@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
@@ -9,6 +10,7 @@ import dev.audiocompanion.transport.AudioReceiverSession
 import dev.audiocompanion.transport.ReceiverConfig
 import dev.audiocompanion.transport.ReceiverSessionState
 import dev.audiocompanion.transport.ReceiverResumeStore
+import dev.audiocompanion.transport.SegmentCloseReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +25,14 @@ data class AudioCompanionDiagnostics(
     val lowStorage: Boolean = false,
     val pauseRequested: Boolean = false,
     val freeStorageHintKb: UInt = 0u,
+    val aiOutputCount: Int = 0,
+)
+
+data class AudioCompanionSupportReport(
+    val generatedAtMs: Long,
+    val receiverState: String,
+    val diagnostics: AudioCompanionDiagnostics,
+    val includeContent: Boolean,
 )
 
 /**
@@ -38,6 +48,7 @@ class AudioCompanionRuntime(
     private val retention: RetentionManager,
     private val resumeStore: ReceiverResumeStore,
     private val transcriptionQueue: FileTranscriptionQueue,
+    private val aiOutputStore: FileAiOutputStore,
     private val receiverConfig: ReceiverConfig,
     private val nowMs: () -> Long,
 ) {
@@ -84,6 +95,33 @@ class AudioCompanionRuntime(
             lowStorage = retention.lowStorage,
             pauseRequested = retention.pauseRequested,
             freeStorageHintKb = retention.freeStorageHintKb(),
+            aiOutputCount = aiOutputStore.list().size,
+        )
+    }
+
+    suspend fun deleteAllLocalData() {
+        stop()
+        store.closeSegment(SegmentCloseReason.Interrupted)
+        store.listSegments().forEach { store.deleteSegment(it.segmentId) }
+        transcriptionQueue.deleteAll()
+        aiOutputStore.deleteAll()
+        resumeStore.clear()
+        refreshDiagnostics()
+    }
+
+    suspend fun revokeReceiverLocally() {
+        stop()
+        resumeStore.clear()
+        refreshDiagnostics()
+    }
+
+    fun buildSupportReport(includeContent: Boolean): AudioCompanionSupportReport {
+        refreshDiagnostics()
+        return AudioCompanionSupportReport(
+            generatedAtMs = nowMs(),
+            receiverState = state.value.toString(),
+            diagnostics = diagnostics.value,
+            includeContent = includeContent,
         )
     }
 }

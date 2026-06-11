@@ -119,6 +119,20 @@ class FileTranscriptionQueueTest {
     }
 
     @Test
+    fun deleteAllRemovesTasks() {
+        val root = tempRoot()
+        val q = queue(root)
+        q.enqueue("seg-1")
+        q.enqueue("seg-2")
+
+        q.deleteAll()
+
+        assertTrue(q.all().isEmpty())
+        assertNull(q.load("seg-1"))
+        assertNull(q.load("seg-2"))
+    }
+
+    @Test
     fun atomicWrites_leaveNoTempFiles() {
         val root = tempRoot()
         val q = queue(root)

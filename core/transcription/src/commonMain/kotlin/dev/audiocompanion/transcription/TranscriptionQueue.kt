@@ -110,6 +110,13 @@ class FileTranscriptionQueue(
         it.copy(state = TaskState.Disabled)
     }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(queueDir)) return
+        fileSystem.list(queueDir)
+            .filter { it.name.endsWith(".task.json") || it.name.endsWith(".task.json.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     /** Process-restart recovery: tasks that died mid-run go back to Pending. */
     fun recoverOnStart() {
         all().filter { it.state == TaskState.Running }

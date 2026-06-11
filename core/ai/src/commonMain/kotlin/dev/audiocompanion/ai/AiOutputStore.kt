@@ -87,6 +87,13 @@ class FileAiOutputStore(
         fileSystem.delete(outputPath(outputId), mustExist = false)
     }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(outputDir)) return
+        fileSystem.list(outputDir)
+            .filter { it.name.endsWith(".ai.json") || it.name.endsWith(".ai.json.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     private fun write(output: AiOutput) {
         fileSystem.createDirectories(outputDir)
         val tmp = Path(outputDir, "${output.outputId}.ai.json.tmp")

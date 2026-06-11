@@ -247,5 +247,8 @@ class SegmentStoreTest {
         store.save(empty)
         assertEquals(empty, FileReceiverResumeStore(SystemFileSystem, root).load())
         assertFalse(File(root.toString(), "receiver_state.json.tmp").exists())
+
+        store.clear()
+        assertEquals(null, store.load())
     }
 }

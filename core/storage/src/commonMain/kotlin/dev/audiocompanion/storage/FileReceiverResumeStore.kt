@@ -54,4 +54,9 @@ class FileReceiverResumeStore(
             lastSampleIndex = parsed.lastSampleIndex,
         )
     }
+
+    override suspend fun clear() {
+        fileSystem.delete(path, mustExist = false)
+        fileSystem.delete(tmpPath, mustExist = false)
+    }
 }

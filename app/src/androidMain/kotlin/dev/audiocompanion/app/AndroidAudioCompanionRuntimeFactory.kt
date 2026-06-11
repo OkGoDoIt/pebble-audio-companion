@@ -3,6 +3,7 @@ package dev.audiocompanion.app
 import android.content.Context
 import android.os.Build
 import android.util.Base64
+import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
@@ -37,6 +38,7 @@ class AndroidAudioCompanionRuntimeFactory(
             retention = retention,
             resumeStore = FileReceiverResumeStore(SystemFileSystem, root),
             transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs),
+            aiOutputStore = FileAiOutputStore(SystemFileSystem, root, nowMs),
             receiverConfig = ReceiverConfig(
                 receiverId = loadOrCreateReceiverId(),
                 receiverName = receiverName(),

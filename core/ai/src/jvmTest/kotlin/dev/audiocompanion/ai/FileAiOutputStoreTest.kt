@@ -49,4 +49,37 @@ class FileAiOutputStoreTest {
         store.delete("run-1")
         assertNull(store.load("run-1"))
     }
+
+    @Test
+    fun deleteAllRemovesOutputs() {
+        val store = FileAiOutputStore(SystemFileSystem, tempRoot(), { clock })
+        val prompt = AiPromptTemplate(
+            id = "summary",
+            title = "Summary",
+            systemPrompt = "Summarize.",
+            userPrompt = "Use transcripts.",
+        )
+        val result = RoutedAiResult(
+            text = "summary",
+            modeUsed = AiProcessingMode.LocalOnly,
+            providerId = "local",
+            modelUsed = null,
+            inputTokens = null,
+            outputTokens = null,
+        )
+        store.save(
+            AiRunRequest("run-1", prompt, listOf(TranscriptExcerpt("seg-1", "one"))),
+            result,
+            userConsentedToRemote = false,
+        )
+        store.save(
+            AiRunRequest("run-2", prompt, listOf(TranscriptExcerpt("seg-2", "two"))),
+            result,
+            userConsentedToRemote = false,
+        )
+
+        store.deleteAll()
+
+        assertEquals(emptyList(), store.list())
+    }
 }

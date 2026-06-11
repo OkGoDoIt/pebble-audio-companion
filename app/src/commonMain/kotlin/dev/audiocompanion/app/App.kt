@@ -68,6 +68,10 @@ fun App(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
+                    text = "AI outputs: ${currentDiagnostics.aiOutputCount}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
                     text = "Storage: ${currentDiagnostics.freeStorageHintKb} KB free" +
                         when {
                             currentDiagnostics.pauseRequested -> " - pause requested"

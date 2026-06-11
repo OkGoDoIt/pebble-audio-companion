@@ -90,4 +90,6 @@ interface ReceiverResumeStore {
     suspend fun save(state: ReceiverResumeState)
 
     suspend fun load(): ReceiverResumeState?
+
+    suspend fun clear() {}
 }

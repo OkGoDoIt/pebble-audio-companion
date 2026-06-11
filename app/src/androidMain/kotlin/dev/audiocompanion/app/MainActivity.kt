@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -28,6 +29,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var runtime: AudioCompanionRuntime
     private lateinit var associator: AndroidAudioCompanionAssociator
     private lateinit var settingsRepository: AndroidAudioCompanionSettingsRepository
+    private var lastSupportReport: AudioCompanionSupportReport? = null
 
     private val associationLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult(),
@@ -82,9 +84,23 @@ class MainActivity : ComponentActivity() {
                     settingsRepository.setAiMode(settingsRepository.settings.value.aiMode.next())
                 },
                 onRetentionDaysChanged = settingsRepository::setRetentionDays,
-                onDeleteAll = { runtime.refreshDiagnostics() },
-                onExportDiagnostics = { runtime.refreshDiagnostics() },
-                onRevokeReceiver = { runtime.refreshDiagnostics() },
+                onDeleteAll = {
+                    runtimeScope.launch {
+                        link.disconnect()
+                        runtime.deleteAllLocalData()
+                    }
+                },
+                onExportDiagnostics = {
+                    lastSupportReport = runtime.buildSupportReport(
+                        includeContent = settingsRepository.settings.value.diagnosticsIncludeContent,
+                    )
+                },
+                onRevokeReceiver = {
+                    runtimeScope.launch {
+                        link.disconnect()
+                        runtime.revokeReceiverLocally()
+                    }
+                },
             )
         }
     }
