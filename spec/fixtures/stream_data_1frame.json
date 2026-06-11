@@ -1,0 +1,16 @@
+{
+  "channel": "data",
+  "description": "First data message of a stream with one typical 25-byte Speex frame",
+  "expect": "parse",
+  "fields": {
+    "first_sample_index": 0,
+    "first_sequence": 0,
+    "frame_count": 1,
+    "frame_lengths": [
+      25
+    ],
+    "stream_id": 1592590337
+  },
+  "name": "stream_data_1frame",
+  "size": 47
+}

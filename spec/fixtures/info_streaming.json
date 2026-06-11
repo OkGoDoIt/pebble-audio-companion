@@ -1,0 +1,16 @@
+{
+  "channel": "info",
+  "description": "Info read while streaming: receiver bound + enabled, Speex codec, fw 4.9.2",
+  "expect": "parse",
+  "fields": {
+    "codec_bitmap": 1,
+    "flags": 3,
+    "fw_version_packed": 67698690,
+    "info_version": 1,
+    "protocol_max": 1,
+    "protocol_min": 1,
+    "service_state": 3
+  },
+  "name": "info_streaming",
+  "size": 20
+}

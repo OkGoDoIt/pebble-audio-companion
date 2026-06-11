@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Nominal authorization request",
+  "expect": "parse",
+  "fields": {
+    "name": "Audio Companion",
+    "proto_version": 1,
+    "receiver_id_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "request_token": 33
+  },
+  "name": "auth_request",
+  "size": 51
+}

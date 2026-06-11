@@ -1,0 +1,11 @@
+{
+  "channel": "control_out",
+  "description": "Consent prompt shown on watch; final result follows asynchronously",
+  "expect": "parse",
+  "fields": {
+    "request_token": 33,
+    "status": 1
+  },
+  "name": "auth_result_pending",
+  "size": 4
+}

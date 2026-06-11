@@ -1,0 +1,11 @@
+{
+  "channel": "control_out",
+  "description": "Watch reports a malformed inbound message",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "error_code": 1
+  },
+  "name": "error_malformed",
+  "size": 6
+}

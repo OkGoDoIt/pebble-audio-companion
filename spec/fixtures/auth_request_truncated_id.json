@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "Authorization request cut inside receiver_id",
+  "expect": "reject",
+  "fields": {},
+  "name": "auth_request_truncated_id",
+  "size": 20
+}

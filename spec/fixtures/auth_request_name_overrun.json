@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "name_len (30) exceeds both the 24-byte limit and the actual payload",
+  "expect": "reject",
+  "fields": {},
+  "name": "auth_request_name_overrun",
+  "size": 40
+}

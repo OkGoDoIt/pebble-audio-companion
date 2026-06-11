@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason low_battery",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1601280,
+    "first_missing_sequence": 5004,
+    "missing_frame_count": 250,
+    "reason": 4,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_low_battery",
+  "size": 26
+}

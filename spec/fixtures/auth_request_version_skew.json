@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "Phone speaks a newer protocol; watch must still parse and grant min(2, watch_max)",
+  "expect": "parse",
+  "fields": {
+    "proto_version": 2,
+    "request_token": 35
+  },
+  "name": "auth_request_version_skew",
+  "size": 51
+}

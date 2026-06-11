@@ -1,0 +1,8 @@
+{
+  "channel": "data",
+  "description": "frame_count of zero is invalid",
+  "expect": "reject",
+  "fields": {},
+  "name": "stream_data_zero_frames",
+  "size": 20
+}

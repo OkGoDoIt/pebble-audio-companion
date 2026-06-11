@@ -1,0 +1,15 @@
+{
+  "channel": "control_in",
+  "description": "Future-version checkpoint with appended field; v1 parser must accept and ignore the tail",
+  "expect": "parse",
+  "fields": {
+    "free_storage_hint_kb": 1024,
+    "highest_contiguous_sequence_persisted": 10,
+    "persisted_sample_index": 3200,
+    "receiver_flags": 0,
+    "request_token": 40,
+    "stream_id": 7
+  },
+  "name": "checkpoint_v2_appended",
+  "size": 30
+}
