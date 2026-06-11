@@ -23,6 +23,7 @@ kotlin {
             implementation(project(":core:transport"))
             implementation(project(":core:storage"))
             implementation(project(":core:transcription"))
+            implementation(project(":core:ai"))
             implementation(libs.coroutines)
             implementation(libs.kotlinx.io.core)
             implementation(libs.koin.core)

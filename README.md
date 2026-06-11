@@ -24,7 +24,7 @@ this app is a separate, dedicated audio receiver. The firmware side lives on the
 - `core/ai` — AI processing over durable transcripts (design: `docs/ai-processing-design.md`).
 - `adapter/ble-android` — CDM association, GATT client, foreground service.
 - `adapter/ble-ios` — Core Bluetooth central wrapper with state restoration.
-- `app` — Compose Multiplatform UI (Android entry + iOS entry).
+- `app` — Compose Multiplatform UI (Android entry; iOS host shell still to be added).
 
 ## Build
 
@@ -32,9 +32,9 @@ this app is a separate, dedicated audio receiver. The firmware side lives on the
 export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 ./gradlew :core:protocol:jvmTest :core:transport:jvmTest :core:storage:jvmTest \
-          :core:transcription:jvmTest
+          :core:transcription:jvmTest :core:ai:jvmTest
 ./gradlew :app:assembleDebug
-./gradlew :app:compileKotlinIosArm64
+./gradlew :adapter:ble-ios:compileKotlinIosSimulatorArm64
 ```
 
 ## Protocol fixtures
