@@ -24,6 +24,7 @@ kotlin {
             implementation(project(":core:storage"))
             implementation(project(":core:transcription"))
             implementation(libs.coroutines)
+            implementation(libs.kotlinx.io.core)
             implementation(libs.koin.core)
             implementation(compose.runtime)
             implementation(compose.foundation)
