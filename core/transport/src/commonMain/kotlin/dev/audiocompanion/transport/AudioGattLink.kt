@@ -1,0 +1,34 @@
+package dev.audiocompanion.transport
+
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+
+/** BLE link connection state as seen by the receiver session. */
+enum class LinkState {
+    Disconnected,
+    Connecting,
+
+    /** Connected, services discovered, characteristics resolved, notifications subscribable. */
+    Ready,
+}
+
+/**
+ * The platform seam (implementation plan Section 6.1). Implemented per platform in
+ * :adapter:ble-android / :adapter:ble-ios; :core:* never touches BLE APIs directly,
+ * which keeps the whole receiver testable on the JVM with scripted byte streams.
+ */
+interface AudioGattLink {
+    val connectionState: StateFlow<LinkState>
+
+    /** Reads the Info characteristic (raw 20-byte snapshot). */
+    suspend fun readInfo(): ByteArray
+
+    /** Writes one complete control request message to the Control characteristic. */
+    suspend fun writeControl(message: ByteArray)
+
+    /** One emission per Control notification (one complete message each). */
+    val controlNotifications: Flow<ByteArray>
+
+    /** One emission per Data notification (one complete message each). */
+    val dataNotifications: Flow<ByteArray>
+}
