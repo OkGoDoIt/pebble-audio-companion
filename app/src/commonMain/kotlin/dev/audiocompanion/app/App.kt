@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -25,18 +28,31 @@ fun App(
         MutableStateFlow(ReceiverSessionState.Disconnected),
     diagnostics: StateFlow<AudioCompanionDiagnostics> =
         MutableStateFlow(AudioCompanionDiagnostics()),
+    settings: StateFlow<AudioCompanionSettings> =
+        MutableStateFlow(AudioCompanionSettings()),
     onPairWatch: () -> Unit = {},
     onStartReceiver: () -> Unit = {},
     onStopReceiver: () -> Unit = {},
     onRefreshDiagnostics: () -> Unit = {},
+    onBackgroundReceiverChanged: (Boolean) -> Unit = {},
+    onCloudTranscriptionConsentChanged: (Boolean) -> Unit = {},
+    onRemoteAiConsentChanged: (Boolean) -> Unit = {},
+    onDiagnosticsContentChanged: (Boolean) -> Unit = {},
+    onCycleTranscriptionMode: () -> Unit = {},
+    onCycleAiMode: () -> Unit = {},
+    onRetentionDaysChanged: (Int) -> Unit = {},
+    onDeleteAll: () -> Unit = {},
+    onExportDiagnostics: () -> Unit = {},
+    onRevokeReceiver: () -> Unit = {},
 ) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val state = sessionState.collectAsState().value
             val currentDiagnostics = diagnostics.collectAsState().value
+            val currentSettings = settings.collectAsState().value
             Column(
-                modifier = Modifier.fillMaxSize().padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 horizontalAlignment = Alignment.Start,
             ) {
                 Text(text = "Pebble Audio Companion", style = MaterialTheme.typography.headlineSmall)
@@ -74,8 +90,79 @@ fun App(
                 OutlinedButton(onClick = onRefreshDiagnostics) {
                     Text("Refresh Diagnostics")
                 }
+                Text(text = "Privacy Controls", style = MaterialTheme.typography.titleMedium)
+                ToggleRow(
+                    label = "Background receiver",
+                    checked = currentSettings.backgroundReceiverEnabled,
+                    onCheckedChange = onBackgroundReceiverChanged,
+                )
+                ToggleRow(
+                    label = "Cloud transcription consent",
+                    checked = currentSettings.cloudTranscriptionConsent,
+                    onCheckedChange = onCloudTranscriptionConsentChanged,
+                )
+                ToggleRow(
+                    label = "Remote AI consent",
+                    checked = currentSettings.remoteAiConsent,
+                    onCheckedChange = onRemoteAiConsentChanged,
+                )
+                ToggleRow(
+                    label = "Include content in diagnostics",
+                    checked = currentSettings.diagnosticsIncludeContent,
+                    onCheckedChange = onDiagnosticsContentChanged,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onCycleTranscriptionMode) {
+                        Text("Transcription: ${currentSettings.transcriptionMode}")
+                    }
+                    OutlinedButton(onClick = onCycleAiMode) {
+                        Text("AI: ${currentSettings.aiMode}")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        onRetentionDaysChanged((currentSettings.retentionDays - 7).coerceAtLeast(1))
+                    }) {
+                        Text("-7d")
+                    }
+                    Text(
+                        text = "Retention: ${currentSettings.retentionDays} days",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    OutlinedButton(onClick = {
+                        onRetentionDaysChanged((currentSettings.retentionDays + 7).coerceAtMost(365))
+                    }) {
+                        Text("+7d")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onExportDiagnostics) {
+                        Text("Export Diagnostics")
+                    }
+                    OutlinedButton(onClick = onRevokeReceiver) {
+                        Text("Revoke")
+                    }
+                    OutlinedButton(onClick = onDeleteAll) {
+                        Text("Delete All")
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Text(text = label, style = MaterialTheme.typography.bodyMedium)
     }
 }
 

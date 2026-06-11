@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var link: AndroidAudioGattLink
     private lateinit var runtime: AudioCompanionRuntime
     private lateinit var associator: AndroidAudioCompanionAssociator
+    private lateinit var settingsRepository: AndroidAudioCompanionSettingsRepository
 
     private val associationLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult(),
@@ -50,11 +51,13 @@ class MainActivity : ComponentActivity() {
         link = AndroidAudioGattLink(this)
         runtime = AndroidAudioCompanionRuntimeFactory(this).create(link)
         associator = AndroidAudioCompanionAssociator(this)
+        settingsRepository = AndroidAudioCompanionSettingsRepository(this)
         runtime.recoverDurableState()
         setContent {
             App(
                 sessionState = runtime.state,
                 diagnostics = runtime.diagnostics,
+                settings = settingsRepository.settings,
                 onPairWatch = { requestPermissionsAndAssociate() },
                 onStartReceiver = { runtime.start(runtimeScope) },
                 onStopReceiver = {
@@ -62,6 +65,26 @@ class MainActivity : ComponentActivity() {
                     runtime.stop()
                 },
                 onRefreshDiagnostics = { runtime.refreshDiagnostics() },
+                onBackgroundReceiverChanged = { enabled ->
+                    settingsRepository.setBackgroundReceiverEnabled(enabled)
+                    if (enabled) runtime.start(runtimeScope) else {
+                        link.disconnect()
+                        runtime.stop()
+                    }
+                },
+                onCloudTranscriptionConsentChanged = settingsRepository::setCloudTranscriptionConsent,
+                onRemoteAiConsentChanged = settingsRepository::setRemoteAiConsent,
+                onDiagnosticsContentChanged = settingsRepository::setDiagnosticsIncludeContent,
+                onCycleTranscriptionMode = {
+                    settingsRepository.setTranscriptionMode(settingsRepository.settings.value.transcriptionMode.next())
+                },
+                onCycleAiMode = {
+                    settingsRepository.setAiMode(settingsRepository.settings.value.aiMode.next())
+                },
+                onRetentionDaysChanged = settingsRepository::setRetentionDays,
+                onDeleteAll = { runtime.refreshDiagnostics() },
+                onExportDiagnostics = { runtime.refreshDiagnostics() },
+                onRevokeReceiver = { runtime.refreshDiagnostics() },
             )
         }
     }
