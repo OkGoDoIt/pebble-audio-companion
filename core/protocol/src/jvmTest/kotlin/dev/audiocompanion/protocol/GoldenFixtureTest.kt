@@ -33,7 +33,10 @@ class GoldenFixtureTest {
     }
 
     private fun loadFixtures(): List<Pair<JsonObject, ByteArray>> {
-        val jsonFiles = fixturesDir.listFiles { f -> f.extension == "json" }?.sortedBy { it.name }
+        // speex_* are codec fixtures (real encoded frames), not protocol-message fixtures.
+        val jsonFiles = fixturesDir
+            .listFiles { f -> f.extension == "json" && !f.name.startsWith("speex_") }
+            ?.sortedBy { it.name }
             ?: fail("No fixtures found in $fixturesDir")
         assertTrue(jsonFiles.size >= 44, "expected at least 44 fixtures, found ${jsonFiles.size}")
         return jsonFiles.map { jsonFile ->

@@ -27,6 +27,10 @@ def main():
 
     entries = []
     for json_path in sorted(FIXTURES_DIR.glob("*.json")):
+        if json_path.name.startswith("speex_"):
+            # Codec fixtures (real encoded Speex), not protocol-message fixtures; the firmware
+            # locks them in test_audio_companion_speex.c instead of the protocol table.
+            continue
         meta = json.loads(json_path.read_text())
         bin_path = json_path.with_suffix(".bin")
         data = bin_path.read_bytes()
