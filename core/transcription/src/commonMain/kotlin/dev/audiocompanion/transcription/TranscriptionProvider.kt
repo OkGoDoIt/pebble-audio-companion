@@ -43,10 +43,7 @@ sealed class TranscriptionException(message: String, cause: Throwable? = null) :
         TranscriptionException(message, cause)
 }
 
-/**
- * One speech-to-text backend (local whisper-family or cloud). Real providers come later
- * (plan 6.5); this module currently ships interfaces, the mode router, and the durable queue.
- */
+/** One speech-to-text backend (local whisper-family or cloud). */
 interface TranscriptionProvider {
     val id: String
 

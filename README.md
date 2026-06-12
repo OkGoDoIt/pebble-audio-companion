@@ -50,9 +50,10 @@ Fixture changes require a protocol version decision (see spec Section 9).
 ## Transcription status
 
 The receiver now enqueues closed segments, decodes stored Speex frame logs to bounded PCM chunks
-on Android/iOS, and processes the durable transcription queue through the four-mode router. Remote
+on Android/iOS, and processes the durable transcription queue through the four-mode router. Android
+local transcription is wired to the vendored Cactus STT runtime and resolves the
+`parakeet-tdt-0.6b-v3` model into the companion app's private files directory. Remote
 transcription is wired to OpenAI's audio transcription endpoint and is disabled unless the user has
-enabled cloud transcription consent and entered an API key in the app. The current local provider is
-an explicit temporary placeholder that consumes the real PCM stream and records provenance; replace
-it with the Cactus/whisper-family provider before treating local transcription quality as
-product-ready.
+enabled cloud transcription consent and entered an API key in the app. The Cactus native wrapper is
+also compiled for iOS in `:core:transcription`; the iOS app entry point remains a separate lifecycle
+integration task.

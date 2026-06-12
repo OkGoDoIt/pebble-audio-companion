@@ -8,6 +8,16 @@ plugins {
 }
 
 kotlin {
+    targets.configureEach {
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    freeCompilerArgs.add("-Xexpect-actual-classes")
+                }
+            }
+        }
+    }
+
     jvm()
     androidTarget {
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
@@ -19,17 +29,35 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
+        val mobileMain by creating {
+            dependsOn(commonMain.get())
+            dependencies {
+                implementation(project(":cactus"))
+            }
+        }
+        val iosMain by creating {
+            dependsOn(mobileMain)
+            dependencies {
+                implementation(libs.coredevices.speex)
+            }
+        }
+        val iosArm64Main by getting {
+            dependsOn(iosMain)
+        }
+        val iosSimulatorArm64Main by getting {
+            dependsOn(iosMain)
+        }
         commonMain.dependencies {
             implementation(libs.coroutines)
             implementation(libs.ktor.client.core)
             implementation(libs.kotlinx.io.core)
             implementation(libs.serialization)
         }
-        androidMain.dependencies {
-            implementation(libs.coredevices.speex)
-        }
-        iosMain.dependencies {
-            implementation(libs.coredevices.speex)
+        androidMain {
+            dependsOn(mobileMain)
+            dependencies {
+                implementation(libs.coredevices.speex)
+            }
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

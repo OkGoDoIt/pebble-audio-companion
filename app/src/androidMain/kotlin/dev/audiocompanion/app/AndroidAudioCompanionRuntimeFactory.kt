@@ -10,8 +10,8 @@ import dev.audiocompanion.storage.FileReceiverResumeStore
 import dev.audiocompanion.storage.FreeSpaceProvider
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
+import dev.audiocompanion.transcription.CactusLocalTranscriptionProvider
 import dev.audiocompanion.transcription.FileTranscriptionQueue
-import dev.audiocompanion.transcription.LocalPlaceholderTranscriptionProvider
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
@@ -45,7 +45,9 @@ class AndroidAudioCompanionRuntimeFactory(
             nowMs = nowMs,
         )
         val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
-        val localProvider = LocalPlaceholderTranscriptionProvider()
+        val localProvider = CactusLocalTranscriptionProvider(
+            modelProvider = AndroidCactusModelPathProvider(appContext),
+        )
         val remoteProvider = OpenAiTranscriptionProvider(
             client = HttpClient(OkHttp),
             apiKey = { settingsRepository.settings.value.openAiApiKey },

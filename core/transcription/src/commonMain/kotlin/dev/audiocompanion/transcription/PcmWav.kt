@@ -5,10 +5,16 @@ internal object PcmWav {
     private const val PCM_FORMAT = 1
 
     fun encodeMono16(pcm: ByteArray, sampleRateHz: Int): ByteArray {
+        val out = headerMono16(pcm.size, sampleRateHz) + pcm
+        return out
+    }
+
+    fun headerMono16(pcmSizeBytes: Int, sampleRateHz: Int): ByteArray {
         require(sampleRateHz > 0) { "sampleRateHz must be positive" }
-        val out = ByteArray(HEADER_BYTES + pcm.size)
+        require(pcmSizeBytes >= 0) { "pcmSizeBytes must be non-negative" }
+        val out = ByteArray(HEADER_BYTES)
         out.writeAscii(0, "RIFF")
-        out.writeU32Le(4, (36 + pcm.size).toUInt())
+        out.writeU32Le(4, (36 + pcmSizeBytes).toUInt())
         out.writeAscii(8, "WAVE")
         out.writeAscii(12, "fmt ")
         out.writeU32Le(16, 16u)
@@ -19,8 +25,7 @@ internal object PcmWav {
         out.writeU16Le(32, Short.SIZE_BYTES.toUShort())
         out.writeU16Le(34, 16u)
         out.writeAscii(36, "data")
-        out.writeU32Le(40, pcm.size.toUInt())
-        pcm.copyInto(out, destinationOffset = HEADER_BYTES)
+        out.writeU32Le(40, pcmSizeBytes.toUInt())
         return out
     }
 
