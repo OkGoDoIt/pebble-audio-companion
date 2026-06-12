@@ -210,6 +210,7 @@ fun App(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
                         liveTranscriptOf = { liveTranscripts[it] },
+                        livePreviewOf = { livePreviews[it] },
                         liveTranscribedFrameCountOf = { segmentId ->
                             livePreviews[segmentId]?.transcribedFrameCount?.toLong()
                         },

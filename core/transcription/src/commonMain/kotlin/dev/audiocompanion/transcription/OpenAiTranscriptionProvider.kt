@@ -18,6 +18,7 @@ import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlin.math.roundToLong
 
 /**
  * Cloud transcription provider for bounded, durable segment chunks.
@@ -57,8 +58,9 @@ class OpenAiTranscriptionProvider(
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException.ProviderUnavailable(id)
 
-        val transcripts = mutableListOf<String>()
+        val transcripts = mutableListOf<OpenAiChunkResult>()
         var chunkIndex = 0
+        var chunkStartMs = 0L
         val pcmUploadLimit = maxUploadBytes - WAV_HEADER_BYTES
         val buffer = Buffer()
         try {
@@ -67,12 +69,15 @@ class OpenAiTranscriptionProvider(
                 while (offset < chunk.size) {
                     val writable = minOf(pcmUploadLimit - buffer.size.toInt(), chunk.size - offset)
                     if (writable <= 0) {
+                        val pcm = buffer.readByteArray(buffer.size.toInt())
                         transcripts += uploadChunk(
                             key = key,
-                            pcm = buffer.readByteArray(buffer.size.toInt()),
+                            pcm = pcm,
                             sampleRateHz = sampleRateHz,
                             chunkIndex = chunkIndex++,
+                            chunkStartMs = chunkStartMs,
                         )
+                        chunkStartMs += pcm.durationMs(sampleRateHz)
                         continue
                     }
                     buffer.write(chunk, offset, offset + writable)
@@ -80,18 +85,20 @@ class OpenAiTranscriptionProvider(
                 }
             }
             if (buffer.size > 0) {
+                val pcm = buffer.readByteArray(buffer.size.toInt())
                 transcripts += uploadChunk(
                     key = key,
-                    pcm = buffer.readByteArray(buffer.size.toInt()),
+                    pcm = pcm,
                     sampleRateHz = sampleRateHz,
                     chunkIndex = chunkIndex,
+                    chunkStartMs = chunkStartMs,
                 )
             }
         } finally {
             buffer.close()
         }
 
-        val text = transcripts.joinToString(separator = "\n").trim()
+        val text = transcripts.joinToString(separator = "\n") { it.text }.trim()
         if (text.isBlank()) {
             throw TranscriptionException.NoSpeechDetected("OpenAI returned an empty transcript")
         }
@@ -99,6 +106,8 @@ class OpenAiTranscriptionProvider(
             text = text,
             providerId = id,
             modelUsed = model(),
+            segments = transcripts.flatMap { it.segments },
+            words = transcripts.flatMap { it.words },
         )
     }
 
@@ -107,7 +116,8 @@ class OpenAiTranscriptionProvider(
         pcm: ByteArray,
         sampleRateHz: Int,
         chunkIndex: Int,
-    ): String {
+        chunkStartMs: Long,
+    ): OpenAiChunkResult {
         if (pcm.isEmpty()) {
             throw TranscriptionException.NoSpeechDetected("empty PCM chunk")
         }
@@ -119,11 +129,17 @@ class OpenAiTranscriptionProvider(
         }
         val response: HttpResponse = client.post(endpointUrl) {
             header(HttpHeaders.Authorization, "Bearer $key")
+            val modelValue = model()
+            val wantsTimestamps = supportsVerboseTimestamps(modelValue)
             setBody(
                 MultiPartFormDataContent(
                     formData {
-                        append("model", model())
-                        append("response_format", "json")
+                        append("model", modelValue)
+                        append("response_format", if (wantsTimestamps) "verbose_json" else "json")
+                        if (wantsTimestamps) {
+                            append("timestamp_granularities[]", "segment")
+                            append("timestamp_granularities[]", "word")
+                        }
                         append(
                             "file",
                             wav,
@@ -145,16 +161,80 @@ class OpenAiTranscriptionProvider(
                 "OpenAI transcription failed (${response.status.value}): ${body.take(240)}",
             )
         }
-        return json.decodeFromString(OpenAiTranscriptionResponse.serializer(), body).text
+        return if (supportsVerboseTimestamps(model())) {
+            json.decodeFromString(OpenAiVerboseTranscriptionResponse.serializer(), body)
+                .toChunkResult(chunkStartMs)
+        } else {
+            OpenAiChunkResult(
+                text = json.decodeFromString(OpenAiTranscriptionResponse.serializer(), body).text,
+            )
+        }
     }
 
     @Serializable
     private data class OpenAiTranscriptionResponse(val text: String = "")
 
+    @Serializable
+    private data class OpenAiVerboseTranscriptionResponse(
+        val text: String = "",
+        val segments: List<OpenAiTimedText> = emptyList(),
+        val words: List<OpenAiTimedWord> = emptyList(),
+    ) {
+        fun toChunkResult(offsetMs: Long): OpenAiChunkResult =
+            OpenAiChunkResult(
+                text = text,
+                segments = segments.mapNotNull { segment ->
+                    val cleaned = segment.text.trim()
+                    if (cleaned.isBlank()) return@mapNotNull null
+                    TranscriptSegment(
+                        text = cleaned,
+                        startMs = offsetMs + (segment.start * 1_000).roundToLong(),
+                        endMs = offsetMs + (segment.end * 1_000).roundToLong(),
+                    )
+                },
+                words = words.mapNotNull { word ->
+                    val cleaned = word.word.trim()
+                    if (cleaned.isBlank()) return@mapNotNull null
+                    TranscriptWord(
+                        text = cleaned,
+                        startMs = offsetMs + (word.start * 1_000).roundToLong(),
+                        endMs = offsetMs + (word.end * 1_000).roundToLong(),
+                    )
+                },
+            )
+    }
+
+    @Serializable
+    private data class OpenAiTimedText(
+        val text: String = "",
+        val start: Double = 0.0,
+        val end: Double = 0.0,
+    )
+
+    @Serializable
+    private data class OpenAiTimedWord(
+        val word: String = "",
+        val start: Double = 0.0,
+        val end: Double = 0.0,
+    )
+
+    private data class OpenAiChunkResult(
+        val text: String,
+        val segments: List<TranscriptSegment> = emptyList(),
+        val words: List<TranscriptWord> = emptyList(),
+    )
+
+    private fun supportsVerboseTimestamps(model: String): Boolean =
+        model == "whisper-1"
+
+    private fun ByteArray.durationMs(sampleRateHz: Int): Long =
+        (size / BYTES_PER_SAMPLE.toDouble() / sampleRateHz * 1_000).roundToLong()
+
     companion object {
         const val DEFAULT_ENDPOINT_URL = "https://api.openai.com/v1/audio/transcriptions"
         const val DEFAULT_MODEL = "gpt-4o-mini-transcribe"
         private const val WAV_HEADER_BYTES = 44
+        private const val BYTES_PER_SAMPLE = 2
         private const val DEFAULT_MAX_UPLOAD_BYTES = 24_000_000
     }
 }

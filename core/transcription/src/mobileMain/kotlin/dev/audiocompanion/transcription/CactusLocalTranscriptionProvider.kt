@@ -18,6 +18,11 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.files.SystemTemporaryDirectory
 import kotlinx.io.readByteArray
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.cancellation.CancellationException
@@ -85,8 +90,8 @@ class CactusLocalTranscriptionProvider(
             }
             writeWavFromRaw(rawPath, wavPath, pcmBytes, sampleRateHz)
             val handle = initModel()
-            val text = runNativeTranscribe(handle, wavPath.toString())
-            val cleaned = text.trim()
+            val nativeResult = runNativeTranscribe(handle, wavPath.toString())
+            val cleaned = nativeResult.text.trim()
             if (isNoSpeech(cleaned)) {
                 throw TranscriptionException.NoSpeechDetected("local model returned no speech")
             }
@@ -94,6 +99,8 @@ class CactusLocalTranscriptionProvider(
                 text = cleaned,
                 providerId = id,
                 modelUsed = "${modelProvider.modelName}:${modelProvider.modelVersion}",
+                segments = nativeResult.segments,
+                words = nativeResult.words,
             )
         } finally {
             deleteQuietly(rawPath)
@@ -131,7 +138,7 @@ class CactusLocalTranscriptionProvider(
         return modelHandle
     }
 
-    private suspend fun runNativeTranscribe(handle: Long, wavPath: String): String {
+    private suspend fun runNativeTranscribe(handle: Long, wavPath: String): NativeTranscription {
         val freeMemory = getFreeTranscriptionMemoryMb()
         if (freeMemory < minTranscriptionMemoryMb) {
             throw TranscriptionException.ProviderUnavailable(id)
@@ -144,8 +151,8 @@ class CactusLocalTranscriptionProvider(
         }
         return try {
             withHighPriorityTranscriptionThread {
-                parseTranscriptionText(cactusTranscribe(handle, wavPath, null, null, null, null))
-            }
+                cactusTranscribe(handle, wavPath, null, null, null, null)
+            }.let(::parseNativeTranscription)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -196,13 +203,54 @@ class CactusLocalTranscriptionProvider(
         }
     }
 
-    private fun parseTranscriptionText(jsonResult: String): String =
+    private fun parseNativeTranscription(jsonResult: String): NativeTranscription =
         try {
-            json.parseToJsonElement(jsonResult).jsonObject["response"]?.jsonPrimitive?.content
-                ?: jsonResult
+            val result = json.parseToJsonElement(jsonResult).jsonObject
+            NativeTranscription(
+                text = result.stringValue("response") ?: result.stringValue("text") ?: jsonResult,
+                segments = result["segments"].timedSegments(),
+                words = result["words"].timedWords(),
+            )
         } catch (_: Exception) {
-            jsonResult
+            NativeTranscription(text = jsonResult)
         }
+
+    private fun JsonElement?.timedSegments(): List<TranscriptSegment> =
+        (this as? JsonArray)?.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val start = item.secondsToMs("start") ?: return@mapNotNull null
+            val end = item.secondsToMs("end") ?: start
+            val text = item.stringValue("text")
+                ?: item.stringValue("word")
+                ?: return@mapNotNull null
+            TranscriptSegment(
+                text = text.trim(),
+                startMs = start,
+                endMs = end.coerceAtLeast(start),
+                speaker = item.stringValue("speaker"),
+            )
+        }.orEmpty().filter { it.text.isNotBlank() }
+
+    private fun JsonElement?.timedWords(): List<TranscriptWord> =
+        (this as? JsonArray)?.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val start = item.secondsToMs("start") ?: return@mapNotNull null
+            val end = item.secondsToMs("end") ?: start
+            val text = item.stringValue("word")
+                ?: item.stringValue("text")
+                ?: return@mapNotNull null
+            TranscriptWord(
+                text = text.trim(),
+                startMs = start,
+                endMs = end.coerceAtLeast(start),
+            )
+        }.orEmpty().filter { it.text.isNotBlank() }
+
+    private fun JsonObject.secondsToMs(key: String): Long? =
+        this[key]?.jsonPrimitive?.doubleOrNull?.let { (it * 1_000).toLong() }
+
+    private fun JsonObject.stringValue(key: String): String? =
+        this[key]?.jsonPrimitive?.content
 
     private fun isNoSpeech(text: String): Boolean =
         text.length < 2 ||
@@ -225,3 +273,9 @@ class CactusLocalTranscriptionProvider(
         private val NON_SPEECH_REGEX = "\\[[^\\]]*\\]|\\([^)]*\\)".toRegex()
     }
 }
+
+private data class NativeTranscription(
+    val text: String,
+    val segments: List<TranscriptSegment> = emptyList(),
+    val words: List<TranscriptWord> = emptyList(),
+)
