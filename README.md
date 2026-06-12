@@ -25,7 +25,12 @@ this app is a separate, dedicated audio receiver. The firmware side lives on the
 - `adapter/ble-android` — CDM association and GATT client (`AndroidAudioGattLink`).
 - `adapter/ble-ios` — Core Bluetooth central wrapper with state restoration.
 - `app` — Compose Multiplatform UI, Android foreground receiver service, CDM presence hook,
-  and the iOS runtime entry point exported as `AudioCompanionApp.framework`.
+  and the iOS runtime entry point exported as `AudioCompanionApp.framework`. The shared UI is
+  the four-tab product surface from `docs/ux-visual-design-plan.md`: Today (status header +
+  capture timeline with inline gaps), Library (search/filter, segment detail with transcript,
+  gaps, provenance, delete), AI (manual templates + custom prompt over durable transcripts,
+  saved outputs with provenance), and Settings (grouped native sections with single-choice
+  mode pickers, consents, retention, revoke, delete-all, diagnostics).
 - `iosApp` — native SwiftUI iOS host that links the KMP framework, declares
   `bluetooth-central`, starts Core Bluetooth at launch, and forwards app lifecycle events to the
   third-party receiver runtime.
@@ -70,3 +75,13 @@ making iOS reliability claims.
 The app exposes local model status and explicit refresh/download actions for the Cactus STT model.
 Android and iOS share the same platform model provider between the UI model manager and the actual
 local transcription provider, so a model downloaded from settings is the model used by transcription.
+
+## Transcript and AI status
+
+Transcript text is persisted durably per segment (`FileTranscriptStore`) with provider/model/mode
+provenance, browsable and searchable from the Library tab. Manual AI processing runs the built-in
+templates (daily summary, meeting notes, action items, decisions, follow-up email) or a custom
+prompt over durable transcripts through the four-mode `AiModeRouter`; the only provider today is
+remote OpenAI chat completions, fail-closed behind remote-AI consent plus an API key, and outputs
+are stored durably with provenance. There is no local AI model yet, so Local* AI modes report
+unavailable.

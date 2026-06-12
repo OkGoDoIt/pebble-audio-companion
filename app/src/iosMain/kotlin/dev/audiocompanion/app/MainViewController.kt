@@ -1,6 +1,7 @@
 package dev.audiocompanion.app
 
 import androidx.compose.ui.window.ComposeUIViewController
+import dev.audiocompanion.app.ui.AppActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -72,38 +73,49 @@ fun MainViewController(): UIViewController {
             diagnostics = runtime.diagnostics,
             settings = settings.settings,
             localModelState = bootstrap.handle.localModelManager.state,
-            onPairWatch = {
-                bootstrap.handle.connectWatch()
-                runtime.refreshDiagnostics()
-            },
-            onStartReceiver = bootstrap::startReceiver,
-            onStopReceiver = bootstrap::stopReceiver,
-            onRefreshDiagnostics = runtime::refreshDiagnostics,
-            onRefreshLocalModel = bootstrap.handle.localModelManager::refresh,
-            onDownloadLocalModel = bootstrap.handle.localModelManager::download,
-            onBackgroundReceiverChanged = { enabled ->
-                if (enabled) {
-                    bootstrap.startReceiver()
-                } else {
-                    bootstrap.stopReceiver()
-                }
-            },
-            onCloudTranscriptionConsentChanged = settings::setCloudTranscriptionConsent,
-            onOpenAiApiKeyChanged = settings::setOpenAiApiKey,
-            onRemoteAiConsentChanged = settings::setRemoteAiConsent,
-            onDiagnosticsContentChanged = settings::setDiagnosticsIncludeContent,
-            onCycleTranscriptionMode = {
-                settings.setTranscriptionMode(settings.settings.value.transcriptionMode.next())
-            },
-            onCycleAiMode = {
-                settings.setAiMode(settings.settings.value.aiMode.next())
-            },
-            onRetentionDaysChanged = settings::setRetentionDays,
-            onDeleteAll = bootstrap::deleteAllLocalData,
-            onExportDiagnostics = {
-                runtime.buildSupportReport(includeContent = settings.settings.value.diagnosticsIncludeContent)
-            },
-            onRevokeReceiver = bootstrap::revokeReceiverLocally,
+            actions = AppActions(
+                pairWatch = {
+                    bootstrap.handle.connectWatch()
+                    runtime.refreshDiagnostics()
+                },
+                startReceiver = bootstrap::startReceiver,
+                stopReceiver = bootstrap::stopReceiver,
+                setBackgroundReceiverEnabled = { enabled ->
+                    if (enabled) {
+                        bootstrap.startReceiver()
+                    } else {
+                        bootstrap.stopReceiver()
+                    }
+                },
+                refreshDiagnostics = runtime::refreshDiagnostics,
+                loadSegments = runtime::listSegmentsForUi,
+                loadTranscript = runtime::transcript,
+                loadAiOutputs = runtime::listAiOutputs,
+                deleteSegment = runtime::deleteSegmentData,
+                deleteAiOutput = runtime::deleteAiOutput,
+                deleteAll = bootstrap::deleteAllLocalData,
+                revokeReceiver = bootstrap::revokeReceiverLocally,
+                exportSupportReport = {
+                    runtime.buildSupportReport(includeContent = false)
+                },
+                runAi = { template, segmentIds ->
+                    runCatching {
+                        runtime.runAi(
+                            prompt = template,
+                            segmentIds = segmentIds,
+                            userConsentedToRemote = settings.settings.value.remoteAiConsent,
+                        )
+                    }
+                },
+                setRetentionDays = settings::setRetentionDays,
+                setTranscriptionMode = settings::setTranscriptionMode,
+                setCloudTranscriptionConsent = settings::setCloudTranscriptionConsent,
+                setOpenAiApiKey = settings::setOpenAiApiKey,
+                setAiMode = settings::setAiMode,
+                setRemoteAiConsent = settings::setRemoteAiConsent,
+                refreshLocalModel = bootstrap.handle.localModelManager::refresh,
+                downloadLocalModel = bootstrap.handle.localModelManager::download,
+            ),
         )
     }
 }

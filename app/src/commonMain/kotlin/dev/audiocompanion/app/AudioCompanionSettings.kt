@@ -28,17 +28,3 @@ interface AudioCompanionSettingsRepository {
     fun setRemoteAiConsent(consented: Boolean)
     fun setDiagnosticsIncludeContent(includeContent: Boolean)
 }
-
-fun TranscriptionMode.next(): TranscriptionMode = when (this) {
-    TranscriptionMode.LocalOnly -> TranscriptionMode.RemoteOnly
-    TranscriptionMode.RemoteOnly -> TranscriptionMode.LocalFirst
-    TranscriptionMode.LocalFirst -> TranscriptionMode.RemoteFirst
-    TranscriptionMode.RemoteFirst -> TranscriptionMode.LocalOnly
-}
-
-fun AiProcessingMode.next(): AiProcessingMode = when (this) {
-    AiProcessingMode.LocalOnly -> AiProcessingMode.RemoteOnly
-    AiProcessingMode.RemoteOnly -> AiProcessingMode.LocalFirst
-    AiProcessingMode.LocalFirst -> AiProcessingMode.RemoteFirst
-    AiProcessingMode.RemoteFirst -> AiProcessingMode.LocalOnly
-}

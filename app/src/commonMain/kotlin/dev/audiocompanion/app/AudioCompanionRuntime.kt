@@ -8,6 +8,7 @@ import dev.audiocompanion.ai.AiRunRequest
 import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.ai.TranscriptExcerpt
 import dev.audiocompanion.storage.RetentionManager
+import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.storage.TranscriptionState as SegmentTranscriptionState
 import dev.audiocompanion.transcription.FileTranscriptStore
@@ -150,6 +151,9 @@ class AudioCompanionRuntime(
             .forEach { aiOutputStore.delete(it.outputId) }
         refreshDiagnostics()
     }
+
+    /** Durable segment snapshot for UI lists (file-backed; cheap at MVP scale). */
+    fun listSegmentsForUi(): List<SegmentMeta> = store.listSegments()
 
     fun transcript(segmentId: String): SegmentTranscript? = transcriptStore.load(segmentId)
 

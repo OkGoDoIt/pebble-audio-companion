@@ -1,0 +1,47 @@
+package dev.audiocompanion.app.ui
+
+import dev.audiocompanion.ai.AiException
+import dev.audiocompanion.ai.AiOutput
+import dev.audiocompanion.ai.AiPromptTemplate
+import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.transcription.SegmentTranscript
+import dev.audiocompanion.transcription.TranscriptionMode
+
+/**
+ * Everything the shared Compose UI can ask the platform/runtime layer to do. Both platforms
+ * wire this once; screens never talk to the runtime directly so the UI stays previewable and
+ * platform-free.
+ */
+class AppActions(
+    // Receiver lifecycle
+    val pairWatch: () -> Unit = {},
+    val startReceiver: () -> Unit = {},
+    val stopReceiver: () -> Unit = {},
+    val setBackgroundReceiverEnabled: (Boolean) -> Unit = {},
+    val refreshDiagnostics: () -> Unit = {},
+    // Durable content reads (file-backed; cheap at MVP scale)
+    val loadSegments: () -> List<SegmentMeta> = { emptyList() },
+    val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },
+    val loadAiOutputs: () -> List<AiOutput> = { emptyList() },
+    // Content management
+    val deleteSegment: (segmentId: String) -> Unit = {},
+    val deleteAiOutput: (outputId: String) -> Unit = {},
+    val deleteAll: () -> Unit = {},
+    val revokeReceiver: () -> Unit = {},
+    val exportSupportReport: () -> Unit = {},
+    // AI
+    val runAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput> = { _, _ ->
+        Result.failure(AiException.ProviderUnavailable("not wired"))
+    },
+    // Settings
+    val setRetentionDays: (Int) -> Unit = {},
+    val setTranscriptionMode: (TranscriptionMode) -> Unit = {},
+    val setCloudTranscriptionConsent: (Boolean) -> Unit = {},
+    val setOpenAiApiKey: (String) -> Unit = {},
+    val setAiMode: (AiProcessingMode) -> Unit = {},
+    val setRemoteAiConsent: (Boolean) -> Unit = {},
+    // Local transcription model
+    val refreshLocalModel: () -> Unit = {},
+    val downloadLocalModel: () -> Unit = {},
+)

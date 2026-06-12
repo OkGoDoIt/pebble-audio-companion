@@ -1,29 +1,62 @@
 package dev.audiocompanion.app
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.vector.ImageVector
+import dev.audiocompanion.app.ui.AiScreen
+import dev.audiocompanion.app.ui.AppActions
+import dev.audiocompanion.app.ui.LibraryScreen
+import dev.audiocompanion.app.ui.PrimaryAction
+import dev.audiocompanion.app.ui.SettingsScreen
+import dev.audiocompanion.app.ui.TodayScreen
+import dev.audiocompanion.app.ui.buildTimeline
+import dev.audiocompanion.app.ui.statusUiModel
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlin.time.Clock
 
+enum class AppTab(val label: String) {
+    Today("Today"),
+    Library("Library"),
+    Ai("AI"),
+    Settings("Settings"),
+}
+
+private val AppTab.icon: ImageVector
+    get() = when (this) {
+        AppTab.Today -> Icons.Filled.GraphicEq
+        AppTab.Library -> Icons.Filled.Folder
+        AppTab.Ai -> Icons.Filled.AutoAwesome
+        AppTab.Settings -> Icons.Filled.Settings
+    }
+
+/**
+ * The shared app shell: four tabs (Today / Library / AI / Settings) per
+ * docs/ux-visual-design-plan.md. All platform work goes through [AppActions]; durable content
+ * is re-read whenever diagnostics change (every receive/transcription/AI event refreshes
+ * diagnostics, so file-backed reads stay current without platform callbacks).
+ */
 @Composable
 fun App(
     sessionState: StateFlow<ReceiverSessionState> =
@@ -34,188 +67,102 @@ fun App(
         MutableStateFlow(AudioCompanionSettings()),
     localModelState: StateFlow<LocalTranscriptionModelState> =
         MutableStateFlow(LocalTranscriptionModelState(modelName = "local", modelVersion = "unknown")),
-    onPairWatch: () -> Unit = {},
-    onStartReceiver: () -> Unit = {},
-    onStopReceiver: () -> Unit = {},
-    onRefreshDiagnostics: () -> Unit = {},
-    onRefreshLocalModel: () -> Unit = {},
-    onDownloadLocalModel: () -> Unit = {},
-    onBackgroundReceiverChanged: (Boolean) -> Unit = {},
-    onCloudTranscriptionConsentChanged: (Boolean) -> Unit = {},
-    onOpenAiApiKeyChanged: (String) -> Unit = {},
-    onRemoteAiConsentChanged: (Boolean) -> Unit = {},
-    onDiagnosticsContentChanged: (Boolean) -> Unit = {},
-    onCycleTranscriptionMode: () -> Unit = {},
-    onCycleAiMode: () -> Unit = {},
-    onRetentionDaysChanged: (Int) -> Unit = {},
-    onDeleteAll: () -> Unit = {},
-    onExportDiagnostics: () -> Unit = {},
-    onRevokeReceiver: () -> Unit = {},
+    actions: AppActions = AppActions(),
 ) {
     MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            val state = sessionState.collectAsState().value
-            val currentDiagnostics = diagnostics.collectAsState().value
-            val currentSettings = settings.collectAsState().value
-            val currentLocalModel = localModelState.collectAsState().value
-            Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalAlignment = Alignment.Start,
-            ) {
-                Text(text = "Pebble Audio Companion", style = MaterialTheme.typography.headlineSmall)
-                Text(text = "Receiver: ${state.describe()}", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    text = "Stored segments: ${currentDiagnostics.segmentCount}" +
-                        currentDiagnostics.openSegmentId?.let { " (open: $it)" }.orEmpty(),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    text = "Transcription queue: ${currentDiagnostics.queuedTranscriptionTasks} queued, " +
-                        "${currentDiagnostics.failedTranscriptionTasks} failed",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    text = "AI outputs: ${currentDiagnostics.aiOutputCount}",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    text = "Storage: ${currentDiagnostics.freeStorageHintKb} KB free" +
-                        when {
-                            currentDiagnostics.pauseRequested -> " - pause requested"
-                            currentDiagnostics.lowStorage -> " - low storage"
-                            else -> ""
+        val state = sessionState.collectAsState().value
+        val currentDiagnostics = diagnostics.collectAsState().value
+        val currentSettings = settings.collectAsState().value
+        val currentLocalModel = localModelState.collectAsState().value
+
+        var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
+        var librarySegmentId by rememberSaveable { mutableStateOf<String?>(null) }
+
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        // Durable content snapshots, re-read when anything observable changes.
+        val segments = remember(currentDiagnostics, tab) { actions.loadSegments() }
+        val transcripts = remember(currentDiagnostics, tab) {
+            segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
+        }
+        val aiOutputs = remember(currentDiagnostics, tab) { actions.loadAiOutputs() }
+
+        val status = statusUiModel(state, currentSettings, currentDiagnostics)
+        val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
+            when (action) {
+                PrimaryAction.Start -> {
+                    actions.setBackgroundReceiverEnabled(true)
+                    actions.startReceiver()
+                }
+                PrimaryAction.Stop -> actions.stopReceiver()
+                PrimaryAction.PairWatch, PrimaryAction.SetUpAgain -> actions.pairWatch()
+                PrimaryAction.Troubleshoot -> tab = AppTab.Settings
+                PrimaryAction.None -> Unit
+            }
+        }
+
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    AppTab.entries.forEach { candidate ->
+                        NavigationBarItem(
+                            selected = tab == candidate,
+                            onClick = { tab = candidate },
+                            icon = { Icon(candidate.icon, contentDescription = candidate.label) },
+                            label = { Text(candidate.label) },
+                        )
+                    }
+                }
+            },
+        ) { padding ->
+            Surface(modifier = Modifier.fillMaxSize().padding(padding)) {
+                when (tab) {
+                    AppTab.Today -> TodayScreen(
+                        status = status,
+                        diagnostics = currentDiagnostics,
+                        timeline = buildTimeline(
+                            segments = segments,
+                            transcriptOf = { transcripts[it] },
+                            nowMs = nowMs,
+                        ),
+                        nowMs = nowMs,
+                        onPrimaryAction = onPrimaryAction,
+                        onOpenSegment = { segmentId ->
+                            librarySegmentId = segmentId
+                            tab = AppTab.Library
                         },
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onPairWatch) {
-                        Text("Pair")
-                    }
-                    Button(onClick = onStartReceiver) {
-                        Text("Start")
-                    }
-                    OutlinedButton(onClick = onStopReceiver) {
-                        Text("Stop")
-                    }
-                }
-                OutlinedButton(onClick = onRefreshDiagnostics) {
-                    Text("Refresh Diagnostics")
-                }
-                Text(text = "Privacy Controls", style = MaterialTheme.typography.titleMedium)
-                ToggleRow(
-                    label = "Background receiver",
-                    checked = currentSettings.backgroundReceiverEnabled,
-                    onCheckedChange = onBackgroundReceiverChanged,
-                )
-                ToggleRow(
-                    label = "Cloud transcription consent",
-                    checked = currentSettings.cloudTranscriptionConsent,
-                    onCheckedChange = onCloudTranscriptionConsentChanged,
-                )
-                OutlinedTextField(
-                    value = currentSettings.openAiApiKey,
-                    onValueChange = onOpenAiApiKeyChanged,
-                    label = { Text("OpenAI API key") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                ToggleRow(
-                    label = "Remote AI consent",
-                    checked = currentSettings.remoteAiConsent,
-                    onCheckedChange = onRemoteAiConsentChanged,
-                )
-                ToggleRow(
-                    label = "Include content in diagnostics",
-                    checked = currentSettings.diagnosticsIncludeContent,
-                    onCheckedChange = onDiagnosticsContentChanged,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onCycleTranscriptionMode) {
-                        Text("Transcription: ${currentSettings.transcriptionMode}")
-                    }
-                    OutlinedButton(onClick = onCycleAiMode) {
-                        Text("AI: ${currentSettings.aiMode}")
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        onRetentionDaysChanged((currentSettings.retentionDays - 7).coerceAtLeast(1))
-                    }) {
-                        Text("-7d")
-                    }
-                    Text(
-                        text = "Retention: ${currentSettings.retentionDays} days",
-                        style = MaterialTheme.typography.bodyMedium,
                     )
-                    OutlinedButton(onClick = {
-                        onRetentionDaysChanged((currentSettings.retentionDays + 7).coerceAtMost(365))
-                    }) {
-                        Text("+7d")
-                    }
-                }
-                Text(text = "Local Transcription Model", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = "${currentLocalModel.modelName} ${currentLocalModel.modelVersion}: " +
-                        currentLocalModel.describe(),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onRefreshLocalModel) {
-                        Text("Refresh Model")
-                    }
-                    Button(
-                        enabled = !currentLocalModel.downloaded && !currentLocalModel.downloading,
-                        onClick = onDownloadLocalModel,
-                    ) {
-                        Text(if (currentLocalModel.downloading) "Downloading..." else "Download Model")
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onExportDiagnostics) {
-                        Text("Export Diagnostics")
-                    }
-                    OutlinedButton(onClick = onRevokeReceiver) {
-                        Text("Revoke")
-                    }
-                    OutlinedButton(onClick = onDeleteAll) {
-                        Text("Delete All")
-                    }
+
+                    AppTab.Library -> LibraryScreen(
+                        segments = segments,
+                        transcriptOf = { transcripts[it] },
+                        nowMs = nowMs,
+                        selectedSegmentId = librarySegmentId,
+                        onSelectSegment = { librarySegmentId = it },
+                        onDeleteSegment = actions.deleteSegment,
+                    )
+
+                    AppTab.Ai -> AiScreen(
+                        segments = segments,
+                        aiOutputs = aiOutputs,
+                        // Only the remote provider exists today; configured = consent + key.
+                        aiConfigured = currentSettings.remoteAiConsent &&
+                            currentSettings.openAiApiKey.isNotBlank(),
+                        nowMs = nowMs,
+                        onRunAi = actions.runAi,
+                        onDeleteOutput = actions.deleteAiOutput,
+                        onRefresh = actions.refreshDiagnostics,
+                    )
+
+                    AppTab.Settings -> SettingsScreen(
+                        sessionState = state,
+                        settings = currentSettings,
+                        diagnostics = currentDiagnostics,
+                        localModel = currentLocalModel,
+                        statusHeadline = status.headline,
+                        actions = actions,
+                    )
                 }
             }
         }
     }
-}
-
-@Composable
-private fun ToggleRow(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-        Text(text = label, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-private fun ReceiverSessionState.describe(): String = when (this) {
-    ReceiverSessionState.Disconnected -> "disconnected"
-    ReceiverSessionState.Connecting -> "connecting..."
-    ReceiverSessionState.Authorizing -> "authorizing..."
-    ReceiverSessionState.PendingConsent -> "confirm on your watch"
-    is ReceiverSessionState.Denied -> "denied (${status ?: statusRaw})"
-    ReceiverSessionState.Authorized -> "authorized, idle"
-    is ReceiverSessionState.Streaming -> "streaming (stream $streamId)"
-    is ReceiverSessionState.Revoked -> "revoked on watch"
-}
-
-private fun LocalTranscriptionModelState.describe(): String = when {
-    downloading -> "downloading"
-    errorMessage != null -> "error: $errorMessage"
-    downloaded -> "downloaded"
-    else -> "not downloaded"
 }

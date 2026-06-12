@@ -28,17 +28,23 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            implementation(project(":core:protocol"))
             implementation(project(":core:transport"))
             implementation(project(":core:storage"))
             implementation(project(":core:transcription"))
             implementation(project(":core:ai"))
             implementation(libs.coroutines)
+            implementation(libs.kotlinx.datetime)
             implementation(libs.kotlinx.io.core)
             implementation(libs.koin.core)
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
+            implementation(compose.materialIconsExtended)
             implementation(compose.ui)
+        }
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
         }
         androidMain.dependencies {
             implementation(project(":adapter:ble-android"))

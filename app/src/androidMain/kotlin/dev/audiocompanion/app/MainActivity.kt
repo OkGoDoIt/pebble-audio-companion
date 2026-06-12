@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import dev.audiocompanion.adapter.ble.AndroidAudioCompanionAssociator
+import dev.audiocompanion.app.ui.AppActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,53 +61,62 @@ class MainActivity : ComponentActivity() {
                 diagnostics = runtime.diagnostics,
                 settings = settingsRepository.settings,
                 localModelState = handle.localModelManager.state,
-                onPairWatch = { requestPermissionsAndAssociate() },
-                onStartReceiver = {
-                    startReceiverService(AudioCompanionReceiverService.startIntent(this))
-                },
-                onStopReceiver = {
-                    startService(AudioCompanionReceiverService.stopIntent(this))
-                },
-                onRefreshDiagnostics = { runtime.refreshDiagnostics() },
-                onRefreshLocalModel = handle.localModelManager::refresh,
-                onDownloadLocalModel = handle.localModelManager::download,
-                onBackgroundReceiverChanged = { enabled ->
-                    settingsRepository.setBackgroundReceiverEnabled(enabled)
-                    if (enabled) {
+                actions = AppActions(
+                    pairWatch = { requestPermissionsAndAssociate() },
+                    startReceiver = {
                         startReceiverService(AudioCompanionReceiverService.startIntent(this))
-                    } else {
+                    },
+                    stopReceiver = {
                         startService(AudioCompanionReceiverService.stopIntent(this))
-                    }
-                },
-                onCloudTranscriptionConsentChanged = settingsRepository::setCloudTranscriptionConsent,
-                onOpenAiApiKeyChanged = settingsRepository::setOpenAiApiKey,
-                onRemoteAiConsentChanged = settingsRepository::setRemoteAiConsent,
-                onDiagnosticsContentChanged = settingsRepository::setDiagnosticsIncludeContent,
-                onCycleTranscriptionMode = {
-                    settingsRepository.setTranscriptionMode(settingsRepository.settings.value.transcriptionMode.next())
-                },
-                onCycleAiMode = {
-                    settingsRepository.setAiMode(settingsRepository.settings.value.aiMode.next())
-                },
-                onRetentionDaysChanged = settingsRepository::setRetentionDays,
-                onDeleteAll = {
-                    runtimeScope.launch {
-                        handle.link.disconnect()
-                        runtime.deleteAllLocalData()
-                        PairedWatchStore.clear(this@MainActivity)
-                    }
-                },
-                onExportDiagnostics = {
-                    lastSupportReport = runtime.buildSupportReport(
-                        includeContent = settingsRepository.settings.value.diagnosticsIncludeContent,
-                    )
-                },
-                onRevokeReceiver = {
-                    runtimeScope.launch {
-                        handle.link.disconnect()
-                        runtime.revokeReceiverLocally()
-                    }
-                },
+                    },
+                    setBackgroundReceiverEnabled = { enabled ->
+                        settingsRepository.setBackgroundReceiverEnabled(enabled)
+                        if (enabled) {
+                            startReceiverService(AudioCompanionReceiverService.startIntent(this))
+                        } else {
+                            startService(AudioCompanionReceiverService.stopIntent(this))
+                        }
+                    },
+                    refreshDiagnostics = { runtime.refreshDiagnostics() },
+                    loadSegments = { runtime.listSegmentsForUi() },
+                    loadTranscript = runtime::transcript,
+                    loadAiOutputs = runtime::listAiOutputs,
+                    deleteSegment = runtime::deleteSegmentData,
+                    deleteAiOutput = runtime::deleteAiOutput,
+                    deleteAll = {
+                        runtimeScope.launch {
+                            handle.link.disconnect()
+                            runtime.deleteAllLocalData()
+                            PairedWatchStore.clear(this@MainActivity)
+                        }
+                    },
+                    revokeReceiver = {
+                        runtimeScope.launch {
+                            handle.link.disconnect()
+                            runtime.revokeReceiverLocally()
+                        }
+                    },
+                    exportSupportReport = {
+                        lastSupportReport = runtime.buildSupportReport(includeContent = false)
+                    },
+                    runAi = { template, segmentIds ->
+                        runCatching {
+                            runtime.runAi(
+                                prompt = template,
+                                segmentIds = segmentIds,
+                                userConsentedToRemote = settingsRepository.settings.value.remoteAiConsent,
+                            )
+                        }
+                    },
+                    setRetentionDays = settingsRepository::setRetentionDays,
+                    setTranscriptionMode = settingsRepository::setTranscriptionMode,
+                    setCloudTranscriptionConsent = settingsRepository::setCloudTranscriptionConsent,
+                    setOpenAiApiKey = settingsRepository::setOpenAiApiKey,
+                    setAiMode = settingsRepository::setAiMode,
+                    setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
+                    refreshLocalModel = handle.localModelManager::refresh,
+                    downloadLocalModel = handle.localModelManager::download,
+                ),
             )
         }
     }
