@@ -21,6 +21,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.coroutines)
+            implementation(libs.ktor.client.core)
             implementation(libs.kotlinx.io.core)
             implementation(libs.serialization)
         }
@@ -33,6 +34,9 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.coroutines.test)
+        }
+        jvmTest.dependencies {
+            implementation(libs.ktor.client.mock)
         }
     }
 }

@@ -10,6 +10,7 @@ data class AudioCompanionSettings(
     val retentionMaxBytes: Long = 2L * 1024 * 1024 * 1024,
     val transcriptionMode: TranscriptionMode = TranscriptionMode.LocalFirst,
     val cloudTranscriptionConsent: Boolean = false,
+    val openAiApiKey: String = "",
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
     val remoteAiConsent: Boolean = false,
     val diagnosticsIncludeContent: Boolean = false,
@@ -22,6 +23,7 @@ interface AudioCompanionSettingsRepository {
     fun setRetentionDays(days: Int)
     fun setTranscriptionMode(mode: TranscriptionMode)
     fun setCloudTranscriptionConsent(consented: Boolean)
+    fun setOpenAiApiKey(apiKey: String)
     fun setAiMode(mode: AiProcessingMode)
     fun setRemoteAiConsent(consented: Boolean)
     fun setDiagnosticsIncludeContent(includeContent: Boolean)

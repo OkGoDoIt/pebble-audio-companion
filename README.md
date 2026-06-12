@@ -50,7 +50,9 @@ Fixture changes require a protocol version decision (see spec Section 9).
 ## Transcription status
 
 The receiver now enqueues closed segments, decodes stored Speex frame logs to bounded PCM chunks
-on Android/iOS, and processes the durable transcription queue through the four-mode router. The
-current local provider is an explicit temporary placeholder that consumes the real PCM stream and
-records provenance; replace it with the Cactus/whisper-family provider before treating local
-transcription quality as product-ready.
+on Android/iOS, and processes the durable transcription queue through the four-mode router. Remote
+transcription is wired to OpenAI's audio transcription endpoint and is disabled unless the user has
+enabled cloud transcription consent and entered an API key in the app. The current local provider is
+an explicit temporary placeholder that consumes the real PCM stream and records provenance; replace
+it with the Cactus/whisper-family provider before treating local transcription quality as
+product-ready.

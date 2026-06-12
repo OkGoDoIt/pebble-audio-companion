@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onCloudTranscriptionConsentChanged = settingsRepository::setCloudTranscriptionConsent,
+                onOpenAiApiKeyChanged = settingsRepository::setOpenAiApiKey,
                 onRemoteAiConsentChanged = settingsRepository::setRemoteAiConsent,
                 onDiagnosticsContentChanged = settingsRepository::setDiagnosticsIncludeContent,
                 onCycleTranscriptionMode = {

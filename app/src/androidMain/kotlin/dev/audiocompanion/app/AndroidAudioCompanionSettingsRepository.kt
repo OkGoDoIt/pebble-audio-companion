@@ -30,6 +30,10 @@ class AndroidAudioCompanionSettingsRepository(
         update { it.copy(cloudTranscriptionConsent = consented) }
     }
 
+    override fun setOpenAiApiKey(apiKey: String) {
+        update { it.copy(openAiApiKey = apiKey.trim()) }
+    }
+
     override fun setAiMode(mode: AiProcessingMode) {
         update { it.copy(aiMode = mode) }
     }
@@ -56,6 +60,7 @@ class AndroidAudioCompanionSettingsRepository(
             TranscriptionMode.LocalFirst,
         ),
         cloudTranscriptionConsent = prefs.getBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, false),
+        openAiApiKey = prefs.getString(KEY_OPENAI_API_KEY, null).orEmpty(),
         aiMode = enumValueOrDefault(prefs.getString(KEY_AI_MODE, null), AiProcessingMode.LocalOnly),
         remoteAiConsent = prefs.getBoolean(KEY_REMOTE_AI_CONSENT, false),
         diagnosticsIncludeContent = prefs.getBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, false),
@@ -67,6 +72,7 @@ class AndroidAudioCompanionSettingsRepository(
             .putInt(KEY_RETENTION_DAYS, settings.retentionDays)
             .putString(KEY_TRANSCRIPTION_MODE, settings.transcriptionMode.name)
             .putBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, settings.cloudTranscriptionConsent)
+            .putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
             .putString(KEY_AI_MODE, settings.aiMode.name)
             .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
             .putBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, settings.diagnosticsIncludeContent)
@@ -82,6 +88,7 @@ class AndroidAudioCompanionSettingsRepository(
         private const val KEY_RETENTION_DAYS = "retention_days"
         private const val KEY_TRANSCRIPTION_MODE = "transcription_mode"
         private const val KEY_CLOUD_TRANSCRIPTION_CONSENT = "cloud_transcription_consent"
+        private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_DIAGNOSTICS_INCLUDE_CONTENT = "diagnostics_include_content"

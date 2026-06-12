@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -17,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +38,7 @@ fun App(
     onRefreshDiagnostics: () -> Unit = {},
     onBackgroundReceiverChanged: (Boolean) -> Unit = {},
     onCloudTranscriptionConsentChanged: (Boolean) -> Unit = {},
+    onOpenAiApiKeyChanged: (String) -> Unit = {},
     onRemoteAiConsentChanged: (Boolean) -> Unit = {},
     onDiagnosticsContentChanged: (Boolean) -> Unit = {},
     onCycleTranscriptionMode: () -> Unit = {},
@@ -104,6 +107,13 @@ fun App(
                     label = "Cloud transcription consent",
                     checked = currentSettings.cloudTranscriptionConsent,
                     onCheckedChange = onCloudTranscriptionConsentChanged,
+                )
+                OutlinedTextField(
+                    value = currentSettings.openAiApiKey,
+                    onValueChange = onOpenAiApiKeyChanged,
+                    label = { Text("OpenAI API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
                 )
                 ToggleRow(
                     label = "Remote AI consent",

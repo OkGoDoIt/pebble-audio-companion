@@ -12,11 +12,14 @@ import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.LocalPlaceholderTranscriptionProvider
+import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
 import dev.audiocompanion.transcription.TranscriptionModeRouter
 import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.ReceiverConfig
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
 import java.security.SecureRandom
 import kotlinx.coroutines.flow.flow
 import kotlinx.io.files.Path
@@ -43,9 +46,14 @@ class AndroidAudioCompanionRuntimeFactory(
         )
         val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
         val localProvider = LocalPlaceholderTranscriptionProvider()
+        val remoteProvider = OpenAiTranscriptionProvider(
+            client = HttpClient(OkHttp),
+            apiKey = { settingsRepository.settings.value.openAiApiKey },
+            cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+        )
         val router = TranscriptionModeRouter(
             local = localProvider,
-            remote = null,
+            remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
         )
         return AudioCompanionRuntime(

@@ -35,6 +35,7 @@ kotlin {
         androidMain.dependencies {
             implementation(project(":adapter:ble-android"))
             implementation(libs.androidx.activity.compose)
+            implementation(libs.ktor.client.okhttp)
         }
     }
 }
