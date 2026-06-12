@@ -33,10 +33,13 @@ class AudioCompanionReceiverService : Service() {
         val handle = AndroidAudioCompanionRuntimeHolder.get(this)
         when (intent?.action) {
             ACTION_STOP -> {
-                handle.link.disconnect()
-                handle.runtime.stop()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+                // Pause the watch first (best effort) so its Settings show Paused instead of
+                // Streaming, then tear down and drop the connection.
+                serviceScope.launch {
+                    handle.runtime.stopReceiving()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                }
                 return START_NOT_STICKY
             }
             ACTION_CONNECT -> {
@@ -88,8 +91,9 @@ class AudioCompanionReceiverService : Service() {
                 handle.runtime.state,
                 handle.runtime.diagnostics,
                 handle.settingsRepository.settings,
-            ) { state, diagnostics, settings ->
-                statusUiModel(state, settings, diagnostics).headline
+                handle.runtime.watchServiceState,
+            ) { state, diagnostics, settings, watchState ->
+                statusUiModel(state, settings, diagnostics, watchState).headline
             }
                 .distinctUntilChanged()
                 .collect { headline ->

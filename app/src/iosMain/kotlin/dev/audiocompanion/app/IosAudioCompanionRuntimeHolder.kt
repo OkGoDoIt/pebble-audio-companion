@@ -4,6 +4,7 @@ import dev.audiocompanion.adapter.ble.IosAudioGattLink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class IosAudioCompanionRuntimeHandle(
     val link: IosAudioGattLink = IosAudioGattLink(),
@@ -30,6 +31,10 @@ class IosAudioCompanionRuntimeHandle(
     }
 
     fun stopReceiver() {
-        runtime.stop()
+        scope.launch {
+            // Pause the watch first (best effort) so its Settings show Paused instead of
+            // Streaming, then tear down and drop the connection.
+            runtime.stopReceiving()
+        }
     }
 }

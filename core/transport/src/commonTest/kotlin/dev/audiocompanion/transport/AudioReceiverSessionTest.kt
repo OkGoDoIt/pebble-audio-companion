@@ -11,6 +11,7 @@ import dev.audiocompanion.protocol.StreamData
 import dev.audiocompanion.protocol.StreamGap
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.protocol.StreamStop
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -377,5 +378,103 @@ class AudioReceiverSessionTest {
         fx.link.pushData(data(8u, 8))
         runCurrent()
         assertEquals(1, fx.sink.eventsOf<SinkEvent.Append>().size)
+    }
+
+    @Test
+    fun requestPauseWritesPauseRequestAndResolvesOnAck() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        val result = backgroundScope.async { fx.session.requestPause() }
+        runCurrent()
+        val pause = fx.writes().filterIsInstance<dev.audiocompanion.protocol.PauseRequest>().single()
+        assertEquals(dev.audiocompanion.protocol.PauseReason.User.raw, pause.reasonRaw)
+
+        fx.link.pushControl(Ack(requestToken = pause.requestToken, statusRaw = 0))
+        runCurrent()
+        assertTrue(result.await())
+    }
+
+    @Test
+    fun requestPauseTimesOutWithoutAckAndFreesTokenSlot() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        val result = backgroundScope.async { fx.session.requestPause() }
+        runCurrent()
+        advanceTimeBy(3_000)
+        runCurrent()
+        assertEquals(false, result.await())
+
+        // The slot must be free again for later requests (e.g. checkpoints, resume).
+        val resume = backgroundScope.async { fx.session.requestResume() }
+        runCurrent()
+        val resumeWrite =
+            fx.writes().filterIsInstance<dev.audiocompanion.protocol.ResumeRequest>().single()
+        fx.link.pushControl(Ack(requestToken = resumeWrite.requestToken, statusRaw = 0))
+        runCurrent()
+        assertTrue(resume.await())
+    }
+
+    @Test
+    fun authorizingWhileWatchPausedByPolicySendsResume() = runTest {
+        val link = FakeAudioGattLink(
+            infoBytes = FakeAudioGattLink.defaultInfo().copy(serviceStateRaw = 5).encode(),
+        )
+        val sink = FakeSegmentSink()
+        val session = AudioReceiverSession(
+            link = link,
+            sink = sink,
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+        val auth = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>().single()
+        link.pushControl(AuthResult(requestToken = auth.requestToken, statusRaw = 0, grantedProtoVersion = 1))
+        runCurrent()
+
+        val resume = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<dev.audiocompanion.protocol.ResumeRequest>()
+        assertEquals(1, resume.size, "re-authorizing a policy-paused watch must auto-resume")
+    }
+
+    @Test
+    fun sessionTeardownResetsStateToDisconnected() = runTest {
+        val link = FakeAudioGattLink()
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+        )
+        val job = session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+        val auth = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>().single()
+        link.pushControl(AuthResult(requestToken = auth.requestToken, statusRaw = 0, grantedProtoVersion = 1))
+        link.pushData(streamStart())
+        runCurrent()
+        assertEquals(ReceiverSessionState.Streaming(streamId), session.state.value)
+
+        job.cancel()
+        runCurrent()
+        assertEquals(
+            ReceiverSessionState.Disconnected,
+            session.state.value,
+            "a stopped session must not keep claiming it is streaming",
+        )
     }
 }

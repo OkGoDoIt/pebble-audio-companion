@@ -11,23 +11,31 @@ import dev.audiocompanion.protocol.DataMessage
 import dev.audiocompanion.protocol.DecodeResult
 import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
+import dev.audiocompanion.protocol.PauseReason
+import dev.audiocompanion.protocol.PauseRequest
 import dev.audiocompanion.protocol.ProtocolConstants
+import dev.audiocompanion.protocol.ResumeRequest
 import dev.audiocompanion.protocol.Revoked
+import dev.audiocompanion.protocol.ServiceState
 import dev.audiocompanion.protocol.StateChanged
 import dev.audiocompanion.protocol.StreamData
 import dev.audiocompanion.protocol.StreamGap
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.protocol.StreamStop
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Receiver/session state exposed to the UI layer. */
 sealed interface ReceiverSessionState {
@@ -106,12 +114,51 @@ class AudioReceiverSession(
     // --- one-in-flight control request bookkeeping -------------------------------------------
     private var tokenCounter = 0
     private var inFlightToken: Int? = null
+    private var ackWaiter: CompletableDeferred<Boolean>? = null
 
     private fun takeToken(): Int? {
         if (inFlightToken != null) return null
         tokenCounter = (tokenCounter + 1) and 0xFF
         inFlightToken = tokenCounter
         return tokenCounter
+    }
+
+    /**
+     * Asks the watch to pause capture (maps to the watch's PausedPolicy state, visible in its
+     * Settings). Returns true when the watch acknowledged. Safe to call from any scope; waits
+     * briefly for an in-flight checkpoint to clear.
+     */
+    suspend fun requestPause(reasonRaw: Int = PauseReason.User.raw): Boolean =
+        sendControlAwaitAck { token -> PauseRequest(token, reasonRaw).encode() }
+
+    /** Asks the watch to resume capture after [requestPause]. True when acknowledged. */
+    suspend fun requestResume(): Boolean =
+        sendControlAwaitAck { token -> ResumeRequest(token).encode() }
+
+    private suspend fun sendControlAwaitAck(build: (Int) -> ByteArray): Boolean {
+        if (!authorized) return false
+        val token = withTimeoutOrNull(REQUEST_TOKEN_WAIT_MS) {
+            var taken = takeToken()
+            while (taken == null) {
+                delay(50)
+                taken = takeToken()
+            }
+            taken
+        } ?: return false
+        val waiter = CompletableDeferred<Boolean>()
+        ackWaiter = waiter
+        return try {
+            link.writeControl(build(token))
+            withTimeoutOrNull(REQUEST_ACK_WAIT_MS) { waiter.await() } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        } finally {
+            if (ackWaiter === waiter) ackWaiter = null
+            // Free the slot on timeout/failure so checkpoints are not blocked forever.
+            if (!waiter.isCompleted && inFlightToken == token) inFlightToken = null
+        }
     }
 
     // --- per-connection state ------------------------------------------------------------------
@@ -166,6 +213,7 @@ class AudioReceiverSession(
                         _state.value = link.lastError.value
                             ?.let { ReceiverSessionState.ConnectionFailed(it) }
                             ?: ReceiverSessionState.Disconnected
+                        _watchServiceState.value = null
                     }
                     LinkState.Connecting -> {
                         onLinkDown()
@@ -176,6 +224,10 @@ class AudioReceiverSession(
             }
         } finally {
             withContext(NonCancellable) { onLinkDown() }
+            // Session torn down (runtime stop / revoke / scope cancelled): the flow must not
+            // keep claiming the last live state.
+            _state.value = ReceiverSessionState.Disconnected
+            _watchServiceState.value = null
         }
     }
 
@@ -233,6 +285,14 @@ class AudioReceiverSession(
                         if (dataJob == null) {
                             dataJob = connectionScope.launch { consumeData() }
                         }
+                        // A previous phone-side Stop leaves the watch in PausedPolicy across
+                        // disconnects. Re-authorizing means the user wants audio again, so
+                        // resume — unless our own storage policy is asking for the pause.
+                        if (_watchServiceState.value == ServiceState.PausedPolicy.raw &&
+                            policy.receiverFlags() == 0u
+                        ) {
+                            connectionScope.launch { requestResume() }
+                        }
                     }
                     AuthStatus.PendingUserConsent -> {
                         // Token stays in flight: the watch pushes a second AUTH_RESULT with the
@@ -247,7 +307,11 @@ class AudioReceiverSession(
                 }
             }
             is Ack -> {
-                if (message.requestToken == inFlightToken) inFlightToken = null
+                if (message.requestToken == inFlightToken) {
+                    inFlightToken = null
+                    ackWaiter?.complete(message.statusRaw == 0)
+                    ackWaiter = null
+                }
             }
             is Revoked -> {
                 closeOpenSegment(SegmentCloseReason.Interrupted)
@@ -433,6 +497,16 @@ class AudioReceiverSession(
         authorized = false
         dataJob = null
         inFlightToken = null
+        ackWaiter?.complete(false)
+        ackWaiter = null
         _grantedProtoVersion.value = null
+    }
+
+    companion object {
+        /** How long pause/resume waits for an in-flight checkpoint to release the token slot. */
+        private const val REQUEST_TOKEN_WAIT_MS = 2_000L
+
+        /** How long pause/resume waits for the watch's ACK. */
+        private const val REQUEST_ACK_WAIT_MS = 2_000L
     }
 }

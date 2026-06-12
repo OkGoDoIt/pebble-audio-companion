@@ -4,6 +4,7 @@ import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.protocol.AuthStatus
 import dev.audiocompanion.protocol.GapReason
+import dev.audiocompanion.protocol.ServiceState
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.storage.TranscriptionState
@@ -25,8 +26,72 @@ data class StatusUiModel(
 /**
  * Maps receiver/protocol state to the plain-language copy from
  * docs/ux-visual-design-plan.md Section 13. No protocol vocabulary may appear here.
+ *
+ * [watchServiceStateRaw] is the watch's own reported state (Info read + state-change pushes);
+ * when the watch says it is paused/disabled, that wins over the session-level view so the
+ * phone always matches what the watch's Settings screen shows.
  */
 fun statusUiModel(
+    state: ReceiverSessionState,
+    settings: AudioCompanionSettings,
+    diagnostics: AudioCompanionDiagnostics,
+    watchServiceStateRaw: Int? = null,
+): StatusUiModel {
+    if (state is ReceiverSessionState.Streaming || state is ReceiverSessionState.Authorized) {
+        watchStatusOverride(watchServiceStateRaw, diagnostics)?.let { return it }
+    }
+    return statusForSessionState(state, settings, diagnostics)
+}
+
+/** Watch-reported states that the phone must mirror (paused, disabled, error). */
+private fun watchStatusOverride(
+    watchServiceStateRaw: Int?,
+    diagnostics: AudioCompanionDiagnostics,
+): StatusUiModel? = when (ServiceState.fromRaw(watchServiceStateRaw ?: -1)) {
+    ServiceState.Disabled -> StatusUiModel(
+        headline = "Background audio is off on the watch",
+        supporting = "Turn it on in the watch's Settings -> Audio Companion.",
+        severity = StatusSeverity.Neutral,
+        primaryAction = PrimaryAction.None,
+    )
+    ServiceState.PausedConflict -> StatusUiModel(
+        headline = "Paused: the watch is using its microphone",
+        supporting = "Recording resumes when the watch finishes.",
+        severity = StatusSeverity.Info,
+        primaryAction = PrimaryAction.None,
+    )
+    ServiceState.PausedPolicy ->
+        if (diagnostics.pauseRequested) {
+            StatusUiModel(
+                headline = "Paused: phone storage low",
+                supporting = "Free storage or reduce retention to resume recording.",
+                severity = StatusSeverity.Warning,
+                primaryAction = PrimaryAction.None,
+            )
+        } else {
+            StatusUiModel(
+                headline = "Paused",
+                supporting = "Recording is paused. Start again when you're ready.",
+                severity = StatusSeverity.Neutral,
+                primaryAction = PrimaryAction.Start,
+            )
+        }
+    ServiceState.PausedLowBattery -> StatusUiModel(
+        headline = "Paused to protect watch battery",
+        supporting = "Recording resumes once the watch has charged.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.None,
+    )
+    ServiceState.Error -> StatusUiModel(
+        headline = "Watch audio needs attention",
+        supporting = "Check the watch's Settings -> Audio Companion.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Troubleshoot,
+    )
+    else -> null
+}
+
+private fun statusForSessionState(
     state: ReceiverSessionState,
     settings: AudioCompanionSettings,
     diagnostics: AudioCompanionDiagnostics,
@@ -127,6 +192,19 @@ fun statusUiModel(
         severity = StatusSeverity.Error,
         primaryAction = PrimaryAction.SetUpAgain,
     )
+}
+
+/** Short plain-language label for the watch's reported state (Settings "Watch" row). */
+fun watchServiceStateLabel(raw: Int?): String = when (ServiceState.fromRaw(raw ?: -1)) {
+    ServiceState.Disabled -> "Background audio off"
+    ServiceState.Idle -> "Waiting for this app"
+    ServiceState.AuthorizedIdle -> "Authorized, not recording"
+    ServiceState.Streaming -> "Recording"
+    ServiceState.PausedConflict -> "Paused: microphone in use"
+    ServiceState.PausedPolicy -> "Paused"
+    ServiceState.PausedLowBattery -> "Paused: low battery"
+    ServiceState.Error -> "Needs attention"
+    null -> "Not connected"
 }
 
 /** Plain-language reason for one gap (ux plan: visible but not alarmist). */

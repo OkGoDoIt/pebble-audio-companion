@@ -71,6 +71,7 @@ fun MainViewController(): UIViewController {
         App(
             sessionState = runtime.state,
             diagnostics = runtime.diagnostics,
+            watchServiceState = runtime.watchServiceState,
             settings = settings.settings,
             localModelState = bootstrap.handle.localModelManager.state,
             waveformBars = runtime.liveMonitor?.bars

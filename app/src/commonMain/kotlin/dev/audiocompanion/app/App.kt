@@ -16,12 +16,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.audiocompanion.app.ui.AiScreen
@@ -65,6 +67,7 @@ fun App(
         MutableStateFlow(ReceiverSessionState.Disconnected),
     diagnostics: StateFlow<AudioCompanionDiagnostics> =
         MutableStateFlow(AudioCompanionDiagnostics()),
+    watchServiceState: StateFlow<Int?> = MutableStateFlow(null),
     settings: StateFlow<AudioCompanionSettings> =
         MutableStateFlow(AudioCompanionSettings()),
     localModelState: StateFlow<LocalTranscriptionModelState> =
@@ -77,9 +80,20 @@ fun App(
     MaterialTheme {
         val state = sessionState.collectAsState().value
         val currentDiagnostics = diagnostics.collectAsState().value
+        val currentWatchState = watchServiceState.collectAsState().value
         val currentSettings = settings.collectAsState().value
         val currentLocalModel = localModelState.collectAsState().value
         val currentPlayback = playbackState.collectAsState().value
+
+        // Wall-clock tick: keeps durations, "Recording now" ages, and file-backed content
+        // fresh even when no state flow happens to emit.
+        var nowTick by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(2_000)
+                nowTick = Clock.System.now().toEpochMilliseconds()
+            }
+        }
 
         if (!currentSettings.onboardingComplete) {
             Surface(modifier = Modifier.fillMaxSize()) {
@@ -102,25 +116,25 @@ fun App(
         }
         val currentWaveformBars = waveformBars.collectAsState().value
 
-        val nowMs = Clock.System.now().toEpochMilliseconds()
-        // Durable content snapshots, re-read when anything observable changes.
-        val segments = remember(currentDiagnostics, tab) { actions.loadSegments() }
-        val transcripts = remember(currentDiagnostics, tab) {
+        val nowMs = nowTick
+        // Durable content snapshots, re-read when anything observable changes or the clock
+        // ticks (transcription/enrichment results land in files, not flows).
+        val segments = remember(currentDiagnostics, tab, nowTick) { actions.loadSegments() }
+        val transcripts = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
         }
-        val annotations = remember(currentDiagnostics, tab) {
+        val annotations = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
         }
-        val aiOutputs = remember(currentDiagnostics, tab) { actions.loadAiOutputs() }
+        val aiOutputs = remember(currentDiagnostics, tab, nowTick) { actions.loadAiOutputs() }
 
-        val status = statusUiModel(state, currentSettings, currentDiagnostics)
+        val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
             when (action) {
-                PrimaryAction.Start -> {
-                    actions.setBackgroundReceiverEnabled(true)
-                    actions.startReceiver()
-                }
-                PrimaryAction.Stop -> actions.stopReceiver()
+                // The enabled flag drives the receiver on both platforms (service/bootstrap),
+                // so Start/Stop stay symmetric and survive app restarts.
+                PrimaryAction.Start -> actions.setBackgroundReceiverEnabled(true)
+                PrimaryAction.Stop -> actions.setBackgroundReceiverEnabled(false)
                 PrimaryAction.PairWatch, PrimaryAction.SetUpAgain -> actions.pairWatch()
                 PrimaryAction.Troubleshoot -> tab = AppTab.Settings
                 PrimaryAction.None -> Unit
@@ -198,6 +212,7 @@ fun App(
                         sessionState = state,
                         settings = currentSettings,
                         diagnostics = currentDiagnostics,
+                        watchServiceState = currentWatchState,
                         localModel = currentLocalModel,
                         statusHeadline = status.headline,
                         actions = actions,

@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
             App(
                 sessionState = runtime.state,
                 diagnostics = runtime.diagnostics,
+                watchServiceState = runtime.watchServiceState,
                 settings = settingsRepository.settings,
                 localModelState = handle.localModelManager.state,
                 waveformBars = runtime.liveMonitor?.bars

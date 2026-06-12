@@ -11,6 +11,7 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,8 +65,10 @@ class IosAudioGattLink : AudioGattLink {
     private val _lastError = MutableStateFlow<String?>(null)
     override val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
-    private val controlChannel = Channel<ByteArray>(Channel.UNLIMITED)
-    private val dataChannel = Channel<ByteArray>(Channel.UNLIMITED)
+    // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
+    // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
+    private val controlChannel = Channel<ByteArray>(256, BufferOverflow.DROP_OLDEST)
+    private val dataChannel = Channel<ByteArray>(4096, BufferOverflow.DROP_OLDEST)
 
     override val controlNotifications: Flow<ByteArray> = controlChannel.receiveAsFlow()
     override val dataNotifications: Flow<ByteArray> = dataChannel.receiveAsFlow()
@@ -95,6 +98,22 @@ class IosAudioGattLink : AudioGattLink {
         _connectionState.value = LinkState.Connecting
         if (manager.state == CBManagerStatePoweredOn) {
             connectWhenPoweredOn(manager)
+        }
+    }
+
+    /** True while a user-initiated disconnect is in flight, so it is not reported as an error. */
+    private var intentionalDisconnect = false
+
+    override fun disconnect() {
+        val manager = centralManager ?: return
+        manager.stopScan()
+        val current = peripheral
+        if (current != null) {
+            intentionalDisconnect = true
+            manager.cancelPeripheralConnection(current)
+        } else {
+            resetCharacteristics()
+            _connectionState.value = LinkState.Disconnected
         }
     }
 
@@ -179,7 +198,12 @@ class IosAudioGattLink : AudioGattLink {
         error: NSError?,
     ) {
         resetCharacteristics()
-        _lastError.value = error?.localizedDescription ?: "Peripheral disconnected"
+        _lastError.value = if (intentionalDisconnect) {
+            null
+        } else {
+            error?.localizedDescription ?: "Peripheral disconnected"
+        }
+        intentionalDisconnect = false
         _connectionState.value = LinkState.Disconnected
     }
 

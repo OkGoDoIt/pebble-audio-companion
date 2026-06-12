@@ -39,6 +39,7 @@ fun SettingsScreen(
     sessionState: ReceiverSessionState,
     settings: AudioCompanionSettings,
     diagnostics: AudioCompanionDiagnostics,
+    watchServiceState: Int?,
     localModel: LocalTranscriptionModelState,
     statusHeadline: String,
     actions: AppActions,
@@ -62,20 +63,18 @@ fun SettingsScreen(
         )
 
         SectionTitle("Watch")
-        InfoRow("Receiver status", statusHeadline)
+        InfoRow("Status", statusHeadline)
+        InfoRow("Watch reports", watchServiceStateLabel(watchServiceState))
         SettingsToggleRow(
-            title = "Background receiving",
-            subtitle = "Keep receiving watch audio while this app is in the background.",
+            title = "Background audio",
+            subtitle = "Receive and store watch audio, including while this app is in the background.",
             checked = settings.backgroundReceiverEnabled,
             onCheckedChange = actions.setBackgroundReceiverEnabled,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = actions.pairWatch) { Text("Find Watch") }
-            when (sessionState) {
-                ReceiverSessionState.Disconnected ->
-                    OutlinedButton(onClick = actions.startReceiver) { Text("Reconnect") }
-                else ->
-                    OutlinedButton(onClick = actions.stopReceiver) { Text("Disconnect") }
+            if (sessionState == ReceiverSessionState.Disconnected && settings.backgroundReceiverEnabled) {
+                OutlinedButton(onClick = actions.startReceiver) { Text("Reconnect") }
             }
         }
         TextButton(onClick = { confirmRevoke = true }) {

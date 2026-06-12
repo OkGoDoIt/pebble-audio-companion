@@ -12,6 +12,7 @@ import android.os.Build
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.transport.AudioGattLink
 import dev.audiocompanion.transport.LinkState
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,8 +55,10 @@ class AndroidAudioGattLink(
     private val _lastError = MutableStateFlow<String?>(null)
     override val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
-    private val controlChannel = Channel<ByteArray>(Channel.UNLIMITED)
-    private val dataChannel = Channel<ByteArray>(Channel.UNLIMITED)
+    // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
+    // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
+    private val controlChannel = Channel<ByteArray>(256, BufferOverflow.DROP_OLDEST)
+    private val dataChannel = Channel<ByteArray>(4096, BufferOverflow.DROP_OLDEST)
 
     override val controlNotifications: Flow<ByteArray> = controlChannel.receiveAsFlow()
     override val dataNotifications: Flow<ByteArray> = dataChannel.receiveAsFlow()
@@ -86,7 +89,7 @@ class AndroidAudioGattLink(
         }
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         disconnectWithError(null)
     }
 

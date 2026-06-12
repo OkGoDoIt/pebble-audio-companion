@@ -34,4 +34,10 @@ interface AudioGattLink {
 
     /** One emission per Data notification (one complete message each). */
     val dataNotifications: Flow<ByteArray>
+
+    /**
+     * Drops the GATT connection (the platform may keep the underlying ACL link for other
+     * apps). No-op when already disconnected; [connectionState] moves to Disconnected.
+     */
+    fun disconnect() {}
 }

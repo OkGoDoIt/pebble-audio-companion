@@ -92,6 +92,14 @@ class AudioCompanionRuntime(
     )
 
     val state: StateFlow<ReceiverSessionState> = session.state
+
+    /**
+     * Raw watch service state (protocol ServiceState) from the Info read and STATE_CHANGED
+     * pushes; null when unknown/disconnected. Lets the UI mirror the watch's own Settings
+     * status (paused by dictation, low battery, disabled on watch, …).
+     */
+    val watchServiceState: StateFlow<Int?> = session.watchServiceState
+
     val diagnostics: StateFlow<AudioCompanionDiagnostics> get() = _diagnostics.asStateFlow()
 
     private val _diagnostics = MutableStateFlow(AudioCompanionDiagnostics())
@@ -127,6 +135,18 @@ class AudioCompanionRuntime(
         refreshDiagnostics()
     }
 
+    /**
+     * User-initiated Stop: tell the watch to pause capture (so its Settings show Paused and it
+     * does not stream into a void), then tear the receiver down and drop the GATT connection.
+     * The watch keeps the pause across disconnects; the next start resumes it (the session
+     * auto-sends RESUME on re-authorization).
+     */
+    suspend fun stopReceiving() {
+        session.requestPause()
+        stop()
+        link.disconnect()
+    }
+
     fun refreshDiagnostics() {
         val tasks = transcriptionQueue.all()
         _diagnostics.value = AudioCompanionDiagnostics(
@@ -143,6 +163,7 @@ class AudioCompanionRuntime(
 
     suspend fun deleteAllLocalData() {
         stop()
+        link.disconnect()
         playback?.stop()
         store.closeSegment(SegmentCloseReason.Interrupted)
         store.listSegments().forEach { store.deleteSegment(it.segmentId) }
@@ -229,6 +250,7 @@ class AudioCompanionRuntime(
 
     suspend fun revokeReceiverLocally() {
         stop()
+        link.disconnect()
         resumeStore.clear()
         refreshDiagnostics()
     }
