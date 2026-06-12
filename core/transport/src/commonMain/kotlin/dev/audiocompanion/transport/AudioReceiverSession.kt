@@ -34,6 +34,8 @@ sealed interface ReceiverSessionState {
     data object Disconnected : ReceiverSessionState
     data object Connecting : ReceiverSessionState
 
+    data class ConnectionFailed(val message: String) : ReceiverSessionState
+
     /** Link ready; reading Info and sending AUTH_REQUEST. */
     data object Authorizing : ReceiverSessionState
 
@@ -161,7 +163,9 @@ class AudioReceiverSession(
                 when (linkState) {
                     LinkState.Disconnected -> {
                         onLinkDown()
-                        _state.value = ReceiverSessionState.Disconnected
+                        _state.value = link.lastError.value
+                            ?.let { ReceiverSessionState.ConnectionFailed(it) }
+                            ?: ReceiverSessionState.Disconnected
                     }
                     LinkState.Connecting -> {
                         onLinkDown()
@@ -254,7 +258,6 @@ class AudioReceiverSession(
             }
             is StateChanged -> _watchServiceState.value = message.serviceStateRaw
             is ErrorMessage -> _lastProtocolError.value = message
-            else -> {}
         }
     }
 
@@ -296,7 +299,6 @@ class AudioReceiverSession(
                 )
                 _state.value = ReceiverSessionState.Authorized
             }
-            else -> {}
         }
     }
 

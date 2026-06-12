@@ -16,6 +16,8 @@ class FakeAudioGattLink(
 ) : AudioGattLink {
     val linkState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = linkState
+    val errorState = MutableStateFlow<String?>(null)
+    override val lastError: StateFlow<String?> = errorState
 
     val controlWrites = mutableListOf<ByteArray>()
 

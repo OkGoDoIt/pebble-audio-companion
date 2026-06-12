@@ -221,6 +221,7 @@ private fun FindWatchStep(
         StatusDot(
             when (sessionState) {
                 ReceiverSessionState.Disconnected -> StatusSeverity.Neutral
+                is ReceiverSessionState.ConnectionFailed -> StatusSeverity.Warning
                 is ReceiverSessionState.Denied, is ReceiverSessionState.Revoked -> StatusSeverity.Warning
                 else -> StatusSeverity.Info
             },
@@ -228,6 +229,7 @@ private fun FindWatchStep(
         Text(
             text = when (sessionState) {
                 ReceiverSessionState.Disconnected -> "Not connected"
+                is ReceiverSessionState.ConnectionFailed -> "Connection failed: ${sessionState.message}"
                 ReceiverSessionState.Connecting -> "Looking for your Pebble…"
                 else -> "Watch found"
             },
@@ -235,7 +237,9 @@ private fun FindWatchStep(
         )
     }
     Button(onClick = onFind) { Text("Find My Watch") }
-    if (sessionState == ReceiverSessionState.Disconnected) {
+    if (sessionState == ReceiverSessionState.Disconnected ||
+        sessionState is ReceiverSessionState.ConnectionFailed
+    ) {
         Text(
             text = "Make sure the watch is nearby, Bluetooth is on, and custom audio firmware " +
                 "is installed.",
@@ -273,6 +277,8 @@ private fun WatchConsentStep(
             else -> StatusSeverity.Warning to "Not authorized"
         }
         is ReceiverSessionState.Revoked -> StatusSeverity.Warning to "Access was revoked"
+        is ReceiverSessionState.ConnectionFailed ->
+            StatusSeverity.Warning to "Connection failed: ${sessionState.message}"
         ReceiverSessionState.Disconnected -> StatusSeverity.Neutral to "Watch not connected"
         else -> StatusSeverity.Info to "Connecting…"
     }

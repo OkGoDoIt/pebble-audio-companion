@@ -41,6 +41,9 @@ import kotlin.coroutines.resumeWithException
 object IosAudioCompanionGatt {
     const val RESTORE_IDENTIFIER = "audio-companion-central"
 
+    val PEBBLE_PAIRING_SERVICE_UUID: CBUUID = CBUUID.UUIDWithString("FED9")
+    val DEVICE_INFORMATION_SERVICE_UUID: CBUUID = CBUUID.UUIDWithString("180A")
+    val BATTERY_SERVICE_UUID: CBUUID = CBUUID.UUIDWithString("180F")
     val SERVICE_UUID: CBUUID = CBUUID.UUIDWithString(ProtocolConstants.SERVICE_UUID)
     val INFO_CHARACTERISTIC_UUID: CBUUID = CBUUID.UUIDWithString(ProtocolConstants.INFO_CHARACTERISTIC_UUID)
     val CONTROL_CHARACTERISTIC_UUID: CBUUID = CBUUID.UUIDWithString(ProtocolConstants.CONTROL_CHARACTERISTIC_UUID)
@@ -58,6 +61,8 @@ object IosAudioCompanionGatt {
 class IosAudioGattLink : AudioGattLink {
     private val _connectionState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = _connectionState.asStateFlow()
+    private val _lastError = MutableStateFlow<String?>(null)
+    override val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     private val controlChannel = Channel<ByteArray>(Channel.UNLIMITED)
     private val dataChannel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -86,6 +91,7 @@ class IosAudioGattLink : AudioGattLink {
             queue = dispatch_get_main_queue(),
             options = mapOf(CBCentralManagerOptionRestoreIdentifierKey to IosAudioCompanionGatt.RESTORE_IDENTIFIER),
         ).also { centralManager = it }
+        _lastError.value = null
         _connectionState.value = LinkState.Connecting
         if (manager.state == CBManagerStatePoweredOn) {
             connectWhenPoweredOn(manager)
@@ -173,6 +179,7 @@ class IosAudioGattLink : AudioGattLink {
         error: NSError?,
     ) {
         resetCharacteristics()
+        _lastError.value = error?.localizedDescription ?: "Peripheral disconnected"
         _connectionState.value = LinkState.Disconnected
     }
 
@@ -224,6 +231,7 @@ class IosAudioGattLink : AudioGattLink {
             return
         }
         pendingNotifyCharacteristics = mutableListOf(control, data)
+        _lastError.value = null
         peripheral.setNotifyValue(true, forCharacteristic = pendingNotifyCharacteristics.removeAt(0))
     }
 
@@ -237,6 +245,7 @@ class IosAudioGattLink : AudioGattLink {
             return
         }
         if (pendingNotifyCharacteristics.isEmpty()) {
+            _lastError.value = null
             _connectionState.value = LinkState.Ready
         } else {
             peripheral.setNotifyValue(true, forCharacteristic = pendingNotifyCharacteristics.removeAt(0))
@@ -280,15 +289,30 @@ class IosAudioGattLink : AudioGattLink {
     }
 
     private fun connectWhenPoweredOn(manager: CBCentralManager) {
-        val connected = manager.retrieveConnectedPeripheralsWithServices(listOf(IosAudioCompanionGatt.SERVICE_UUID))
-            .filterIsInstance<CBPeripheral>()
-        val existing = connected.firstOrNull()
+        val connected = listOf(
+            IosAudioCompanionGatt.SERVICE_UUID,
+            IosAudioCompanionGatt.PEBBLE_PAIRING_SERVICE_UUID,
+            IosAudioCompanionGatt.DEVICE_INFORMATION_SERVICE_UUID,
+            IosAudioCompanionGatt.BATTERY_SERVICE_UUID,
+        ).flatMap { serviceUuid ->
+            manager.retrieveConnectedPeripheralsWithServices(listOf(serviceUuid))
+                .filterIsInstance<CBPeripheral>()
+        }
+            .distinctBy { it.identifier.UUIDString }
+        val existing = connected.firstOrNull { it.name?.contains("Pebble", ignoreCase = true) == true }
+            ?: connected.firstOrNull()
         if (existing != null) {
             peripheral = existing
             existing.delegate = delegate
             manager.connectPeripheral(existing, options = null)
         } else {
-            manager.scanForPeripheralsWithServices(listOf(IosAudioCompanionGatt.SERVICE_UUID), options = null)
+            manager.scanForPeripheralsWithServices(
+                listOf(
+                    IosAudioCompanionGatt.SERVICE_UUID,
+                    IosAudioCompanionGatt.PEBBLE_PAIRING_SERVICE_UUID,
+                ),
+                options = null,
+            )
         }
     }
 
@@ -299,6 +323,7 @@ class IosAudioGattLink : AudioGattLink {
         pendingControlWrite = null
         centralManager?.stopScan()
         resetCharacteristics()
+        _lastError.value = message
         _connectionState.value = LinkState.Disconnected
     }
 

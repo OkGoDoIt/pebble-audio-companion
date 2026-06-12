@@ -108,6 +108,7 @@ class StatusUiTest {
     fun noProtocolVocabularyInHeadlines() {
         val states = listOf(
             ReceiverSessionState.Disconnected,
+            ReceiverSessionState.ConnectionFailed("Peripheral disconnected"),
             ReceiverSessionState.Connecting,
             ReceiverSessionState.Authorizing,
             ReceiverSessionState.PendingConsent,

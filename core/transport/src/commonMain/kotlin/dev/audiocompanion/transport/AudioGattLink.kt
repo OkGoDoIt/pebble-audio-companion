@@ -20,6 +20,9 @@ enum class LinkState {
 interface AudioGattLink {
     val connectionState: StateFlow<LinkState>
 
+    /** Last platform BLE failure, if the current disconnected state followed an error. */
+    val lastError: StateFlow<String?>
+
     /** Reads the Info characteristic (raw 20-byte snapshot). */
     suspend fun readInfo(): ByteArray
 

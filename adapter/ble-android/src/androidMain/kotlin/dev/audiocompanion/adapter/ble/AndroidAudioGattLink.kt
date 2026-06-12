@@ -51,6 +51,8 @@ class AndroidAudioGattLink(
 
     private val _connectionState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = _connectionState.asStateFlow()
+    private val _lastError = MutableStateFlow<String?>(null)
+    override val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     private val controlChannel = Channel<ByteArray>(Channel.UNLIMITED)
     private val dataChannel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -74,6 +76,7 @@ class AndroidAudioGattLink(
      */
     fun connect(device: BluetoothDevice) {
         disconnect()
+        _lastError.value = null
         _connectionState.value = LinkState.Connecting
         gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
@@ -84,6 +87,10 @@ class AndroidAudioGattLink(
     }
 
     fun disconnect() {
+        disconnectWithError(null)
+    }
+
+    private fun disconnectWithError(message: String?) {
         val oldGatt = gatt
         gatt = null
         infoCharacteristic = null
@@ -98,6 +105,7 @@ class AndroidAudioGattLink(
         }
         oldGatt?.disconnect()
         oldGatt?.close()
+        _lastError.value = message
         _connectionState.value = LinkState.Disconnected
     }
 
@@ -161,7 +169,7 @@ class AndroidAudioGattLink(
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnect()
+                disconnectWithError("Bluetooth connection failed with status $status")
                 return
             }
             when (newState) {
@@ -172,7 +180,7 @@ class AndroidAudioGattLink(
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED ->
-                    disconnect()
+                    disconnectWithError("Bluetooth peripheral disconnected")
             }
         }
 
@@ -182,7 +190,7 @@ class AndroidAudioGattLink(
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnect()
+                disconnectWithError("Bluetooth service discovery failed: $status")
                 return
             }
             val service = gatt.getService(SERVICE_UUID)
@@ -190,7 +198,7 @@ class AndroidAudioGattLink(
             val control = service?.getCharacteristic(CONTROL_CHARACTERISTIC_UUID)
             val data = service?.getCharacteristic(DATA_CHARACTERISTIC_UUID)
             if (service == null || info == null || control == null || data == null) {
-                disconnect()
+                disconnectWithError("Audio Companion service or characteristics not found")
                 return
             }
 
@@ -209,7 +217,7 @@ class AndroidAudioGattLink(
             status: Int,
         ) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnect()
+                disconnectWithError("Notification subscription failed: $status")
                 return
             }
             writeNextCccd(gatt)
@@ -275,12 +283,12 @@ class AndroidAudioGattLink(
             return
         }
         if (!gatt.setCharacteristicNotification(characteristic, true)) {
-            disconnect()
+            disconnectWithError("Failed to enable local notifications")
             return
         }
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
         if (descriptor == null) {
-            disconnect()
+            disconnectWithError("Bluetooth notification descriptor not found")
             return
         }
         val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -295,7 +303,7 @@ class AndroidAudioGattLink(
             gatt.writeDescriptor(descriptor)
         }
         if (!started) {
-            disconnect()
+            disconnectWithError("Failed to write CCCD")
         }
     }
 

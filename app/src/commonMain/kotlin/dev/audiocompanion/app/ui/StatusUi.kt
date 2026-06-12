@@ -48,6 +48,13 @@ fun statusUiModel(
             )
         }
 
+    is ReceiverSessionState.ConnectionFailed -> StatusUiModel(
+        headline = "Connection failed",
+        supporting = state.message,
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Troubleshoot,
+    )
+
     ReceiverSessionState.Connecting -> StatusUiModel(
         headline = "Connecting to your Pebble",
         supporting = null,

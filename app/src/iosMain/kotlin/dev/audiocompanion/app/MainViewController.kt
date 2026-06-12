@@ -80,7 +80,7 @@ fun MainViewController(): UIViewController {
                 ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
             actions = AppActions(
                 pairWatch = {
-                    bootstrap.handle.connectWatch()
+                    bootstrap.handle.startReceiver()
                     runtime.refreshDiagnostics()
                 },
                 // iOS surfaces the Bluetooth permission dialog when the central first starts;
