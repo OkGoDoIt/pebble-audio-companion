@@ -1,6 +1,6 @@
 package dev.audiocompanion.transcription
 
-internal object PcmWav {
+object PcmWav {
     private const val HEADER_BYTES = 44
     private const val PCM_FORMAT = 1
 

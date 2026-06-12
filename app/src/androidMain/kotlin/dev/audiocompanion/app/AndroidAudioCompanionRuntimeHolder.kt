@@ -12,7 +12,12 @@ object AndroidAudioCompanionRuntimeHolder {
             handle ?: run {
                 val link = AndroidAudioGattLink(context.applicationContext)
                 val settingsRepository = AndroidAudioCompanionSettingsRepository(context)
-                val modelProvider = AndroidCactusModelPathProvider(context.applicationContext)
+                val modelProvider = AndroidCactusModelPathProvider(
+                    context.applicationContext,
+                    selectedModelId = {
+                        settingsRepository.settings.value.localTranscriptionModelId
+                    },
+                )
                 val runtime = AndroidAudioCompanionRuntimeFactory(context).create(
                     link,
                     settingsRepository,
@@ -23,10 +28,14 @@ object AndroidAudioCompanionRuntimeHolder {
                     runtime = runtime,
                     settingsRepository = settingsRepository,
                     localModelManager = LocalTranscriptionModelManager(
-                        modelName = modelProvider.modelName,
-                        modelVersion = modelProvider.modelVersion,
+                        models = LocalTranscriptionModels.all,
+                        selectedModelId = {
+                            settingsRepository.settings.value.localTranscriptionModelId
+                        },
                         isDownloaded = modelProvider::isModelDownloaded,
-                        download = { onProgress -> modelProvider.downloadModel(onProgress) },
+                        download = { modelId, onProgress ->
+                            modelProvider.downloadModel(modelId, onProgress)
+                        },
                         onModelStateChanged = { runtime.notifyTranscriptionConfigChanged() },
                     ).also { it.refresh() },
                 ).also { handle = it }

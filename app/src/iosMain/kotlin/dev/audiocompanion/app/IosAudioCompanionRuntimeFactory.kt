@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import platform.Foundation.NSApplicationSupportDirectory
+import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSystemFreeSize
 import platform.Foundation.NSNumber
@@ -39,11 +40,14 @@ import kotlin.random.Random
 class IosAudioCompanionRuntimeFactory(
     private val defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,
     private val filesRoot: String = defaultFilesRoot(),
+    private val exportRoot: String = defaultExportRoot(),
 ) {
     fun create(
         link: IosAudioGattLink,
         settingsRepository: AudioCompanionSettingsRepository,
-        modelProvider: CactusModelPathProvider = IosCactusModelPathProvider(),
+        modelProvider: CactusModelPathProvider = IosCactusModelPathProvider(
+            selectedModelId = { settingsRepository.settings.value.localTranscriptionModelId },
+        ),
     ): AudioCompanionRuntime {
         val root = Path(filesRoot, "audio-companion")
         val nowMs = { (kotlin.time.Clock.System.now().toEpochMilliseconds()) }
@@ -126,6 +130,24 @@ class IosAudioCompanionRuntimeFactory(
                 frameSource = { segmentId -> store.readFrames(segmentId).map { it.payload } },
             ),
             waveformBuilder = SegmentWaveformBuilder(decoder = SpeexLiveFrameDecoder()),
+            exportManager = AudioExportManager(
+                fileSystem = SystemFileSystem,
+                exportRoot = Path(exportRoot),
+                listSegments = store::listSegments,
+                readMeta = store::readMeta,
+                readFrames = store::readFrames,
+                decodePcm = { meta, frames ->
+                    val decoder = SpeexFrameDecoder(
+                        sampleRateHz = meta.sampleRateHz.toInt(),
+                        bitRateBps = meta.bitRateBps.toInt(),
+                        frameSamples = meta.frameSamples,
+                    )
+                    decoder.decode(flow { frames.forEach { emit(it.payload) } })
+                },
+            ),
+            automaticWavExportEnabled = {
+                settingsRepository.settings.value.automaticWavExportEnabled
+            },
         )
     }
 
@@ -157,6 +179,22 @@ class IosAudioCompanionRuntimeFactory(
                 NSUserDomainMask,
                 true,
             ).first() as String
+            NSFileManager.defaultManager.createDirectoryAtPath(
+                root,
+                withIntermediateDirectories = true,
+                attributes = null,
+                error = null,
+            )
+            return root
+        }
+
+        private fun defaultExportRoot(): String {
+            val documents = NSSearchPathForDirectoriesInDomains(
+                NSDocumentDirectory,
+                NSUserDomainMask,
+                true,
+            ).first() as String
+            val root = "$documents/PebbleAudioExports"
             NSFileManager.defaultManager.createDirectoryAtPath(
                 root,
                 withIntermediateDirectories = true,

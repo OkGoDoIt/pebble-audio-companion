@@ -9,16 +9,18 @@ import kotlinx.coroutines.launch
 class IosAudioCompanionRuntimeHandle(
     val link: IosAudioGattLink = IosAudioGattLink(),
     val settingsRepository: IosAudioCompanionSettingsRepository = IosAudioCompanionSettingsRepository(),
-    private val modelProvider: IosCactusModelPathProvider = IosCactusModelPathProvider(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val modelProvider = IosCactusModelPathProvider(
+        selectedModelId = { settingsRepository.settings.value.localTranscriptionModelId },
+    )
     val runtime: AudioCompanionRuntime =
         IosAudioCompanionRuntimeFactory().create(link, settingsRepository, modelProvider)
     val localModelManager: LocalTranscriptionModelManager = LocalTranscriptionModelManager(
-        modelName = modelProvider.modelName,
-        modelVersion = modelProvider.modelVersion,
+        models = LocalTranscriptionModels.all,
+        selectedModelId = { settingsRepository.settings.value.localTranscriptionModelId },
         isDownloaded = modelProvider::isModelDownloaded,
-        download = { onProgress -> modelProvider.downloadModel(onProgress) },
+        download = { modelId, onProgress -> modelProvider.downloadModel(modelId, onProgress) },
         onModelStateChanged = { runtime.notifyTranscriptionConfigChanged() },
     ).also { it.refresh() }
 

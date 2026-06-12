@@ -14,49 +14,59 @@ import kotlinx.coroutines.withContext
 
 class AndroidCactusModelPathProvider(
     context: Context,
+    private val selectedModelId: () -> String = { LocalTranscriptionModels.DEFAULT_MODEL_ID },
 ) : CactusModelPathProvider {
-    override val modelName: String = STT_MODEL_NAME
-    override val modelVersion: String = STT_MODEL_VERSION
+    override val modelName: String
+        get() = selectedModel().modelNameForProvenance
+    override val modelVersion: String
+        get() = selectedModel().modelVersionForProvenance
 
     private val appContext = context.applicationContext
     private val modelsDir: File
         get() = appContext.filesDir.resolve("models").also { it.mkdirs() }
 
-    override fun isModelDownloaded(): Boolean {
-        val modelDir = modelsDir.resolve(modelName)
+    override fun isModelDownloaded(): Boolean = isModelDownloaded(selectedModel().id)
+
+    fun isModelDownloaded(modelId: String): Boolean {
+        val model = LocalTranscriptionModels.byId(modelId)
+        val modelDir = modelsDir.resolve(model.installDirectoryName)
         return modelDir.exists() && modelDir.resolve("config.txt").exists() &&
-            modelDir.resolve(VERSION_FILE).readTextOrNull() == modelVersion
+            modelDir.resolve(VERSION_FILE).readTextOrNull() == model.revision
     }
 
     override suspend fun getModelPath(): String = withContext(Dispatchers.IO) {
-        val modelDir = modelsDir.resolve(modelName)
-        val versionFile = modelDir.resolve(VERSION_FILE)
-        val needsDownload = !modelDir.exists() ||
-            !modelDir.resolve("config.txt").exists() ||
-            versionFile.readTextOrNull() != modelVersion
-
-        if (needsDownload) {
-            downloadAndExtract(modelDir) { _, _ -> }
-            versionFile.writeText(modelVersion)
+        val model = selectedModel()
+        val modelDir = modelsDir.resolve(model.installDirectoryName)
+        if (!isModelDownloaded(model.id)) {
+            throw IllegalStateException("${model.displayName} is not downloaded")
         }
         modelDir.absolutePath
     }
 
     override suspend fun downloadModel(onProgress: (Long, Long) -> Unit) {
+        downloadModel(selectedModel().id, onProgress)
+    }
+
+    suspend fun downloadModel(modelId: String, onProgress: (Long, Long) -> Unit) {
         withContext(Dispatchers.IO) {
-            val modelDir = modelsDir.resolve(modelName)
+            val model = LocalTranscriptionModels.byId(modelId)
+            val modelDir = modelsDir.resolve(model.installDirectoryName)
             val versionFile = modelDir.resolve(VERSION_FILE)
-            if (!isModelDownloaded()) {
-                downloadAndExtract(modelDir, onProgress)
-                versionFile.writeText(modelVersion)
+            if (!isModelDownloaded(model.id)) {
+                downloadAndExtract(model, modelDir, onProgress)
+                versionFile.writeText(model.revision)
             }
         }
     }
 
-    private suspend fun downloadAndExtract(targetDir: File, onProgress: (Long, Long) -> Unit) {
-        val tempZip = File(appContext.cacheDir, "cactus_download_$modelName.zip")
+    private suspend fun downloadAndExtract(
+        model: LocalTranscriptionModelSpec,
+        targetDir: File,
+        onProgress: (Long, Long) -> Unit,
+    ) {
+        val tempZip = File(appContext.cacheDir, "cactus_download_${model.id}.zip")
         try {
-            downloadToFile(tempZip, onProgress)
+            downloadToFile(model, tempZip, onProgress)
             if (targetDir.exists()) {
                 targetDir.deleteRecursively()
             }
@@ -71,8 +81,12 @@ class AndroidCactusModelPathProvider(
         }
     }
 
-    private suspend fun downloadToFile(outputFile: File, onProgress: (Long, Long) -> Unit) {
-        val connection = URL(modelUrl()).openConnection() as HttpURLConnection
+    private suspend fun downloadToFile(
+        model: LocalTranscriptionModelSpec,
+        outputFile: File,
+        onProgress: (Long, Long) -> Unit,
+    ) {
+        val connection = URL(modelUrl(model)).openConnection() as HttpURLConnection
         connection.connectTimeout = 30_000
         connection.readTimeout = 60_000
         connection.instanceFollowRedirects = true
@@ -81,7 +95,9 @@ class AndroidCactusModelPathProvider(
             if (code !in 200..299) {
                 throw IllegalStateException("Cactus model download failed: HTTP $code")
             }
-            val totalBytes = connection.contentLengthLong.coerceAtLeast(0)
+            val totalBytes = connection.contentLengthLong
+                .takeIf { it > 1024 }
+                ?: model.downloadBytes
             var received = 0L
             connection.inputStream.use { input ->
                 FileOutputStream(outputFile).use { output ->
@@ -130,16 +146,17 @@ class AndroidCactusModelPathProvider(
         }
     }
 
-    private fun modelUrl(): String =
-        "$HF_BASE/$modelName/resolve/$modelVersion/weights/${modelName.lowercase()}-int8.zip"
+    private fun selectedModel(): LocalTranscriptionModelSpec =
+        LocalTranscriptionModels.byId(selectedModelId())
+
+    private fun modelUrl(model: LocalTranscriptionModelSpec): String =
+        "$HF_BASE/${model.repository}/resolve/${model.revision}/${model.archivePath}"
 
     private fun File.readTextOrNull(): String? =
         if (exists()) readText().trim() else null
 
     companion object {
-        private const val HF_BASE = "https://huggingface.co/Cactus-Compute"
-        private const val STT_MODEL_NAME = "parakeet-tdt-0.6b-v3"
-        private const val STT_MODEL_VERSION = "v1.10"
+        private const val HF_BASE = "https://huggingface.co"
         private const val VERSION_FILE = ".cactus_version"
         private const val DOWNLOAD_BUFFER_BYTES = 256 * 1024
     }

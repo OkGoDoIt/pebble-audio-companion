@@ -45,6 +45,13 @@ class AppActions(
     val deleteAll: () -> Unit = {},
     val revokeReceiver: () -> Unit = {},
     val exportSupportReport: () -> dev.audiocompanion.app.AudioCompanionSupportReport? = { null },
+    val audioExportDirectory: () -> String? = { null },
+    val exportSegmentAudio: suspend (segmentId: String) -> Result<dev.audiocompanion.app.AudioExportResult> = {
+        Result.failure(IllegalStateException("audio export is not wired"))
+    },
+    val exportAllAudio: suspend () -> Result<dev.audiocompanion.app.AudioExportResult> = {
+        Result.failure(IllegalStateException("audio export is not wired"))
+    },
     // AI
     val runAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput> = { _, _ ->
         Result.failure(AiException.ProviderUnavailable("not wired"))
@@ -52,10 +59,12 @@ class AppActions(
     // Settings
     val setRetentionDays: (Int) -> Unit = {},
     val setTranscriptionMode: (TranscriptionMode) -> Unit = {},
+    val setLocalTranscriptionModel: (String) -> Unit = {},
     val setCloudTranscriptionConsent: (Boolean) -> Unit = {},
     val setOpenAiApiKey: (String) -> Unit = {},
     val setAiMode: (AiProcessingMode) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
+    val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},
     // Local transcription model
     val refreshLocalModel: () -> Unit = {},
     val downloadLocalModel: () -> Unit = {},

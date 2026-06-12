@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Alignment
@@ -31,11 +32,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
+import dev.audiocompanion.app.LocalTranscriptionModelOptionState
 import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transport.ReceiverSessionState
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
@@ -45,13 +49,18 @@ fun SettingsScreen(
     watchServiceState: Int?,
     localModel: LocalTranscriptionModelState,
     statusHeadline: String,
+    exportDirectory: String?,
     actions: AppActions,
 ) {
     var confirmRevoke by remember { mutableStateOf(false) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var showTranscriptionModePicker by remember { mutableStateOf(false) }
+    var showLocalModelPicker by remember { mutableStateOf(false) }
     var showAiModePicker by remember { mutableStateOf(false) }
     var supportReportText by remember { mutableStateOf<String?>(null) }
+    var exportResultText by remember { mutableStateOf<String?>(null) }
+    var exportingAll by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
@@ -89,6 +98,7 @@ fun SettingsScreen(
         SectionTitle("Storage & Retention")
         InfoRow("Stored segments", diagnostics.segmentCount.toString())
         InfoRow("Free phone storage", Formatting.storageSize(diagnostics.freeStorageHintKb.toLong() * 1024))
+        InfoRow("Export folder", exportDirectory ?: "Unavailable")
         if (diagnostics.lowStorage) {
             Text(
                 text = "Phone storage is low. Receiving will pause if it drops further.",
@@ -114,6 +124,35 @@ fun SettingsScreen(
         TextButton(onClick = { confirmDeleteAll = true }) {
             Text("Delete all local data", color = MaterialTheme.colorScheme.error)
         }
+        SettingsToggleRow(
+            title = "Auto-export WAV files",
+            subtitle = "Write normal audio files for closed segments into the export folder. Off by default because WAV uses much more storage.",
+            checked = settings.automaticWavExportEnabled,
+            onCheckedChange = actions.setAutomaticWavExportEnabled,
+        )
+        OutlinedButton(
+            enabled = !exportingAll,
+            onClick = {
+                exportingAll = true
+                scope.launch {
+                    val result = actions.exportAllAudio()
+                    exportResultText = result.fold(
+                        onSuccess = ::formatAudioExportResult,
+                        onFailure = { "Export failed: ${it.message ?: it::class.simpleName}" },
+                    )
+                    exportingAll = false
+                }
+            },
+        ) {
+            Text(if (exportingAll) "Exporting…" else "Export all audio")
+        }
+        exportResultText?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         HorizontalDivider()
 
         SectionTitle("Transcription")
@@ -122,12 +161,26 @@ fun SettingsScreen(
             value = transcriptionModeLabel(settings.transcriptionMode),
             onClick = { showTranscriptionModePicker = true },
         )
+        ModePickerRow(
+            title = "Local model",
+            value = localModel.selectedOption?.let {
+                "${it.model.shortLabel} · ${Formatting.storageSize(it.model.downloadBytes)}"
+            } ?: "Choose model",
+            onClick = { if (!localModel.downloading) showLocalModelPicker = true },
+        )
+        localModel.selectedOption?.model?.let { model ->
+            Text(
+                text = model.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         InfoRow(
             "On-device model",
             when {
                 localModel.installing -> "Installing…"
                 localModel.downloading -> "Downloading…"
-                localModel.downloaded -> "Installed (${localModel.modelName})"
+                localModel.downloaded -> "Installed (${localModel.selectedOption?.model?.displayName ?: localModel.modelName})"
                 localModel.errorMessage != null -> "Error"
                 else -> "Not installed"
             },
@@ -157,7 +210,7 @@ fun SettingsScreen(
         if (!localModel.downloaded && !localModel.downloading) {
             Text(
                 text = "Transcribes on this phone with no audio leaving the device. " +
-                    "The model is a large download (about 700 MB) — use Wi-Fi.",
+                    "Choose the model size that fits this phone, then download on Wi-Fi.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -171,7 +224,7 @@ fun SettingsScreen(
                     enabled = !localModel.downloaded,
                     onClick = actions.downloadLocalModel,
                 ) {
-                    Text("Download Model")
+                    Text("Download selected")
                 }
             }
         }
@@ -294,6 +347,14 @@ fun SettingsScreen(
             onDismiss = { showTranscriptionModePicker = false },
         )
     }
+    if (showLocalModelPicker) {
+        LocalModelPickerDialog(
+            options = localModel.options,
+            selectedModelId = localModel.selectedModelId,
+            onSelect = actions.setLocalTranscriptionModel,
+            onDismiss = { showLocalModelPicker = false },
+        )
+    }
     if (showAiModePicker) {
         SingleChoiceDialog(
             title = "AI mode",
@@ -304,6 +365,64 @@ fun SettingsScreen(
             onDismiss = { showAiModePicker = false },
         )
     }
+}
+
+@Composable
+private fun LocalModelPickerDialog(
+    options: List<LocalTranscriptionModelOptionState>,
+    selectedModelId: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Local transcription model") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { option ->
+                    val model = option.model
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelect(model.id)
+                                onDismiss()
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = model.id == selectedModelId,
+                            onClick = {
+                                onSelect(model.id)
+                                onDismiss()
+                            },
+                        )
+                        Column {
+                            Text(
+                                text = model.displayName + if (model.recommended) " (Recommended)" else "",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "${model.shortLabel} · ${Formatting.storageSize(model.downloadBytes)}" +
+                                    if (option.downloaded) " · Installed" else "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = model.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
 }
 
 @Composable
@@ -387,6 +506,18 @@ fun formatSupportReport(report: dev.audiocompanion.app.AudioCompanionSupportRepo
         appendLine("Low storage: ${d.lowStorage}")
         appendLine("Pause requested: ${d.pauseRequested}")
         append("Free storage: ${Formatting.storageSize(d.freeStorageHintKb.toLong() * 1024)}")
+    }
+
+fun formatAudioExportResult(result: AudioExportResult): String =
+    when {
+        result.fileCount == 0 && result.skippedOpenSegments > 0 ->
+            "No closed segments exported yet. The current recording will export after it closes."
+        result.fileCount == 0 ->
+            "No audio was available to export."
+        result.fileCount == 1 ->
+            "Exported 1 WAV file to ${result.directory}."
+        else ->
+            "Exported ${result.fileCount} WAV files to ${result.directory}."
     }
 
 fun transcriptionModeLabel(mode: TranscriptionMode): String = when (mode) {

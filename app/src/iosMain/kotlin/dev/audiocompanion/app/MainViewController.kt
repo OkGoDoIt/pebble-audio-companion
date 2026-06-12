@@ -120,6 +120,13 @@ fun MainViewController(): UIViewController {
                 exportSupportReport = {
                     runtime.buildSupportReport(includeContent = false)
                 },
+                audioExportDirectory = { runtime.audioExportDirectory },
+                exportSegmentAudio = { segmentId ->
+                    runCatching { runtime.exportSegmentAudio(segmentId) }
+                },
+                exportAllAudio = {
+                    runCatching { runtime.exportAllAudio() }
+                },
                 runAi = { template, segmentIds ->
                     runCatching {
                         runtime.runAi(
@@ -134,6 +141,11 @@ fun MainViewController(): UIViewController {
                     settings.setTranscriptionMode(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
+                setLocalTranscriptionModel = {
+                    settings.setLocalTranscriptionModel(it)
+                    bootstrap.handle.localModelManager.refreshSelection()
+                    runtime.notifyTranscriptionConfigChanged()
+                },
                 setCloudTranscriptionConsent = {
                     settings.setCloudTranscriptionConsent(it)
                     runtime.notifyTranscriptionConfigChanged()
@@ -144,6 +156,10 @@ fun MainViewController(): UIViewController {
                 },
                 setAiMode = settings::setAiMode,
                 setRemoteAiConsent = settings::setRemoteAiConsent,
+                setAutomaticWavExportEnabled = {
+                    settings.setAutomaticWavExportEnabled(it)
+                    runtime.notifyExportConfigChanged()
+                },
                 refreshLocalModel = bootstrap.handle.localModelManager::refresh,
                 downloadLocalModel = bootstrap.handle.localModelManager::download,
                 cancelModelDownload = bootstrap.handle.localModelManager::cancelDownload,

@@ -122,6 +122,13 @@ class MainActivity : ComponentActivity() {
                     exportSupportReport = {
                         runtime.buildSupportReport(includeContent = false)
                     },
+                    audioExportDirectory = { runtime.audioExportDirectory },
+                    exportSegmentAudio = { segmentId ->
+                        runCatching { runtime.exportSegmentAudio(segmentId) }
+                    },
+                    exportAllAudio = {
+                        runCatching { runtime.exportAllAudio() }
+                    },
                     runAi = { template, segmentIds ->
                         runCatching {
                             runtime.runAi(
@@ -136,6 +143,11 @@ class MainActivity : ComponentActivity() {
                         settingsRepository.setTranscriptionMode(it)
                         runtime.notifyTranscriptionConfigChanged()
                     },
+                    setLocalTranscriptionModel = {
+                        settingsRepository.setLocalTranscriptionModel(it)
+                        handle.localModelManager.refreshSelection()
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
                     setCloudTranscriptionConsent = {
                         settingsRepository.setCloudTranscriptionConsent(it)
                         runtime.notifyTranscriptionConfigChanged()
@@ -146,6 +158,10 @@ class MainActivity : ComponentActivity() {
                     },
                     setAiMode = settingsRepository::setAiMode,
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
+                    setAutomaticWavExportEnabled = {
+                        settingsRepository.setAutomaticWavExportEnabled(it)
+                        runtime.notifyExportConfigChanged()
+                    },
                     refreshLocalModel = handle.localModelManager::refresh,
                     downloadLocalModel = handle.localModelManager::download,
                     cancelModelDownload = handle.localModelManager::cancelDownload,

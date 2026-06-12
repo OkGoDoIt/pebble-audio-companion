@@ -25,16 +25,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
+import kotlinx.coroutines.launch
 
 enum class LibraryFilter(val label: String) {
     All("All"),
@@ -53,6 +56,7 @@ fun LibraryScreen(
     selectedSegmentId: String?,
     onSelectSegment: (String?) -> Unit,
     onDeleteSegment: (String) -> Unit,
+    onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -73,6 +77,7 @@ fun LibraryScreen(
                 onDeleteSegment(selected.segmentId)
                 onSelectSegment(null)
             },
+            onExportSegment = onExportSegment,
             onPlaySegment = onPlaySegment,
             onPausePlayback = onPausePlayback,
             onStopPlayback = onStopPlayback,
@@ -220,6 +225,7 @@ fun SegmentDetailScreen(
     playback: PlaybackUiState,
     onBack: () -> Unit,
     onDelete: () -> Unit,
+    onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -228,6 +234,9 @@ fun SegmentDetailScreen(
     loadWaveform: suspend (String) -> SegmentWaveform? = { null },
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var exportMessage by remember(meta.segmentId) { mutableStateOf<String?>(null) }
+    var exporting by remember(meta.segmentId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     // Decoded off the UI path; re-built when more audio is stored (open segment grows).
     var waveform by remember(meta.segmentId) { mutableStateOf<SegmentWaveform?>(null) }
     LaunchedEffect(meta.segmentId, meta.frameCount) {
@@ -306,6 +315,37 @@ fun SegmentDetailScreen(
                 onSeekPlayback = onSeekPlayback,
                 onCyclePlaybackSpeed = onCyclePlaybackSpeed,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = !exporting,
+                    onClick = {
+                        exporting = true
+                        scope.launch {
+                            val result = onExportSegment(meta.segmentId)
+                            exportMessage = result.fold(
+                                onSuccess = {
+                                    if (it.fileCount == 0) {
+                                        "No audio frames were available to export."
+                                    } else {
+                                        "Exported WAV to ${it.files.first().path}"
+                                    }
+                                },
+                                onFailure = { "Export failed: ${it.message ?: it::class.simpleName}" },
+                            )
+                            exporting = false
+                        }
+                    },
+                ) {
+                    Text(if (exporting) "Exporting…" else "Export WAV")
+                }
+            }
+            exportMessage?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->

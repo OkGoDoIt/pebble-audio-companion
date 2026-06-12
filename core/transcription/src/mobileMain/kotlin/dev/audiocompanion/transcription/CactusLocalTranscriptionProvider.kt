@@ -30,8 +30,8 @@ interface CactusModelPathProvider {
     fun isModelDownloaded(): Boolean
 
     /**
-     * Path of the installed model. Must only be called when [isModelDownloaded] is true (or
-     * from [downloadModel]); resolves without network when the model is present.
+     * Path of the installed model. Must only be called when [isModelDownloaded] is true; this
+     * resolves without network and must never download implicitly.
      */
     suspend fun getModelPath(): String
 
@@ -40,9 +40,7 @@ interface CactusModelPathProvider {
      * the archive downloads. totalBytes is 0 while unknown. Implementations must be
      * cancellable and must leave no partial install behind on failure.
      */
-    suspend fun downloadModel(onProgress: (receivedBytes: Long, totalBytes: Long) -> Unit) {
-        getModelPath()
-    }
+    suspend fun downloadModel(onProgress: (receivedBytes: Long, totalBytes: Long) -> Unit)
 }
 
 expect suspend fun withHighPriorityTranscriptionThread(block: suspend () -> String): String
@@ -104,7 +102,8 @@ class CactusLocalTranscriptionProvider(
     }
 
     private suspend fun initModel(): Long {
-        if (modelHandle != 0L && initializedModel == modelProvider.modelName) {
+        val selectedModel = "${modelProvider.modelName}:${modelProvider.modelVersion}"
+        if (modelHandle != 0L && initializedModel == selectedModel) {
             mutableStatus.value = ProviderStatus.Ready
             return modelHandle
         }
@@ -127,7 +126,7 @@ class CactusLocalTranscriptionProvider(
             mutableStatus.value = ProviderStatus.Error
             throw TranscriptionException.TranscriptionFailed("failed to initialize local model", e)
         }
-        initializedModel = modelProvider.modelName
+        initializedModel = selectedModel
         mutableStatus.value = ProviderStatus.Ready
         return modelHandle
     }

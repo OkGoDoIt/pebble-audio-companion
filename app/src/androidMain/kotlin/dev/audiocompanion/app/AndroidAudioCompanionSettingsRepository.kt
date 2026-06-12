@@ -26,6 +26,11 @@ class AndroidAudioCompanionSettingsRepository(
         update { it.copy(transcriptionMode = mode) }
     }
 
+    override fun setLocalTranscriptionModel(modelId: String) {
+        val selected = LocalTranscriptionModels.byId(modelId)
+        update { it.copy(localTranscriptionModelId = selected.id) }
+    }
+
     override fun setCloudTranscriptionConsent(consented: Boolean) {
         update { it.copy(cloudTranscriptionConsent = consented) }
     }
@@ -40,6 +45,10 @@ class AndroidAudioCompanionSettingsRepository(
 
     override fun setRemoteAiConsent(consented: Boolean) {
         update { it.copy(remoteAiConsent = consented) }
+    }
+
+    override fun setAutomaticWavExportEnabled(enabled: Boolean) {
+        update { it.copy(automaticWavExportEnabled = enabled) }
     }
 
     override fun setDiagnosticsIncludeContent(includeContent: Boolean) {
@@ -63,10 +72,14 @@ class AndroidAudioCompanionSettingsRepository(
             prefs.getString(KEY_TRANSCRIPTION_MODE, null),
             TranscriptionMode.LocalFirst,
         ),
+        localTranscriptionModelId = LocalTranscriptionModels
+            .byId(prefs.getString(KEY_LOCAL_TRANSCRIPTION_MODEL, null).orEmpty())
+            .id,
         cloudTranscriptionConsent = prefs.getBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, false),
         openAiApiKey = prefs.getString(KEY_OPENAI_API_KEY, null).orEmpty(),
         aiMode = enumValueOrDefault(prefs.getString(KEY_AI_MODE, null), AiProcessingMode.LocalOnly),
         remoteAiConsent = prefs.getBoolean(KEY_REMOTE_AI_CONSENT, false),
+        automaticWavExportEnabled = prefs.getBoolean(KEY_AUTOMATIC_WAV_EXPORT, false),
         diagnosticsIncludeContent = prefs.getBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, false),
         onboardingComplete = prefs.getBoolean(KEY_ONBOARDING_COMPLETE, false),
     )
@@ -76,10 +89,12 @@ class AndroidAudioCompanionSettingsRepository(
             .putBoolean(KEY_BACKGROUND_ENABLED, settings.backgroundReceiverEnabled)
             .putInt(KEY_RETENTION_DAYS, settings.retentionDays)
             .putString(KEY_TRANSCRIPTION_MODE, settings.transcriptionMode.name)
+            .putString(KEY_LOCAL_TRANSCRIPTION_MODEL, settings.localTranscriptionModelId)
             .putBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, settings.cloudTranscriptionConsent)
             .putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
             .putString(KEY_AI_MODE, settings.aiMode.name)
             .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
+            .putBoolean(KEY_AUTOMATIC_WAV_EXPORT, settings.automaticWavExportEnabled)
             .putBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, settings.diagnosticsIncludeContent)
             .putBoolean(KEY_ONBOARDING_COMPLETE, settings.onboardingComplete)
             .apply()
@@ -93,10 +108,12 @@ class AndroidAudioCompanionSettingsRepository(
         private const val KEY_BACKGROUND_ENABLED = "background_enabled"
         private const val KEY_RETENTION_DAYS = "retention_days"
         private const val KEY_TRANSCRIPTION_MODE = "transcription_mode"
+        private const val KEY_LOCAL_TRANSCRIPTION_MODEL = "local_transcription_model"
         private const val KEY_CLOUD_TRANSCRIPTION_CONSENT = "cloud_transcription_consent"
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
+        private const val KEY_AUTOMATIC_WAV_EXPORT = "automatic_wav_export"
         private const val KEY_DIAGNOSTICS_INCLUDE_CONTENT = "diagnostics_include_content"
         private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
     }

@@ -71,7 +71,16 @@ fun App(
     settings: StateFlow<AudioCompanionSettings> =
         MutableStateFlow(AudioCompanionSettings()),
     localModelState: StateFlow<LocalTranscriptionModelState> =
-        MutableStateFlow(LocalTranscriptionModelState(modelName = "local", modelVersion = "unknown")),
+        MutableStateFlow(
+            LocalTranscriptionModelState(
+                modelName = "local",
+                modelVersion = "unknown",
+                selectedModelId = LocalTranscriptionModels.DEFAULT_MODEL_ID,
+                options = LocalTranscriptionModels.all.map {
+                    LocalTranscriptionModelOptionState(it, downloaded = false)
+                },
+            ),
+        ),
     waveformBars: StateFlow<List<WaveformBar>> = MutableStateFlow(emptyList()),
     waveformWindowMs: Long = 60_000,
     playbackState: StateFlow<PlaybackUiState> = MutableStateFlow(PlaybackUiState()),
@@ -193,6 +202,7 @@ fun App(
                         selectedSegmentId = librarySegmentId,
                         onSelectSegment = { librarySegmentId = it },
                         onDeleteSegment = actions.deleteSegment,
+                        onExportSegment = actions.exportSegmentAudio,
                         onPlaySegment = actions.playSegment,
                         onPausePlayback = actions.pausePlayback,
                         onStopPlayback = actions.stopPlayback,
@@ -220,6 +230,7 @@ fun App(
                         watchServiceState = currentWatchState,
                         localModel = currentLocalModel,
                         statusHeadline = status.headline,
+                        exportDirectory = actions.audioExportDirectory(),
                         actions = actions,
                     )
                 }

@@ -40,7 +40,10 @@ class AndroidAudioCompanionRuntimeFactory(
     fun create(
         link: AndroidAudioGattLink,
         settingsRepository: AudioCompanionSettingsRepository,
-        modelProvider: CactusModelPathProvider = AndroidCactusModelPathProvider(appContext),
+        modelProvider: CactusModelPathProvider = AndroidCactusModelPathProvider(
+            appContext,
+            selectedModelId = { settingsRepository.settings.value.localTranscriptionModelId },
+        ),
     ): AudioCompanionRuntime {
         val root = Path(appContext.filesDir.absolutePath, "audio-companion")
         val nowMs = { System.currentTimeMillis() }
@@ -123,6 +126,24 @@ class AndroidAudioCompanionRuntimeFactory(
                 frameSource = { segmentId -> store.readFrames(segmentId).map { it.payload } },
             ),
             waveformBuilder = SegmentWaveformBuilder(decoder = SpeexLiveFrameDecoder()),
+            exportManager = AudioExportManager(
+                fileSystem = SystemFileSystem,
+                exportRoot = AndroidExportRootProvider.exportRoot(appContext),
+                listSegments = store::listSegments,
+                readMeta = store::readMeta,
+                readFrames = store::readFrames,
+                decodePcm = { meta, frames ->
+                    val decoder = SpeexFrameDecoder(
+                        sampleRateHz = meta.sampleRateHz.toInt(),
+                        bitRateBps = meta.bitRateBps.toInt(),
+                        frameSamples = meta.frameSamples,
+                    )
+                    decoder.decode(flow { frames.forEach { emit(it.payload) } })
+                },
+            ),
+            automaticWavExportEnabled = {
+                settingsRepository.settings.value.automaticWavExportEnabled
+            },
         )
     }
 
@@ -160,6 +181,14 @@ class AndroidAudioCompanionRuntimeFactory(
         private val context: Context,
     ) : FreeSpaceProvider {
         override fun freeBytes(): Long = context.filesDir.usableSpace
+    }
+
+    private object AndroidExportRootProvider {
+        fun exportRoot(context: Context): Path {
+            val external = context.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
+            val root = external ?: context.filesDir.resolve("exports")
+            return Path(root.absolutePath, "PebbleAudioExports")
+        }
     }
 
     companion object {

@@ -78,6 +78,10 @@ class AudioCompanionRuntime(
     val playback: SegmentPlaybackController? = null,
     /** Stored-segment waveform builder; null when no decoder exists (tests). */
     private val waveformBuilder: SegmentWaveformBuilder? = null,
+    /** User-visible WAV exporter; null in tests or bare receiver builds without a decoder. */
+    private val exportManager: AudioExportManager? = null,
+    /** Off by default; when true, closed segments are mirrored into WAV files. */
+    private val automaticWavExportEnabled: () -> Boolean = { false },
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -163,6 +167,9 @@ class AudioCompanionRuntime(
         )
     }
 
+    val audioExportDirectory: String?
+        get() = exportManager?.directory
+
     suspend fun deleteAllLocalData() {
         stop()
         link.disconnect()
@@ -192,6 +199,16 @@ class AudioCompanionRuntime(
             .filter { it.segmentIds == listOf(segmentId) }
             .forEach { aiOutputStore.delete(it.outputId) }
         refreshDiagnostics()
+    }
+
+    suspend fun exportSegmentAudio(segmentId: String): AudioExportResult {
+        val manager = exportManager ?: return AudioExportResult("", emptyList())
+        return manager.exportSegment(segmentId, overwrite = true)
+    }
+
+    suspend fun exportAllAudio(): AudioExportResult {
+        val manager = exportManager ?: return AudioExportResult("", emptyList())
+        return manager.exportAllClosedSegments(overwrite = true)
     }
 
     /** Durable segment snapshot for UI lists (file-backed; cheap at MVP scale). */
@@ -295,6 +312,7 @@ class AudioCompanionRuntime(
             if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
                 refreshDiagnostics()
             }
+            exportClosedSegmentsIfEnabled()
             // Sleep until the poll interval elapses, a failed task's backoff expires, or a
             // config change (model downloaded, key/mode/consent changed) wakes the loop.
             val sleepMs = if (processed) {
@@ -310,6 +328,16 @@ class AudioCompanionRuntime(
     /** Wakes the transcription loop early; call after transcription settings change. */
     fun notifyTranscriptionConfigChanged() {
         transcriptionWakeups.trySend(Unit)
+    }
+
+    fun notifyExportConfigChanged() {
+        transcriptionWakeups.trySend(Unit)
+    }
+
+    private suspend fun exportClosedSegmentsIfEnabled() {
+        val manager = exportManager ?: return
+        if (!automaticWavExportEnabled()) return
+        manager.exportAllClosedSegments(overwrite = false)
     }
 
     private fun enqueueClosedSegmentsForTranscription() {

@@ -32,9 +32,13 @@ import platform.darwin.NSObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class IosCactusModelPathProvider : CactusModelPathProvider {
-    override val modelName: String = STT_MODEL_NAME
-    override val modelVersion: String = STT_MODEL_VERSION
+class IosCactusModelPathProvider(
+    private val selectedModelId: () -> String = { LocalTranscriptionModels.DEFAULT_MODEL_ID },
+) : CactusModelPathProvider {
+    override val modelName: String
+        get() = selectedModel().modelNameForProvenance
+    override val modelVersion: String
+        get() = selectedModel().modelVersionForProvenance
 
     private val cachesDir: String
         get() = NSSearchPathForDirectoriesInDomains(
@@ -45,47 +49,52 @@ class IosCactusModelPathProvider : CactusModelPathProvider {
 
     private val modelsDir: String get() = "$cachesDir/models"
 
-    override fun isModelDownloaded(): Boolean {
-        val modelPath = "$modelsDir/$modelName"
+    override fun isModelDownloaded(): Boolean = isModelDownloaded(selectedModel().id)
+
+    fun isModelDownloaded(modelId: String): Boolean {
+        val model = LocalTranscriptionModels.byId(modelId)
+        val modelPath = "$modelsDir/${model.installDirectoryName}"
         val configPath = Path(modelPath, "config.txt")
         val versionPath = Path(modelPath, VERSION_FILE)
         return SystemFileSystem.exists(configPath) &&
-            readVersion(versionPath) == modelVersion
+            readVersion(versionPath) == model.revision
     }
 
     override suspend fun getModelPath(): String = withContext(Dispatchers.Default) {
-        val modelPath = "$modelsDir/$modelName"
-        val configPath = Path(modelPath, "config.txt")
-        val versionPath = Path(modelPath, VERSION_FILE)
-        val needsDownload = !SystemFileSystem.exists(configPath) ||
-            readVersion(versionPath) != modelVersion
-
-        if (needsDownload) {
-            downloadAndExtract(modelPath) { _, _ -> }
-            SystemFileSystem.sink(versionPath).buffered().use { sink ->
-                sink.write(modelVersion.encodeToByteArray())
-            }
+        val model = selectedModel()
+        val modelPath = "$modelsDir/${model.installDirectoryName}"
+        if (!isModelDownloaded(model.id)) {
+            throw IllegalStateException("${model.displayName} is not downloaded")
         }
         modelPath
     }
 
     override suspend fun downloadModel(onProgress: (Long, Long) -> Unit) {
+        downloadModel(selectedModel().id, onProgress)
+    }
+
+    suspend fun downloadModel(modelId: String, onProgress: (Long, Long) -> Unit) {
         withContext(Dispatchers.Default) {
-            if (isModelDownloaded()) return@withContext
-            val modelPath = "$modelsDir/$modelName"
+            val model = LocalTranscriptionModels.byId(modelId)
+            if (isModelDownloaded(model.id)) return@withContext
+            val modelPath = "$modelsDir/${model.installDirectoryName}"
             val versionPath = Path(modelPath, VERSION_FILE)
-            downloadAndExtract(modelPath, onProgress)
+            downloadAndExtract(model, modelPath, onProgress)
             SystemFileSystem.sink(versionPath).buffered().use { sink ->
-                sink.write(modelVersion.encodeToByteArray())
+                sink.write(model.revision.encodeToByteArray())
             }
         }
     }
 
-    private suspend fun downloadAndExtract(targetDir: String, onProgress: (Long, Long) -> Unit) {
-        val tempZipPath = "${NSTemporaryDirectory()}cactus_download_$modelName.zip"
+    private suspend fun downloadAndExtract(
+        model: LocalTranscriptionModelSpec,
+        targetDir: String,
+        onProgress: (Long, Long) -> Unit,
+    ) {
+        val tempZipPath = "${NSTemporaryDirectory()}cactus_download_${model.id}.zip"
         val fileManager = NSFileManager.defaultManager
         try {
-            downloadToFile(modelUrl(), tempZipPath, onProgress)
+            downloadToFile(model, tempZipPath, onProgress)
             if (fileManager.fileExistsAtPath(targetDir)) {
                 fileManager.removeItemAtPath(targetDir, null)
             }
@@ -114,16 +123,19 @@ class IosCactusModelPathProvider : CactusModelPathProvider {
      * reported no progress). Cancellation cancels the task.
      */
     private suspend fun downloadToFile(
-        url: String,
+        model: LocalTranscriptionModelSpec,
         outputPath: String,
         onProgress: (Long, Long) -> Unit,
     ) {
+        val url = modelUrl(model)
         val nsUrl = NSURL.URLWithString(url)
             ?: throw IllegalArgumentException("Invalid URL: $url")
         suspendCancellableCoroutine { continuation ->
             val delegate = DownloadDelegate(
                 outputPath = outputPath,
-                onProgress = onProgress,
+                onProgress = { written, total ->
+                    onProgress(written, if (total > 1024) total else model.downloadBytes)
+                },
                 onDone = { error ->
                     if (error == null) {
                         continuation.resume(Unit)
@@ -245,13 +257,14 @@ class IosCactusModelPathProvider : CactusModelPathProvider {
             null
         }
 
-    private fun modelUrl(): String =
-        "$HF_BASE/$modelName/resolve/$modelVersion/weights/${modelName.lowercase()}-int8.zip"
+    private fun selectedModel(): LocalTranscriptionModelSpec =
+        LocalTranscriptionModels.byId(selectedModelId())
+
+    private fun modelUrl(model: LocalTranscriptionModelSpec): String =
+        "$HF_BASE/${model.repository}/resolve/${model.revision}/${model.archivePath}"
 
     companion object {
-        private const val HF_BASE = "https://huggingface.co/Cactus-Compute"
-        private const val STT_MODEL_NAME = "parakeet-tdt-0.6b-v3"
-        private const val STT_MODEL_VERSION = "v1.10"
+        private const val HF_BASE = "https://huggingface.co"
         private const val VERSION_FILE = ".cactus_version"
     }
 }
