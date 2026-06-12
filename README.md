@@ -66,3 +66,7 @@ the same receiver runtime, starts the Core Bluetooth central at app launch, decl
 `bluetooth-central`, and registers a BGProcessing hook for deferred non-BLE work. The hardware
 lifecycle matrix in `docs/ios-lifecycle-validation.md` must still pass on physical devices before
 making iOS reliability claims.
+
+The app exposes local model status and explicit refresh/download actions for the Cactus STT model.
+Android and iOS share the same platform model provider between the UI model manager and the actual
+local transcription provider, so a model downloaded from settings is the model used by transcription.

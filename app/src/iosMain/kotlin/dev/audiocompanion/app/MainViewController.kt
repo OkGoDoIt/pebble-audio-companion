@@ -71,6 +71,7 @@ fun MainViewController(): UIViewController {
             sessionState = runtime.state,
             diagnostics = runtime.diagnostics,
             settings = settings.settings,
+            localModelState = bootstrap.handle.localModelManager.state,
             onPairWatch = {
                 bootstrap.handle.connectWatch()
                 runtime.refreshDiagnostics()
@@ -78,6 +79,8 @@ fun MainViewController(): UIViewController {
             onStartReceiver = bootstrap::startReceiver,
             onStopReceiver = bootstrap::stopReceiver,
             onRefreshDiagnostics = runtime::refreshDiagnostics,
+            onRefreshLocalModel = bootstrap.handle.localModelManager::refresh,
+            onDownloadLocalModel = bootstrap.handle.localModelManager::download,
             onBackgroundReceiverChanged = { enabled ->
                 if (enabled) {
                     bootstrap.startReceiver()

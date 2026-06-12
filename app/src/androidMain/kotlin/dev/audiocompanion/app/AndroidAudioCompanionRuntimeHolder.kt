@@ -12,13 +12,21 @@ object AndroidAudioCompanionRuntimeHolder {
             handle ?: run {
                 val link = AndroidAudioGattLink(context.applicationContext)
                 val settingsRepository = AndroidAudioCompanionSettingsRepository(context)
+                val modelProvider = AndroidCactusModelPathProvider(context.applicationContext)
                 AndroidAudioCompanionRuntimeHandle(
                     link = link,
                     runtime = AndroidAudioCompanionRuntimeFactory(context).create(
                         link,
                         settingsRepository,
+                        modelProvider,
                     ),
                     settingsRepository = settingsRepository,
+                    localModelManager = LocalTranscriptionModelManager(
+                        modelName = modelProvider.modelName,
+                        modelVersion = modelProvider.modelVersion,
+                        isDownloaded = modelProvider::isModelDownloaded,
+                        ensureDownloaded = { modelProvider.getModelPath() },
+                    ).also { it.refresh() },
                 ).also { handle = it }
             }
         }
@@ -28,4 +36,5 @@ class AndroidAudioCompanionRuntimeHandle(
     val link: AndroidAudioGattLink,
     val runtime: AudioCompanionRuntime,
     val settingsRepository: AndroidAudioCompanionSettingsRepository,
+    val localModelManager: LocalTranscriptionModelManager,
 )

@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
                 sessionState = runtime.state,
                 diagnostics = runtime.diagnostics,
                 settings = settingsRepository.settings,
+                localModelState = handle.localModelManager.state,
                 onPairWatch = { requestPermissionsAndAssociate() },
                 onStartReceiver = {
                     startReceiverService(AudioCompanionReceiverService.startIntent(this))
@@ -67,6 +68,8 @@ class MainActivity : ComponentActivity() {
                     startService(AudioCompanionReceiverService.stopIntent(this))
                 },
                 onRefreshDiagnostics = { runtime.refreshDiagnostics() },
+                onRefreshLocalModel = handle.localModelManager::refresh,
+                onDownloadLocalModel = handle.localModelManager::download,
                 onBackgroundReceiverChanged = { enabled ->
                     settingsRepository.setBackgroundReceiverEnabled(enabled)
                     if (enabled) {

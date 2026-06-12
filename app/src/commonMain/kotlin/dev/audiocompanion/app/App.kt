@@ -32,10 +32,14 @@ fun App(
         MutableStateFlow(AudioCompanionDiagnostics()),
     settings: StateFlow<AudioCompanionSettings> =
         MutableStateFlow(AudioCompanionSettings()),
+    localModelState: StateFlow<LocalTranscriptionModelState> =
+        MutableStateFlow(LocalTranscriptionModelState(modelName = "local", modelVersion = "unknown")),
     onPairWatch: () -> Unit = {},
     onStartReceiver: () -> Unit = {},
     onStopReceiver: () -> Unit = {},
     onRefreshDiagnostics: () -> Unit = {},
+    onRefreshLocalModel: () -> Unit = {},
+    onDownloadLocalModel: () -> Unit = {},
     onBackgroundReceiverChanged: (Boolean) -> Unit = {},
     onCloudTranscriptionConsentChanged: (Boolean) -> Unit = {},
     onOpenAiApiKeyChanged: (String) -> Unit = {},
@@ -53,6 +57,7 @@ fun App(
             val state = sessionState.collectAsState().value
             val currentDiagnostics = diagnostics.collectAsState().value
             val currentSettings = settings.collectAsState().value
+            val currentLocalModel = localModelState.collectAsState().value
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -149,6 +154,23 @@ fun App(
                         Text("+7d")
                     }
                 }
+                Text(text = "Local Transcription Model", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "${currentLocalModel.modelName} ${currentLocalModel.modelVersion}: " +
+                        currentLocalModel.describe(),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onRefreshLocalModel) {
+                        Text("Refresh Model")
+                    }
+                    Button(
+                        enabled = !currentLocalModel.downloaded && !currentLocalModel.downloading,
+                        onClick = onDownloadLocalModel,
+                    ) {
+                        Text(if (currentLocalModel.downloading) "Downloading..." else "Download Model")
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onExportDiagnostics) {
                         Text("Export Diagnostics")
@@ -189,4 +211,11 @@ private fun ReceiverSessionState.describe(): String = when (this) {
     ReceiverSessionState.Authorized -> "authorized, idle"
     is ReceiverSessionState.Streaming -> "streaming (stream $streamId)"
     is ReceiverSessionState.Revoked -> "revoked on watch"
+}
+
+private fun LocalTranscriptionModelState.describe(): String = when {
+    downloading -> "downloading"
+    errorMessage != null -> "error: $errorMessage"
+    downloaded -> "downloaded"
+    else -> "not downloaded"
 }

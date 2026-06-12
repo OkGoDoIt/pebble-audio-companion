@@ -10,6 +10,7 @@ import dev.audiocompanion.storage.FreeSpaceProvider
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.CactusLocalTranscriptionProvider
+import dev.audiocompanion.transcription.CactusModelPathProvider
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
@@ -38,6 +39,7 @@ class IosAudioCompanionRuntimeFactory(
     fun create(
         link: IosAudioGattLink,
         settingsRepository: AudioCompanionSettingsRepository,
+        modelProvider: CactusModelPathProvider = IosCactusModelPathProvider(),
     ): AudioCompanionRuntime {
         val root = Path(filesRoot, "audio-companion")
         val nowMs = { (kotlin.time.Clock.System.now().toEpochMilliseconds()) }
@@ -48,9 +50,7 @@ class IosAudioCompanionRuntimeFactory(
             nowMs = nowMs,
         )
         val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
-        val localProvider = CactusLocalTranscriptionProvider(
-            modelProvider = IosCactusModelPathProvider(),
-        )
+        val localProvider = CactusLocalTranscriptionProvider(modelProvider = modelProvider)
         val remoteProvider = OpenAiTranscriptionProvider(
             client = HttpClient(Darwin),
             apiKey = { settingsRepository.settings.value.openAiApiKey },
