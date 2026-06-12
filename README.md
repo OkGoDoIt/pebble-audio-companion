@@ -34,7 +34,7 @@ export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 ./gradlew :core:protocol:jvmTest :core:transport:jvmTest :core:storage:jvmTest \
           :core:transcription:jvmTest :core:ai:jvmTest
 ./gradlew :app:assembleDebug
-./gradlew :adapter:ble-ios:compileKotlinIosSimulatorArm64
+./gradlew :app:compileKotlinIosSimulatorArm64 :adapter:ble-ios:compileKotlinIosSimulatorArm64
 ```
 
 ## Protocol fixtures
@@ -54,6 +54,7 @@ on Android/iOS, and processes the durable transcription queue through the four-m
 local transcription is wired to the vendored Cactus STT runtime and resolves the
 `parakeet-tdt-0.6b-v3` model into the companion app's private files directory. Remote
 transcription is wired to OpenAI's audio transcription endpoint and is disabled unless the user has
-enabled cloud transcription consent and entered an API key in the app. The Cactus native wrapper is
-also compiled for iOS in `:core:transcription`; the iOS app entry point remains a separate lifecycle
-integration task.
+enabled cloud transcription consent and entered an API key in the app. The app module also compiles
+an iOS runtime holder that combines the Core Bluetooth link, durable receiver runtime, local Cactus
+provider, and OpenAI provider; a native Xcode shell and hardware lifecycle matrix are still required
+before making iOS reliability claims.

@@ -16,7 +16,8 @@ kotlin {
         }
     }
 
-    // iOS entry point is deliberately deferred; the :core:* modules already build for iOS.
+    iosArm64()
+    iosSimulatorArm64()
 
     sourceSets {
         commonMain.dependencies {
@@ -36,6 +37,11 @@ kotlin {
             implementation(project(":adapter:ble-android"))
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
+        }
+        iosMain.dependencies {
+            implementation(project(":adapter:ble-ios"))
+            implementation(libs.ktor.client.darwin)
+            implementation(libs.okio)
         }
     }
 }
