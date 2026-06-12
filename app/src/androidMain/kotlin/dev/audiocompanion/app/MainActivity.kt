@@ -148,6 +148,7 @@ class MainActivity : ComponentActivity() {
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
                     refreshLocalModel = handle.localModelManager::refresh,
                     downloadLocalModel = handle.localModelManager::download,
+                    cancelModelDownload = handle.localModelManager::cancelDownload,
                 ),
             )
         }

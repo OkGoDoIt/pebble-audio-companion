@@ -143,6 +143,7 @@ fun MainViewController(): UIViewController {
                 setRemoteAiConsent = settings::setRemoteAiConsent,
                 refreshLocalModel = bootstrap.handle.localModelManager::refresh,
                 downloadLocalModel = bootstrap.handle.localModelManager::download,
+                cancelModelDownload = bootstrap.handle.localModelManager::cancelDownload,
             ),
         )
     }

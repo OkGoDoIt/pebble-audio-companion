@@ -28,7 +28,21 @@ interface CactusModelPathProvider {
     val modelName: String
     val modelVersion: String
     fun isModelDownloaded(): Boolean
+
+    /**
+     * Path of the installed model. Must only be called when [isModelDownloaded] is true (or
+     * from [downloadModel]); resolves without network when the model is present.
+     */
     suspend fun getModelPath(): String
+
+    /**
+     * Downloads and installs the model if missing, reporting (receivedBytes, totalBytes) as
+     * the archive downloads. totalBytes is 0 while unknown. Implementations must be
+     * cancellable and must leave no partial install behind on failure.
+     */
+    suspend fun downloadModel(onProgress: (receivedBytes: Long, totalBytes: Long) -> Unit) {
+        getModelPath()
+    }
 }
 
 expect suspend fun withHighPriorityTranscriptionThread(block: suspend () -> String): String

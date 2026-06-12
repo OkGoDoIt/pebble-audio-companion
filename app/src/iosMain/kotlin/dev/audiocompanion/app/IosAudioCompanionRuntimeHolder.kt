@@ -18,7 +18,8 @@ class IosAudioCompanionRuntimeHandle(
         modelName = modelProvider.modelName,
         modelVersion = modelProvider.modelVersion,
         isDownloaded = modelProvider::isModelDownloaded,
-        ensureDownloaded = { modelProvider.getModelPath() },
+        download = { onProgress -> modelProvider.downloadModel(onProgress) },
+        onModelStateChanged = { runtime.notifyTranscriptionConfigChanged() },
     ).also { it.refresh() }
 
     fun connectWatch() {

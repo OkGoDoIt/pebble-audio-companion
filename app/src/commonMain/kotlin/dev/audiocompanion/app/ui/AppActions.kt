@@ -57,4 +57,5 @@ class AppActions(
     // Local transcription model
     val refreshLocalModel: () -> Unit = {},
     val downloadLocalModel: () -> Unit = {},
+    val cancelModelDownload: () -> Unit = {},
 )

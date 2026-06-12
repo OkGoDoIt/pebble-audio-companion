@@ -36,16 +36,27 @@ class AndroidCactusModelPathProvider(
             versionFile.readTextOrNull() != modelVersion
 
         if (needsDownload) {
-            downloadAndExtract(modelDir)
+            downloadAndExtract(modelDir) { _, _ -> }
             versionFile.writeText(modelVersion)
         }
         modelDir.absolutePath
     }
 
-    private suspend fun downloadAndExtract(targetDir: File) {
+    override suspend fun downloadModel(onProgress: (Long, Long) -> Unit) {
+        withContext(Dispatchers.IO) {
+            val modelDir = modelsDir.resolve(modelName)
+            val versionFile = modelDir.resolve(VERSION_FILE)
+            if (!isModelDownloaded()) {
+                downloadAndExtract(modelDir, onProgress)
+                versionFile.writeText(modelVersion)
+            }
+        }
+    }
+
+    private suspend fun downloadAndExtract(targetDir: File, onProgress: (Long, Long) -> Unit) {
         val tempZip = File(appContext.cacheDir, "cactus_download_$modelName.zip")
         try {
-            downloadToFile(tempZip)
+            downloadToFile(tempZip, onProgress)
             if (targetDir.exists()) {
                 targetDir.deleteRecursively()
             }
@@ -60,7 +71,7 @@ class AndroidCactusModelPathProvider(
         }
     }
 
-    private suspend fun downloadToFile(outputFile: File) {
+    private suspend fun downloadToFile(outputFile: File, onProgress: (Long, Long) -> Unit) {
         val connection = URL(modelUrl()).openConnection() as HttpURLConnection
         connection.connectTimeout = 30_000
         connection.readTimeout = 60_000
@@ -70,6 +81,8 @@ class AndroidCactusModelPathProvider(
             if (code !in 200..299) {
                 throw IllegalStateException("Cactus model download failed: HTTP $code")
             }
+            val totalBytes = connection.contentLengthLong.coerceAtLeast(0)
+            var received = 0L
             connection.inputStream.use { input ->
                 FileOutputStream(outputFile).use { output ->
                     val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
@@ -78,6 +91,8 @@ class AndroidCactusModelPathProvider(
                         val read = input.read(buffer)
                         if (read == -1) break
                         output.write(buffer, 0, read)
+                        received += read
+                        onProgress(received, totalBytes)
                     }
                 }
             }

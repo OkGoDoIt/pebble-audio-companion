@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -119,24 +120,56 @@ fun SettingsScreen(
             onClick = { showTranscriptionModePicker = true },
         )
         InfoRow(
-            "Local model",
+            "On-device model",
             when {
+                localModel.installing -> "Installing…"
                 localModel.downloading -> "Downloading…"
                 localModel.downloaded -> "Installed (${localModel.modelName})"
                 localModel.errorMessage != null -> "Error"
                 else -> "Not installed"
             },
         )
+        if (localModel.downloading) {
+            if (localModel.totalBytes > 0) {
+                LinearProgressIndicator(
+                    progress = {
+                        (localModel.downloadedBytes.toFloat() / localModel.totalBytes)
+                            .coerceIn(0f, 1f)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "${Formatting.storageSize(localModel.downloadedBytes)} of " +
+                        Formatting.storageSize(localModel.totalBytes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
         localModel.errorMessage?.let {
             Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
+        if (!localModel.downloaded && !localModel.downloading) {
+            Text(
+                text = "Transcribes on this phone with no audio leaving the device. " +
+                    "The model is a large download (about 700 MB) — use Wi-Fi.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = actions.refreshLocalModel) { Text("Check") }
-            Button(
-                enabled = !localModel.downloaded && !localModel.downloading,
-                onClick = actions.downloadLocalModel,
-            ) {
-                Text(if (localModel.downloading) "Downloading…" else "Download Model")
+            if (localModel.downloading) {
+                OutlinedButton(onClick = actions.cancelModelDownload) { Text("Cancel") }
+            } else {
+                OutlinedButton(onClick = actions.refreshLocalModel) { Text("Check") }
+                Button(
+                    enabled = !localModel.downloaded,
+                    onClick = actions.downloadLocalModel,
+                ) {
+                    Text("Download Model")
+                }
             }
         }
         SettingsToggleRow(
