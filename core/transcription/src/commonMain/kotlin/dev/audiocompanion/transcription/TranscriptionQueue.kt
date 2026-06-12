@@ -109,6 +109,11 @@ class FileTranscriptionQueue(
         it.copy(state = TaskState.Disabled)
     }
 
+    fun delete(segmentId: String) {
+        fileSystem.delete(taskPath(segmentId), mustExist = false)
+        fileSystem.delete(Path(queueDir, "$segmentId.task.json.tmp"), mustExist = false)
+    }
+
     fun deleteAll() {
         if (!fileSystem.exists(queueDir)) return
         fileSystem.list(queueDir)

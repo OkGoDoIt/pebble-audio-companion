@@ -14,6 +14,8 @@ class TranscriptionProcessor(
     private val pcmSource: suspend (segmentId: String) -> Flow<ByteArray>,
     private val sampleRateHz: Int = 16_000,
     private val onStateChanged: (segmentId: String, state: TaskState) -> Unit = { _, _ -> },
+    /** Persists transcript text durably before the task is marked Complete. */
+    private val transcriptStore: FileTranscriptStore? = null,
 ) {
     fun enqueueClosedSegments(segmentIds: Iterable<String>) {
         segmentIds.forEach { queue.enqueue(it) }
@@ -31,6 +33,9 @@ class TranscriptionProcessor(
         onStateChanged(task.segmentId, TaskState.Running)
         return try {
             val result = router.transcribe(pcmSource(task.segmentId), sampleRateHz)
+            // Durability order matters: the transcript text is on disk before the task goes
+            // terminal, so a crash in between re-runs transcription instead of losing text.
+            transcriptStore?.save(task.segmentId, result)
             queue.markComplete(task.segmentId, result).also {
                 onStateChanged(task.segmentId, TaskState.Complete)
             }

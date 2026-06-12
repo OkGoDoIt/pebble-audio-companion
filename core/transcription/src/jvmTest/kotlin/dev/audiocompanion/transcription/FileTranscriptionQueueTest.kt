@@ -133,6 +133,19 @@ class FileTranscriptionQueueTest {
     }
 
     @Test
+    fun deleteRemovesSingleTask() {
+        val root = tempRoot()
+        val q = queue(root)
+        q.enqueue("seg-1")
+        q.enqueue("seg-2")
+
+        q.delete("seg-1")
+
+        assertNull(q.load("seg-1"))
+        assertEquals("seg-2", q.load("seg-2")?.segmentId)
+    }
+
+    @Test
     fun atomicWrites_leaveNoTempFiles() {
         val root = tempRoot()
         val q = queue(root)

@@ -63,6 +63,29 @@ class TranscriptionProcessorTest {
     }
 
     @Test
+    fun processNextPersistsTranscriptTextDurably() = runTest {
+        val root = tempRoot()
+        val queue = queue(root)
+        queue.enqueue("seg-1")
+        val transcripts = FileTranscriptStore(SystemFileSystem, root) { clock++ }
+        val local = ProcessorFakeProvider("local")
+        val processor = TranscriptionProcessor(
+            queue = queue,
+            router = TranscriptionModeRouter(local, null) { TranscriptionMode.LocalOnly },
+            pcmSource = { flowOf(byteArrayOf(1, 2, 3, 4)) },
+            transcriptStore = transcripts,
+        )
+
+        processor.processNext()
+
+        val transcript = transcripts.load("seg-1")
+        assertEquals("hello", transcript?.text)
+        assertEquals(TranscriptionMode.LocalOnly, transcript?.modeUsed)
+        assertEquals("local", transcript?.providerId)
+        assertEquals("model", transcript?.modelUsed)
+    }
+
+    @Test
     fun noSpeechIsTerminal() = runTest {
         val root = tempRoot()
         val queue = queue(root)

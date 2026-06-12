@@ -4,7 +4,9 @@ import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.storage.TranscriptionState as SegmentTranscriptionState
+import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
+import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TaskState
 import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.AudioGattLink
@@ -53,6 +55,7 @@ class AudioCompanionRuntime(
     private val resumeStore: ReceiverResumeStore,
     private val transcriptionQueue: FileTranscriptionQueue,
     private val transcriptionProcessor: TranscriptionProcessor,
+    private val transcriptStore: FileTranscriptStore,
     private val aiOutputStore: FileAiOutputStore,
     private val receiverConfig: ReceiverConfig,
     private val nowMs: () -> Long,
@@ -76,7 +79,10 @@ class AudioCompanionRuntime(
     fun recoverDurableState() {
         store.recover()
         transcriptionQueue.recoverOnStart()
-        retention.enforce()
+        retention.enforce().forEach { deletedSegmentId ->
+            transcriptionQueue.delete(deletedSegmentId)
+            transcriptStore.delete(deletedSegmentId)
+        }
         enqueueClosedSegmentsForTranscription()
         refreshDiagnostics()
     }
@@ -116,10 +122,30 @@ class AudioCompanionRuntime(
         store.closeSegment(SegmentCloseReason.Interrupted)
         store.listSegments().forEach { store.deleteSegment(it.segmentId) }
         transcriptionQueue.deleteAll()
+        transcriptStore.deleteAll()
         aiOutputStore.deleteAll()
         resumeStore.clear()
         refreshDiagnostics()
     }
+
+    /**
+     * Deletes one segment and everything linked only to it: encoded audio, metadata, the
+     * transcription task, the transcript, and AI outputs whose source set was just this segment.
+     */
+    fun deleteSegmentData(segmentId: String) {
+        if (segmentId == store.openSegmentId) return
+        store.deleteSegment(segmentId)
+        transcriptionQueue.delete(segmentId)
+        transcriptStore.delete(segmentId)
+        aiOutputStore.list()
+            .filter { it.segmentIds == listOf(segmentId) }
+            .forEach { aiOutputStore.delete(it.outputId) }
+        refreshDiagnostics()
+    }
+
+    fun transcript(segmentId: String): SegmentTranscript? = transcriptStore.load(segmentId)
+
+    fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 
     suspend fun revokeReceiverLocally() {
         stop()
