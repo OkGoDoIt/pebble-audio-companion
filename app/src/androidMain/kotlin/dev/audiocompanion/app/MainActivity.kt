@@ -1,6 +1,7 @@
 package dev.audiocompanion.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
@@ -15,8 +16,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import dev.audiocompanion.adapter.ble.AndroidAudioCompanionAssociator
-import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
-import dev.audiocompanion.adapter.ble.AudioCompanionBleService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +24,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private lateinit var link: AndroidAudioGattLink
+    private lateinit var handle: AndroidAudioCompanionRuntimeHandle
     private lateinit var runtime: AudioCompanionRuntime
     private lateinit var associator: AndroidAudioCompanionAssociator
     private lateinit var settingsRepository: AndroidAudioCompanionSettingsRepository
@@ -50,10 +49,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        link = AndroidAudioGattLink(this)
-        runtime = AndroidAudioCompanionRuntimeFactory(this).create(link)
+        handle = AndroidAudioCompanionRuntimeHolder.get(this)
+        runtime = handle.runtime
         associator = AndroidAudioCompanionAssociator(this)
-        settingsRepository = AndroidAudioCompanionSettingsRepository(this)
+        settingsRepository = handle.settingsRepository
         runtime.recoverDurableState()
         setContent {
             App(
@@ -61,17 +60,19 @@ class MainActivity : ComponentActivity() {
                 diagnostics = runtime.diagnostics,
                 settings = settingsRepository.settings,
                 onPairWatch = { requestPermissionsAndAssociate() },
-                onStartReceiver = { runtime.start(runtimeScope) },
+                onStartReceiver = {
+                    startReceiverService(AudioCompanionReceiverService.startIntent(this))
+                },
                 onStopReceiver = {
-                    link.disconnect()
-                    runtime.stop()
+                    startService(AudioCompanionReceiverService.stopIntent(this))
                 },
                 onRefreshDiagnostics = { runtime.refreshDiagnostics() },
                 onBackgroundReceiverChanged = { enabled ->
                     settingsRepository.setBackgroundReceiverEnabled(enabled)
-                    if (enabled) runtime.start(runtimeScope) else {
-                        link.disconnect()
-                        runtime.stop()
+                    if (enabled) {
+                        startReceiverService(AudioCompanionReceiverService.startIntent(this))
+                    } else {
+                        startService(AudioCompanionReceiverService.stopIntent(this))
                     }
                 },
                 onCloudTranscriptionConsentChanged = settingsRepository::setCloudTranscriptionConsent,
@@ -86,8 +87,9 @@ class MainActivity : ComponentActivity() {
                 onRetentionDaysChanged = settingsRepository::setRetentionDays,
                 onDeleteAll = {
                     runtimeScope.launch {
-                        link.disconnect()
+                        handle.link.disconnect()
                         runtime.deleteAllLocalData()
+                        PairedWatchStore.clear(this@MainActivity)
                     }
                 },
                 onExportDiagnostics = {
@@ -97,7 +99,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onRevokeReceiver = {
                     runtimeScope.launch {
-                        link.disconnect()
+                        handle.link.disconnect()
                         runtime.revokeReceiverLocally()
                     }
                 },
@@ -150,14 +152,18 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    @SuppressLint("MissingPermission")
     private fun startReceiver(device: BluetoothDevice) {
+        PairedWatchStore.save(this, device.address)
+        startReceiverService(AudioCompanionReceiverService.connectIntent(this, device.address))
+    }
+
+    private fun startReceiverService(intent: Intent) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(AudioCompanionBleService.startIntent(this))
+            startForegroundService(intent)
         } else {
-            startService(AudioCompanionBleService.startIntent(this))
+            startService(intent)
         }
-        runtime.start(runtimeScope)
-        link.connect(device)
     }
 
     @Suppress("DEPRECATION")

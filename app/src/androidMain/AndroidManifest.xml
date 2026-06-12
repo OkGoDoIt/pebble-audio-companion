@@ -27,12 +27,12 @@
         </activity>
 
         <service
-            android:name="dev.audiocompanion.adapter.ble.AudioCompanionBleService"
+            android:name=".AudioCompanionReceiverService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
         <service
-            android:name="dev.audiocompanion.adapter.ble.AudioCompanionDeviceService"
+            android:name=".AudioCompanionDeviceService"
             android:exported="true"
             android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
             <intent-filter>

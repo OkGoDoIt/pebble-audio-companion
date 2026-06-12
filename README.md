@@ -22,9 +22,9 @@ this app is a separate, dedicated audio receiver. The firmware side lives on the
 - `core/storage` — segment frame logs, metadata, retention, corruption recovery.
 - `core/transcription` — provider abstraction, 4-mode router, durable queue, Speex decode.
 - `core/ai` — AI processing over durable transcripts (design: `docs/ai-processing-design.md`).
-- `adapter/ble-android` — CDM association, GATT client, foreground service.
+- `adapter/ble-android` — CDM association and GATT client (`AndroidAudioGattLink`).
 - `adapter/ble-ios` — Core Bluetooth central wrapper with state restoration.
-- `app` — Compose Multiplatform UI (Android entry; iOS host shell still to be added).
+- `app` — Compose Multiplatform UI, app-owned foreground receiver service, CDM presence hook.
 
 ## Build
 
