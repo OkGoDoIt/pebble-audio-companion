@@ -3,7 +3,9 @@
 package dev.audiocompanion.app
 
 import dev.audiocompanion.adapter.ble.IosAudioGattLink
+import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
 import dev.audiocompanion.storage.FreeSpaceProvider
@@ -63,6 +65,15 @@ class IosAudioCompanionRuntimeFactory(
             remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
         )
+        val aiRouter = AiModeRouter(
+            local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
+            remote = OpenAiChatAiProvider(
+                client = HttpClient(Darwin),
+                apiKey = { settingsRepository.settings.value.openAiApiKey },
+                remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
+            ),
+            mode = { settingsRepository.settings.value.aiMode },
+        )
         return AudioCompanionRuntime(
             link = link,
             store = store,
@@ -105,6 +116,7 @@ class IosAudioCompanionRuntimeFactory(
                 receiverName = "Audio Companion iOS",
             ),
             nowMs = nowMs,
+            aiRouter = aiRouter,
         )
     }
 

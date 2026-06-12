@@ -1,6 +1,12 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.ai.AiException
+import dev.audiocompanion.ai.AiModeRouter
+import dev.audiocompanion.ai.AiOutput
+import dev.audiocompanion.ai.AiPromptTemplate
+import dev.audiocompanion.ai.AiRunRequest
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.TranscriptExcerpt
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.storage.TranscriptionState as SegmentTranscriptionState
@@ -59,6 +65,8 @@ class AudioCompanionRuntime(
     private val aiOutputStore: FileAiOutputStore,
     private val receiverConfig: ReceiverConfig,
     private val nowMs: () -> Long,
+    /** Null when the app ships without any AI provider wiring (AI screen shows setup state). */
+    private val aiRouter: AiModeRouter? = null,
 ) {
     private val session = AudioReceiverSession(
         link = link,
@@ -146,6 +154,53 @@ class AudioCompanionRuntime(
     fun transcript(segmentId: String): SegmentTranscript? = transcriptStore.load(segmentId)
 
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
+
+    // --- AI (manual MVP flow: durable transcripts in, durable outputs out) ----------------------
+
+    suspend fun isAiAvailable(): Boolean = aiRouter?.isAvailable() == true
+
+    /**
+     * Runs one manual AI template over the durable transcripts of [segmentIds] and persists the
+     * output with provenance. Throws [AiException] subtypes for unavailability/consent issues so
+     * the UI can show actionable copy.
+     */
+    suspend fun runAi(
+        prompt: AiPromptTemplate,
+        segmentIds: List<String>,
+        userConsentedToRemote: Boolean,
+    ): AiOutput {
+        val router = aiRouter ?: throw AiException.ProviderUnavailable("none-configured")
+        val transcripts = segmentIds.mapNotNull { segmentId ->
+            transcriptStore.load(segmentId)?.let { transcript ->
+                TranscriptExcerpt(
+                    segmentId = segmentId,
+                    text = transcript.text,
+                    startTimeMs = store.readMeta(segmentId)?.startTimeMs?.toLong(),
+                )
+            }
+        }
+        if (transcripts.isEmpty()) {
+            throw AiException.ProviderFailed("No transcripts available for the selected segments")
+        }
+        val request = AiRunRequest(
+            requestId = "ai-${nowMs()}-${aiRunCounter++}",
+            prompt = prompt,
+            transcripts = transcripts,
+        )
+        val result = router.run(request)
+        val output = aiOutputStore.save(request, result, userConsentedToRemote)
+        refreshDiagnostics()
+        return output
+    }
+
+    fun listAiOutputs(): List<AiOutput> = aiOutputStore.list()
+
+    fun deleteAiOutput(outputId: String) {
+        aiOutputStore.delete(outputId)
+        refreshDiagnostics()
+    }
+
+    private var aiRunCounter = 0
 
     suspend fun revokeReceiverLocally() {
         stop()

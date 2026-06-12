@@ -3,7 +3,9 @@ package dev.audiocompanion.app
 import android.content.Context
 import android.os.Build
 import android.util.Base64
+import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
@@ -60,6 +62,15 @@ class AndroidAudioCompanionRuntimeFactory(
             remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
         )
+        val aiRouter = AiModeRouter(
+            local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
+            remote = OpenAiChatAiProvider(
+                client = HttpClient(OkHttp),
+                apiKey = { settingsRepository.settings.value.openAiApiKey },
+                remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
+            ),
+            mode = { settingsRepository.settings.value.aiMode },
+        )
         return AudioCompanionRuntime(
             link = link,
             store = store,
@@ -102,6 +113,7 @@ class AndroidAudioCompanionRuntimeFactory(
                 receiverName = receiverName(),
             ),
             nowMs = nowMs,
+            aiRouter = aiRouter,
         )
     }
 

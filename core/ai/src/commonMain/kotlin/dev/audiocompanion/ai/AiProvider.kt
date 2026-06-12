@@ -56,6 +56,7 @@ data class RoutedAiResult(
 sealed class AiException(message: String, cause: Throwable? = null) : Exception(message, cause) {
     class ProviderUnavailable(providerId: String) : AiException("AI provider unavailable: $providerId")
     class ConsentRequired(providerId: String) : AiException("AI provider requires consent: $providerId")
+    class ProviderFailed(message: String, cause: Throwable? = null) : AiException(message, cause)
 }
 
 interface AiProvider {
