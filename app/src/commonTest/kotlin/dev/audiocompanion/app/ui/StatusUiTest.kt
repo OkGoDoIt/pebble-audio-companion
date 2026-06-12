@@ -50,6 +50,53 @@ private fun transcript(segmentId: String, text: String) = SegmentTranscript(
 class StatusUiTest {
 
     @Test
+    fun watchReportedStateOverridesSessionView() {
+        val settings = AudioCompanionSettings(backgroundReceiverEnabled = true)
+        val diagnostics = AudioCompanionDiagnostics()
+
+        // The watch paused for dictation mid-stream: the phone must not claim Recording.
+        val conflict = statusUiModel(
+            ReceiverSessionState.Streaming(7u), settings, diagnostics, watchServiceStateRaw = 4,
+        )
+        assertTrue(conflict.headline.contains("microphone"), conflict.headline)
+
+        // Watch-side toggle off while connected.
+        val disabled = statusUiModel(
+            ReceiverSessionState.Authorized, settings, diagnostics, watchServiceStateRaw = 0,
+        )
+        assertTrue(disabled.headline.contains("off on the watch"), disabled.headline)
+
+        // Phone-requested pause offers Start to resume.
+        val paused = statusUiModel(
+            ReceiverSessionState.Authorized, settings, diagnostics, watchServiceStateRaw = 5,
+        )
+        assertEquals(PrimaryAction.Start, paused.primaryAction)
+
+        // Storage-policy pause keeps the storage copy.
+        val storagePaused = statusUiModel(
+            ReceiverSessionState.Streaming(7u),
+            settings,
+            AudioCompanionDiagnostics(pauseRequested = true),
+            watchServiceStateRaw = 5,
+        )
+        assertTrue(storagePaused.headline.contains("storage"), storagePaused.headline)
+
+        // Unknown/streaming watch state defers to the session view.
+        val streaming = statusUiModel(
+            ReceiverSessionState.Streaming(7u), settings, diagnostics, watchServiceStateRaw = 3,
+        )
+        assertEquals("Recording from Pebble", streaming.headline)
+    }
+
+    @Test
+    fun watchServiceStateLabelsCoverAllStates() {
+        for (raw in 0..7) {
+            assertTrue(watchServiceStateLabel(raw).isNotBlank())
+        }
+        assertEquals("Not connected", watchServiceStateLabel(null))
+    }
+
+    @Test
     fun disconnectedAndDisabledIsOffWithStartAction() {
         val status = statusUiModel(
             ReceiverSessionState.Disconnected,
@@ -140,7 +187,7 @@ class TimelineTest {
     private val nowMs = 1_750_000_000_000L // fixed reference time
 
     @Test
-    fun timelineShowsOnlyTodayNewestFirstWithInlineGaps() {
+    fun timelineShowsOnlyTodayNewestFirstWithQuietGapSummaries() {
         val today1 = meta("seg-1", nowMs - 3_600_000)
         val today2 = meta(
             "seg-2",
@@ -164,10 +211,13 @@ class TimelineTest {
         )
 
         val keys = timeline.map { it.key }
-        assertEquals(listOf("seg-seg-2", "gap-seg-2-0", "seg-seg-1"), keys)
-        val gap = timeline[1] as TimelineItem.Gap
-        assertTrue(gap.description.contains("dictation"), gap.description)
-        assertEquals(2_000, gap.approxDurationMs) // 100 frames * 20 ms
+        assertEquals(listOf("seg-seg-2", "seg-seg-1"), keys)
+        // Gaps render inside the row as one calm summary line, not as separate warning rows.
+        val withGap = timeline[0] as TimelineItem.Segment
+        val summary = withGap.gapSummary
+        assertTrue(summary != null && summary.contains("dictation"), "summary: $summary")
+        assertTrue(summary!!.contains("2 sec"), "summary should carry ~duration: $summary")
+        assertEquals(null, (timeline[1] as TimelineItem.Segment).gapSummary)
     }
 
     @Test

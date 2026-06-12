@@ -125,6 +125,7 @@ class IosAudioCompanionRuntimeFactory(
                 decoder = SpeexLiveFrameDecoder(),
                 frameSource = { segmentId -> store.readFrames(segmentId).map { it.payload } },
             ),
+            waveformBuilder = SegmentWaveformBuilder(decoder = SpeexLiveFrameDecoder()),
         )
     }
 

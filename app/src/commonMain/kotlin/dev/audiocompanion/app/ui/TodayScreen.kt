@@ -7,10 +7,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,10 +26,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionDiagnostics
+import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 
-/** One row in the Today timeline: a captured segment or a gap inside it. */
+/** One row in the Today timeline: a captured segment (gaps render inside the row, quietly). */
 sealed interface TimelineItem {
     val key: String
 
@@ -31,21 +39,14 @@ sealed interface TimelineItem {
         val title: String,
         val summary: String?,
         val stateLabel: String,
+        /** Calm one-line summary of missing audio, or null. */
+        val gapSummary: String?,
     ) : TimelineItem {
         override val key: String get() = "seg-${meta.segmentId}"
     }
-
-    data class Gap(
-        val segmentId: String,
-        val index: Int,
-        val description: String,
-        val approxDurationMs: Long,
-    ) : TimelineItem {
-        override val key: String get() = "gap-$segmentId-$index"
-    }
 }
 
-/** Derives the Today timeline: today's segments newest-first, gaps shown inline. */
+/** Derives the Today timeline: today's segments newest-first. */
 fun buildTimeline(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
@@ -56,25 +57,16 @@ fun buildTimeline(
     val relevant = segments
         .filter { !todayOnly || Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
         .sortedByDescending { it.receivedAtMs }
-    val items = mutableListOf<TimelineItem>()
-    for (meta in relevant) {
+    return relevant.map { meta ->
         val annotation = annotationOf(meta.segmentId)
-        items += TimelineItem.Segment(
+        TimelineItem.Segment(
             meta = meta,
             title = segmentTitle(meta, transcriptOf(meta.segmentId), annotation),
             summary = annotation?.summary,
             stateLabel = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
+            gapSummary = gapSummary(meta),
         )
-        meta.gaps.forEachIndexed { index, gap ->
-            items += TimelineItem.Gap(
-                segmentId = meta.segmentId,
-                index = index,
-                description = gapDescription(gap),
-                approxDurationMs = gapDurationMs(gap, meta.frameDurationMs),
-            )
-        }
     }
-    return items
 }
 
 /**
@@ -102,9 +94,13 @@ fun TodayScreen(
     nowMs: Long,
     waveformBars: List<dev.audiocompanion.app.WaveformBar>,
     waveformWindowMs: Long,
+    playback: PlaybackUiState,
     isSegmentTranscribed: (String) -> Boolean,
     onPrimaryAction: (PrimaryAction) -> Unit,
     onOpenSegment: (String) -> Unit,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
+    onStopPlayback: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text(
@@ -133,6 +129,18 @@ fun TodayScreen(
                 modifier = Modifier.padding(vertical = 4.dp),
             )
         }
+        if (playback.segmentId != null) {
+            NowPlayingBar(
+                playback = playback,
+                title = timeline
+                    .filterIsInstance<TimelineItem.Segment>()
+                    .firstOrNull { it.meta.segmentId == playback.segmentId }
+                    ?.title ?: "Stored audio",
+                onPlaySegment = onPlaySegment,
+                onPausePlayback = onPausePlayback,
+                onStopPlayback = onStopPlayback,
+            )
+        }
         HorizontalDivider()
         if (timeline.isEmpty()) {
             TodayEmptyState(status)
@@ -147,12 +155,55 @@ fun TodayScreen(
                         is TimelineItem.Segment -> TimelineSegmentRow(
                             item = item,
                             nowMs = nowMs,
+                            playback = playback,
                             onClick = { onOpenSegment(item.meta.segmentId) },
+                            onPlaySegment = onPlaySegment,
+                            onPausePlayback = onPausePlayback,
                         )
-                        is TimelineItem.Gap -> TimelineGapRow(item)
                     }
                 }
             }
+        }
+    }
+}
+
+/** Compact player strip shown while stored audio is playing (replay of any conversation). */
+@Composable
+private fun NowPlayingBar(
+    playback: PlaybackUiState,
+    title: String,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
+    onStopPlayback: () -> Unit,
+) {
+    val segmentId = playback.segmentId ?: return
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        IconButton(onClick = {
+            if (playback.playing) onPausePlayback() else onPlaySegment(segmentId)
+        }) {
+            Icon(
+                imageVector = if (playback.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = if (playback.playing) "Pause" else "Play",
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+            )
+            Text(
+                text = "${Formatting.duration(playback.positionMs)} / ${Formatting.duration(playback.durationMs)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(onClick = onStopPlayback) {
+            Icon(imageVector = Icons.Filled.Stop, contentDescription = "Stop playback")
         }
     }
 }
@@ -184,64 +235,68 @@ private fun TodayEmptyState(status: StatusUiModel) {
 fun TimelineSegmentRow(
     item: TimelineItem.Segment,
     nowMs: Long,
+    playback: PlaybackUiState,
     onClick: () -> Unit,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
 ) {
     val meta = item.meta
     val startMs = meta.receivedAtMs
     val durationMs = segmentDurationMs(meta)
+    val isThisPlaying = playback.segmentId == meta.segmentId && playback.playing
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(text = item.title, style = MaterialTheme.typography.bodyLarge)
-            item.summary?.takeIf { it.isNotBlank() }?.let { summary ->
-                Text(
-                    text = summary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        Row(
+            modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(
-                    text = "${Formatting.timeOfDay(startMs)} · ${Formatting.duration(durationMs)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = item.stateLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (meta.isOpen) StatusColors.recording else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (meta.gaps.isNotEmpty()) {
+                Text(text = item.title, style = MaterialTheme.typography.bodyLarge)
+                item.summary?.takeIf { it.isNotBlank() }?.let { summary ->
                     Text(
-                        text = "${meta.gaps.size} gap${if (meta.gaps.size == 1) "" else "s"}",
+                        text = summary,
                         style = MaterialTheme.typography.bodySmall,
-                        color = StatusColors.warning,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${Formatting.timeOfDay(startMs)} · ${Formatting.duration(durationMs)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = item.stateLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (meta.isOpen) StatusColors.recording else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item.gapSummary?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (meta.frameCount > 0) {
+                IconButton(
+                    onClick = {
+                        if (isThisPlaying) onPausePlayback() else onPlaySegment(meta.segmentId)
+                    },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isThisPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isThisPlaying) "Pause" else "Play this conversation",
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-fun TimelineGapRow(item: TimelineItem.Gap) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = buildString {
-                append(item.description)
-                if (item.approxDurationMs > 0) {
-                    append(" · about ")
-                    append(Formatting.duration(item.approxDurationMs))
-                }
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = StatusColors.warning,
-        )
     }
 }

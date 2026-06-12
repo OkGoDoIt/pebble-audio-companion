@@ -1,20 +1,28 @@
 package dev.audiocompanion.app.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.app.WaveformBar
 import dev.audiocompanion.app.WaveformBarState
 
@@ -84,6 +92,120 @@ fun LiveWaveform(
                 text = "now",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        WaveformLegend(showTranscribed = true)
+    }
+}
+
+/** Explains the waveform colors (user requirement: every waveform carries a legend). */
+@Composable
+fun WaveformLegend(
+    showTranscribed: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LegendEntry(MaterialTheme.colorScheme.primary, "Audio")
+        if (showTranscribed) LegendEntry(StatusColors.info, "Transcribed")
+        LegendEntry(StatusColors.neutral, "Quiet")
+        LegendEntry(StatusColors.warning, "Missing")
+    }
+}
+
+@Composable
+private fun LegendEntry(color: Color, label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Waveform of one stored segment (Library detail): bars over media time colored by audio
+ * status, amber markers where audio is missing, a playback cursor, and tap-to-seek.
+ */
+@Composable
+fun SegmentWaveformView(
+    waveform: SegmentWaveform,
+    positionFraction: Float?,
+    onSeekFraction: ((Float) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val recordedColor = MaterialTheme.colorScheme.primary
+    val cursorColor = MaterialTheme.colorScheme.onSurface
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .let { base ->
+                if (onSeekFraction == null) {
+                    base
+                } else {
+                    base.pointerInput(waveform) {
+                        detectTapGestures { offset ->
+                            onSeekFraction((offset.x / size.width).coerceIn(0f, 1f))
+                        }
+                    }
+                }
+            },
+    ) {
+        val width = size.width
+        val centerY = size.height / 2f
+        if (waveform.bars.isNotEmpty()) {
+            val step = width / waveform.bars.size
+            val stroke = (step * 0.8f).coerceAtLeast(1f)
+            waveform.bars.forEachIndexed { index, bar ->
+                val x = step * (index + 0.5f)
+                val color: Color
+                val halfHeight: Float
+                when (bar.state) {
+                    WaveformBarState.Silence -> {
+                        color = StatusColors.neutral
+                        halfHeight = (centerY * 0.06f).coerceAtLeast(1f)
+                    }
+                    else -> {
+                        color = recordedColor
+                        halfHeight = (centerY * bar.amplitude).coerceAtLeast(2f)
+                    }
+                }
+                drawLine(
+                    color = color,
+                    start = Offset(x, centerY - halfHeight),
+                    end = Offset(x, centerY + halfHeight),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
+            }
+        }
+        // Missing-audio markers: thin full-height ticks at the position the loss occurred.
+        waveform.gapMarkers.forEach { marker ->
+            val x = (marker.fraction * width).coerceIn(0f, width)
+            drawLine(
+                color = StatusColors.warning,
+                start = Offset(x, centerY * 0.1f),
+                end = Offset(x, size.height - centerY * 0.1f),
+                strokeWidth = 2.5f,
+                cap = StrokeCap.Round,
+            )
+        }
+        positionFraction?.let { fraction ->
+            val x = (fraction * width).coerceIn(0f, width)
+            drawLine(
+                color = cursorColor,
+                start = Offset(x, 0f),
+                end = Offset(x, size.height),
+                strokeWidth = 2f,
             )
         }
     }

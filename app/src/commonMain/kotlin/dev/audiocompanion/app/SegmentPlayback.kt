@@ -125,18 +125,30 @@ class SegmentPlaybackController(
             player.setSpeed(_state.value.speed)
             var completed = false
             try {
+                var currentFrames = frames
                 var index = startFrame
-                while (index < frames.size) {
+                while (index < currentFrames.size) {
                     val requested = seekFrameRequest
                     if (requested >= 0) {
                         seekFrameRequest = -1
-                        index = requested.coerceIn(0, frames.size - 1)
+                        index = requested.coerceIn(0, currentFrames.size - 1)
                     }
-                    val end = min(index + BATCH_FRAMES, frames.size)
-                    val pcm = decoder.decode(frames.subList(index, end))
+                    val end = min(index + BATCH_FRAMES, currentFrames.size)
+                    val pcm = decoder.decode(currentFrames.subList(index, end))
                     player.write(pcm)
                     index = end
                     _state.value = _state.value.copy(positionMs = index * frameDurationMs)
+                    if (index >= currentFrames.size) {
+                        // An open (still recording) segment may have stored more audio while
+                        // we played: pick it up so replay can follow the live tail.
+                        val refreshed = frameSource(segmentId)
+                        if (refreshed.size > currentFrames.size) {
+                            currentFrames = refreshed
+                            _state.value = _state.value.copy(
+                                durationMs = currentFrames.size * frameDurationMs,
+                            )
+                        }
+                    }
                 }
                 completed = true
             } finally {

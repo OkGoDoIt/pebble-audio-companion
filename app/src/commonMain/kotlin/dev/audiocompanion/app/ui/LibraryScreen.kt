@@ -21,6 +21,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.PlaybackUiState
+import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -56,6 +58,7 @@ fun LibraryScreen(
     onStopPlayback: () -> Unit,
     onSeekPlayback: (String, Long) -> Unit,
     onCyclePlaybackSpeed: () -> Unit,
+    loadWaveform: suspend (String) -> SegmentWaveform? = { null },
 ) {
     val selected = selectedSegmentId?.let { id -> segments.firstOrNull { it.segmentId == id } }
     if (selected != null) {
@@ -75,6 +78,7 @@ fun LibraryScreen(
             onStopPlayback = onStopPlayback,
             onSeekPlayback = onSeekPlayback,
             onCyclePlaybackSpeed = onCyclePlaybackSpeed,
+            loadWaveform = loadWaveform,
         )
         return
     }
@@ -195,13 +199,13 @@ private fun LibrarySegmentRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (meta.gaps.isNotEmpty()) {
-                    Text(
-                        text = "${meta.gaps.size} gap${if (meta.gaps.size == 1) "" else "s"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StatusColors.warning,
-                    )
-                }
+            }
+            gapSummary(meta)?.let { summary ->
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -221,8 +225,14 @@ fun SegmentDetailScreen(
     onStopPlayback: () -> Unit,
     onSeekPlayback: (String, Long) -> Unit,
     onCyclePlaybackSpeed: () -> Unit,
+    loadWaveform: suspend (String) -> SegmentWaveform? = { null },
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
+    // Decoded off the UI path; re-built when more audio is stored (open segment grows).
+    var waveform by remember(meta.segmentId) { mutableStateOf<SegmentWaveform?>(null) }
+    LaunchedEffect(meta.segmentId, meta.frameCount) {
+        waveform = loadWaveform(meta.segmentId)
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -259,26 +269,34 @@ fun SegmentDetailScreen(
             color = if (meta.isOpen) StatusColors.recording else MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        if (meta.gaps.isNotEmpty()) {
-            SectionTitle("Gaps")
-            meta.gaps.forEach { gap ->
-                Text(
-                    text = buildString {
-                        append(gapDescription(gap))
-                        val approx = gapDurationMs(gap, meta.frameDurationMs)
-                        if (approx > 0) {
-                            append(" · about ")
-                            append(Formatting.duration(approx))
-                        }
+        if (meta.frameCount > 0) {
+            SectionTitle("Audio")
+            waveform?.let { wave ->
+                val selected = playback.segmentId == meta.segmentId
+                SegmentWaveformView(
+                    waveform = wave,
+                    positionFraction = if (selected && wave.mediaDurationMs > 0) {
+                        (playback.positionMs.toFloat() / wave.mediaDurationMs).coerceIn(0f, 1f)
+                    } else {
+                        null
                     },
+                    onSeekFraction = { fraction ->
+                        onSeekPlayback(meta.segmentId, (fraction * wave.mediaDurationMs).toLong())
+                    },
+                )
+                WaveformLegend(showTranscribed = false)
+            } ?: Text(
+                text = "Preparing waveform…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            gapSummary(meta)?.let { summary ->
+                Text(
+                    text = summary,
                     style = MaterialTheme.typography.bodySmall,
-                    color = StatusColors.warning,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-
-        if (!meta.isOpen) {
-            SectionTitle("Playback")
             PlaybackControls(
                 meta = meta,
                 playback = playback,
@@ -376,11 +394,11 @@ private fun PlaybackControls(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (meta.gaps.isNotEmpty()) {
+        if (meta.isOpen) {
             Text(
-                text = "${meta.gaps.size} gap marker${if (meta.gaps.size == 1) "" else "s"} shown in the transcript timeline.",
+                text = "Still recording — playback follows what has been stored so far.",
                 style = MaterialTheme.typography.bodySmall,
-                color = StatusColors.warning,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

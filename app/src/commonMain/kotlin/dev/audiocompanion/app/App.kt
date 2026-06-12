@@ -169,6 +169,7 @@ fun App(
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
                         waveformWindowMs = waveformWindowMs,
+                        playback = currentPlayback,
                         isSegmentTranscribed = { segmentId ->
                             segments.firstOrNull { it.segmentId == segmentId }
                                 ?.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Complete
@@ -178,6 +179,9 @@ fun App(
                             librarySegmentId = segmentId
                             tab = AppTab.Library
                         },
+                        onPlaySegment = actions.playSegment,
+                        onPausePlayback = actions.pausePlayback,
+                        onStopPlayback = actions.stopPlayback,
                     )
 
                     AppTab.Library -> LibraryScreen(
@@ -194,6 +198,7 @@ fun App(
                         onStopPlayback = actions.stopPlayback,
                         onSeekPlayback = actions.seekPlayback,
                         onCyclePlaybackSpeed = actions.cyclePlaybackSpeed,
+                        loadWaveform = actions.loadSegmentWaveform,
                     )
 
                     AppTab.Ai -> AiScreen(

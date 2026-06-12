@@ -76,6 +76,8 @@ class AudioCompanionRuntime(
     val liveMonitor: LiveAudioMonitor? = null,
     /** Segment playback; null on platforms/tests without an audio output path. */
     val playback: SegmentPlaybackController? = null,
+    /** Stored-segment waveform builder; null when no decoder exists (tests). */
+    private val waveformBuilder: SegmentWaveformBuilder? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -200,6 +202,16 @@ class AudioCompanionRuntime(
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 
     fun annotation(segmentId: String): SegmentAnnotation? = annotationStore.load(segmentId)
+
+    /**
+     * Color-codable waveform of a stored segment, decoded from the durable frame log off the
+     * UI path. Null when no decoder is wired. Cached for the most recent segment.
+     */
+    suspend fun segmentWaveform(segmentId: String): SegmentWaveform? {
+        val builder = waveformBuilder ?: return null
+        val meta = store.readMeta(segmentId) ?: return null
+        return builder.build(meta, store.readFrames(segmentId))
+    }
 
     // --- AI (manual MVP flow: durable transcripts in, durable outputs out) ----------------------
 

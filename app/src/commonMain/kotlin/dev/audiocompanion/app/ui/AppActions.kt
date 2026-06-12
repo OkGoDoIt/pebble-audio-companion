@@ -34,6 +34,8 @@ class AppActions(
     val cyclePlaybackSpeed: () -> Unit = {},
     // Durable content reads (file-backed; cheap at MVP scale)
     val loadSegments: () -> List<SegmentMeta> = { emptyList() },
+    /** Decoded waveform of one stored segment (computed off the UI path, cached). */
+    val loadSegmentWaveform: suspend (segmentId: String) -> dev.audiocompanion.app.SegmentWaveform? = { null },
     val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },
     val loadAnnotation: (segmentId: String) -> SegmentAnnotation? = { null },
     val loadAiOutputs: () -> List<AiOutput> = { emptyList() },

@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity() {
                     },
                     cyclePlaybackSpeed = { runtime.playback?.cycleSpeed() },
                     loadSegments = { runtime.listSegmentsForUi() },
+                    loadSegmentWaveform = { runtime.segmentWaveform(it) },
                     loadTranscript = runtime::transcript,
                     loadAnnotation = runtime::annotation,
                     loadAiOutputs = runtime::listAiOutputs,

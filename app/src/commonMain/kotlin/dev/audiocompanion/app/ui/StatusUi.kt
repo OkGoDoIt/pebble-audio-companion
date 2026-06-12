@@ -207,24 +207,50 @@ fun watchServiceStateLabel(raw: Int?): String = when (ServiceState.fromRaw(raw ?
     null -> "Not connected"
 }
 
-/** Plain-language reason for one gap (ux plan: visible but not alarmist). */
+/**
+ * Plain-language reason for one gap. Calm by design (ux plan: "visible but not alarmist");
+ * gaps are expected in normal use, so no "Gap:"/error framing.
+ */
 fun gapDescription(gap: GapMeta): String {
     val reason = gap.reasonRaw?.let { GapReason.fromRaw(it) }
     return when {
-        gap.origin == GapMeta.ORIGIN_SEQUENCE_SKIP -> "Gap: phone missed some audio"
-        reason == GapReason.SpoolOverflow -> "Some audio was skipped: the watch buffer filled while the phone was unavailable"
-        reason == GapReason.MicConflict -> "Gap: watch dictation used the microphone"
-        reason == GapReason.UserDisabled -> "Gap: background audio was turned off"
-        reason == GapReason.LowBattery -> "Gap: paused to protect watch battery"
-        reason == GapReason.CodecError -> "Gap: watch audio error"
-        reason == GapReason.TransportReset -> "Gap: connection was interrupted"
-        else -> "Gap: audio missing"
+        gap.origin == GapMeta.ORIGIN_SEQUENCE_SKIP -> "phone briefly missed audio"
+        reason == GapReason.SpoolOverflow -> "watch buffer filled while disconnected"
+        reason == GapReason.MicConflict -> "watch dictation used the mic"
+        reason == GapReason.UserDisabled -> "recording was paused"
+        reason == GapReason.LowBattery -> "paused for watch battery"
+        reason == GapReason.CodecError -> "watch audio hiccup"
+        reason == GapReason.TransportReset -> "connection was interrupted"
+        else -> "audio missing"
     }
 }
 
 /** Approximate gap length from missing frame count (20 ms frames). */
 fun gapDurationMs(gap: GapMeta, frameDurationMs: Int): Long =
     gap.missingFrameCount.toLong() * frameDurationMs
+
+/** Total approximate missing time of a segment. */
+fun totalGapMs(meta: SegmentMeta): Long =
+    meta.gaps.sumOf { gapDurationMs(it, meta.frameDurationMs) }
+
+/**
+ * One calm summary line for a segment's gaps, or null when there are none:
+ * "Missing ~1m 20s (watch dictation used the mic)".
+ */
+fun gapSummary(meta: SegmentMeta): String? {
+    if (meta.gaps.isEmpty()) return null
+    val totalMs = totalGapMs(meta)
+    val reasons = meta.gaps.map { gapDescription(it) }.distinct()
+    val reasonText = when {
+        reasons.size == 1 -> reasons.single()
+        else -> "several reasons"
+    }
+    return if (totalMs > 0) {
+        "Missing ~${Formatting.duration(totalMs)} ($reasonText)"
+    } else {
+        "Some audio is missing ($reasonText)"
+    }
+}
 
 /** Plain-language transcription state for list rows (ux plan Section 18). */
 fun transcriptionStateLabel(state: TranscriptionState): String = when (state) {
