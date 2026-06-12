@@ -56,6 +56,8 @@ class AppActions(
     val exportAllAudio: suspend () -> Result<dev.audiocompanion.app.AudioExportResult> = {
         Result.failure(IllegalStateException("audio export is not wired"))
     },
+    /** Opens the platform share sheet for an exported file (UIActivityViewController / ACTION_SEND). */
+    val shareFile: (path: String) -> Unit = {},
     // AI
     val runAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput> = { _, _ ->
         Result.failure(AiException.ProviderUnavailable("not wired"))

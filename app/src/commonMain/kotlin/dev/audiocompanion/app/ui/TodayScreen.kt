@@ -25,7 +25,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.SegmentAnnotation
+import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioCompanionDiagnostics
+import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -108,6 +110,8 @@ fun transcriptSnippet(text: String?, tail: Boolean = false): String? {
 fun TodayScreen(
     status: StatusUiModel,
     diagnostics: AudioCompanionDiagnostics,
+    settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
     timeline: List<TimelineItem>,
     nowMs: Long,
     waveformBars: List<dev.audiocompanion.app.WaveformBar>,
@@ -141,6 +145,14 @@ fun TodayScreen(
             },
             onPrimaryAction = onPrimaryAction,
         )
+        transcriptionSetupMessage(settings, localModel)?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = StatusColors.warning,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
         if (waveformBars.isNotEmpty()) {
             LiveWaveform(
                 bars = waveformBars,

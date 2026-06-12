@@ -30,7 +30,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
+import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.ai.SegmentAnnotation
@@ -52,12 +54,15 @@ fun LibraryScreen(
     liveTranscriptOf: (String) -> String? = { null },
     liveTranscribedFrameCountOf: (String) -> Long? = { null },
     annotationOf: (String) -> SegmentAnnotation?,
+    settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
     nowMs: Long,
     playback: PlaybackUiState,
     selectedSegmentId: String?,
     onSelectSegment: (String?) -> Unit,
     onDeleteSegment: (String) -> Unit,
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
+    onShareFile: (String) -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -73,6 +78,8 @@ fun LibraryScreen(
             liveTranscript = liveTranscriptOf(selected.segmentId),
             liveTranscribedFrameCount = liveTranscribedFrameCountOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
+            settings = settings,
+            localModel = localModel,
             nowMs = nowMs,
             playback = playback,
             onBack = { onSelectSegment(null) },
@@ -81,6 +88,7 @@ fun LibraryScreen(
                 onSelectSegment(null)
             },
             onExportSegment = onExportSegment,
+            onShareFile = onShareFile,
             onPlaySegment = onPlaySegment,
             onPausePlayback = onPausePlayback,
             onStopPlayback = onStopPlayback,
@@ -229,11 +237,14 @@ fun SegmentDetailScreen(
     /** Live-transcribed frame count of the open segment, for waveform coloring. */
     liveTranscribedFrameCount: Long? = null,
     annotation: SegmentAnnotation?,
+    settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
     nowMs: Long,
     playback: PlaybackUiState,
     onBack: () -> Unit,
     onDelete: () -> Unit,
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
+    onShareFile: (String) -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -343,7 +354,10 @@ fun SegmentDetailScreen(
                                     if (it.fileCount == 0) {
                                         "No audio frames were available to export."
                                     } else {
-                                        "Exported WAV to ${it.files.first().path}"
+                                        // Hand straight to the platform share sheet: on iOS the
+                                        // raw file path is not reachable for users.
+                                        onShareFile(it.files.first().path)
+                                        "Exported — use the share sheet to save or send the WAV."
                                     }
                                 },
                                 onFailure = { "Export failed: ${it.message ?: it::class.simpleName}" },
@@ -352,7 +366,7 @@ fun SegmentDetailScreen(
                         }
                     },
                 ) {
-                    Text(if (exporting) "Exporting…" else "Export WAV")
+                    Text(if (exporting) "Exporting…" else "Share WAV")
                 }
             }
             exportMessage?.let {
@@ -370,12 +384,19 @@ fun SegmentDetailScreen(
         }
 
         SectionTitle("Transcript")
+        transcriptionSetupMessage(settings, localModel)?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = StatusColors.warning,
+            )
+        }
         when {
             transcript != null -> {
-                Text(text = transcript.text, style = MaterialTheme.typography.bodyMedium)
+                TranscriptText(text = transcript.text)
             }
             !liveTranscript.isNullOrBlank() -> {
-                Text(text = liveTranscript, style = MaterialTheme.typography.bodyMedium)
+                TranscriptText(text = liveTranscript)
                 Text(
                     text = if (meta.isOpen) {
                         "Live transcript — updates while the recording continues. The final " +
@@ -434,6 +455,59 @@ fun SegmentDetailScreen(
             )
         }
     }
+}
+
+@Composable
+private fun TranscriptText(text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        transcriptParagraphs(text).forEach { paragraph ->
+            Text(text = paragraph, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+fun transcriptParagraphs(text: String, maxChars: Int = 520): List<String> {
+    val normalized = text.trim().replace('\r', '\n')
+    if (normalized.isBlank()) return emptyList()
+    val paragraphs = mutableListOf<String>()
+    val current = StringBuilder()
+    normalized.split(Regex("\\n{2,}")).forEachIndexed { blockIndex, block ->
+        if (blockIndex > 0 && current.isNotEmpty()) {
+            paragraphs += current.toString()
+            current.clear()
+        }
+        for (sentence in sentencesIn(block).map { it.trim() }.filter { it.isNotBlank() }) {
+            if (current.isNotEmpty() && current.length + 1 + sentence.length > maxChars) {
+                paragraphs += current.toString()
+                current.clear()
+            }
+            if (current.isNotEmpty()) current.append(' ')
+            current.append(sentence)
+        }
+    }
+    if (current.isNotEmpty()) paragraphs += current.toString()
+    return paragraphs
+}
+
+private fun sentencesIn(block: String): List<String> {
+    val sentences = mutableListOf<String>()
+    val current = StringBuilder()
+    for (index in block.indices) {
+        val char = block[index]
+        current.append(if (char == '\n' || char == '\t') ' ' else char)
+        val next = block.getOrNull(index + 1)
+        val nextAfterSpace = block.drop(index + 1).firstOrNull { !it.isWhitespace() }
+        if ((char == '.' || char == '!' || char == '?') &&
+            next?.isWhitespace() == true &&
+            (nextAfterSpace == null || nextAfterSpace.isUpperCase() || nextAfterSpace.isDigit())
+        ) {
+            sentences += current.toString().replace(Regex(" +"), " ").trim()
+            current.clear()
+        }
+    }
+    val tail = current.toString().replace(Regex(" +"), " ").trim()
+    if (tail.isNotBlank()) sentences += tail
+    return sentences
 }
 
 @Composable

@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.AudioCompanionSettings
+import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.protocol.AuthStatus
 import dev.audiocompanion.transport.ReceiverSessionState
 
@@ -48,6 +49,7 @@ enum class OnboardingStep(val title: String) {
 fun OnboardingScreen(
     sessionState: ReceiverSessionState,
     settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
     actions: AppActions,
 ) {
     var step by rememberSaveable { mutableStateOf(OnboardingStep.Welcome) }
@@ -96,6 +98,7 @@ fun OnboardingScreen(
 
             OnboardingStep.PrivacyDefaults -> PrivacyDefaultsStep(
                 settings = settings,
+                localModel = localModel,
                 actions = actions,
                 onBack = { step = OnboardingStep.WatchConsent },
                 onNext = { step = OnboardingStep.Ready },
@@ -301,6 +304,7 @@ private fun WatchConsentStep(
 @Composable
 private fun PrivacyDefaultsStep(
     settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
     actions: AppActions,
     onBack: () -> Unit,
     onNext: () -> Unit,
@@ -325,6 +329,64 @@ private fun PrivacyDefaultsStep(
     )
     InfoRow("Keep audio", "${settings.retentionDays} days")
     InfoRow("Transcription", transcriptionModeLabel(settings.transcriptionMode))
+    InfoRow(
+        "Local model",
+        when {
+            localModel.installing -> "Installing..."
+            localModel.downloading -> "Downloading..."
+            localModel.downloaded -> "Installed"
+            else -> "Not installed"
+        },
+    )
+    localModel.selectedOption?.model?.let { model ->
+        Text(
+            text = "${model.displayName} (${Formatting.storageSize(model.downloadBytes)})",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    transcriptionSetupMessage(settings, localModel)?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = StatusColors.warning,
+        )
+    }
+    if (localModel.downloading) {
+        if (localModel.totalBytes > 0) {
+            LinearProgressIndicator(
+                progress = {
+                    (localModel.downloadedBytes.toFloat() / localModel.totalBytes)
+                        .coerceIn(0f, 1f)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = "${Formatting.storageSize(localModel.downloadedBytes)} of " +
+                    Formatting.storageSize(localModel.totalBytes),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+    }
+    localModel.errorMessage?.let {
+        Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (localModel.downloading) {
+            OutlinedButton(onClick = actions.cancelModelDownload) { Text("Cancel download") }
+        } else {
+            OutlinedButton(onClick = actions.refreshLocalModel) { Text("Check model") }
+            Button(
+                enabled = !localModel.downloaded,
+                onClick = actions.downloadLocalModel,
+            ) {
+                Text(if (localModel.downloaded) "Installed" else "Download model")
+            }
+        }
+    }
     Text(
         text = "You are responsible for following recording and consent laws where you use " +
             "this feature.",

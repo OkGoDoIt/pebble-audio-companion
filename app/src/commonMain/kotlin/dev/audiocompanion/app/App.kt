@@ -109,6 +109,7 @@ fun App(
                 OnboardingScreen(
                     sessionState = state,
                     settings = currentSettings,
+                    localModel = currentLocalModel,
                     actions = actions,
                 )
             }
@@ -175,6 +176,8 @@ fun App(
                     AppTab.Today -> TodayScreen(
                         status = status,
                         diagnostics = currentDiagnostics,
+                        settings = currentSettings,
+                        localModel = currentLocalModel,
                         timeline = buildTimeline(
                             segments = segments,
                             transcriptOf = { transcripts[it] },
@@ -211,12 +214,15 @@ fun App(
                             livePreviews[segmentId]?.transcribedFrameCount?.toLong()
                         },
                         annotationOf = { annotations[it] },
+                        settings = currentSettings,
+                        localModel = currentLocalModel,
                         nowMs = nowMs,
                         playback = currentPlayback,
                         selectedSegmentId = librarySegmentId,
                         onSelectSegment = { librarySegmentId = it },
                         onDeleteSegment = actions.deleteSegment,
                         onExportSegment = actions.exportSegmentAudio,
+                        onShareFile = actions.shareFile,
                         onPlaySegment = actions.playSegment,
                         onPausePlayback = actions.pausePlayback,
                         onStopPlayback = actions.stopPlayback,

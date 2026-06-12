@@ -21,6 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.app.AudioCompanionSettings
+import dev.audiocompanion.app.LocalTranscriptionModelState
+import dev.audiocompanion.transcription.TranscriptionMode
 
 /** Semantic colors (ux plan Section 14): platform-leaning, restrained. */
 object StatusColors {
@@ -147,6 +150,31 @@ fun InfoRow(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(text = value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+fun transcriptionSetupMessage(
+    settings: AudioCompanionSettings,
+    localModel: LocalTranscriptionModelState,
+): String? {
+    val localReady = localModel.downloaded
+    val cloudReady = settings.cloudTranscriptionConsent && settings.openAiApiKey.isNotBlank()
+    return when (settings.transcriptionMode) {
+        TranscriptionMode.LocalOnly ->
+            if (localReady) null
+            else "Local transcription model is not installed, so transcription will not run until you download it."
+        TranscriptionMode.LocalFirst -> when {
+            localReady -> null
+            cloudReady -> "Local transcription model is not installed. Transcription can use cloud while cloud consent and the API key stay enabled."
+            else -> "Local transcription model is not installed and cloud transcription is not configured, so transcription will not run."
+        }
+        TranscriptionMode.RemoteOnly ->
+            if (cloudReady) null
+            else "Cloud transcription is not configured. Add an API key and enable cloud transcription, or switch to a local mode after downloading a model."
+        TranscriptionMode.RemoteFirst -> when {
+            cloudReady || localReady -> null
+            else -> "No transcription provider is ready. Download a local model or configure cloud transcription before transcripts can be created."
+        }
     }
 }
 

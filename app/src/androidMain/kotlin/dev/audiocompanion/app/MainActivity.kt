@@ -15,8 +15,10 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.content.FileProvider
 import dev.audiocompanion.adapter.ble.AndroidAudioCompanionAssociator
 import dev.audiocompanion.app.ui.AppActions
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -131,6 +133,7 @@ class MainActivity : ComponentActivity() {
                     exportAllAudio = {
                         runCatching { runtime.exportAllAudio() }
                     },
+                    shareFile = ::shareFile,
                     runAi = { template, segmentIds ->
                         runCatching {
                             runtime.runAi(
@@ -256,4 +259,19 @@ class MainActivity : ComponentActivity() {
 
     private fun bluetoothAdapter(): BluetoothAdapter? =
         getSystemService(BluetoothManager::class.java)?.adapter
+
+    private fun shareFile(path: String) {
+        val file = File(path)
+        if (!file.exists()) return
+        val uri = FileProvider.getUriForFile(
+            this,
+            "${applicationContext.packageName}.files",
+            file,
+        )
+        val sendIntent = Intent(Intent.ACTION_SEND)
+            .setType("audio/wav")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(sendIntent, "Share WAV"))
+    }
 }

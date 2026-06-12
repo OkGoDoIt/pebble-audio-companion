@@ -6,6 +6,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import platform.Foundation.NSURL
+import platform.UIKit.UIActivityViewController
+import platform.UIKit.UIApplication
 import platform.UIKit.UIViewController
 
 object IosAudioCompanionBootstrap {
@@ -129,6 +132,7 @@ fun MainViewController(): UIViewController {
                 exportAllAudio = {
                     runCatching { runtime.exportAllAudio() }
                 },
+                shareFile = ::shareFile,
                 runAi = { template, segmentIds ->
                     runCatching {
                         runtime.runAi(
@@ -168,4 +172,21 @@ fun MainViewController(): UIViewController {
             ),
         )
     }
+}
+
+private fun shareFile(path: String) {
+    val url = NSURL.fileURLWithPath(path)
+    val controller = UIActivityViewController(
+        activityItems = listOf(url),
+        applicationActivities = null,
+    )
+    topViewController()?.presentViewController(controller, animated = true, completion = null)
+}
+
+private fun topViewController(): UIViewController? {
+    var controller = UIApplication.sharedApplication.keyWindow?.rootViewController
+    while (controller?.presentedViewController != null) {
+        controller = controller.presentedViewController
+    }
+    return controller
 }
