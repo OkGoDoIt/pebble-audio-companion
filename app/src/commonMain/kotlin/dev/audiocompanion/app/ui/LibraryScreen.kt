@@ -17,7 +17,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,6 +49,7 @@ enum class LibraryFilter(val label: String) {
 fun LibraryScreen(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
+    liveTranscriptOf: (String) -> String? = { null },
     annotationOf: (String) -> SegmentAnnotation?,
     nowMs: Long,
     playback: PlaybackUiState,
@@ -69,6 +69,7 @@ fun LibraryScreen(
         SegmentDetailScreen(
             meta = selected,
             transcript = transcriptOf(selected.segmentId),
+            liveTranscript = liveTranscriptOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
             nowMs = nowMs,
             playback = playback,
@@ -160,6 +161,7 @@ fun LibraryScreen(
                     LibrarySegmentRow(
                         meta = meta,
                         transcript = transcriptOf(meta.segmentId),
+                        liveText = liveTranscriptOf(meta.segmentId),
                         annotation = annotationOf(meta.segmentId),
                         nowMs = nowMs,
                         onClick = { onSelectSegment(meta.segmentId) },
@@ -174,6 +176,7 @@ fun LibraryScreen(
 private fun LibrarySegmentRow(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
+    liveText: String?,
     annotation: SegmentAnnotation?,
     nowMs: Long,
     onClick: () -> Unit,
@@ -181,7 +184,7 @@ private fun LibrarySegmentRow(
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                text = segmentTitle(meta, transcript, annotation),
+                text = segmentTitle(meta, transcript, annotation, liveText),
                 style = MaterialTheme.typography.bodyLarge,
             )
             annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
@@ -220,6 +223,7 @@ private fun LibrarySegmentRow(
 fun SegmentDetailScreen(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
+    liveTranscript: String? = null,
     annotation: SegmentAnnotation?,
     nowMs: Long,
     playback: PlaybackUiState,
@@ -262,7 +266,7 @@ fun SegmentDetailScreen(
             }
         }
         Text(
-            text = segmentTitle(meta, transcript, annotation),
+            text = segmentTitle(meta, transcript, annotation, liveTranscript),
             style = MaterialTheme.typography.headlineSmall,
         )
         Text(
@@ -354,15 +358,34 @@ fun SegmentDetailScreen(
         }
 
         SectionTitle("Transcript")
-        if (transcript != null) {
-            Text(text = transcript.text, style = MaterialTheme.typography.bodyMedium)
-        } else {
-            Text(
-                text = when (meta.transcriptionState) {
-                    dev.audiocompanion.storage.TranscriptionState.NoSpeech -> "No speech was detected in this audio."
-                    dev.audiocompanion.storage.TranscriptionState.Failed -> "Transcription failed. It will be retried."
-                    dev.audiocompanion.storage.TranscriptionState.Disabled ->
+        when {
+            transcript != null -> {
+                Text(text = transcript.text, style = MaterialTheme.typography.bodyMedium)
+            }
+            !liveTranscript.isNullOrBlank() -> {
+                Text(text = liveTranscript, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = if (meta.isOpen) {
+                        "Live transcript — updates while the recording continues. The final " +
+                            "transcript replaces this when the recording ends."
+                    } else {
+                        "Preliminary transcript — the final pass over the full recording is " +
+                            "still processing."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> Text(
+                text = when {
+                    meta.transcriptionState == dev.audiocompanion.storage.TranscriptionState.NoSpeech ->
+                        "No speech was detected in this audio."
+                    meta.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Failed ->
+                        "Transcription failed. It will be retried."
+                    meta.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Disabled ->
                         "Transcription is unavailable. Install the local model or enable cloud transcription in Settings."
+                    meta.isOpen ->
+                        "Recording — the transcript will appear here as speech is recognized."
                     else -> "Audio is stored. The transcript will appear here after processing."
                 },
                 style = MaterialTheme.typography.bodyMedium,
@@ -413,12 +436,9 @@ private fun PlaybackControls(
     }.coerceAtLeast(0)
     val positionMs = if (selected) playback.positionMs.coerceIn(0, durationMs) else 0L
 
+    // The waveform above is the one and only progress bar: it draws the playback cursor and
+    // seeks on tap, so there is deliberately no second Slider here.
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Slider(
-            value = positionMs.toFloat(),
-            onValueChange = { onSeekPlayback(meta.segmentId, it.toLong()) },
-            valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
-        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,

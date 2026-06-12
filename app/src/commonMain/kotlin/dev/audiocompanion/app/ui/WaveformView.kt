@@ -2,6 +2,7 @@ package dev.audiocompanion.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -152,11 +153,20 @@ fun SegmentWaveformView(
                 if (onSeekFraction == null) {
                     base
                 } else {
-                    base.pointerInput(waveform) {
-                        detectTapGestures { offset ->
-                            onSeekFraction((offset.x / size.width).coerceIn(0f, 1f))
+                    // The waveform is the segment's only progress bar, so it must support
+                    // both tap-to-seek and drag-to-scrub.
+                    base
+                        .pointerInput(waveform) {
+                            detectTapGestures { offset ->
+                                onSeekFraction((offset.x / size.width).coerceIn(0f, 1f))
+                            }
                         }
-                    }
+                        .pointerInput(waveform) {
+                            detectHorizontalDragGestures { change, _ ->
+                                change.consume()
+                                onSeekFraction((change.position.x / size.width).coerceIn(0f, 1f))
+                            }
+                        }
                 }
             },
     ) {

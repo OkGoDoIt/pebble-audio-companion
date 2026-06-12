@@ -37,6 +37,8 @@ class AppActions(
     /** Decoded waveform of one stored segment (computed off the UI path, cached). */
     val loadSegmentWaveform: suspend (segmentId: String) -> dev.audiocompanion.app.SegmentWaveform? = { null },
     val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },
+    /** Rolling live transcript preview of a still-recording segment, or null. */
+    val loadLiveTranscript: (segmentId: String) -> String? = { null },
     val loadAnnotation: (segmentId: String) -> SegmentAnnotation? = { null },
     val loadAiOutputs: () -> List<AiOutput> = { emptyList() },
     // Content management

@@ -53,6 +53,8 @@ fun buildTimeline(
     nowMs: Long,
     todayOnly: Boolean = true,
     annotationOf: (String) -> SegmentAnnotation? = { null },
+    /** Rolling live transcript of a still-recording segment (preview, not durable). */
+    liveTextOf: (String) -> String? = { null },
 ): List<TimelineItem> {
     val relevant = segments
         .filter { !todayOnly || Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
@@ -61,7 +63,12 @@ fun buildTimeline(
         val annotation = annotationOf(meta.segmentId)
         TimelineItem.Segment(
             meta = meta,
-            title = segmentTitle(meta, transcriptOf(meta.segmentId), annotation),
+            title = segmentTitle(
+                meta,
+                transcriptOf(meta.segmentId),
+                annotation,
+                liveText = liveTextOf(meta.segmentId),
+            ),
             summary = annotation?.summary,
             stateLabel = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
             gapSummary = gapSummary(meta),
@@ -70,20 +77,31 @@ fun buildTimeline(
 }
 
 /**
- * Title preference (ux plan Sections 8/9): AI-generated title, else transcript snippet, else a
- * neutral label. Never raw file names/ids.
+ * Title preference (ux plan Sections 8/9): AI-generated title, else transcript snippet (the
+ * live preview while still recording), else a neutral label. Never raw file names/ids.
  */
 fun segmentTitle(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
     annotation: SegmentAnnotation? = null,
+    liveText: String? = null,
 ): String {
     annotation?.title?.takeIf { it.isNotBlank() }?.let { return it }
-    val snippet = transcript?.text?.trim()?.replace('\n', ' ')
-    if (!snippet.isNullOrBlank()) {
-        return if (snippet.length <= 64) snippet else snippet.take(64).trimEnd() + "…"
-    }
+    transcriptSnippet(transcript?.text)?.let { return it }
+    // While recording, the freshest words are the interesting ones: show the tail.
+    transcriptSnippet(liveText, tail = meta.isOpen)?.let { return it }
     return if (meta.isOpen) "Recording now" else "Conversation"
+}
+
+/** A ~64-char single-line transcript snippet (head or tail), or null when blank. */
+fun transcriptSnippet(text: String?, tail: Boolean = false): String? {
+    val snippet = text?.trim()?.replace('\n', ' ')
+    if (snippet.isNullOrBlank()) return null
+    return when {
+        snippet.length <= 64 -> snippet
+        tail -> "…" + snippet.takeLast(64).trimStart()
+        else -> snippet.take(64).trimEnd() + "…"
+    }
 }
 
 @Composable

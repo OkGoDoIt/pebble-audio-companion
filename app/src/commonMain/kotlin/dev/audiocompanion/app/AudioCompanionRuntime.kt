@@ -74,6 +74,8 @@ class AudioCompanionRuntime(
     private val aiRouter: AiModeRouter? = null,
     /** Live waveform source; null disables the tee (e.g. in receiver-only tests). */
     val liveMonitor: LiveAudioMonitor? = null,
+    /** Rolling transcript preview of the open segment; null disables live transcription. */
+    private val liveTranscriber: LiveTranscriber? = null,
     /** Segment playback; null on platforms/tests without an audio output path. */
     val playback: SegmentPlaybackController? = null,
     /** Stored-segment waveform builder; null when no decoder exists (tests). */
@@ -216,6 +218,12 @@ class AudioCompanionRuntime(
 
     fun transcript(segmentId: String): SegmentTranscript? = transcriptStore.load(segmentId)
 
+    /**
+     * Rolling live transcript of a still-recording (or just-closed, not yet fully transcribed)
+     * segment, or null. UI-preview only; the durable transcript supersedes it.
+     */
+    fun liveTranscript(segmentId: String): String? = liveTranscriber?.textFor(segmentId)
+
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 
     fun annotation(segmentId: String): SegmentAnnotation? = annotationStore.load(segmentId)
@@ -312,14 +320,23 @@ class AudioCompanionRuntime(
             if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
                 refreshDiagnostics()
             }
+            // Live preview of the open segment, after the durable closed-segment work (same
+            // loop, so a possibly single-instance native model is never used concurrently).
+            liveTranscriber?.let { live ->
+                if (live.processOnce()) processed = true
+                live.prune { segmentId -> transcriptStore.load(segmentId) != null }
+            }
             exportClosedSegmentsIfEnabled()
             // Sleep until the poll interval elapses, a failed task's backoff expires, or a
             // config change (model downloaded, key/mode/consent changed) wakes the loop.
-            val sleepMs = if (processed) {
-                1_000L
-            } else {
-                val retryInMs = transcriptionProcessor.nextRetryAtMs()?.let { it - nowMs() }
-                retryInMs?.coerceIn(1_000L, TRANSCRIPTION_POLL_MS) ?: TRANSCRIPTION_POLL_MS
+            val sleepMs = when {
+                processed -> 1_000L
+                // While recording, wake often enough that the live preview feels live.
+                store.openSegmentId != null && liveTranscriber != null -> LIVE_PREVIEW_POLL_MS
+                else -> {
+                    val retryInMs = transcriptionProcessor.nextRetryAtMs()?.let { it - nowMs() }
+                    retryInMs?.coerceIn(1_000L, TRANSCRIPTION_POLL_MS) ?: TRANSCRIPTION_POLL_MS
+                }
             }
             withTimeoutOrNull(sleepMs) { transcriptionWakeups.receive() }
         }
@@ -350,6 +367,7 @@ class AudioCompanionRuntime(
 
     companion object {
         private const val TRANSCRIPTION_POLL_MS = 30_000L
+        private const val LIVE_PREVIEW_POLL_MS = 5_000L
 
         fun segmentTranscriptionState(state: TaskState): SegmentTranscriptionState = when (state) {
             TaskState.Pending -> SegmentTranscriptionState.Pending

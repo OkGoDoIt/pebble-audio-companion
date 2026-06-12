@@ -124,6 +124,13 @@ class IosAudioCompanionRuntimeFactory(
             nowMs = nowMs,
             aiRouter = aiRouter,
             liveMonitor = LiveAudioMonitor(decoder = SpeexLiveFrameDecoder(), nowMs = nowMs),
+            liveTranscriber = LiveTranscriber(
+                openSegmentId = { store.openSegmentId },
+                readMeta = store::readMeta,
+                readFrames = store::readFrames,
+                router = router,
+                nowMs = nowMs,
+            ),
             playback = SegmentPlaybackController(
                 playerFactory = { IosPcmAudioPlayer() },
                 decoder = SpeexLiveFrameDecoder(),

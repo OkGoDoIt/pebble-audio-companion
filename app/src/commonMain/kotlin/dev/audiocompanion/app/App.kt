@@ -132,6 +132,9 @@ fun App(
         val transcripts = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
         }
+        val liveTranscripts = remember(currentDiagnostics, tab, nowTick) {
+            segments.associate { it.segmentId to actions.loadLiveTranscript(it.segmentId) }
+        }
         val annotations = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
         }
@@ -174,6 +177,7 @@ fun App(
                             transcriptOf = { transcripts[it] },
                             nowMs = nowMs,
                             annotationOf = { annotations[it] },
+                            liveTextOf = { liveTranscripts[it] },
                         ),
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
@@ -196,6 +200,7 @@ fun App(
                     AppTab.Library -> LibraryScreen(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
+                        liveTranscriptOf = { liveTranscripts[it] },
                         annotationOf = { annotations[it] },
                         nowMs = nowMs,
                         playback = currentPlayback,

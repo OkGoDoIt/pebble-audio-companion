@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
                     loadSegments = { runtime.listSegmentsForUi() },
                     loadSegmentWaveform = { runtime.segmentWaveform(it) },
                     loadTranscript = runtime::transcript,
+                    loadLiveTranscript = runtime::liveTranscript,
                     loadAnnotation = runtime::annotation,
                     loadAiOutputs = runtime::listAiOutputs,
                     deleteSegment = runtime::deleteSegmentData,
