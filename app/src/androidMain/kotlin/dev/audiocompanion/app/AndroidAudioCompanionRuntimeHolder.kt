@@ -11,10 +11,14 @@ object AndroidAudioCompanionRuntimeHolder {
         handle ?: synchronized(this) {
             handle ?: run {
                 val link = AndroidAudioGattLink(context.applicationContext)
+                val settingsRepository = AndroidAudioCompanionSettingsRepository(context)
                 AndroidAudioCompanionRuntimeHandle(
                     link = link,
-                    runtime = AndroidAudioCompanionRuntimeFactory(context).create(link),
-                    settingsRepository = AndroidAudioCompanionSettingsRepository(context),
+                    runtime = AndroidAudioCompanionRuntimeFactory(context).create(
+                        link,
+                        settingsRepository,
+                    ),
+                    settingsRepository = settingsRepository,
                 ).also { handle = it }
             }
         }

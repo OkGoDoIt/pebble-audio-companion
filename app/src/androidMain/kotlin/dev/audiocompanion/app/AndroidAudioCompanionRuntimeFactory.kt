@@ -11,8 +11,14 @@ import dev.audiocompanion.storage.FreeSpaceProvider
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
+import dev.audiocompanion.transcription.LocalPlaceholderTranscriptionProvider
+import dev.audiocompanion.transcription.SpeexFrameDecoder
+import dev.audiocompanion.transcription.TranscriptionException
+import dev.audiocompanion.transcription.TranscriptionModeRouter
+import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.ReceiverConfig
 import java.security.SecureRandom
+import kotlinx.coroutines.flow.flow
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 
@@ -23,7 +29,10 @@ class AndroidAudioCompanionRuntimeFactory(
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val secureRandom = SecureRandom()
 
-    fun create(link: AndroidAudioGattLink): AudioCompanionRuntime {
+    fun create(
+        link: AndroidAudioGattLink,
+        settingsRepository: AudioCompanionSettingsRepository,
+    ): AudioCompanionRuntime {
         val root = Path(appContext.filesDir.absolutePath, "audio-companion")
         val nowMs = { System.currentTimeMillis() }
         val store = SegmentStore(SystemFileSystem, root, nowMs)
@@ -32,12 +41,47 @@ class AndroidAudioCompanionRuntimeFactory(
             freeSpace = AndroidFreeSpaceProvider(appContext),
             nowMs = nowMs,
         )
+        val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
+        val localProvider = LocalPlaceholderTranscriptionProvider()
+        val router = TranscriptionModeRouter(
+            local = localProvider,
+            remote = null,
+            mode = { settingsRepository.settings.value.transcriptionMode },
+        )
         return AudioCompanionRuntime(
             link = link,
             store = store,
             retention = retention,
             resumeStore = FileReceiverResumeStore(SystemFileSystem, root),
-            transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs),
+            transcriptionQueue = transcriptionQueue,
+            transcriptionProcessor = TranscriptionProcessor(
+                queue = transcriptionQueue,
+                router = router,
+                pcmSource = { segmentId ->
+                    val meta = store.readMeta(segmentId)
+                        ?: throw TranscriptionException.TranscriptionFailed(
+                            "missing metadata for segment $segmentId",
+                        )
+                    val decoder = SpeexFrameDecoder(
+                        sampleRateHz = meta.sampleRateHz.toInt(),
+                        bitRateBps = meta.bitRateBps.toInt(),
+                        frameSamples = meta.frameSamples,
+                    )
+                    decoder.decode(
+                        flow {
+                            for (record in store.readFrames(segmentId)) {
+                                emit(record.payload)
+                            }
+                        },
+                    )
+                },
+                onStateChanged = { segmentId, state ->
+                    store.updateTranscriptionState(
+                        segmentId,
+                        AudioCompanionRuntime.segmentTranscriptionState(state),
+                    )
+                },
+            ),
             aiOutputStore = FileAiOutputStore(SystemFileSystem, root, nowMs),
             receiverConfig = ReceiverConfig(
                 receiverId = loadOrCreateReceiverId(),

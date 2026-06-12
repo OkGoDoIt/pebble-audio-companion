@@ -24,6 +24,12 @@ kotlin {
             implementation(libs.kotlinx.io.core)
             implementation(libs.serialization)
         }
+        androidMain.dependencies {
+            implementation(libs.coredevices.speex)
+        }
+        iosMain.dependencies {
+            implementation(libs.coredevices.speex)
+        }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.coroutines.test)
