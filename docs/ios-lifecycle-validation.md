@@ -11,6 +11,13 @@ service enabled.
 - 2026-06-12: `xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug
   -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
   CODE_SIGNING_ALLOWED=NO build` passed.
+- 2026-06-12: `xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug
+  -destination 'generic/platform=iOS' build` passed and signed with Apple Development team
+  `R73F7TNT65`.
+- 2026-06-12: `xcrun devicectl device install app --device
+  B934AFBF-31B4-5066-8453-F8D6C3E16ECA "<DerivedData>/Build/Products/Debug-iphoneos/Pebble
+  Audio Companion.app"` reached connected iPhone `G17` but failed because Developer Mode is
+  disabled on the device. Enable Developer Mode on the iPhone before the first physical run.
 
 ## Host Shell Coverage
 
@@ -40,5 +47,7 @@ service enabled.
 
 - The simulator build validates Swift/Kotlin linking and app metadata only; it cannot validate Core
   Bluetooth background delivery.
+- A signed iPhoneOS build now exists locally; the remaining install blocker is device-side
+  Developer Mode, not app signing.
 - The first physical-device pass should capture device model, iOS version, firmware commit, app
   commit, session length, observed gap counts, and whether the official app stayed connected.
