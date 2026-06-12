@@ -65,6 +65,7 @@ class SegmentStore(
         val openedAtMs: Long,
         val start: StreamStart,
         val provenance: SegmentProvenance?,
+        var framesSinceMetaWrite: Int = 0,
     )
 
     private var current: OpenSegment? = null
@@ -143,7 +144,17 @@ class SegmentStore(
                 last.sampleIndex + segment.meta.frameSamples.toULong(),
             ),
             frameCount = segment.meta.frameCount + frames.size,
+            logBytes = segment.logBytes,
         )
+
+        // Keep the on-disk meta fresh while recording: readers (UI durations/sizes, the live
+        // transcript preview) only see the sidecar file, and without periodic writes an open
+        // segment's frame counters would stay at their last gap/rotate values for minutes.
+        segment.framesSinceMetaWrite += frames.size
+        if (segment.framesSinceMetaWrite >= OPEN_META_FLUSH_FRAMES) {
+            segment.framesSinceMetaWrite = 0
+            writeMetaAtomically(segment.meta)
+        }
 
         maybeRotate(segment)
     }
@@ -264,17 +275,18 @@ class SegmentStore(
                 fileSystem.sink(tmp).buffered().use { it.write(bytes, 0, parsed.validBytes) }
                 fileSystem.atomicMove(tmp, log)
             }
-            reconcileMeta(meta, parsed.records)
+            reconcileMeta(meta, parsed.records, parsed.validBytes.toLong())
         }
     }
 
-    private fun reconcileMeta(meta: SegmentMeta, records: List<FrameRecord>) {
+    private fun reconcileMeta(meta: SegmentMeta, records: List<FrameRecord>, logBytes: Long) {
         val reconciled = meta.copy(
             firstSequence = records.firstOrNull()?.sequence,
             lastSequence = records.maxOfOrNull { it.sequence },
             firstSampleIndex = records.firstOrNull()?.sampleIndex,
             lastSampleIndexExclusive = records.maxOfOrNull { it.sampleIndex + meta.frameSamples.toULong() },
             frameCount = records.size.toLong(),
+            logBytes = logBytes,
             // A meta still marked open means we died with the segment open: it was interrupted.
             closeReason = meta.closeReason ?: CloseReasonMeta.Interrupted,
         )
@@ -310,5 +322,8 @@ class SegmentStore(
 
         /** u32 seq + u64 sample_index + u16 len. */
         const val RECORD_HEADER_BYTES = 14
+
+        /** Flush the open segment's sidecar meta every ~5 s of audio (250 × 20 ms frames). */
+        const val OPEN_META_FLUSH_FRAMES = 250
     }
 }

@@ -401,7 +401,13 @@ fun SegmentDetailScreen(
             InfoRow("Processing mode", it.modeUsed.toString())
             InfoRow("Transcribed", Formatting.relativeTime(it.createdAtMs, nowMs))
         }
-        InfoRow("Stored on this phone", Formatting.storageSize(meta.frameCount * 27))
+        InfoRow(
+            "Stored on this phone",
+            Formatting.storageSize(
+                // Actual on-disk log size when known; estimate for metas from older builds.
+                if (meta.logBytes > 0) meta.logBytes else meta.frameCount * 39,
+            ),
+        )
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
         OutlinedButton(onClick = onBack) { Text("Back to Library") }
 

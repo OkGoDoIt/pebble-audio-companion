@@ -39,13 +39,29 @@ class SegmentWaveformBuilder(
     private val frameDurationMs: Long = 20,
     private val maxBars: Int = 240,
     private val decodeBatchFrames: Int = 200,
+    /**
+     * While a segment is still recording its meta refreshes every few seconds; only re-read and
+     * re-decode once this much new audio exists (500 frames = 10 s), not on every refresh.
+     */
+    private val minRebuildDeltaFrames: Long = 500,
 ) {
-    private var cachedKey: Pair<String, Long>? = null
+    private var cachedSegmentId: String? = null
+    private var cachedFrameCount: Long = -1
     private var cachedValue: SegmentWaveform? = null
 
-    suspend fun build(meta: SegmentMeta, frames: List<FrameRecord>): SegmentWaveform {
-        val key = meta.segmentId to meta.frameCount
-        cachedValue?.let { cached -> if (cachedKey == key) return cached }
+    suspend fun build(
+        meta: SegmentMeta,
+        framesProvider: () -> List<FrameRecord>,
+    ): SegmentWaveform {
+        cachedValue?.let { cached ->
+            if (cachedSegmentId == meta.segmentId) {
+                val delta = meta.frameCount - cachedFrameCount
+                val fresh = delta == 0L ||
+                    (meta.isOpen && delta in 0 until minRebuildDeltaFrames)
+                if (fresh) return cached
+            }
+        }
+        val frames = framesProvider()
 
         val mediaDurationMs = frames.size * frameDurationMs
         val framesPerBar = ((frames.size + maxBars - 1) / maxBars).coerceAtLeast(1)
@@ -95,7 +111,8 @@ class SegmentWaveformBuilder(
 
         val markers = meta.gaps.mapNotNull { gap -> gapMarker(gap, meta, frames) }
         return SegmentWaveform(bars, markers, mediaDurationMs).also {
-            cachedKey = key
+            cachedSegmentId = meta.segmentId
+            cachedFrameCount = maxOf(meta.frameCount, frames.size.toLong())
             cachedValue = it
         }
     }

@@ -101,6 +101,25 @@ class SegmentStoreTest {
     }
 
     @Test
+    fun openSegmentMetaIsFlushedPeriodicallyWhileRecording() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        // Below the flush threshold: on-disk sidecar still has the open-time counters.
+        store.appendFrames(streamId, frames(0u, SegmentStore.OPEN_META_FLUSH_FRAMES - 1))
+        assertEquals(0L, assertNotNull(store.readMeta(segmentId)).frameCount)
+
+        // Crossing the threshold flushes the live counters without closing the segment.
+        store.appendFrames(streamId, frames((SegmentStore.OPEN_META_FLUSH_FRAMES - 1).toUInt(), 2))
+        val flushed = assertNotNull(store.readMeta(segmentId))
+        assertEquals((SegmentStore.OPEN_META_FLUSH_FRAMES + 1).toLong(), flushed.frameCount)
+        assertTrue(flushed.isOpen, "periodic flush must not close the segment")
+        assertNoTempFiles(root)
+    }
+
+    @Test
     fun killMidAppend_truncatesToLastGoodRecord() = runTest {
         val root = tempRoot()
         val store = store(root)

@@ -235,7 +235,7 @@ class AudioCompanionRuntime(
     suspend fun segmentWaveform(segmentId: String): SegmentWaveform? {
         val builder = waveformBuilder ?: return null
         val meta = store.readMeta(segmentId) ?: return null
-        return builder.build(meta, store.readFrames(segmentId))
+        return builder.build(meta) { store.readFrames(segmentId) }
     }
 
     // --- AI (manual MVP flow: durable transcripts in, durable outputs out) ----------------------

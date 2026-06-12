@@ -35,6 +35,8 @@ data class SegmentMeta(
     val firstSampleIndex: ULong? = null,
     val lastSampleIndexExclusive: ULong? = null,
     val frameCount: Long = 0,
+    /** Bytes of the segment's frame log on disk (as of the last meta flush). */
+    val logBytes: Long = 0,
     val gaps: List<GapMeta> = emptyList(),
     /** Null while the segment is open. */
     val closeReason: CloseReasonMeta? = null,
