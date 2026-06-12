@@ -24,8 +24,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiProcessingMode
@@ -49,6 +51,7 @@ fun SettingsScreen(
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var showTranscriptionModePicker by remember { mutableStateOf(false) }
     var showAiModePicker by remember { mutableStateOf(false) }
+    var supportReportText by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -83,7 +86,7 @@ fun SettingsScreen(
         }
         HorizontalDivider()
 
-        SectionTitle("Storage And Retention")
+        SectionTitle("Storage & Retention")
         InfoRow("Stored segments", diagnostics.segmentCount.toString())
         InfoRow("Free phone storage", Formatting.storageSize(diagnostics.freeStorageHintKb.toLong() * 1024))
         if (diagnostics.lowStorage) {
@@ -230,12 +233,33 @@ fun SettingsScreen(
             "${diagnostics.queuedTranscriptionTasks} waiting, ${diagnostics.failedTranscriptionTasks} failed",
         )
         InfoRow("AI outputs", diagnostics.aiOutputCount.toString())
-        OutlinedButton(onClick = actions.exportSupportReport) { Text("Export support report") }
+        OutlinedButton(onClick = {
+            supportReportText = actions.exportSupportReport()?.let { formatSupportReport(it) }
+        }) { Text("View support report") }
         Text(
             text = "Support reports contain status counters only — never audio or transcript text.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 24.dp),
+        )
+    }
+
+    supportReportText?.let { report ->
+        AlertDialog(
+            onDismissRequest = { supportReportText = null },
+            title = { Text("Support report") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        text = report,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { supportReportText = null }) { Text("Done") }
+            },
         )
     }
 
@@ -348,6 +372,22 @@ private fun <T> SingleChoiceDialog(
         },
     )
 }
+
+/** Plain-text content-free support report (counters and states only). */
+fun formatSupportReport(report: dev.audiocompanion.app.AudioCompanionSupportReport): String =
+    buildString {
+        appendLine("Generated: ${Formatting.timeOfDay(report.generatedAtMs)}")
+        appendLine("Receiver state: ${report.receiverState}")
+        val d = report.diagnostics
+        appendLine("Segments stored: ${d.segmentCount}")
+        appendLine("Open segment: ${if (d.openSegmentId != null) "yes" else "no"}")
+        appendLine("Transcription queued: ${d.queuedTranscriptionTasks}")
+        appendLine("Transcription failed: ${d.failedTranscriptionTasks}")
+        appendLine("AI outputs: ${d.aiOutputCount}")
+        appendLine("Low storage: ${d.lowStorage}")
+        appendLine("Pause requested: ${d.pauseRequested}")
+        append("Free storage: ${Formatting.storageSize(d.freeStorageHintKb.toLong() * 1024)}")
+    }
 
 fun transcriptionModeLabel(mode: TranscriptionMode): String = when (mode) {
     TranscriptionMode.LocalOnly -> "Local only"

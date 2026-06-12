@@ -29,7 +29,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var runtime: AudioCompanionRuntime
     private lateinit var associator: AndroidAudioCompanionAssociator
     private lateinit var settingsRepository: AndroidAudioCompanionSettingsRepository
-    private var lastSupportReport: AudioCompanionSupportReport? = null
 
     private val associationLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult(),
@@ -121,7 +120,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     exportSupportReport = {
-                        lastSupportReport = runtime.buildSupportReport(includeContent = false)
+                        runtime.buildSupportReport(includeContent = false)
                     },
                     runAi = { template, segmentIds ->
                         runCatching {

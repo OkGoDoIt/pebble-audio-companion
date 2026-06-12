@@ -44,7 +44,7 @@ class AppActions(
     val deleteAiOutput: (outputId: String) -> Unit = {},
     val deleteAll: () -> Unit = {},
     val revokeReceiver: () -> Unit = {},
-    val exportSupportReport: () -> Unit = {},
+    val exportSupportReport: () -> dev.audiocompanion.app.AudioCompanionSupportReport? = { null },
     // AI
     val runAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput> = { _, _ ->
         Result.failure(AiException.ProviderUnavailable("not wired"))
