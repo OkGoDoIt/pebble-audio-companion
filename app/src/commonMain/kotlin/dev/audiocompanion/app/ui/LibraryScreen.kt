@@ -17,6 +17,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -45,9 +47,15 @@ fun LibraryScreen(
     transcriptOf: (String) -> SegmentTranscript?,
     annotationOf: (String) -> SegmentAnnotation?,
     nowMs: Long,
+    playback: PlaybackUiState,
     selectedSegmentId: String?,
     onSelectSegment: (String?) -> Unit,
     onDeleteSegment: (String) -> Unit,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
+    onStopPlayback: () -> Unit,
+    onSeekPlayback: (String, Long) -> Unit,
+    onCyclePlaybackSpeed: () -> Unit,
 ) {
     val selected = selectedSegmentId?.let { id -> segments.firstOrNull { it.segmentId == id } }
     if (selected != null) {
@@ -56,11 +64,17 @@ fun LibraryScreen(
             transcript = transcriptOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
             nowMs = nowMs,
+            playback = playback,
             onBack = { onSelectSegment(null) },
             onDelete = {
                 onDeleteSegment(selected.segmentId)
                 onSelectSegment(null)
             },
+            onPlaySegment = onPlaySegment,
+            onPausePlayback = onPausePlayback,
+            onStopPlayback = onStopPlayback,
+            onSeekPlayback = onSeekPlayback,
+            onCyclePlaybackSpeed = onCyclePlaybackSpeed,
         )
         return
     }
@@ -199,8 +213,14 @@ fun SegmentDetailScreen(
     transcript: SegmentTranscript?,
     annotation: SegmentAnnotation?,
     nowMs: Long,
+    playback: PlaybackUiState,
     onBack: () -> Unit,
     onDelete: () -> Unit,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
+    onStopPlayback: () -> Unit,
+    onSeekPlayback: (String, Long) -> Unit,
+    onCyclePlaybackSpeed: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     Column(
@@ -257,6 +277,19 @@ fun SegmentDetailScreen(
             }
         }
 
+        if (!meta.isOpen) {
+            SectionTitle("Playback")
+            PlaybackControls(
+                meta = meta,
+                playback = playback,
+                onPlaySegment = onPlaySegment,
+                onPausePlayback = onPausePlayback,
+                onStopPlayback = onStopPlayback,
+                onSeekPlayback = onSeekPlayback,
+                onCyclePlaybackSpeed = onCyclePlaybackSpeed,
+            )
+        }
+
         annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
             SectionTitle("AI Summary")
             Text(text = summary, style = MaterialTheme.typography.bodyMedium)
@@ -300,6 +333,73 @@ fun SegmentDetailScreen(
                 onConfirm = onDelete,
                 onDismiss = { confirmDelete = false },
             )
+        }
+    }
+}
+
+@Composable
+private fun PlaybackControls(
+    meta: SegmentMeta,
+    playback: PlaybackUiState,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
+    onStopPlayback: () -> Unit,
+    onSeekPlayback: (String, Long) -> Unit,
+    onCyclePlaybackSpeed: () -> Unit,
+) {
+    val selected = playback.segmentId == meta.segmentId
+    val durationMs = if (selected && playback.durationMs > 0) {
+        playback.durationMs
+    } else {
+        segmentDurationMs(meta)
+    }.coerceAtLeast(0)
+    val positionMs = if (selected) playback.positionMs.coerceIn(0, durationMs) else 0L
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Slider(
+            value = positionMs.toFloat(),
+            onValueChange = { onSeekPlayback(meta.segmentId, it.toLong()) },
+            valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "${Formatting.duration(positionMs)} / ${Formatting.duration(durationMs)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Speed ${if (selected) playback.speed else 1f}x",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (meta.gaps.isNotEmpty()) {
+            Text(
+                text = "${meta.gaps.size} gap marker${if (meta.gaps.size == 1) "" else "s"} shown in the transcript timeline.",
+                style = MaterialTheme.typography.bodySmall,
+                color = StatusColors.warning,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    if (selected && playback.playing) onPausePlayback() else onPlaySegment(meta.segmentId)
+                },
+            ) {
+                Text(if (selected && playback.playing) "Pause" else "Play")
+            }
+            OutlinedButton(
+                onClick = onStopPlayback,
+                enabled = selected && (playback.playing || playback.positionMs > 0),
+            ) {
+                Text("Stop")
+            }
+            OutlinedButton(onClick = onCyclePlaybackSpeed) {
+                Text("Speed")
+            }
         }
     }
 }

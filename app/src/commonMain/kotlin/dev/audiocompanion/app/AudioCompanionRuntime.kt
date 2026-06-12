@@ -73,6 +73,8 @@ class AudioCompanionRuntime(
     private val aiRouter: AiModeRouter? = null,
     /** Live waveform source; null disables the tee (e.g. in receiver-only tests). */
     val liveMonitor: LiveAudioMonitor? = null,
+    /** Segment playback; null on platforms/tests without an audio output path. */
+    val playback: SegmentPlaybackController? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -139,6 +141,7 @@ class AudioCompanionRuntime(
 
     suspend fun deleteAllLocalData() {
         stop()
+        playback?.stop()
         store.closeSegment(SegmentCloseReason.Interrupted)
         store.listSegments().forEach { store.deleteSegment(it.segmentId) }
         transcriptionQueue.deleteAll()
@@ -155,6 +158,7 @@ class AudioCompanionRuntime(
      */
     fun deleteSegmentData(segmentId: String) {
         if (segmentId == store.openSegmentId) return
+        if (playback?.state?.value?.segmentId == segmentId) playback.stop()
         store.deleteSegment(segmentId)
         transcriptionQueue.delete(segmentId)
         transcriptStore.delete(segmentId)

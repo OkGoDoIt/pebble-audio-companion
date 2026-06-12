@@ -71,6 +71,7 @@ fun App(
         MutableStateFlow(LocalTranscriptionModelState(modelName = "local", modelVersion = "unknown")),
     waveformBars: StateFlow<List<WaveformBar>> = MutableStateFlow(emptyList()),
     waveformWindowMs: Long = 60_000,
+    playbackState: StateFlow<PlaybackUiState> = MutableStateFlow(PlaybackUiState()),
     actions: AppActions = AppActions(),
 ) {
     MaterialTheme {
@@ -78,6 +79,7 @@ fun App(
         val currentDiagnostics = diagnostics.collectAsState().value
         val currentSettings = settings.collectAsState().value
         val currentLocalModel = localModelState.collectAsState().value
+        val currentPlayback = playbackState.collectAsState().value
 
         if (!currentSettings.onboardingComplete) {
             Surface(modifier = Modifier.fillMaxSize()) {
@@ -169,9 +171,15 @@ fun App(
                         transcriptOf = { transcripts[it] },
                         annotationOf = { annotations[it] },
                         nowMs = nowMs,
+                        playback = currentPlayback,
                         selectedSegmentId = librarySegmentId,
                         onSelectSegment = { librarySegmentId = it },
                         onDeleteSegment = actions.deleteSegment,
+                        onPlaySegment = actions.playSegment,
+                        onPausePlayback = actions.pausePlayback,
+                        onStopPlayback = actions.stopPlayback,
+                        onSeekPlayback = actions.seekPlayback,
+                        onCyclePlaybackSpeed = actions.cyclePlaybackSpeed,
                     )
 
                     AppTab.Ai -> AiScreen(

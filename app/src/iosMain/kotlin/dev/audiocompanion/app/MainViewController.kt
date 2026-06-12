@@ -76,6 +76,8 @@ fun MainViewController(): UIViewController {
             waveformBars = runtime.liveMonitor?.bars
                 ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
             waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
+            playbackState = runtime.playback?.state
+                ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
             actions = AppActions(
                 pairWatch = {
                     bootstrap.handle.connectWatch()
@@ -96,6 +98,13 @@ fun MainViewController(): UIViewController {
                 },
                 refreshDiagnostics = runtime::refreshDiagnostics,
                 setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
+                playSegment = { segmentId -> runtime.playback?.play(segmentId) },
+                pausePlayback = { runtime.playback?.pause() },
+                stopPlayback = { runtime.playback?.stop() },
+                seekPlayback = { segmentId, positionMs ->
+                    runtime.playback?.seekTo(segmentId, positionMs)
+                },
+                cyclePlaybackSpeed = { runtime.playback?.cycleSpeed() },
                 loadSegments = runtime::listSegmentsForUi,
                 loadTranscript = runtime::transcript,
                 loadAnnotation = runtime::annotation,

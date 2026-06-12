@@ -120,6 +120,11 @@ class IosAudioCompanionRuntimeFactory(
             nowMs = nowMs,
             aiRouter = aiRouter,
             liveMonitor = LiveAudioMonitor(decoder = SpeexLiveFrameDecoder(), nowMs = nowMs),
+            playback = SegmentPlaybackController(
+                playerFactory = { IosPcmAudioPlayer() },
+                decoder = SpeexLiveFrameDecoder(),
+                frameSource = { segmentId -> store.readFrames(segmentId).map { it.payload } },
+            ),
         )
     }
 

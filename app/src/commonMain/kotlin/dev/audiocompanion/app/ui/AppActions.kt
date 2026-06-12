@@ -26,6 +26,12 @@ class AppActions(
     val refreshDiagnostics: () -> Unit = {},
     /** Live waveform decode runs only while the Today screen is visible. */
     val setWaveformActive: (Boolean) -> Unit = {},
+    // Segment playback
+    val playSegment: (segmentId: String) -> Unit = {},
+    val pausePlayback: () -> Unit = {},
+    val stopPlayback: () -> Unit = {},
+    val seekPlayback: (segmentId: String, positionMs: Long) -> Unit = { _, _ -> },
+    val cyclePlaybackSpeed: () -> Unit = {},
     // Durable content reads (file-backed; cheap at MVP scale)
     val loadSegments: () -> List<SegmentMeta> = { emptyList() },
     val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },

@@ -117,6 +117,11 @@ class AndroidAudioCompanionRuntimeFactory(
             nowMs = nowMs,
             aiRouter = aiRouter,
             liveMonitor = LiveAudioMonitor(decoder = SpeexLiveFrameDecoder(), nowMs = nowMs),
+            playback = SegmentPlaybackController(
+                playerFactory = { AndroidPcmAudioPlayer() },
+                decoder = SpeexLiveFrameDecoder(),
+                frameSource = { segmentId -> store.readFrames(segmentId).map { it.payload } },
+            ),
         )
     }
 
