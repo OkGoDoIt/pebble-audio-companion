@@ -24,7 +24,11 @@ this app is a separate, dedicated audio receiver. The firmware side lives on the
 - `core/ai` — AI processing over durable transcripts (design: `docs/ai-processing-design.md`).
 - `adapter/ble-android` — CDM association and GATT client (`AndroidAudioGattLink`).
 - `adapter/ble-ios` — Core Bluetooth central wrapper with state restoration.
-- `app` — Compose Multiplatform UI, app-owned foreground receiver service, CDM presence hook.
+- `app` — Compose Multiplatform UI, Android foreground receiver service, CDM presence hook,
+  and the iOS runtime entry point exported as `AudioCompanionApp.framework`.
+- `iosApp` — native SwiftUI iOS host that links the KMP framework, declares
+  `bluetooth-central`, starts Core Bluetooth at launch, and forwards app lifecycle events to the
+  third-party receiver runtime.
 
 ## Build
 
@@ -35,6 +39,9 @@ export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
           :core:transcription:jvmTest :core:ai:jvmTest
 ./gradlew :app:assembleDebug
 ./gradlew :app:compileKotlinIosSimulatorArm64 :adapter:ble-ios:compileKotlinIosSimulatorArm64
+xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGNING_ALLOWED=NO build
 ```
 
 ## Protocol fixtures
@@ -54,7 +61,8 @@ on Android/iOS, and processes the durable transcription queue through the four-m
 local transcription is wired to the vendored Cactus STT runtime and resolves the
 `parakeet-tdt-0.6b-v3` model into the companion app's private files directory. Remote
 transcription is wired to OpenAI's audio transcription endpoint and is disabled unless the user has
-enabled cloud transcription consent and entered an API key in the app. The app module also compiles
-an iOS runtime holder that combines the Core Bluetooth link, durable receiver runtime, local Cactus
-provider, and OpenAI provider; a native Xcode shell and hardware lifecycle matrix are still required
-before making iOS reliability claims.
+enabled cloud transcription consent and entered an API key in the app. The native iOS shell links
+the same receiver runtime, starts the Core Bluetooth central at app launch, declares
+`bluetooth-central`, and registers a BGProcessing hook for deferred non-BLE work. The hardware
+lifecycle matrix in `docs/ios-lifecycle-validation.md` must still pass on physical devices before
+making iOS reliability claims.
