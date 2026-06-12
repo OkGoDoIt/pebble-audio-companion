@@ -3,19 +3,26 @@ package dev.audiocompanion.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import dev.audiocompanion.app.ui.statusUiModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 class AudioCompanionReceiverService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var notificationJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -33,14 +40,16 @@ class AudioCompanionReceiverService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_CONNECT -> {
-                startForeground(NOTIFICATION_ID, buildNotification())
+                startForeground(NOTIFICATION_ID, buildNotification("Waiting for Pebble"))
                 handle.runtime.start(serviceScope)
+                observeStateForNotification(handle)
                 connectFromIntent(intent)
                 return START_STICKY
             }
             else -> {
-                startForeground(NOTIFICATION_ID, buildNotification())
+                startForeground(NOTIFICATION_ID, buildNotification("Waiting for Pebble"))
                 handle.runtime.start(serviceScope)
+                observeStateForNotification(handle)
                 PairedWatchStore.load(this)?.let { address ->
                     connectFromIntent(
                         AudioCompanionReceiverService.connectIntent(this, address),
@@ -68,6 +77,28 @@ class AudioCompanionReceiverService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Keeps the foreground notification honest (ux plan Section 15): the content text is the
+     * same plain-language headline the Today screen shows for the current receiver state.
+     */
+    private fun observeStateForNotification(handle: AndroidAudioCompanionRuntimeHandle) {
+        if (notificationJob != null) return
+        notificationJob = serviceScope.launch {
+            combine(
+                handle.runtime.state,
+                handle.runtime.diagnostics,
+                handle.settingsRepository.settings,
+            ) { state, diagnostics, settings ->
+                statusUiModel(state, settings, diagnostics).headline
+            }
+                .distinctUntilChanged()
+                .collect { headline ->
+                    getSystemService(NotificationManager::class.java)
+                        ?.notify(NOTIFICATION_ID, buildNotification(headline))
+                }
+        }
+    }
+
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
@@ -81,17 +112,33 @@ class AudioCompanionReceiverService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(contentText: String): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
+        val openIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent(this),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return builder
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Pebble audio companion")
-            .setContentText("Receiving encrypted background audio from your watch")
+            .setContentTitle("Pebble Audio Companion")
+            .setContentText(contentText)
+            .setContentIntent(openIntent)
+            .addAction(
+                Notification.Action.Builder(null, "Stop", stopIntent).build(),
+            )
             .setOngoing(true)
             .build()
     }
