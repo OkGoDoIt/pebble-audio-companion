@@ -4,6 +4,7 @@ import dev.audiocompanion.ai.AiException
 import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
 import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptionMode
@@ -23,6 +24,7 @@ class AppActions(
     // Durable content reads (file-backed; cheap at MVP scale)
     val loadSegments: () -> List<SegmentMeta> = { emptyList() },
     val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },
+    val loadAnnotation: (segmentId: String) -> SegmentAnnotation? = { null },
     val loadAiOutputs: () -> List<AiOutput> = { emptyList() },
     // Content management
     val deleteSegment: (segmentId: String) -> Unit = {},

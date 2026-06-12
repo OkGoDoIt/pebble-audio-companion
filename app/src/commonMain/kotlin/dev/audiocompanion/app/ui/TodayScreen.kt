@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -28,6 +29,7 @@ sealed interface TimelineItem {
     data class Segment(
         val meta: SegmentMeta,
         val title: String,
+        val summary: String?,
         val stateLabel: String,
     ) : TimelineItem {
         override val key: String get() = "seg-${meta.segmentId}"
@@ -49,15 +51,18 @@ fun buildTimeline(
     transcriptOf: (String) -> SegmentTranscript?,
     nowMs: Long,
     todayOnly: Boolean = true,
+    annotationOf: (String) -> SegmentAnnotation? = { null },
 ): List<TimelineItem> {
     val relevant = segments
         .filter { !todayOnly || Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
         .sortedByDescending { it.receivedAtMs }
     val items = mutableListOf<TimelineItem>()
     for (meta in relevant) {
+        val annotation = annotationOf(meta.segmentId)
         items += TimelineItem.Segment(
             meta = meta,
-            title = segmentTitle(meta, transcriptOf(meta.segmentId)),
+            title = segmentTitle(meta, transcriptOf(meta.segmentId), annotation),
+            summary = annotation?.summary,
             stateLabel = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
         )
         meta.gaps.forEachIndexed { index, gap ->
@@ -72,8 +77,16 @@ fun buildTimeline(
     return items
 }
 
-/** Title preference: transcript snippet, else a neutral label. Never raw file names/ids. */
-fun segmentTitle(meta: SegmentMeta, transcript: SegmentTranscript?): String {
+/**
+ * Title preference (ux plan Sections 8/9): AI-generated title, else transcript snippet, else a
+ * neutral label. Never raw file names/ids.
+ */
+fun segmentTitle(
+    meta: SegmentMeta,
+    transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation? = null,
+): String {
+    annotation?.title?.takeIf { it.isNotBlank() }?.let { return it }
     val snippet = transcript?.text?.trim()?.replace('\n', ' ')
     if (!snippet.isNullOrBlank()) {
         return if (snippet.length <= 64) snippet else snippet.take(64).trimEnd() + "…"
@@ -167,6 +180,13 @@ fun TimelineSegmentRow(
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(text = item.title, style = MaterialTheme.typography.bodyLarge)
+            item.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,

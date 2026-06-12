@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Base64
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileSegmentAnnotationStore
 import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
 import dev.audiocompanion.protocol.ProtocolConstants
@@ -108,6 +109,7 @@ class AndroidAudioCompanionRuntimeFactory(
             ),
             transcriptStore = transcriptStore,
             aiOutputStore = FileAiOutputStore(SystemFileSystem, root, nowMs),
+            annotationStore = FileSegmentAnnotationStore(SystemFileSystem, root, nowMs),
             receiverConfig = ReceiverConfig(
                 receiverId = loadOrCreateReceiverId(),
                 receiverName = receiverName(),

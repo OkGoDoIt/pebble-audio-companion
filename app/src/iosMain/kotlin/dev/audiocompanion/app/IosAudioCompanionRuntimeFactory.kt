@@ -5,6 +5,7 @@ package dev.audiocompanion.app
 import dev.audiocompanion.adapter.ble.IosAudioGattLink
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileSegmentAnnotationStore
 import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
@@ -111,6 +112,7 @@ class IosAudioCompanionRuntimeFactory(
             ),
             transcriptStore = transcriptStore,
             aiOutputStore = FileAiOutputStore(SystemFileSystem, root, nowMs),
+            annotationStore = FileSegmentAnnotationStore(SystemFileSystem, root, nowMs),
             receiverConfig = ReceiverConfig(
                 receiverId = loadOrCreateReceiverId(),
                 receiverName = "Audio Companion iOS",

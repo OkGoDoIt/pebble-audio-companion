@@ -1228,6 +1228,16 @@ MVP should include:
 - Android foreground notification.
 - iOS background restoration explanation and state handling.
 
+MVP must also include (decision 2026-06-12 — these were previously implied lower priority but
+are explicitly required for the MVP):
+
+- Live waveform view on Today (Section 8 "Visual Waveform").
+- Audio playback with scrubbing and speed control in segment detail (Section 9).
+- AI-generated segment titles and summaries in timeline/Library rows, with transcript-snippet
+  fallback when AI is not configured (Sections 8 and 9).
+- The full onboarding wizard screens of Section 7 (not just the bare permission/CDM/consent
+  flow).
+
 MVP can defer:
 
 - Speaker diarization.

@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
                     refreshDiagnostics = { runtime.refreshDiagnostics() },
                     loadSegments = { runtime.listSegmentsForUi() },
                     loadTranscript = runtime::transcript,
+                    loadAnnotation = runtime::annotation,
                     loadAiOutputs = runtime::listAiOutputs,
                     deleteSegment = runtime::deleteSegmentData,
                     deleteAiOutput = runtime::deleteAiOutput,

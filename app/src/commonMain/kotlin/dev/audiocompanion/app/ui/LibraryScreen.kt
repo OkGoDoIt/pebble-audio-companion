@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 
@@ -42,6 +43,7 @@ enum class LibraryFilter(val label: String) {
 fun LibraryScreen(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
+    annotationOf: (String) -> SegmentAnnotation?,
     nowMs: Long,
     selectedSegmentId: String?,
     onSelectSegment: (String?) -> Unit,
@@ -52,6 +54,7 @@ fun LibraryScreen(
         SegmentDetailScreen(
             meta = selected,
             transcript = transcriptOf(selected.segmentId),
+            annotation = annotationOf(selected.segmentId),
             nowMs = nowMs,
             onBack = { onSelectSegment(null) },
             onDelete = {
@@ -80,7 +83,10 @@ fun LibraryScreen(
                 if (query.isBlank()) true
                 else {
                     val transcript = transcriptOf(meta.segmentId)?.text.orEmpty()
-                    transcript.contains(query, ignoreCase = true)
+                    val annotation = annotationOf(meta.segmentId)
+                    transcript.contains(query, ignoreCase = true) ||
+                        annotation?.title.orEmpty().contains(query, ignoreCase = true) ||
+                        annotation?.summary.orEmpty().contains(query, ignoreCase = true)
                 }
             }
     }
@@ -131,6 +137,7 @@ fun LibraryScreen(
                     LibrarySegmentRow(
                         meta = meta,
                         transcript = transcriptOf(meta.segmentId),
+                        annotation = annotationOf(meta.segmentId),
                         nowMs = nowMs,
                         onClick = { onSelectSegment(meta.segmentId) },
                     )
@@ -144,12 +151,23 @@ fun LibraryScreen(
 private fun LibrarySegmentRow(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation?,
     nowMs: Long,
     onClick: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(text = segmentTitle(meta, transcript), style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = segmentTitle(meta, transcript, annotation),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} " +
@@ -179,6 +197,7 @@ private fun LibrarySegmentRow(
 fun SegmentDetailScreen(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation?,
     nowMs: Long,
     onBack: () -> Unit,
     onDelete: () -> Unit,
@@ -203,7 +222,10 @@ fun SegmentDetailScreen(
                 }
             }
         }
-        Text(text = segmentTitle(meta, transcript), style = MaterialTheme.typography.headlineSmall)
+        Text(
+            text = segmentTitle(meta, transcript, annotation),
+            style = MaterialTheme.typography.headlineSmall,
+        )
         Text(
             text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} " +
                 "${Formatting.timeOfDay(meta.receivedAtMs)} · " +
@@ -233,6 +255,11 @@ fun SegmentDetailScreen(
                     color = StatusColors.warning,
                 )
             }
+        }
+
+        annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+            SectionTitle("AI Summary")
+            Text(text = summary, style = MaterialTheme.typography.bodyMedium)
         }
 
         SectionTitle("Transcript")

@@ -6,6 +6,8 @@ import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
 import dev.audiocompanion.ai.AiRunRequest
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.ai.TranscriptExcerpt
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentMeta
@@ -64,11 +66,17 @@ class AudioCompanionRuntime(
     private val transcriptionProcessor: TranscriptionProcessor,
     private val transcriptStore: FileTranscriptStore,
     private val aiOutputStore: FileAiOutputStore,
+    private val annotationStore: FileSegmentAnnotationStore,
     private val receiverConfig: ReceiverConfig,
     private val nowMs: () -> Long,
     /** Null when the app ships without any AI provider wiring (AI screen shows setup state). */
     private val aiRouter: AiModeRouter? = null,
 ) {
+    private val enrichmentWorker = SegmentEnrichmentWorker(
+        annotations = annotationStore,
+        router = aiRouter,
+        nowMs = nowMs,
+    )
     private val session = AudioReceiverSession(
         link = link,
         sink = store,
@@ -91,6 +99,7 @@ class AudioCompanionRuntime(
         retention.enforce().forEach { deletedSegmentId ->
             transcriptionQueue.delete(deletedSegmentId)
             transcriptStore.delete(deletedSegmentId)
+            annotationStore.delete(deletedSegmentId)
         }
         enqueueClosedSegmentsForTranscription()
         refreshDiagnostics()
@@ -132,6 +141,7 @@ class AudioCompanionRuntime(
         store.listSegments().forEach { store.deleteSegment(it.segmentId) }
         transcriptionQueue.deleteAll()
         transcriptStore.deleteAll()
+        annotationStore.deleteAll()
         aiOutputStore.deleteAll()
         resumeStore.clear()
         refreshDiagnostics()
@@ -146,6 +156,7 @@ class AudioCompanionRuntime(
         store.deleteSegment(segmentId)
         transcriptionQueue.delete(segmentId)
         transcriptStore.delete(segmentId)
+        annotationStore.delete(segmentId)
         aiOutputStore.list()
             .filter { it.segmentIds == listOf(segmentId) }
             .forEach { aiOutputStore.delete(it.outputId) }
@@ -158,6 +169,8 @@ class AudioCompanionRuntime(
     fun transcript(segmentId: String): SegmentTranscript? = transcriptStore.load(segmentId)
 
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
+
+    fun annotation(segmentId: String): SegmentAnnotation? = annotationStore.load(segmentId)
 
     // --- AI (manual MVP flow: durable transcripts in, durable outputs out) ----------------------
 
@@ -228,6 +241,11 @@ class AudioCompanionRuntime(
             var processed = false
             while (transcriptionProcessor.processNext() != null) {
                 processed = true
+                refreshDiagnostics()
+            }
+            // Row titles/summaries follow transcription (MVP requirement). The worker is a
+            // no-op when AI is not configured; rows then show transcript snippets instead.
+            if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
                 refreshDiagnostics()
             }
             delay(if (processed) 1_000 else TRANSCRIPTION_POLL_MS)

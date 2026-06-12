@@ -45,6 +45,7 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.coroutines.test)
         }
         androidMain.dependencies {
             implementation(project(":adapter:ble-android"))

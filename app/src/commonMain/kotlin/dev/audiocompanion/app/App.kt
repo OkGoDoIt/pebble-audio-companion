@@ -84,6 +84,9 @@ fun App(
         val transcripts = remember(currentDiagnostics, tab) {
             segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
         }
+        val annotations = remember(currentDiagnostics, tab) {
+            segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
+        }
         val aiOutputs = remember(currentDiagnostics, tab) { actions.loadAiOutputs() }
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics)
@@ -123,6 +126,7 @@ fun App(
                             segments = segments,
                             transcriptOf = { transcripts[it] },
                             nowMs = nowMs,
+                            annotationOf = { annotations[it] },
                         ),
                         nowMs = nowMs,
                         onPrimaryAction = onPrimaryAction,
@@ -135,6 +139,7 @@ fun App(
                     AppTab.Library -> LibraryScreen(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
+                        annotationOf = { annotations[it] },
                         nowMs = nowMs,
                         selectedSegmentId = librarySegmentId,
                         onSelectSegment = { librarySegmentId = it },
