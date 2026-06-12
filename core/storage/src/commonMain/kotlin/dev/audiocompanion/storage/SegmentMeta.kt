@@ -10,8 +10,8 @@ import kotlinx.serialization.Serializable
  * temp-file + atomic rename. The frame log (`.spxlog`) is the durable source of truth for
  * frames; recovery reconciles this meta against it.
  *
- * Note: the DB-backed index from the implementation plan is deliberately deferred; for now all
- * metadata is file-based (see plan Section 6.2 — Room/SQLDelight decision postponed).
+ * The app uses this file-backed index as the durable segment database: each update is written by
+ * temp-file + atomic rename, and startup recovery scans these sidecars plus the frame logs.
  */
 @Serializable
 data class SegmentMeta(

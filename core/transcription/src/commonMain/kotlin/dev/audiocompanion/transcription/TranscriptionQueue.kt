@@ -33,8 +33,7 @@ data class TranscriptionTask(
 )
 
 /**
- * DB-less durable transcription queue (plan 6.5; the DB-backed version is deferred together
- * with the segment index DB). One JSON file per task under `<root>/transcription/queue/`,
+ * Durable transcription queue. One JSON file per task under `<root>/transcription/queue/`,
  * written via temp file + atomic rename, so the queue survives process death; [recoverOnStart]
  * returns tasks that died mid-run to Pending.
  */
