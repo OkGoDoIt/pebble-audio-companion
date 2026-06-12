@@ -14,6 +14,8 @@ data class AudioCompanionSettings(
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
     val remoteAiConsent: Boolean = false,
     val diagnosticsIncludeContent: Boolean = false,
+    /** True once the user has finished the onboarding wizard (ux plan Section 7). */
+    val onboardingComplete: Boolean = false,
 )
 
 interface AudioCompanionSettingsRepository {
@@ -27,4 +29,5 @@ interface AudioCompanionSettingsRepository {
     fun setAiMode(mode: AiProcessingMode)
     fun setRemoteAiConsent(consented: Boolean)
     fun setDiagnosticsIncludeContent(includeContent: Boolean)
+    fun setOnboardingComplete(complete: Boolean)
 }

@@ -46,6 +46,10 @@ class AndroidAudioCompanionSettingsRepository(
         update { it.copy(diagnosticsIncludeContent = includeContent) }
     }
 
+    override fun setOnboardingComplete(complete: Boolean) {
+        update { it.copy(onboardingComplete = complete) }
+    }
+
     private fun update(transform: (AudioCompanionSettings) -> AudioCompanionSettings) {
         val updated = transform(_settings.value)
         persist(updated)
@@ -64,6 +68,7 @@ class AndroidAudioCompanionSettingsRepository(
         aiMode = enumValueOrDefault(prefs.getString(KEY_AI_MODE, null), AiProcessingMode.LocalOnly),
         remoteAiConsent = prefs.getBoolean(KEY_REMOTE_AI_CONSENT, false),
         diagnosticsIncludeContent = prefs.getBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, false),
+        onboardingComplete = prefs.getBoolean(KEY_ONBOARDING_COMPLETE, false),
     )
 
     private fun persist(settings: AudioCompanionSettings) {
@@ -76,6 +81,7 @@ class AndroidAudioCompanionSettingsRepository(
             .putString(KEY_AI_MODE, settings.aiMode.name)
             .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
             .putBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, settings.diagnosticsIncludeContent)
+            .putBoolean(KEY_ONBOARDING_COMPLETE, settings.onboardingComplete)
             .apply()
     }
 
@@ -92,5 +98,6 @@ class AndroidAudioCompanionSettingsRepository(
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_DIAGNOSTICS_INCLUDE_CONTENT = "diagnostics_include_content"
+        private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
     }
 }

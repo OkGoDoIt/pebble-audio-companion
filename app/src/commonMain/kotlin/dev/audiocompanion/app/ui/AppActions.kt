@@ -17,6 +17,9 @@ import dev.audiocompanion.transcription.TranscriptionMode
 class AppActions(
     // Receiver lifecycle
     val pairWatch: () -> Unit = {},
+    /** Onboarding: request platform permissions without starting watch association. */
+    val requestPermissions: () -> Unit = {},
+    val setOnboardingComplete: (Boolean) -> Unit = {},
     val startReceiver: () -> Unit = {},
     val stopReceiver: () -> Unit = {},
     val setBackgroundReceiverEnabled: (Boolean) -> Unit = {},

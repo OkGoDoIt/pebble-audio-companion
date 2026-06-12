@@ -45,6 +45,10 @@ class IosAudioCompanionSettingsRepository(
         update { it.copy(diagnosticsIncludeContent = includeContent) }
     }
 
+    override fun setOnboardingComplete(complete: Boolean) {
+        update { it.copy(onboardingComplete = complete) }
+    }
+
     private fun update(transform: (AudioCompanionSettings) -> AudioCompanionSettings) {
         val updated = transform(_settings.value)
         persist(updated)
@@ -63,6 +67,7 @@ class IosAudioCompanionSettingsRepository(
         aiMode = enumValueOrDefault(defaults.stringForKey(KEY_AI_MODE), AiProcessingMode.LocalOnly),
         remoteAiConsent = defaults.boolForKey(KEY_REMOTE_AI_CONSENT),
         diagnosticsIncludeContent = defaults.boolForKey(KEY_DIAGNOSTICS_INCLUDE_CONTENT),
+        onboardingComplete = defaults.boolForKey(KEY_ONBOARDING_COMPLETE),
     )
 
     private fun persist(settings: AudioCompanionSettings) {
@@ -74,6 +79,7 @@ class IosAudioCompanionSettingsRepository(
         defaults.setObject(settings.aiMode.name, forKey = KEY_AI_MODE)
         defaults.setBool(settings.remoteAiConsent, forKey = KEY_REMOTE_AI_CONSENT)
         defaults.setBool(settings.diagnosticsIncludeContent, forKey = KEY_DIAGNOSTICS_INCLUDE_CONTENT)
+        defaults.setBool(settings.onboardingComplete, forKey = KEY_ONBOARDING_COMPLETE)
     }
 
     private inline fun <reified T : Enum<T>> enumValueOrDefault(raw: String?, default: T): T =
@@ -88,5 +94,6 @@ class IosAudioCompanionSettingsRepository(
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_DIAGNOSTICS_INCLUDE_CONTENT = "diagnostics_include_content"
+        private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
     }
 }

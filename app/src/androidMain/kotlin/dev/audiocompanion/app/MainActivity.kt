@@ -42,10 +42,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** When true, a granted permission request continues into CDM association. */
+    private var associateAfterPermissions = false
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
-        associateWatch()
+        if (associateAfterPermissions) {
+            associateAfterPermissions = false
+            associateWatch()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,6 +69,8 @@ class MainActivity : ComponentActivity() {
                 localModelState = handle.localModelManager.state,
                 actions = AppActions(
                     pairWatch = { requestPermissionsAndAssociate() },
+                    requestPermissions = { requestPermissionsOnly() },
+                    setOnboardingComplete = settingsRepository::setOnboardingComplete,
                     startReceiver = {
                         startReceiverService(AudioCompanionReceiverService.startIntent(this))
                     },
@@ -127,18 +135,29 @@ class MainActivity : ComponentActivity() {
         runtimeScope.cancel()
     }
 
-    private fun requestPermissionsAndAssociate() {
-        val permissions = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
+    private fun requiredPermissions(): List<String> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(Manifest.permission.BLUETOOTH_CONNECT)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun requestPermissionsOnly() {
+        val permissions = requiredPermissions()
+        if (permissions.isNotEmpty()) {
+            associateAfterPermissions = false
+            permissionLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    private fun requestPermissionsAndAssociate() {
+        val permissions = requiredPermissions()
         if (permissions.isEmpty()) {
             associateWatch()
         } else {
+            associateAfterPermissions = true
             permissionLauncher.launch(permissions.toTypedArray())
         }
     }

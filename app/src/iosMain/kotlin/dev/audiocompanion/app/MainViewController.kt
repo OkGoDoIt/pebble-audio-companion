@@ -78,6 +78,10 @@ fun MainViewController(): UIViewController {
                     bootstrap.handle.connectWatch()
                     runtime.refreshDiagnostics()
                 },
+                // iOS surfaces the Bluetooth permission dialog when the central first starts;
+                // connecting is the permission request.
+                requestPermissions = { bootstrap.handle.connectWatch() },
+                setOnboardingComplete = settings::setOnboardingComplete,
                 startReceiver = bootstrap::startReceiver,
                 stopReceiver = bootstrap::stopReceiver,
                 setBackgroundReceiverEnabled = { enabled ->

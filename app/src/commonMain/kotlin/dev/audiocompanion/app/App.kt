@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import dev.audiocompanion.app.ui.AiScreen
 import dev.audiocompanion.app.ui.AppActions
 import dev.audiocompanion.app.ui.LibraryScreen
+import dev.audiocompanion.app.ui.OnboardingScreen
 import dev.audiocompanion.app.ui.PrimaryAction
 import dev.audiocompanion.app.ui.SettingsScreen
 import dev.audiocompanion.app.ui.TodayScreen
@@ -74,6 +75,17 @@ fun App(
         val currentDiagnostics = diagnostics.collectAsState().value
         val currentSettings = settings.collectAsState().value
         val currentLocalModel = localModelState.collectAsState().value
+
+        if (!currentSettings.onboardingComplete) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                OnboardingScreen(
+                    sessionState = state,
+                    settings = currentSettings,
+                    actions = actions,
+                )
+            }
+            return@MaterialTheme
+        }
 
         var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
         var librarySegmentId by rememberSaveable { mutableStateOf<String?>(null) }
