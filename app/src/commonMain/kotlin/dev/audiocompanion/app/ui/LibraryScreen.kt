@@ -215,7 +215,7 @@ private fun LibrarySegmentRow(
                 Text(
                     text = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = segmentStateColor(meta),
                 )
             }
             gapSummary(meta)?.let { summary ->
@@ -294,7 +294,7 @@ fun SegmentDetailScreen(
         Text(
             text = if (meta.isOpen) "Recording now" else transcriptionStateLabel(meta.transcriptionState),
             style = MaterialTheme.typography.bodyMedium,
-            color = if (meta.isOpen) StatusColors.recording else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = segmentStateColor(meta),
         )
 
         if (meta.frameCount > 0) {

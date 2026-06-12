@@ -308,7 +308,7 @@ fun TimelineSegmentRow(
                     Text(
                         text = item.stateLabel,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (meta.isOpen) StatusColors.recording else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = segmentStateColor(meta),
                     )
                 }
                 item.gapSummary?.let { summary ->
@@ -334,4 +334,11 @@ fun TimelineSegmentRow(
             }
         }
     }
+}
+
+@Composable
+fun segmentStateColor(meta: SegmentMeta) = when {
+    meta.isFullyTranscribed -> StatusColors.info
+    meta.isOpen -> StatusColors.recording
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
