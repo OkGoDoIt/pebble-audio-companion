@@ -39,6 +39,8 @@ class AppActions(
     val loadTranscript: (segmentId: String) -> SegmentTranscript? = { null },
     /** Rolling live transcript preview of a still-recording segment, or null. */
     val loadLiveTranscript: (segmentId: String) -> String? = { null },
+    /** Full live-preview progress (text + transcribed boundary), for waveform coloring. */
+    val loadLiveTranscriptPreview: (segmentId: String) -> dev.audiocompanion.app.LiveTranscriptPreview? = { null },
     val loadAnnotation: (segmentId: String) -> SegmentAnnotation? = { null },
     val loadAiOutputs: () -> List<AiOutput> = { emptyList() },
     // Content management

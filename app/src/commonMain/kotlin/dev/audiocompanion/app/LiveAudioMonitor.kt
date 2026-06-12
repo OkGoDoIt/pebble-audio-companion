@@ -60,6 +60,8 @@ data class WaveformBar(
     val state: WaveformBarState,
     /** Segment the audio belongs to, for transcribed-state coloring in the UI. */
     val segmentId: String?,
+    /** Highest stream sample index in this bucket; compares against the live-transcribed boundary. */
+    val maxSampleIndex: ULong? = null,
 )
 
 /**
@@ -82,12 +84,14 @@ class LiveAudioMonitor(
         val segmentId: String?,
         val payload: ByteArray?,
         val gapDurationMs: Long,
+        val sampleIndex: ULong? = null,
     )
 
     private class BarAccum(val timeMs: Long, var segmentId: String?) {
         var sumSquares: Double = 0.0
         var sampleCount: Int = 0
         var hasGap: Boolean = false
+        var maxSampleIndex: ULong? = null
     }
 
     private val mutex = Mutex()
@@ -109,6 +113,7 @@ class LiveAudioMonitor(
                         segmentId = segmentId,
                         payload = frame.payload,
                         gapDurationMs = 0,
+                        sampleIndex = frame.sampleIndex,
                     ),
                 )
             }
@@ -184,6 +189,9 @@ class LiveAudioMonitor(
                     bucket.sumSquares += sumSquares
                     // When no decoder exists, count the frame anyway so presence still renders.
                     bucket.sampleCount += if (available > 0) available else frameSamples
+                    entry.sampleIndex?.let { sample ->
+                        bucket.maxSampleIndex = maxOf(bucket.maxSampleIndex ?: sample, sample)
+                    }
                 } else {
                     var t = entry.timeMs
                     val end = entry.timeMs + entry.gapDurationMs
@@ -230,6 +238,7 @@ class LiveAudioMonitor(
                 amplitude = sqrt((rms / Short.MAX_VALUE).coerceIn(0.0, 1.0)).toFloat(),
                 state = state,
                 segmentId = accum.segmentId,
+                maxSampleIndex = accum.maxSampleIndex,
             )
         }
     }

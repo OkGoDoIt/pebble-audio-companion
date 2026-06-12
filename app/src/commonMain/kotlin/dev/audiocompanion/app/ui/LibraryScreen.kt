@@ -50,6 +50,7 @@ fun LibraryScreen(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
     liveTranscriptOf: (String) -> String? = { null },
+    liveTranscribedFrameCountOf: (String) -> Long? = { null },
     annotationOf: (String) -> SegmentAnnotation?,
     nowMs: Long,
     playback: PlaybackUiState,
@@ -70,6 +71,7 @@ fun LibraryScreen(
             meta = selected,
             transcript = transcriptOf(selected.segmentId),
             liveTranscript = liveTranscriptOf(selected.segmentId),
+            liveTranscribedFrameCount = liveTranscribedFrameCountOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
             nowMs = nowMs,
             playback = playback,
@@ -224,6 +226,8 @@ fun SegmentDetailScreen(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
     liveTranscript: String? = null,
+    /** Live-transcribed frame count of the open segment, for waveform coloring. */
+    liveTranscribedFrameCount: Long? = null,
     annotation: SegmentAnnotation?,
     nowMs: Long,
     playback: PlaybackUiState,
@@ -296,8 +300,16 @@ fun SegmentDetailScreen(
                     onSeekFraction = { fraction ->
                         onSeekPlayback(meta.segmentId, (fraction * wave.mediaDurationMs).toLong())
                     },
+                    // Blue = transcribed: the whole bar once the final transcript exists, or
+                    // the live-transcribed prefix while still recording.
+                    transcribedFraction = when {
+                        meta.isFullyTranscribed -> 1f
+                        liveTranscribedFrameCount != null && meta.frameCount > 0 ->
+                            (liveTranscribedFrameCount.toFloat() / meta.frameCount).coerceIn(0f, 1f)
+                        else -> null
+                    },
                 )
-                WaveformLegend(showTranscribed = false)
+                WaveformLegend(showTranscribed = true)
             } ?: Text(
                 text = "Preparing waveform…",
                 style = MaterialTheme.typography.bodySmall,

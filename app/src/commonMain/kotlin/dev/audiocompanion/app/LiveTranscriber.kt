@@ -19,6 +19,8 @@ data class LiveTranscriptPreview(
     val text: String,
     /** Frame-log records consumed so far (index into readFrames, not a sequence number). */
     val transcribedFrameCount: Int,
+    /** Stream sample index the preview has consumed up to (for waveform coloring). */
+    val lastSampleIndexExclusive: ULong,
     val updatedAtMs: Long,
 )
 
@@ -71,6 +73,8 @@ class LiveTranscriber(
     fun textFor(segmentId: String): String? =
         _previews.value[segmentId]?.text?.takeIf { it.isNotBlank() }
 
+    fun previewFor(segmentId: String): LiveTranscriptPreview? = _previews.value[segmentId]
+
     /** True when the open segment has enough new audio for another pass (drives loop cadence). */
     fun hasPendingWork(): Boolean {
         val segmentId = openSegmentId() ?: return false
@@ -117,6 +121,7 @@ class LiveTranscriber(
                 segmentId = segmentId,
                 text = combined,
                 transcribedFrameCount = done + chunk.size,
+                lastSampleIndexExclusive = chunk.last().sampleIndex + meta.frameSamples.toULong(),
                 updatedAtMs = nowMs(),
             ),
         )

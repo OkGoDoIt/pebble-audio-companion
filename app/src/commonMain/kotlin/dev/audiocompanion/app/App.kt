@@ -135,6 +135,9 @@ fun App(
         val liveTranscripts = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadLiveTranscript(it.segmentId) }
         }
+        val livePreviews = remember(currentDiagnostics, tab, nowTick) {
+            segments.associate { it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId) }
+        }
         val annotations = remember(currentDiagnostics, tab, nowTick) {
             segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
         }
@@ -185,7 +188,10 @@ fun App(
                         playback = currentPlayback,
                         isSegmentTranscribed = { segmentId ->
                             segments.firstOrNull { it.segmentId == segmentId }
-                                ?.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Complete
+                                ?.isFullyTranscribed == true
+                        },
+                        liveTranscribedSampleIndex = { segmentId ->
+                            livePreviews[segmentId]?.lastSampleIndexExclusive
                         },
                         onPrimaryAction = onPrimaryAction,
                         onOpenSegment = { segmentId ->
@@ -201,6 +207,9 @@ fun App(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
                         liveTranscriptOf = { liveTranscripts[it] },
+                        liveTranscribedFrameCountOf = { segmentId ->
+                            livePreviews[segmentId]?.transcribedFrameCount?.toLong()
+                        },
                         annotationOf = { annotations[it] },
                         nowMs = nowMs,
                         playback = currentPlayback,

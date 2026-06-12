@@ -224,6 +224,10 @@ class AudioCompanionRuntime(
      */
     fun liveTranscript(segmentId: String): String? = liveTranscriber?.textFor(segmentId)
 
+    /** Full live-preview progress (text + transcribed boundary) for waveform coloring. */
+    fun liveTranscriptPreview(segmentId: String): LiveTranscriptPreview? =
+        liveTranscriber?.previewFor(segmentId)
+
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 
     fun annotation(segmentId: String): SegmentAnnotation? = annotationStore.load(segmentId)

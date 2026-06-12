@@ -112,8 +112,11 @@ fun TodayScreen(
     nowMs: Long,
     waveformBars: List<dev.audiocompanion.app.WaveformBar>,
     waveformWindowMs: Long,
+    waveformBarMs: Long = 250,
     playback: PlaybackUiState,
     isSegmentTranscribed: (String) -> Boolean,
+    /** Live-transcribed boundary per segment (sample index), for waveform coloring. */
+    liveTranscribedSampleIndex: (String) -> ULong? = { null },
     onPrimaryAction: (PrimaryAction) -> Unit,
     onOpenSegment: (String) -> Unit,
     onPlaySegment: (String) -> Unit,
@@ -145,6 +148,8 @@ fun TodayScreen(
                 nowMs = nowMs,
                 isSegmentTranscribed = isSegmentTranscribed,
                 modifier = Modifier.padding(vertical = 4.dp),
+                barMs = waveformBarMs,
+                transcribedThroughSampleIndex = liveTranscribedSampleIndex,
             )
         }
         if (playback.segmentId != null) {

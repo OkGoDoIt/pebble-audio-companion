@@ -40,17 +40,29 @@ fun LiveWaveform(
     nowMs: Long,
     isSegmentTranscribed: (String) -> Boolean,
     modifier: Modifier = Modifier,
+    barMs: Long = 250,
+    /** Live-transcribed boundary per segment: bars at/before it render as transcribed. */
+    transcribedThroughSampleIndex: (String) -> ULong? = { null },
 ) {
     val recordedColor = MaterialTheme.colorScheme.primary
     Column(modifier = modifier.fillMaxWidth()) {
-        Canvas(modifier = Modifier.fillMaxWidth().height(56.dp)) {
+        // Same visual language as the Library segment waveform: thin rounded bars around a
+        // center line, one per time bucket.
+        Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
             val width = size.width
             val centerY = size.height / 2f
-            val barWidth = (width * 1000f / windowMs).coerceAtLeast(1.5f)
+            val barWidth = (width * barMs.toFloat() / windowMs * 0.8f).coerceAtLeast(1f)
             for (bar in bars) {
                 val age = nowMs - bar.timeMs
                 if (age < 0 || age > windowMs) continue
                 val x = width - (age.toFloat() / windowMs) * width
+                val transcribed = bar.segmentId != null && (
+                    isSegmentTranscribed(bar.segmentId) ||
+                        bar.maxSampleIndex?.let { sample ->
+                            transcribedThroughSampleIndex(bar.segmentId)
+                                ?.let { boundary -> sample < boundary } == true
+                        } == true
+                    )
                 val color: Color
                 val halfHeight: Float
                 when {
@@ -62,7 +74,7 @@ fun LiveWaveform(
                         color = StatusColors.neutral
                         halfHeight = (centerY * 0.06f).coerceAtLeast(1f)
                     }
-                    bar.segmentId?.let(isSegmentTranscribed) == true -> {
+                    transcribed -> {
                         color = StatusColors.info
                         halfHeight = (centerY * bar.amplitude).coerceAtLeast(2f)
                     }
@@ -75,7 +87,7 @@ fun LiveWaveform(
                     color = color,
                     start = Offset(x, centerY - halfHeight),
                     end = Offset(x, centerY + halfHeight),
-                    strokeWidth = barWidth * 0.8f,
+                    strokeWidth = barWidth,
                     cap = StrokeCap.Round,
                 )
             }
@@ -142,6 +154,8 @@ fun SegmentWaveformView(
     positionFraction: Float?,
     onSeekFraction: ((Float) -> Unit)?,
     modifier: Modifier = Modifier,
+    /** Audio bars left of this media-time fraction render as transcribed (blue). */
+    transcribedFraction: Float? = null,
 ) {
     val recordedColor = MaterialTheme.colorScheme.primary
     val cursorColor = MaterialTheme.colorScheme.onSurface
@@ -177,12 +191,18 @@ fun SegmentWaveformView(
             val stroke = (step * 0.8f).coerceAtLeast(1f)
             waveform.bars.forEachIndexed { index, bar ->
                 val x = step * (index + 0.5f)
+                val transcribed = transcribedFraction != null &&
+                    (index + 0.5f) / waveform.bars.size <= transcribedFraction
                 val color: Color
                 val halfHeight: Float
-                when (bar.state) {
-                    WaveformBarState.Silence -> {
+                when {
+                    bar.state == WaveformBarState.Silence -> {
                         color = StatusColors.neutral
                         halfHeight = (centerY * 0.06f).coerceAtLeast(1f)
+                    }
+                    transcribed -> {
+                        color = StatusColors.info
+                        halfHeight = (centerY * bar.amplitude).coerceAtLeast(2f)
                     }
                     else -> {
                         color = recordedColor

@@ -245,10 +245,11 @@ fun gapSummary(meta: SegmentMeta): String? {
         reasons.size == 1 -> reasons.single()
         else -> "several reasons"
     }
-    return if (totalMs > 0) {
-        "Missing ~${Formatting.duration(totalMs)} ($reasonText)"
-    } else {
-        "Some audio is missing ($reasonText)"
+    return when {
+        // Sub-second losses would render as the absurd "Missing ~0 sec".
+        totalMs in 1..999 -> "Missing <1 sec ($reasonText)"
+        totalMs > 0 -> "Missing ~${Formatting.duration(totalMs)} ($reasonText)"
+        else -> "Some audio is missing ($reasonText)"
     }
 }
 
