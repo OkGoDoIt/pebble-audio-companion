@@ -119,6 +119,7 @@ class IosAudioCompanionRuntimeFactory(
             ),
             nowMs = nowMs,
             aiRouter = aiRouter,
+            liveMonitor = LiveAudioMonitor(decoder = SpeexLiveFrameDecoder(), nowMs = nowMs),
         )
     }
 

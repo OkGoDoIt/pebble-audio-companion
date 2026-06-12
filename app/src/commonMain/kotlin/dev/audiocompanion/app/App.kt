@@ -15,6 +15,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +69,8 @@ fun App(
         MutableStateFlow(AudioCompanionSettings()),
     localModelState: StateFlow<LocalTranscriptionModelState> =
         MutableStateFlow(LocalTranscriptionModelState(modelName = "local", modelVersion = "unknown")),
+    waveformBars: StateFlow<List<WaveformBar>> = MutableStateFlow(emptyList()),
+    waveformWindowMs: Long = 60_000,
     actions: AppActions = AppActions(),
 ) {
     MaterialTheme {
@@ -89,6 +92,13 @@ fun App(
 
         var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
         var librarySegmentId by rememberSaveable { mutableStateOf<String?>(null) }
+
+        // The live waveform decodes only while Today is visible (ux plan Section 8).
+        DisposableEffect(tab) {
+            actions.setWaveformActive(tab == AppTab.Today)
+            onDispose { actions.setWaveformActive(false) }
+        }
+        val currentWaveformBars = waveformBars.collectAsState().value
 
         val nowMs = Clock.System.now().toEpochMilliseconds()
         // Durable content snapshots, re-read when anything observable changes.
@@ -141,6 +151,12 @@ fun App(
                             annotationOf = { annotations[it] },
                         ),
                         nowMs = nowMs,
+                        waveformBars = currentWaveformBars,
+                        waveformWindowMs = waveformWindowMs,
+                        isSegmentTranscribed = { segmentId ->
+                            segments.firstOrNull { it.segmentId == segmentId }
+                                ?.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Complete
+                        },
                         onPrimaryAction = onPrimaryAction,
                         onOpenSegment = { segmentId ->
                             librarySegmentId = segmentId

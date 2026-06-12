@@ -67,6 +67,9 @@ class MainActivity : ComponentActivity() {
                 diagnostics = runtime.diagnostics,
                 settings = settingsRepository.settings,
                 localModelState = handle.localModelManager.state,
+                waveformBars = runtime.liveMonitor?.bars
+                    ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
+                waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
                 actions = AppActions(
                     pairWatch = { requestPermissionsAndAssociate() },
                     requestPermissions = { requestPermissionsOnly() },
@@ -86,6 +89,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     refreshDiagnostics = { runtime.refreshDiagnostics() },
+                    setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
                     loadSegments = { runtime.listSegmentsForUi() },
                     loadTranscript = runtime::transcript,
                     loadAnnotation = runtime::annotation,

@@ -71,6 +71,8 @@ class AudioCompanionRuntime(
     private val nowMs: () -> Long,
     /** Null when the app ships without any AI provider wiring (AI screen shows setup state). */
     private val aiRouter: AiModeRouter? = null,
+    /** Live waveform source; null disables the tee (e.g. in receiver-only tests). */
+    val liveMonitor: LiveAudioMonitor? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -79,7 +81,7 @@ class AudioCompanionRuntime(
     )
     private val session = AudioReceiverSession(
         link = link,
-        sink = store,
+        sink = liveMonitor?.let { TeeSegmentSink(store, it, nowMs) } ?: store,
         policy = retention,
         resumeStore = resumeStore,
         config = receiverConfig,

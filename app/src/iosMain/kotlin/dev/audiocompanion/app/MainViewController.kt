@@ -73,6 +73,9 @@ fun MainViewController(): UIViewController {
             diagnostics = runtime.diagnostics,
             settings = settings.settings,
             localModelState = bootstrap.handle.localModelManager.state,
+            waveformBars = runtime.liveMonitor?.bars
+                ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
+            waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
             actions = AppActions(
                 pairWatch = {
                     bootstrap.handle.connectWatch()
@@ -92,6 +95,7 @@ fun MainViewController(): UIViewController {
                     }
                 },
                 refreshDiagnostics = runtime::refreshDiagnostics,
+                setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
                 loadSegments = runtime::listSegmentsForUi,
                 loadTranscript = runtime::transcript,
                 loadAnnotation = runtime::annotation,

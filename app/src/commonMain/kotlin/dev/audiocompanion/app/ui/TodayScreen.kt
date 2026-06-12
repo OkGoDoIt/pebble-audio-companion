@@ -100,6 +100,9 @@ fun TodayScreen(
     diagnostics: AudioCompanionDiagnostics,
     timeline: List<TimelineItem>,
     nowMs: Long,
+    waveformBars: List<dev.audiocompanion.app.WaveformBar>,
+    waveformWindowMs: Long,
+    isSegmentTranscribed: (String) -> Boolean,
     onPrimaryAction: (PrimaryAction) -> Unit,
     onOpenSegment: (String) -> Unit,
 ) {
@@ -121,6 +124,15 @@ fun TodayScreen(
             },
             onPrimaryAction = onPrimaryAction,
         )
+        if (waveformBars.isNotEmpty()) {
+            LiveWaveform(
+                bars = waveformBars,
+                windowMs = waveformWindowMs,
+                nowMs = nowMs,
+                isSegmentTranscribed = isSegmentTranscribed,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+        }
         HorizontalDivider()
         if (timeline.isEmpty()) {
             TodayEmptyState(status)
