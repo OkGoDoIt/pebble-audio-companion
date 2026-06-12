@@ -3,6 +3,7 @@ package dev.audiocompanion.app
 import dev.audiocompanion.storage.FrameRecord
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SpeexFrameDecoder
+import dev.audiocompanion.transcription.TranscriptSegment
 import dev.audiocompanion.transcription.TranscriptionException
 import dev.audiocompanion.transcription.TranscriptionModeRouter
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,8 @@ import kotlin.math.min
 data class LiveTranscriptPreview(
     val segmentId: String,
     val text: String,
+    /** Timed text spans from completed live chunks, relative to this segment's first sample. */
+    val segments: List<TranscriptSegment> = emptyList(),
     /** Frame-log records consumed so far (index into readFrames, not a sequence number). */
     val transcribedFrameCount: Int,
     /** Stream sample index the preview has consumed up to (for waveform coloring). */
@@ -101,17 +104,30 @@ class LiveTranscriber(
         if (frames.size - done < minChunkFrames) return false
         val chunk = frames.subList(done, min(frames.size, done + maxChunkFrames))
 
-        val chunkText = try {
-            router.transcribe(decodePcm(meta, chunk), meta.sampleRateHz.toInt()).text.trim()
+        val result = try {
+            router.transcribe(decodePcm(meta, chunk), meta.sampleRateHz.toInt())
         } catch (e: CancellationException) {
             throw e
         } catch (_: TranscriptionException.NoSpeechDetected) {
-            "" // Quiet audio is a valid outcome: advance past it without text.
+            null // Quiet audio is a valid outcome: advance past it without text.
         } catch (_: Exception) {
             lastFailureAtMs = nowMs()
             return false
         }
         lastFailureAtMs = 0
+        val chunkText = result?.text?.trim().orEmpty()
+        val chunkSegments = result?.segments
+            ?.takeIf { it.isNotEmpty() }
+            ?.map { it.offsetBy(chunkStartMs(meta, chunk)) }
+            ?: chunkText.takeIf { it.isNotBlank() }?.let {
+                listOf(
+                    TranscriptSegment(
+                        text = it,
+                        startMs = chunkStartMs(meta, chunk),
+                        endMs = chunkEndMs(meta, chunk),
+                    ),
+                )
+            }.orEmpty()
 
         val combined = listOfNotNull(existing?.text, chunkText.takeIf { it.isNotBlank() })
             .joinToString(" ")
@@ -120,6 +136,7 @@ class LiveTranscriber(
             LiveTranscriptPreview(
                 segmentId = segmentId,
                 text = combined,
+                segments = existing?.segments.orEmpty() + chunkSegments,
                 transcribedFrameCount = done + chunk.size,
                 lastSampleIndexExclusive = chunk.last().sampleIndex + meta.frameSamples.toULong(),
                 updatedAtMs = nowMs(),
@@ -148,4 +165,19 @@ class LiveTranscriber(
         }
         _previews.value = next
     }
+
+    private fun chunkStartMs(meta: SegmentMeta, chunk: List<FrameRecord>): Long =
+        sampleOffsetMs(meta, chunk.first().sampleIndex)
+
+    private fun chunkEndMs(meta: SegmentMeta, chunk: List<FrameRecord>): Long =
+        sampleOffsetMs(meta, chunk.last().sampleIndex + meta.frameSamples.toULong())
+
+    private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
+        val base = meta.firstSampleIndex ?: sampleIndex
+        val samples = if (sampleIndex >= base) sampleIndex - base else 0UL
+        return (samples.toLong() * 1_000L) / meta.sampleRateHz.toLong()
+    }
+
+    private fun TranscriptSegment.offsetBy(offsetMs: Long): TranscriptSegment =
+        copy(startMs = startMs + offsetMs, endMs = endMs + offsetMs)
 }

@@ -14,6 +14,8 @@ data class RoutedTranscription(
     val modeUsed: TranscriptionMode,
     val providerId: String,
     val modelUsed: String?,
+    val segments: List<TranscriptSegment> = emptyList(),
+    val words: List<TranscriptWord> = emptyList(),
 )
 
 /**
@@ -99,6 +101,8 @@ class TranscriptionModeRouter(
             modeUsed = modeUsed,
             providerId = result.providerId,
             modelUsed = result.modelUsed,
+            segments = result.segments,
+            words = result.words,
         )
     }
 }

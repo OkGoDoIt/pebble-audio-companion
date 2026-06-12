@@ -20,6 +20,8 @@ data class SegmentTranscript(
     val providerId: String,
     val modelUsed: String? = null,
     val createdAtMs: Long,
+    val segments: List<TranscriptSegment> = emptyList(),
+    val words: List<TranscriptWord> = emptyList(),
 )
 
 /**
@@ -48,6 +50,8 @@ class FileTranscriptStore(
             providerId = result.providerId,
             modelUsed = result.modelUsed,
             createdAtMs = nowMs(),
+            segments = result.segments,
+            words = result.words,
         )
         write(transcript)
         return transcript

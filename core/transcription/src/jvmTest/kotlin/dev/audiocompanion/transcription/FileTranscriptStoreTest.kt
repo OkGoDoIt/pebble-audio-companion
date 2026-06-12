@@ -27,6 +27,8 @@ class FileTranscriptStoreTest {
         modeUsed = TranscriptionMode.LocalFirst,
         providerId = "local",
         modelUsed = "model-1",
+        segments = listOf(TranscriptSegment(text = "hello", startMs = 1_000, endMs = 2_000)),
+        words = listOf(TranscriptWord(text = "hello", startMs = 1_000, endMs = 1_400)),
     )
 
     @Test
@@ -41,6 +43,8 @@ class FileTranscriptStoreTest {
         assertEquals("local", loaded?.providerId)
         assertEquals("model-1", loaded?.modelUsed)
         assertEquals("seg-1", loaded?.segmentId)
+        assertEquals(listOf(TranscriptSegment(text = "hello", startMs = 1_000, endMs = 2_000)), loaded?.segments)
+        assertEquals(listOf(TranscriptWord(text = "hello", startMs = 1_000, endMs = 1_400)), loaded?.words)
     }
 
     @Test

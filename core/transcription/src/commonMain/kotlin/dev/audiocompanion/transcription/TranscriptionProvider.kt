@@ -28,6 +28,25 @@ data class TranscriptionResult(
     val providerId: String,
     /** Model/version identifier for provenance records. */
     val modelUsed: String?,
+    /** Provider-supplied phrase/window timings, relative to the start of the audio. */
+    val segments: List<TranscriptSegment> = emptyList(),
+    /** Provider-supplied word timings, when available. */
+    val words: List<TranscriptWord> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+data class TranscriptSegment(
+    val text: String,
+    val startMs: Long,
+    val endMs: Long,
+    val speaker: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class TranscriptWord(
+    val text: String,
+    val startMs: Long,
+    val endMs: Long,
 )
 
 sealed class TranscriptionException(message: String, cause: Throwable? = null) :

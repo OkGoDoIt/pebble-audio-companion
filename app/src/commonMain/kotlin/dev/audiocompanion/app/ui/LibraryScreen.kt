@@ -1,15 +1,20 @@
 package dev.audiocompanion.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -17,6 +22,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,14 +36,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
+import dev.audiocompanion.app.LiveTranscriptPreview
 import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
+import dev.audiocompanion.transcription.TranscriptSegment
 import kotlinx.coroutines.launch
 
 enum class LibraryFilter(val label: String) {
@@ -52,6 +61,7 @@ fun LibraryScreen(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
     liveTranscriptOf: (String) -> String? = { null },
+    livePreviewOf: (String) -> LiveTranscriptPreview? = { null },
     liveTranscribedFrameCountOf: (String) -> Long? = { null },
     annotationOf: (String) -> SegmentAnnotation?,
     settings: AudioCompanionSettings,
@@ -76,6 +86,7 @@ fun LibraryScreen(
             meta = selected,
             transcript = transcriptOf(selected.segmentId),
             liveTranscript = liveTranscriptOf(selected.segmentId),
+            livePreview = livePreviewOf(selected.segmentId),
             liveTranscribedFrameCount = liveTranscribedFrameCountOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
             settings = settings,
@@ -234,6 +245,7 @@ fun SegmentDetailScreen(
     meta: SegmentMeta,
     transcript: SegmentTranscript?,
     liveTranscript: String? = null,
+    livePreview: LiveTranscriptPreview? = null,
     /** Live-transcribed frame count of the open segment, for waveform coloring. */
     liveTranscribedFrameCount: Long? = null,
     annotation: SegmentAnnotation?,
@@ -393,10 +405,20 @@ fun SegmentDetailScreen(
         }
         when {
             transcript != null -> {
-                TranscriptText(text = transcript.text)
+                TranscriptTimeline(
+                    meta = meta,
+                    text = transcript.text,
+                    segments = transcript.segments,
+                    onSeekMs = { onSeekPlayback(meta.segmentId, it) },
+                )
             }
             !liveTranscript.isNullOrBlank() -> {
-                TranscriptText(text = liveTranscript)
+                TranscriptTimeline(
+                    meta = meta,
+                    text = liveTranscript,
+                    segments = livePreview?.segments.orEmpty(),
+                    onSeekMs = { onSeekPlayback(meta.segmentId, it) },
+                )
                 Text(
                     text = if (meta.isOpen) {
                         "Live transcript — updates while the recording continues. The final " +
@@ -458,36 +480,274 @@ fun SegmentDetailScreen(
 }
 
 @Composable
-private fun TranscriptText(text: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        transcriptParagraphs(text).forEach { paragraph ->
-            Text(text = paragraph, style = MaterialTheme.typography.bodyMedium)
+private fun TranscriptTimeline(
+    meta: SegmentMeta,
+    text: String,
+    segments: List<TranscriptSegment>,
+    onSeekMs: (Long) -> Unit,
+) {
+    val timed = transcriptTimelineItems(meta, segments)
+    if (timed.isEmpty()) {
+        TranscriptParagraphs(text = text)
+        return
+    }
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            timed.forEach { item ->
+                when (item) {
+                    is TranscriptTimelineItem.Speech -> SpeechTimelineRow(item, onSeekMs)
+                    is TranscriptTimelineItem.Pause -> PauseTimelineRow(item)
+                }
+            }
         }
     }
 }
 
-fun transcriptParagraphs(text: String, maxChars: Int = 520): List<String> {
+@Composable
+private fun TranscriptParagraphs(text: String) {
+    val paragraphs = transcriptParagraphs(text)
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            paragraphs.forEachIndexed { index, paragraph ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (paragraphs.size > 1) {
+                        Text(
+                            text = "Transcript section ${index + 1}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StatusColors.info,
+                        )
+                    }
+                    Text(
+                        text = paragraph,
+                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
+                    )
+                }
+                if (index < paragraphs.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpeechTimelineRow(item: TranscriptTimelineItem.Speech, onSeekMs: (Long) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onSeekMs(item.startMs) },
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        TimestampPill(item.startMs)
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
+            item.speaker?.let { speaker ->
+                Text(
+                    text = speaker,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                text = item.text,
+                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PauseTimelineRow(item: TranscriptTimelineItem.Pause) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = if (item.prominent) 8.dp else 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TimestampPill(item.startMs)
+        HorizontalDivider(modifier = Modifier.weight(1f))
+        Surface(
+            color = if (item.missing) StatusColors.warning.copy(alpha = 0.14f)
+            else MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(999.dp),
+        ) {
+            Text(
+                text = item.label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (item.missing) StatusColors.warning else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
+        HorizontalDivider(modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun TimestampPill(ms: Long) {
+    Box(
+        modifier = Modifier
+            .width(54.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(999.dp))
+            .padding(vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = Formatting.duration(ms),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+sealed interface TranscriptTimelineItem {
+    val startMs: Long
+
+    data class Speech(
+        override val startMs: Long,
+        val endMs: Long,
+        val text: String,
+        val speaker: String?,
+    ) : TranscriptTimelineItem
+
+    data class Pause(
+        override val startMs: Long,
+        val durationMs: Long,
+        val missing: Boolean,
+    ) : TranscriptTimelineItem {
+        val prominent: Boolean get() = durationMs >= LONG_PAUSE_MS || missing
+        val label: String
+            get() = if (missing) {
+                "missing audio for ${Formatting.duration(durationMs)}"
+            } else {
+                "quiet for ${Formatting.duration(durationMs)}"
+            }
+    }
+}
+
+fun transcriptTimelineItems(
+    meta: SegmentMeta,
+    segments: List<TranscriptSegment>,
+): List<TranscriptTimelineItem> {
+    val speech = segments
+        .filter { it.text.isNotBlank() }
+        .sortedBy { it.startMs }
+        .map {
+            TranscriptTimelineItem.Speech(
+                startMs = it.startMs.coerceAtLeast(0),
+                endMs = it.endMs.coerceAtLeast(it.startMs),
+                text = it.text.trim(),
+                speaker = it.speaker,
+            )
+        }
+    if (speech.isEmpty()) return emptyList()
+
+    val gaps = meta.gaps.map {
+        TranscriptTimelineItem.Pause(
+            startMs = sampleOffsetMs(meta, it.firstMissingSampleIndex),
+            durationMs = it.missingFrameCount.toLong() * meta.frameDurationMs,
+            missing = true,
+        )
+    }
+    val items = mutableListOf<TranscriptTimelineItem>()
+    var gapIndex = 0
+    var previousSpeechEnd: Long? = null
+    speech.forEach { block ->
+        while (gapIndex < gaps.size && gaps[gapIndex].startMs < block.startMs) {
+            items += gaps[gapIndex++]
+        }
+        previousSpeechEnd?.let { previousEnd ->
+            val pauseMs = block.startMs - previousEnd
+            if (pauseMs >= SHORT_PAUSE_MS) {
+                items += TranscriptTimelineItem.Pause(
+                    startMs = previousEnd,
+                    durationMs = pauseMs,
+                    missing = false,
+                )
+            }
+        }
+        items += block
+        previousSpeechEnd = maxOf(previousSpeechEnd ?: block.endMs, block.endMs)
+    }
+    while (gapIndex < gaps.size) items += gaps[gapIndex++]
+    return items.distinctBy { item ->
+        when (item) {
+            is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
+            is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
+        }
+    }
+}
+
+private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
+    val base = meta.firstSampleIndex ?: sampleIndex
+    val samples = if (sampleIndex >= base) sampleIndex - base else 0UL
+    return (samples.toLong() * 1_000L) / meta.sampleRateHz.toLong()
+}
+
+private const val SHORT_PAUSE_MS = 2_500L
+private const val LONG_PAUSE_MS = 10_000L
+
+fun transcriptParagraphs(
+    text: String,
+    maxChars: Int = 280,
+    maxWords: Int = 34,
+): List<String> {
     val normalized = text.trim().replace('\r', '\n')
     if (normalized.isBlank()) return emptyList()
     val paragraphs = mutableListOf<String>()
     val current = StringBuilder()
-    normalized.split(Regex("\\n{2,}")).forEachIndexed { blockIndex, block ->
-        if (blockIndex > 0 && current.isNotEmpty()) {
+    var currentWords = 0
+    fun flush() {
+        if (current.isNotEmpty()) {
             paragraphs += current.toString()
             current.clear()
+            currentWords = 0
         }
-        for (sentence in sentencesIn(block).map { it.trim() }.filter { it.isNotBlank() }) {
-            if (current.isNotEmpty() && current.length + 1 + sentence.length > maxChars) {
-                paragraphs += current.toString()
-                current.clear()
+    }
+    normalized.split(Regex("\\n{2,}")).forEachIndexed { blockIndex, block ->
+        if (blockIndex > 0) flush()
+        for (sentence in sentencesIn(block).flatMap { readableChunks(it, maxChars, maxWords) }) {
+            val words = wordCount(sentence)
+            if (current.isNotEmpty() &&
+                (current.length + 1 + sentence.length > maxChars || currentWords + words > maxWords)
+            ) {
+                flush()
             }
             if (current.isNotEmpty()) current.append(' ')
             current.append(sentence)
+            currentWords += words
         }
     }
-    if (current.isNotEmpty()) paragraphs += current.toString()
+    flush()
     return paragraphs
 }
+
+private fun readableChunks(text: String, maxChars: Int, maxWords: Int): List<String> {
+    val words = text.replace(Regex(" +"), " ").trim().split(' ').filter { it.isNotBlank() }
+    if (words.isEmpty()) return emptyList()
+    if (text.length <= maxChars && words.size <= maxWords) return listOf(text.trim())
+    val chunks = mutableListOf<String>()
+    val current = mutableListOf<String>()
+    var currentChars = 0
+    fun flush() {
+        if (current.isNotEmpty()) {
+            chunks += current.joinToString(" ")
+            current.clear()
+            currentChars = 0
+        }
+    }
+    for (word in words) {
+        val nextChars = currentChars + word.length + if (current.isEmpty()) 0 else 1
+        if (current.isNotEmpty() && (nextChars > maxChars || current.size >= maxWords)) {
+            flush()
+        }
+        current += word
+        currentChars += word.length + if (current.size == 1) 0 else 1
+    }
+    flush()
+    return chunks
+}
+
+private fun wordCount(text: String): Int =
+    text.split(Regex("\\s+")).count { it.isNotBlank() }
 
 private fun sentencesIn(block: String): List<String> {
     val sentences = mutableListOf<String>()

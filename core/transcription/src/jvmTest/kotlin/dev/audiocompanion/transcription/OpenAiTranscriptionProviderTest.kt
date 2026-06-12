@@ -94,6 +94,46 @@ class OpenAiTranscriptionProviderTest {
     }
 
     @Test
+    fun parsesWhisperVerboseTimestamps() = runTest {
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler {
+                    respond(
+                        content = ByteReadChannel(
+                            """
+                            {
+                              "text": "hello watch",
+                              "segments": [
+                                {"start": 1.25, "end": 2.5, "text": "hello watch"}
+                              ],
+                              "words": [
+                                {"start": 1.25, "end": 1.7, "word": "hello"},
+                                {"start": 1.8, "end": 2.5, "word": "watch"}
+                              ]
+                            }
+                            """.trimIndent(),
+                        ),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }
+        }
+        val provider = OpenAiTranscriptionProvider(
+            client = client,
+            apiKey = { "test-key" },
+            cloudConsent = { true },
+            model = { "whisper-1" },
+        )
+
+        val result = provider.transcribe(flowOf(ByteArray(640) { 1 }), 16_000)
+
+        assertEquals("hello watch", result.text)
+        assertEquals(listOf(TranscriptSegment("hello watch", 1_250, 2_500)), result.segments)
+        assertEquals(listOf(TranscriptWord("hello", 1_250, 1_700), TranscriptWord("watch", 1_800, 2_500)), result.words)
+    }
+
+    @Test
     fun wavEncoderWritesExpectedHeader() {
         val wav = PcmWav.encodeMono16(byteArrayOf(1, 2, 3, 4), 16_000)
 
