@@ -20,6 +20,7 @@ import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
+import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transcription.TranscriptionModeRouter
 import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.ReceiverConfig
@@ -120,11 +121,17 @@ class AndroidAudioCompanionRuntimeFactory(
             nowMs = nowMs,
             aiRouter = aiRouter,
             liveMonitor = LiveAudioMonitor(decoder = SpeexLiveFrameDecoder(), nowMs = nowMs),
+            // Live preview is deliberately local-only: a cloud provider would be called once
+            // per ~8 s chunk. Cloud-only users get their transcript when the segment closes.
             liveTranscriber = LiveTranscriber(
                 openSegmentId = { store.openSegmentId },
                 readMeta = store::readMeta,
                 readFrames = store::readFrames,
-                router = router,
+                router = TranscriptionModeRouter(
+                    local = localProvider,
+                    remote = null,
+                    mode = { TranscriptionMode.LocalOnly },
+                ),
                 nowMs = nowMs,
             ),
             playback = SegmentPlaybackController(

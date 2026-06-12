@@ -35,6 +35,11 @@ data class LiveTranscriptPreview(
  * Chunk boundaries can split words, so the preview may differ slightly from the final
  * transcript; that is an accepted preview tradeoff. Runs on the runtime's single transcription
  * loop, so it never races the closed-segment work for a (possibly single-instance) native model.
+ *
+ * Cost note: callers should pass a router restricted to the LOCAL provider. Routing the preview
+ * through a cloud provider would mean one network call per chunk (~110 per 15-minute segment)
+ * instead of one per closed segment — surprise cost and audio leaving the device far more often
+ * than the user consented to for normal transcription cadence.
  */
 class LiveTranscriber(
     private val openSegmentId: () -> String?,
