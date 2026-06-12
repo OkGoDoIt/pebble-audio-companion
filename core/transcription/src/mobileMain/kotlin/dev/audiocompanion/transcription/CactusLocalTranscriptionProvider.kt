@@ -49,7 +49,12 @@ class CactusLocalTranscriptionProvider(
     private var modelHandle: Long = 0L
     private var initializedModel: String? = null
 
-    override suspend fun isAvailable(): Boolean = isCactusSupported()
+    /**
+     * Available only when the model is already on disk: transcription must never trigger the
+     * (large) model download implicitly — that is an explicit user action in Settings.
+     */
+    override suspend fun isAvailable(): Boolean =
+        isCactusSupported() && modelProvider.isModelDownloaded()
 
     override suspend fun transcribe(
         pcmChunks: Flow<ByteArray>,

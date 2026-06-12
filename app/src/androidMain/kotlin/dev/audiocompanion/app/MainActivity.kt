@@ -131,9 +131,18 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     setRetentionDays = settingsRepository::setRetentionDays,
-                    setTranscriptionMode = settingsRepository::setTranscriptionMode,
-                    setCloudTranscriptionConsent = settingsRepository::setCloudTranscriptionConsent,
-                    setOpenAiApiKey = settingsRepository::setOpenAiApiKey,
+                    setTranscriptionMode = {
+                        settingsRepository.setTranscriptionMode(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
+                    setCloudTranscriptionConsent = {
+                        settingsRepository.setCloudTranscriptionConsent(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
+                    setOpenAiApiKey = {
+                        settingsRepository.setOpenAiApiKey(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
                     setAiMode = settingsRepository::setAiMode,
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
                     refreshLocalModel = handle.localModelManager::refresh,

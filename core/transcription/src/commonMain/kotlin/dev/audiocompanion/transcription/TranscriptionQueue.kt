@@ -74,12 +74,39 @@ class FileTranscriptionQueue(
             .sortedBy { it.createdAtMs }
     }
 
-    /** Oldest Pending task, or a retryable Failed one when no Pending exists. */
+    /**
+     * Oldest Pending task, or a retryable Failed one whose backoff has elapsed. Failed tasks
+     * back off exponentially with [retryBackoffMs] so a persistently failing segment cannot
+     * spin the worker loop.
+     */
     fun nextRunnable(): TranscriptionTask? {
         val tasks = all()
         return tasks.firstOrNull { it.state == TaskState.Pending }
-            ?: tasks.firstOrNull { it.state == TaskState.Failed && it.retryable }
+            ?: tasks.firstOrNull {
+                it.state == TaskState.Failed && it.retryable &&
+                    nowMs() >= it.updatedAtMs + retryBackoffMs(it.attempts)
+            }
     }
+
+    /**
+     * Soonest time a Failed-retryable task becomes runnable, or null when nothing is waiting on
+     * backoff. Lets the worker sleep precisely instead of polling.
+     */
+    fun nextRetryAtMs(): Long? = all()
+        .filter { it.state == TaskState.Failed && it.retryable }
+        .minOfOrNull { it.updatedAtMs + retryBackoffMs(it.attempts) }
+
+    /**
+     * Tasks parked as Disabled (no provider was usable when they ran) go back to Pending —
+     * called when transcription becomes available again (model downloaded, key added, mode
+     * changed). Returns the segment ids that were reset.
+     */
+    fun resetDisabled(): List<String> =
+        all().filter { it.state == TaskState.Disabled }
+            .map { task ->
+                write(task.copy(state = TaskState.Pending, updatedAtMs = nowMs()))
+                task.segmentId
+            }
 
     fun markRunning(segmentId: String): TranscriptionTask? = update(segmentId) {
         it.copy(state = TaskState.Running, attempts = it.attempts + 1)
@@ -102,7 +129,11 @@ class FileTranscriptionQueue(
 
     fun markFailed(segmentId: String, error: String, retryable: Boolean): TranscriptionTask? =
         update(segmentId) {
-            it.copy(state = TaskState.Failed, lastError = error, retryable = retryable)
+            it.copy(
+                state = TaskState.Failed,
+                lastError = error,
+                retryable = retryable && it.attempts < MAX_ATTEMPTS,
+            )
         }
 
     fun markDisabled(segmentId: String): TranscriptionTask? = update(segmentId) {
@@ -144,5 +175,16 @@ class FileTranscriptionQueue(
             sink.write(json.encodeToString(TranscriptionTask.serializer(), task).encodeToByteArray())
         }
         fileSystem.atomicMove(tmp, taskPath(task.segmentId))
+    }
+
+    companion object {
+        /** After this many attempts a failing task stops retrying and stays Failed. */
+        const val MAX_ATTEMPTS = 8
+
+        /** Exponential backoff: 30 s, 1 m, 2 m, … capped at 30 m. */
+        fun retryBackoffMs(attempts: Int): Long {
+            val exponent = (attempts - 1).coerceIn(0, 6)
+            return (30_000L shl exponent).coerceAtMost(30 * 60_000L)
+        }
     }
 }

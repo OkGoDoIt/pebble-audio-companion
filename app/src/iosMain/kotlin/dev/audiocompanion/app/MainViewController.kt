@@ -126,9 +126,18 @@ fun MainViewController(): UIViewController {
                     }
                 },
                 setRetentionDays = settings::setRetentionDays,
-                setTranscriptionMode = settings::setTranscriptionMode,
-                setCloudTranscriptionConsent = settings::setCloudTranscriptionConsent,
-                setOpenAiApiKey = settings::setOpenAiApiKey,
+                setTranscriptionMode = {
+                    settings.setTranscriptionMode(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
+                setCloudTranscriptionConsent = {
+                    settings.setCloudTranscriptionConsent(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
+                setOpenAiApiKey = {
+                    settings.setOpenAiApiKey(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
                 setAiMode = settings::setAiMode,
                 setRemoteAiConsent = settings::setRemoteAiConsent,
                 refreshLocalModel = bootstrap.handle.localModelManager::refresh,

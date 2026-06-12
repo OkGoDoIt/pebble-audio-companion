@@ -26,11 +26,12 @@ import dev.audiocompanion.transport.ReceiverResumeStore
 import dev.audiocompanion.transport.SegmentCloseReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class AudioCompanionDiagnostics(
     val segmentCount: Int = 0,
@@ -96,6 +97,7 @@ class AudioCompanionRuntime(
     private val _diagnostics = MutableStateFlow(AudioCompanionDiagnostics())
     private var sessionJob: Job? = null
     private var transcriptionJob: Job? = null
+    private val transcriptionWakeups = Channel<Unit>(Channel.CONFLATED)
 
     fun recoverDurableState() {
         store.recover()
@@ -243,6 +245,11 @@ class AudioCompanionRuntime(
 
     private suspend fun runTranscriptionLoop() {
         while (true) {
+            // Segments parked while no provider was usable become eligible again the moment
+            // one is (model downloaded, key added, mode changed).
+            if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) {
+                refreshDiagnostics()
+            }
             enqueueClosedSegmentsForTranscription()
             var processed = false
             while (transcriptionProcessor.processNext() != null) {
@@ -254,8 +261,21 @@ class AudioCompanionRuntime(
             if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
                 refreshDiagnostics()
             }
-            delay(if (processed) 1_000 else TRANSCRIPTION_POLL_MS)
+            // Sleep until the poll interval elapses, a failed task's backoff expires, or a
+            // config change (model downloaded, key/mode/consent changed) wakes the loop.
+            val sleepMs = if (processed) {
+                1_000L
+            } else {
+                val retryInMs = transcriptionProcessor.nextRetryAtMs()?.let { it - nowMs() }
+                retryInMs?.coerceIn(1_000L, TRANSCRIPTION_POLL_MS) ?: TRANSCRIPTION_POLL_MS
+            }
+            withTimeoutOrNull(sleepMs) { transcriptionWakeups.receive() }
         }
+    }
+
+    /** Wakes the transcription loop early; call after transcription settings change. */
+    fun notifyTranscriptionConfigChanged() {
+        transcriptionWakeups.trySend(Unit)
     }
 
     private fun enqueueClosedSegmentsForTranscription() {

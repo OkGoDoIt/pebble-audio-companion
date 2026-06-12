@@ -59,19 +59,70 @@ class FileTranscriptionQueueTest {
     }
 
     @Test
-    fun failedRetryableTasksAreRunnable_nonRetryableAreNot() {
+    fun failedRetryableTasksAreRunnable_afterBackoff_nonRetryableAreNot() {
         val root = tempRoot()
         val q = queue(root)
         q.enqueue("seg-1")
         q.markRunning("seg-1")
         q.markFailed("seg-1", "timeout", retryable = true)
+
+        // Inside the backoff window the failed task is NOT runnable (no hot retry loop).
+        assertNull(q.nextRunnable())
+        assertEquals(clock + FileTranscriptionQueue.retryBackoffMs(1), q.nextRetryAtMs())
+
+        clock += FileTranscriptionQueue.retryBackoffMs(1)
         assertEquals("seg-1", q.nextRunnable()?.segmentId)
 
         q.markRunning("seg-1")
         q.markFailed("seg-1", "decode error", retryable = false)
+        clock += FileTranscriptionQueue.retryBackoffMs(2)
         assertNull(q.nextRunnable())
+        assertNull(q.nextRetryAtMs())
         assertEquals(2, q.load("seg-1")?.attempts)
         assertEquals("decode error", q.load("seg-1")?.lastError)
+    }
+
+    @Test
+    fun backoffGrowsExponentiallyAndCaps() {
+        assertEquals(30_000L, FileTranscriptionQueue.retryBackoffMs(0))
+        assertEquals(30_000L, FileTranscriptionQueue.retryBackoffMs(1))
+        assertEquals(60_000L, FileTranscriptionQueue.retryBackoffMs(2))
+        assertEquals(120_000L, FileTranscriptionQueue.retryBackoffMs(3))
+        assertEquals(30 * 60_000L, FileTranscriptionQueue.retryBackoffMs(7))
+        assertEquals(30 * 60_000L, FileTranscriptionQueue.retryBackoffMs(100))
+    }
+
+    @Test
+    fun retryableFlagDropsAtMaxAttempts() {
+        val root = tempRoot()
+        val q = queue(root)
+        q.enqueue("seg-1")
+        repeat(FileTranscriptionQueue.MAX_ATTEMPTS) {
+            q.markRunning("seg-1")
+            q.markFailed("seg-1", "still broken", retryable = true)
+        }
+        val task = assertNotNull(q.load("seg-1"))
+        assertEquals(FileTranscriptionQueue.MAX_ATTEMPTS, task.attempts)
+        assertTrue(!task.retryable, "task must stop retrying after MAX_ATTEMPTS")
+    }
+
+    @Test
+    fun resetDisabledRequeuesOnlyDisabledTasks() {
+        val root = tempRoot()
+        val q = queue(root)
+        q.enqueue("seg-disabled")
+        q.markDisabled("seg-disabled")
+        q.enqueue("seg-done")
+        q.markRunning("seg-done")
+        q.markComplete(
+            "seg-done",
+            RoutedTranscription("text", TranscriptionMode.LocalOnly, "local", null),
+        )
+
+        assertEquals(listOf("seg-disabled"), q.resetDisabled())
+        assertEquals(TaskState.Pending, q.load("seg-disabled")?.state)
+        assertEquals(TaskState.Complete, q.load("seg-done")?.state)
+        assertEquals("seg-disabled", q.nextRunnable()?.segmentId)
     }
 
     @Test

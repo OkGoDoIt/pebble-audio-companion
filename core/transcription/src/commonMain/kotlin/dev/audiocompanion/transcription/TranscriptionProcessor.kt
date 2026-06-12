@@ -21,6 +21,23 @@ class TranscriptionProcessor(
         segmentIds.forEach { queue.enqueue(it) }
     }
 
+    suspend fun isTranscriptionAvailable(): Boolean = router.isAvailable()
+
+    /**
+     * Re-queues tasks that were parked as Disabled while no provider was usable. Call when
+     * transcription availability may have changed (model downloaded, key/consent added, mode
+     * switched). Returns the segment ids reset to Pending.
+     */
+    suspend fun reconsiderDisabled(): List<String> {
+        if (!router.isAvailable()) return emptyList()
+        return queue.resetDisabled().onEach { segmentId ->
+            onStateChanged(segmentId, TaskState.Pending)
+        }
+    }
+
+    /** Soonest time a failed task becomes retryable, or null when none is waiting. */
+    fun nextRetryAtMs(): Long? = queue.nextRetryAtMs()
+
     suspend fun processNext(): TranscriptionTask? {
         val task = queue.nextRunnable() ?: return null
         if (!router.isAvailable()) {

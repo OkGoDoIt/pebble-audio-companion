@@ -42,10 +42,15 @@ data class SegmentMeta(
     val provenance: ProvenanceMeta? = null,
 ) {
     val isOpen: Boolean get() = closeReason == null
+
+    /**
+     * Terminal-success transcription states only. Disabled is deliberately NOT terminal: a
+     * segment that could not be transcribed because no provider was usable becomes eligible
+     * again once one is (model downloaded, key added, mode changed).
+     */
     val isFullyTranscribed: Boolean
         get() = transcriptionState == TranscriptionState.Complete ||
-            transcriptionState == TranscriptionState.NoSpeech ||
-            transcriptionState == TranscriptionState.Disabled
+            transcriptionState == TranscriptionState.NoSpeech
 }
 
 @Serializable
