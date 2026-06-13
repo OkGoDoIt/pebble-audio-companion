@@ -98,6 +98,12 @@ class IosAudioGattLink : AudioGattLink {
             options = mapOf(CBCentralManagerOptionRestoreIdentifierKey to IosAudioCompanionGatt.RESTORE_IDENTIFIER),
         ).also { centralManager = it }
         wantConnected = true
+        // Idempotent: a live or in-progress link must not be bounced. connect() is called on every
+        // app foreground/launch, so restarting it here would drop a working connection (and lose
+        // audio) each time the app comes to the foreground.
+        if (connectionState.value != LinkState.Disconnected) {
+            return
+        }
         _lastError.value = null
         _connectionState.value = LinkState.Connecting
         if (manager.state == CBManagerStatePoweredOn) {

@@ -64,6 +64,7 @@ class AndroidAudioGattLink(
     override val dataNotifications: Flow<ByteArray> = dataChannel.receiveAsFlow()
 
     private var gatt: BluetoothGatt? = null
+    private var connectedDeviceAddress: String? = null
     private var infoCharacteristic: BluetoothGattCharacteristic? = null
     private var controlCharacteristic: BluetoothGattCharacteristic? = null
     private var dataCharacteristic: BluetoothGattCharacteristic? = null
@@ -78,7 +79,14 @@ class AndroidAudioGattLink(
      * transport, then discovers [SERVICE_UUID] and subscribes Control + Data.
      */
     fun connect(device: BluetoothDevice) {
+        // Idempotent: connect() is sent on every app open and CDM presence event. If we already
+        // have a GATT client for this device (connected, or autoConnect-reconnecting), don't
+        // bounce it — restarting would drop a working link and lose audio.
+        if (gatt != null && device.address == connectedDeviceAddress) {
+            return
+        }
         disconnect()
+        connectedDeviceAddress = device.address
         _lastError.value = null
         _connectionState.value = LinkState.Connecting
         gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -96,6 +104,7 @@ class AndroidAudioGattLink(
     private fun disconnectWithError(message: String?) {
         val oldGatt = gatt
         gatt = null
+        connectedDeviceAddress = null
         infoCharacteristic = null
         controlCharacteristic = null
         dataCharacteristic = null

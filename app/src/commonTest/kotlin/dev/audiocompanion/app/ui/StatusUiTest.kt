@@ -187,9 +187,9 @@ class TimelineTest {
     private val nowMs = 1_750_000_000_000L // fixed reference time
 
     @Test
-    fun timelineShowsOnlyTodayNewestFirstWithQuietGapSummaries() {
-        val today1 = meta("seg-1", nowMs - 3_600_000)
-        val today2 = meta(
+    fun timelineShowsLast24HoursNewestFirstWithQuietGapSummariesAndOpenSegment() {
+        val recent1 = meta("seg-1", nowMs - 3_600_000)
+        val recent2 = meta(
             "seg-2",
             nowMs - 600_000,
             gaps = listOf(
@@ -202,22 +202,25 @@ class TimelineTest {
                 ),
             ),
         )
+        val almost24HoursOld = meta("seg-near-cutoff", nowMs - dayMs + 1_000)
+        val staleOpen = meta("seg-open", nowMs - 2 * dayMs, open = true)
         val lastWeek = meta("seg-old", nowMs - 7 * dayMs)
 
         val timeline = buildTimeline(
-            segments = listOf(today1, lastWeek, today2),
+            segments = listOf(recent1, lastWeek, recent2, almost24HoursOld, staleOpen),
             transcriptOf = { null },
             nowMs = nowMs,
         )
 
         val keys = timeline.map { it.key }
-        assertEquals(listOf("seg-seg-2", "seg-seg-1"), keys)
+        assertEquals(listOf("seg-seg-2", "seg-seg-1", "seg-seg-near-cutoff", "seg-seg-open"), keys)
         // Gaps render inside the row as one calm summary line, not as separate warning rows.
         val withGap = timeline[0] as TimelineItem.Segment
         val summary = withGap.gapSummary
         assertTrue(summary != null && summary.contains("dictation"), "summary: $summary")
         assertTrue(summary.contains("2 sec"), "summary should carry ~duration: $summary")
         assertEquals(null, (timeline[1] as TimelineItem.Segment).gapSummary)
+        assertEquals("Recording", (timeline[3] as TimelineItem.Segment).stateLabel)
     }
 
     @Test
