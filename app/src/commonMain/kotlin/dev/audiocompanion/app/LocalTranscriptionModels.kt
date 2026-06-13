@@ -58,10 +58,10 @@ object LocalTranscriptionModels {
         ),
         LocalTranscriptionModelSpec(
             id = "parakeet-ctc-1.1b-int8",
-            displayName = "Parakeet CTC 1.1B, large",
-            shortLabel = "Large",
-            description = "Larger English Parakeet model. Try it when the default misses too " +
-                "much, but expect slower processing and much more storage use.",
+            displayName = "Parakeet CTC 1.1B, experimental",
+            shortLabel = "Experimental",
+            description = "Fast English-only CTC model for comparison. It can over-interpret " +
+                "quiet or noisy watch audio, so the recommended TDT model is the safer default.",
             repository = "Cactus-Compute/parakeet-ctc-1.1b",
             revision = "v1.14",
             archivePath = "weights/parakeet-ctc-1.1b-int8.zip",

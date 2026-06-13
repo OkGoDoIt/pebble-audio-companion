@@ -405,6 +405,13 @@ fun SegmentDetailScreen(
         }
         when {
             transcript != null -> {
+                transcriptionQualityMessage(transcript.modelUsed)?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StatusColors.warning,
+                    )
+                }
                 TranscriptTimeline(
                     meta = meta,
                     text = transcript.text,
