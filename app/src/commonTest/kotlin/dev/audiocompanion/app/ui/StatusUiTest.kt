@@ -3,6 +3,7 @@ package dev.audiocompanion.app.ui
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.protocol.AuthStatus
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.CloseReasonMeta
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
@@ -81,6 +82,13 @@ class StatusUiTest {
         )
         assertTrue(storagePaused.headline.contains("storage"), storagePaused.headline)
 
+        // Watch-side power policy is held by the watch and should not offer app resume.
+        val powerSave = statusUiModel(
+            ReceiverSessionState.Streaming(7u), settings, diagnostics, watchServiceStateRaw = 8,
+        )
+        assertTrue(powerSave.headline.contains("saving power"), powerSave.headline)
+        assertEquals(PrimaryAction.None, powerSave.primaryAction)
+
         // Unknown/streaming watch state defers to the session view.
         val streaming = statusUiModel(
             ReceiverSessionState.Streaming(7u), settings, diagnostics, watchServiceStateRaw = 3,
@@ -90,7 +98,7 @@ class StatusUiTest {
 
     @Test
     fun watchServiceStateLabelsCoverAllStates() {
-        for (raw in 0..7) {
+        for (raw in 0..8) {
             assertTrue(watchServiceStateLabel(raw).isNotBlank())
         }
         assertEquals("Not connected", watchServiceStateLabel(null))
@@ -139,6 +147,20 @@ class StatusUiTest {
         )
         assertEquals("Paused: phone storage low", status.headline)
         assertEquals(StatusSeverity.Warning, status.severity)
+    }
+
+    @Test
+    fun powerSaveGapIsExplainedCalmly() {
+        val text = gapDescription(
+            GapMeta(
+                firstMissingSequence = 1u,
+                missingFrameCount = 50u,
+                firstMissingSampleIndex = 320uL,
+                origin = GapMeta.ORIGIN_WATCH,
+                reasonRaw = GapReason.PowerSave.raw,
+            ),
+        )
+        assertEquals("watch was saving power", text)
     }
 
     @Test

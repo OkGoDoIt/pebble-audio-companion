@@ -428,6 +428,14 @@ def build_fixtures():
         "Service entered streaming state",
     )
     add(
+        "state_changed_power_save",
+        state_changed(8),
+        "control_out",
+        "parse",
+        {"service_state": 8},
+        "Service paused while the watch is saving power",
+    )
+    add(
         "error_malformed",
         error_msg(1, 0),
         "control_out",
@@ -531,6 +539,7 @@ def build_fixtures():
     gap_reasons = {
         1: "spool_overflow", 2: "mic_conflict", 3: "user_disabled",
         4: "low_battery", 5: "codec_error", 6: "transport_reset",
+        7: "power_save",
     }
     for reason, label in gap_reasons.items():
         add(

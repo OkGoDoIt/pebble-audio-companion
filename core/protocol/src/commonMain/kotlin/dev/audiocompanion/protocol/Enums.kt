@@ -13,7 +13,8 @@ enum class ServiceState(val raw: Int) {
     PausedConflict(4),
     PausedPolicy(5),
     PausedLowBattery(6),
-    Error(7);
+    Error(7),
+    PausedPowerSave(8);
 
     companion object {
         fun fromRaw(raw: Int): ServiceState? = entries.firstOrNull { it.raw == raw }
@@ -37,7 +38,8 @@ enum class GapReason(val raw: Int) {
     UserDisabled(0x03),
     LowBattery(0x04),
     CodecError(0x05),
-    TransportReset(0x06);
+    TransportReset(0x06),
+    PowerSave(0x07);
 
     companion object {
         fun fromRaw(raw: Int): GapReason? = entries.firstOrNull { it.raw == raw }

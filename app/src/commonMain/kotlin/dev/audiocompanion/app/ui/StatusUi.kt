@@ -82,6 +82,12 @@ private fun watchStatusOverride(
         severity = StatusSeverity.Warning,
         primaryAction = PrimaryAction.None,
     )
+    ServiceState.PausedPowerSave -> StatusUiModel(
+        headline = "Paused while the watch is saving power",
+        supporting = "Recording resumes when the watch wakes or leaves low power mode.",
+        severity = StatusSeverity.Info,
+        primaryAction = PrimaryAction.None,
+    )
     ServiceState.Error -> StatusUiModel(
         headline = "Watch audio needs attention",
         supporting = "Check the watch's Settings -> Audio Companion.",
@@ -203,6 +209,7 @@ fun watchServiceStateLabel(raw: Int?): String = when (ServiceState.fromRaw(raw ?
     ServiceState.PausedConflict -> "Paused: microphone in use"
     ServiceState.PausedPolicy -> "Paused"
     ServiceState.PausedLowBattery -> "Paused: low battery"
+    ServiceState.PausedPowerSave -> "Paused: power save"
     ServiceState.Error -> "Needs attention"
     null -> "Not connected"
 }
@@ -221,6 +228,7 @@ fun gapDescription(gap: GapMeta): String {
         reason == GapReason.LowBattery -> "paused for watch battery"
         reason == GapReason.CodecError -> "watch audio hiccup"
         reason == GapReason.TransportReset -> "connection was interrupted"
+        reason == GapReason.PowerSave -> "watch was saving power"
         else -> "audio missing"
     }
 }

@@ -515,6 +515,36 @@ class AudioReceiverSessionTest {
     }
 
     @Test
+    fun watchPowerSavePauseDoesNotTriggerResume() = runTest {
+        val link = FakeAudioGattLink()
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+        val auth = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>().single()
+        link.pushControl(AuthResult(requestToken = auth.requestToken, statusRaw = 0, grantedProtoVersion = 1))
+        runCurrent()
+
+        link.pushControl(StateChanged(serviceStateRaw = ServiceState.PausedPowerSave.raw))
+        runCurrent()
+
+        val resumeCount = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<dev.audiocompanion.protocol.ResumeRequest>().size
+        assertEquals(0, resumeCount, "watch-side power-save pauses must not be auto-resumed")
+    }
+
+    @Test
     fun sessionTeardownResetsStateToDisconnected() = runTest {
         val link = FakeAudioGattLink()
         val session = AudioReceiverSession(

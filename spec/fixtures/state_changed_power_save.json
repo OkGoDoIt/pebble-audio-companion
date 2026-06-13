@@ -1,0 +1,10 @@
+{
+  "channel": "control_out",
+  "description": "Service paused while the watch is saving power",
+  "expect": "parse",
+  "fields": {
+    "service_state": 8
+  },
+  "name": "state_changed_power_save",
+  "size": 2
+}
