@@ -1,8 +1,10 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.SpeexFrameDecoder
+import dev.audiocompanion.transport.GapOrigin
 import dev.audiocompanion.transport.GapRecord
 import dev.audiocompanion.transport.SegmentCloseReason
 import dev.audiocompanion.transport.SegmentFrame
@@ -85,6 +87,8 @@ class LiveAudioMonitor(
         val payload: ByteArray?,
         val gapDurationMs: Long,
         val sampleIndex: ULong? = null,
+        /** True for voice-activity silence the watch skipped: render as quiet, not as a gap. */
+        val silenceFill: Boolean = false,
     )
 
     private class BarAccum(val timeMs: Long, var segmentId: String?) {
@@ -122,7 +126,13 @@ class LiveAudioMonitor(
         wakeups.trySend(Unit)
     }
 
-    suspend fun onGap(receivedAtMs: Long, approxDurationMs: Long) {
+    /**
+     * Records a span with no received audio. [silence] = true marks voice-activity silence the
+     * watch withheld to save power: it renders as quiet (flat) bars, never as an amber gap,
+     * because no audio was lost. [silence] = false marks a genuine gap (audio that should have
+     * arrived but did not).
+     */
+    suspend fun onGap(receivedAtMs: Long, approxDurationMs: Long, silence: Boolean = false) {
         mutex.withLock {
             pending.addLast(
                 Entry(
@@ -130,6 +140,7 @@ class LiveAudioMonitor(
                     segmentId = null,
                     payload = null,
                     gapDurationMs = approxDurationMs.coerceIn(barMs, windowMs),
+                    silenceFill = silence,
                 ),
             )
             trimPendingLocked()
@@ -196,7 +207,10 @@ class LiveAudioMonitor(
                     var t = entry.timeMs
                     val end = entry.timeMs + entry.gapDurationMs
                     while (t < end) {
-                        bucketLocked(t, null).hasGap = true
+                        val bucket = bucketLocked(t, null)
+                        // A silence-fill span just needs its buckets to exist: an empty bucket
+                        // reads as quiet (Silence). Only genuine gaps get the amber treatment.
+                        if (!entry.silenceFill) bucket.hasGap = true
                         t += barMs
                     }
                 }
@@ -273,7 +287,9 @@ class TeeSegmentSink(
 
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {
         store.recordGap(streamId, gap)
-        monitor.onGap(nowMs(), gap.missingFrameCount.toLong() * 20)
+        val silence = (gap.origin as? GapOrigin.WatchReported)
+            ?.let { GapReason.fromRaw(it.reasonRaw)?.isSilence } == true
+        monitor.onGap(nowMs(), gap.missingFrameCount.toLong() * 20, silence = silence)
     }
 
     override suspend fun closeSegment(reason: SegmentCloseReason) {

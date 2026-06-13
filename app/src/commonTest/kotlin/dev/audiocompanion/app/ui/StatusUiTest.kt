@@ -178,6 +178,57 @@ class StatusUiTest {
     }
 
     @Test
+    fun gapSummaryIgnoresSuppressedSilence() {
+        // A segment whose only "gaps" are voice-activity silence has nothing wrong: no
+        // "interrupted" summary, and no time counted as missing.
+        val quiet = meta(
+            "seg-quiet",
+            0L,
+            gaps = List(3) { index ->
+                GapMeta(
+                    firstMissingSequence = (index * 100 + 1).toUInt(),
+                    missingFrameCount = 5_000u,
+                    firstMissingSampleIndex = (index * 100 + 1).toULong() * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                )
+            },
+        )
+        assertEquals(0L, totalGapMs(quiet))
+        assertEquals(null, gapSummary(quiet))
+    }
+
+    @Test
+    fun gapSummaryReportsOnlyGenuineLossAlongsideSilence() {
+        // Mixed: one real loss (mic conflict) plus skipped silence. The summary speaks only to
+        // the loss; the silence adds neither time nor a second reason.
+        val mixed = meta(
+            "seg-mixed",
+            0L,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 1u,
+                    missingFrameCount = 100u, // 2 s
+                    firstMissingSampleIndex = 320uL,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.MicConflict.raw,
+                ),
+                GapMeta(
+                    firstMissingSequence = 200u,
+                    missingFrameCount = 5_000u,
+                    firstMissingSampleIndex = 200uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                ),
+            ),
+        )
+        assertEquals(2_000L, totalGapMs(mixed))
+        val summary = gapSummary(mixed)
+        assertTrue(summary != null && summary.contains("dictation"), "summary: $summary")
+        assertTrue(summary.contains("2 sec"), "summary: $summary")
+    }
+
+    @Test
     fun deniedMismatchExplainsForeignReceiver() {
         val status = statusUiModel(
             ReceiverSessionState.Denied(AuthStatus.DeniedMismatch.raw),

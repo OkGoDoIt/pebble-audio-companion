@@ -218,16 +218,12 @@ fun SegmentWaveformView(
                 )
             }
         }
-        // Missing-audio markers: thin full-height ticks at the position the loss occurred.
+        // Missing-audio markers: thin full-height ticks where genuine audio loss occurred.
+        // Silence the watch skipped to save power is not loss and carries no marker.
         waveform.gapMarkers.forEach { marker ->
             val x = (marker.fraction * width).coerceIn(0f, width)
-            val markerColor = if (marker.state == WaveformBarState.Silence) {
-                StatusColors.neutral
-            } else {
-                StatusColors.warning
-            }
             drawLine(
-                color = markerColor,
+                color = StatusColors.warning,
                 start = Offset(x, centerY * 0.1f),
                 end = Offset(x, size.height - centerY * 0.1f),
                 strokeWidth = 2.5f,

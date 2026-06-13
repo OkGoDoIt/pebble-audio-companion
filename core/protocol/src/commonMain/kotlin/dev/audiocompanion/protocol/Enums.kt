@@ -42,6 +42,13 @@ enum class GapReason(val raw: Int) {
     PowerSave(0x07),
     SilenceSuppressed(0x08);
 
+    /**
+     * True when the "gap" is audio the watch intentionally skipped because it was below the
+     * voice-activity threshold. This is known silence reported to save Bluetooth/battery, not
+     * lost audio, so the app must render it as quiet rather than as a gap or error.
+     */
+    val isSilence: Boolean get() = this == SilenceSuppressed
+
     companion object {
         fun fromRaw(raw: Int): GapReason? = entries.firstOrNull { it.raw == raw }
     }

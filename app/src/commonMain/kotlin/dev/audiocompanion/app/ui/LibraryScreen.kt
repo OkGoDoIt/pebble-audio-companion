@@ -43,6 +43,7 @@ import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.app.SegmentWaveform
 import dev.audiocompanion.ai.SegmentAnnotation
+import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptSegment
@@ -120,7 +121,9 @@ fun LibraryScreen(
                 when (filter) {
                     LibraryFilter.All -> true
                     LibraryFilter.Today -> Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)
-                    LibraryFilter.Gaps -> meta.gaps.isNotEmpty()
+                    // Silence the watch skipped to save power is not a gap, so a segment that
+                    // only has those does not belong in the "Gaps" filter.
+                    LibraryFilter.Gaps -> meta.gaps.any { !isSilenceGap(it) }
                     LibraryFilter.Untranscribed -> !meta.isFullyTranscribed
                 }
             }
@@ -783,7 +786,8 @@ private fun splitSpeechBlock(
 private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineItem.Pause> {
     if (meta.gaps.isEmpty()) return emptyList()
     val segmentDuration = segmentDurationMs(meta).coerceAtLeast(0)
-    val ranges = meta.gaps.map { gap ->
+
+    fun rangeOf(gap: GapMeta): Pair<Long, Long> {
         val rawStart = sampleOffsetMs(meta, gap.firstMissingSampleIndex)
         val start = if (segmentDuration > 0) rawStart.coerceIn(0, segmentDuration) else rawStart.coerceAtLeast(0)
         val rawDuration = gapDurationMs(gap, meta.frameDurationMs).coerceAtLeast(0)
@@ -792,26 +796,37 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
         } else {
             start + rawDuration
         }
-        start to end.coerceAtLeast(start)
-    }.sortedBy { it.first }
-
-    val merged = mutableListOf<Pair<Long, Long>>()
-    ranges.forEach { range ->
-        val last = merged.lastOrNull()
-        if (last != null && range.first <= last.second + GAP_COLLAPSE_WINDOW_MS) {
-            merged[merged.lastIndex] = last.first to maxOf(last.second, range.second)
-        } else {
-            merged += range
-        }
+        return start to end.coerceAtLeast(start)
     }
 
-    return merged.map { (start, end) ->
+    fun collapse(gaps: List<GapMeta>): List<Pair<Long, Long>> {
+        val ranges = gaps.map(::rangeOf).sortedBy { it.first }
+        val merged = mutableListOf<Pair<Long, Long>>()
+        ranges.forEach { range ->
+            val last = merged.lastOrNull()
+            if (last != null && range.first <= last.second + GAP_COLLAPSE_WINDOW_MS) {
+                merged[merged.lastIndex] = last.first to maxOf(last.second, range.second)
+            } else {
+                merged += range
+            }
+        }
+        return merged
+    }
+
+    fun pauses(gaps: List<GapMeta>, missing: Boolean) = collapse(gaps).map { (start, end) ->
         TranscriptTimelineItem.Pause(
             startMs = start,
             durationMs = (end - start).coerceAtLeast(0),
-            missing = true,
+            missing = missing,
         )
     }
+
+    // Silence-suppressed spans are known-quiet audio, shown as a calm "quiet for…" pause; genuine
+    // loss is shown as "audio interrupted…". They collapse separately so a quiet stretch never
+    // inherits an interruption's framing when the two happen to sit close together.
+    val lost = pauses(meta.gaps.filterNot(::isSilenceGap), missing = true)
+    val quiet = pauses(meta.gaps.filter(::isSilenceGap), missing = false)
+    return (lost + quiet).sortedBy { it.startMs }
 }
 
 private fun joinTranscriptText(a: String, b: String): String =

@@ -88,11 +88,12 @@ class SegmentWaveformBuilderTest {
         val marker = wave.gapMarkers.single()
         assertEquals(0.5f, marker.fraction)
         assertEquals(2_000L, marker.approxDurationMs)
-        assertEquals(WaveformBarState.Gap, marker.state)
     }
 
     @Test
-    fun silenceSuppressionGapMarkersRenderAsQuietMarkers() = runTest {
+    fun silenceSuppressionProducesNoGapMarker() = runTest {
+        // Voice-activity silence the watch skipped is not loss: the stored audio just continues
+        // across it, so it must not draw a marker (which would read as something gone wrong).
         val stored = frames(50) + frames(50, firstSequence = 150u)
         val gap = GapMeta(
             firstMissingSequence = 50u,
@@ -102,10 +103,8 @@ class SegmentWaveformBuilderTest {
             reasonRaw = GapReason.SilenceSuppressed.raw,
         )
         val builder = SegmentWaveformBuilder(decoder = decoder, maxBars = 10)
-        val marker = builder.build(meta(frameCount = 100, gaps = listOf(gap))) { stored }
-            .gapMarkers
-            .single()
-        assertEquals(WaveformBarState.Silence, marker.state)
+        val wave = builder.build(meta(frameCount = 100, gaps = listOf(gap))) { stored }
+        assertTrue(wave.gapMarkers.isEmpty())
     }
 
     @Test
