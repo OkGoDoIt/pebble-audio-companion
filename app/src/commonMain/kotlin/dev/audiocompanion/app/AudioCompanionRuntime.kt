@@ -84,6 +84,11 @@ class AudioCompanionRuntime(
     private val exportManager: AudioExportManager? = null,
     /** Off by default; when true, closed segments are mirrored into WAV files. */
     private val automaticWavExportEnabled: () -> Boolean = { false },
+    /**
+     * The user's current "record in the background" intent (the Start/Stop toggle). Drives the
+     * session's declarative reconcile so a restart reliably resumes the watch.
+     */
+    private val desiredEnabled: () -> Boolean = { true },
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -97,6 +102,7 @@ class AudioCompanionRuntime(
         resumeStore = resumeStore,
         config = receiverConfig,
         nowMs = nowMs,
+        desiredEnabled = desiredEnabled,
     )
 
     val state: StateFlow<ReceiverSessionState> = session.state

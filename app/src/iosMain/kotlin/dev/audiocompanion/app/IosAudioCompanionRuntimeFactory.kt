@@ -162,6 +162,9 @@ class IosAudioCompanionRuntimeFactory(
             automaticWavExportEnabled = {
                 settingsRepository.settings.value.automaticWavExportEnabled
             },
+            desiredEnabled = {
+                settingsRepository.settings.value.backgroundReceiverEnabled
+            },
         )
     }
 

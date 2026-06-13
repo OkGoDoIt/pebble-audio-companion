@@ -95,6 +95,12 @@ class AudioReceiverSession(
     private val resumeStore: ReceiverResumeStore,
     private val config: ReceiverConfig,
     private val nowMs: () -> Long,
+    /**
+     * The user's current intent: true when they want the watch recording. Drives the
+     * declarative reconcile after every (re)authorization, so restart is reliable regardless
+     * of what state the watch happened to be in (defaults to "wants audio" for bare tests).
+     */
+    private val desiredEnabled: () -> Boolean = { true },
 ) {
     private val _state = MutableStateFlow<ReceiverSessionState>(ReceiverSessionState.Disconnected)
     val state: StateFlow<ReceiverSessionState> = _state.asStateFlow()
@@ -285,14 +291,11 @@ class AudioReceiverSession(
                         if (dataJob == null) {
                             dataJob = connectionScope.launch { consumeData() }
                         }
-                        // A previous phone-side Stop leaves the watch in PausedPolicy across
-                        // disconnects. Re-authorizing means the user wants audio again, so
-                        // resume — unless our own storage policy is asking for the pause.
-                        if (_watchServiceState.value == ServiceState.PausedPolicy.raw &&
-                            policy.receiverFlags() == 0u
-                        ) {
-                            connectionScope.launch { requestResume() }
-                        }
+                        // Declarative reconcile: drive the watch to the user's intent now that
+                        // we are authorized. This does not depend on the (pre-auth) Info state,
+                        // so restart works whether the watch stayed paused on a shared link or
+                        // fell back to Idle after a real disconnect.
+                        connectionScope.launch { reconcileWatchState() }
                     }
                     AuthStatus.PendingUserConsent -> {
                         // Token stays in flight: the watch pushes a second AUTH_RESULT with the
@@ -320,8 +323,38 @@ class AudioReceiverSession(
                 dataJob = null
                 _state.value = ReceiverSessionState.Revoked(message.reasonRaw)
             }
-            is StateChanged -> _watchServiceState.value = message.serviceStateRaw
+            is StateChanged -> {
+                _watchServiceState.value = message.serviceStateRaw
+                // Safety net for a watch that pauses (policy) after we authorized: if the user
+                // wants audio and we have no storage reason to hold the pause, resume.
+                if (authorized &&
+                    message.serviceStateRaw == ServiceState.PausedPolicy.raw &&
+                    desiredEnabled() &&
+                    policy.receiverFlags() == 0u
+                ) {
+                    connectionScope.launch { requestResume() }
+                }
+            }
             is ErrorMessage -> _lastProtocolError.value = message
+        }
+    }
+
+    /**
+     * Brings the watch's capture state in line with the local intent after (re)authorization.
+     * Gated on the watch's reported state so the common reconnect (watch already streaming/idle)
+     * sends nothing; we only act when the watch diverges from intent. RESUME/PAUSE are also
+     * idempotent on the watch, so a redundant send is harmless.
+     */
+    private suspend fun reconcileWatchState() {
+        if (!authorized) return
+        val pausedOnWatch = _watchServiceState.value == ServiceState.PausedPolicy.raw
+        val wantPaused = !desiredEnabled() || policy.receiverFlags() != 0u
+        when {
+            // We want it paused but the watch is not holding a policy pause: assert one.
+            wantPaused && !pausedOnWatch ->
+                requestPause(if (!desiredEnabled()) PauseReason.User.raw else PauseReason.Policy.raw)
+            // We want audio and the watch is holding a policy pause: release it.
+            !wantPaused && pausedOnWatch -> requestResume()
         }
     }
 
