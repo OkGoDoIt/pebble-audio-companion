@@ -43,6 +43,12 @@ fun LiveWaveform(
     barMs: Long = 250,
     /** Live-transcribed boundary per segment: bars at/before it render as transcribed. */
     transcribedThroughSampleIndex: (String) -> ULong? = { null },
+    /**
+     * Whether the watch is still recording (connected). The watch only reports a quiet span at
+     * its resume edge, so an ongoing silence sends nothing; while still recording we render that
+     * live leading edge as quiet rather than empty — only a true disconnect should read as empty.
+     */
+    isRecording: Boolean = false,
 ) {
     val recordedColor = MaterialTheme.colorScheme.primary
     Column(modifier = modifier.fillMaxWidth()) {
@@ -99,6 +105,29 @@ fun LiveWaveform(
                     strokeWidth = strokeWidth,
                     cap = StrokeCap.Round,
                 )
+            }
+            // Live leading edge: from the newest audio up to "now", render any still-unfilled time
+            // as quiet ticks while we are recording. This is the ongoing-silence case — the watch
+            // is connected but withholding quiet audio, so it must not read as a dropped link.
+            if (isRecording && bars.isNotEmpty()) {
+                val quietColor = StatusColors.neutral.copy(alpha = 0.5f)
+                val quietHalf = (centerY * 0.06f).coerceAtLeast(1.5f)
+                val quietStroke = (barWidth * 0.5f).coerceAtLeast(1f)
+                var t = maxOf(bars.maxOf { it.timeMs } + barMs, nowMs - windowMs)
+                while (t <= nowMs) {
+                    val age = nowMs - t
+                    if (age in 0..windowMs) {
+                        val x = width - (age.toFloat() / windowMs) * width
+                        drawLine(
+                            color = quietColor,
+                            start = Offset(x, centerY - quietHalf),
+                            end = Offset(x, centerY + quietHalf),
+                            strokeWidth = quietStroke,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    t += barMs
+                }
             }
         }
         Row(
