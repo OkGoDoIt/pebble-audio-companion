@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,6 +47,7 @@ import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptSegment
+import dev.audiocompanion.transcription.TranscriptWord
 import kotlinx.coroutines.launch
 
 enum class LibraryFilter(val label: String) {
@@ -408,6 +410,7 @@ fun SegmentDetailScreen(
                     meta = meta,
                     text = transcript.text,
                     segments = transcript.segments,
+                    words = transcript.words,
                     onSeekMs = { onSeekPlayback(meta.segmentId, it) },
                 )
             }
@@ -416,6 +419,7 @@ fun SegmentDetailScreen(
                     meta = meta,
                     text = liveTranscript,
                     segments = livePreview?.segments.orEmpty(),
+                    words = emptyList(),
                     onSeekMs = { onSeekPlayback(meta.segmentId, it) },
                 )
                 Text(
@@ -483,18 +487,20 @@ private fun TranscriptTimeline(
     meta: SegmentMeta,
     text: String,
     segments: List<TranscriptSegment>,
+    words: List<TranscriptWord>,
     onSeekMs: (Long) -> Unit,
 ) {
-    val timed = transcriptTimelineItems(meta, segments)
+    val timed = transcriptTimelineItems(meta, segments, words)
     if (timed.isEmpty()) {
         TranscriptParagraphs(text = text)
         return
     }
     SelectionContainer {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             timed.forEach { item ->
                 when (item) {
                     is TranscriptTimelineItem.Speech -> SpeechTimelineRow(meta, item, onSeekMs)
+                    is TranscriptTimelineItem.Break -> BreakTimelineRow()
                     is TranscriptTimelineItem.Pause -> PauseTimelineRow(meta, item)
                 }
             }
@@ -560,6 +566,11 @@ private fun SpeechTimelineRow(
 }
 
 @Composable
+private fun BreakTimelineRow() {
+    Box(modifier = Modifier.fillMaxWidth().height(6.dp))
+}
+
+@Composable
 private fun PauseTimelineRow(meta: SegmentMeta, item: TranscriptTimelineItem.Pause) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
@@ -610,6 +621,11 @@ sealed interface TranscriptTimelineItem {
         val speaker: String?,
     ) : TranscriptTimelineItem
 
+    data class Break(
+        override val startMs: Long,
+        val durationMs: Long,
+    ) : TranscriptTimelineItem
+
     data class Pause(
         override val startMs: Long,
         val durationMs: Long,
@@ -627,18 +643,9 @@ sealed interface TranscriptTimelineItem {
 fun transcriptTimelineItems(
     meta: SegmentMeta,
     segments: List<TranscriptSegment>,
+    words: List<TranscriptWord> = emptyList(),
 ): List<TranscriptTimelineItem> {
-    val speech = segments
-        .filter { it.text.isNotBlank() }
-        .sortedBy { it.startMs }
-        .map {
-            TranscriptTimelineItem.Speech(
-                startMs = it.startMs.coerceAtLeast(0),
-                endMs = it.endMs.coerceAtLeast(it.startMs),
-                text = it.text.trim(),
-                speaker = it.speaker,
-            )
-        }
+    val speech = coalescedSpeechBlocks(segments, words)
     if (speech.isEmpty()) return emptyList()
 
     val gaps = meta.gaps.map {
@@ -663,6 +670,11 @@ fun transcriptTimelineItems(
                     durationMs = pauseMs,
                     missing = false,
                 )
+            } else if (pauseMs >= SILENCE_BREAK_THRESHOLD_MS) {
+                items += TranscriptTimelineItem.Break(
+                    startMs = previousEnd,
+                    durationMs = pauseMs,
+                )
             }
         }
         items += block
@@ -672,10 +684,64 @@ fun transcriptTimelineItems(
     return items.distinctBy { item ->
         when (item) {
             is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
+            is TranscriptTimelineItem.Break -> "break:${item.startMs}:${item.durationMs}"
             is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
         }
     }
 }
+
+private fun coalescedSpeechBlocks(
+    segments: List<TranscriptSegment>,
+    words: List<TranscriptWord>,
+): List<TranscriptTimelineItem.Speech> {
+    val raw = if (words.isNotEmpty()) {
+        words.map {
+            TranscriptTimelineItem.Speech(
+                startMs = it.startMs.coerceAtLeast(0),
+                endMs = it.endMs.coerceAtLeast(it.startMs),
+                text = it.text.trim(),
+                speaker = null,
+            )
+        }
+    } else {
+        segments.map {
+            TranscriptTimelineItem.Speech(
+                startMs = it.startMs.coerceAtLeast(0),
+                endMs = it.endMs.coerceAtLeast(it.startMs),
+                text = it.text.trim(),
+                speaker = it.speaker,
+            )
+        }
+    }.filter { it.text.isNotBlank() }.sortedBy { it.startMs }
+
+    val blocks = mutableListOf<TranscriptTimelineItem.Speech>()
+    var current: TranscriptTimelineItem.Speech? = null
+    raw.forEach { next ->
+        val existing = current
+        if (existing != null &&
+            next.startMs - existing.endMs < SILENCE_BREAK_THRESHOLD_MS &&
+            next.speaker == existing.speaker
+        ) {
+            current = existing.copy(
+                endMs = maxOf(existing.endMs, next.endMs),
+                text = joinTranscriptText(existing.text, next.text),
+            )
+        } else {
+            existing?.let { blocks += it }
+            current = next
+        }
+    }
+    current?.let { blocks += it }
+    return blocks
+}
+
+private fun joinTranscriptText(a: String, b: String): String =
+    when {
+        a.isBlank() -> b
+        b.isBlank() -> a
+        b.firstOrNull() in listOf('.', ',', '!', '?', ';', ':') -> a + b
+        else -> "$a $b"
+    }
 
 private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
     val base = meta.firstSampleIndex ?: sampleIndex
@@ -686,6 +752,7 @@ private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
 private fun clockTimeFor(meta: SegmentMeta, offsetMs: Long): String =
     Formatting.timeOfDay(meta.receivedAtMs + offsetMs)
 
+private const val SILENCE_BREAK_THRESHOLD_MS = 5_000L
 private const val QUIET_PAUSE_THRESHOLD_MS = 30_000L
 
 fun transcriptParagraphs(
