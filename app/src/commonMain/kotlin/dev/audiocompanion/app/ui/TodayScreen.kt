@@ -48,18 +48,21 @@ sealed interface TimelineItem {
     }
 }
 
-/** Derives the Today timeline: today's segments newest-first. */
+private const val TODAY_TIMELINE_WINDOW_MS = 24L * 60 * 60 * 1000
+
+/** Derives the Today timeline: rolling 24-hour segments newest-first, plus any open segment. */
 fun buildTimeline(
     segments: List<SegmentMeta>,
     transcriptOf: (String) -> SegmentTranscript?,
     nowMs: Long,
-    todayOnly: Boolean = true,
+    windowMs: Long = TODAY_TIMELINE_WINDOW_MS,
     annotationOf: (String) -> SegmentAnnotation? = { null },
     /** Rolling live transcript of a still-recording segment (preview, not durable). */
     liveTextOf: (String) -> String? = { null },
 ): List<TimelineItem> {
+    val oldestVisibleMs = nowMs - windowMs
     val relevant = segments
-        .filter { !todayOnly || Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
+        .filter { it.isOpen || it.receivedAtMs >= oldestVisibleMs }
         .sortedByDescending { it.receivedAtMs }
     return relevant.map { meta ->
         val annotation = annotationOf(meta.segmentId)
@@ -251,7 +254,7 @@ private fun TodayEmptyState(status: StatusUiModel) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = if (status.severity == StatusSeverity.Active) "Listening…" else "No audio captured yet",
+            text = if (status.severity == StatusSeverity.Active) "Listening…" else "No audio captured in the last 24 hours",
             style = MaterialTheme.typography.titleMedium,
         )
         Text(

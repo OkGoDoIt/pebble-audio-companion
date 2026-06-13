@@ -157,6 +157,14 @@ class AudioCompanionRuntime(
      */
     suspend fun stopReceiving() {
         session.requestPause()
+        if (desiredEnabled()) {
+            // Fast Stop -> Start: the user turned recording back on while the pause request was
+            // in flight. Tearing down now would strand that restart (a dead session with the
+            // intent on). Keep the live session and just undo the pause instead. Callers set the
+            // intent to false before calling stopReceiving, so this only triggers on a real race.
+            session.requestResume()
+            return
+        }
         stop()
         link.disconnect()
     }
