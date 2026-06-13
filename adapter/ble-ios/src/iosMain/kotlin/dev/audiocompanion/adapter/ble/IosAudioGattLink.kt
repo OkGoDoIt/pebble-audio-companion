@@ -24,7 +24,10 @@ import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
 import platform.CoreBluetooth.CBCentralManagerOptionRestoreIdentifierKey
 import platform.CoreBluetooth.CBCharacteristic
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
+import platform.CoreBluetooth.CBManagerStatePoweredOff
 import platform.CoreBluetooth.CBManagerStatePoweredOn
+import platform.CoreBluetooth.CBManagerStateUnauthorized
+import platform.CoreBluetooth.CBManagerStateUnsupported
 import platform.CoreBluetooth.CBPeripheral
 import platform.CoreBluetooth.CBPeripheralDelegateProtocol
 import platform.CoreBluetooth.CBService
@@ -94,6 +97,7 @@ class IosAudioGattLink : AudioGattLink {
             queue = dispatch_get_main_queue(),
             options = mapOf(CBCentralManagerOptionRestoreIdentifierKey to IosAudioCompanionGatt.RESTORE_IDENTIFIER),
         ).also { centralManager = it }
+        wantConnected = true
         _lastError.value = null
         _connectionState.value = LinkState.Connecting
         if (manager.state == CBManagerStatePoweredOn) {
@@ -104,7 +108,15 @@ class IosAudioGattLink : AudioGattLink {
     /** True while a user-initiated disconnect is in flight, so it is not reported as an error. */
     private var intentionalDisconnect = false
 
+    /**
+     * True between [connect] and [disconnect]: we should (re)establish the link whenever possible.
+     * Lets an unexpected drop or a Bluetooth-off→on transition reconnect automatically, the way
+     * Android's autoConnect/CDM presence does, instead of stranding the link Disconnected.
+     */
+    private var wantConnected = false
+
     override fun disconnect() {
+        wantConnected = false
         val manager = centralManager ?: return
         manager.stopScan()
         val current = peripheral
@@ -144,8 +156,21 @@ class IosAudioGattLink : AudioGattLink {
     }
 
     internal fun onCentralStateChanged(central: CBCentralManager) {
-        if (central.state == CBManagerStatePoweredOn && connectionState.value == LinkState.Connecting) {
-            connectWhenPoweredOn(central)
+        when (central.state) {
+            CBManagerStatePoweredOn ->
+                if (wantConnected && connectionState.value != LinkState.Ready) {
+                    _connectionState.value = LinkState.Connecting
+                    connectWhenPoweredOn(central)
+                }
+            // Surface an actionable reason instead of hanging in "Connecting". wantConnected is
+            // kept set, so the link reconnects automatically once Bluetooth comes back.
+            CBManagerStatePoweredOff ->
+                if (wantConnected) failAndReset("Bluetooth is turned off")
+            CBManagerStateUnauthorized ->
+                if (wantConnected) failAndReset("Bluetooth access is off for this app. Turn it on in Settings.")
+            CBManagerStateUnsupported ->
+                if (wantConnected) failAndReset("This device does not support Bluetooth LE.")
+            else -> {} // Resetting / Unknown: transient, wait for the next update.
         }
     }
 
@@ -156,6 +181,7 @@ class IosAudioGattLink : AudioGattLink {
         @Suppress("UNCHECKED_CAST")
         val peripherals = willRestoreState["CBCentralManagerRestoredStatePeripheralsKey"] as? List<CBPeripheral>
         val restored = peripherals?.firstOrNull() ?: return
+        wantConnected = true
         peripheral = restored
         restored.delegate = delegate
         _connectionState.value = LinkState.Connecting
@@ -198,13 +224,18 @@ class IosAudioGattLink : AudioGattLink {
         error: NSError?,
     ) {
         resetCharacteristics()
-        _lastError.value = if (intentionalDisconnect) {
-            null
-        } else {
-            error?.localizedDescription ?: "Peripheral disconnected"
+        if (intentionalDisconnect || !wantConnected) {
+            intentionalDisconnect = false
+            _lastError.value = null
+            _connectionState.value = LinkState.Disconnected
+            return
         }
-        intentionalDisconnect = false
-        _connectionState.value = LinkState.Disconnected
+        // Unexpected drop while we still want the link (watch out of range or reset). Re-issue a
+        // pending connect: CoreBluetooth resolves it with no timeout when the watch returns, even
+        // in the background, so the receiver reconnects on its own (the watch buffers the gap).
+        _lastError.value = null
+        _connectionState.value = LinkState.Connecting
+        central.connectPeripheral(didDisconnectPeripheral, options = null)
     }
 
     internal fun onServicesDiscovered(
