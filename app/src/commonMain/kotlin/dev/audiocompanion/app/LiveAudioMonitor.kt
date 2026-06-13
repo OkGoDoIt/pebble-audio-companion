@@ -52,7 +52,14 @@ class SpeexLiveFrameDecoder(
     }
 }
 
-enum class WaveformBarState { Recorded, Silence, Gap }
+enum class WaveformBarState {
+    Recorded,
+    Silence,
+
+    /** Voice-activity silence the watch skipped sending: known-quiet, rendered as a subtle tick. */
+    SuppressedSilence,
+    Gap,
+}
 
 /** One ~250 ms bar of the live waveform. */
 data class WaveformBar(
@@ -95,6 +102,7 @@ class LiveAudioMonitor(
         var sumSquares: Double = 0.0
         var sampleCount: Int = 0
         var hasGap: Boolean = false
+        var suppressed: Boolean = false
         var maxSampleIndex: ULong? = null
     }
 
@@ -204,13 +212,15 @@ class LiveAudioMonitor(
                         bucket.maxSampleIndex = maxOf(bucket.maxSampleIndex ?: sample, sample)
                     }
                 } else {
-                    var t = entry.timeMs
-                    val end = entry.timeMs + entry.gapDurationMs
-                    while (t < end) {
+                    // Gaps and skipped-silence spans are reported at their trailing edge (the
+                    // moment audio resumes), so fill backward across the span that just ended.
+                    // Filling forward would place the bars past "now", where the view — which
+                    // skips any bar with age < 0 — never draws them, leaving the span blank.
+                    var t = entry.timeMs - entry.gapDurationMs
+                    while (t < entry.timeMs) {
                         val bucket = bucketLocked(t, null)
-                        // A silence-fill span just needs its buckets to exist: an empty bucket
-                        // reads as quiet (Silence). Only genuine gaps get the amber treatment.
-                        if (!entry.silenceFill) bucket.hasGap = true
+                        // Skipped silence reads as a quiet tick; only genuine gaps get amber.
+                        if (entry.silenceFill) bucket.suppressed = true else bucket.hasGap = true
                         t += barMs
                     }
                 }
@@ -244,6 +254,8 @@ class LiveAudioMonitor(
             val rms = if (accum.sampleCount > 0) sqrt(accum.sumSquares / accum.sampleCount) else 0.0
             val state = when {
                 accum.hasGap -> WaveformBarState.Gap
+                // Skipped silence, but only if no real audio also landed in this bucket.
+                accum.suppressed && accum.sampleCount == 0 -> WaveformBarState.SuppressedSilence
                 rms < SILENCE_RMS -> WaveformBarState.Silence
                 else -> WaveformBarState.Recorded
             }

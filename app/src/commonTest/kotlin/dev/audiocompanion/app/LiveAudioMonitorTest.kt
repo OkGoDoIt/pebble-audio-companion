@@ -59,29 +59,31 @@ class LiveAudioMonitorTest {
     fun gapsMarkBarsAcrossTheirDuration() = runTest {
         val monitor = LiveAudioMonitor(decoder = fakeDecoder, nowMs = { 100_000 })
         monitor.onFrames("seg-1", frames(13, loud = true), receivedAtMs = 100_000)
-        monitor.onGap(receivedAtMs = 101_000, approxDurationMs = 1_000)
+        // Gaps are reported at their trailing edge, so the span fills backward from there.
+        monitor.onGap(receivedAtMs = 102_000, approxDurationMs = 1_000)
 
         monitor.processPending()
 
         val gapBars = monitor.bars.value.filter { it.state == WaveformBarState.Gap }
         assertEquals(4, gapBars.size) // 1000 ms / 250 ms per bar
-        assertTrue(gapBars.all { it.timeMs >= 101_000 })
+        assertTrue(gapBars.all { it.timeMs in 101_000 until 102_000 })
     }
 
     @Test
     fun suppressedSilenceRendersAsQuietNotGap() = runTest {
         val monitor = LiveAudioMonitor(decoder = fakeDecoder, nowMs = { 100_000 })
         monitor.onFrames("seg-1", frames(13, loud = true), receivedAtMs = 100_000)
-        // Voice-activity silence the watch skipped to save power: quiet, not a gap.
-        monitor.onGap(receivedAtMs = 101_000, approxDurationMs = 1_000, silence = true)
+        // Voice-activity silence the watch skipped, reported at the resume edge: it must fill the
+        // span that just ended (backward) as a quiet tick — never an amber gap or empty space.
+        monitor.onGap(receivedAtMs = 102_000, approxDurationMs = 1_000, silence = true)
 
         monitor.processPending()
 
         val bars = monitor.bars.value
         assertTrue(bars.none { it.state == WaveformBarState.Gap }, "silence must not show amber gap bars")
-        val quietBars = bars.filter { it.timeMs >= 101_000 }
+        val quietBars = bars.filter { it.timeMs in 101_000 until 102_000 }
         assertEquals(4, quietBars.size) // 1000 ms / 250 ms per bar
-        assertTrue(quietBars.all { it.state == WaveformBarState.Silence })
+        assertTrue(quietBars.all { it.state == WaveformBarState.SuppressedSilence })
     }
 
     @Test

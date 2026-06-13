@@ -103,15 +103,14 @@ class TranscriptFormattingTest {
     }
 
     @Test
-    fun transcriptTimelineItemsRenderSuppressedSilenceAsQuiet() {
-        // Voice-activity silence the watch skipped must read as a calm "quiet for…" pause,
-        // never as "audio interrupted…".
+    fun transcriptTimelineItemsHideShortSuppressedSilence() {
+        // A skipped-silence span under 30 s earns no label (same rule as natural quiet pauses).
         val items = transcriptTimelineItems(
             meta = testMeta(
                 gaps = listOf(
                     GapMeta(
                         firstMissingSequence = 0u,
-                        missingFrameCount = 81_000u,
+                        missingFrameCount = 500u, // 10 s at 20 ms/frame
                         firstMissingSampleIndex = 0uL,
                         origin = GapMeta.ORIGIN_WATCH,
                         reasonRaw = GapReason.SilenceSuppressed.raw,
@@ -119,7 +118,32 @@ class TranscriptFormattingTest {
                 ),
             ),
             segments = listOf(
-                TranscriptSegment("back after a quiet stretch", startMs = 2_000, endMs = 4_000),
+                TranscriptSegment("back after a short quiet stretch", startMs = 2_000, endMs = 4_000),
+            ),
+        )
+
+        assertTrue(items.filterIsInstance<TranscriptTimelineItem.Pause>().isEmpty())
+        assertTrue(items.any { it is TranscriptTimelineItem.Speech })
+    }
+
+    @Test
+    fun transcriptTimelineItemsLabelLongSuppressedSilenceAsQuiet() {
+        // 30 s or longer reads as a calm "quiet for…" pause, never "audio interrupted…".
+        val items = transcriptTimelineItems(
+            // 60 s segment so the 40 s skipped-silence span is not clamped below the 30 s cutoff.
+            meta = testMeta(
+                gaps = listOf(
+                    GapMeta(
+                        firstMissingSequence = 0u,
+                        missingFrameCount = 2_000u, // 40 s at 20 ms/frame
+                        firstMissingSampleIndex = 0uL,
+                        origin = GapMeta.ORIGIN_WATCH,
+                        reasonRaw = GapReason.SilenceSuppressed.raw,
+                    ),
+                ),
+            ).copy(lastSampleIndexExclusive = 960_000uL),
+            segments = listOf(
+                TranscriptSegment("back after a long quiet stretch", startMs = 45_000, endMs = 47_000),
             ),
         )
 
