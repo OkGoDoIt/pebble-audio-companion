@@ -706,13 +706,70 @@ fun transcriptTimelineItems(
         previousSpeechEnd = maxOf(previousSpeechEnd ?: block.endMs, block.endMs)
     }
     while (gapIndex < gaps.size) items += gaps[gapIndex++]
-    return items.distinctBy { item ->
+    val deduped = items.distinctBy { item ->
         when (item) {
             is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
             is TranscriptTimelineItem.Break -> "break:${item.startMs}:${item.durationMs}"
             is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
         }
     }
+    return coalesceTimelineQuiet(deduped)
+}
+
+/**
+ * Collapses consecutive non-speech rows of the same kind so the transcript reads cleanly: a run
+ * of quiet spans (skipped silence, breaks, or stretches too quiet to transcribe) becomes one quiet
+ * period of their combined length, and a run of interruptions becomes one. The merged quiet total
+ * is then labelled by length — 30 s+ gets a "quiet for…" label, 5–30 s a bare break, shorter is
+ * dropped — matching the natural between-speech pauses.
+ */
+private fun coalesceTimelineQuiet(
+    items: List<TranscriptTimelineItem>,
+): List<TranscriptTimelineItem> {
+    val out = mutableListOf<TranscriptTimelineItem>()
+    var i = 0
+    while (i < items.size) {
+        val kind = timelineQuietKind(items[i])
+        if (kind == null) {
+            out += items[i]
+            i++
+            continue
+        }
+        val startMs = items[i].startMs
+        var totalMs = 0L
+        var j = i
+        while (j < items.size && timelineQuietKind(items[j]) == kind) {
+            totalMs += timelineItemDurationMs(items[j])
+            j++
+        }
+        when {
+            kind == TimelineQuietKind.Loss ->
+                out += TranscriptTimelineItem.Pause(startMs, totalMs, missing = true)
+            totalMs >= QUIET_PAUSE_THRESHOLD_MS ->
+                out += TranscriptTimelineItem.Pause(startMs, totalMs, missing = false)
+            totalMs >= SILENCE_BREAK_THRESHOLD_MS ->
+                out += TranscriptTimelineItem.Break(startMs, totalMs)
+            // Shorter than a break: nothing to show.
+        }
+        i = j
+    }
+    return out
+}
+
+private enum class TimelineQuietKind { Quiet, Loss }
+
+/** Quiet (skipped silence / too-quiet pause / break) vs interruption; null for speech. */
+private fun timelineQuietKind(item: TranscriptTimelineItem): TimelineQuietKind? = when (item) {
+    is TranscriptTimelineItem.Speech -> null
+    is TranscriptTimelineItem.Break -> TimelineQuietKind.Quiet
+    is TranscriptTimelineItem.Pause ->
+        if (item.missing) TimelineQuietKind.Loss else TimelineQuietKind.Quiet
+}
+
+private fun timelineItemDurationMs(item: TranscriptTimelineItem): Long = when (item) {
+    is TranscriptTimelineItem.Speech -> 0L
+    is TranscriptTimelineItem.Break -> item.durationMs
+    is TranscriptTimelineItem.Pause -> item.durationMs
 }
 
 private fun coalescedSpeechBlocks(
@@ -821,14 +878,13 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
         )
     }
 
-    // Silence-suppressed spans are known-quiet audio, shown as a calm "quiet for…" pause; genuine
-    // loss is shown as "audio interrupted…". They collapse separately so a quiet stretch never
-    // inherits an interruption's framing when the two happen to sit close together. As with the
-    // natural between-speech pauses, a quiet label only earns its place at 30 s or longer; shorter
-    // skipped-silence spans carry no label.
+    // Silence-suppressed spans are known-quiet audio, marked missing=false ("quiet"); genuine loss
+    // is missing=true ("audio interrupted"). They collapse separately so a quiet stretch never
+    // inherits an interruption's framing. The length-based labelling (30 s+ label, shorter → break
+    // or nothing) is applied later by coalesceTimelineQuiet, on the combined total, so consecutive
+    // quiet spans from any source read as one period.
     val lost = pauses(meta.gaps.filterNot(::isSilenceGap), missing = true)
     val quiet = pauses(meta.gaps.filter(::isSilenceGap), missing = false)
-        .filter { it.durationMs >= QUIET_PAUSE_THRESHOLD_MS }
     return (lost + quiet).sortedBy { it.startMs }
 }
 

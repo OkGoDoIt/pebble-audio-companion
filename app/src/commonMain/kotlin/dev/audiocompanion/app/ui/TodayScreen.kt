@@ -165,6 +165,9 @@ fun TodayScreen(
                 modifier = Modifier.padding(vertical = 4.dp),
                 barMs = waveformBarMs,
                 transcribedThroughSampleIndex = liveTranscribedSampleIndex,
+                // "Recording from Pebble" is the only Active state; during a VAD-quiet stretch the
+                // session stays Active, so the live edge fills with quiet instead of going blank.
+                isRecording = status.severity == StatusSeverity.Active,
             )
         }
         if (playback.segmentId != null) {

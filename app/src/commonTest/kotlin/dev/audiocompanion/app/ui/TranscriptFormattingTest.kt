@@ -127,6 +127,37 @@ class TranscriptFormattingTest {
     }
 
     @Test
+    fun transcriptTimelineItemsCollapseConsecutiveQuietSpans() {
+        // Three separate skipped-silence spans with no transcribed speech between them collapse
+        // into one quiet period of their combined length, not three "quiet for…" rows.
+        fun silence(sampleIndex: ULong, seq: UInt) = GapMeta(
+            firstMissingSequence = seq,
+            missingFrameCount = 1_500u, // 30 s at 20 ms/frame
+            firstMissingSampleIndex = sampleIndex,
+            origin = GapMeta.ORIGIN_WATCH,
+            reasonRaw = GapReason.SilenceSuppressed.raw,
+        )
+        val items = transcriptTimelineItems(
+            // 200 s segment with quiet spans at ~0 s, ~50 s, ~100 s (too far apart to merge as gaps).
+            meta = testMeta(
+                gaps = listOf(
+                    silence(0uL, 0u),
+                    silence(800_000uL, 100u),
+                    silence(1_600_000uL, 200u),
+                ),
+            ).copy(lastSampleIndexExclusive = 3_200_000uL),
+            segments = listOf(
+                TranscriptSegment("after a long quiet block", startMs = 150_000, endMs = 152_000),
+            ),
+        )
+
+        val pauses = items.filterIsInstance<TranscriptTimelineItem.Pause>()
+        assertEquals(1, pauses.size)
+        assertEquals(false, pauses.single().missing)
+        assertTrue(pauses.single().durationMs >= 85_000, "combined ~90 s: ${pauses.single().durationMs}")
+    }
+
+    @Test
     fun transcriptTimelineItemsLabelLongSuppressedSilenceAsQuiet() {
         // 30 s or longer reads as a calm "quiet for…" pause, never "audio interrupted…".
         val items = transcriptTimelineItems(
