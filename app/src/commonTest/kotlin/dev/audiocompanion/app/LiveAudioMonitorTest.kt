@@ -69,6 +69,22 @@ class LiveAudioMonitorTest {
     }
 
     @Test
+    fun suppressedSilenceRendersAsQuietNotGap() = runTest {
+        val monitor = LiveAudioMonitor(decoder = fakeDecoder, nowMs = { 100_000 })
+        monitor.onFrames("seg-1", frames(13, loud = true), receivedAtMs = 100_000)
+        // Voice-activity silence the watch skipped to save power: quiet, not a gap.
+        monitor.onGap(receivedAtMs = 101_000, approxDurationMs = 1_000, silence = true)
+
+        monitor.processPending()
+
+        val bars = monitor.bars.value
+        assertTrue(bars.none { it.state == WaveformBarState.Gap }, "silence must not show amber gap bars")
+        val quietBars = bars.filter { it.timeMs >= 101_000 }
+        assertEquals(4, quietBars.size) // 1000 ms / 250 ms per bar
+        assertTrue(quietBars.all { it.state == WaveformBarState.Silence })
+    }
+
+    @Test
     fun barsOutsideTheWindowAreTrimmed() = runTest {
         val monitor = LiveAudioMonitor(decoder = fakeDecoder, nowMs = { 0 })
         monitor.onFrames("seg-1", frames(13, loud = true), receivedAtMs = 10_000)

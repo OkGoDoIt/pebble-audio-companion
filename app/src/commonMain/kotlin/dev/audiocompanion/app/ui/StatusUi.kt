@@ -234,13 +234,21 @@ fun gapDescription(gap: GapMeta): String {
     }
 }
 
+/**
+ * A silence-suppressed gap is audio the watch intentionally skipped because it was below the
+ * voice-activity threshold — known-quiet time it withheld to save Bluetooth/battery, not lost
+ * audio. The app treats it as silence everywhere, never as a gap, interruption, or error.
+ */
+fun isSilenceGap(gap: GapMeta): Boolean =
+    gap.reasonRaw?.let { GapReason.fromRaw(it)?.isSilence } == true
+
 /** Approximate gap length from missing frame count (20 ms frames). */
 fun gapDurationMs(gap: GapMeta, frameDurationMs: Int): Long =
     gap.missingFrameCount.toLong() * frameDurationMs
 
-/** Total approximate missing time of a segment. */
+/** Total approximate missing time of a segment (intentionally-skipped silence excluded). */
 fun totalGapMs(meta: SegmentMeta): Long =
-    meta.gaps.sumOf { gapDurationMs(it, meta.frameDurationMs) }
+    meta.gaps.filterNot(::isSilenceGap).sumOf { gapDurationMs(it, meta.frameDurationMs) }
 
 /** User-facing missing time, guarded against stale/impossible gap metadata. */
 fun displayGapMs(meta: SegmentMeta): Long {
@@ -258,9 +266,10 @@ fun displayGapMs(meta: SegmentMeta): Long {
  * "Missing ~1m 20s (watch dictation used the mic)".
  */
 fun gapSummary(meta: SegmentMeta): String? {
-    if (meta.gaps.isEmpty()) return null
+    val lost = meta.gaps.filterNot(::isSilenceGap)
+    if (lost.isEmpty()) return null
     val totalMs = displayGapMs(meta)
-    val reasons = meta.gaps.map { gapDescription(it) }.distinct()
+    val reasons = lost.map { gapDescription(it) }.distinct()
     val reasonText = when {
         reasons.size == 1 -> reasons.single()
         else -> "several reasons"

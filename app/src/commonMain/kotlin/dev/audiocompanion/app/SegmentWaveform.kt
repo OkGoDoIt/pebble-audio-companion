@@ -14,12 +14,11 @@ data class SegmentWaveformBar(
     val state: WaveformBarState,
 )
 
-/** A gap shown as a marker between two media-time positions. */
+/** A marker at the media-time position where genuine audio loss occurred. */
 data class SegmentGapMarker(
     /** 0..1 position within the stored audio where the missing audio would have been. */
     val fraction: Float,
     val approxDurationMs: Long,
-    val state: WaveformBarState = WaveformBarState.Gap,
 )
 
 data class SegmentWaveform(
@@ -126,6 +125,10 @@ class SegmentWaveformBuilder(
         frames: List<FrameRecord>,
     ): SegmentGapMarker? {
         if (frames.isEmpty()) return null
+        // Silence-suppressed spans are known-quiet audio the watch skipped, not loss: the stored
+        // audio simply continues across them, so they get no marker. Drawing one would imply
+        // something went wrong where the watch was only saving power during quiet.
+        if (GapReason.fromRaw(gap.reasonRaw ?: -1)?.isSilence == true) return null
         var low = 0
         var high = frames.size
         while (low < high) {
@@ -135,11 +138,6 @@ class SegmentWaveformBuilder(
         return SegmentGapMarker(
             fraction = low.toFloat() / frames.size,
             approxDurationMs = gap.missingFrameCount.toLong() * meta.frameDurationMs,
-            state = if (GapReason.fromRaw(gap.reasonRaw ?: -1) == GapReason.SilenceSuppressed) {
-                WaveformBarState.Silence
-            } else {
-                WaveformBarState.Gap
-            },
         )
     }
 }

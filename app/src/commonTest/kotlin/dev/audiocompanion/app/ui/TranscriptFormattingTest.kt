@@ -1,5 +1,6 @@
 package dev.audiocompanion.app.ui
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.TranscriptSegment
@@ -99,6 +100,32 @@ class TranscriptFormattingTest {
         assertEquals(true, gap.missing)
         assertEquals("audio interrupted for 10 sec", gap.label)
         assertTrue(items[1] is TranscriptTimelineItem.Speech)
+    }
+
+    @Test
+    fun transcriptTimelineItemsRenderSuppressedSilenceAsQuiet() {
+        // Voice-activity silence the watch skipped must read as a calm "quiet for…" pause,
+        // never as "audio interrupted…".
+        val items = transcriptTimelineItems(
+            meta = testMeta(
+                gaps = listOf(
+                    GapMeta(
+                        firstMissingSequence = 0u,
+                        missingFrameCount = 81_000u,
+                        firstMissingSampleIndex = 0uL,
+                        origin = GapMeta.ORIGIN_WATCH,
+                        reasonRaw = GapReason.SilenceSuppressed.raw,
+                    ),
+                ),
+            ),
+            segments = listOf(
+                TranscriptSegment("back after a quiet stretch", startMs = 2_000, endMs = 4_000),
+            ),
+        )
+
+        val pause = items.filterIsInstance<TranscriptTimelineItem.Pause>().single()
+        assertEquals(false, pause.missing)
+        assertTrue(pause.label.startsWith("quiet for"), pause.label)
     }
 
     @Test
