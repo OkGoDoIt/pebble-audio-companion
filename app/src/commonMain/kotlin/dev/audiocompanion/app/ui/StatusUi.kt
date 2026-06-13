@@ -233,23 +233,34 @@ fun gapDurationMs(gap: GapMeta, frameDurationMs: Int): Long =
 fun totalGapMs(meta: SegmentMeta): Long =
     meta.gaps.sumOf { gapDurationMs(it, meta.frameDurationMs) }
 
+/** User-facing missing time, guarded against stale/impossible gap metadata. */
+fun displayGapMs(meta: SegmentMeta): Long {
+    val totalMs = totalGapMs(meta)
+    val durationMs = segmentDurationMs(meta)
+    return when {
+        totalMs <= 0 -> 0
+        durationMs > 0 -> totalMs.coerceAtMost(durationMs)
+        else -> totalMs
+    }
+}
+
 /**
  * One calm summary line for a segment's gaps, or null when there are none:
  * "Missing ~1m 20s (watch dictation used the mic)".
  */
 fun gapSummary(meta: SegmentMeta): String? {
     if (meta.gaps.isEmpty()) return null
-    val totalMs = totalGapMs(meta)
+    val totalMs = displayGapMs(meta)
     val reasons = meta.gaps.map { gapDescription(it) }.distinct()
     val reasonText = when {
         reasons.size == 1 -> reasons.single()
         else -> "several reasons"
     }
     return when {
-        // Sub-second losses would render as the absurd "Missing ~0 sec".
-        totalMs in 1..999 -> "Missing <1 sec ($reasonText)"
-        totalMs > 0 -> "Missing ~${Formatting.duration(totalMs)} ($reasonText)"
-        else -> "Some audio is missing ($reasonText)"
+        // Sub-second losses would render as the absurd "0 sec".
+        totalMs in 1..999 -> "Audio was briefly interrupted ($reasonText)"
+        totalMs > 0 -> "Audio was interrupted for about ${Formatting.duration(totalMs)} ($reasonText)"
+        else -> "Audio was interrupted ($reasonText)"
     }
 }
 

@@ -36,7 +36,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.LiveTranscriptPreview
@@ -404,6 +403,13 @@ fun SegmentDetailScreen(
                 color = StatusColors.warning,
             )
         }
+        transcriptGapNote(meta)?.let { note ->
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         when {
             transcript != null -> {
                 TranscriptTimeline(
@@ -496,12 +502,28 @@ private fun TranscriptTimeline(
         return
     }
     SelectionContainer {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            var previousTimestamp: String? = null
             timed.forEach { item ->
                 when (item) {
-                    is TranscriptTimelineItem.Speech -> SpeechTimelineRow(meta, item, onSeekMs)
+                    is TranscriptTimelineItem.Speech -> {
+                        val timestamp = clockTimeFor(meta, item.startMs)
+                        SpeechTimelineRow(
+                            timestamp = timestamp.takeIf { it != previousTimestamp },
+                            item = item,
+                            onSeekMs = onSeekMs,
+                        )
+                        previousTimestamp = timestamp
+                    }
                     is TranscriptTimelineItem.Break -> BreakTimelineRow()
-                    is TranscriptTimelineItem.Pause -> PauseTimelineRow(meta, item)
+                    is TranscriptTimelineItem.Pause -> {
+                        val timestamp = clockTimeFor(meta, item.startMs)
+                        PauseTimelineRow(
+                            timestamp = timestamp.takeIf { it != previousTimestamp },
+                            item = item,
+                        )
+                        previousTimestamp = timestamp
+                    }
                 }
             }
         }
@@ -518,13 +540,13 @@ private fun TranscriptParagraphs(text: String) {
                     if (paragraphs.size > 1) {
                         Text(
                             text = "Transcript section ${index + 1}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StatusColors.info,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = StatusColors.info,
                         )
                     }
                     Text(
                         text = paragraph,
-                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
+                        style = MaterialTheme.typography.bodyLarge,
                     )
                 }
                 if (index < paragraphs.lastIndex) {
@@ -537,7 +559,7 @@ private fun TranscriptParagraphs(text: String) {
 
 @Composable
 private fun SpeechTimelineRow(
-    meta: SegmentMeta,
+    timestamp: String?,
     item: TranscriptTimelineItem.Speech,
     onSeekMs: (Long) -> Unit,
 ) {
@@ -548,7 +570,7 @@ private fun SpeechTimelineRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        TimestampPill(clockTimeFor(meta, item.startMs))
+        TimestampPill(timestamp)
         Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
             item.speaker?.let { speaker ->
                 Text(
@@ -559,7 +581,7 @@ private fun SpeechTimelineRow(
             }
             Text(
                 text = item.text,
-                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
+                style = MaterialTheme.typography.bodyLarge,
             )
         }
     }
@@ -567,17 +589,17 @@ private fun SpeechTimelineRow(
 
 @Composable
 private fun BreakTimelineRow() {
-    Box(modifier = Modifier.fillMaxWidth().height(6.dp))
+    Box(modifier = Modifier.fillMaxWidth().height(8.dp))
 }
 
 @Composable
-private fun PauseTimelineRow(meta: SegmentMeta, item: TranscriptTimelineItem.Pause) {
+private fun PauseTimelineRow(timestamp: String?, item: TranscriptTimelineItem.Pause) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TimestampPill(clockTimeFor(meta, item.startMs), muted = true)
+        TimestampPill(timestamp, muted = true)
         Text(
             text = item.label,
             style = MaterialTheme.typography.labelSmall,
@@ -592,7 +614,11 @@ private fun PauseTimelineRow(meta: SegmentMeta, item: TranscriptTimelineItem.Pau
 }
 
 @Composable
-private fun TimestampPill(text: String, muted: Boolean = false) {
+private fun TimestampPill(text: String?, muted: Boolean = false) {
+    if (text == null) {
+        Box(modifier = Modifier.width(72.dp))
+        return
+    }
     Box(
         modifier = Modifier
             .width(72.dp)
@@ -648,20 +674,9 @@ fun transcriptTimelineItems(
     val speech = coalescedSpeechBlocks(segments, words)
     if (speech.isEmpty()) return emptyList()
 
-    val gaps = meta.gaps.map {
-        TranscriptTimelineItem.Pause(
-            startMs = sampleOffsetMs(meta, it.firstMissingSampleIndex),
-            durationMs = it.missingFrameCount.toLong() * meta.frameDurationMs,
-            missing = true,
-        )
-    }
     val items = mutableListOf<TranscriptTimelineItem>()
-    var gapIndex = 0
     var previousSpeechEnd: Long? = null
     speech.forEach { block ->
-        while (gapIndex < gaps.size && gaps[gapIndex].startMs < block.startMs) {
-            items += gaps[gapIndex++]
-        }
         previousSpeechEnd?.let { previousEnd ->
             val pauseMs = block.startMs - previousEnd
             if (pauseMs >= QUIET_PAUSE_THRESHOLD_MS) {
@@ -680,13 +695,22 @@ fun transcriptTimelineItems(
         items += block
         previousSpeechEnd = maxOf(previousSpeechEnd ?: block.endMs, block.endMs)
     }
-    while (gapIndex < gaps.size) items += gaps[gapIndex++]
     return items.distinctBy { item ->
         when (item) {
             is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
             is TranscriptTimelineItem.Break -> "break:${item.startMs}:${item.durationMs}"
             is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
         }
+    }
+}
+
+private fun transcriptGapNote(meta: SegmentMeta): String? {
+    if (meta.gaps.isEmpty()) return null
+    val totalMs = displayGapMs(meta)
+    return when {
+        totalMs in 1..999 -> "Audio was briefly interrupted in this segment."
+        totalMs > 0 -> "Audio was interrupted for about ${Formatting.duration(totalMs)} in this segment."
+        else -> "Audio was interrupted in this segment."
     }
 }
 
