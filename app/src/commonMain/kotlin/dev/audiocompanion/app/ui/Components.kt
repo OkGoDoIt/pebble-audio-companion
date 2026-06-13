@@ -178,6 +178,14 @@ fun transcriptionSetupMessage(
     }
 }
 
+fun transcriptionQualityMessage(modelUsed: String?): String? =
+    if (modelUsed?.contains("parakeet-ctc", ignoreCase = true) == true) {
+        "This transcript used the experimental Parakeet CTC model. If the wording looks off, " +
+            "switch to the recommended TDT local model in Settings for future recordings."
+    } else {
+        null
+    }
+
 /** Destructive confirmation dialog listing exactly what will happen (ux plan Section 11). */
 @Composable
 fun ConfirmDialog(

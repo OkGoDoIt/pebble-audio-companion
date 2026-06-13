@@ -27,6 +27,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 interface CactusModelPathProvider {
@@ -88,10 +89,22 @@ class CactusLocalTranscriptionProvider(
             if (pcmBytes < MIN_AUDIO_BYTES) {
                 throw TranscriptionException.NoSpeechDetected("local audio too short")
             }
-            writeWavFromRaw(rawPath, wavPath, pcmBytes, sampleRateHz)
+            val speechRanges = detectSpeechRanges(rawPath, pcmBytes, sampleRateHz)
+            if (speechRanges.isEmpty()) {
+                throw TranscriptionException.NoSpeechDetected("local audio is below speech threshold")
+            }
             val handle = initModel()
-            val nativeResult = runNativeTranscribe(handle, wavPath.toString())
-            val cleaned = nativeResult.text.trim()
+            val nativeResults = speechRanges.mapNotNull { range ->
+                writeWavRangeFromRaw(rawPath, wavPath, range, sampleRateHz)
+                val native = runNativeTranscribe(handle, wavPath.toString())
+                val cleaned = native.text.trim()
+                if (isNoSpeech(cleaned)) {
+                    null
+                } else {
+                    native.offsetBy(range.startMs(sampleRateHz), range.endMs(sampleRateHz), cleaned)
+                }
+            }
+            val cleaned = nativeResults.joinToString(" ") { it.text.trim() }.trim()
             if (isNoSpeech(cleaned)) {
                 throw TranscriptionException.NoSpeechDetected("local model returned no speech")
             }
@@ -99,8 +112,8 @@ class CactusLocalTranscriptionProvider(
                 text = cleaned,
                 providerId = id,
                 modelUsed = "${modelProvider.modelName}:${modelProvider.modelVersion}",
-                segments = nativeResult.segments,
-                words = nativeResult.words,
+                segments = nativeResults.flatMap { it.segments },
+                words = nativeResults.flatMap { it.words },
             )
         } finally {
             deleteQuietly(rawPath)
@@ -183,25 +196,160 @@ class CactusLocalTranscriptionProvider(
         return bytes
     }
 
-    private fun writeWavFromRaw(
+    private fun writeWavRangeFromRaw(
         rawPath: Path,
         wavPath: Path,
-        pcmBytes: Int,
+        range: PcmSpeechRange,
         sampleRateHz: Int,
     ) {
+        val pcmBytes = range.byteLength
         fileSystem.sink(wavPath).buffered().use { sink ->
             sink.write(PcmWav.headerMono16(pcmBytes, sampleRateHz))
             fileSystem.source(rawPath).buffered().use { source ->
                 val buffer = Buffer()
+                var skipBytes = range.startByte
+                while (skipBytes > 0) {
+                    val read = source.readAtMostTo(buffer, minOf(skipBytes, COPY_BUFFER_BYTES).toLong())
+                    if (read == -1L) break
+                    buffer.skip(read)
+                    skipBytes -= read.toInt()
+                }
+                var remainingBytes = pcmBytes
                 while (true) {
-                    val read = source.readAtMostTo(buffer, COPY_BUFFER_BYTES.toLong())
+                    if (remainingBytes <= 0) break
+                    val read = source.readAtMostTo(buffer, minOf(remainingBytes, COPY_BUFFER_BYTES).toLong())
                     if (read == -1L) break
                     sink.write(buffer, read)
+                    remainingBytes -= read.toInt()
                 }
                 buffer.close()
             }
         }
     }
+
+    private fun detectSpeechRanges(
+        rawPath: Path,
+        pcmBytes: Int,
+        sampleRateHz: Int,
+    ): List<PcmSpeechRange> {
+        val rawEnd = alignToSampleBoundary(pcmBytes)
+        if (rawEnd < MIN_AUDIO_BYTES) return emptyList()
+
+        val windowBytes = msToPcmBytes(ANALYSIS_WINDOW_MS, sampleRateHz)
+            .coerceAtLeast(BYTES_PER_SAMPLE)
+        val prerollBytes = msToPcmBytes(SPEECH_PREROLL_MS, sampleRateHz)
+        val postrollBytes = msToPcmBytes(SPEECH_POSTROLL_MS, sampleRateHz)
+        val minSpeechBytes = msToPcmBytes(MIN_SPEECH_RANGE_MS, sampleRateHz)
+        val ranges = mutableListOf<PcmSpeechRange>()
+        var speechStart: Int? = null
+        var speechEnd = 0
+        var offset = 0
+
+        fileSystem.source(rawPath).buffered().use { source ->
+            val buffer = Buffer()
+            while (offset < rawEnd) {
+                val bytesToRead = minOf(windowBytes, rawEnd - offset)
+                val read = source.readAtMostTo(buffer, bytesToRead.toLong())
+                if (read == -1L) break
+                val window = buffer.readByteArray(read.toInt())
+                val windowEnd = offset + alignToSampleBoundary(read.toInt())
+                val voiced = isVoicedPcm(window)
+                if (voiced) {
+                    if (speechStart == null) {
+                        speechStart = alignToSampleBoundary((offset - prerollBytes).coerceAtLeast(0))
+                    }
+                    speechEnd = alignToSampleBoundary((windowEnd + postrollBytes).coerceAtMost(rawEnd))
+                } else if (speechStart != null && offset >= speechEnd) {
+                    addSpeechRange(ranges, speechStart, speechEnd, minSpeechBytes)
+                    speechStart = null
+                }
+                offset += read.toInt()
+            }
+            buffer.close()
+        }
+
+        speechStart?.let { addSpeechRange(ranges, it, speechEnd, minSpeechBytes) }
+        return splitLongSpeechRanges(mergeSpeechRanges(ranges, sampleRateHz), sampleRateHz)
+    }
+
+    private fun addSpeechRange(
+        ranges: MutableList<PcmSpeechRange>,
+        startByte: Int,
+        endByte: Int,
+        minSpeechBytes: Int,
+    ) {
+        val start = alignToSampleBoundary(startByte)
+        val end = alignToSampleBoundary(endByte).coerceAtLeast(start)
+        if (end - start >= minSpeechBytes) {
+            ranges += PcmSpeechRange(startByte = start, endByte = end)
+        }
+    }
+
+    private fun mergeSpeechRanges(
+        ranges: List<PcmSpeechRange>,
+        sampleRateHz: Int,
+    ): List<PcmSpeechRange> {
+        if (ranges.isEmpty()) return emptyList()
+        val mergeGapBytes = msToPcmBytes(MERGE_SPEECH_GAP_MS, sampleRateHz)
+        val merged = mutableListOf<PcmSpeechRange>()
+        var current = ranges.first()
+        ranges.drop(1).forEach { next ->
+            current = if (next.startByte - current.endByte <= mergeGapBytes) {
+                current.copy(endByte = maxOf(current.endByte, next.endByte))
+            } else {
+                merged += current
+                next
+            }
+        }
+        merged += current
+        return merged
+    }
+
+    private fun splitLongSpeechRanges(
+        ranges: List<PcmSpeechRange>,
+        sampleRateHz: Int,
+    ): List<PcmSpeechRange> {
+        val maxBytes = msToPcmBytes(MAX_LOCAL_TRANSCRIBE_CHUNK_MS, sampleRateHz)
+        return ranges.flatMap { range ->
+            if (range.byteLength <= maxBytes) {
+                listOf(range)
+            } else {
+                buildList {
+                    var start = range.startByte
+                    while (start < range.endByte) {
+                        val end = minOf(start + maxBytes, range.endByte)
+                        add(PcmSpeechRange(startByte = start, endByte = end))
+                        start = end
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isVoicedPcm(bytes: ByteArray): Boolean {
+        val sampleBytes = alignToSampleBoundary(bytes.size)
+        if (sampleBytes <= 0) return false
+        var sumSquares = 0.0
+        var peak = 0
+        var index = 0
+        while (index < sampleBytes) {
+            val lo = bytes[index].toInt() and 0xFF
+            val hi = bytes[index + 1].toInt()
+            val sample = (hi shl 8) or lo
+            val magnitude = kotlin.math.abs(sample)
+            if (magnitude > peak) peak = magnitude
+            sumSquares += sample.toDouble() * sample.toDouble()
+            index += BYTES_PER_SAMPLE
+        }
+        val rms = sqrt(sumSquares / (sampleBytes / BYTES_PER_SAMPLE))
+        return rms >= MIN_VOICE_RMS || peak >= MIN_VOICE_PEAK
+    }
+
+    private fun msToPcmBytes(ms: Int, sampleRateHz: Int): Int =
+        alignToSampleBoundary((sampleRateHz * BYTES_PER_SAMPLE * ms) / 1_000)
+
+    private fun alignToSampleBoundary(bytes: Int): Int =
+        bytes - (bytes % BYTES_PER_SAMPLE)
 
     private fun parseNativeTranscription(jsonResult: String): NativeTranscription =
         try {
@@ -269,6 +417,15 @@ class CactusLocalTranscriptionProvider(
 
     companion object {
         private const val MIN_AUDIO_BYTES = 3_200
+        private const val BYTES_PER_SAMPLE = 2
+        private const val ANALYSIS_WINDOW_MS = 100
+        private const val MIN_SPEECH_RANGE_MS = 400
+        private const val SPEECH_PREROLL_MS = 450
+        private const val SPEECH_POSTROLL_MS = 700
+        private const val MERGE_SPEECH_GAP_MS = 1_500
+        private const val MAX_LOCAL_TRANSCRIBE_CHUNK_MS = 45_000
+        private const val MIN_VOICE_RMS = 180.0
+        private const val MIN_VOICE_PEAK = 900
         private const val COPY_BUFFER_BYTES = 64 * 1024
         private val NON_SPEECH_REGEX = "\\[[^\\]]*\\]|\\([^)]*\\)".toRegex()
     }
@@ -278,4 +435,34 @@ private data class NativeTranscription(
     val text: String,
     val segments: List<TranscriptSegment> = emptyList(),
     val words: List<TranscriptWord> = emptyList(),
-)
+) {
+    fun offsetBy(startMs: Long, endMs: Long, cleanedText: String): NativeTranscription =
+        NativeTranscription(
+            text = cleanedText,
+            segments = segments.takeIf { it.isNotEmpty() }?.map {
+                it.copy(startMs = it.startMs + startMs, endMs = it.endMs + startMs)
+            } ?: listOf(
+                TranscriptSegment(
+                    text = cleanedText,
+                    startMs = startMs,
+                    endMs = endMs.coerceAtLeast(startMs),
+                ),
+            ),
+            words = words.map {
+                it.copy(startMs = it.startMs + startMs, endMs = it.endMs + startMs)
+            },
+        )
+}
+
+private data class PcmSpeechRange(
+    val startByte: Int,
+    val endByte: Int,
+) {
+    val byteLength: Int get() = endByte - startByte
+
+    fun startMs(sampleRateHz: Int): Long =
+        ((startByte / 2L) * 1_000L) / sampleRateHz
+
+    fun endMs(sampleRateHz: Int): Long =
+        ((endByte / 2L) * 1_000L) / sampleRateHz
+}
