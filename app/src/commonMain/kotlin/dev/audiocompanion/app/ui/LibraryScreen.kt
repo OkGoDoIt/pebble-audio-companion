@@ -22,7 +22,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -492,11 +491,11 @@ private fun TranscriptTimeline(
         return
     }
     SelectionContainer {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             timed.forEach { item ->
                 when (item) {
-                    is TranscriptTimelineItem.Speech -> SpeechTimelineRow(item, onSeekMs)
-                    is TranscriptTimelineItem.Pause -> PauseTimelineRow(item)
+                    is TranscriptTimelineItem.Speech -> SpeechTimelineRow(meta, item, onSeekMs)
+                    is TranscriptTimelineItem.Pause -> PauseTimelineRow(meta, item)
                 }
             }
         }
@@ -531,7 +530,11 @@ private fun TranscriptParagraphs(text: String) {
 }
 
 @Composable
-private fun SpeechTimelineRow(item: TranscriptTimelineItem.Speech, onSeekMs: (Long) -> Unit) {
+private fun SpeechTimelineRow(
+    meta: SegmentMeta,
+    item: TranscriptTimelineItem.Speech,
+    onSeekMs: (Long) -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -539,7 +542,7 @@ private fun SpeechTimelineRow(item: TranscriptTimelineItem.Speech, onSeekMs: (Lo
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        TimestampPill(item.startMs)
+        TimestampPill(clockTimeFor(meta, item.startMs))
         Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
             item.speaker?.let { speaker ->
                 Text(
@@ -557,41 +560,40 @@ private fun SpeechTimelineRow(item: TranscriptTimelineItem.Speech, onSeekMs: (Lo
 }
 
 @Composable
-private fun PauseTimelineRow(item: TranscriptTimelineItem.Pause) {
+private fun PauseTimelineRow(meta: SegmentMeta, item: TranscriptTimelineItem.Pause) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = if (item.prominent) 8.dp else 2.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TimestampPill(item.startMs)
-        HorizontalDivider(modifier = Modifier.weight(1f))
-        Surface(
-            color = if (item.missing) StatusColors.warning.copy(alpha = 0.14f)
-            else MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(999.dp),
-        ) {
-            Text(
-                text = item.label,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (item.missing) StatusColors.warning else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            )
-        }
-        HorizontalDivider(modifier = Modifier.weight(1f))
+        TimestampPill(clockTimeFor(meta, item.startMs), muted = true)
+        Text(
+            text = item.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (item.missing) {
+                StatusColors.warning
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+            },
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
 @Composable
-private fun TimestampPill(ms: Long) {
+private fun TimestampPill(text: String, muted: Boolean = false) {
     Box(
         modifier = Modifier
-            .width(54.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(999.dp))
+            .width(72.dp)
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (muted) 0.55f else 1f),
+                RoundedCornerShape(999.dp),
+            )
             .padding(vertical = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = Formatting.duration(ms),
+            text = text,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -613,7 +615,6 @@ sealed interface TranscriptTimelineItem {
         val durationMs: Long,
         val missing: Boolean,
     ) : TranscriptTimelineItem {
-        val prominent: Boolean get() = durationMs >= LONG_PAUSE_MS || missing
         val label: String
             get() = if (missing) {
                 "missing audio for ${Formatting.duration(durationMs)}"
@@ -656,7 +657,7 @@ fun transcriptTimelineItems(
         }
         previousSpeechEnd?.let { previousEnd ->
             val pauseMs = block.startMs - previousEnd
-            if (pauseMs >= SHORT_PAUSE_MS) {
+            if (pauseMs >= QUIET_PAUSE_THRESHOLD_MS) {
                 items += TranscriptTimelineItem.Pause(
                     startMs = previousEnd,
                     durationMs = pauseMs,
@@ -682,8 +683,10 @@ private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
     return (samples.toLong() * 1_000L) / meta.sampleRateHz.toLong()
 }
 
-private const val SHORT_PAUSE_MS = 2_500L
-private const val LONG_PAUSE_MS = 10_000L
+private fun clockTimeFor(meta: SegmentMeta, offsetMs: Long): String =
+    Formatting.timeOfDay(meta.receivedAtMs + offsetMs)
+
+private const val QUIET_PAUSE_THRESHOLD_MS = 30_000L
 
 fun transcriptParagraphs(
     text: String,
