@@ -65,10 +65,19 @@ fun LiveWaveform(
                     )
                 val color: Color
                 val halfHeight: Float
+                var strokeWidth = barWidth
                 when {
                     bar.state == WaveformBarState.Gap -> {
                         color = StatusColors.warning
                         halfHeight = centerY * 0.9f
+                    }
+                    bar.state == WaveformBarState.SuppressedSilence -> {
+                        // Voice-activity silence the watch skipped: a subtle thin grey tick at the
+                        // same minimal height as quiet audio, but greyer and narrower so it reads
+                        // as "intentionally quiet here", not as missing audio or a dropped link.
+                        color = StatusColors.neutral.copy(alpha = 0.5f)
+                        halfHeight = (centerY * 0.06f).coerceAtLeast(1.5f)
+                        strokeWidth = (barWidth * 0.5f).coerceAtLeast(1f)
                     }
                     bar.state == WaveformBarState.Silence -> {
                         color = StatusColors.neutral
@@ -87,7 +96,7 @@ fun LiveWaveform(
                     color = color,
                     start = Offset(x, centerY - halfHeight),
                     end = Offset(x, centerY + halfHeight),
-                    strokeWidth = barWidth,
+                    strokeWidth = strokeWidth,
                     cap = StrokeCap.Round,
                 )
             }
@@ -196,7 +205,8 @@ fun SegmentWaveformView(
                 val color: Color
                 val halfHeight: Float
                 when {
-                    bar.state == WaveformBarState.Silence -> {
+                    bar.state == WaveformBarState.Silence ||
+                        bar.state == WaveformBarState.SuppressedSilence -> {
                         color = StatusColors.neutral
                         halfHeight = (centerY * 0.06f).coerceAtLeast(1f)
                     }

@@ -823,9 +823,12 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
 
     // Silence-suppressed spans are known-quiet audio, shown as a calm "quiet for…" pause; genuine
     // loss is shown as "audio interrupted…". They collapse separately so a quiet stretch never
-    // inherits an interruption's framing when the two happen to sit close together.
+    // inherits an interruption's framing when the two happen to sit close together. As with the
+    // natural between-speech pauses, a quiet label only earns its place at 30 s or longer; shorter
+    // skipped-silence spans carry no label.
     val lost = pauses(meta.gaps.filterNot(::isSilenceGap), missing = true)
     val quiet = pauses(meta.gaps.filter(::isSilenceGap), missing = false)
+        .filter { it.durationMs >= QUIET_PAUSE_THRESHOLD_MS }
     return (lost + quiet).sortedBy { it.startMs }
 }
 
