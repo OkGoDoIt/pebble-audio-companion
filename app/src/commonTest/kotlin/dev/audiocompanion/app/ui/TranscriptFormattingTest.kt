@@ -50,24 +50,29 @@ class TranscriptFormattingTest {
     }
 
     @Test
-    fun transcriptTimelineItemsInsertQuietMarkersOnlyAfterThirtySeconds() {
+    fun transcriptTimelineItemsUseUnlabeledBreaksBeforeQuietMarkers() {
         val items = transcriptTimelineItems(
             meta = testMeta(),
             segments = listOf(
                 TranscriptSegment("first thought", startMs = 0, endMs = 1_000),
-                TranscriptSegment("short pause", startMs = 29_000, endMs = 30_000),
-                TranscriptSegment("long pause", startMs = 61_000, endMs = 62_000),
+                TranscriptSegment("same paragraph", startMs = 4_000, endMs = 5_000),
+                TranscriptSegment("new paragraph", startMs = 11_000, endMs = 12_000),
+                TranscriptSegment("long pause", startMs = 43_000, endMs = 44_000),
             ),
         )
 
-        assertEquals(4, items.size)
-        assertTrue(items[0] is TranscriptTimelineItem.Speech)
-        assertTrue(items[1] is TranscriptTimelineItem.Speech)
-        val pause = items[2] as TranscriptTimelineItem.Pause
-        assertEquals(30_000, pause.startMs)
+        assertEquals(5, items.size)
+        val first = items[0] as TranscriptTimelineItem.Speech
+        assertEquals("first thought same paragraph", first.text)
+        val breakItem = items[1] as TranscriptTimelineItem.Break
+        assertEquals(5_000, breakItem.startMs)
+        assertEquals(6_000, breakItem.durationMs)
+        assertTrue(items[2] is TranscriptTimelineItem.Speech)
+        val pause = items[3] as TranscriptTimelineItem.Pause
+        assertEquals(12_000, pause.startMs)
         assertEquals(31_000, pause.durationMs)
         assertEquals(false, pause.missing)
-        assertTrue(items[3] is TranscriptTimelineItem.Speech)
+        assertTrue(items[4] is TranscriptTimelineItem.Speech)
     }
 
     private fun testMeta() = SegmentMeta(
