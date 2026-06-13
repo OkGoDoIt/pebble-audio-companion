@@ -39,7 +39,8 @@ enum class GapReason(val raw: Int) {
     LowBattery(0x04),
     CodecError(0x05),
     TransportReset(0x06),
-    PowerSave(0x07);
+    PowerSave(0x07),
+    SilenceSuppressed(0x08);
 
     companion object {
         fun fromRaw(raw: Int): GapReason? = entries.firstOrNull { it.raw == raw }

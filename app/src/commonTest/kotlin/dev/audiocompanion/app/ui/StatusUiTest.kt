@@ -164,6 +164,20 @@ class StatusUiTest {
     }
 
     @Test
+    fun silenceSuppressedGapIsExplainedAsQuietAudio() {
+        val text = gapDescription(
+            GapMeta(
+                firstMissingSequence = 1u,
+                missingFrameCount = 50u,
+                firstMissingSampleIndex = 320uL,
+                origin = GapMeta.ORIGIN_WATCH,
+                reasonRaw = GapReason.SilenceSuppressed.raw,
+            ),
+        )
+        assertEquals("quiet audio was skipped", text)
+    }
+
+    @Test
     fun deniedMismatchExplainsForeignReceiver() {
         val status = statusUiModel(
             ReceiverSessionState.Denied(AuthStatus.DeniedMismatch.raw),

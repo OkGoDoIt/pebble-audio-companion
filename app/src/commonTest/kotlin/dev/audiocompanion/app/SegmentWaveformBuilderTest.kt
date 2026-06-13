@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.CloseReasonMeta
 import dev.audiocompanion.storage.FrameRecord
 import dev.audiocompanion.storage.GapMeta
@@ -80,13 +81,31 @@ class SegmentWaveformBuilderTest {
             missingFrameCount = 100u,
             firstMissingSampleIndex = 50uL * 320u,
             origin = GapMeta.ORIGIN_WATCH,
-            reasonRaw = 2,
+            reasonRaw = GapReason.MicConflict.raw,
         )
         val builder = SegmentWaveformBuilder(decoder = decoder, maxBars = 10)
         val wave = builder.build(meta(frameCount = 100, gaps = listOf(gap))) { stored }
         val marker = wave.gapMarkers.single()
         assertEquals(0.5f, marker.fraction)
         assertEquals(2_000L, marker.approxDurationMs)
+        assertEquals(WaveformBarState.Gap, marker.state)
+    }
+
+    @Test
+    fun silenceSuppressionGapMarkersRenderAsQuietMarkers() = runTest {
+        val stored = frames(50) + frames(50, firstSequence = 150u)
+        val gap = GapMeta(
+            firstMissingSequence = 50u,
+            missingFrameCount = 100u,
+            firstMissingSampleIndex = 50uL * 320u,
+            origin = GapMeta.ORIGIN_WATCH,
+            reasonRaw = GapReason.SilenceSuppressed.raw,
+        )
+        val builder = SegmentWaveformBuilder(decoder = decoder, maxBars = 10)
+        val marker = builder.build(meta(frameCount = 100, gaps = listOf(gap))) { stored }
+            .gapMarkers
+            .single()
+        assertEquals(WaveformBarState.Silence, marker.state)
     }
 
     @Test

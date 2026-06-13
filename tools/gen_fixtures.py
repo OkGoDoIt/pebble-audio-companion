@@ -539,7 +539,7 @@ def build_fixtures():
     gap_reasons = {
         1: "spool_overflow", 2: "mic_conflict", 3: "user_disabled",
         4: "low_battery", 5: "codec_error", 6: "transport_reset",
-        7: "power_save",
+        7: "power_save", 8: "silence_suppressed",
     }
     for reason, label in gap_reasons.items():
         add(

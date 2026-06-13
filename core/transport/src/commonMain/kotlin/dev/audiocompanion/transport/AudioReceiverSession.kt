@@ -471,6 +471,7 @@ class AudioReceiverSession(
             ),
         )
 
+        var advancedSamples = 0uL
         if (message.missingFrameCount == 0u) {
             // Unknown extent: account for it when the next STREAM_DATA shows where it ends.
             ctx.openWatchGapFrom = message.firstMissingSequence
@@ -479,12 +480,16 @@ class AudioReceiverSession(
             // so contiguity (and the checkpoint) advances past them.
             val gapEnd = message.firstMissingSequence + message.missingFrameCount
             if (gapEnd > ctx.contiguousNext) {
-                ctx.contiguousSampleIndex +=
-                    (gapEnd - ctx.contiguousNext).toULong() * ctx.frameSamples
+                advancedSamples = (gapEnd - ctx.contiguousNext).toULong() * ctx.frameSamples
+                ctx.contiguousSampleIndex += advancedSamples
                 ctx.contiguousNext = gapEnd
                 ctx.mergePendingRanges()
                 ctx.checkpointedSinceLastChange = false
             }
+        }
+        if (advancedSamples > 0uL) {
+            ctx.samplesSinceCheckpoint += advancedSamples
+            maybeSendCheckpoint(ctx)
         }
     }
 

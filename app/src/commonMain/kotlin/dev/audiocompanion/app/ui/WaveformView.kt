@@ -221,8 +221,13 @@ fun SegmentWaveformView(
         // Missing-audio markers: thin full-height ticks at the position the loss occurred.
         waveform.gapMarkers.forEach { marker ->
             val x = (marker.fraction * width).coerceIn(0f, width)
+            val markerColor = if (marker.state == WaveformBarState.Silence) {
+                StatusColors.neutral
+            } else {
+                StatusColors.warning
+            }
             drawLine(
-                color = StatusColors.warning,
+                color = markerColor,
                 start = Offset(x, centerY * 0.1f),
                 end = Offset(x, size.height - centerY * 0.1f),
                 strokeWidth = 2.5f,
