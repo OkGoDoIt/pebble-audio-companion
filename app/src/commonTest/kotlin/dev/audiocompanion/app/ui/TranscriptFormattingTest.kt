@@ -77,7 +77,7 @@ class TranscriptFormattingTest {
     }
 
     @Test
-    fun transcriptTimelineItemsDoNotRenderStoredGapsAsRows() {
+    fun transcriptTimelineItemsCollapseStoredGapsIntoInlineRows() {
         val items = transcriptTimelineItems(
             meta = testMeta(
                 gaps = List(4) { index ->
@@ -94,8 +94,28 @@ class TranscriptFormattingTest {
             ),
         )
 
-        assertEquals(1, items.size)
-        assertTrue(items.single() is TranscriptTimelineItem.Speech)
+        assertEquals(2, items.size)
+        val gap = items[0] as TranscriptTimelineItem.Pause
+        assertEquals(true, gap.missing)
+        assertEquals("audio interrupted for 10 sec", gap.label)
+        assertTrue(items[1] is TranscriptTimelineItem.Speech)
+    }
+
+    @Test
+    fun transcriptTimelineItemsSplitLongFinalSegmentsIntoReadableBlocks() {
+        val longText = (1..90).joinToString(" ") { "word$it" }
+        val items = transcriptTimelineItems(
+            meta = testMeta(),
+            segments = listOf(
+                TranscriptSegment(longText, startMs = 0, endMs = 90_000),
+            ),
+        )
+
+        val speech = items.filterIsInstance<TranscriptTimelineItem.Speech>()
+        assertTrue(speech.size >= 3)
+        assertTrue(speech.all { it.text.split(Regex("\\s+")).size <= 34 })
+        assertEquals(0, speech.first().startMs)
+        assertEquals(90_000, speech.last().endMs)
     }
 
     private fun testMeta(gaps: List<GapMeta> = emptyList()) = SegmentMeta(

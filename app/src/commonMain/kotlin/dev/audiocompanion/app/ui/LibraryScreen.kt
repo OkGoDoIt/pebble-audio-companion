@@ -403,13 +403,6 @@ fun SegmentDetailScreen(
                 color = StatusColors.warning,
             )
         }
-        transcriptGapNote(meta)?.let { note ->
-            Text(
-                text = note,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
         when {
             transcript != null -> {
                 TranscriptTimeline(
@@ -540,8 +533,8 @@ private fun TranscriptParagraphs(text: String) {
                     if (paragraphs.size > 1) {
                         Text(
                             text = "Transcript section ${index + 1}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = StatusColors.info,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StatusColors.info,
                         )
                     }
                     Text(
@@ -603,11 +596,7 @@ private fun PauseTimelineRow(timestamp: String?, item: TranscriptTimelineItem.Pa
         Text(
             text = item.label,
             style = MaterialTheme.typography.labelSmall,
-            color = if (item.missing) {
-                StatusColors.warning
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
-            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
             modifier = Modifier.weight(1f),
         )
     }
@@ -659,7 +648,11 @@ sealed interface TranscriptTimelineItem {
     ) : TranscriptTimelineItem {
         val label: String
             get() = if (missing) {
-                "missing audio for ${Formatting.duration(durationMs)}"
+                if (durationMs < 1_000) {
+                    "audio briefly interrupted"
+                } else {
+                    "audio interrupted for ${Formatting.duration(durationMs)}"
+                }
             } else {
                 "quiet for ${Formatting.duration(durationMs)}"
             }
@@ -671,13 +664,20 @@ fun transcriptTimelineItems(
     segments: List<TranscriptSegment>,
     words: List<TranscriptWord> = emptyList(),
 ): List<TranscriptTimelineItem> {
-    val speech = coalescedSpeechBlocks(segments, words)
+    val speech = coalescedSpeechBlocks(segments, words).flatMap(::splitSpeechBlock)
     if (speech.isEmpty()) return emptyList()
 
+    val gaps = collapsedTranscriptGaps(meta)
     val items = mutableListOf<TranscriptTimelineItem>()
+    var gapIndex = 0
     var previousSpeechEnd: Long? = null
     speech.forEach { block ->
-        previousSpeechEnd?.let { previousEnd ->
+        var insertedGapBeforeBlock = false
+        while (gapIndex < gaps.size && gaps[gapIndex].startMs <= block.startMs) {
+            items += gaps[gapIndex++]
+            insertedGapBeforeBlock = true
+        }
+        previousSpeechEnd?.takeUnless { insertedGapBeforeBlock }?.let { previousEnd ->
             val pauseMs = block.startMs - previousEnd
             if (pauseMs >= QUIET_PAUSE_THRESHOLD_MS) {
                 items += TranscriptTimelineItem.Pause(
@@ -695,22 +695,13 @@ fun transcriptTimelineItems(
         items += block
         previousSpeechEnd = maxOf(previousSpeechEnd ?: block.endMs, block.endMs)
     }
+    while (gapIndex < gaps.size) items += gaps[gapIndex++]
     return items.distinctBy { item ->
         when (item) {
             is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
             is TranscriptTimelineItem.Break -> "break:${item.startMs}:${item.durationMs}"
             is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
         }
-    }
-}
-
-private fun transcriptGapNote(meta: SegmentMeta): String? {
-    if (meta.gaps.isEmpty()) return null
-    val totalMs = displayGapMs(meta)
-    return when {
-        totalMs in 1..999 -> "Audio was briefly interrupted in this segment."
-        totalMs > 0 -> "Audio was interrupted for about ${Formatting.duration(totalMs)} in this segment."
-        else -> "Audio was interrupted in this segment."
     }
 }
 
@@ -759,6 +750,63 @@ private fun coalescedSpeechBlocks(
     return blocks
 }
 
+private fun splitSpeechBlock(
+    block: TranscriptTimelineItem.Speech,
+    maxChars: Int = 260,
+    maxWords: Int = 34,
+): List<TranscriptTimelineItem.Speech> {
+    val chunks = readableChunks(block.text, maxChars, maxWords)
+    if (chunks.size <= 1) return listOf(block)
+    val totalWords = wordCount(block.text).coerceAtLeast(1)
+    val durationMs = (block.endMs - block.startMs).coerceAtLeast(0)
+    var consumedWords = 0
+    return chunks.map { chunk ->
+        val chunkWords = wordCount(chunk).coerceAtLeast(1)
+        val startOffset = durationMs * consumedWords / totalWords
+        consumedWords += chunkWords
+        val endOffset = durationMs * consumedWords / totalWords
+        block.copy(
+            startMs = block.startMs + startOffset,
+            endMs = (block.startMs + endOffset).coerceAtLeast(block.startMs + startOffset),
+            text = chunk,
+        )
+    }
+}
+
+private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineItem.Pause> {
+    if (meta.gaps.isEmpty()) return emptyList()
+    val segmentDuration = segmentDurationMs(meta).coerceAtLeast(0)
+    val ranges = meta.gaps.map { gap ->
+        val rawStart = sampleOffsetMs(meta, gap.firstMissingSampleIndex)
+        val start = if (segmentDuration > 0) rawStart.coerceIn(0, segmentDuration) else rawStart.coerceAtLeast(0)
+        val rawDuration = gapDurationMs(gap, meta.frameDurationMs).coerceAtLeast(0)
+        val end = if (segmentDuration > 0) {
+            (start + rawDuration).coerceAtMost(segmentDuration)
+        } else {
+            start + rawDuration
+        }
+        start to end.coerceAtLeast(start)
+    }.sortedBy { it.first }
+
+    val merged = mutableListOf<Pair<Long, Long>>()
+    ranges.forEach { range ->
+        val last = merged.lastOrNull()
+        if (last != null && range.first <= last.second + GAP_COLLAPSE_WINDOW_MS) {
+            merged[merged.lastIndex] = last.first to maxOf(last.second, range.second)
+        } else {
+            merged += range
+        }
+    }
+
+    return merged.map { (start, end) ->
+        TranscriptTimelineItem.Pause(
+            startMs = start,
+            durationMs = (end - start).coerceAtLeast(0),
+            missing = true,
+        )
+    }
+}
+
 private fun joinTranscriptText(a: String, b: String): String =
     when {
         a.isBlank() -> b
@@ -778,6 +826,7 @@ private fun clockTimeFor(meta: SegmentMeta, offsetMs: Long): String =
 
 private const val SILENCE_BREAK_THRESHOLD_MS = 5_000L
 private const val QUIET_PAUSE_THRESHOLD_MS = 30_000L
+private const val GAP_COLLAPSE_WINDOW_MS = 5_000L
 
 fun transcriptParagraphs(
     text: String,
