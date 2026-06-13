@@ -33,8 +33,10 @@ class AudioCompanionReceiverService : Service() {
         val handle = AndroidAudioCompanionRuntimeHolder.get(this)
         when (intent?.action) {
             ACTION_STOP -> {
-                // Pause the watch first (best effort) so its Settings show Paused instead of
-                // Streaming, then tear down and drop the connection.
+                // Record the intent (the notification's Stop action bypasses the UI toggle) so a
+                // sticky restart does not auto-resume against the user's wish, then pause the
+                // watch (best effort) so its Settings show Paused, tear down, and disconnect.
+                handle.settingsRepository.setBackgroundReceiverEnabled(false)
                 serviceScope.launch {
                     handle.runtime.stopReceiving()
                     stopForeground(STOP_FOREGROUND_REMOVE)

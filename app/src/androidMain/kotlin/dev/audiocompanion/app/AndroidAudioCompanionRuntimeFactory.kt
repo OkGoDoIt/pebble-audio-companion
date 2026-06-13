@@ -158,6 +158,9 @@ class AndroidAudioCompanionRuntimeFactory(
             automaticWavExportEnabled = {
                 settingsRepository.settings.value.automaticWavExportEnabled
             },
+            desiredEnabled = {
+                settingsRepository.settings.value.backgroundReceiverEnabled
+            },
         )
     }
 

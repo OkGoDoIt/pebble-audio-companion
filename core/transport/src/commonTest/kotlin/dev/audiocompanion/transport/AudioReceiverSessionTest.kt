@@ -3,6 +3,8 @@ package dev.audiocompanion.transport
 import dev.audiocompanion.protocol.Ack
 import dev.audiocompanion.protocol.AudioCompanionProtocol
 import dev.audiocompanion.protocol.AuthRequest
+import dev.audiocompanion.protocol.ServiceState
+import dev.audiocompanion.protocol.StateChanged
 import dev.audiocompanion.protocol.AuthResult
 import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.DecodeResult
@@ -444,6 +446,72 @@ class AudioReceiverSessionTest {
             (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
         }.filterIsInstance<dev.audiocompanion.protocol.ResumeRequest>()
         assertEquals(1, resume.size, "re-authorizing a policy-paused watch must auto-resume")
+    }
+
+    @Test
+    fun authorizingWhileUserStoppedPausesTheWatch() = runTest {
+        // Default Info state is AuthorizedIdle (2): the watch is not paused. With the user intent
+        // off (e.g. a sticky service reconnected after Stop), authorization must pause the watch
+        // rather than let it stream.
+        val link = FakeAudioGattLink()
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+            desiredEnabled = { false },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+        val auth = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>().single()
+        link.pushControl(AuthResult(requestToken = auth.requestToken, statusRaw = 0, grantedProtoVersion = 1))
+        runCurrent()
+
+        val pause = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<dev.audiocompanion.protocol.PauseRequest>()
+        assertEquals(1, pause.size, "authorizing while the user has stopped must pause the watch")
+        assertEquals(dev.audiocompanion.protocol.PauseReason.User.raw, pause.single().reasonRaw)
+    }
+
+    @Test
+    fun watchPausingByPolicyAfterAuthorizationTriggersResume() = runTest {
+        // Default Info state AuthorizedIdle (2): the gated reconcile sends nothing at auth. If the
+        // watch later reports a policy pause (STATE_CHANGED) while the user wants audio, the
+        // safety net resumes it without depending on the pre-auth Info snapshot.
+        val link = FakeAudioGattLink()
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+        val auth = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>().single()
+        link.pushControl(AuthResult(requestToken = auth.requestToken, statusRaw = 0, grantedProtoVersion = 1))
+        runCurrent()
+
+        fun resumeCount() = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<dev.audiocompanion.protocol.ResumeRequest>().size
+        assertEquals(0, resumeCount(), "no reconcile write when the watch is not paused")
+
+        link.pushControl(StateChanged(serviceStateRaw = ServiceState.PausedPolicy.raw))
+        runCurrent()
+        assertEquals(1, resumeCount(), "a watch that pauses by policy after auth must be resumed")
     }
 
     @Test

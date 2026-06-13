@@ -34,6 +34,9 @@ class IosAudioCompanionRuntimeHandle(
     }
 
     fun stopReceiver() {
+        // Record the intent first so a later restore/reconnect does not auto-resume against the
+        // user's wish (the session's declarative reconcile reads this flag).
+        settingsRepository.setBackgroundReceiverEnabled(false)
         scope.launch {
             // Pause the watch first (best effort) so its Settings show Paused instead of
             // Streaming, then tear down and drop the connection.
