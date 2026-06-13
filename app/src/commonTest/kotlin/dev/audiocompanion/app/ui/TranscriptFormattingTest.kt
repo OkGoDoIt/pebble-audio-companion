@@ -50,22 +50,24 @@ class TranscriptFormattingTest {
     }
 
     @Test
-    fun transcriptTimelineItemsInsertPauseMarkersFromTimingGaps() {
+    fun transcriptTimelineItemsInsertQuietMarkersOnlyAfterThirtySeconds() {
         val items = transcriptTimelineItems(
             meta = testMeta(),
             segments = listOf(
                 TranscriptSegment("first thought", startMs = 0, endMs = 1_000),
-                TranscriptSegment("after a pause", startMs = 5_000, endMs = 6_000),
+                TranscriptSegment("short pause", startMs = 29_000, endMs = 30_000),
+                TranscriptSegment("long pause", startMs = 61_000, endMs = 62_000),
             ),
         )
 
-        assertEquals(3, items.size)
+        assertEquals(4, items.size)
         assertTrue(items[0] is TranscriptTimelineItem.Speech)
-        val pause = items[1] as TranscriptTimelineItem.Pause
-        assertEquals(1_000, pause.startMs)
-        assertEquals(4_000, pause.durationMs)
+        assertTrue(items[1] is TranscriptTimelineItem.Speech)
+        val pause = items[2] as TranscriptTimelineItem.Pause
+        assertEquals(30_000, pause.startMs)
+        assertEquals(31_000, pause.durationMs)
         assertEquals(false, pause.missing)
-        assertTrue(items[2] is TranscriptTimelineItem.Speech)
+        assertTrue(items[3] is TranscriptTimelineItem.Speech)
     }
 
     private fun testMeta() = SegmentMeta(
