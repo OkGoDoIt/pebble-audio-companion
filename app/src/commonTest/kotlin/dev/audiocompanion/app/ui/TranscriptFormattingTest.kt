@@ -1,5 +1,6 @@
 package dev.audiocompanion.app.ui
 
+import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.TranscriptSegment
 import kotlin.test.Test
@@ -75,7 +76,29 @@ class TranscriptFormattingTest {
         assertTrue(items[4] is TranscriptTimelineItem.Speech)
     }
 
-    private fun testMeta() = SegmentMeta(
+    @Test
+    fun transcriptTimelineItemsDoNotRenderStoredGapsAsRows() {
+        val items = transcriptTimelineItems(
+            meta = testMeta(
+                gaps = List(4) { index ->
+                    GapMeta(
+                        firstMissingSequence = index.toUInt(),
+                        missingFrameCount = 81_000u,
+                        firstMissingSampleIndex = (index * 16_000).toULong(),
+                        origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                    )
+                },
+            ),
+            segments = listOf(
+                TranscriptSegment("oh what's going on here", startMs = 2_000, endMs = 4_000),
+            ),
+        )
+
+        assertEquals(1, items.size)
+        assertTrue(items.single() is TranscriptTimelineItem.Speech)
+    }
+
+    private fun testMeta(gaps: List<GapMeta> = emptyList()) = SegmentMeta(
         segmentId = "seg",
         streamId = 1u,
         protocolVersion = 1,
@@ -89,5 +112,8 @@ class TranscriptFormattingTest {
         startMonotonicMs = 0UL,
         receivedAtMs = 0,
         firstSampleIndex = 0UL,
+        lastSampleIndexExclusive = 160_000UL,
+        frameCount = 500,
+        gaps = gaps,
     )
 }

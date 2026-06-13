@@ -216,8 +216,30 @@ class TimelineTest {
         val withGap = timeline[0] as TimelineItem.Segment
         val summary = withGap.gapSummary
         assertTrue(summary != null && summary.contains("dictation"), "summary: $summary")
-        assertTrue(summary!!.contains("2 sec"), "summary should carry ~duration: $summary")
+        assertTrue(summary.contains("2 sec"), "summary should carry ~duration: $summary")
         assertEquals(null, (timeline[1] as TimelineItem.Segment).gapSummary)
+    }
+
+    @Test
+    fun gapSummaryCapsImpossibleTotalsToSegmentDuration() {
+        val withHugeGap = meta(
+            "seg-gap",
+            nowMs,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 10_000_000u,
+                    firstMissingSampleIndex = 3_200uL,
+                    origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                ),
+            ),
+        )
+
+        assertEquals(10_000, displayGapMs(withHugeGap))
+        assertEquals(
+            "Audio was interrupted for about 10 sec (phone briefly missed audio)",
+            gapSummary(withHugeGap),
+        )
     }
 
     @Test
