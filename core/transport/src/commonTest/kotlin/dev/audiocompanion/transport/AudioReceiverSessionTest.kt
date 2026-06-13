@@ -8,6 +8,7 @@ import dev.audiocompanion.protocol.StateChanged
 import dev.audiocompanion.protocol.AuthResult
 import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.DecodeResult
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.StreamData
 import dev.audiocompanion.protocol.StreamGap
@@ -269,6 +270,38 @@ class AudioReceiverSessionTest {
         val cp = fx.checkpoints().single()
         assertEquals(15u, cp.highestContiguousSequencePersisted)
         assertEquals(16uL * 320u, cp.persistedSampleIndex)
+    }
+
+    @Test
+    fun silenceSuppressionGapCanCheckpointWithoutRecurringQuietData() = runTest {
+        val fx = startSession()
+        authorize(fx)
+        fx.link.pushData(streamStart())
+        runCurrent()
+
+        fx.link.pushData(data(0u, 8))
+        runCurrent()
+        assertTrue(fx.checkpoints().isEmpty())
+
+        advanceTimeBy(600)
+        fx.link.pushData(
+            StreamGap(
+                streamId = streamId,
+                firstMissingSequence = 8u,
+                missingFrameCount = 100u,
+                firstMissingSampleIndex = 8uL * 320u,
+                reasonRaw = GapReason.SilenceSuppressed.raw,
+                watchDropCounter = 0u,
+            )
+        )
+        runCurrent()
+
+        val gap = fx.sink.eventsOf<SinkEvent.Gap>().single().gap
+        val origin = assertIs<GapOrigin.WatchReported>(gap.origin)
+        assertEquals(GapReason.SilenceSuppressed.raw, origin.reasonRaw)
+        val cp = fx.checkpoints().single()
+        assertEquals(107u, cp.highestContiguousSequencePersisted)
+        assertEquals(108uL * 320u, cp.persistedSampleIndex)
     }
 
     @Test

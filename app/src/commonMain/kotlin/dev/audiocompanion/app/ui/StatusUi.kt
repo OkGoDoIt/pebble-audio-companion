@@ -229,6 +229,7 @@ fun gapDescription(gap: GapMeta): String {
         reason == GapReason.CodecError -> "watch audio hiccup"
         reason == GapReason.TransportReset -> "connection was interrupted"
         reason == GapReason.PowerSave -> "watch was saving power"
+        reason == GapReason.SilenceSuppressed -> "quiet audio was skipped"
         else -> "audio missing"
     }
 }

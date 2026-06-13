@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.FrameRecord
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
@@ -18,6 +19,7 @@ data class SegmentGapMarker(
     /** 0..1 position within the stored audio where the missing audio would have been. */
     val fraction: Float,
     val approxDurationMs: Long,
+    val state: WaveformBarState = WaveformBarState.Gap,
 )
 
 data class SegmentWaveform(
@@ -133,6 +135,11 @@ class SegmentWaveformBuilder(
         return SegmentGapMarker(
             fraction = low.toFloat() / frames.size,
             approxDurationMs = gap.missingFrameCount.toLong() * meta.frameDurationMs,
+            state = if (GapReason.fromRaw(gap.reasonRaw ?: -1) == GapReason.SilenceSuppressed) {
+                WaveformBarState.Silence
+            } else {
+                WaveformBarState.Gap
+            },
         )
     }
 }
