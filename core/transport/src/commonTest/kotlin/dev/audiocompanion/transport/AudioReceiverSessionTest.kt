@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package dev.audiocompanion.transport
 
 import dev.audiocompanion.protocol.Ack
