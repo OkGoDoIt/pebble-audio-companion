@@ -69,6 +69,10 @@ object AudioCompanionProtocol {
                 r.u8()
                 ResumeRequest(requestToken = r.u8())
             }
+            MessageId.ENABLE_REQUEST -> sized(bytes, 2) { r ->
+                r.u8()
+                EnableRequest(requestToken = r.u8())
+            }
             MessageId.RECEIVER_HEALTH -> sized(bytes, 8) { r ->
                 r.u8()
                 ReceiverHealth(

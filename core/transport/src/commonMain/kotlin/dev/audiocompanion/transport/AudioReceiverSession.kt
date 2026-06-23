@@ -9,6 +9,7 @@ import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.ControlOutMessage
 import dev.audiocompanion.protocol.DataMessage
 import dev.audiocompanion.protocol.DecodeResult
+import dev.audiocompanion.protocol.EnableRequest
 import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
 import dev.audiocompanion.protocol.PauseReason
@@ -50,6 +51,9 @@ sealed interface ReceiverSessionState {
 
     /** Watch returned pending-user-consent; waiting for the user to accept on the watch. */
     data object PendingConsent : ReceiverSessionState
+
+    /** Watch has Background Audio off; waiting for the user to allow enabling it on-watch. */
+    data object PendingEnable : ReceiverSessionState
 
     data class Denied(val statusRaw: Int) : ReceiverSessionState {
         val status: AuthStatus? get() = AuthStatus.fromRaw(statusRaw)
@@ -150,8 +154,11 @@ class AudioReceiverSession(
     suspend fun requestResume(): Boolean =
         sendControlAwaitAck { token -> ResumeRequest(token).encode() }
 
-    private suspend fun sendControlAwaitAck(build: (Int) -> ByteArray): Boolean {
-        if (!authorized) return false
+    private suspend fun sendControlAwaitAck(
+        requireAuthorized: Boolean = true,
+        build: (Int) -> ByteArray,
+    ): Boolean {
+        if (requireAuthorized && !authorized) return false
         val token = withTimeoutOrNull(REQUEST_TOKEN_WAIT_MS) {
             var taken = takeToken()
             while (taken == null) {
@@ -340,6 +347,14 @@ class AudioReceiverSession(
                     }
                 }
                 launch { runKeepalive() }
+
+                if (desiredEnabled() && _watchInfo.value?.enabled == false) {
+                    _state.value = ReceiverSessionState.PendingEnable
+                    sendControlAwaitAck(requireAuthorized = false) { token ->
+                        EnableRequest(token).encode()
+                    }
+                    _state.value = ReceiverSessionState.Authorizing
+                }
 
                 val token = takeToken() ?: error("fresh connection must have no in-flight request")
                 link.writeControl(

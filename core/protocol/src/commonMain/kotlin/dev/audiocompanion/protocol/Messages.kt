@@ -161,6 +161,15 @@ data class ResumeRequest(
         .toByteArray()
 }
 
+data class EnableRequest(
+    val requestToken: Int,
+) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(2)
+        .u8(MessageId.ENABLE_REQUEST)
+        .u8(requestToken)
+        .toByteArray()
+}
+
 data class ReceiverHealth(
     val requestToken: Int,
     val batteryPct: Int,
