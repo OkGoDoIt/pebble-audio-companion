@@ -40,6 +40,8 @@ data class SegmentMeta(
     val gaps: List<GapMeta> = emptyList(),
     /** Null while the segment is open. */
     val closeReason: CloseReasonMeta? = null,
+    /** Phone wall clock when this segment was closed, or null while open/legacy. */
+    val closedAtMs: Long? = null,
     val transcriptionState: TranscriptionState = TranscriptionState.Pending,
     val provenance: ProvenanceMeta? = null,
 ) {

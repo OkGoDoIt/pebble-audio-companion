@@ -1,5 +1,6 @@
 package dev.audiocompanion.storage
 
+import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.transport.GapOrigin
 import dev.audiocompanion.transport.GapRecord
@@ -30,7 +31,7 @@ class SegmentStoreTest {
     private fun store(root: Path, config: SegmentStoreConfig = SegmentStoreConfig()) =
         SegmentStore(SystemFileSystem, root, { clock }, config)
 
-    private fun streamStart(id: UInt = streamId) = StreamStart(
+    private fun streamStart(id: UInt = streamId, flags: UInt = 0u) = StreamStart(
         protocolVersion = 1,
         streamId = id,
         codecIdRaw = 1,
@@ -41,7 +42,7 @@ class SegmentStoreTest {
         frameDurationMs = 20,
         startTimeMs = 1_781_000_000_000u,
         startMonotonicMs = 86_400_123u,
-        flags = 0u,
+        flags = flags,
     )
 
     private fun frames(firstSequence: UInt, count: Int, len: Int = 25): List<SegmentFrame> =
@@ -183,6 +184,72 @@ class SegmentStoreTest {
         reopened.recover()
         assertFalse(stale.exists())
         assertNoTempFiles(root)
+    }
+
+    @Test
+    fun resumeStartWithinContinuationWindowReopensInterruptedSegment() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 3))
+        clock += 2_000
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock += 45_000
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        assertEquals(segmentId, store.openSegmentId)
+        store.appendFrames(streamId, frames(3u, 2))
+        val reopenedMeta = assertNotNull(store.readMeta(segmentId))
+        assertTrue(reopenedMeta.isOpen, "continued segment should be open again")
+        assertEquals(null, reopenedMeta.closedAtMs)
+        store.closeSegment(SegmentCloseReason.Interrupted)
+        val closedMeta = assertNotNull(store.readMeta(segmentId))
+        assertEquals(5L, closedMeta.frameCount)
+        assertEquals(4u, closedMeta.lastSequence)
+        assertEquals(5, store.readFrames(segmentId).size)
+    }
+
+    @Test
+    fun resumeStartAfterContinuationWindowOpensNewSegment() = runTest {
+        val root = tempRoot()
+        val store = store(root, SegmentStoreConfig(continueInterruptedWithinMs = 60_000))
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val firstId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 1))
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock += 60_001
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        val secondId = assertNotNull(store.openSegmentId)
+        assertTrue(secondId != firstId, "long interruptions should remain separate Library rows")
+        assertEquals(CloseReasonMeta.KIND_INTERRUPTED, store.readMeta(firstId)?.closeReason?.kind)
+    }
+
+    @Test
+    fun freshStreamStartDoesNotReopenInterruptedSegment() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val firstId = assertNotNull(store.openSegmentId)
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock += 10_000
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+
+        assertTrue(store.openSegmentId != firstId)
     }
 
     @Test
