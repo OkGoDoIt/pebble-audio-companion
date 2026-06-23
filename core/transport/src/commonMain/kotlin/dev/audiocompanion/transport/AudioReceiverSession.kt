@@ -14,6 +14,7 @@ import dev.audiocompanion.protocol.InfoSnapshot
 import dev.audiocompanion.protocol.PauseReason
 import dev.audiocompanion.protocol.PauseRequest
 import dev.audiocompanion.protocol.ProtocolConstants
+import dev.audiocompanion.protocol.ReceiverHealth
 import dev.audiocompanion.protocol.ResumeRequest
 import dev.audiocompanion.protocol.Revoked
 import dev.audiocompanion.protocol.ServiceState
@@ -72,6 +73,14 @@ class ReceiverConfig(
     val checkpointAudioMs: Long = 2_000,
     /** ... or once this much wall time has passed since the last send (and new data exists). */
     val checkpointMinIntervalMs: Long = 500,
+    /**
+     * While authorized but not actively receiving, ping the watch this often (RECEIVER_HEALTH)
+     * to keep its liveness watchdog armed and to revive a watch that already presumed us gone.
+     * Also doubles as a stale-link probe: repeated unanswered pings force a full reconnect.
+     */
+    val keepaliveIntervalMs: Long = 5_000,
+    /** Force a link resync after this many consecutive unanswered keepalive pings. */
+    val keepaliveMaxFailures: Int = 2,
 ) {
     init {
         require(receiverId.size == ProtocolConstants.RECEIVER_ID_BYTES)
@@ -172,6 +181,55 @@ class AudioReceiverSession(
     private var dataJob: Job? = null
     private var stream: StreamContext? = null
 
+    /** Wall time of the last inbound control/data notification; drives the keepalive idle check. */
+    private var lastInboundMs = 0L
+
+    /**
+     * Sends a RECEIVER_HEALTH ping and waits for the watch's ACK. Used as an idle keepalive: the
+     * watch treats any control message as proof the receiver is alive, which re-arms its liveness
+     * watchdog and revives a session it had already presumed gone. Returns true on ACK.
+     */
+    private suspend fun sendReceiverHealth(): Boolean =
+        sendControlAwaitAck { token ->
+            ReceiverHealth(
+                requestToken = token,
+                batteryPct = 0,
+                appStateRaw = 0,
+                queueDepthFrames = 0u,
+            ).encode()
+        }
+
+    /**
+     * Per-connection keepalive. While authorized but not actively receiving (the watch is not
+     * streaming to us, or the link has stalled), ping RECEIVER_HEALTH every interval. This:
+     *  - re-arms the watch's 15 s liveness watchdog so it does not stop capturing, and
+     *  - revives a watch that already presumed us gone — its control handler re-evaluates on the
+     *    next message and resumes streaming, re-announcing STREAM_START to us.
+     * Active streaming keeps [lastInboundMs] fresh (data + our checkpoints), so no ping fires then.
+     * If the watch stops answering entirely the link is stale even though the platform still
+     * reports it connected, so force a fresh GATT connection via [AudioGattLink.resync].
+     */
+    private suspend fun runKeepalive() {
+        var failures = 0
+        while (true) {
+            delay(config.keepaliveIntervalMs)
+            if (!authorized) {
+                failures = 0
+                continue
+            }
+            if (nowMs() - lastInboundMs < config.keepaliveIntervalMs) {
+                failures = 0 // active traffic; no ping needed
+                continue
+            }
+            if (sendReceiverHealth()) {
+                failures = 0
+            } else if (++failures >= config.keepaliveMaxFailures) {
+                link.resync()
+                return
+            }
+        }
+    }
+
     /**
      * Sequence/contiguity tracker for the open stream.
      *
@@ -188,6 +246,24 @@ class AudioReceiverSession(
         var contiguousNext: UInt = 0u
         var contiguousSampleIndex: ULong = 0u
         val pendingRanges = mutableListOf<PersistedRange>()
+
+        /**
+         * False until the first STREAM_DATA/STREAM_GAP fixes the contiguity base. A fresh stream
+         * is known to begin at sequence 0; a RESUME re-announcement (sent by the watch when it
+         * re-attaches a receiver mid-stream after a reconnect) continues at the watch's current
+         * sequence, so we adopt the first message's sequence as the base instead of assuming 0 —
+         * otherwise we would synthesize a bogus multi-thousand-frame leading gap and never
+         * checkpoint, stranding the resumed buffered audio.
+         */
+        var baseInitialized: Boolean =
+            (start.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) == 0u
+
+        fun ensureBase(firstSequence: UInt, firstSampleIndex: ULong) {
+            if (baseInitialized) return
+            contiguousNext = firstSequence
+            contiguousSampleIndex = firstSampleIndex
+            baseInitialized = true
+        }
 
         /** First missing sequence of a watch-reported gap whose extent is still unknown. */
         var openWatchGapFrom: UInt? = null
@@ -252,8 +328,10 @@ class AudioReceiverSession(
                 }
 
                 val connectionScope = this
+                lastInboundMs = nowMs()
                 launch {
                     link.controlNotifications.collect { bytes ->
+                        lastInboundMs = nowMs()
                         when (val result = AudioCompanionProtocol.decodeControlOut(bytes)) {
                             is DecodeResult.Decoded ->
                                 handleControl(result.message as ControlOutMessage, connectionScope)
@@ -261,6 +339,7 @@ class AudioReceiverSession(
                         }
                     }
                 }
+                launch { runKeepalive() }
 
                 val token = takeToken() ?: error("fresh connection must have no in-flight request")
                 link.writeControl(
@@ -360,6 +439,7 @@ class AudioReceiverSession(
 
     private suspend fun consumeData() {
         link.dataNotifications.collect { bytes ->
+            lastInboundMs = nowMs()
             when (val result = AudioCompanionProtocol.decodeData(bytes)) {
                 is DecodeResult.Decoded -> handleData(result.message as DataMessage)
                 else -> {} // unknown ids ignored per spec
@@ -402,6 +482,7 @@ class AudioReceiverSession(
     private suspend fun handleStreamData(message: StreamData) {
         val ctx = stream ?: return // STREAM_DATA before STREAM_START: nothing to attach it to
         if (message.streamId != ctx.streamId) return
+        ctx.ensureBase(message.firstSequence, message.firstSampleIndex)
 
         val first = message.firstSequence
         val count = message.frameCount.toUInt()
@@ -460,6 +541,7 @@ class AudioReceiverSession(
     private suspend fun handleStreamGap(message: StreamGap) {
         val ctx = stream ?: return
         if (message.streamId != ctx.streamId) return
+        ctx.ensureBase(message.firstMissingSequence, message.firstMissingSampleIndex)
 
         sink.recordGap(
             ctx.streamId,

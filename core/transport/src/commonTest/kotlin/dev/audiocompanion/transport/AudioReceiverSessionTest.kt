@@ -10,6 +10,7 @@ import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.DecodeResult
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ProtocolConstants
+import dev.audiocompanion.protocol.ReceiverHealth
 import dev.audiocompanion.protocol.StreamData
 import dev.audiocompanion.protocol.StreamGap
 import dev.audiocompanion.protocol.StreamStart
@@ -607,5 +608,104 @@ class AudioReceiverSessionTest {
             session.state.value,
             "a stopped session must not keep claiming it is streaming",
         )
+    }
+
+    // --- reconnect resume (Scenario 1) ----------------------------------------------------------
+
+    private fun resumeStart() =
+        streamStart().copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME)
+
+    @Test
+    fun resumeStreamAdoptsBaseFromFirstData_noBogusLeadingGap() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        // The watch re-announces an ongoing stream after a reconnect: RESUME flag set, frames
+        // continue at a high sequence rather than 0 (it never reset s_next_sequence).
+        fx.link.pushData(resumeStart())
+        runCurrent()
+        assertEquals(ReceiverSessionState.Streaming(streamId), fx.session.state.value)
+
+        fx.link.pushData(data(5_000u, 8))
+        runCurrent()
+
+        // No bogus 0..5000 leading gap, and the resumed buffered frames are persisted.
+        assertTrue(
+            fx.sink.eventsOf<SinkEvent.Gap>().isEmpty(),
+            "a RESUME stream must adopt the first frame's sequence as the base, not synthesize a gap",
+        )
+        val append = fx.sink.eventsOf<SinkEvent.Append>().single()
+        assertEquals(5_000u, append.frames.first().sequence)
+
+        // The checkpoint advances from the adopted base (a sequence-0 assumption would stall at 0).
+        advanceTimeBy(600)
+        fx.link.pushData(data(5_008u, 1))
+        runCurrent()
+        val cp = fx.checkpoints().single()
+        assertEquals(5_008u, cp.highestContiguousSequencePersisted)
+    }
+
+    @Test
+    fun resumeStreamWithLeadingOverflowGap_recordsLossOnceAndAdoptsBase() = runTest {
+        val fx = startSession()
+        authorize(fx)
+        fx.link.pushData(resumeStart())
+        runCurrent()
+
+        // The first thing resent is the overflow gap the watch recorded while the buffer filled.
+        fx.link.pushData(
+            StreamGap(
+                streamId = streamId,
+                firstMissingSequence = 5_000u,
+                missingFrameCount = 10u,
+                firstMissingSampleIndex = 5_000uL * 320u,
+                reasonRaw = GapReason.SpoolOverflow.raw,
+                watchDropCounter = 10u,
+            )
+        )
+        runCurrent()
+        fx.link.pushData(data(5_010u, 8))
+        runCurrent()
+
+        // Exactly one gap (the real loss), then the buffered audio attaches contiguously after it.
+        val gap = fx.sink.eventsOf<SinkEvent.Gap>().single().gap
+        assertEquals(5_000u, gap.firstMissingSequence)
+        assertEquals(10u, gap.missingFrameCount)
+        val append = fx.sink.eventsOf<SinkEvent.Append>().single()
+        assertEquals(5_010u, append.frames.first().sequence)
+    }
+
+    // --- keepalive / stale-link recovery (Scenario 2) -------------------------------------------
+
+    @Test
+    fun keepalivePingsIdleWatchAndAckKeepsLinkAlive() = runTest {
+        val fx = startSession()
+        authorize(fx) // authorized, but the watch is not streaming to us
+
+        // After one keepalive interval with no inbound traffic, a RECEIVER_HEALTH ping goes out —
+        // this is what re-arms the watch's liveness watchdog and revives a presumed-gone watch.
+        // (6 s lands after the 5 s ping but before its 2 s ACK-wait would expire.)
+        advanceTimeBy(6_000)
+        runCurrent()
+        val health = fx.writes().filterIsInstance<ReceiverHealth>()
+        assertEquals(1, health.size, "an idle authorized session must ping the watch")
+
+        // The watch ACKs: the link is healthy, so no forced reconnect.
+        fx.link.pushControl(Ack(health.single().requestToken, statusRaw = 0))
+        runCurrent()
+        assertEquals(0, fx.link.resyncCount)
+    }
+
+    @Test
+    fun unansweredKeepalivePingsForceResync() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        // The link is half-dead: writes fail, so pings are never acknowledged. After the failure
+        // budget the session forces a fresh GATT connection instead of sitting "ready" forever.
+        fx.link.failControlWrites = true
+        advanceTimeBy(5_000L * 3)
+        runCurrent()
+        assertTrue(fx.link.resyncCount >= 1, "a stale link must be force-reconnected")
     }
 }

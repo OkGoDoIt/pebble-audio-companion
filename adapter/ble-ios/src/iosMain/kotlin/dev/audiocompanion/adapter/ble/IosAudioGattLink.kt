@@ -135,6 +135,33 @@ class IosAudioGattLink : AudioGattLink {
         }
     }
 
+    /**
+     * Forces a fresh GATT session without giving up the link: cancel this app's connection to the
+     * peripheral and reconnect. On a shared ACL link (the official app is also connected) this
+     * re-runs service discovery, CCCD subscription and AUTH without disturbing the other app — the
+     * recovery for a half-dead connection CoreBluetooth still reports as connected.
+     */
+    override fun resync() {
+        val manager = centralManager
+        if (manager == null) {
+            connect()
+            return
+        }
+        wantConnected = true
+        manager.stopScan()
+        val current = peripheral
+        if (current != null) {
+            // Not an intentional (user) disconnect: onPeripheralDisconnected re-issues the connect
+            // because wantConnected stays true, so the link rebuilds itself.
+            intentionalDisconnect = false
+            _connectionState.value = LinkState.Connecting
+            manager.cancelPeripheralConnection(current)
+        } else if (manager.state == CBManagerStatePoweredOn) {
+            _connectionState.value = LinkState.Connecting
+            connectWhenPoweredOn(manager)
+        }
+    }
+
     override suspend fun readInfo(): ByteArray {
         val localPeripheral = peripheral ?: throw IllegalStateException("Peripheral is not connected")
         val characteristic = infoCharacteristic ?: throw IllegalStateException("Info characteristic not ready")
