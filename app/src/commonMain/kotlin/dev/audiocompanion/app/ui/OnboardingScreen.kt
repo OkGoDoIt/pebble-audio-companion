@@ -268,6 +268,8 @@ private fun WatchConsentStep(
     val (severity, statusText) = when (sessionState) {
         ReceiverSessionState.PendingConsent ->
             StatusSeverity.Info to "Waiting — confirm on your watch now"
+        ReceiverSessionState.PendingEnable ->
+            StatusSeverity.Info to "Waiting — approve Background Audio on your watch"
         ReceiverSessionState.Authorized, is ReceiverSessionState.Streaming ->
             StatusSeverity.Active to "Authorized"
         is ReceiverSessionState.Denied -> when (sessionState.status) {
@@ -275,8 +277,7 @@ private fun WatchConsentStep(
                 "This watch is already authorized for another receiver. Use Forget Receiver " +
                 "in the watch's Audio Companion settings, then try again."
             AuthStatus.DeniedDisabled -> StatusSeverity.Warning to
-                "Background Audio is off on the watch. Turn it on in watch Settings -> " +
-                "Audio Companion, then try again."
+                "Background Audio is off on the watch. Try again and approve the watch prompt."
             else -> StatusSeverity.Warning to "Not authorized"
         }
         is ReceiverSessionState.Revoked -> StatusSeverity.Warning to "Access was revoked"

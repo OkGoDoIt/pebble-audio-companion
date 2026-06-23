@@ -246,6 +246,7 @@ class StatusUiTest {
             ReceiverSessionState.Connecting,
             ReceiverSessionState.Authorizing,
             ReceiverSessionState.PendingConsent,
+            ReceiverSessionState.PendingEnable,
             ReceiverSessionState.Denied(AuthStatus.DeniedDisabled.raw),
             ReceiverSessionState.Authorized,
             ReceiverSessionState.Streaming(1u),

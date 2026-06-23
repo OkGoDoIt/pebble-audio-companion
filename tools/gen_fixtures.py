@@ -27,6 +27,7 @@ MSG_CHECKPOINT = 0x03
 MSG_PAUSE_REQUEST = 0x04
 MSG_RESUME_REQUEST = 0x05
 MSG_RECEIVER_HEALTH = 0x06
+MSG_ENABLE_REQUEST = 0x07
 
 # Control message ids (watch -> phone)
 MSG_AUTH_RESULT = 0x41
@@ -75,6 +76,10 @@ def receiver_health(token, battery_pct, app_state, queue_depth) -> bytes:
     return struct.pack(
         "<BBBBI", MSG_RECEIVER_HEALTH, token, battery_pct, app_state, queue_depth
     )
+
+
+def enable_request(token) -> bytes:
+    return struct.pack("<BB", MSG_ENABLE_REQUEST, token)
 
 
 def auth_result(token, status, granted) -> bytes:
@@ -360,6 +365,14 @@ def build_fixtures():
         "parse",
         {"request_token": 0x2C, "battery_pct": 76, "app_state": 2, "queue_depth_frames": 130},
         "Health report from a backgrounded receiver",
+    )
+    add(
+        "enable_request",
+        enable_request(0x2D),
+        "control_in",
+        "parse",
+        {"request_token": 0x2D},
+        "Receiver asks the watch to prompt the user to enable Background Audio",
     )
     add(
         "control_unknown_id",

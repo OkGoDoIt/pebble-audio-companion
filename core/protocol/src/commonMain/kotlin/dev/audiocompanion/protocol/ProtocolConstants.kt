@@ -53,6 +53,7 @@ object MessageId {
     const val PAUSE_REQUEST: Int = 0x04
     const val RESUME_REQUEST: Int = 0x05
     const val RECEIVER_HEALTH: Int = 0x06
+    const val ENABLE_REQUEST: Int = 0x07
 
     // Watch -> phone control notifications (0x41-0x7F).
     const val AUTH_RESULT: Int = 0x41

@@ -147,6 +147,13 @@ private fun statusForSessionState(
         primaryAction = PrimaryAction.None,
     )
 
+    ReceiverSessionState.PendingEnable -> StatusUiModel(
+        headline = "Turn on Background Audio on your watch",
+        supporting = "Approve the prompt on your Pebble to start recording.",
+        severity = StatusSeverity.Info,
+        primaryAction = PrimaryAction.None,
+    )
+
     is ReceiverSessionState.Denied -> when (state.status) {
         AuthStatus.DeniedMismatch -> StatusUiModel(
             headline = "This watch is authorized for another receiver",
@@ -155,8 +162,8 @@ private fun statusForSessionState(
             primaryAction = PrimaryAction.Troubleshoot,
         )
         AuthStatus.DeniedDisabled -> StatusUiModel(
-            headline = "Turn on Background Audio on your watch",
-            supporting = "Open watch Settings -> Audio Companion and turn Background Audio on.",
+            headline = "Background Audio is still off",
+            supporting = "Start again and approve the prompt on your watch.",
             severity = StatusSeverity.Warning,
             primaryAction = PrimaryAction.None,
         )

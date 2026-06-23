@@ -154,6 +154,9 @@ class GoldenFixtureTest {
         is ResumeRequest -> mapOf(
             "request_token" to message.requestToken.toString(),
         )
+        is EnableRequest -> mapOf(
+            "request_token" to message.requestToken.toString(),
+        )
         is ReceiverHealth -> mapOf(
             "request_token" to message.requestToken.toString(),
             "battery_pct" to message.batteryPct.toString(),
