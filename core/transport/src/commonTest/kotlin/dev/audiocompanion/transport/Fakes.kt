@@ -21,13 +21,25 @@ class FakeAudioGattLink(
 
     val controlWrites = mutableListOf<ByteArray>()
 
+    /** Number of times the session forced a stale-link resync. */
+    var resyncCount = 0
+        private set
+
+    /** When set, control writes throw to simulate a dead link (no ACK ever returns). */
+    var failControlWrites = false
+
     private val controlChannel = Channel<ByteArray>(Channel.UNLIMITED)
     private val dataChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
     override suspend fun readInfo(): ByteArray = infoBytes
 
     override suspend fun writeControl(message: ByteArray) {
+        if (failControlWrites) throw IllegalStateException("link is dead")
         controlWrites += message
+    }
+
+    override fun resync() {
+        resyncCount += 1
     }
 
     override val controlNotifications: Flow<ByteArray> = controlChannel.receiveAsFlow()

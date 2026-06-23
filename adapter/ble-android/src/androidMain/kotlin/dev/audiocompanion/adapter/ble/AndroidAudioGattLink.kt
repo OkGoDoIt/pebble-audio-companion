@@ -65,6 +65,7 @@ class AndroidAudioGattLink(
 
     private var gatt: BluetoothGatt? = null
     private var connectedDeviceAddress: String? = null
+    private var lastDevice: BluetoothDevice? = null
     private var infoCharacteristic: BluetoothGattCharacteristic? = null
     private var controlCharacteristic: BluetoothGattCharacteristic? = null
     private var dataCharacteristic: BluetoothGattCharacteristic? = null
@@ -86,6 +87,7 @@ class AndroidAudioGattLink(
             return
         }
         disconnect()
+        lastDevice = device
         connectedDeviceAddress = device.address
         _lastError.value = null
         _connectionState.value = LinkState.Connecting
@@ -99,6 +101,17 @@ class AndroidAudioGattLink(
 
     override fun disconnect() {
         disconnectWithError(null)
+    }
+
+    /**
+     * Forces a fresh GATT client for the last device: close the current (possibly stale)
+     * connection and reconnect (autoConnect resumes on radio contact). The receiver session calls
+     * this when keepalive pings go unanswered.
+     */
+    override fun resync() {
+        val device = lastDevice ?: return
+        disconnect() // closes the current client and clears gatt so connect() rebuilds it
+        connect(device)
     }
 
     private fun disconnectWithError(message: String?) {

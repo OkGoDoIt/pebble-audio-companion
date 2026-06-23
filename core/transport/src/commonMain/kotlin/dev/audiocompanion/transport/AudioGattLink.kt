@@ -40,4 +40,13 @@ interface AudioGattLink {
      * apps). No-op when already disconnected; [connectionState] moves to Disconnected.
      */
     fun disconnect() {}
+
+    /**
+     * Forces a fresh GATT connection without giving up the intent to stay connected: drop the
+     * current (possibly stale) connection and immediately reconnect, re-running discovery,
+     * subscription and authorization. The receiver session calls this when keepalive pings go
+     * unanswered — a half-dead connection the platform still reports as connected. Default no-op
+     * for links that cannot self-heal.
+     */
+    fun resync() {}
 }

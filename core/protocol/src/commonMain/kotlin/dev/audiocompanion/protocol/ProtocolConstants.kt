@@ -37,6 +37,11 @@ object ProtocolConstants {
     // CHECKPOINT receiver_flags bits (Section 4.1).
     const val RECEIVER_FLAG_LOW_STORAGE: UInt = 1u
     const val RECEIVER_FLAG_PAUSE_REQUESTED: UInt = 2u
+
+    // STREAM_START flags (Section 5). RESUME marks a re-announcement of an already-running stream
+    // to a freshly (re)attached receiver: take the first STREAM_DATA/STREAM_GAP sequence as the
+    // contiguity base instead of assuming the stream begins at sequence 0.
+    const val STREAM_START_FLAG_RESUME: UInt = 1u
 }
 
 /** One-byte message ids (Sections 4 and 5). */
