@@ -28,6 +28,8 @@ data class SegmentStoreConfig(
     val rotateAfterMs: Long = 15L * 60 * 1000,
     /** ... or after this many frame-log bytes (plan 6.2: 16 MB). */
     val rotateAfterBytes: Long = 16L * 1024 * 1024,
+    /** Reattach a RESUME stream to a recently interrupted Library segment within this window. */
+    val continueInterruptedWithinMs: Long = 10L * 60 * 1000,
 )
 
 /**
@@ -83,8 +85,58 @@ class SegmentStore(
 
     override suspend fun openSegment(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?) {
         closeSegment(SegmentCloseReason.Superseded)
+        if (tryContinueInterruptedSegment(start, receivedAtMs, provenance)) return
         openSegmentInternal(start, receivedAtMs, provenance)
     }
+
+    private fun tryContinueInterruptedSegment(
+        start: StreamStart,
+        receivedAtMs: Long,
+        provenance: SegmentProvenance?,
+    ): Boolean {
+        val resume = (start.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) != 0u
+        if (!resume || !fileSystem.exists(segmentsDir)) return false
+        val candidate = listSegments()
+            .asReversed()
+            .firstOrNull { meta ->
+                val closedAt = meta.closedAtMs ?: return@firstOrNull false
+                meta.closeReason?.kind == CloseReasonMeta.KIND_INTERRUPTED &&
+                    receivedAtMs >= closedAt &&
+                    receivedAtMs - closedAt <= config.continueInterruptedWithinMs &&
+                    canContinue(meta, start, provenance)
+            } ?: return false
+
+        val continued = candidate.copy(closeReason = null, closedAtMs = null)
+        writeMetaAtomically(continued)
+        current = OpenSegment(
+            meta = continued,
+            sink = fileSystem.sink(logPath(continued.segmentId), append = true).buffered(),
+            logBytes = logSizeBytes(continued.segmentId),
+            openedAtMs = nowMs(),
+            start = start,
+            provenance = provenance,
+        )
+        return true
+    }
+
+    private fun canContinue(
+        meta: SegmentMeta,
+        start: StreamStart,
+        provenance: SegmentProvenance?,
+    ): Boolean =
+        meta.streamId == start.streamId &&
+            meta.protocolVersion == start.protocolVersion &&
+            meta.codecIdRaw == start.codecIdRaw &&
+            meta.channels == start.channels &&
+            meta.frameSamples == start.frameSamples &&
+            meta.sampleRateHz == start.sampleRateHz &&
+            meta.bitRateBps == start.bitRateBps &&
+            meta.frameDurationMs == start.frameDurationMs &&
+            meta.startTimeMs == start.startTimeMs &&
+            meta.startMonotonicMs == start.startMonotonicMs &&
+            meta.provenance == provenance?.let {
+                ProvenanceMeta(it.fwVersionPacked, it.protocolVersion)
+            }
 
     private fun openSegmentInternal(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?) {
         fileSystem.createDirectories(segmentsDir)
@@ -174,7 +226,7 @@ class SegmentStore(
         val segment = current ?: return
         current = null
         segment.sink.close()
-        segment.meta = segment.meta.copy(closeReason = reason)
+        segment.meta = segment.meta.copy(closeReason = reason, closedAtMs = nowMs())
         writeMetaAtomically(segment.meta)
     }
 
