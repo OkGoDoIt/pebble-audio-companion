@@ -30,7 +30,7 @@ class IosAudioCompanionRuntimeHandle(
 
     fun startReceiver() {
         connectWatch()
-        runtime.start(scope)
+        scope.launch { runtime.start(scope) }
     }
 
     fun stopReceiver() {

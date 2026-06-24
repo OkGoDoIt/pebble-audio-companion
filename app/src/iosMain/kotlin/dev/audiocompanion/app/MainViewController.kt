@@ -16,16 +16,16 @@ object IosAudioCompanionBootstrap {
     val handle: IosAudioCompanionRuntimeHandle = IosAudioCompanionRuntimeHandle()
 
     fun applicationDidFinishLaunching() {
-        handle.runtime.recoverDurableState()
         if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
             handle.startReceiver()
         } else {
             handle.connectWatch()
+            scope.launch { handle.runtime.recoverDurableState() }
         }
     }
 
     fun applicationWillEnterForeground() {
-        handle.runtime.refreshDiagnostics()
+        scope.launch { handle.runtime.refreshDiagnostics() }
         if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
             handle.startReceiver()
         }
@@ -49,7 +49,7 @@ object IosAudioCompanionBootstrap {
     }
 
     fun refreshDiagnostics() {
-        handle.runtime.refreshDiagnostics()
+        scope.launch { handle.runtime.refreshDiagnostics() }
     }
 
     fun deleteAllLocalData() {
@@ -88,7 +88,7 @@ fun MainViewController(): UIViewController {
                     // Goes through the bootstrap so the persisted enabled flag stays in sync
                     // with the actually-running receiver.
                     bootstrap.startReceiver()
-                    runtime.refreshDiagnostics()
+                    bootstrap.refreshDiagnostics()
                 },
                 // iOS surfaces the Bluetooth permission dialog when the central first starts;
                 // connecting is the permission request.
@@ -103,7 +103,7 @@ fun MainViewController(): UIViewController {
                         bootstrap.stopReceiver()
                     }
                 },
-                refreshDiagnostics = runtime::refreshDiagnostics,
+                refreshDiagnostics = bootstrap::refreshDiagnostics,
                 setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
                 playSegment = { segmentId -> runtime.playback?.play(segmentId) },
                 pausePlayback = { runtime.playback?.pause() },

@@ -94,8 +94,8 @@ fun App(
         val currentLocalModel = localModelState.collectAsState().value
         val currentPlayback = playbackState.collectAsState().value
 
-        // Wall-clock tick: keeps durations, "Recording now" ages, and file-backed content
-        // fresh even when no state flow happens to emit.
+        // Wall-clock tick: keeps durations and "Recording now" ages fresh without forcing
+        // durable file reads on every tick.
         var nowTick by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
         LaunchedEffect(Unit) {
             while (true) {
@@ -127,22 +127,22 @@ fun App(
         val currentWaveformBars = waveformBars.collectAsState().value
 
         val nowMs = nowTick
-        // Durable content snapshots, re-read when anything observable changes or the clock
-        // ticks (transcription/enrichment results land in files, not flows).
-        val segments = remember(currentDiagnostics, tab, nowTick) { actions.loadSegments() }
-        val transcripts = remember(currentDiagnostics, tab, nowTick) {
+        // Durable content snapshots. Transcription/enrichment workers refresh diagnostics when
+        // file-backed content changes, so the wall-clock tick should only repaint elapsed time.
+        val segments = remember(currentDiagnostics, tab) { actions.loadSegments() }
+        val transcripts = remember(currentDiagnostics, tab, segments) {
             segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
         }
-        val liveTranscripts = remember(currentDiagnostics, tab, nowTick) {
+        val liveTranscripts = remember(currentDiagnostics, tab, segments) {
             segments.associate { it.segmentId to actions.loadLiveTranscript(it.segmentId) }
         }
-        val livePreviews = remember(currentDiagnostics, tab, nowTick) {
+        val livePreviews = remember(currentDiagnostics, tab, segments) {
             segments.associate { it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId) }
         }
-        val annotations = remember(currentDiagnostics, tab, nowTick) {
+        val annotations = remember(currentDiagnostics, tab, segments) {
             segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
         }
-        val aiOutputs = remember(currentDiagnostics, tab, nowTick) { actions.loadAiOutputs() }
+        val aiOutputs = remember(currentDiagnostics, tab) { actions.loadAiOutputs() }
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
