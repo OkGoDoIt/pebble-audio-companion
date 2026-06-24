@@ -233,6 +233,94 @@ class SegmentStoreTest {
     }
 
     @Test
+    fun overlappingRepeatedLossCoalescesIntoOneDurablePeriod() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        store.recordGap(
+            streamId,
+            gap(100u, 50u, GapOrigin.WatchReported(GapReason.TransportReset.raw, watchDropCounter = 20u)),
+        )
+        store.recordGap(streamId, gap(100u, 55u))
+        store.recordGap(streamId, gap(100u, 60u))
+
+        val stored = assertNotNull(store.readMeta(segmentId)).gaps.single()
+        assertEquals(100u, stored.firstMissingSequence)
+        assertEquals(60u, stored.missingFrameCount)
+        assertEquals(GapMeta.ORIGIN_WATCH, stored.origin)
+        assertEquals(GapReason.TransportReset.raw, stored.reasonRaw)
+    }
+
+    @Test
+    fun recoverNormalizesLegacyGapMetadata() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        val sidecar = metaFile(root, segmentId)
+        val closed = json.decodeFromString(SegmentMeta.serializer(), sidecar.readText())
+        val polluted = closed.copy(
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 5u,
+                    firstMissingSampleIndex = 10uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                    watchDropCounter = 0u,
+                ),
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 5u,
+                    firstMissingSampleIndex = 10uL * 320u,
+                    origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                ),
+                GapMeta(
+                    firstMissingSequence = 100u,
+                    missingFrameCount = 50u,
+                    firstMissingSampleIndex = 100uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.TransportReset.raw,
+                    watchDropCounter = 50u,
+                ),
+                GapMeta(
+                    firstMissingSequence = 100u,
+                    missingFrameCount = 60u,
+                    firstMissingSampleIndex = 100uL * 320u,
+                    origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                ),
+                GapMeta(
+                    firstMissingSequence = 200u,
+                    missingFrameCount = 5u,
+                    firstMissingSampleIndex = 200uL * 320u,
+                    origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                ),
+            )
+        )
+        sidecar.writeText(json.encodeToString(SegmentMeta.serializer(), polluted))
+
+        val reopened = store(root)
+        reopened.recover()
+
+        val gaps = assertNotNull(reopened.readMeta(segmentId)).gaps
+        assertEquals(2, gaps.size)
+        assertEquals(100u, gaps[0].firstMissingSequence)
+        assertEquals(60u, gaps[0].missingFrameCount)
+        assertEquals(GapMeta.ORIGIN_WATCH, gaps[0].origin)
+        assertEquals(GapReason.TransportReset.raw, gaps[0].reasonRaw)
+        assertEquals(200u, gaps[1].firstMissingSequence)
+        assertEquals(5u, gaps[1].missingFrameCount)
+        assertEquals(GapMeta.ORIGIN_SEQUENCE_SKIP, gaps[1].origin)
+
+        val persisted = json.decodeFromString(SegmentMeta.serializer(), sidecar.readText())
+        assertEquals(gaps, persisted.gaps)
+    }
+
+    @Test
     fun nonContiguousLossRemainsSeparateDurablePeriods() = runTest {
         val root = tempRoot()
         val store = store(root)
@@ -291,11 +379,10 @@ class SegmentStoreTest {
         )
 
         val gaps = assertNotNull(resumed.readMeta(segmentId)).gaps
-        assertEquals(2, gaps.size)
-        assertEquals(GapReason.SilenceSuppressed.raw, gaps[0].reasonRaw)
-        assertEquals(105u, gaps[1].firstMissingSequence)
-        assertEquals(2u, gaps[1].missingFrameCount)
-        assertEquals(GapReason.SpoolOverflow.raw, gaps[1].reasonRaw)
+        assertEquals(1, gaps.size)
+        assertEquals(105u, gaps[0].firstMissingSequence)
+        assertEquals(2u, gaps[0].missingFrameCount)
+        assertEquals(GapReason.SpoolOverflow.raw, gaps[0].reasonRaw)
     }
 
     @Test

@@ -259,6 +259,7 @@ class AudioReceiverSession(
         var contiguousNext: UInt = 0u
         var contiguousSampleIndex: ULong = 0u
         val pendingRanges = mutableListOf<PersistedRange>()
+        val pendingWatchGaps = mutableListOf<KnownGapRange>()
 
         /**
          * False until the first STREAM_DATA/STREAM_GAP fixes the contiguity base. A fresh stream
@@ -286,13 +287,35 @@ class AudioReceiverSession(
         var checkpointedSinceLastChange = true
 
         class PersistedRange(val first: UInt, val endExclusive: UInt, val endSampleIndex: ULong)
+        class KnownGapRange(val first: UInt, val endExclusive: UInt)
 
-        fun mergePendingRanges() {
+        fun rememberKnownGap(first: UInt, missingCount: UInt) {
+            if (missingCount == 0u) return
+            val endExclusive = first + missingCount
+            if (endExclusive <= contiguousNext) return
+            pendingWatchGaps += KnownGapRange(first, endExclusive)
+        }
+
+        fun advanceAccountedPrefix(): ULong {
+            var advancedGapSamples = 0uL
             while (true) {
-                val next = pendingRanges.firstOrNull { it.first == contiguousNext } ?: return
-                contiguousNext = next.endExclusive
-                contiguousSampleIndex = next.endSampleIndex
-                pendingRanges.remove(next)
+                val nextGap = pendingWatchGaps.firstOrNull {
+                    it.first <= contiguousNext && it.endExclusive > contiguousNext
+                }
+                if (nextGap != null) {
+                    val missingFrames = nextGap.endExclusive - contiguousNext
+                    advancedGapSamples += missingFrames.toULong() * frameSamples
+                    contiguousSampleIndex += missingFrames.toULong() * frameSamples
+                    contiguousNext = nextGap.endExclusive
+                    pendingWatchGaps.remove(nextGap)
+                    continue
+                }
+
+                val nextRange = pendingRanges.firstOrNull { it.first == contiguousNext }
+                    ?: return advancedGapSamples
+                contiguousNext = nextRange.endExclusive
+                contiguousSampleIndex = nextRange.endSampleIndex
+                pendingRanges.remove(nextRange)
             }
         }
     }
@@ -532,7 +555,16 @@ class AudioReceiverSession(
         val count = message.frameCount.toUInt()
         val endExclusive = first + count
 
-        if (endExclusive <= ctx.contiguousNext) return // stale duplicate, already accounted
+        val advancedKnownGapSamples = ctx.advanceAccountedPrefix()
+        if (advancedKnownGapSamples > 0uL) {
+            ctx.samplesSinceCheckpoint += advancedKnownGapSamples
+            ctx.checkpointedSinceLastChange = false
+        }
+
+        if (endExclusive <= ctx.contiguousNext) {
+            maybeSendCheckpoint(ctx)
+            return // stale duplicate, already accounted
+        }
 
         // Durability first: frames hit the frame log before any bookkeeping or checkpointing.
         val frames = message.frames.mapIndexed { i, payload ->
@@ -572,7 +604,11 @@ class AudioReceiverSession(
         if (first <= ctx.contiguousNext) {
             ctx.contiguousNext = endExclusive
             ctx.contiguousSampleIndex = endSampleIndex
-            ctx.mergePendingRanges()
+            val advancedSamples = ctx.advanceAccountedPrefix()
+            if (advancedSamples > 0uL) {
+                ctx.samplesSinceCheckpoint += advancedSamples
+                ctx.checkpointedSinceLastChange = false
+            }
         } else {
             ctx.pendingRanges.add(StreamContext.PersistedRange(first, endExclusive, endSampleIndex))
         }
@@ -601,16 +637,15 @@ class AudioReceiverSession(
         if (message.missingFrameCount == 0u) {
             // Unknown extent: account for it when the next STREAM_DATA shows where it ends.
             ctx.openWatchGapFrom = message.firstMissingSequence
-        } else if (message.firstMissingSequence <= ctx.contiguousNext) {
-            // Known-lost range adjoining the contiguous prefix: those frames will never arrive,
-            // so contiguity (and the checkpoint) advances past them.
-            val gapEnd = message.firstMissingSequence + message.missingFrameCount
-            if (gapEnd > ctx.contiguousNext) {
-                advancedSamples = (gapEnd - ctx.contiguousNext).toULong() * ctx.frameSamples
-                ctx.contiguousSampleIndex += advancedSamples
-                ctx.contiguousNext = gapEnd
-                ctx.mergePendingRanges()
-                ctx.checkpointedSinceLastChange = false
+        } else {
+            ctx.rememberKnownGap(message.firstMissingSequence, message.missingFrameCount)
+            if (message.firstMissingSequence <= ctx.contiguousNext) {
+                // Known-lost range adjoining the contiguous prefix: those frames will never arrive,
+                // so contiguity (and the checkpoint) advances past them.
+                advancedSamples = ctx.advanceAccountedPrefix()
+                if (advancedSamples > 0uL) {
+                    ctx.checkpointedSinceLastChange = false
+                }
             }
         }
         if (advancedSamples > 0uL) {
