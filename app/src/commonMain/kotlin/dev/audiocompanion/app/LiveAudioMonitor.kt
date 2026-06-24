@@ -22,7 +22,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.ln
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 /** Decodes encoded Speex frames to one concatenated PCM16 sample array, in order. */
@@ -307,13 +309,23 @@ class LiveAudioMonitor(
         const val SILENCE_RMS = 90.0
 
         /**
-         * Watch speech can decode to low PCM levels after Speex. Use a speech-focused display
-         * curve so audible low-level talk is visible instead of looking almost flat.
+         * Watch speech can decode to low PCM levels after Speex. Map RMS on a dB-like curve so
+         * speech just above quiet is visible without flattening quiet, normal, and loud speech
+         * into nearly the same bar height.
          */
         fun displayAmplitude(rms: Double): Float {
             if (rms <= 0.0) return 0f
-            return sqrt(sqrt((rms / 1_200.0).coerceIn(0.0, 1.0))).toFloat()
+            val normalized = (
+                ln(rms.coerceAtLeast(SILENCE_RMS) / SILENCE_RMS) /
+                    ln(DISPLAY_LOUD_RMS / SILENCE_RMS)
+                ).coerceIn(0.0, 1.0)
+            return (DISPLAY_MIN_RECORDED_AMPLITUDE +
+                (1.0 - DISPLAY_MIN_RECORDED_AMPLITUDE) *
+                normalized.pow(1.5)).toFloat()
         }
+
+        private const val DISPLAY_LOUD_RMS = 8_000.0
+        private const val DISPLAY_MIN_RECORDED_AMPLITUDE = 0.08
     }
 }
 

@@ -75,7 +75,9 @@ class LiveAudioMonitorTest {
         val bars = monitor.bars.value
         assertTrue(bars.isNotEmpty())
         assertTrue(bars.all { it.state == WaveformBarState.Recorded })
-        assertTrue(bars.all { it.amplitude >= 0.3f })
+        assertTrue(bars.all { it.amplitude in 0.08f..0.2f })
+        assertTrue(LiveAudioMonitor.displayAmplitude(120.0) < LiveAudioMonitor.displayAmplitude(1_000.0))
+        assertTrue(LiveAudioMonitor.displayAmplitude(1_000.0) < LiveAudioMonitor.displayAmplitude(8_000.0))
     }
 
     @Test
