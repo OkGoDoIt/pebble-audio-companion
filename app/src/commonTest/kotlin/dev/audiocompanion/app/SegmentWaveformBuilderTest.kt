@@ -73,6 +73,16 @@ class SegmentWaveformBuilderTest {
     }
 
     @Test
+    fun lowLevelSpeechMarksRecordedAndVisible() = runTest {
+        val lowSpeech = LiveFrameDecoder { payloads -> ShortArray(payloads.size * 320) { 120 } }
+        val builder = SegmentWaveformBuilder(decoder = lowSpeech, maxBars = 4)
+        val wave = builder.build(meta(frameCount = 40)) { frames(40) }
+
+        assertTrue(wave.bars.all { it.state == WaveformBarState.Recorded })
+        assertTrue(wave.bars.all { it.amplitude >= 0.3f })
+    }
+
+    @Test
     fun gapMarkersLandAtTheMediaPositionOfTheLoss() = runTest {
         // 50 stored frames, then 100 missing (seq 50..149), then 50 more stored (150..199).
         val stored = frames(50) + frames(50, firstSequence = 150u)
