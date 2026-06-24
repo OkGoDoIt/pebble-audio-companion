@@ -1,5 +1,6 @@
 package dev.audiocompanion.storage
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.protocol.WireReader
@@ -227,12 +228,46 @@ class SegmentStore(
         maybeRotate(segment)
     }
 
+    /**
+     * Records genuinely-lost audio. A durable gap means audio the receiver could not recover: a
+     * disconnection long enough that the watch's buffer overflowed, an explicit watch pause/
+     * interruption, or a dropped notification. Two things keep `gaps` informative and sparse
+     * instead of one record per dropped packet:
+     *
+     *  - Silence-suppressed spans are deliberately-skipped quiet, not lost audio, so they are
+     *    never persisted as loss (the live waveform still renders them as quiet while active).
+     *  - A loss contiguous (in sequence) with the previous gap extends that record's total dropped
+     *    duration rather than appending a new one — so one period of lost audio is one gap noting
+     *    the total time, however many packets it spanned.
+     */
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {
         val segment = current ?: return
         if (segment.meta.streamId != streamId) return
-        segment.meta = segment.meta.copy(gaps = segment.meta.gaps + GapMeta.from(gap))
+        val incoming = GapMeta.from(gap).takeIf { it.shouldPersistAsLoss() } ?: return
+        val updated = segment.meta.gaps.withSparseLossGap(incoming)
+        segment.meta = segment.meta.copy(gaps = updated)
         writeMetaAtomically(segment.meta)
     }
+
+    private fun GapMeta.shouldPersistAsLoss(): Boolean =
+        reasonRaw?.let { GapReason.fromRaw(it)?.isSilence } != true
+
+    private fun List<GapMeta>.withSparseLossGap(incoming: GapMeta): List<GapMeta> {
+        val last = lastOrNull()
+        if (last == null || !last.shouldPersistAsLoss() || !last.isContiguousWith(incoming)) {
+            return this + incoming
+        }
+        return dropLast(1) + last.copy(
+            missingFrameCount = last.missingFrameCount + incoming.missingFrameCount,
+            watchDropCounter = incoming.watchDropCounter ?: last.watchDropCounter,
+        )
+    }
+
+    private fun GapMeta.isContiguousWith(next: GapMeta): Boolean =
+        missingFrameCount > 0u &&
+            next.missingFrameCount > 0u &&
+            firstMissingSequence.toULong() + missingFrameCount.toULong() ==
+            next.firstMissingSequence.toULong()
 
     override suspend fun closeSegment(reason: SegmentCloseReason) {
         closeSegmentInternal(CloseReasonMeta.from(reason))
