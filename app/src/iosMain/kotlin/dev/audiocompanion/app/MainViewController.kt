@@ -31,7 +31,9 @@ import platform.UIKit.UIApplication
 import platform.UIKit.UIViewController
 
 object IosAudioCompanionBootstrap {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + iosCoroutineExceptionHandler("bootstrap"),
+    )
     private val handleMutex = Mutex()
     private val _handle = MutableStateFlow<IosAudioCompanionRuntimeHandle?>(null)
     val handleState: StateFlow<IosAudioCompanionRuntimeHandle?> = _handle.asStateFlow()
