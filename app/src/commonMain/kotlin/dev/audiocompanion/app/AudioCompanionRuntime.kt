@@ -31,6 +31,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 data class AudioCompanionDiagnostics(
@@ -120,11 +122,21 @@ class AudioCompanionRuntime(
     val diagnostics: StateFlow<AudioCompanionDiagnostics> get() = _diagnostics.asStateFlow()
 
     private val _diagnostics = MutableStateFlow(AudioCompanionDiagnostics())
+    private val lifecycleMutex = Mutex()
+    private var durableStateRecovered = false
     private var sessionJob: Job? = null
     private var transcriptionJob: Job? = null
     private val transcriptionWakeups = Channel<Unit>(Channel.CONFLATED)
 
     fun recoverDurableState() {
+        recoverDurableStateIfNeeded()
+    }
+
+    private fun recoverDurableStateIfNeeded() {
+        if (durableStateRecovered) {
+            refreshDiagnostics()
+            return
+        }
         store.recover()
         transcriptionQueue.recoverOnStart()
         retention.enforce().forEach { deletedSegmentId ->
@@ -133,16 +145,18 @@ class AudioCompanionRuntime(
             annotationStore.delete(deletedSegmentId)
         }
         enqueueClosedSegmentsForTranscription()
+        durableStateRecovered = true
         refreshDiagnostics()
     }
 
-    fun start(scope: CoroutineScope): Job {
-        recoverDurableState()
-        if (transcriptionJob == null) {
-            transcriptionJob = scope.launch { runTranscriptionLoop() }
+    suspend fun start(scope: CoroutineScope): Job =
+        lifecycleMutex.withLock {
+            recoverDurableStateIfNeeded()
+            if (transcriptionJob == null) {
+                transcriptionJob = scope.launch { runTranscriptionLoop() }
+            }
+            sessionJob ?: session.start(scope).also { sessionJob = it }
         }
-        return sessionJob ?: session.start(scope).also { sessionJob = it }
-    }
 
     /**
      * Arms exactly one phone-initiated watch enable prompt. Automatic lifecycle reconnects may

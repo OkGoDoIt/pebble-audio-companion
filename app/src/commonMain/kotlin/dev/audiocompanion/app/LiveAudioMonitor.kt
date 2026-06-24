@@ -87,7 +87,14 @@ class LiveAudioMonitor(
     private val frameDurationMs: Long = 20,
     val barMs: Long = 250,
     val windowMs: Long = 60_000,
+    private val maxDecodeFramesPerPass: Int = 250,
+    private val maxActivationCatchUpFrames: Int = 500,
 ) {
+    init {
+        require(maxDecodeFramesPerPass > 0)
+        require(maxActivationCatchUpFrames >= maxDecodeFramesPerPass)
+    }
+
     private class Entry(
         val timeMs: Long,
         val segmentId: String?,
@@ -163,6 +170,7 @@ class LiveAudioMonitor(
             val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             scope = newScope
             newScope.launch {
+                mutex.withLock { trimActivationBacklogLocked() }
                 processPending()
                 for (unused in wakeups) {
                     processPending()
@@ -177,9 +185,7 @@ class LiveAudioMonitor(
 
     suspend fun processPending() {
         val batch = mutex.withLock {
-            val snapshot = pending.toList()
-            pending.clear()
-            snapshot
+            drainPendingBatchLocked()
         }
         if (batch.isEmpty()) {
             publishBars()
@@ -228,6 +234,24 @@ class LiveAudioMonitor(
             trimBucketsLocked()
         }
         publishBars()
+        val hasMore = mutex.withLock { pending.isNotEmpty() }
+        if (hasMore) wakeups.trySend(Unit)
+    }
+
+    private fun drainPendingBatchLocked(): List<Entry> {
+        val snapshot = mutableListOf<Entry>()
+        var decodeFrames = 0
+        while (pending.isNotEmpty()) {
+            val entry = pending.first()
+            if (snapshot.isNotEmpty()) {
+                if (snapshot.size >= maxDecodeFramesPerPass * 2) break
+                if (entry.payload != null && decodeFrames >= maxDecodeFramesPerPass) break
+            }
+            val removed = pending.removeFirst()
+            snapshot += removed
+            if (removed.payload != null) decodeFrames += 1
+        }
+        return snapshot
     }
 
     private fun bucketLocked(timeMs: Long, segmentId: String?): BarAccum {
@@ -240,6 +264,15 @@ class LiveAudioMonitor(
         val newest = pending.lastOrNull()?.timeMs ?: return
         while (pending.isNotEmpty() && pending.first().timeMs < newest - windowMs) {
             pending.removeFirst()
+        }
+    }
+
+    private fun trimActivationBacklogLocked() {
+        var payloadCount = pending.count { it.payload != null }
+        while (payloadCount > maxActivationCatchUpFrames && pending.isNotEmpty()) {
+            if (pending.removeFirst().payload != null) {
+                payloadCount -= 1
+            }
         }
     }
 

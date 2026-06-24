@@ -319,6 +319,10 @@ class SegmentStore(
                 quarantine(log)
                 continue
             }
+            val logBytes = fileSystem.metadataOrNull(log)?.size ?: 0L
+            if (!needsRecoveryParse(meta, logBytes)) {
+                continue
+            }
             val bytes = fileSystem.source(log).buffered().use { it.readByteArray() }
             val parsed = parseRecords(bytes)
             if (parsed.validBytes < bytes.size) {
@@ -330,6 +334,16 @@ class SegmentStore(
             reconcileMeta(meta, parsed.records, parsed.validBytes.toLong())
         }
     }
+
+    private fun needsRecoveryParse(meta: SegmentMeta, logBytes: Long): Boolean =
+        // Open-at-crash segments need frame-log reconciliation so they become explicit
+        // interrupted segments and their counters match the flushed durable audio.
+        meta.closeReason == null ||
+            // Closed segments normally wrote a final sidecar after the log closed. If the log size
+            // still matches that sidecar, launch can trust the metadata instead of reparsing every
+            // historical audio byte. Size drift means an append/truncate raced the final metadata
+            // write, so we pay the parse cost and reconcile.
+            meta.logBytes != logBytes
 
     private fun reconcileMeta(meta: SegmentMeta, records: List<FrameRecord>, logBytes: Long) {
         val reconciled = meta.copy(
