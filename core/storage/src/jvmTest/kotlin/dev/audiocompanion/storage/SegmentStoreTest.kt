@@ -1,5 +1,6 @@
 package dev.audiocompanion.storage
 
+import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.StreamStart
 import dev.audiocompanion.transport.GapOrigin
@@ -9,6 +10,7 @@ import dev.audiocompanion.transport.SegmentFrame
 import kotlinx.coroutines.test.runTest
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
+import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -21,6 +23,10 @@ class SegmentStoreTest {
 
     private val streamId = 0x5EED0001u
     private var clock = 1_000_000L
+    private val json = Json {
+        prettyPrint = true
+        ignoreUnknownKeys = true
+    }
 
     private fun tempRoot(): Path {
         val dir = File.createTempFile("segstore", null).apply { delete(); mkdirs() }
@@ -54,7 +60,21 @@ class SegmentStoreTest {
             )
         }
 
+    private fun gap(
+        firstSequence: UInt,
+        count: UInt,
+        origin: GapOrigin = GapOrigin.SequenceSkip,
+    ) = GapRecord(
+        firstMissingSequence = firstSequence,
+        missingFrameCount = count,
+        firstMissingSampleIndex = firstSequence.toULong() * 320u,
+        origin = origin,
+    )
+
     private fun segmentsDir(root: Path) = File(root.toString(), "segments")
+
+    private fun metaFile(root: Path, segmentId: String) =
+        File(segmentsDir(root), "$segmentId${SegmentStore.META_SUFFIX}")
 
     private fun assertNoTempFiles(root: Path) {
         val leftovers = segmentsDir(root).listFiles().orEmpty().filter { it.name.endsWith(".tmp") }
@@ -142,6 +162,140 @@ class SegmentStoreTest {
         // deleteSegment evicts from the index as well.
         store.deleteSegment(segmentId)
         assertTrue(store.listSegments().isEmpty())
+    }
+
+    @Test
+    fun silenceSuppressedGapsAreNotPersistedAsDurableLoss() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        store.recordGap(
+            streamId,
+            gap(
+                20u,
+                150u,
+                GapOrigin.WatchReported(
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                    watchDropCounter = 0u,
+                ),
+            ),
+        )
+
+        assertTrue(assertNotNull(store.readMeta(segmentId)).gaps.isEmpty())
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        val reopened = store(root)
+        reopened.recover()
+        assertTrue(assertNotNull(reopened.readMeta(segmentId)).gaps.isEmpty())
+    }
+
+    @Test
+    fun contiguousSequenceSkipsCoalesceIntoOneDurableLossPeriod() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        store.recordGap(streamId, gap(10u, 1u))
+        store.recordGap(streamId, gap(11u, 1u))
+        store.recordGap(streamId, gap(12u, 3u))
+
+        val stored = assertNotNull(store.readMeta(segmentId)).gaps.single()
+        assertEquals(10u, stored.firstMissingSequence)
+        assertEquals(5u, stored.missingFrameCount)
+        assertEquals(GapMeta.ORIGIN_SEQUENCE_SKIP, stored.origin)
+    }
+
+    @Test
+    fun contiguousWatchLossCoalescesAndKeepsNewestDropCounter() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        store.recordGap(
+            streamId,
+            gap(50u, 4u, GapOrigin.WatchReported(GapReason.SpoolOverflow.raw, watchDropCounter = 4u)),
+        )
+        store.recordGap(
+            streamId,
+            gap(54u, 6u, GapOrigin.WatchReported(GapReason.SpoolOverflow.raw, watchDropCounter = 10u)),
+        )
+
+        val stored = assertNotNull(store.readMeta(segmentId)).gaps.single()
+        assertEquals(50u, stored.firstMissingSequence)
+        assertEquals(10u, stored.missingFrameCount)
+        assertEquals(GapMeta.ORIGIN_WATCH, stored.origin)
+        assertEquals(GapReason.SpoolOverflow.raw, stored.reasonRaw)
+        assertEquals(10u, stored.watchDropCounter)
+    }
+
+    @Test
+    fun nonContiguousLossRemainsSeparateDurablePeriods() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+
+        store.recordGap(streamId, gap(10u, 2u))
+        store.recordGap(streamId, gap(13u, 2u))
+
+        val gaps = assertNotNull(store.readMeta(segmentId)).gaps
+        assertEquals(2, gaps.size)
+        assertEquals(10u, gaps[0].firstMissingSequence)
+        assertEquals(2u, gaps[0].missingFrameCount)
+        assertEquals(13u, gaps[1].firstMissingSequence)
+        assertEquals(2u, gaps[1].missingFrameCount)
+    }
+
+    @Test
+    fun resumedLegacySilenceGapDoesNotAbsorbLaterLoss() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        val sidecar = metaFile(root, segmentId)
+        val closed = json.decodeFromString(SegmentMeta.serializer(), sidecar.readText())
+        val legacy = closed.copy(
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 100u,
+                    missingFrameCount = 5u,
+                    firstMissingSampleIndex = 100uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                    watchDropCounter = 0u,
+                )
+            )
+        )
+        sidecar.writeText(json.encodeToString(SegmentMeta.serializer(), legacy))
+
+        clock += 1_000
+        val resumed = store(root)
+        resumed.recover()
+        resumed.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        assertEquals(segmentId, resumed.openSegmentId)
+
+        resumed.recordGap(
+            streamId,
+            gap(105u, 2u, GapOrigin.WatchReported(GapReason.SpoolOverflow.raw, watchDropCounter = 2u)),
+        )
+
+        val gaps = assertNotNull(resumed.readMeta(segmentId)).gaps
+        assertEquals(2, gaps.size)
+        assertEquals(GapReason.SilenceSuppressed.raw, gaps[0].reasonRaw)
+        assertEquals(105u, gaps[1].firstMissingSequence)
+        assertEquals(2u, gaps[1].missingFrameCount)
+        assertEquals(GapReason.SpoolOverflow.raw, gaps[1].reasonRaw)
     }
 
     @Test
