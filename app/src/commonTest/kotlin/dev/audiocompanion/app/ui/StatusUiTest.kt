@@ -253,6 +253,44 @@ class StatusUiTest {
     }
 
     @Test
+    fun visibleLossGapsMatchesBruteForceOnLargeInput() {
+        // visibleLossGaps used to be O(gaps^2) (every gap rescanned the whole list), which froze
+        // the Today timeline for ~12 s once segments accumulated thousands of gap records. The
+        // O(n log n) rewrite must stay semantically identical to the old per-gap rescan. Build a
+        // big, varied gap set and compare against a brute-force reference of the original rule.
+        val rng = kotlin.random.Random(42)
+        val gaps = List(2_000) {
+            val start = rng.nextInt(0, 5_000).toUInt()
+            val count = rng.nextInt(1, 500).toUInt()
+            val roll = rng.nextInt(3)
+            GapMeta(
+                firstMissingSequence = start,
+                missingFrameCount = count,
+                firstMissingSampleIndex = start.toULong() * 320u,
+                origin = if (roll == 0) GapMeta.ORIGIN_SEQUENCE_SKIP else GapMeta.ORIGIN_WATCH,
+                reasonRaw = if (roll == 1) GapReason.SilenceSuppressed.raw else GapReason.MicConflict.raw,
+            )
+        }
+        fun bruteForceVisible(all: List<GapMeta>): List<GapMeta> = all.filter { gap ->
+            when {
+                isSilenceGap(gap) -> false
+                gap.origin != GapMeta.ORIGIN_SEQUENCE_SKIP -> true
+                else -> {
+                    val start = gap.firstMissingSequence
+                    val end = start + gap.missingFrameCount
+                    all.none { c ->
+                        isSilenceGap(c) &&
+                            c.firstMissingSequence <= start &&
+                            c.firstMissingSequence + c.missingFrameCount >= end
+                    }
+                }
+            }
+        }
+        val segment = meta("seg-large", 0L, gaps = gaps)
+        assertEquals(bruteForceVisible(gaps), visibleLossGaps(segment))
+    }
+
+    @Test
     fun unrelatedSequenceSkipStillCountsAsMissing() {
         val quiet = GapMeta(
             firstMissingSequence = 100u,
