@@ -50,9 +50,9 @@ private fun watchStatusOverride(
 ): StatusUiModel? = when (ServiceState.fromRaw(watchServiceStateRaw ?: -1)) {
     ServiceState.Disabled -> StatusUiModel(
         headline = "Background audio is off on the watch",
-        supporting = "Turn it on in the watch's Settings -> Audio Companion.",
+        supporting = "Tap Start Recording when you want to ask your watch to turn it on.",
         severity = StatusSeverity.Neutral,
-        primaryAction = PrimaryAction.None,
+        primaryAction = PrimaryAction.Start,
     )
     ServiceState.PausedConflict -> StatusUiModel(
         headline = "Paused: the watch is using its microphone",
@@ -162,10 +162,10 @@ private fun statusForSessionState(
             primaryAction = PrimaryAction.Troubleshoot,
         )
         AuthStatus.DeniedDisabled -> StatusUiModel(
-            headline = "Background Audio is still off",
-            supporting = "Start again and approve the prompt on your watch.",
+            headline = "Background audio is off on the watch",
+            supporting = "Tap Start Recording when you're ready, then approve the prompt on your watch.",
             severity = StatusSeverity.Warning,
-            primaryAction = PrimaryAction.None,
+            primaryAction = PrimaryAction.Start,
         )
         else -> StatusUiModel(
             headline = "Not authorized",

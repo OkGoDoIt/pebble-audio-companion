@@ -39,6 +39,7 @@ object IosAudioCompanionBootstrap {
 
     fun startReceiver() {
         handle.settingsRepository.setBackgroundReceiverEnabled(true)
+        handle.runtime.armWatchEnableRequest()
         handle.startReceiver()
     }
 

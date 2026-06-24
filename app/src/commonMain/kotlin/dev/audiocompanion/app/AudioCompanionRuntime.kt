@@ -95,6 +95,8 @@ class AudioCompanionRuntime(
         router = aiRouter,
         nowMs = nowMs,
     )
+    private var watchEnableRequestArmed = false
+
     private val session = AudioReceiverSession(
         link = link,
         sink = liveMonitor?.let { TeeSegmentSink(store, it, nowMs) } ?: store,
@@ -103,6 +105,7 @@ class AudioCompanionRuntime(
         config = receiverConfig,
         nowMs = nowMs,
         desiredEnabled = desiredEnabled,
+        consumeEnableRequestPermission = ::consumeWatchEnableRequestPermission,
     )
 
     val state: StateFlow<ReceiverSessionState> = session.state
@@ -141,9 +144,25 @@ class AudioCompanionRuntime(
         return sessionJob ?: session.start(scope).also { sessionJob = it }
     }
 
+    /**
+     * Arms exactly one phone-initiated watch enable prompt. Automatic lifecycle reconnects may
+     * resume an already-enabled watch, but only an explicit Start/Settings action should ask the
+     * watch to turn Background Audio on.
+     */
+    fun armWatchEnableRequest() {
+        watchEnableRequestArmed = true
+    }
+
+    private fun consumeWatchEnableRequestPermission(): Boolean {
+        val armed = watchEnableRequestArmed
+        watchEnableRequestArmed = false
+        return armed
+    }
+
     fun stop() {
         sessionJob?.cancel()
         sessionJob = null
+        watchEnableRequestArmed = false
         transcriptionJob?.cancel()
         transcriptionJob = null
         refreshDiagnostics()

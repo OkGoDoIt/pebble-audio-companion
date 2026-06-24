@@ -114,6 +114,11 @@ class AudioReceiverSession(
      * of what state the watch happened to be in (defaults to "wants audio" for bare tests).
      */
     private val desiredEnabled: () -> Boolean = { true },
+    /**
+     * One-shot permission for asking the watch to enable Background Audio. Lifecycle reconnects
+     * may still want recording, but they must not surprise the user with a watch prompt.
+     */
+    private val consumeEnableRequestPermission: () -> Boolean = { desiredEnabled() },
 ) {
     private val _state = MutableStateFlow<ReceiverSessionState>(ReceiverSessionState.Disconnected)
     val state: StateFlow<ReceiverSessionState> = _state.asStateFlow()
@@ -156,6 +161,7 @@ class AudioReceiverSession(
 
     private suspend fun sendControlAwaitAck(
         requireAuthorized: Boolean = true,
+        ackWaitMs: Long = REQUEST_ACK_WAIT_MS,
         build: (Int) -> ByteArray,
     ): Boolean {
         if (requireAuthorized && !authorized) return false
@@ -171,7 +177,7 @@ class AudioReceiverSession(
         ackWaiter = waiter
         return try {
             link.writeControl(build(token))
-            withTimeoutOrNull(REQUEST_ACK_WAIT_MS) { waiter.await() } ?: false
+            withTimeoutOrNull(ackWaitMs) { waiter.await() } ?: false
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -349,10 +355,22 @@ class AudioReceiverSession(
                 launch { runKeepalive() }
 
                 if (desiredEnabled() && _watchInfo.value?.enabled == false) {
+                    if (!consumeEnableRequestPermission()) {
+                        _state.value = ReceiverSessionState.Denied(AuthStatus.DeniedDisabled.raw)
+                        return@coroutineScope
+                    }
                     _state.value = ReceiverSessionState.PendingEnable
-                    sendControlAwaitAck(requireAuthorized = false) { token ->
+                    val enabled = sendControlAwaitAck(
+                        requireAuthorized = false,
+                        ackWaitMs = ENABLE_REQUEST_ACK_WAIT_MS,
+                    ) { token ->
                         EnableRequest(token).encode()
                     }
+                    if (!enabled) {
+                        _state.value = ReceiverSessionState.Denied(AuthStatus.DeniedDisabled.raw)
+                        return@coroutineScope
+                    }
+                    refreshInfoSnapshot()
                     _state.value = ReceiverSessionState.Authorizing
                 }
 
@@ -430,6 +448,17 @@ class AudioReceiverSession(
                 }
             }
             is ErrorMessage -> _lastProtocolError.value = message
+        }
+    }
+
+    private suspend fun refreshInfoSnapshot() {
+        when (val info = AudioCompanionProtocol.decodeInfo(link.readInfo())) {
+            is DecodeResult.Decoded -> {
+                val snapshot = info.message as InfoSnapshot
+                _watchInfo.value = snapshot
+                _watchServiceState.value = snapshot.serviceStateRaw
+            }
+            else -> {} // Keep the previous diagnostic snapshot; auth will report real failure.
         }
     }
 
@@ -643,5 +672,8 @@ class AudioReceiverSession(
 
         /** How long pause/resume waits for the watch's ACK. */
         private const val REQUEST_ACK_WAIT_MS = 2_000L
+
+        /** Enable waits on a human watch dialog; match the watch's consent-sized interaction. */
+        private const val ENABLE_REQUEST_ACK_WAIT_MS = 35_000L
     }
 }

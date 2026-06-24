@@ -8,8 +8,10 @@ import dev.audiocompanion.protocol.AuthRequest
 import dev.audiocompanion.protocol.ServiceState
 import dev.audiocompanion.protocol.StateChanged
 import dev.audiocompanion.protocol.AuthResult
+import dev.audiocompanion.protocol.AuthStatus
 import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.DecodeResult
+import dev.audiocompanion.protocol.EnableRequest
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.ReceiverHealth
@@ -514,6 +516,85 @@ class AudioReceiverSessionTest {
         }.filterIsInstance<dev.audiocompanion.protocol.PauseRequest>()
         assertEquals(1, pause.size, "authorizing while the user has stopped must pause the watch")
         assertEquals(dev.audiocompanion.protocol.PauseReason.User.raw, pause.single().reasonRaw)
+    }
+
+    @Test
+    fun disabledWatchDoesNotPromptWithoutFreshStartIntent() = runTest {
+        val disabledInfo = FakeAudioGattLink.defaultInfo().copy(
+            serviceStateRaw = ServiceState.Disabled.raw,
+            flags = ProtocolConstants.INFO_FLAG_RECEIVER_AUTHORIZED,
+        )
+        val link = FakeAudioGattLink(infoBytes = disabledInfo.encode())
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+            desiredEnabled = { true },
+            consumeEnableRequestPermission = { false },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+
+        val writes = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }
+        assertEquals(emptyList(), writes.filterIsInstance<EnableRequest>())
+        assertEquals(emptyList(), writes.filterIsInstance<AuthRequest>())
+        val denied = assertIs<ReceiverSessionState.Denied>(session.state.value)
+        assertEquals(AuthStatus.DeniedDisabled, denied.status)
+    }
+
+    @Test
+    fun enableRequestWaitsForHumanApprovalBeforeAuth() = runTest {
+        val disabledInfo = FakeAudioGattLink.defaultInfo().copy(
+            serviceStateRaw = ServiceState.Disabled.raw,
+            flags = ProtocolConstants.INFO_FLAG_RECEIVER_AUTHORIZED,
+        )
+        val link = FakeAudioGattLink(infoBytes = disabledInfo.encode())
+        var enablePromptArmed = true
+        val session = AudioReceiverSession(
+            link = link,
+            sink = FakeSegmentSink(),
+            policy = FakeReceiverPolicy(),
+            resumeStore = FakeResumeStore(),
+            config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
+            nowMs = { testScheduler.currentTime },
+            desiredEnabled = { true },
+            consumeEnableRequestPermission = {
+                enablePromptArmed.also { enablePromptArmed = false }
+            },
+        )
+        session.start(backgroundScope)
+        runCurrent()
+        link.linkState.value = LinkState.Ready
+        runCurrent()
+
+        val enable = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<EnableRequest>().single()
+        assertEquals(ReceiverSessionState.PendingEnable, session.state.value)
+
+        advanceTimeBy(2_500)
+        runCurrent()
+        val authBeforeApproval = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>()
+        assertEquals(emptyList(), authBeforeApproval, "human approval must not time out at 2s")
+
+        link.infoBytes = FakeAudioGattLink.defaultInfo().encode()
+        link.pushControl(Ack(requestToken = enable.requestToken, statusRaw = 0))
+        runCurrent()
+
+        val authAfterApproval = link.controlWrites.map {
+            (AudioCompanionProtocol.decodeControlIn(it) as DecodeResult.Decoded).message
+        }.filterIsInstance<AuthRequest>()
+        assertEquals(1, authAfterApproval.size)
+        assertEquals(ReceiverSessionState.Authorizing, session.state.value)
     }
 
     @Test
