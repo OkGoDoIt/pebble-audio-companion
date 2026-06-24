@@ -249,13 +249,37 @@ fun gapDescription(gap: GapMeta): String {
 fun isSilenceGap(gap: GapMeta): Boolean =
     gap.reasonRaw?.let { GapReason.fromRaw(it)?.isSilence } == true
 
+/**
+ * Gaps that should be presented as genuine missing audio. A small number of field builds could
+ * store a receiver-synthesized sequence skip adjacent to the watch's explicit skipped-silence
+ * record for the same range. For display, the watch's silence reason wins: that time was known
+ * quiet, not a phone/link failure. The raw metadata remains unchanged for diagnostics.
+ */
+fun visibleLossGaps(meta: SegmentMeta): List<GapMeta> =
+    meta.gaps.filter { gap -> isVisibleLossGap(gap, meta.gaps) }
+
+fun quietGaps(meta: SegmentMeta): List<GapMeta> =
+    meta.gaps.filter { gap -> !isVisibleLossGap(gap, meta.gaps) }
+
+fun isVisibleLossGap(gap: GapMeta, allGaps: List<GapMeta>): Boolean {
+    if (isSilenceGap(gap)) return false
+    if (gap.origin != GapMeta.ORIGIN_SEQUENCE_SKIP) return true
+    val gapStart = gap.firstMissingSequence
+    val gapEnd = gapStart + gap.missingFrameCount
+    return allGaps.none { candidate ->
+        isSilenceGap(candidate) &&
+            candidate.firstMissingSequence <= gapStart &&
+            candidate.firstMissingSequence + candidate.missingFrameCount >= gapEnd
+    }
+}
+
 /** Approximate gap length from missing frame count (20 ms frames). */
 fun gapDurationMs(gap: GapMeta, frameDurationMs: Int): Long =
     gap.missingFrameCount.toLong() * frameDurationMs
 
 /** Total approximate missing time of a segment (intentionally-skipped silence excluded). */
 fun totalGapMs(meta: SegmentMeta): Long =
-    meta.gaps.filterNot(::isSilenceGap).sumOf { gapDurationMs(it, meta.frameDurationMs) }
+    visibleLossGaps(meta).sumOf { gapDurationMs(it, meta.frameDurationMs) }
 
 /** User-facing missing time, guarded against stale/impossible gap metadata. */
 fun displayGapMs(meta: SegmentMeta): Long {
@@ -273,7 +297,7 @@ fun displayGapMs(meta: SegmentMeta): Long {
  * "Missing ~1m 20s (watch dictation used the mic)".
  */
 fun gapSummary(meta: SegmentMeta): String? {
-    val lost = meta.gaps.filterNot(::isSilenceGap)
+    val lost = visibleLossGaps(meta)
     if (lost.isEmpty()) return null
     val totalMs = displayGapMs(meta)
     val reasons = lost.map { gapDescription(it) }.distinct()

@@ -249,6 +249,7 @@ fun App(
                         settings = currentSettings,
                         diagnostics = currentDiagnostics,
                         watchServiceState = currentWatchState,
+                        segments = segments,
                         localModel = currentLocalModel,
                         statusHeadline = status.headline,
                         exportDirectory = actions.audioExportDirectory(),

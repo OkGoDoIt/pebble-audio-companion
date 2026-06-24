@@ -123,7 +123,7 @@ fun LibraryScreen(
                     LibraryFilter.Today -> Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)
                     // Silence the watch skipped to save power is not a gap, so a segment that
                     // only has those does not belong in the "Gaps" filter.
-                    LibraryFilter.Gaps -> meta.gaps.any { !isSilenceGap(it) }
+                    LibraryFilter.Gaps -> visibleLossGaps(meta).isNotEmpty()
                     LibraryFilter.Untranscribed -> !meta.isFullyTranscribed
                 }
             }
@@ -883,8 +883,8 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
     // inherits an interruption's framing. The length-based labelling (30 s+ label, shorter → break
     // or nothing) is applied later by coalesceTimelineQuiet, on the combined total, so consecutive
     // quiet spans from any source read as one period.
-    val lost = pauses(meta.gaps.filterNot(::isSilenceGap), missing = true)
-    val quiet = pauses(meta.gaps.filter(::isSilenceGap), missing = false)
+    val lost = pauses(visibleLossGaps(meta), missing = true)
+    val quiet = pauses(quietGaps(meta), missing = false)
     return (lost + quiet).sortedBy { it.startMs }
 }
 
