@@ -42,7 +42,33 @@ class FileAiOutputStore(
     }
     private val outputDir = Path(Path(root, "ai"), "outputs")
 
+    /** In-memory index by output id; read source of truth, disk is the durable mirror. See
+     * `SegmentStore.metaIndex`. `list()` is called on every diagnostics refresh. */
+    private var index: Map<String, AiOutput>? = null
+
     private fun outputPath(outputId: String) = Path(outputDir, "$outputId.ai.json")
+
+    private fun ensureIndex(): Map<String, AiOutput> =
+        index ?: buildIndexFromDisk().also { index = it }
+
+    private fun buildIndexFromDisk(): Map<String, AiOutput> {
+        if (!fileSystem.exists(outputDir)) return emptyMap()
+        val map = LinkedHashMap<String, AiOutput>()
+        fileSystem.list(outputDir)
+            .filter { it.name.endsWith(".ai.json") }
+            .forEach { path ->
+                val id = path.name.removeSuffix(".ai.json")
+                readFromDisk(id)?.let { map[id] = it }
+            }
+        return map
+    }
+
+    private fun readFromDisk(outputId: String): AiOutput? {
+        val path = outputPath(outputId)
+        if (!fileSystem.exists(path)) return null
+        val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
+        return runCatching { json.decodeFromString(AiOutput.serializer(), text) }.getOrNull()
+    }
 
     fun save(
         request: AiRunRequest,
@@ -68,26 +94,17 @@ class FileAiOutputStore(
         return output
     }
 
-    fun load(outputId: String): AiOutput? {
-        val path = outputPath(outputId)
-        if (!fileSystem.exists(path)) return null
-        val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
-        return runCatching { json.decodeFromString(AiOutput.serializer(), text) }.getOrNull()
-    }
+    fun load(outputId: String): AiOutput? = ensureIndex()[outputId]
 
-    fun list(): List<AiOutput> {
-        if (!fileSystem.exists(outputDir)) return emptyList()
-        return fileSystem.list(outputDir)
-            .filter { it.name.endsWith(".ai.json") }
-            .mapNotNull { load(it.name.removeSuffix(".ai.json")) }
-            .sortedBy { it.createdAtMs }
-    }
+    fun list(): List<AiOutput> = ensureIndex().values.sortedBy { it.createdAtMs }
 
     fun delete(outputId: String) {
         fileSystem.delete(outputPath(outputId), mustExist = false)
+        index = index?.minus(outputId)
     }
 
     fun deleteAll() {
+        index = emptyMap()
         if (!fileSystem.exists(outputDir)) return
         fileSystem.list(outputDir)
             .filter { it.name.endsWith(".ai.json") || it.name.endsWith(".ai.json.tmp") }
@@ -101,5 +118,6 @@ class FileAiOutputStore(
             sink.write(json.encodeToString(AiOutput.serializer(), output).encodeToByteArray())
         }
         fileSystem.atomicMove(tmp, outputPath(output.outputId))
+        index?.let { index = it + (output.outputId to output) }
     }
 }

@@ -73,6 +73,22 @@ class SegmentStore(
     private var current: OpenSegment? = null
     private var segmentCounter = 0
 
+    /**
+     * Process-lifetime in-memory index of segment metadata, keyed by id. The read source of truth;
+     * the `*.meta.json` files are the durable mirror. Without this, `listSegments()`/`readMeta()`
+     * re-list the directory and re-parse every sidecar from disk on every call — and they are
+     * called constantly (diagnostics refresh, the UI durable reload, RESUME continuation lookups),
+     * which makes launch and steady-state O(library)-file-reads and starves the app.
+     *
+     * Held as a copy-on-write immutable map reassigned wholesale, so a concurrent reader on the
+     * background pool always observes a complete map (matching the store's existing lock-free
+     * shared-`current` posture; a lost write self-heals on the next sidecar flush, and disk is
+     * always authoritative). Entries mirror the last-flushed sidecar, so the open segment's live
+     * counters appear on its periodic meta flush — the same visibility callers had when reads hit
+     * disk.
+     */
+    private var metaIndex: Map<String, SegmentMeta>? = null
+
     /** Segment id of the currently open segment, or null. */
     val openSegmentId: String? get() = current?.meta?.segmentId
 
@@ -251,6 +267,9 @@ class SegmentStore(
             sink.write(json.encodeToString(SegmentMeta.serializer(), meta).encodeToByteArray())
         }
         fileSystem.atomicMove(tmp, final)
+        // Keep the in-memory index coherent. No-op until the index is built (recover() rebuilds it
+        // at the end, so reconcile-writes during recovery don't each trigger a disk scan).
+        metaIndex?.let { metaIndex = it + (meta.segmentId to meta) }
     }
 
     /** Marks transcription progress for a closed segment (used by :core:transcription's queue). */
@@ -262,19 +281,35 @@ class SegmentStore(
 
     // --- reading ----------------------------------------------------------------------------------
 
-    fun readMeta(segmentId: String): SegmentMeta? {
+    // Served from the index, which is the last-flushed sidecar state — identical to what reading
+    // the on-disk `*.meta.json` returned before, just without the disk I/O. The open segment's
+    // live counters become visible on its periodic meta flush, exactly as they did before.
+    fun readMeta(segmentId: String): SegmentMeta? = ensureIndex()[segmentId]
+
+    fun listSegments(): List<SegmentMeta> =
+        ensureIndex().values.sortedBy { it.receivedAtMs }
+
+    /** Lazily builds the metadata index from disk on first read (recover() rebuilds it explicitly). */
+    private fun ensureIndex(): Map<String, SegmentMeta> =
+        metaIndex ?: buildIndexFromDisk().also { metaIndex = it }
+
+    private fun buildIndexFromDisk(): Map<String, SegmentMeta> {
+        if (!fileSystem.exists(segmentsDir)) return emptyMap()
+        val map = LinkedHashMap<String, SegmentMeta>()
+        fileSystem.list(segmentsDir)
+            .filter { it.name.endsWith(META_SUFFIX) }
+            .forEach { path ->
+                val id = path.name.removeSuffix(META_SUFFIX)
+                readMetaFromDisk(id)?.let { map[id] = it }
+            }
+        return map
+    }
+
+    private fun readMetaFromDisk(segmentId: String): SegmentMeta? {
         val path = metaPath(segmentId)
         if (!fileSystem.exists(path)) return null
         val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
         return runCatching { json.decodeFromString(SegmentMeta.serializer(), text) }.getOrNull()
-    }
-
-    fun listSegments(): List<SegmentMeta> {
-        if (!fileSystem.exists(segmentsDir)) return emptyList()
-        return fileSystem.list(segmentsDir)
-            .filter { it.name.endsWith(META_SUFFIX) }
-            .mapNotNull { readMeta(it.name.removeSuffix(META_SUFFIX)) }
-            .sortedBy { it.receivedAtMs }
     }
 
     fun logSizeBytes(segmentId: String): Long =
@@ -291,6 +326,7 @@ class SegmentStore(
         check(segmentId != openSegmentId) { "refusing to delete the open segment $segmentId" }
         fileSystem.delete(logPath(segmentId), mustExist = false)
         fileSystem.delete(metaPath(segmentId), mustExist = false)
+        metaIndex = metaIndex?.minus(segmentId)
     }
 
     // --- corruption recovery -----------------------------------------------------------------------
@@ -314,7 +350,7 @@ class SegmentStore(
         val logs = entries.filter { it.name.endsWith(LOG_SUFFIX) }
         for (log in logs) {
             val segmentId = log.name.removeSuffix(LOG_SUFFIX)
-            val meta = readMeta(segmentId)
+            val meta = readMetaFromDisk(segmentId)
             if (meta == null) {
                 quarantine(log)
                 continue
@@ -333,6 +369,9 @@ class SegmentStore(
             }
             reconcileMeta(meta, parsed.records, parsed.validBytes.toLong())
         }
+        // Build the authoritative index once, after all reconcile-writes, so subsequent reads
+        // (diagnostics, UI, RESUME continuation) never touch disk.
+        metaIndex = buildIndexFromDisk()
     }
 
     private fun needsRecoveryParse(meta: SegmentMeta, logBytes: Long): Boolean =

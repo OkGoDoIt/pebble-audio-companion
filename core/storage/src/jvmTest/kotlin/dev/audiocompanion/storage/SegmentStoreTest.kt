@@ -121,6 +121,30 @@ class SegmentStoreTest {
     }
 
     @Test
+    fun readsAreServedFromTheInMemoryIndexNotDiskEachCall() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        store.openSegment(streamStart(), receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 4))
+        store.closeSegment(
+            SegmentCloseReason.Stopped(reasonRaw = 1, finalSequence = 3u, finalSampleIndex = 4uL * 320u),
+        )
+
+        // Prime the index, then delete the on-disk sidecar behind the store's back. Before the
+        // in-memory index, every read re-listed and re-parsed the directory, so the segment would
+        // disappear here — and that per-call full-library disk re-parse is what starved iOS launch.
+        assertEquals(1, store.listSegments().size)
+        assertTrue(File(segmentsDir(root), "$segmentId.meta.json").delete())
+        assertEquals(1, store.listSegments().size, "reads must come from the in-memory index")
+        assertNotNull(store.readMeta(segmentId))
+
+        // deleteSegment evicts from the index as well.
+        store.deleteSegment(segmentId)
+        assertTrue(store.listSegments().isEmpty())
+    }
+
+    @Test
     fun killMidAppend_truncatesToLastGoodRecord() = runTest {
         val root = tempRoot()
         val store = store(root)
