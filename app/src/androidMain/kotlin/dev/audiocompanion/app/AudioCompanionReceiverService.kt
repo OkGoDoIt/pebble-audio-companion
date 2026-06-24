@@ -46,14 +46,14 @@ class AudioCompanionReceiverService : Service() {
             }
             ACTION_CONNECT -> {
                 startForeground(NOTIFICATION_ID, buildNotification("Waiting for Pebble"))
-                handle.runtime.start(serviceScope)
+                serviceScope.launch { handle.runtime.start(serviceScope) }
                 observeStateForNotification(handle)
                 connectFromIntent(intent)
                 return START_STICKY
             }
             else -> {
                 startForeground(NOTIFICATION_ID, buildNotification("Waiting for Pebble"))
-                handle.runtime.start(serviceScope)
+                serviceScope.launch { handle.runtime.start(serviceScope) }
                 observeStateForNotification(handle)
                 PairedWatchStore.load(this)?.let { address ->
                     connectFromIntent(
