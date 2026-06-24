@@ -33,6 +33,7 @@ import dev.audiocompanion.app.ui.LibraryScreen
 import dev.audiocompanion.app.ui.OnboardingScreen
 import dev.audiocompanion.app.ui.PrimaryAction
 import dev.audiocompanion.app.ui.SettingsScreen
+import dev.audiocompanion.app.ui.TimelineItem
 import dev.audiocompanion.app.ui.TodayScreen
 import dev.audiocompanion.app.ui.buildTimeline
 import dev.audiocompanion.app.ui.statusUiModel
@@ -68,6 +69,9 @@ private data class DurableContentSnapshot(
     val livePreviews: Map<String, LiveTranscriptPreview?> = emptyMap(),
     val annotations: Map<String, SegmentAnnotation?> = emptyMap(),
     val aiOutputs: List<AiOutput> = emptyList(),
+    /** Built off the UI thread alongside the durable reads: buildTimeline is O(segments) and was
+     * freezing the main thread when computed in composition over a large/gappy library. */
+    val todayTimeline: List<TimelineItem> = emptyList(),
 )
 
 private const val TODAY_CONTENT_WINDOW_MS = 24L * 60 * 60 * 1000
@@ -160,21 +164,33 @@ fun App(
                     AppTab.Settings -> emptyList()
                     AppTab.Library, AppTab.Ai -> loadedSegments
                 }
+                val transcriptsMap = contentSegments.associate {
+                    it.segmentId to actions.loadTranscript(it.segmentId)
+                }
+                val liveTranscriptsMap = contentSegments.associate {
+                    it.segmentId to actions.loadLiveTranscript(it.segmentId)
+                }
+                val livePreviewsMap = contentSegments.associate {
+                    it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId)
+                }
+                val annotationsMap = contentSegments.associate {
+                    it.segmentId to actions.loadAnnotation(it.segmentId)
+                }
+                val timeline = buildTimeline(
+                    segments = loadedSegments,
+                    transcriptOf = { transcriptsMap[it] },
+                    nowMs = snapshotNow,
+                    annotationOf = { annotationsMap[it] },
+                    liveTextOf = { liveTranscriptsMap[it] },
+                )
                 DurableContentSnapshot(
                     segments = loadedSegments,
-                    transcripts = contentSegments.associate {
-                        it.segmentId to actions.loadTranscript(it.segmentId)
-                    },
-                    liveTranscripts = contentSegments.associate {
-                        it.segmentId to actions.loadLiveTranscript(it.segmentId)
-                    },
-                    livePreviews = contentSegments.associate {
-                        it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId)
-                    },
-                    annotations = contentSegments.associate {
-                        it.segmentId to actions.loadAnnotation(it.segmentId)
-                    },
+                    transcripts = transcriptsMap,
+                    liveTranscripts = liveTranscriptsMap,
+                    livePreviews = livePreviewsMap,
+                    annotations = annotationsMap,
                     aiOutputs = if (tab == AppTab.Ai) actions.loadAiOutputs() else previousAiOutputs,
+                    todayTimeline = timeline,
                 )
             }
         }
@@ -184,15 +200,8 @@ fun App(
         val livePreviews = durableContent.livePreviews
         val annotations = durableContent.annotations
         val aiOutputs = durableContent.aiOutputs
-        val todayTimeline = remember(segments, transcripts, annotations, liveTranscripts) {
-            buildTimeline(
-                segments = segments,
-                transcriptOf = { transcripts[it] },
-                nowMs = nowMs,
-                annotationOf = { annotations[it] },
-                liveTextOf = { liveTranscripts[it] },
-            )
-        }
+        // Built off the UI thread in the durable reload above (see DurableContentSnapshot).
+        val todayTimeline = durableContent.todayTimeline
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->

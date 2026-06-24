@@ -255,22 +255,71 @@ fun isSilenceGap(gap: GapMeta): Boolean =
  * record for the same range. For display, the watch's silence reason wins: that time was known
  * quiet, not a phone/link failure. The raw metadata remains unchanged for diagnostics.
  */
-fun visibleLossGaps(meta: SegmentMeta): List<GapMeta> =
-    meta.gaps.filter { gap -> isVisibleLossGap(gap, meta.gaps) }
+fun visibleLossGaps(meta: SegmentMeta): List<GapMeta> {
+    val visibility = GapVisibility(meta.gaps)
+    return meta.gaps.filter { visibility.isVisibleLoss(it) }
+}
 
-fun quietGaps(meta: SegmentMeta): List<GapMeta> =
-    meta.gaps.filter { gap -> !isVisibleLossGap(gap, meta.gaps) }
+fun quietGaps(meta: SegmentMeta): List<GapMeta> {
+    val visibility = GapVisibility(meta.gaps)
+    return meta.gaps.filter { !visibility.isVisibleLoss(it) }
+}
+
+/**
+ * Precomputes silence-coverage for one segment's gaps so visibility is a binary search instead of
+ * a per-gap rescan of the whole list. A segment can accumulate thousands of gap records (every
+ * silence-suppression span, overflow, and reconnect adds one), so the old O(n²)
+ * `allGaps.none { … }` froze the main thread for ~12 s while building the Today timeline once the
+ * test library grew. Silence intervals are sorted by start with a running max end, which answers
+ * "is this sequence-skip fully covered by some single silence gap?" in O(log n).
+ */
+class GapVisibility(gaps: List<GapMeta>) {
+    private val silenceStarts: UIntArray
+    private val silenceMaxEnd: UIntArray
+
+    init {
+        val silence = gaps.asSequence()
+            .filter { isSilenceGap(it) }
+            .map { it.firstMissingSequence to (it.firstMissingSequence + it.missingFrameCount) }
+            .sortedBy { it.first }
+            .toList()
+        silenceStarts = UIntArray(silence.size) { silence[it].first }
+        silenceMaxEnd = UIntArray(silence.size)
+        var runningMax = 0u
+        for (i in silence.indices) {
+            runningMax = if (i == 0) silence[i].second else maxOf(runningMax, silence[i].second)
+            silenceMaxEnd[i] = runningMax
+        }
+    }
+
+    fun isVisibleLoss(gap: GapMeta): Boolean {
+        if (isSilenceGap(gap)) return false
+        if (gap.origin != GapMeta.ORIGIN_SEQUENCE_SKIP) return true
+        val start = gap.firstMissingSequence
+        return !coveredBySingleSilenceGap(start, start + gap.missingFrameCount)
+    }
+
+    private fun coveredBySingleSilenceGap(start: UInt, end: UInt): Boolean {
+        // Largest index whose silence start <= `start`; its prefix max end is the widest a single
+        // silence gap (with start <= start) reaches, so >= end means one fully covers [start, end).
+        var lo = 0
+        var hi = silenceStarts.size - 1
+        var idx = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (silenceStarts[mid] <= start) {
+                idx = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return idx >= 0 && silenceMaxEnd[idx] >= end
+    }
+}
 
 fun isVisibleLossGap(gap: GapMeta, allGaps: List<GapMeta>): Boolean {
-    if (isSilenceGap(gap)) return false
-    if (gap.origin != GapMeta.ORIGIN_SEQUENCE_SKIP) return true
-    val gapStart = gap.firstMissingSequence
-    val gapEnd = gapStart + gap.missingFrameCount
-    return allGaps.none { candidate ->
-        isSilenceGap(candidate) &&
-            candidate.firstMissingSequence <= gapStart &&
-            candidate.firstMissingSequence + candidate.missingFrameCount >= gapEnd
-    }
+    return GapVisibility(allGaps).isVisibleLoss(gap)
 }
 
 /** Approximate gap length from missing frame count (20 ms frames). */
