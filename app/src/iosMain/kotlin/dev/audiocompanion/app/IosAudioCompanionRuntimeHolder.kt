@@ -10,7 +10,9 @@ class IosAudioCompanionRuntimeHandle(
     val link: IosAudioGattLink = IosAudioGattLink(),
     val settingsRepository: IosAudioCompanionSettingsRepository = IosAudioCompanionSettingsRepository(),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + iosCoroutineExceptionHandler("runtime"),
+    )
     private val modelProvider = IosCactusModelPathProvider(
         selectedModelId = { settingsRepository.settings.value.localTranscriptionModelId },
     )
