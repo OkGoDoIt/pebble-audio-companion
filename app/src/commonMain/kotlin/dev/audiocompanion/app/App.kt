@@ -35,7 +35,6 @@ import dev.audiocompanion.app.ui.SettingsScreen
 import dev.audiocompanion.app.ui.TodayScreen
 import dev.audiocompanion.app.ui.buildTimeline
 import dev.audiocompanion.app.ui.statusUiModel
-import dev.audiocompanion.protocol.AuthStatus
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -146,14 +145,6 @@ fun App(
         val aiOutputs = remember(currentDiagnostics, tab, nowTick) { actions.loadAiOutputs() }
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
-        LaunchedEffect(state, currentSettings.backgroundReceiverEnabled) {
-            val denied = state as? ReceiverSessionState.Denied
-            if (denied?.status == AuthStatus.DeniedDisabled &&
-                currentSettings.backgroundReceiverEnabled
-            ) {
-                actions.setBackgroundReceiverEnabled(false)
-            }
-        }
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
             when (action) {
                 // The enabled flag drives the receiver on both platforms (service/bootstrap),

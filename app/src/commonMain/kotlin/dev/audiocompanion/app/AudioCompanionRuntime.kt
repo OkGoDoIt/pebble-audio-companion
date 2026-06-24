@@ -95,7 +95,7 @@ class AudioCompanionRuntime(
         router = aiRouter,
         nowMs = nowMs,
     )
-    private var watchEnableRequestArmed = false
+    private val watchEnableRequestArmed = MutableStateFlow(false)
 
     private val session = AudioReceiverSession(
         link = link,
@@ -150,19 +150,24 @@ class AudioCompanionRuntime(
      * watch to turn Background Audio on.
      */
     fun armWatchEnableRequest() {
-        watchEnableRequestArmed = true
+        watchEnableRequestArmed.value = true
+        val deniedDisabled = (state.value as? ReceiverSessionState.Denied)
+            ?.status == dev.audiocompanion.protocol.AuthStatus.DeniedDisabled
+        if (deniedDisabled) {
+            link.resync()
+        }
     }
 
     private fun consumeWatchEnableRequestPermission(): Boolean {
-        val armed = watchEnableRequestArmed
-        watchEnableRequestArmed = false
+        val armed = watchEnableRequestArmed.value
+        watchEnableRequestArmed.value = false
         return armed
     }
 
     fun stop() {
         sessionJob?.cancel()
         sessionJob = null
-        watchEnableRequestArmed = false
+        watchEnableRequestArmed.value = false
         transcriptionJob?.cancel()
         transcriptionJob = null
         refreshDiagnostics()
