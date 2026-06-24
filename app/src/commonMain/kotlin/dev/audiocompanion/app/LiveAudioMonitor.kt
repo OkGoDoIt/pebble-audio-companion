@@ -294,7 +294,7 @@ class LiveAudioMonitor(
             }
             WaveformBar(
                 timeMs = accum.timeMs,
-                amplitude = sqrt((rms / Short.MAX_VALUE).coerceIn(0.0, 1.0)).toFloat(),
+                amplitude = displayAmplitude(rms),
                 state = state,
                 segmentId = accum.segmentId,
                 maxSampleIndex = accum.maxSampleIndex,
@@ -304,7 +304,16 @@ class LiveAudioMonitor(
 
     companion object {
         /** Below this RMS (16-bit full scale 32767) a bar renders as detected silence. */
-        const val SILENCE_RMS = 330.0
+        const val SILENCE_RMS = 90.0
+
+        /**
+         * Watch speech can decode to low PCM levels after Speex. Use a speech-focused display
+         * curve so audible low-level talk is visible instead of looking almost flat.
+         */
+        fun displayAmplitude(rms: Double): Float {
+            if (rms <= 0.0) return 0f
+            return sqrt(sqrt((rms / 1_200.0).coerceIn(0.0, 1.0))).toFloat()
+        }
     }
 }
 

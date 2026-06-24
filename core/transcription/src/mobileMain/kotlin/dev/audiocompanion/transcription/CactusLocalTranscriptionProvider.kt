@@ -90,9 +90,12 @@ class CactusLocalTranscriptionProvider(
                 throw TranscriptionException.NoSpeechDetected("local audio too short")
             }
             val speechRanges = detectSpeechRanges(rawPath, pcmBytes, sampleRateHz)
-            if (speechRanges.isEmpty()) {
-                throw TranscriptionException.NoSpeechDetected("local audio is below speech threshold")
-            }
+                .ifEmpty {
+                    splitLongSpeechRanges(
+                        listOf(PcmSpeechRange(startByte = 0, endByte = alignToSampleBoundary(pcmBytes))),
+                        sampleRateHz,
+                    )
+                }
             val handle = initModel()
             val nativeResults = speechRanges.mapNotNull { range ->
                 writeWavRangeFromRaw(rawPath, wavPath, range, sampleRateHz)
@@ -424,8 +427,8 @@ class CactusLocalTranscriptionProvider(
         private const val SPEECH_POSTROLL_MS = 700
         private const val MERGE_SPEECH_GAP_MS = 1_500
         private const val MAX_LOCAL_TRANSCRIBE_CHUNK_MS = 45_000
-        private const val MIN_VOICE_RMS = 180.0
-        private const val MIN_VOICE_PEAK = 900
+        private const val MIN_VOICE_RMS = 45.0
+        private const val MIN_VOICE_PEAK = 240
         private const val COPY_BUFFER_BYTES = 64 * 1024
         private val NON_SPEECH_REGEX = "\\[[^\\]]*\\]|\\([^)]*\\)".toRegex()
     }

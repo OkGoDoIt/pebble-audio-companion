@@ -21,6 +21,16 @@ private val fakeDecoder = LiveFrameDecoder { frames ->
     out
 }
 
+private val lowSpeechDecoder = LiveFrameDecoder { frames ->
+    val out = ShortArray(frames.size * 320)
+    frames.forEachIndexed { frameIndex, _ ->
+        for (i in 0 until 320) {
+            out[frameIndex * 320 + i] = 120
+        }
+    }
+    out
+}
+
 private fun frames(count: Int, loud: Boolean): List<SegmentFrame> = List(count) { index ->
     SegmentFrame(
         sequence = index.toUInt(),
@@ -53,6 +63,19 @@ class LiveAudioMonitorTest {
         monitor.processPending()
 
         assertTrue(monitor.bars.value.all { it.state == WaveformBarState.Silence })
+    }
+
+    @Test
+    fun lowLevelSpeechStillLooksRecordedAndVisible() = runTest {
+        val monitor = LiveAudioMonitor(decoder = lowSpeechDecoder, nowMs = { 100_000 })
+        monitor.onFrames("seg-1", frames(25, loud = true), receivedAtMs = 100_000)
+
+        monitor.processPending()
+
+        val bars = monitor.bars.value
+        assertTrue(bars.isNotEmpty())
+        assertTrue(bars.all { it.state == WaveformBarState.Recorded })
+        assertTrue(bars.all { it.amplitude >= 0.3f })
     }
 
     @Test

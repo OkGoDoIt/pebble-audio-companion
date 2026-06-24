@@ -101,7 +101,7 @@ class SegmentWaveformBuilder(
         val bars = List(barCount) { bar ->
             val rms = if (sampleCounts[bar] > 0) sqrt(sumSquares[bar] / sampleCounts[bar]) else 0.0
             SegmentWaveformBar(
-                amplitude = sqrt((rms / Short.MAX_VALUE).coerceIn(0.0, 1.0)).toFloat(),
+                amplitude = LiveAudioMonitor.displayAmplitude(rms),
                 state = if (rms < LiveAudioMonitor.SILENCE_RMS) {
                     WaveformBarState.Silence
                 } else {
