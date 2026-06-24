@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
                     setBackgroundReceiverEnabled = { enabled ->
                         settingsRepository.setBackgroundReceiverEnabled(enabled)
                         if (enabled) {
+                            runtime.armWatchEnableRequest()
                             startReceiverService(AudioCompanionReceiverService.startIntent(this))
                         } else {
                             startService(AudioCompanionReceiverService.stopIntent(this))

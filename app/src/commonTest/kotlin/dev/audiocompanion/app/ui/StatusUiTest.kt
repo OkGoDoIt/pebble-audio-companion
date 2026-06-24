@@ -66,6 +66,7 @@ class StatusUiTest {
             ReceiverSessionState.Authorized, settings, diagnostics, watchServiceStateRaw = 0,
         )
         assertTrue(disabled.headline.contains("off on the watch"), disabled.headline)
+        assertEquals(PrimaryAction.Start, disabled.primaryAction)
 
         // Phone-requested pause offers Start to resume.
         val paused = statusUiModel(
@@ -281,6 +282,17 @@ class StatusUiTest {
             AudioCompanionDiagnostics(),
         )
         assertEquals("This watch is authorized for another receiver", status.headline)
+    }
+
+    @Test
+    fun deniedDisabledOffersDeliberateRestart() {
+        val status = statusUiModel(
+            ReceiverSessionState.Denied(AuthStatus.DeniedDisabled.raw),
+            AudioCompanionSettings(backgroundReceiverEnabled = true),
+            AudioCompanionDiagnostics(),
+        )
+        assertEquals("Background audio is off on the watch", status.headline)
+        assertEquals(PrimaryAction.Start, status.primaryAction)
     }
 
     @Test
