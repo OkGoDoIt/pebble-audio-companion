@@ -1,11 +1,30 @@
 package dev.audiocompanion.app
 
 import androidx.compose.ui.window.ComposeUIViewController
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.ui.AppActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import platform.Foundation.NSURL
 import platform.UIKit.UIActivityViewController
 import platform.UIKit.UIApplication
@@ -13,47 +32,74 @@ import platform.UIKit.UIViewController
 
 object IosAudioCompanionBootstrap {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val handle: IosAudioCompanionRuntimeHandle = IosAudioCompanionRuntimeHandle()
+    private val handleMutex = Mutex()
+    private val _handle = MutableStateFlow<IosAudioCompanionRuntimeHandle?>(null)
+    val handleState: StateFlow<IosAudioCompanionRuntimeHandle?> = _handle.asStateFlow()
+
+    private suspend fun ensureHandle(): IosAudioCompanionRuntimeHandle =
+        handleMutex.withLock {
+            _handle.value ?: IosAudioCompanionRuntimeHandle().also { _handle.value = it }
+        }
+
+    fun prepareForUi() {
+        scope.launch { ensureHandle() }
+    }
 
     fun applicationDidFinishLaunching() {
-        if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
-            handle.startReceiver()
-        } else {
-            handle.connectWatch()
-            scope.launch { handle.runtime.recoverDurableState() }
+        scope.launch {
+            val handle = ensureHandle()
+            if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
+                handle.startReceiver()
+            } else {
+                handle.connectWatch()
+                handle.runtime.recoverDurableState()
+            }
         }
     }
 
     fun applicationWillEnterForeground() {
-        scope.launch { handle.runtime.refreshDiagnostics() }
-        if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
-            handle.startReceiver()
+        scope.launch {
+            val handle = ensureHandle()
+            handle.runtime.refreshDiagnostics()
+            if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
+                handle.startReceiver()
+            }
         }
     }
 
     fun applicationDidEnterBackground() {
-        if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
-            handle.startReceiver()
+        scope.launch {
+            val handle = ensureHandle()
+            if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
+                handle.startReceiver()
+            }
         }
     }
 
     fun startReceiver() {
-        handle.settingsRepository.setBackgroundReceiverEnabled(true)
-        handle.runtime.armWatchEnableRequest()
-        handle.startReceiver()
+        scope.launch {
+            val handle = ensureHandle()
+            handle.settingsRepository.setBackgroundReceiverEnabled(true)
+            handle.runtime.armWatchEnableRequest()
+            handle.startReceiver()
+        }
     }
 
     fun stopReceiver() {
-        handle.settingsRepository.setBackgroundReceiverEnabled(false)
-        handle.stopReceiver()
+        scope.launch {
+            val handle = ensureHandle()
+            handle.settingsRepository.setBackgroundReceiverEnabled(false)
+            handle.stopReceiver()
+        }
     }
 
     fun refreshDiagnostics() {
-        scope.launch { handle.runtime.refreshDiagnostics() }
+        scope.launch { ensureHandle().runtime.refreshDiagnostics() }
     }
 
     fun deleteAllLocalData() {
         scope.launch {
+            val handle = ensureHandle()
             handle.stopReceiver()
             handle.runtime.deleteAllLocalData()
         }
@@ -61,6 +107,7 @@ object IosAudioCompanionBootstrap {
 
     fun revokeReceiverLocally() {
         scope.launch {
+            val handle = ensureHandle()
             handle.stopReceiver()
             handle.runtime.revokeReceiverLocally()
         }
@@ -69,15 +116,24 @@ object IosAudioCompanionBootstrap {
 
 fun MainViewController(): UIViewController {
     val bootstrap = IosAudioCompanionBootstrap
-    val runtime = bootstrap.handle.runtime
-    val settings = bootstrap.handle.settingsRepository
     return ComposeUIViewController {
+        LaunchedEffect(Unit) {
+            bootstrap.prepareForUi()
+        }
+        val handle by bootstrap.handleState.collectAsState()
+        if (handle == null) {
+            StartupScreen()
+            return@ComposeUIViewController
+        }
+        val readyHandle = handle ?: return@ComposeUIViewController
+        val runtime = readyHandle.runtime
+        val settings = readyHandle.settingsRepository
         App(
             sessionState = runtime.state,
             diagnostics = runtime.diagnostics,
             watchServiceState = runtime.watchServiceState,
             settings = settings.settings,
-            localModelState = bootstrap.handle.localModelManager.state,
+            localModelState = readyHandle.localModelManager.state,
             waveformBars = runtime.liveMonitor?.bars
                 ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
             waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
@@ -92,7 +148,7 @@ fun MainViewController(): UIViewController {
                 },
                 // iOS surfaces the Bluetooth permission dialog when the central first starts;
                 // connecting is the permission request.
-                requestPermissions = { bootstrap.handle.connectWatch() },
+                requestPermissions = { readyHandle.connectWatch() },
                 setOnboardingComplete = settings::setOnboardingComplete,
                 startReceiver = bootstrap::startReceiver,
                 stopReceiver = bootstrap::stopReceiver,
@@ -150,7 +206,7 @@ fun MainViewController(): UIViewController {
                 },
                 setLocalTranscriptionModel = {
                     settings.setLocalTranscriptionModel(it)
-                    bootstrap.handle.localModelManager.refreshSelection()
+                    readyHandle.localModelManager.refreshSelection()
                     runtime.notifyTranscriptionConfigChanged()
                 },
                 setCloudTranscriptionConsent = {
@@ -167,11 +223,32 @@ fun MainViewController(): UIViewController {
                     settings.setAutomaticWavExportEnabled(it)
                     runtime.notifyExportConfigChanged()
                 },
-                refreshLocalModel = bootstrap.handle.localModelManager::refresh,
-                downloadLocalModel = bootstrap.handle.localModelManager::download,
-                cancelModelDownload = bootstrap.handle.localModelManager::cancelDownload,
+                refreshLocalModel = readyHandle.localModelManager::refresh,
+                downloadLocalModel = readyHandle.localModelManager::download,
+                cancelModelDownload = readyHandle.localModelManager::cancelDownload,
             ),
         )
+    }
+}
+
+@Composable
+private fun StartupScreen() {
+    MaterialTheme {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.Start,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(text = "Pebble Audio", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    text = "Opening your audio library...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
     }
 }
 

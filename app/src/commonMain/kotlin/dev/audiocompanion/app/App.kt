@@ -23,9 +23,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import dev.audiocompanion.ai.AiOutput
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.ui.AiScreen
 import dev.audiocompanion.app.ui.AppActions
 import dev.audiocompanion.app.ui.LibraryScreen
@@ -35,9 +36,14 @@ import dev.audiocompanion.app.ui.SettingsScreen
 import dev.audiocompanion.app.ui.TodayScreen
 import dev.audiocompanion.app.ui.buildTimeline
 import dev.audiocompanion.app.ui.statusUiModel
+import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transport.ReceiverSessionState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
 enum class AppTab(val label: String) {
@@ -54,6 +60,17 @@ private val AppTab.icon: ImageVector
         AppTab.Ai -> Icons.Filled.AutoAwesome
         AppTab.Settings -> Icons.Filled.Settings
     }
+
+private data class DurableContentSnapshot(
+    val segments: List<SegmentMeta> = emptyList(),
+    val transcripts: Map<String, SegmentTranscript?> = emptyMap(),
+    val liveTranscripts: Map<String, String?> = emptyMap(),
+    val livePreviews: Map<String, LiveTranscriptPreview?> = emptyMap(),
+    val annotations: Map<String, SegmentAnnotation?> = emptyMap(),
+    val aiOutputs: List<AiOutput> = emptyList(),
+)
+
+private const val TODAY_CONTENT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 /**
  * The shared app shell: four tabs (Today / Library / AI / Settings) per
@@ -127,22 +144,55 @@ fun App(
         val currentWaveformBars = waveformBars.collectAsState().value
 
         val nowMs = nowTick
-        // Durable content snapshots. Transcription/enrichment workers refresh diagnostics when
-        // file-backed content changes, so the wall-clock tick should only repaint elapsed time.
-        val segments = remember(currentDiagnostics, tab) { actions.loadSegments() }
-        val transcripts = remember(currentDiagnostics, tab, segments) {
-            segments.associate { it.segmentId to actions.loadTranscript(it.segmentId) }
+        // Durable content snapshots are file-backed, so hydrate them away from the UI thread.
+        // The previous snapshot remains visible while storage refreshes; first launch can paint
+        // immediately instead of blocking on a large library.
+        var durableContent by remember { mutableStateOf(DurableContentSnapshot()) }
+        LaunchedEffect(currentDiagnostics, tab) {
+            val previousAiOutputs = durableContent.aiOutputs
+            durableContent = withContext(Dispatchers.Default) {
+                val snapshotNow = Clock.System.now().toEpochMilliseconds()
+                val loadedSegments = actions.loadSegments()
+                val contentSegments = when (tab) {
+                    AppTab.Today -> loadedSegments.filter {
+                        it.isOpen || it.receivedAtMs >= snapshotNow - TODAY_CONTENT_WINDOW_MS
+                    }
+                    AppTab.Settings -> emptyList()
+                    AppTab.Library, AppTab.Ai -> loadedSegments
+                }
+                DurableContentSnapshot(
+                    segments = loadedSegments,
+                    transcripts = contentSegments.associate {
+                        it.segmentId to actions.loadTranscript(it.segmentId)
+                    },
+                    liveTranscripts = contentSegments.associate {
+                        it.segmentId to actions.loadLiveTranscript(it.segmentId)
+                    },
+                    livePreviews = contentSegments.associate {
+                        it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId)
+                    },
+                    annotations = contentSegments.associate {
+                        it.segmentId to actions.loadAnnotation(it.segmentId)
+                    },
+                    aiOutputs = if (tab == AppTab.Ai) actions.loadAiOutputs() else previousAiOutputs,
+                )
+            }
         }
-        val liveTranscripts = remember(currentDiagnostics, tab, segments) {
-            segments.associate { it.segmentId to actions.loadLiveTranscript(it.segmentId) }
+        val segments = durableContent.segments
+        val transcripts = durableContent.transcripts
+        val liveTranscripts = durableContent.liveTranscripts
+        val livePreviews = durableContent.livePreviews
+        val annotations = durableContent.annotations
+        val aiOutputs = durableContent.aiOutputs
+        val todayTimeline = remember(segments, transcripts, annotations, liveTranscripts) {
+            buildTimeline(
+                segments = segments,
+                transcriptOf = { transcripts[it] },
+                nowMs = nowMs,
+                annotationOf = { annotations[it] },
+                liveTextOf = { liveTranscripts[it] },
+            )
         }
-        val livePreviews = remember(currentDiagnostics, tab, segments) {
-            segments.associate { it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId) }
-        }
-        val annotations = remember(currentDiagnostics, tab, segments) {
-            segments.associate { it.segmentId to actions.loadAnnotation(it.segmentId) }
-        }
-        val aiOutputs = remember(currentDiagnostics, tab) { actions.loadAiOutputs() }
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
@@ -178,13 +228,7 @@ fun App(
                         diagnostics = currentDiagnostics,
                         settings = currentSettings,
                         localModel = currentLocalModel,
-                        timeline = buildTimeline(
-                            segments = segments,
-                            transcriptOf = { transcripts[it] },
-                            nowMs = nowMs,
-                            annotationOf = { annotations[it] },
-                            liveTextOf = { liveTranscripts[it] },
-                        ),
+                        timeline = todayTimeline,
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
                         waveformWindowMs = waveformWindowMs,
