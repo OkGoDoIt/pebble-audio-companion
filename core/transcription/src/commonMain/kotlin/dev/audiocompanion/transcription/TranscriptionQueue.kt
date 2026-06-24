@@ -45,7 +45,37 @@ class FileTranscriptionQueue(
     private val json = Json { ignoreUnknownKeys = true }
     private val queueDir = Path(Path(root, "transcription"), "queue")
 
+    /**
+     * In-memory index of tasks by segment id, the read source of truth (disk is the durable
+     * mirror). Without it `all()`/`load()` re-list and re-parse every task file on each call, and
+     * `refreshDiagnostics()` calls `all()` constantly. Copy-on-write immutable map, same lock-free
+     * posture as `SegmentStore.metaIndex`.
+     */
+    private var index: Map<String, TranscriptionTask>? = null
+
     private fun taskPath(segmentId: String) = Path(queueDir, "$segmentId.task.json")
+
+    private fun ensureIndex(): Map<String, TranscriptionTask> =
+        index ?: buildIndexFromDisk().also { index = it }
+
+    private fun buildIndexFromDisk(): Map<String, TranscriptionTask> {
+        if (!fileSystem.exists(queueDir)) return emptyMap()
+        val map = LinkedHashMap<String, TranscriptionTask>()
+        fileSystem.list(queueDir)
+            .filter { it.name.endsWith(".task.json") }
+            .forEach { path ->
+                val id = path.name.removeSuffix(".task.json")
+                readFromDisk(id)?.let { map[id] = it }
+            }
+        return map
+    }
+
+    private fun readFromDisk(segmentId: String): TranscriptionTask? {
+        val path = taskPath(segmentId)
+        if (!fileSystem.exists(path)) return null
+        val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
+        return runCatching { json.decodeFromString(TranscriptionTask.serializer(), text) }.getOrNull()
+    }
 
     /** Adds a Pending task for [segmentId]; no-op when a task already exists. */
     fun enqueue(segmentId: String): TranscriptionTask {
@@ -59,20 +89,9 @@ class FileTranscriptionQueue(
         return task
     }
 
-    fun load(segmentId: String): TranscriptionTask? {
-        val path = taskPath(segmentId)
-        if (!fileSystem.exists(path)) return null
-        val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
-        return runCatching { json.decodeFromString(TranscriptionTask.serializer(), text) }.getOrNull()
-    }
+    fun load(segmentId: String): TranscriptionTask? = ensureIndex()[segmentId]
 
-    fun all(): List<TranscriptionTask> {
-        if (!fileSystem.exists(queueDir)) return emptyList()
-        return fileSystem.list(queueDir)
-            .filter { it.name.endsWith(".task.json") }
-            .mapNotNull { load(it.name.removeSuffix(".task.json")) }
-            .sortedBy { it.createdAtMs }
-    }
+    fun all(): List<TranscriptionTask> = ensureIndex().values.sortedBy { it.createdAtMs }
 
     /**
      * Oldest Pending task, or a retryable Failed one whose backoff has elapsed. Failed tasks
@@ -143,9 +162,11 @@ class FileTranscriptionQueue(
     fun delete(segmentId: String) {
         fileSystem.delete(taskPath(segmentId), mustExist = false)
         fileSystem.delete(Path(queueDir, "$segmentId.task.json.tmp"), mustExist = false)
+        index = index?.minus(segmentId)
     }
 
     fun deleteAll() {
+        index = emptyMap()
         if (!fileSystem.exists(queueDir)) return
         fileSystem.list(queueDir)
             .filter { it.name.endsWith(".task.json") || it.name.endsWith(".task.json.tmp") }
@@ -175,6 +196,7 @@ class FileTranscriptionQueue(
             sink.write(json.encodeToString(TranscriptionTask.serializer(), task).encodeToByteArray())
         }
         fileSystem.atomicMove(tmp, taskPath(task.segmentId))
+        index?.let { index = it + (task.segmentId to task) }
     }
 
     companion object {
