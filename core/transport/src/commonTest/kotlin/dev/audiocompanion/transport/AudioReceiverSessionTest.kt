@@ -278,6 +278,44 @@ class AudioReceiverSessionTest {
     }
 
     @Test
+    fun futureExplicitGapIsAccountedWhenEarlierFramesArriveLater() = runTest {
+        val fx = startSession()
+        authorize(fx)
+        fx.link.pushData(streamStart())
+        runCurrent()
+
+        fx.link.pushData(data(0u, 8))
+        runCurrent()
+        fx.link.pushData(
+            StreamGap(
+                streamId = streamId,
+                firstMissingSequence = 12u,
+                missingFrameCount = 8u,
+                firstMissingSampleIndex = 12uL * 320u,
+                reasonRaw = GapReason.TransportReset.raw,
+                watchDropCounter = 8u,
+            )
+        )
+        runCurrent()
+
+        // These frames complete the prefix up to the already-reported watch gap. The receiver must
+        // then advance across that known loss instead of later synthesizing a duplicate 12..20 skip.
+        fx.link.pushData(data(8u, 4))
+        runCurrent()
+        advanceTimeBy(600)
+        fx.link.pushData(data(20u, 4))
+        runCurrent()
+
+        val gaps = fx.sink.eventsOf<SinkEvent.Gap>()
+        assertEquals(1, gaps.size)
+        val origin = assertIs<GapOrigin.WatchReported>(gaps.single().gap.origin)
+        assertEquals(GapReason.TransportReset.raw, origin.reasonRaw)
+        val cp = fx.checkpoints().single()
+        assertEquals(23u, cp.highestContiguousSequencePersisted)
+        assertEquals(24uL * 320u, cp.persistedSampleIndex)
+    }
+
+    @Test
     fun silenceSuppressionGapCanCheckpointWithoutRecurringQuietData() = runTest {
         val fx = startSession()
         authorize(fx)

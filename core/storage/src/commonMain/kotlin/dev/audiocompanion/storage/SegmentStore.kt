@@ -236,9 +236,9 @@ class SegmentStore(
      *
      *  - Silence-suppressed spans are deliberately-skipped quiet, not lost audio, so they are
      *    never persisted as loss (the live waveform still renders them as quiet while active).
-     *  - A loss contiguous (in sequence) with the previous gap extends that record's total dropped
-     *    duration rather than appending a new one — so one period of lost audio is one gap noting
-     *    the total time, however many packets it spanned.
+     *  - A loss overlapping or contiguous (in sequence) with the previous gap extends that record's
+     *    total dropped duration rather than appending a new one — so one period of lost audio is one
+     *    gap noting the total time, however many packets it spanned.
      */
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {
         val segment = current ?: return
@@ -254,20 +254,23 @@ class SegmentStore(
 
     private fun List<GapMeta>.withSparseLossGap(incoming: GapMeta): List<GapMeta> {
         val last = lastOrNull()
-        if (last == null || !last.shouldPersistAsLoss() || !last.isContiguousWith(incoming)) {
+        if (last == null || !last.shouldPersistAsLoss() || !last.overlapsOrTouches(incoming)) {
             return this + incoming
         }
+        val mergedEnd = maxOf(last.endExclusive(), incoming.endExclusive())
         return dropLast(1) + last.copy(
-            missingFrameCount = last.missingFrameCount + incoming.missingFrameCount,
+            missingFrameCount = (mergedEnd - last.firstMissingSequence.toULong()).toUInt(),
             watchDropCounter = incoming.watchDropCounter ?: last.watchDropCounter,
         )
     }
 
-    private fun GapMeta.isContiguousWith(next: GapMeta): Boolean =
+    private fun GapMeta.overlapsOrTouches(next: GapMeta): Boolean =
         missingFrameCount > 0u &&
             next.missingFrameCount > 0u &&
-            firstMissingSequence.toULong() + missingFrameCount.toULong() ==
-            next.firstMissingSequence.toULong()
+            next.firstMissingSequence.toULong() <= endExclusive()
+
+    private fun GapMeta.endExclusive(): ULong =
+        firstMissingSequence.toULong() + missingFrameCount.toULong()
 
     override suspend fun closeSegment(reason: SegmentCloseReason) {
         closeSegmentInternal(CloseReasonMeta.from(reason))
@@ -335,7 +338,7 @@ class SegmentStore(
             .filter { it.name.endsWith(META_SUFFIX) }
             .forEach { path ->
                 val id = path.name.removeSuffix(META_SUFFIX)
-                readMetaFromDisk(id)?.let { map[id] = it }
+                readMetaFromDisk(id)?.let { map[id] = it.withNormalizedGaps() }
             }
         return map
     }
@@ -346,6 +349,34 @@ class SegmentStore(
         val text = fileSystem.source(path).buffered().use { it.readByteArray() }.decodeToString()
         return runCatching { json.decodeFromString(SegmentMeta.serializer(), text) }.getOrNull()
     }
+
+    private fun SegmentMeta.withNormalizedGaps(): SegmentMeta {
+        val normalized = normalizeSparseLossGaps(gaps)
+        return if (normalized == gaps) this else copy(gaps = normalized)
+    }
+
+    private fun normalizeSparseLossGaps(gaps: List<GapMeta>): List<GapMeta> {
+        if (gaps.isEmpty()) return emptyList()
+        val watchRanges = gaps.filter { it.origin == GapMeta.ORIGIN_WATCH && it.missingFrameCount > 0u }
+        fun coveredByWatch(gap: GapMeta): Boolean =
+            watchRanges.any { it.covers(gap) }
+
+        val sorted = gaps.asSequence()
+            .filter { it.shouldPersistAsLoss() }
+            .filterNot { it.origin == GapMeta.ORIGIN_SEQUENCE_SKIP && coveredByWatch(it) }
+            .sortedWith(
+                compareBy<GapMeta> { it.firstMissingSequence.toULong() }
+                    .thenBy { if (it.origin == GapMeta.ORIGIN_WATCH) 0 else 1 }
+            )
+            .toList()
+        return sorted.fold(emptyList()) { acc, gap -> acc.withSparseLossGap(gap) }
+    }
+
+    private fun GapMeta.covers(other: GapMeta): Boolean =
+        missingFrameCount > 0u &&
+            other.missingFrameCount > 0u &&
+            firstMissingSequence <= other.firstMissingSequence &&
+            endExclusive() >= other.endExclusive()
 
     fun logSizeBytes(segmentId: String): Long =
         fileSystem.metadataOrNull(logPath(segmentId))?.size ?: 0L
@@ -404,9 +435,21 @@ class SegmentStore(
             }
             reconcileMeta(meta, parsed.records, parsed.validBytes.toLong())
         }
+        normalizeGapSidecars()
         // Build the authoritative index once, after all reconcile-writes, so subsequent reads
         // (diagnostics, UI, RESUME continuation) never touch disk.
         metaIndex = buildIndexFromDisk()
+    }
+
+    private fun normalizeGapSidecars() {
+        fileSystem.list(segmentsDir)
+            .filter { it.name.endsWith(META_SUFFIX) }
+            .forEach { path ->
+                val segmentId = path.name.removeSuffix(META_SUFFIX)
+                val meta = readMetaFromDisk(segmentId) ?: return@forEach
+                val normalized = meta.withNormalizedGaps()
+                if (normalized != meta) writeMetaAtomically(normalized)
+            }
     }
 
     private fun needsRecoveryParse(meta: SegmentMeta, logBytes: Long): Boolean =
