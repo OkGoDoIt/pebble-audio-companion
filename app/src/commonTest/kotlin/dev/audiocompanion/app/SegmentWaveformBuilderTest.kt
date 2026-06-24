@@ -79,7 +79,7 @@ class SegmentWaveformBuilderTest {
         val wave = builder.build(meta(frameCount = 40)) { frames(40) }
 
         assertTrue(wave.bars.all { it.state == WaveformBarState.Recorded })
-        assertTrue(wave.bars.all { it.amplitude >= 0.3f })
+        assertTrue(wave.bars.all { it.amplitude in 0.08f..0.2f })
     }
 
     @Test

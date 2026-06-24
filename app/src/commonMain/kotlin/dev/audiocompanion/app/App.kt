@@ -120,7 +120,7 @@ fun App(
         var nowTick by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
         LaunchedEffect(Unit) {
             while (true) {
-                delay(2_000)
+                delay(500)
                 nowTick = Clock.System.now().toEpochMilliseconds()
             }
         }
