@@ -37,6 +37,9 @@ import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.LocalTranscriptionModelOptionState
 import dev.audiocompanion.app.LocalTranscriptionModelState
+import dev.audiocompanion.protocol.GapReason
+import dev.audiocompanion.storage.GapMeta
+import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlinx.coroutines.launch
@@ -47,6 +50,7 @@ fun SettingsScreen(
     settings: AudioCompanionSettings,
     diagnostics: AudioCompanionDiagnostics,
     watchServiceState: Int?,
+    segments: List<SegmentMeta>,
     localModel: LocalTranscriptionModelState,
     statusHeadline: String,
     exportDirectory: String?,
@@ -58,6 +62,7 @@ fun SettingsScreen(
     var showLocalModelPicker by remember { mutableStateOf(false) }
     var showAiModePicker by remember { mutableStateOf(false) }
     var supportReportText by remember { mutableStateOf<String?>(null) }
+    var detailedDiagnosticsText by remember { mutableStateOf<String?>(null) }
     var exportResultText by remember { mutableStateOf<String?>(null) }
     var exportingAll by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -289,8 +294,17 @@ fun SettingsScreen(
         OutlinedButton(onClick = {
             supportReportText = actions.exportSupportReport()?.let { formatSupportReport(it) }
         }) { Text("View support report") }
+        OutlinedButton(onClick = {
+            detailedDiagnosticsText = formatDetailedDiagnostics(
+                sessionState = sessionState,
+                settings = settings,
+                diagnostics = diagnostics,
+                watchServiceState = watchServiceState,
+                segments = segments,
+            )
+        }) { Text("View detailed logs") }
         Text(
-            text = "Support reports contain status counters only — never audio or transcript text.",
+            text = "Diagnostics contain status counters and gap metadata only — never audio or transcript text.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 24.dp),
@@ -312,6 +326,26 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { supportReportText = null }) { Text("Done") }
+            },
+        )
+    }
+
+    detailedDiagnosticsText?.let { report ->
+        AlertDialog(
+            onDismissRequest = { detailedDiagnosticsText = null },
+            title = { Text("Detailed diagnostics") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        text = report,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { detailedDiagnosticsText = null }) { Text("Done") }
             },
         )
     }
@@ -507,6 +541,69 @@ fun formatSupportReport(report: dev.audiocompanion.app.AudioCompanionSupportRepo
         appendLine("Pause requested: ${d.pauseRequested}")
         append("Free storage: ${Formatting.storageSize(d.freeStorageHintKb.toLong() * 1024)}")
     }
+
+/** Content-free technical diagnostics for local troubleshooting. */
+fun formatDetailedDiagnostics(
+    sessionState: ReceiverSessionState,
+    settings: AudioCompanionSettings,
+    diagnostics: AudioCompanionDiagnostics,
+    watchServiceState: Int?,
+    segments: List<SegmentMeta>,
+): String = buildString {
+    appendLine("Receiver")
+    appendLine("state=${sessionState}")
+    appendLine("watch=${watchServiceStateLabel(watchServiceState)} raw=${watchServiceState ?: "unknown"}")
+    appendLine("enabled=${settings.backgroundReceiverEnabled}")
+    appendLine("pauseRequested=${diagnostics.pauseRequested}")
+    appendLine("lowStorage=${diagnostics.lowStorage}")
+    appendLine("freeStorage=${Formatting.storageSize(diagnostics.freeStorageHintKb.toLong() * 1024)}")
+    appendLine("segments=${diagnostics.segmentCount} open=${diagnostics.openSegmentId ?: "none"}")
+    appendLine("transcriptionQueued=${diagnostics.queuedTranscriptionTasks}")
+    appendLine("transcriptionFailed=${diagnostics.failedTranscriptionTasks}")
+    appendLine()
+    appendLine("Recent segments")
+    val recent = segments.sortedByDescending { it.receivedAtMs }.take(8)
+    if (recent.isEmpty()) {
+        appendLine("none")
+        return@buildString
+    }
+    recent.forEach { meta ->
+        val loss = visibleLossGaps(meta)
+        val quiet = quietGaps(meta)
+        appendLine(
+            "${Formatting.shortDate(meta.receivedAtMs, meta.receivedAtMs)} " +
+                "${Formatting.timeOfDay(meta.receivedAtMs)} " +
+                "id=${meta.segmentId.take(12)} " +
+                "state=${if (meta.isOpen) "open" else meta.closeReason?.kind ?: "closed"} " +
+                "duration=${Formatting.duration(segmentDurationMs(meta))} " +
+                "frames=${meta.frameCount} gaps=${meta.gaps.size} " +
+                "loss=${loss.size}/${Formatting.duration(loss.sumOf { gapDurationMs(it, meta.frameDurationMs) })} " +
+                "quiet=${quiet.size}/${Formatting.duration(quiet.sumOf { gapDurationMs(it, meta.frameDurationMs) })}",
+        )
+        meta.gaps.sortedBy { it.firstMissingSequence }.take(16).forEach { gap ->
+            appendLine("  ${formatGapDiagnostic(meta, gap)}")
+        }
+        if (meta.gaps.size > 16) {
+            appendLine("  ... ${meta.gaps.size - 16} more gap records")
+        }
+    }
+}
+
+private fun formatGapDiagnostic(meta: SegmentMeta, gap: GapMeta): String {
+    val rawReason = gap.reasonRaw
+    val reason = rawReason?.let { GapReason.fromRaw(it) }
+    val classification = if (isVisibleLossGap(gap, meta.gaps)) "missing" else "quiet"
+    val first = gap.firstMissingSequence
+    val last = if (gap.missingFrameCount > 0u) first + gap.missingFrameCount - 1u else first
+    return "gap $classification " +
+        "origin=${gap.origin} " +
+        "reason=${reason?.name ?: rawReason?.toString() ?: "unknown"} " +
+        "duration=${Formatting.duration(gapDurationMs(gap, meta.frameDurationMs))} " +
+        "seq=$first..$last " +
+        "sample=${gap.firstMissingSampleIndex} " +
+        "watchDrops=${gap.watchDropCounter ?: "n/a"} " +
+        "display=${gapDescription(gap)}"
+}
 
 fun formatAudioExportResult(result: AudioExportResult): String =
     when {

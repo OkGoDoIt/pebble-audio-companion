@@ -229,6 +229,51 @@ class StatusUiTest {
     }
 
     @Test
+    fun duplicateSequenceSkipCoveredBySuppressedSilenceIsQuiet() {
+        val quiet = GapMeta(
+            firstMissingSequence = 100u,
+            missingFrameCount = 5_000u,
+            firstMissingSampleIndex = 100uL * 320u,
+            origin = GapMeta.ORIGIN_WATCH,
+            reasonRaw = GapReason.SilenceSuppressed.raw,
+        )
+        val duplicateSkip = GapMeta(
+            firstMissingSequence = 100u,
+            missingFrameCount = 5_000u,
+            firstMissingSampleIndex = 100uL * 320u,
+            origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+        )
+        val segment = meta("seg-duplicate-quiet", 0L, gaps = listOf(quiet, duplicateSkip))
+
+        assertEquals(0L, totalGapMs(segment))
+        assertEquals(null, gapSummary(segment))
+        assertEquals(2, quietGaps(segment).size)
+        assertTrue(visibleLossGaps(segment).isEmpty())
+    }
+
+    @Test
+    fun unrelatedSequenceSkipStillCountsAsMissing() {
+        val quiet = GapMeta(
+            firstMissingSequence = 100u,
+            missingFrameCount = 5_000u,
+            firstMissingSampleIndex = 100uL * 320u,
+            origin = GapMeta.ORIGIN_WATCH,
+            reasonRaw = GapReason.SilenceSuppressed.raw,
+        )
+        val realSkip = GapMeta(
+            firstMissingSequence = 6_000u,
+            missingFrameCount = 50u,
+            firstMissingSampleIndex = 6_000uL * 320u,
+            origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+        )
+        val segment = meta("seg-real-skip", 0L, gaps = listOf(quiet, realSkip))
+
+        assertEquals(1_000L, totalGapMs(segment))
+        assertEquals(listOf(realSkip), visibleLossGaps(segment))
+        assertTrue(gapSummary(segment)?.contains("phone briefly missed audio") == true)
+    }
+
+    @Test
     fun deniedMismatchExplainsForeignReceiver() {
         val status = statusUiModel(
             ReceiverSessionState.Denied(AuthStatus.DeniedMismatch.raw),

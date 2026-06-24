@@ -108,6 +108,27 @@ class SegmentWaveformBuilderTest {
     }
 
     @Test
+    fun duplicateSequenceSkipCoveredBySilenceProducesNoGapMarker() = runTest {
+        val stored = frames(50) + frames(50, firstSequence = 150u)
+        val quiet = GapMeta(
+            firstMissingSequence = 50u,
+            missingFrameCount = 100u,
+            firstMissingSampleIndex = 50uL * 320u,
+            origin = GapMeta.ORIGIN_WATCH,
+            reasonRaw = GapReason.SilenceSuppressed.raw,
+        )
+        val duplicateSkip = GapMeta(
+            firstMissingSequence = 50u,
+            missingFrameCount = 100u,
+            firstMissingSampleIndex = 50uL * 320u,
+            origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+        )
+        val builder = SegmentWaveformBuilder(decoder = decoder, maxBars = 10)
+        val wave = builder.build(meta(frameCount = 100, gaps = listOf(quiet, duplicateSkip))) { stored }
+        assertTrue(wave.gapMarkers.isEmpty())
+    }
+
+    @Test
     fun openSegmentRebuildsOnlyAfterEnoughNewAudio() = runTest {
         val builder = SegmentWaveformBuilder(decoder = decoder, minRebuildDeltaFrames = 500)
         var reads = 0

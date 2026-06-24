@@ -126,9 +126,9 @@ class SegmentWaveformBuilder(
     ): SegmentGapMarker? {
         if (frames.isEmpty()) return null
         // Silence-suppressed spans are known-quiet audio the watch skipped, not loss: the stored
-        // audio simply continues across them, so they get no marker. Drawing one would imply
-        // something went wrong where the watch was only saving power during quiet.
-        if (GapReason.fromRaw(gap.reasonRaw ?: -1)?.isSilence == true) return null
+        // audio simply continues across them, so they get no marker. Also hide a duplicate
+        // receiver-synthesized skip if it covers the same range as a watch-reported silence span.
+        if (isKnownQuietGap(gap, meta.gaps)) return null
         var low = 0
         var high = frames.size
         while (low < high) {
@@ -139,5 +139,17 @@ class SegmentWaveformBuilder(
             fraction = low.toFloat() / frames.size,
             approxDurationMs = gap.missingFrameCount.toLong() * meta.frameDurationMs,
         )
+    }
+
+    private fun isKnownQuietGap(gap: GapMeta, allGaps: List<GapMeta>): Boolean {
+        if (GapReason.fromRaw(gap.reasonRaw ?: -1)?.isSilence == true) return true
+        if (gap.origin != GapMeta.ORIGIN_SEQUENCE_SKIP) return false
+        val gapStart = gap.firstMissingSequence
+        val gapEnd = gapStart + gap.missingFrameCount
+        return allGaps.any { candidate ->
+            GapReason.fromRaw(candidate.reasonRaw ?: -1)?.isSilence == true &&
+                candidate.firstMissingSequence <= gapStart &&
+                candidate.firstMissingSequence + candidate.missingFrameCount >= gapEnd
+        }
     }
 }
