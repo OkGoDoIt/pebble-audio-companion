@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 data class AudioCompanionDiagnostics(
     val segmentCount: Int = 0,
@@ -366,41 +367,52 @@ class AudioCompanionRuntime(
 
     private suspend fun runTranscriptionLoop() {
         while (true) {
-            // Segments parked while no provider was usable become eligible again the moment
-            // one is (model downloaded, key added, mode changed).
-            if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) {
-                refreshDiagnostics()
-            }
-            enqueueClosedSegmentsForTranscription()
-            var processed = false
-            while (transcriptionProcessor.processNext() != null) {
-                processed = true
-                refreshDiagnostics()
-            }
-            // Row titles/summaries follow transcription (MVP requirement). The worker is a
-            // no-op when AI is not configured; rows then show transcript snippets instead.
-            if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
-                refreshDiagnostics()
-            }
-            // Live preview of the open segment, after the durable closed-segment work (same
-            // loop, so a possibly single-instance native model is never used concurrently).
-            liveTranscriber?.let { live ->
-                if (live.processOnce()) processed = true
-                live.prune { segmentId -> transcriptStore.load(segmentId) != null }
-            }
-            exportClosedSegmentsIfEnabled()
-            // Sleep until the poll interval elapses, a failed task's backoff expires, or a
-            // config change (model downloaded, key/mode/consent changed) wakes the loop.
-            val sleepMs = when {
-                processed -> 1_000L
-                // While recording, wake often enough that the live preview feels live.
-                store.openSegmentId != null && liveTranscriber != null -> LIVE_PREVIEW_POLL_MS
-                else -> {
-                    val retryInMs = transcriptionProcessor.nextRetryAtMs()?.let { it - nowMs() }
-                    retryInMs?.coerceIn(1_000L, TRANSCRIPTION_POLL_MS) ?: TRANSCRIPTION_POLL_MS
-                }
+            val sleepMs = try {
+                runTranscriptionPass()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                logBackgroundFailure("transcription loop", t)
+                TRANSCRIPTION_FAILURE_BACKOFF_MS
             }
             withTimeoutOrNull(sleepMs) { transcriptionWakeups.receive() }
+        }
+    }
+
+    private suspend fun runTranscriptionPass(): Long {
+        // Segments parked while no provider was usable become eligible again the moment
+        // one is (model downloaded, key added, mode changed).
+        if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) {
+            refreshDiagnostics()
+        }
+        enqueueClosedSegmentsForTranscription()
+        var processed = false
+        while (transcriptionProcessor.processNext() != null) {
+            processed = true
+            refreshDiagnostics()
+        }
+        // Row titles/summaries follow transcription (MVP requirement). The worker is a
+        // no-op when AI is not configured; rows then show transcript snippets instead.
+        if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
+            refreshDiagnostics()
+        }
+        // Live preview of the open segment, after the durable closed-segment work (same
+        // loop, so a possibly single-instance native model is never used concurrently).
+        liveTranscriber?.let { live ->
+            if (live.processOnce()) processed = true
+            live.prune { segmentId -> transcriptStore.load(segmentId) != null }
+        }
+        exportClosedSegmentsIfEnabled()
+        // Sleep until the poll interval elapses, a failed task's backoff expires, or a
+        // config change (model downloaded, key/mode/consent changed) wakes the loop.
+        return when {
+            processed -> 1_000L
+            // While recording, wake often enough that the live preview feels live.
+            store.openSegmentId != null && liveTranscriber != null -> LIVE_PREVIEW_POLL_MS
+            else -> {
+                val retryInMs = transcriptionProcessor.nextRetryAtMs()?.let { it - nowMs() }
+                retryInMs?.coerceIn(1_000L, TRANSCRIPTION_POLL_MS) ?: TRANSCRIPTION_POLL_MS
+            }
         }
     }
 
@@ -430,6 +442,7 @@ class AudioCompanionRuntime(
     companion object {
         private const val TRANSCRIPTION_POLL_MS = 30_000L
         private const val LIVE_PREVIEW_POLL_MS = 5_000L
+        private const val TRANSCRIPTION_FAILURE_BACKOFF_MS = 5_000L
 
         fun segmentTranscriptionState(state: TaskState): SegmentTranscriptionState = when (state) {
             TaskState.Pending -> SegmentTranscriptionState.Pending

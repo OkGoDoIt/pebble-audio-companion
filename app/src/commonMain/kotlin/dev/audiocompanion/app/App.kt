@@ -46,6 +46,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 
 enum class AppTab(val label: String) {
@@ -158,50 +159,60 @@ fun App(
         var durableContent by remember { mutableStateOf(DurableContentSnapshot()) }
         LaunchedEffect(currentDiagnostics, tab, currentLivePreviews) {
             val previousAiOutputs = durableContent.aiOutputs
-            durableContent = withContext(Dispatchers.Default) {
-                val snapshotNow = Clock.System.now().toEpochMilliseconds()
-                val loadedSegments = actions.loadSegments()
-                val contentSegments = when (tab) {
-                    AppTab.Today -> loadedSegments.filter {
-                        it.isOpen || it.receivedAtMs >= snapshotNow - TODAY_CONTENT_WINDOW_MS
+            try {
+                durableContent = withContext(Dispatchers.Default) {
+                    val snapshotNow = Clock.System.now().toEpochMilliseconds()
+                    val loadedSegments = actions.loadSegments()
+                    val contentSegments = when (tab) {
+                        AppTab.Today -> loadedSegments.filter {
+                            it.isOpen || it.receivedAtMs >= snapshotNow - TODAY_CONTENT_WINDOW_MS
+                        }
+                        AppTab.Settings -> emptyList()
+                        AppTab.Library, AppTab.Ai -> loadedSegments
                     }
-                    AppTab.Settings -> emptyList()
-                    AppTab.Library, AppTab.Ai -> loadedSegments
+                    val transcriptsMap = contentSegments.associate {
+                        it.segmentId to actions.loadTranscript(it.segmentId)
+                    }
+                    val livePreviewsMap = contentSegments.associate {
+                        it.segmentId to (
+                            currentLivePreviews[it.segmentId]
+                                ?: actions.loadLiveTranscriptPreview(it.segmentId)
+                            )
+                    }
+                    val liveTranscriptsMap = contentSegments.associate {
+                        it.segmentId to (
+                            livePreviewsMap[it.segmentId]?.text
+                                ?: actions.loadLiveTranscript(it.segmentId)
+                            )
+                    }
+                    val annotationsMap = contentSegments.associate {
+                        it.segmentId to actions.loadAnnotation(it.segmentId)
+                    }
+                    val timeline = buildTimeline(
+                        segments = loadedSegments,
+                        transcriptOf = { transcriptsMap[it] },
+                        nowMs = snapshotNow,
+                        annotationOf = { annotationsMap[it] },
+                        liveTextOf = { liveTranscriptsMap[it] },
+                    )
+                    DurableContentSnapshot(
+                        segments = loadedSegments,
+                        transcripts = transcriptsMap,
+                        liveTranscripts = liveTranscriptsMap,
+                        livePreviews = livePreviewsMap,
+                        annotations = annotationsMap,
+                        aiOutputs = if (tab == AppTab.Ai) {
+                            actions.loadAiOutputs()
+                        } else {
+                            previousAiOutputs
+                        },
+                        todayTimeline = timeline,
+                    )
                 }
-                val transcriptsMap = contentSegments.associate {
-                    it.segmentId to actions.loadTranscript(it.segmentId)
-                }
-                val livePreviewsMap = contentSegments.associate {
-                    it.segmentId to (
-                        currentLivePreviews[it.segmentId]
-                            ?: actions.loadLiveTranscriptPreview(it.segmentId)
-                        )
-                }
-                val liveTranscriptsMap = contentSegments.associate {
-                    it.segmentId to (
-                        livePreviewsMap[it.segmentId]?.text
-                            ?: actions.loadLiveTranscript(it.segmentId)
-                        )
-                }
-                val annotationsMap = contentSegments.associate {
-                    it.segmentId to actions.loadAnnotation(it.segmentId)
-                }
-                val timeline = buildTimeline(
-                    segments = loadedSegments,
-                    transcriptOf = { transcriptsMap[it] },
-                    nowMs = snapshotNow,
-                    annotationOf = { annotationsMap[it] },
-                    liveTextOf = { liveTranscriptsMap[it] },
-                )
-                DurableContentSnapshot(
-                    segments = loadedSegments,
-                    transcripts = transcriptsMap,
-                    liveTranscripts = liveTranscriptsMap,
-                    livePreviews = livePreviewsMap,
-                    annotations = annotationsMap,
-                    aiOutputs = if (tab == AppTab.Ai) actions.loadAiOutputs() else previousAiOutputs,
-                    todayTimeline = timeline,
-                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                logBackgroundFailure("durable content reload", t)
             }
         }
         val segments = durableContent.segments
