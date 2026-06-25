@@ -25,8 +25,15 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_17)
         }
     }
-    iosArm64()
-    iosSimulatorArm64()
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        target.compilations.getByName("main") {
+            cinterops {
+                create("osmemory") {
+                    defFile("src/nativeInterop/cinterop/osmemory.def")
+                }
+            }
+        }
+    }
 
     sourceSets {
         val mobileMain by creating {

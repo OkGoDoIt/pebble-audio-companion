@@ -1,0 +1,12 @@
+package = osmemory
+---
+#include <os/proc.h>
+#include <stddef.h>
+
+// os_proc_available_memory() (os/proc.h, iOS 13+) is not exposed by the Kotlin/Native platform
+// bindings, so wrap it. It returns the number of bytes this process can still allocate before iOS
+// terminates it for memory pressure (jetsam) -- the correct per-process budget for gating heavy
+// local transcription. The symbol links from libSystem, which every app already links.
+static inline size_t audiocompanion_available_memory_bytes(void) {
+    return os_proc_available_memory();
+}
