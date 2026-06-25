@@ -98,8 +98,39 @@ class TranscriptFormattingTest {
         assertEquals(2, items.size)
         val gap = items[0] as TranscriptTimelineItem.Pause
         assertEquals(true, gap.missing)
-        assertEquals("audio interrupted for 10 sec", gap.label)
+        assertEquals("audio interrupted for 10 sec (phone briefly missed audio)", gap.label)
         assertTrue(items[1] is TranscriptTimelineItem.Speech)
+    }
+
+    @Test
+    fun transcriptTimelineItemsShowSeveralReasonsWhenLossReasonsCollapseTogether() {
+        val items = transcriptTimelineItems(
+            meta = testMeta(
+                gaps = listOf(
+                    GapMeta(
+                        firstMissingSequence = 0u,
+                        missingFrameCount = 100u,
+                        firstMissingSampleIndex = 0uL,
+                        origin = GapMeta.ORIGIN_WATCH,
+                        reasonRaw = GapReason.MicConflict.raw,
+                    ),
+                    GapMeta(
+                        firstMissingSequence = 100u,
+                        missingFrameCount = 100u,
+                        firstMissingSampleIndex = 32_000uL,
+                        origin = GapMeta.ORIGIN_WATCH,
+                        reasonRaw = GapReason.TransportReset.raw,
+                    ),
+                ),
+            ),
+            segments = listOf(
+                TranscriptSegment("back after interruptions", startMs = 6_000, endMs = 8_000),
+            ),
+        )
+
+        val pause = items.first() as TranscriptTimelineItem.Pause
+        assertEquals(true, pause.missing)
+        assertEquals("audio interrupted for 4 sec (several reasons)", pause.label)
     }
 
     @Test

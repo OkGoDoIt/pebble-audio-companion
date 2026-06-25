@@ -230,6 +230,54 @@ class StatusUiTest {
     }
 
     @Test
+    fun gapReasonBreakdownGroupsVisibleLossAndIgnoresQuiet() {
+        val segment = meta(
+            "seg-breakdown",
+            0L,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 1u,
+                    missingFrameCount = 100u,
+                    firstMissingSampleIndex = 320uL,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.MicConflict.raw,
+                ),
+                GapMeta(
+                    firstMissingSequence = 200u,
+                    missingFrameCount = 50u,
+                    firstMissingSampleIndex = 200uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.TransportReset.raw,
+                ),
+                GapMeta(
+                    firstMissingSequence = 300u,
+                    missingFrameCount = 100u,
+                    firstMissingSampleIndex = 300uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.MicConflict.raw,
+                ),
+                GapMeta(
+                    firstMissingSequence = 500u,
+                    missingFrameCount = 5_000u,
+                    firstMissingSampleIndex = 500uL * 320u,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.SilenceSuppressed.raw,
+                ),
+            ),
+        )
+
+        val breakdown = gapReasonBreakdown(segment)
+
+        assertEquals(2, breakdown.size)
+        assertEquals("watch dictation used the mic", breakdown[0].reason)
+        assertEquals(2, breakdown[0].count)
+        assertEquals(4_000, breakdown[0].durationMs)
+        assertEquals("connection was interrupted", breakdown[1].reason)
+        assertEquals(1, breakdown[1].count)
+        assertEquals(1_000, breakdown[1].durationMs)
+    }
+
+    @Test
     fun duplicateSequenceSkipCoveredBySuppressedSilenceIsQuiet() {
         val quiet = GapMeta(
             firstMissingSequence = 100u,
