@@ -27,6 +27,7 @@ import dev.audiocompanion.transport.ReceiverResumeStore
 import dev.audiocompanion.transport.SegmentCloseReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -154,6 +156,13 @@ class AudioCompanionRuntime(
     private val foreground = MutableStateFlow(true)
 
     /**
+     * True while a sanctioned background catch-up burst ([runCatchUpBurst]) holds the local model.
+     * The suppressed background loop checks this so it does not release the model out from under an
+     * in-progress burst.
+     */
+    private val backgroundCatchUpActive = MutableStateFlow(false)
+
+    /**
      * Switches the processing policy. Receiving is unaffected. On entering the background it stops
      * decoding the live waveform, releases the local model promptly (interrupting any in-flight
      * inference), and wakes the loop so it begins deferring; on returning to the foreground it
@@ -173,6 +182,41 @@ class AudioCompanionRuntime(
     /** Releases the resident local transcription model now (e.g. on a system memory warning). */
     suspend fun releaseLocalModel(reason: String) {
         localTranscriptionLifecycle?.releaseModel(reason)
+    }
+
+    /**
+     * Bounded, opportunistic catch-up for an iOS BGProcessingTask window, where the app is
+     * legitimately awake (unlike a ~10s Core Bluetooth wake). Transcribes up to [maxSegments] queued
+     * segments, then releases the local model. Each step is still gated by the per-process memory
+     * guard, so it defers rather than risks a kill when the budget is tight, and it is fully
+     * cancellable — the BGProcessing expiration handler cancels it cleanly. Returns the number of
+     * tasks advanced.
+     *
+     * No-op in the foreground: the normal processing loop already drains the queue there, and
+     * skipping avoids two concurrent `processNext` callers.
+     */
+    suspend fun runCatchUpBurst(maxSegments: Int = BACKGROUND_CATCHUP_MAX_SEGMENTS): Int {
+        if (foreground.value) return 0
+        backgroundCatchUpActive.value = true
+        try {
+            recoverDurableStateIfNeeded()
+            if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) {
+                refreshDiagnostics()
+            }
+            enqueueClosedSegmentsForTranscription()
+            var processed = 0
+            while (processed < maxSegments && transcriptionProcessor.processNext() != null) {
+                processed += 1
+                refreshDiagnostics()
+            }
+            return processed
+        } finally {
+            // Never leave the model resident after a background burst, even on cancellation.
+            withContext(NonCancellable) {
+                localTranscriptionLifecycle?.releaseModel("background catch-up")
+            }
+            backgroundCatchUpActive.value = false
+        }
     }
 
     fun recoverDurableState() {
@@ -447,8 +491,11 @@ class AudioCompanionRuntime(
             // Background: receive-only. Defer all heavy processing (local STT, live preview, AI
             // enrichment, WAV export) and release the local model so a ~10s Bluetooth wake stays
             // cheap and the app is not a jetsam target. Pending segments stay queued and are
-            // transcribed when the app returns to the foreground.
-            localTranscriptionLifecycle?.releaseModel("background")
+            // transcribed when the app returns to the foreground (or in a BGProcessing catch-up
+            // burst). Yield the model to an in-progress burst instead of releasing it under it.
+            if (!backgroundCatchUpActive.value) {
+                localTranscriptionLifecycle?.releaseModel("background")
+            }
             return BACKGROUND_PROCESSING_SLEEP_MS
         }
         // Segments parked while no provider was usable become eligible again the moment
@@ -526,6 +573,12 @@ class AudioCompanionRuntime(
 
         /** Release the resident local model after this much foreground idle time. */
         private const val LOCAL_MODEL_IDLE_TIMEOUT_MS = 30_000L
+
+        /**
+         * Cap on segments transcribed per BGProcessing catch-up burst. Keeps a single background
+         * window bounded; anything not reached stays queued for the next window or the foreground.
+         */
+        const val BACKGROUND_CATCHUP_MAX_SEGMENTS = 10
 
         fun segmentTranscriptionState(state: TaskState): SegmentTranscriptionState = when (state) {
             TaskState.Pending -> SegmentTranscriptionState.Pending

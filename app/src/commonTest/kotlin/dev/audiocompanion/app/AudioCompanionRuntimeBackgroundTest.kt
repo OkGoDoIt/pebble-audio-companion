@@ -26,6 +26,7 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.files.SystemTemporaryDirectory
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -143,6 +144,30 @@ class AudioCompanionRuntimeBackgroundTest {
         assertTrue(
             lifecycle.idleChecks > 0,
             "expected the foreground loop to evaluate idle model release",
+        )
+    }
+
+    @Test
+    fun catchUpBurstIsSkippedInForeground() = runTest {
+        val (runtime, lifecycle) = newRuntime()
+        // Default policy is foreground; the normal loop owns catch-up there.
+        val processed = runtime.runCatchUpBurst()
+
+        assertEquals(0, processed)
+        assertFalse(lifecycle.releaseReasons.contains("background catch-up"))
+    }
+
+    @Test
+    fun catchUpBurstRunsAndReleasesModelWhenBackgrounded() = runTest {
+        val (runtime, lifecycle) = newRuntime()
+        runtime.setForeground(false)
+
+        val processed = runtime.runCatchUpBurst()
+
+        assertEquals(0, processed) // empty queue
+        assertTrue(
+            lifecycle.releaseReasons.contains("background catch-up"),
+            "expected the burst to release the model afterward; got ${lifecycle.releaseReasons}",
         )
     }
 }

@@ -125,7 +125,12 @@ object IosAudioCompanionBootstrap {
         maintenanceJob?.cancel()
         maintenanceJob = scope.launch {
             try {
-                ensureHandle().runtime.runBackgroundMaintenance()
+                val handle = ensureHandle()
+                handle.runtime.runBackgroundMaintenance()
+                // The BGProcessing window keeps us awake, so opportunistically catch up a bounded,
+                // memory-gated batch of pending transcriptions. No-op in the foreground or when the
+                // per-process memory budget is tight. Cancelled cleanly by the expiration handler.
+                handle.runtime.runCatchUpBurst()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (t: Throwable) {
