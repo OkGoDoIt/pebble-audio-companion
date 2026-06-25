@@ -31,6 +31,12 @@ class OpenAiTranscriptionProvider(
     private val apiKey: () -> String?,
     private val cloudConsent: () -> Boolean,
     private val model: () -> String = { DEFAULT_MODEL },
+    /**
+     * When true, transcription is routed through the diarization model
+     * ([DIARIZE_MODEL], `diarized_json`) so segments carry a `speaker`. This overrides [model],
+     * since only the diarize model returns speaker labels. The tradeoff is no word-level timings.
+     */
+    private val diarizationEnabled: () -> Boolean = { false },
     private val endpointUrl: String = DEFAULT_ENDPOINT_URL,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
 ) : TranscriptionProvider {
@@ -105,10 +111,19 @@ class OpenAiTranscriptionProvider(
         return TranscriptionResult(
             text = text,
             providerId = id,
-            modelUsed = model(),
+            modelUsed = effectiveModel(),
             segments = transcripts.flatMap { it.segments },
             words = transcripts.flatMap { it.words },
         )
+    }
+
+    /** The diarize model takes precedence when diarization is on; only it returns speakers. */
+    private fun effectiveModel(): String = if (diarizationEnabled()) DIARIZE_MODEL else model()
+
+    private fun responseFormat(model: String): String = when (model) {
+        DIARIZE_MODEL -> "diarized_json"
+        "whisper-1" -> "verbose_json"
+        else -> "json"
     }
 
     private suspend fun uploadChunk(
@@ -127,16 +142,16 @@ class OpenAiTranscriptionProvider(
                 "WAV upload chunk ${wav.size} exceeds $maxUploadBytes byte limit",
             )
         }
+        val modelValue = effectiveModel()
+        val format = responseFormat(modelValue)
         val response: HttpResponse = client.post(endpointUrl) {
             header(HttpHeaders.Authorization, "Bearer $key")
-            val modelValue = model()
-            val wantsTimestamps = supportsVerboseTimestamps(modelValue)
             setBody(
                 MultiPartFormDataContent(
                     formData {
                         append("model", modelValue)
-                        append("response_format", if (wantsTimestamps) "verbose_json" else "json")
-                        if (wantsTimestamps) {
+                        append("response_format", format)
+                        if (format == "verbose_json") {
                             append("timestamp_granularities[]", "segment")
                             append("timestamp_granularities[]", "word")
                         }
@@ -161,13 +176,17 @@ class OpenAiTranscriptionProvider(
                 "OpenAI transcription failed (${response.status.value}): ${body.take(240)}",
             )
         }
-        return if (supportsVerboseTimestamps(model())) {
-            json.decodeFromString(OpenAiVerboseTranscriptionResponse.serializer(), body)
-                .toChunkResult(chunkStartMs)
-        } else {
-            OpenAiChunkResult(
-                text = json.decodeFromString(OpenAiTranscriptionResponse.serializer(), body).text,
-            )
+        return when (format) {
+            "verbose_json" ->
+                json.decodeFromString(OpenAiVerboseTranscriptionResponse.serializer(), body)
+                    .toChunkResult(chunkStartMs)
+            "diarized_json" ->
+                json.decodeFromString(OpenAiDiarizedTranscriptionResponse.serializer(), body)
+                    .toChunkResult(chunkStartMs)
+            else ->
+                OpenAiChunkResult(
+                    text = json.decodeFromString(OpenAiTranscriptionResponse.serializer(), body).text,
+                )
         }
     }
 
@@ -205,6 +224,35 @@ class OpenAiTranscriptionProvider(
     }
 
     @Serializable
+    private data class OpenAiDiarizedTranscriptionResponse(
+        val text: String = "",
+        val segments: List<OpenAiDiarizedSegment> = emptyList(),
+    ) {
+        fun toChunkResult(offsetMs: Long): OpenAiChunkResult =
+            OpenAiChunkResult(
+                text = text,
+                segments = segments.mapNotNull { segment ->
+                    val cleaned = segment.text.trim()
+                    if (cleaned.isBlank()) return@mapNotNull null
+                    TranscriptSegment(
+                        text = cleaned,
+                        startMs = offsetMs + (segment.start * 1_000).roundToLong(),
+                        endMs = offsetMs + (segment.end * 1_000).roundToLong(),
+                        speaker = segment.speaker,
+                    )
+                },
+            )
+    }
+
+    @Serializable
+    private data class OpenAiDiarizedSegment(
+        val text: String = "",
+        val start: Double = 0.0,
+        val end: Double = 0.0,
+        val speaker: String? = null,
+    )
+
+    @Serializable
     private data class OpenAiTimedText(
         val text: String = "",
         val start: Double = 0.0,
@@ -224,15 +272,15 @@ class OpenAiTranscriptionProvider(
         val words: List<TranscriptWord> = emptyList(),
     )
 
-    private fun supportsVerboseTimestamps(model: String): Boolean =
-        model == "whisper-1"
-
     private fun ByteArray.durationMs(sampleRateHz: Int): Long =
         (size / BYTES_PER_SAMPLE.toDouble() / sampleRateHz * 1_000).roundToLong()
 
     companion object {
         const val DEFAULT_ENDPOINT_URL = "https://api.openai.com/v1/audio/transcriptions"
         const val DEFAULT_MODEL = "gpt-4o-mini-transcribe"
+
+        /** OpenAI's speaker-diarization model; returns `diarized_json` with per-segment speakers. */
+        const val DIARIZE_MODEL = "gpt-4o-transcribe-diarize"
         private const val WAV_HEADER_BYTES = 44
         private const val BYTES_PER_SAMPLE = 2
         private const val DEFAULT_MAX_UPLOAD_BYTES = 24_000_000

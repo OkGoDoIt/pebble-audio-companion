@@ -134,6 +134,50 @@ class OpenAiTranscriptionProviderTest {
     }
 
     @Test
+    fun diarizationUsesDiarizeModelAndParsesSpeakers() = runTest {
+        lateinit var request: HttpRequestData
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler {
+                    request = it
+                    respond(
+                        content = ByteReadChannel(
+                            """
+                            {
+                              "text": "hi there",
+                              "segments": [
+                                {"type":"transcript.text.segment","id":"s0","start":0.0,"end":1.0,
+                                 "text":"hi","speaker":"agent"},
+                                {"type":"transcript.text.segment","id":"s1","start":1.0,"end":2.0,
+                                 "text":"there","speaker":"customer"}
+                              ]
+                            }
+                            """.trimIndent(),
+                        ),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }
+        }
+        val provider = OpenAiTranscriptionProvider(
+            client = client,
+            apiKey = { "test-key" },
+            cloudConsent = { true },
+            model = { "gpt-4o-mini-transcribe" }, // overridden by diarization
+            diarizationEnabled = { true },
+        )
+
+        val result = provider.transcribe(flowOf(ByteArray(640) { 1 }), 16_000)
+
+        assertEquals("hi there", result.text)
+        assertEquals("gpt-4o-transcribe-diarize", result.modelUsed)
+        assertEquals(listOf("agent", "customer"), result.segments.map { it.speaker })
+        assertEquals(0L, result.segments.first().startMs)
+        assertEquals(2_000L, result.segments.last().endMs)
+    }
+
+    @Test
     fun wavEncoderWritesExpectedHeader() {
         val wav = PcmWav.encodeMono16(byteArrayOf(1, 2, 3, 4), 16_000)
 
