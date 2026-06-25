@@ -94,6 +94,16 @@ object IosAudioCompanionBootstrap {
         scope.launch { ensureHandle().runtime.releaseLocalModel("memory warning") }
     }
 
+    /**
+     * iOS handed us background URL session events (an upload finished while suspended). Store the
+     * system completion handler and ensure the runtime is up so its upload coordinator reconnects
+     * to the session and processes the delivered outcomes.
+     */
+    fun handleBackgroundUrlSessionEvents(completion: () -> Unit) {
+        IosBackgroundUploader.shared.backgroundEventsCompletion = completion
+        scope.launch { ensureHandle().startReceiver() }
+    }
+
     fun startReceiver() {
         scope.launch {
             val handle = ensureHandle()

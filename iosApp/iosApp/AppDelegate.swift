@@ -40,6 +40,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         IosAudioCompanionBootstrap.shared.applicationDidReceiveMemoryWarning()
     }
 
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        // A background transcription upload finished while suspended. Let the runtime reconnect to
+        // the session and process the outcome; call the system handler when events have drained.
+        IosAudioCompanionBootstrap.shared.handleBackgroundUrlSessionEvents(completion: completionHandler)
+    }
+
     private func handleProcessingTask(_ task: BGTask) {
         // Always chain the next opportunity first.
         scheduleProcessingTask()
