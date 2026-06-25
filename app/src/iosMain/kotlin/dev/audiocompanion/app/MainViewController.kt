@@ -264,8 +264,20 @@ fun MainViewController(): UIViewController {
                     settings.setCloudTranscriptionConsent(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
+                setCloudTranscriptionProvider = {
+                    settings.setCloudTranscriptionProvider(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
                 setOpenAiApiKey = {
                     settings.setOpenAiApiKey(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
+                setSonioxApiKey = {
+                    settings.setSonioxApiKey(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
+                setDiarizationEnabled = {
+                    settings.setDiarizationEnabled(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
                 setAiMode = settings::setAiMode,

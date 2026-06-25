@@ -2,6 +2,7 @@ package dev.audiocompanion.app
 
 import android.content.Context
 import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,8 +36,20 @@ class AndroidAudioCompanionSettingsRepository(
         update { it.copy(cloudTranscriptionConsent = consented) }
     }
 
+    override fun setCloudTranscriptionProvider(provider: CloudProvider) {
+        update { it.copy(cloudTranscriptionProvider = provider) }
+    }
+
     override fun setOpenAiApiKey(apiKey: String) {
         update { it.copy(openAiApiKey = apiKey.trim()) }
+    }
+
+    override fun setSonioxApiKey(apiKey: String) {
+        update { it.copy(sonioxApiKey = apiKey.trim()) }
+    }
+
+    override fun setDiarizationEnabled(enabled: Boolean) {
+        update { it.copy(diarizationEnabled = enabled) }
     }
 
     override fun setAiMode(mode: AiProcessingMode) {
@@ -76,7 +89,13 @@ class AndroidAudioCompanionSettingsRepository(
             .byId(prefs.getString(KEY_LOCAL_TRANSCRIPTION_MODEL, null).orEmpty())
             .id,
         cloudTranscriptionConsent = prefs.getBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, false),
+        cloudTranscriptionProvider = enumValueOrDefault(
+            prefs.getString(KEY_CLOUD_PROVIDER, null),
+            CloudProvider.OpenAi,
+        ),
         openAiApiKey = prefs.getString(KEY_OPENAI_API_KEY, null).orEmpty(),
+        sonioxApiKey = prefs.getString(KEY_SONIOX_API_KEY, null).orEmpty(),
+        diarizationEnabled = prefs.getBoolean(KEY_DIARIZATION_ENABLED, false),
         aiMode = enumValueOrDefault(prefs.getString(KEY_AI_MODE, null), AiProcessingMode.LocalOnly),
         remoteAiConsent = prefs.getBoolean(KEY_REMOTE_AI_CONSENT, false),
         automaticWavExportEnabled = prefs.getBoolean(KEY_AUTOMATIC_WAV_EXPORT, false),
@@ -91,7 +110,10 @@ class AndroidAudioCompanionSettingsRepository(
             .putString(KEY_TRANSCRIPTION_MODE, settings.transcriptionMode.name)
             .putString(KEY_LOCAL_TRANSCRIPTION_MODEL, settings.localTranscriptionModelId)
             .putBoolean(KEY_CLOUD_TRANSCRIPTION_CONSENT, settings.cloudTranscriptionConsent)
+            .putString(KEY_CLOUD_PROVIDER, settings.cloudTranscriptionProvider.name)
             .putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
+            .putString(KEY_SONIOX_API_KEY, settings.sonioxApiKey)
+            .putBoolean(KEY_DIARIZATION_ENABLED, settings.diarizationEnabled)
             .putString(KEY_AI_MODE, settings.aiMode.name)
             .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
             .putBoolean(KEY_AUTOMATIC_WAV_EXPORT, settings.automaticWavExportEnabled)
@@ -110,7 +132,10 @@ class AndroidAudioCompanionSettingsRepository(
         private const val KEY_TRANSCRIPTION_MODE = "transcription_mode"
         private const val KEY_LOCAL_TRANSCRIPTION_MODEL = "local_transcription_model"
         private const val KEY_CLOUD_TRANSCRIPTION_CONSENT = "cloud_transcription_consent"
+        private const val KEY_CLOUD_PROVIDER = "cloud_transcription_provider"
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
+        private const val KEY_SONIOX_API_KEY = "soniox_api_key"
+        private const val KEY_DIARIZATION_ENABLED = "diarization_enabled"
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_AUTOMATIC_WAV_EXPORT = "automatic_wav_export"

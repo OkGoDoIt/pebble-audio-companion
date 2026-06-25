@@ -6,6 +6,7 @@ import dev.audiocompanion.ai.AiPromptTemplate
 import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptionMode
 
@@ -67,7 +68,10 @@ class AppActions(
     val setTranscriptionMode: (TranscriptionMode) -> Unit = {},
     val setLocalTranscriptionModel: (String) -> Unit = {},
     val setCloudTranscriptionConsent: (Boolean) -> Unit = {},
+    val setCloudTranscriptionProvider: (CloudProvider) -> Unit = {},
     val setOpenAiApiKey: (String) -> Unit = {},
+    val setSonioxApiKey: (String) -> Unit = {},
+    val setDiarizationEnabled: (Boolean) -> Unit = {},
     val setAiMode: (AiProcessingMode) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
     val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},

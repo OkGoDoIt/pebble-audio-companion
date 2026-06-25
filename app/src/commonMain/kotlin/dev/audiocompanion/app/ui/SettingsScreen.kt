@@ -40,6 +40,7 @@ import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlinx.coroutines.launch
@@ -60,6 +61,7 @@ fun SettingsScreen(
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var showTranscriptionModePicker by remember { mutableStateOf(false) }
     var showLocalModelPicker by remember { mutableStateOf(false) }
+    var showCloudProviderPicker by remember { mutableStateOf(false) }
     var showAiModePicker by remember { mutableStateOf(false) }
     var supportReportText by remember { mutableStateOf<String?>(null) }
     var detailedDiagnosticsText by remember { mutableStateOf<String?>(null) }
@@ -239,6 +241,27 @@ fun SettingsScreen(
             checked = settings.cloudTranscriptionConsent,
             onCheckedChange = actions.setCloudTranscriptionConsent,
         )
+        ModePickerRow(
+            title = "Cloud provider",
+            value = cloudProviderLabel(settings.cloudTranscriptionProvider),
+            onClick = { showCloudProviderPicker = true },
+        )
+        if (settings.cloudTranscriptionProvider == CloudProvider.Soniox) {
+            OutlinedTextField(
+                value = settings.sonioxApiKey,
+                onValueChange = actions.setSonioxApiKey,
+                label = { Text("Soniox API key") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        SettingsToggleRow(
+            title = "Speaker labels",
+            subtitle = "Tag who is speaking (diarization) when the cloud provider supports it.",
+            checked = settings.diarizationEnabled,
+            onCheckedChange = actions.setDiarizationEnabled,
+        )
         HorizontalDivider()
 
         SectionTitle("AI")
@@ -389,6 +412,16 @@ fun SettingsScreen(
             onDismiss = { showLocalModelPicker = false },
         )
     }
+    if (showCloudProviderPicker) {
+        SingleChoiceDialog(
+            title = "Cloud provider",
+            options = CloudProvider.entries.map { it to cloudProviderLabel(it) },
+            descriptions = CloudProvider.entries.associateWith { cloudProviderDescription(it) },
+            selected = settings.cloudTranscriptionProvider,
+            onSelect = actions.setCloudTranscriptionProvider,
+            onDismiss = { showCloudProviderPicker = false },
+        )
+    }
     if (showAiModePicker) {
         SingleChoiceDialog(
             title = "AI mode",
@@ -399,6 +432,16 @@ fun SettingsScreen(
             onDismiss = { showAiModePicker = false },
         )
     }
+}
+
+fun cloudProviderLabel(provider: CloudProvider): String = when (provider) {
+    CloudProvider.OpenAi -> "OpenAI"
+    CloudProvider.Soniox -> "Soniox"
+}
+
+fun cloudProviderDescription(provider: CloudProvider): String = when (provider) {
+    CloudProvider.OpenAi -> "OpenAI Audio transcriptions (gpt-4o-transcribe). Uses the OpenAI API key."
+    CloudProvider.Soniox -> "Soniox async transcription (stt-async-v5). Uses the Soniox API key."
 }
 
 @Composable
