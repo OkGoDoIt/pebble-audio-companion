@@ -341,6 +341,40 @@ fun displayGapMs(meta: SegmentMeta): Long {
     }
 }
 
+data class GapReasonBreakdown(
+    val reason: String,
+    val count: Int,
+    val durationMs: Long,
+)
+
+/**
+ * Compact interruption diagnostics for detail screens. Durations are scaled down if stale
+ * metadata claims more loss than the segment can contain, matching [displayGapMs].
+ */
+fun gapReasonBreakdown(meta: SegmentMeta): List<GapReasonBreakdown> {
+    val lost = visibleLossGaps(meta)
+    if (lost.isEmpty()) return emptyList()
+    val rawTotalMs = lost.sumOf { gapDurationMs(it, meta.frameDurationMs) }
+    val displayTotalMs = displayGapMs(meta)
+    fun displayDuration(rawMs: Long): Long {
+        if (rawMs <= 0 || rawTotalMs <= 0 || displayTotalMs <= 0 || rawTotalMs <= displayTotalMs) {
+            return rawMs
+        }
+        return (rawMs * displayTotalMs / rawTotalMs).coerceAtLeast(1)
+    }
+    return lost
+        .groupBy { gapDescription(it) }
+        .map { (reason, gaps) ->
+            val rawMs = gaps.sumOf { gapDurationMs(it, meta.frameDurationMs) }
+            GapReasonBreakdown(
+                reason = reason,
+                count = gaps.size,
+                durationMs = displayDuration(rawMs),
+            )
+        }
+        .sortedWith(compareByDescending<GapReasonBreakdown> { it.durationMs }.thenBy { it.reason })
+}
+
 /**
  * One calm summary line for a segment's gaps, or null when there are none:
  * "Missing ~1m 20s (watch dictation used the mic)".

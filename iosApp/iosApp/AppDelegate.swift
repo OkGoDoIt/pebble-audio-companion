@@ -15,7 +15,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         ) { task in
             self.handleProcessingTask(task)
         }
-        IosAudioCompanionBootstrap.shared.applicationDidFinishLaunching()
+        // A Core Bluetooth restoration relaunch wakes the app directly into the background:
+        // didFinishLaunching runs but applicationDidEnterBackground does not. Pass the launch state
+        // so the runtime applies receive-only mode BEFORE it starts the receiver — otherwise it
+        // would run the full transcription pipeline during a background relaunch, the worst moment
+        // for a jetsam kill.
+        IosAudioCompanionBootstrap.shared.applicationDidFinishLaunching(
+            launchedInBackground: application.applicationState == .background
+        )
         scheduleProcessingTask()
         return true
     }
