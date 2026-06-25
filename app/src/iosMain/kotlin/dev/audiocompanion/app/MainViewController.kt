@@ -63,6 +63,7 @@ object IosAudioCompanionBootstrap {
     fun applicationWillEnterForeground() {
         scope.launch {
             val handle = ensureHandle()
+            handle.runtime.setForeground(true)
             handle.runtime.refreshDiagnostics()
             if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
                 handle.startReceiver()
@@ -73,10 +74,18 @@ object IosAudioCompanionBootstrap {
     fun applicationDidEnterBackground() {
         scope.launch {
             val handle = ensureHandle()
+            // Keep receiving in the background, but switch processing to receive-only so a short
+            // Core Bluetooth wake stays cheap and the app is not a jetsam target.
             if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
                 handle.startReceiver()
             }
+            handle.runtime.setForeground(false)
         }
+    }
+
+    /** iOS jetsam pre-warning: drop the resident local model immediately. */
+    fun applicationDidReceiveMemoryWarning() {
+        scope.launch { ensureHandle().runtime.releaseLocalModel("memory warning") }
     }
 
     fun startReceiver() {

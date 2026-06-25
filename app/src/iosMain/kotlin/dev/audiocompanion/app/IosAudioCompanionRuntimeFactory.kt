@@ -168,6 +168,7 @@ class IosAudioCompanionRuntimeFactory(
             desiredEnabled = {
                 settingsRepository.settings.value.backgroundReceiverEnabled
             },
+            localTranscriptionLifecycle = localProvider,
         )
     }
 
