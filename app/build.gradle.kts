@@ -56,6 +56,7 @@ kotlin {
         iosMain.dependencies {
             implementation(project(":adapter:ble-ios"))
             implementation(libs.ktor.client.darwin)
+            implementation(libs.ktor.client.websockets)
             implementation(libs.okio)
         }
     }

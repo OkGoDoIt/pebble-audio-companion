@@ -262,6 +262,13 @@ fun SettingsScreen(
             checked = settings.diarizationEnabled,
             onCheckedChange = actions.setDiarizationEnabled,
         )
+        SettingsToggleRow(
+            title = "Live cloud transcription",
+            subtitle = "Stream the open recording to Soniox in real time while the app is open. " +
+                "Closed segments still transcribe normally.",
+            checked = settings.cloudLiveTranscriptionEnabled,
+            onCheckedChange = actions.setCloudLiveTranscriptionEnabled,
+        )
         HorizontalDivider()
 
         SectionTitle("AI")

@@ -72,6 +72,7 @@ class AppActions(
     val setOpenAiApiKey: (String) -> Unit = {},
     val setSonioxApiKey: (String) -> Unit = {},
     val setDiarizationEnabled: (Boolean) -> Unit = {},
+    val setCloudLiveTranscriptionEnabled: (Boolean) -> Unit = {},
     val setAiMode: (AiProcessingMode) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
     val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},

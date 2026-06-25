@@ -290,6 +290,10 @@ fun MainViewController(): UIViewController {
                     settings.setDiarizationEnabled(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
+                setCloudLiveTranscriptionEnabled = {
+                    settings.setCloudLiveTranscriptionEnabled(it)
+                    runtime.notifyTranscriptionConfigChanged()
+                },
                 setAiMode = settings::setAiMode,
                 setRemoteAiConsent = settings::setRemoteAiConsent,
                 setAutomaticWavExportEnabled = {

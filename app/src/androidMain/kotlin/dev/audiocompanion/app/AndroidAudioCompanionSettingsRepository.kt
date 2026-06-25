@@ -52,6 +52,10 @@ class AndroidAudioCompanionSettingsRepository(
         update { it.copy(diarizationEnabled = enabled) }
     }
 
+    override fun setCloudLiveTranscriptionEnabled(enabled: Boolean) {
+        update { it.copy(cloudLiveTranscriptionEnabled = enabled) }
+    }
+
     override fun setAiMode(mode: AiProcessingMode) {
         update { it.copy(aiMode = mode) }
     }
@@ -96,6 +100,7 @@ class AndroidAudioCompanionSettingsRepository(
         openAiApiKey = prefs.getString(KEY_OPENAI_API_KEY, null).orEmpty(),
         sonioxApiKey = prefs.getString(KEY_SONIOX_API_KEY, null).orEmpty(),
         diarizationEnabled = prefs.getBoolean(KEY_DIARIZATION_ENABLED, false),
+        cloudLiveTranscriptionEnabled = prefs.getBoolean(KEY_CLOUD_LIVE_TRANSCRIPTION, false),
         aiMode = enumValueOrDefault(prefs.getString(KEY_AI_MODE, null), AiProcessingMode.LocalOnly),
         remoteAiConsent = prefs.getBoolean(KEY_REMOTE_AI_CONSENT, false),
         automaticWavExportEnabled = prefs.getBoolean(KEY_AUTOMATIC_WAV_EXPORT, false),
@@ -114,6 +119,7 @@ class AndroidAudioCompanionSettingsRepository(
             .putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
             .putString(KEY_SONIOX_API_KEY, settings.sonioxApiKey)
             .putBoolean(KEY_DIARIZATION_ENABLED, settings.diarizationEnabled)
+            .putBoolean(KEY_CLOUD_LIVE_TRANSCRIPTION, settings.cloudLiveTranscriptionEnabled)
             .putString(KEY_AI_MODE, settings.aiMode.name)
             .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
             .putBoolean(KEY_AUTOMATIC_WAV_EXPORT, settings.automaticWavExportEnabled)
@@ -136,6 +142,7 @@ class AndroidAudioCompanionSettingsRepository(
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_SONIOX_API_KEY = "soniox_api_key"
         private const val KEY_DIARIZATION_ENABLED = "diarization_enabled"
+        private const val KEY_CLOUD_LIVE_TRANSCRIPTION = "cloud_live_transcription"
         private const val KEY_AI_MODE = "ai_mode"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_AUTOMATIC_WAV_EXPORT = "automatic_wav_export"
