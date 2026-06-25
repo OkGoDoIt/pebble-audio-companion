@@ -122,6 +122,8 @@ class AudioCompanionRuntime(
     val diagnostics: StateFlow<AudioCompanionDiagnostics> get() = _diagnostics.asStateFlow()
 
     private val _diagnostics = MutableStateFlow(AudioCompanionDiagnostics())
+    private val emptyLiveTranscriptPreviews =
+        MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     private val lifecycleMutex = Mutex()
     private var durableStateRecovered = false
     private var sessionJob: Job? = null
@@ -279,6 +281,10 @@ class AudioCompanionRuntime(
     /** Full live-preview progress (text + transcribed boundary) for waveform coloring. */
     fun liveTranscriptPreview(segmentId: String): LiveTranscriptPreview? =
         liveTranscriber?.previewFor(segmentId)
+
+    /** Live preview progress as a flow so visible screens can update without a tab reload. */
+    val liveTranscriptPreviews: StateFlow<Map<String, LiveTranscriptPreview>> =
+        liveTranscriber?.previews ?: emptyLiveTranscriptPreviews.asStateFlow()
 
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 

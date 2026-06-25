@@ -36,6 +36,7 @@ import dev.audiocompanion.app.ui.SettingsScreen
 import dev.audiocompanion.app.ui.TimelineItem
 import dev.audiocompanion.app.ui.TodayScreen
 import dev.audiocompanion.app.ui.buildTimeline
+import dev.audiocompanion.app.ui.segmentTitle
 import dev.audiocompanion.app.ui.statusUiModel
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -102,6 +103,8 @@ fun App(
                 },
             ),
         ),
+    liveTranscriptPreviews: StateFlow<Map<String, LiveTranscriptPreview>> =
+        MutableStateFlow(emptyMap()),
     waveformBars: StateFlow<List<WaveformBar>> = MutableStateFlow(emptyList()),
     waveformWindowMs: Long = 60_000,
     playbackState: StateFlow<PlaybackUiState> = MutableStateFlow(PlaybackUiState()),
@@ -114,6 +117,7 @@ fun App(
         val currentSettings = settings.collectAsState().value
         val currentLocalModel = localModelState.collectAsState().value
         val currentPlayback = playbackState.collectAsState().value
+        val currentLivePreviews = liveTranscriptPreviews.collectAsState().value
 
         // Wall-clock tick: keeps durations and "Recording now" ages fresh without forcing
         // durable file reads on every tick.
@@ -152,7 +156,7 @@ fun App(
         // The previous snapshot remains visible while storage refreshes; first launch can paint
         // immediately instead of blocking on a large library.
         var durableContent by remember { mutableStateOf(DurableContentSnapshot()) }
-        LaunchedEffect(currentDiagnostics, tab) {
+        LaunchedEffect(currentDiagnostics, tab, currentLivePreviews) {
             val previousAiOutputs = durableContent.aiOutputs
             durableContent = withContext(Dispatchers.Default) {
                 val snapshotNow = Clock.System.now().toEpochMilliseconds()
@@ -167,11 +171,17 @@ fun App(
                 val transcriptsMap = contentSegments.associate {
                     it.segmentId to actions.loadTranscript(it.segmentId)
                 }
-                val liveTranscriptsMap = contentSegments.associate {
-                    it.segmentId to actions.loadLiveTranscript(it.segmentId)
-                }
                 val livePreviewsMap = contentSegments.associate {
-                    it.segmentId to actions.loadLiveTranscriptPreview(it.segmentId)
+                    it.segmentId to (
+                        currentLivePreviews[it.segmentId]
+                            ?: actions.loadLiveTranscriptPreview(it.segmentId)
+                        )
+                }
+                val liveTranscriptsMap = contentSegments.associate {
+                    it.segmentId to (
+                        livePreviewsMap[it.segmentId]?.text
+                            ?: actions.loadLiveTranscript(it.segmentId)
+                        )
                 }
                 val annotationsMap = contentSegments.associate {
                     it.segmentId to actions.loadAnnotation(it.segmentId)
@@ -202,6 +212,28 @@ fun App(
         val aiOutputs = durableContent.aiOutputs
         // Built off the UI thread in the durable reload above (see DurableContentSnapshot).
         val todayTimeline = durableContent.todayTimeline
+        val displayedTodayTimeline =
+            remember(todayTimeline, currentLivePreviews, transcripts, annotations) {
+                todayTimeline.map { item ->
+                    when (item) {
+                        is TimelineItem.Segment -> {
+                            val livePreview = currentLivePreviews[item.meta.segmentId]
+                            if (livePreview == null) {
+                                item
+                            } else {
+                                item.copy(
+                                    title = segmentTitle(
+                                        item.meta,
+                                        transcripts[item.meta.segmentId],
+                                        annotations[item.meta.segmentId],
+                                        liveText = livePreview.text,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
         val status = statusUiModel(state, currentSettings, currentDiagnostics, currentWatchState)
         val onPrimaryAction: (PrimaryAction) -> Unit = { action ->
@@ -237,7 +269,7 @@ fun App(
                         diagnostics = currentDiagnostics,
                         settings = currentSettings,
                         localModel = currentLocalModel,
-                        timeline = todayTimeline,
+                        timeline = displayedTodayTimeline,
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
                         waveformWindowMs = waveformWindowMs,
@@ -247,7 +279,8 @@ fun App(
                                 ?.isFullyTranscribed == true
                         },
                         liveTranscribedSampleIndex = { segmentId ->
-                            livePreviews[segmentId]?.lastSampleIndexExclusive
+                            currentLivePreviews[segmentId]?.lastSampleIndexExclusive
+                                ?: livePreviews[segmentId]?.lastSampleIndexExclusive
                         },
                         onPrimaryAction = onPrimaryAction,
                         onOpenSegment = { segmentId ->
@@ -263,9 +296,10 @@ fun App(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
                         liveTranscriptOf = { liveTranscripts[it] },
-                        livePreviewOf = { livePreviews[it] },
+                        livePreviewOf = { currentLivePreviews[it] ?: livePreviews[it] },
                         liveTranscribedFrameCountOf = { segmentId ->
-                            livePreviews[segmentId]?.transcribedFrameCount?.toLong()
+                            currentLivePreviews[segmentId]?.transcribedFrameCount?.toLong()
+                                ?: livePreviews[segmentId]?.transcribedFrameCount?.toLong()
                         },
                         annotationOf = { annotations[it] },
                         settings = currentSettings,

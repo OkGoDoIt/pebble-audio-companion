@@ -136,6 +136,7 @@ fun MainViewController(): UIViewController {
             watchServiceState = runtime.watchServiceState,
             settings = settings.settings,
             localModelState = readyHandle.localModelManager.state,
+            liveTranscriptPreviews = runtime.liveTranscriptPreviews,
             waveformBars = runtime.liveMonitor?.bars
                 ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
             waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,

@@ -439,6 +439,24 @@ class TimelineTest {
     }
 
     @Test
+    fun segmentTitleUsesLivePreviewForOpenRecordingUntilFinalTranscriptExists() {
+        val open = meta("seg-1", nowMs, open = true)
+
+        assertEquals(
+            "Please tell me if it's working",
+            segmentTitle(open, null, liveText = "Please tell me if it's working"),
+        )
+        assertEquals(
+            "Final transcript wins",
+            segmentTitle(
+                open,
+                transcript("seg-1", "Final transcript wins"),
+                liveText = "newer preview",
+            ),
+        )
+    }
+
+    @Test
     fun segmentDurationPrefersSampleCounters() {
         assertEquals(10_000, segmentDurationMs(meta("seg-1", nowMs)))
     }
