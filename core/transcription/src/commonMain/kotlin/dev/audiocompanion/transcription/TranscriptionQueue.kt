@@ -11,6 +11,13 @@ import kotlinx.serialization.json.Json
 enum class TaskState {
     Pending,
     Running,
+
+    /**
+     * Handed to the suspension-proof background upload transport. Distinct from [Running] so
+     * process-restart recovery does NOT reset it (the OS may still be uploading); the upload
+     * coordinator reconciles it against the transport's in-flight set instead.
+     */
+    Uploading,
     Complete,
     NoSpeech,
     Failed,
@@ -130,6 +137,26 @@ class FileTranscriptionQueue(
     fun markRunning(segmentId: String): TranscriptionTask? = update(segmentId) {
         it.copy(state = TaskState.Running, attempts = it.attempts + 1)
     }
+
+    /** Hands a task to the background upload transport. Counts as an attempt (bounds retries). */
+    fun markUploading(segmentId: String): TranscriptionTask? = update(segmentId) {
+        it.copy(state = TaskState.Uploading, attempts = it.attempts + 1)
+    }
+
+    /** Segment ids currently handed to the upload transport. */
+    fun uploadingSegmentIds(): List<String> =
+        all().filter { it.state == TaskState.Uploading }.map { it.segmentId }
+
+    /**
+     * Returns Uploading tasks whose id is not in [inFlight] to Pending (the transport forgot them,
+     * e.g. across a relaunch). Returns the reset ids.
+     */
+    fun resetAbandonedUploads(inFlight: Set<String>): List<String> =
+        all().filter { it.state == TaskState.Uploading && it.segmentId !in inFlight }
+            .map { task ->
+                write(task.copy(state = TaskState.Pending, updatedAtMs = nowMs()))
+                task.segmentId
+            }
 
     fun markComplete(segmentId: String, result: RoutedTranscription): TranscriptionTask? =
         update(segmentId) {

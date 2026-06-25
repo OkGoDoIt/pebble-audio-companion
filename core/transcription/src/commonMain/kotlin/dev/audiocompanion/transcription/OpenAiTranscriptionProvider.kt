@@ -39,7 +39,7 @@ class OpenAiTranscriptionProvider(
     private val diarizationEnabled: () -> Boolean = { false },
     private val endpointUrl: String = DEFAULT_ENDPOINT_URL,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
-) : TranscriptionProvider {
+) : TranscriptionProvider, CloudUploadCapable {
     override val id: String = "openai"
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
 
@@ -176,19 +176,73 @@ class OpenAiTranscriptionProvider(
                 "OpenAI transcription failed (${response.status.value}): ${body.take(240)}",
             )
         }
-        return when (format) {
+        return parseChunk(body, chunkStartMs)
+    }
+
+    private fun parseChunk(body: String, offsetMs: Long): OpenAiChunkResult =
+        when (responseFormat(effectiveModel())) {
             "verbose_json" ->
                 json.decodeFromString(OpenAiVerboseTranscriptionResponse.serializer(), body)
-                    .toChunkResult(chunkStartMs)
+                    .toChunkResult(offsetMs)
             "diarized_json" ->
                 json.decodeFromString(OpenAiDiarizedTranscriptionResponse.serializer(), body)
-                    .toChunkResult(chunkStartMs)
+                    .toChunkResult(offsetMs)
             else ->
                 OpenAiChunkResult(
                     text = json.decodeFromString(OpenAiTranscriptionResponse.serializer(), body).text,
                 )
         }
+
+    // --- CloudUploadCapable: single-shot background upload (response is the transcript) ----------
+
+    override suspend fun uploadPlan(wav: ByteArray, sampleRateHz: Int): CloudUploadPlan? {
+        if (!cloudConsent()) return null
+        val key = apiKey()?.takeIf { it.isNotBlank() } ?: return null
+        // One background upload is a single request; segments larger than the API limit stay on the
+        // synchronous chunked path.
+        if (wav.size > maxUploadBytes) return null
+        val modelValue = effectiveModel()
+        val format = responseFormat(modelValue)
+        val fields = buildList {
+            add("model" to modelValue)
+            add("response_format" to format)
+            if (format == "verbose_json") {
+                add("timestamp_granularities[]" to "segment")
+                add("timestamp_granularities[]" to "word")
+            }
+        }
+        return CloudUploadPlan(
+            url = endpointUrl,
+            headers = mapOf("Authorization" to "Bearer $key"),
+            textFields = fields,
+            file = MultipartBody.FilePart("file", "segment.wav", "audio/wav", wav),
+        )
     }
+
+    override suspend fun onUploadResponse(httpStatus: Int, body: String): CloudUploadStep {
+        if (httpStatus !in 200..299) {
+            throw TranscriptionException.TranscriptionFailed(
+                "OpenAI transcription failed ($httpStatus): ${body.take(240)}",
+            )
+        }
+        val chunk = parseChunk(body, 0L)
+        val text = chunk.text.trim()
+        if (text.isBlank()) {
+            throw TranscriptionException.NoSpeechDetected("OpenAI returned an empty transcript")
+        }
+        return CloudUploadStep.Done(
+            TranscriptionResult(
+                text = text,
+                providerId = id,
+                modelUsed = effectiveModel(),
+                segments = chunk.segments,
+                words = chunk.words,
+            ),
+        )
+    }
+
+    override suspend fun completeControlPlane(controlState: String): TranscriptionResult =
+        throw TranscriptionException.TranscriptionFailed("OpenAI uploads have no control-plane step")
 
     @Serializable
     private data class OpenAiTranscriptionResponse(val text: String = "")

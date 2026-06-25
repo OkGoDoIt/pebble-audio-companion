@@ -51,7 +51,7 @@ class SonioxTranscriptionProvider(
     private val maxPollAttempts: Int = DEFAULT_MAX_POLL_ATTEMPTS,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
     private val sleep: suspend (Long) -> Unit = { delay(it) },
-) : TranscriptionProvider {
+) : TranscriptionProvider, CloudUploadCapable {
     override val id: String = PROVIDER_ID
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
 
@@ -82,6 +82,44 @@ class SonioxTranscriptionProvider(
             }
         } finally {
             deleteQuietly(key, "$baseUrl/v1/files/$fileId")
+        }
+    }
+
+    // --- CloudUploadCapable: background-upload the file, finish the control plane in an awake window
+
+    override suspend fun uploadPlan(wav: ByteArray, sampleRateHz: Int): CloudUploadPlan? {
+        if (!cloudConsent()) return null
+        val key = apiKey()?.takeIf { it.isNotBlank() } ?: return null
+        if (wav.size > maxUploadBytes) return null
+        return CloudUploadPlan(
+            url = "$baseUrl/v1/files",
+            headers = mapOf("Authorization" to "Bearer $key"),
+            file = MultipartBody.FilePart("file", "segment.wav", "audio/wav", wav),
+        )
+    }
+
+    override suspend fun onUploadResponse(httpStatus: Int, body: String): CloudUploadStep {
+        if (httpStatus !in 200..299) {
+            throw failure("file upload", HttpStatusCode.fromValue(httpStatus), body)
+        }
+        val fileId = json.decodeFromString(SonioxFile.serializer(), body).id
+            ?: throw TranscriptionException.TranscriptionFailed("Soniox upload returned no file id")
+        return CloudUploadStep.NeedsControlPlane(fileId)
+    }
+
+    override suspend fun completeControlPlane(controlState: String): TranscriptionResult {
+        val key = apiKey()?.takeIf { it.isNotBlank() }
+            ?: throw TranscriptionException.ProviderUnavailable(id)
+        try {
+            val transcriptionId = createTranscription(key, controlState)
+            try {
+                awaitCompletion(key, transcriptionId)
+                return mapTranscript(fetchTranscript(key, transcriptionId))
+            } finally {
+                deleteQuietly(key, "$baseUrl/v1/transcriptions/$transcriptionId")
+            }
+        } finally {
+            deleteQuietly(key, "$baseUrl/v1/files/$controlState")
         }
     }
 
