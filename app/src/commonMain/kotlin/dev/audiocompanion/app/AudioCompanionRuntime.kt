@@ -210,6 +210,23 @@ class AudioCompanionRuntime(
         link.disconnect()
     }
 
+    /**
+     * Light maintenance for an iOS BGProcessingTask wake (plan: "Fix BGProcessing usage"):
+     * retention cleanup and a diagnostics refresh only. It deliberately never starts STT/AI/WAV
+     * export and never changes the receiver's run state or the user's background-recording intent —
+     * Core Bluetooth restoration owns the receive path, and a processing-task timeout must not be
+     * able to disable recording. Heavy catch-up belongs in the foreground or a user-started task.
+     */
+    suspend fun runBackgroundMaintenance() {
+        recoverDurableStateIfNeeded()
+        retention.enforce().forEach { deletedSegmentId ->
+            transcriptionQueue.delete(deletedSegmentId)
+            transcriptStore.delete(deletedSegmentId)
+            annotationStore.delete(deletedSegmentId)
+        }
+        refreshDiagnostics()
+    }
+
     fun refreshDiagnostics() {
         val tasks = transcriptionQueue.all()
         _diagnostics.value = AudioCompanionDiagnostics(
