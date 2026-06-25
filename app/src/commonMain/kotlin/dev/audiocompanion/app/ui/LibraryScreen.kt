@@ -475,6 +475,7 @@ fun SegmentDetailScreen(
                 if (meta.logBytes > 0) meta.logBytes else meta.frameCount * 39,
             ),
         )
+        InterruptionDetails(meta)
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
         OutlinedButton(onClick = onBack) { Text("Back to Library") }
 
@@ -655,16 +656,25 @@ sealed interface TranscriptTimelineItem {
         override val startMs: Long,
         val durationMs: Long,
         val missing: Boolean,
+        val reasons: List<String> = emptyList(),
     ) : TranscriptTimelineItem {
         val label: String
             get() = if (missing) {
-                if (durationMs < 1_000) {
+                val base = if (durationMs < 1_000) {
                     "audio briefly interrupted"
                 } else {
                     "audio interrupted for ${Formatting.duration(durationMs)}"
                 }
+                reasonSummary?.let { "$base ($it)" } ?: base
             } else {
                 "quiet for ${Formatting.duration(durationMs)}"
+            }
+
+        private val reasonSummary: String?
+            get() = when (reasons.size) {
+                0 -> null
+                1 -> reasons.single()
+                else -> "several reasons"
             }
     }
 }
@@ -710,7 +720,8 @@ fun transcriptTimelineItems(
         when (item) {
             is TranscriptTimelineItem.Speech -> "speech:${item.startMs}:${item.endMs}:${item.text}"
             is TranscriptTimelineItem.Break -> "break:${item.startMs}:${item.durationMs}"
-            is TranscriptTimelineItem.Pause -> "pause:${item.startMs}:${item.durationMs}:${item.missing}"
+            is TranscriptTimelineItem.Pause ->
+                "pause:${item.startMs}:${item.durationMs}:${item.missing}:${item.reasons.joinToString("|")}"
         }
     }
     return coalesceTimelineQuiet(deduped)
@@ -744,7 +755,15 @@ private fun coalesceTimelineQuiet(
         }
         when {
             kind == TimelineQuietKind.Loss ->
-                out += TranscriptTimelineItem.Pause(startMs, totalMs, missing = true)
+                out += TranscriptTimelineItem.Pause(
+                    startMs = startMs,
+                    durationMs = totalMs,
+                    missing = true,
+                    reasons = items.subList(i, j)
+                        .filterIsInstance<TranscriptTimelineItem.Pause>()
+                        .flatMap { it.reasons }
+                        .distinct(),
+                )
             totalMs >= QUIET_PAUSE_THRESHOLD_MS ->
                 out += TranscriptTimelineItem.Pause(startMs, totalMs, missing = false)
             totalMs >= SILENCE_BREAK_THRESHOLD_MS ->
@@ -856,13 +875,25 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
         return start to end.coerceAtLeast(start)
     }
 
-    fun collapse(gaps: List<GapMeta>): List<Pair<Long, Long>> {
-        val ranges = gaps.map(::rangeOf).sortedBy { it.first }
-        val merged = mutableListOf<Pair<Long, Long>>()
+    data class GapCluster(
+        val startMs: Long,
+        val endMs: Long,
+        val gaps: List<GapMeta>,
+    )
+
+    fun collapse(gaps: List<GapMeta>): List<GapCluster> {
+        val ranges = gaps.map { gap ->
+            val (start, end) = rangeOf(gap)
+            GapCluster(start, end, listOf(gap))
+        }.sortedBy { it.startMs }
+        val merged = mutableListOf<GapCluster>()
         ranges.forEach { range ->
             val last = merged.lastOrNull()
-            if (last != null && range.first <= last.second + GAP_COLLAPSE_WINDOW_MS) {
-                merged[merged.lastIndex] = last.first to maxOf(last.second, range.second)
+            if (last != null && range.startMs <= last.endMs + GAP_COLLAPSE_WINDOW_MS) {
+                merged[merged.lastIndex] = last.copy(
+                    endMs = maxOf(last.endMs, range.endMs),
+                    gaps = last.gaps + range.gaps,
+                )
             } else {
                 merged += range
             }
@@ -870,11 +901,12 @@ private fun collapsedTranscriptGaps(meta: SegmentMeta): List<TranscriptTimelineI
         return merged
     }
 
-    fun pauses(gaps: List<GapMeta>, missing: Boolean) = collapse(gaps).map { (start, end) ->
+    fun pauses(gaps: List<GapMeta>, missing: Boolean) = collapse(gaps).map { cluster ->
         TranscriptTimelineItem.Pause(
-            startMs = start,
-            durationMs = (end - start).coerceAtLeast(0),
+            startMs = cluster.startMs,
+            durationMs = (cluster.endMs - cluster.startMs).coerceAtLeast(0),
             missing = missing,
+            reasons = if (missing) cluster.gaps.map { gapDescription(it) }.distinct() else emptyList(),
         )
     }
 
@@ -904,6 +936,42 @@ private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
 
 private fun clockTimeFor(meta: SegmentMeta, offsetMs: Long): String =
     Formatting.timeOfDay(meta.receivedAtMs + offsetMs)
+
+@Composable
+private fun InterruptionDetails(meta: SegmentMeta) {
+    val breakdown = gapReasonBreakdown(meta)
+    if (breakdown.isEmpty()) return
+
+    SectionTitle("Interruption details")
+    Text(
+        text = "Missing audio only. Quiet periods are not counted as interruptions.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        breakdown.forEach { item ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = item.reason, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = "${item.count} interruption${if (item.count == 1) "" else "s"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = "about ${Formatting.duration(item.durationMs)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
 
 private const val SILENCE_BREAK_THRESHOLD_MS = 5_000L
 private const val QUIET_PAUSE_THRESHOLD_MS = 30_000L
