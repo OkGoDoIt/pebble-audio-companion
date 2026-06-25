@@ -57,6 +57,7 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.coroutines)
             implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.websockets)
             implementation(libs.kotlinx.io.core)
             implementation(libs.serialization)
         }
