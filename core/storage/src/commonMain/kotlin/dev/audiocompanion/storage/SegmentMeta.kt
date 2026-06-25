@@ -124,6 +124,9 @@ data class CloseReasonMeta(
 enum class TranscriptionState {
     Pending,
     Running,
+
+    /** Audio is uploading to the cloud provider on the background transport. */
+    Uploading,
     Complete,
     NoSpeech,
     Failed,

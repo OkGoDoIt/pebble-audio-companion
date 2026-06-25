@@ -583,6 +583,7 @@ class AudioCompanionRuntime(
         fun segmentTranscriptionState(state: TaskState): SegmentTranscriptionState = when (state) {
             TaskState.Pending -> SegmentTranscriptionState.Pending
             TaskState.Running -> SegmentTranscriptionState.Running
+            TaskState.Uploading -> SegmentTranscriptionState.Uploading
             TaskState.Complete -> SegmentTranscriptionState.Complete
             TaskState.NoSpeech -> SegmentTranscriptionState.NoSpeech
             TaskState.Failed -> SegmentTranscriptionState.Failed

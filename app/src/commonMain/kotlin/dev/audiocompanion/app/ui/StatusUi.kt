@@ -400,6 +400,7 @@ fun gapSummary(meta: SegmentMeta): String? {
 fun transcriptionStateLabel(state: TranscriptionState): String = when (state) {
     TranscriptionState.Pending -> "Waiting to transcribe"
     TranscriptionState.Running -> "Transcribing"
+    TranscriptionState.Uploading -> "Uploading to cloud"
     TranscriptionState.Complete -> "Transcript ready"
     TranscriptionState.NoSpeech -> "No speech"
     TranscriptionState.Failed -> "Transcription failed"
