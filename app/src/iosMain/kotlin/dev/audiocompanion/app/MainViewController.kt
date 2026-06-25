@@ -48,9 +48,15 @@ object IosAudioCompanionBootstrap {
         scope.launch { ensureHandle() }
     }
 
-    fun applicationDidFinishLaunching() {
+    fun applicationDidFinishLaunching(launchedInBackground: Boolean) {
         scope.launch {
             val handle = ensureHandle()
+            // Apply the receive-only policy before starting the receiver when we are launched
+            // straight into the background (Core Bluetooth restoration), so no heavy foreground
+            // transcription pass runs at the most jetsam-prone moment.
+            if (launchedInBackground) {
+                handle.runtime.setForeground(false)
+            }
             if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
                 handle.startReceiver()
             } else {
