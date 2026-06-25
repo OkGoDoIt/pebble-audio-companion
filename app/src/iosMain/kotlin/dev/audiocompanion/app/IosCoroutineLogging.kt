@@ -6,10 +6,8 @@ import platform.Foundation.NSLog
 internal fun iosCoroutineExceptionHandler(component: String): CoroutineExceptionHandler =
     CoroutineExceptionHandler { _, throwable ->
         NSLog(
-            "Pebble Audio Companion %@ coroutine failed: %@: %@",
-            component,
-            throwable::class.simpleName ?: "Throwable",
-            throwable.message ?: "",
+            "Pebble Audio Companion $component coroutine failed: " +
+                "${throwable::class.simpleName ?: "Throwable"}: ${throwable.message ?: ""}",
         )
-        throwable.printStackTrace()
+        logBackgroundFailure("$component coroutine", throwable)
     }

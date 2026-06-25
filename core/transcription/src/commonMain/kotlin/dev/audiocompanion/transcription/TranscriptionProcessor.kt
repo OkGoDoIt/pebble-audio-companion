@@ -1,6 +1,7 @@
 package dev.audiocompanion.transcription
 
 import kotlinx.coroutines.flow.Flow
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Durable transcription worker for closed audio segments.
@@ -56,6 +57,8 @@ class TranscriptionProcessor(
             queue.markComplete(task.segmentId, result).also {
                 onStateChanged(task.segmentId, TaskState.Complete)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: TranscriptionException.NoSpeechDetected) {
             queue.markNoSpeech(task.segmentId).also {
                 onStateChanged(task.segmentId, TaskState.NoSpeech)
@@ -64,7 +67,7 @@ class TranscriptionProcessor(
             queue.markDisabled(task.segmentId).also {
                 onStateChanged(task.segmentId, TaskState.Disabled)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             queue.markFailed(task.segmentId, e.message ?: e::class.simpleName.orEmpty(),
                 retryable = true).also {
                 onStateChanged(task.segmentId, TaskState.Failed)
