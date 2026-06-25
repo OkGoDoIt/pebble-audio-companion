@@ -57,7 +57,7 @@ class TranscriptionModeRouter(
                 throw e
             } catch (e: TranscriptionException.NoSpeechDetected) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 runProvider(remote, "remote", pcmChunks, sampleRateHz,
                     modeUsed = TranscriptionMode.RemoteOnly, suppressed = e)
             }
@@ -68,7 +68,7 @@ class TranscriptionModeRouter(
                 throw e
             } catch (e: TranscriptionException.NoSpeechDetected) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 runProvider(local, "local", pcmChunks, sampleRateHz,
                     modeUsed = TranscriptionMode.LocalOnly, suppressed = e)
             }
@@ -83,7 +83,7 @@ class TranscriptionModeRouter(
         pcmChunks: Flow<ByteArray>,
         sampleRateHz: Int,
         modeUsed: TranscriptionMode,
-        suppressed: Exception? = null,
+        suppressed: Throwable? = null,
     ): RoutedTranscription {
         if (provider == null || !provider.isAvailable()) {
             throw TranscriptionException.ProviderUnavailable(provider?.id ?: role).apply {
@@ -92,7 +92,9 @@ class TranscriptionModeRouter(
         }
         val result = try {
             provider.transcribe(pcmChunks, sampleRateHz)
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             suppressed?.let(e::addSuppressed)
             throw e
         }

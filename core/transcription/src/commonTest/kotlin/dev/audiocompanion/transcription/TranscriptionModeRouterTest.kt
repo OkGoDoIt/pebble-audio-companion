@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 private class FakeProvider(
     override val id: String,
     var available: Boolean = true,
-    var error: Exception? = null,
+    var error: Throwable? = null,
 ) : TranscriptionProvider {
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
     var calls = 0
@@ -89,6 +89,15 @@ class TranscriptionModeRouterTest {
         assertEquals(TranscriptionMode.RemoteOnly, result.modeUsed, "fallback provenance must say RemoteOnly")
         assertEquals("remote", result.providerId)
         assertEquals(TranscriptionMode.RemoteOnly, r.lastSuccessfulMode)
+    }
+
+    @Test
+    fun localFirst_nonExceptionProviderFailure_fallsBackToRemote() = runTest {
+        val local = FakeProvider("local", error = AssertionError("native boundary failed"))
+        val remote = FakeProvider("remote")
+        val result = router(local, remote, TranscriptionMode.LocalFirst).transcribe(pcm, 16000)
+        assertEquals(TranscriptionMode.RemoteOnly, result.modeUsed)
+        assertEquals("remote", result.providerId)
     }
 
     @Test
