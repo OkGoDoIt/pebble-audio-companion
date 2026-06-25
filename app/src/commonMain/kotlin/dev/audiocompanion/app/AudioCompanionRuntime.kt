@@ -13,6 +13,7 @@ import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.storage.TranscriptionState as SegmentTranscriptionState
+import dev.audiocompanion.transcription.BackgroundCloudUploadCoordinator
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.LocalTranscriptionLifecycle
@@ -106,6 +107,11 @@ class AudioCompanionRuntime(
      * tests and builds without a local model.
      */
     private val localTranscriptionLifecycle: LocalTranscriptionLifecycle? = null,
+    /**
+     * Suspension-proof background cloud-upload transport for cloud-primary modes (iOS only for
+     * now); null disables it (Android, tests, local-only builds).
+     */
+    private val backgroundUploadCoordinator: BackgroundCloudUploadCoordinator? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -143,6 +149,7 @@ class AudioCompanionRuntime(
     private var durableStateRecovered = false
     private var sessionJob: Job? = null
     private var transcriptionJob: Job? = null
+    private var uploadCoordinatorJob: Job? = null
     private val transcriptionWakeups = Channel<Unit>(Channel.CONFLATED)
 
     /** Scope the processing loop runs on, captured at [start]; used to release the model promptly. */
@@ -174,6 +181,18 @@ class AudioCompanionRuntime(
         if (!value) {
             liveMonitor?.setActive(false)
             processingScope?.launch { localTranscriptionLifecycle?.releaseModel("background") }
+            // Hand any pending cloud-primary segments to the suspension-proof upload transport so
+            // they keep transcribing while the app is suspended. Done here (background entry, app
+            // still alive) rather than during the short Bluetooth wakes.
+            processingScope?.launch {
+                try {
+                    backgroundUploadCoordinator?.submitPending()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    logBackgroundFailure("upload submit", t)
+                }
+            }
         }
         transcriptionWakeups.trySend(Unit)
         refreshDiagnostics()
@@ -247,6 +266,19 @@ class AudioCompanionRuntime(
             if (transcriptionJob == null) {
                 transcriptionJob = scope.launch { runTranscriptionLoop() }
             }
+            if (backgroundUploadCoordinator != null && uploadCoordinatorJob == null) {
+                uploadCoordinatorJob = backgroundUploadCoordinator.start(scope)
+                // Re-attach to uploads that may have completed while we were suspended/terminated.
+                scope.launch {
+                    try {
+                        backgroundUploadCoordinator.reconcile()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        logBackgroundFailure("upload reconcile", t)
+                    }
+                }
+            }
             sessionJob ?: session.start(scope).also { sessionJob = it }
         }
 
@@ -313,6 +345,8 @@ class AudioCompanionRuntime(
             transcriptStore.delete(deletedSegmentId)
             annotationStore.delete(deletedSegmentId)
         }
+        // The BGProcessing window has time to decode + hand off any newly pending cloud uploads.
+        backgroundUploadCoordinator?.submitPending()
         refreshDiagnostics()
     }
 

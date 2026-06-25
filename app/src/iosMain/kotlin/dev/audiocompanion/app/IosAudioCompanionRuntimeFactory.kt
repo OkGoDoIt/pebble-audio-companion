@@ -12,11 +12,15 @@ import dev.audiocompanion.storage.FileReceiverResumeStore
 import dev.audiocompanion.storage.FreeSpaceProvider
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentStore
+import dev.audiocompanion.transcription.BackgroundCloudUploadCoordinator
 import dev.audiocompanion.transcription.CactusLocalTranscriptionProvider
 import dev.audiocompanion.transcription.CactusModelPathProvider
+import dev.audiocompanion.transcription.CloudUploadJobStore
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
+import dev.audiocompanion.transcription.PcmWav
+import dev.audiocompanion.transcription.SegmentAudio
 import dev.audiocompanion.transcription.SelectableCloudTranscriptionProvider
 import dev.audiocompanion.transcription.SonioxTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
@@ -28,6 +32,8 @@ import dev.audiocompanion.transport.ReceiverConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.darwin.Darwin
 import kotlinx.coroutines.flow.flow
+import kotlinx.io.Buffer
+import kotlinx.io.readByteArray
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import platform.Foundation.NSApplicationSupportDirectory
@@ -88,6 +94,55 @@ class IosAudioCompanionRuntimeFactory(
             local = localProvider,
             remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
+        )
+        val uploadCoordinator = BackgroundCloudUploadCoordinator(
+            uploader = IosBackgroundUploader.shared,
+            cloudProvider = remoteProvider,
+            jobStore = CloudUploadJobStore(SystemFileSystem, root),
+            queue = transcriptionQueue,
+            transcriptStore = transcriptStore,
+            audioSource = { segmentId ->
+                val meta = store.readMeta(segmentId)
+                if (meta == null) {
+                    null
+                } else {
+                    val decoder = SpeexFrameDecoder(
+                        sampleRateHz = meta.sampleRateHz.toInt(),
+                        bitRateBps = meta.bitRateBps.toInt(),
+                        frameSamples = meta.frameSamples,
+                    )
+                    val pcm = Buffer()
+                    decoder.decode(
+                        flow { for (record in store.readFrames(segmentId)) emit(record.payload) },
+                    ).collect { pcm.write(it) }
+                    val bytes = pcm.readByteArray()
+                    if (bytes.isEmpty()) {
+                        null
+                    } else {
+                        SegmentAudio(
+                            wav = PcmWav.encodeMono16(bytes, meta.sampleRateHz.toInt()),
+                            sampleRateHz = meta.sampleRateHz.toInt(),
+                        )
+                    }
+                }
+            },
+            onStateChanged = { segmentId, state ->
+                store.updateTranscriptionState(
+                    segmentId,
+                    AudioCompanionRuntime.segmentTranscriptionState(state),
+                )
+            },
+            fileSystem = SystemFileSystem,
+            bodyDir = Path(root, "upload-bodies"),
+            nowMs = nowMs,
+            cloudPrimary = {
+                val s = settingsRepository.settings.value
+                s.cloudTranscriptionConsent &&
+                    (
+                        s.transcriptionMode == TranscriptionMode.RemoteOnly ||
+                            s.transcriptionMode == TranscriptionMode.RemoteFirst
+                        )
+            },
         )
         val aiRouter = AiModeRouter(
             local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
@@ -184,6 +239,7 @@ class IosAudioCompanionRuntimeFactory(
                 settingsRepository.settings.value.backgroundReceiverEnabled
             },
             localTranscriptionLifecycle = localProvider,
+            backgroundUploadCoordinator = uploadCoordinator,
         )
     }
 
