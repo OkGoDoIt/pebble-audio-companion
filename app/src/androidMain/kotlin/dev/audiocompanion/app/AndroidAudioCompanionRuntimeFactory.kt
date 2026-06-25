@@ -56,7 +56,10 @@ class AndroidAudioCompanionRuntimeFactory(
         )
         val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
         val transcriptStore = FileTranscriptStore(SystemFileSystem, root, nowMs)
-        val localProvider = CactusLocalTranscriptionProvider(modelProvider = modelProvider)
+        val localProvider = CactusLocalTranscriptionProvider(
+            modelProvider = modelProvider,
+            nowMs = nowMs,
+        )
         val remoteProvider = OpenAiTranscriptionProvider(
             client = HttpClient(OkHttp),
             apiKey = { settingsRepository.settings.value.openAiApiKey },

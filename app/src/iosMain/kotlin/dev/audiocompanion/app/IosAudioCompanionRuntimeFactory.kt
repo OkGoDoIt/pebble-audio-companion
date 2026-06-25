@@ -60,7 +60,10 @@ class IosAudioCompanionRuntimeFactory(
         )
         val transcriptionQueue = FileTranscriptionQueue(SystemFileSystem, root, nowMs)
         val transcriptStore = FileTranscriptStore(SystemFileSystem, root, nowMs)
-        val localProvider = CactusLocalTranscriptionProvider(modelProvider = modelProvider)
+        val localProvider = CactusLocalTranscriptionProvider(
+            modelProvider = modelProvider,
+            nowMs = nowMs,
+        )
         val remoteProvider = OpenAiTranscriptionProvider(
             client = HttpClient(Darwin),
             apiKey = { settingsRepository.settings.value.openAiApiKey },

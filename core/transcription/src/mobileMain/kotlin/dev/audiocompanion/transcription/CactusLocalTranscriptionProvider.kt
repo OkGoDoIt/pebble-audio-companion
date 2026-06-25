@@ -57,7 +57,8 @@ class CactusLocalTranscriptionProvider(
     private val modelProvider: CactusModelPathProvider,
     private val fileSystem: kotlinx.io.files.FileSystem = SystemFileSystem,
     private val tempDirectory: Path = SystemTemporaryDirectory,
-) : TranscriptionProvider {
+    private val nowMs: () -> Long = { 0L },
+) : TranscriptionProvider, LocalTranscriptionLifecycle {
     override val id: String = "cactus-local"
     private val mutableStatus = MutableStateFlow(ProviderStatus.NotReady)
     override val status: StateFlow<ProviderStatus> = mutableStatus
@@ -66,6 +67,9 @@ class CactusLocalTranscriptionProvider(
     private val json = Json { ignoreUnknownKeys = true }
     private var modelHandle: Long = 0L
     private var initializedModel: String? = null
+
+    /** Wall-clock of the most recent transcription, for [releaseModelIfIdle]; 0 when never used. */
+    private var lastUsedMs: Long = 0L
 
     /**
      * Available only when the model is already on disk: transcription must never trigger the
@@ -119,8 +123,41 @@ class CactusLocalTranscriptionProvider(
                 words = nativeResults.flatMap { it.words },
             )
         } finally {
+            lastUsedMs = nowMs()
             deleteQuietly(rawPath)
             deleteQuietly(wavPath)
+        }
+    }
+
+    override suspend fun releaseModel(reason: String) {
+        // Interrupt any in-flight native transcription first so the mutex frees promptly; the
+        // running transcribe() throws/returns and the next reload restarts cleanly.
+        val running = modelHandle
+        if (running != 0L) {
+            try {
+                cactusStop(running)
+            } catch (_: Exception) {
+            }
+        }
+        mutex.withLock {
+            if (modelHandle != 0L) {
+                try {
+                    cactusDestroy(modelHandle)
+                } catch (_: Exception) {
+                }
+                modelHandle = 0L
+                initializedModel = null
+                mutableStatus.value = ProviderStatus.NotReady
+                println("Pebble Audio Companion local transcription model released ($reason)")
+            }
+        }
+    }
+
+    override suspend fun releaseModelIfIdle(nowMs: Long, idleTimeoutMs: Long) {
+        if (modelHandle == 0L) return
+        val last = lastUsedMs
+        if (last != 0L && nowMs - last >= idleTimeoutMs) {
+            releaseModel("idle ${idleTimeoutMs}ms")
         }
     }
 
