@@ -10,6 +10,14 @@ import kotlin.test.assertTrue
 
 class TranscriptFormattingTest {
     @Test
+    fun speakerLabelFormatsNumericAndNamedSpeakers() {
+        assertEquals("Speaker 1", speakerLabel("1"))
+        assertEquals("Speaker 12", speakerLabel("12"))
+        assertEquals("Agent", speakerLabel("agent"))
+        assertEquals("Customer", speakerLabel("Customer"))
+    }
+
+    @Test
     fun transcriptParagraphsSplitsOnReadableSentenceBoundaries() {
         val text = "First sentence. Second sentence! third fragment continues. 42 starts here?"
 
