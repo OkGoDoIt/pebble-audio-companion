@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
                 watchServiceState = runtime.watchServiceState,
                 settings = settingsRepository.settings,
                 localModelState = handle.localModelManager.state,
+                liveTranscriptPreviews = runtime.liveTranscriptPreviews,
                 waveformBars = runtime.liveMonitor?.bars
                     ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
                 waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
