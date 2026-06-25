@@ -37,6 +37,7 @@ object IosAudioCompanionBootstrap {
     private val handleMutex = Mutex()
     private val _handle = MutableStateFlow<IosAudioCompanionRuntimeHandle?>(null)
     val handleState: StateFlow<IosAudioCompanionRuntimeHandle?> = _handle.asStateFlow()
+    private var maintenanceJob: kotlinx.coroutines.Job? = null
 
     private suspend fun ensureHandle(): IosAudioCompanionRuntimeHandle =
         handleMutex.withLock {
@@ -97,6 +98,33 @@ object IosAudioCompanionBootstrap {
 
     fun refreshDiagnostics() {
         scope.launch { ensureHandle().runtime.refreshDiagnostics() }
+    }
+
+    /**
+     * Runs one BGProcessingTask's worth of optional maintenance (retention cleanup + diagnostics),
+     * then invokes [onComplete] so the host can call setTaskCompleted exactly once. Must never stop
+     * the receiver or change the user's background-recording intent (plan: "Fix BGProcessing
+     * usage"); on task expiration the host calls [cancelBackgroundMaintenance] instead.
+     */
+    fun runBackgroundMaintenance(onComplete: () -> Unit) {
+        maintenanceJob?.cancel()
+        maintenanceJob = scope.launch {
+            try {
+                ensureHandle().runtime.runBackgroundMaintenance()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                logBackgroundFailure("background maintenance", t)
+            } finally {
+                onComplete()
+            }
+        }
+    }
+
+    /** Cancels in-flight [runBackgroundMaintenance] work without touching the receive path. */
+    fun cancelBackgroundMaintenance() {
+        maintenanceJob?.cancel()
+        maintenanceJob = null
     }
 
     fun deleteAllLocalData() {

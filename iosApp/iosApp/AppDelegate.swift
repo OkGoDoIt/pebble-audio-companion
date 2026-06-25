@@ -30,13 +30,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     private func handleProcessingTask(_ task: BGTask) {
+        // Always chain the next opportunity first.
         scheduleProcessingTask()
-        task.expirationHandler = {
-            IosAudioCompanionBootstrap.shared.stopReceiver()
+
+        // BGProcessing is optional maintenance, not a relaunch hook for receiving. On expiration we
+        // must NOT stop the receiver or change the user's background-recording intent — Core
+        // Bluetooth restoration owns the receive path. So just cancel the optional work and report
+        // it unfinished; the receiver keeps running untouched.
+        var completed = false
+        let complete: (Bool) -> Void = { success in
+            DispatchQueue.main.async {
+                guard !completed else { return }
+                completed = true
+                task.setTaskCompleted(success: success)
+            }
         }
-        IosAudioCompanionBootstrap.shared.applicationDidEnterBackground()
-        IosAudioCompanionBootstrap.shared.refreshDiagnostics()
-        task.setTaskCompleted(success: true)
+        task.expirationHandler = {
+            IosAudioCompanionBootstrap.shared.cancelBackgroundMaintenance()
+            complete(false)
+        }
+        IosAudioCompanionBootstrap.shared.runBackgroundMaintenance {
+            complete(true)
+        }
     }
 
     private func scheduleProcessingTask() {
