@@ -22,6 +22,7 @@ import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.PcmWav
 import dev.audiocompanion.transcription.SegmentAudio
 import dev.audiocompanion.transcription.SelectableCloudTranscriptionProvider
+import dev.audiocompanion.transcription.SonioxRealtimeProvider
 import dev.audiocompanion.transcription.SonioxTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
@@ -31,6 +32,7 @@ import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.ReceiverConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.darwin.Darwin
+import io.ktor.client.plugins.websocket.WebSockets
 import kotlinx.coroutines.flow.flow
 import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
@@ -144,6 +146,18 @@ class IosAudioCompanionRuntimeFactory(
                         )
             },
         )
+        val liveAudioTap = LiveAudioTap()
+        val cloudLiveTranscriber = CloudLiveTranscriber(
+            tap = liveAudioTap,
+            provider = SonioxRealtimeProvider(
+                client = HttpClient(Darwin) { install(WebSockets) },
+                apiKey = { settingsRepository.settings.value.sonioxApiKey },
+                cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+                diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled },
+            ),
+            enabled = { settingsRepository.settings.value.cloudLiveTranscriptionEnabled },
+            nowMs = nowMs,
+        )
         val aiRouter = AiModeRouter(
             local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
             remote = OpenAiChatAiProvider(
@@ -240,6 +254,8 @@ class IosAudioCompanionRuntimeFactory(
             },
             localTranscriptionLifecycle = localProvider,
             backgroundUploadCoordinator = uploadCoordinator,
+            cloudLiveTranscriber = cloudLiveTranscriber,
+            liveAudioTap = liveAudioTap,
         )
     }
 

@@ -337,6 +337,8 @@ class TeeSegmentSink(
     private val store: SegmentStore,
     private val monitor: LiveAudioMonitor,
     private val nowMs: () -> Long,
+    /** Optional live-audio fan-out for real-time cloud transcription; null disables it. */
+    private val tap: LiveAudioTap? = null,
 ) : SegmentSink {
     override suspend fun openSegment(
         start: StreamStart,
@@ -344,11 +346,25 @@ class TeeSegmentSink(
         provenance: SegmentProvenance?,
     ) {
         store.openSegment(start, receivedAtMs, provenance)
+        val segmentId = store.openSegmentId ?: return
+        val meta = store.readMeta(segmentId) ?: return
+        tap?.emit(
+            LiveAudioEvent.SegmentOpened(
+                segmentId = segmentId,
+                sampleRateHz = meta.sampleRateHz.toInt(),
+                bitRateBps = meta.bitRateBps.toInt(),
+                frameSamples = meta.frameSamples,
+            ),
+        )
     }
 
     override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
         store.appendFrames(streamId, frames)
-        monitor.onFrames(store.openSegmentId, frames, nowMs())
+        val segmentId = store.openSegmentId
+        monitor.onFrames(segmentId, frames, nowMs())
+        if (tap != null && segmentId != null) {
+            tap.emit(LiveAudioEvent.FramesAppended(segmentId, frames.map { it.payload }))
+        }
     }
 
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {
@@ -359,6 +375,8 @@ class TeeSegmentSink(
     }
 
     override suspend fun closeSegment(reason: SegmentCloseReason) {
+        val closingId = store.openSegmentId
         store.closeSegment(reason)
+        closingId?.let { tap?.emit(LiveAudioEvent.SegmentClosed(it)) }
     }
 }

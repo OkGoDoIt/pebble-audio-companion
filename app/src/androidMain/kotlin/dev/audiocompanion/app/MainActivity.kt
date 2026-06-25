@@ -175,6 +175,10 @@ class MainActivity : ComponentActivity() {
                         settingsRepository.setDiarizationEnabled(it)
                         runtime.notifyTranscriptionConfigChanged()
                     },
+                    setCloudLiveTranscriptionEnabled = {
+                        settingsRepository.setCloudLiveTranscriptionEnabled(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
                     setAiMode = settingsRepository::setAiMode,
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
                     setAutomaticWavExportEnabled = {

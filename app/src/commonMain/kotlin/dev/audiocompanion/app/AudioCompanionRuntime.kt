@@ -33,6 +33,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -112,6 +113,10 @@ class AudioCompanionRuntime(
      * now); null disables it (Android, tests, local-only builds).
      */
     private val backgroundUploadCoordinator: BackgroundCloudUploadCoordinator? = null,
+    /** Real-time cloud transcription of the open segment (foreground, opt-in); null disables it. */
+    private val cloudLiveTranscriber: CloudLiveTranscriber? = null,
+    /** Live-audio fan-out feeding [cloudLiveTranscriber]; null disables real-time streaming. */
+    private val liveAudioTap: LiveAudioTap? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -122,7 +127,7 @@ class AudioCompanionRuntime(
 
     private val session = AudioReceiverSession(
         link = link,
-        sink = liveMonitor?.let { TeeSegmentSink(store, it, nowMs) } ?: store,
+        sink = liveMonitor?.let { TeeSegmentSink(store, it, nowMs, liveAudioTap) } ?: store,
         policy = retention,
         resumeStore = resumeStore,
         config = receiverConfig,
@@ -150,6 +155,7 @@ class AudioCompanionRuntime(
     private var sessionJob: Job? = null
     private var transcriptionJob: Job? = null
     private var uploadCoordinatorJob: Job? = null
+    private var livePreviewMergeJob: Job? = null
     private val transcriptionWakeups = Channel<Unit>(Channel.CONFLATED)
 
     /** Scope the processing loop runs on, captured at [start]; used to release the model promptly. */
@@ -178,6 +184,7 @@ class AudioCompanionRuntime(
     fun setForeground(value: Boolean) {
         if (foreground.value == value) return
         foreground.value = value
+        cloudLiveTranscriber?.setForeground(value)
         if (!value) {
             liveMonitor?.setActive(false)
             processingScope?.launch { localTranscriptionLifecycle?.releaseModel("background") }
@@ -265,6 +272,16 @@ class AudioCompanionRuntime(
             processingScope = scope
             if (transcriptionJob == null) {
                 transcriptionJob = scope.launch { runTranscriptionLoop() }
+            }
+            if (livePreviewMergeJob == null) {
+                cloudLiveTranscriber?.start(scope)
+                livePreviewMergeJob = scope.launch {
+                    combine(
+                        liveTranscriber?.previews ?: emptyLiveTranscriptPreviews,
+                        cloudLiveTranscriber?.previews ?: emptyLiveTranscriptPreviews,
+                    ) { local, cloud -> local + cloud }
+                        .collect { _liveTranscriptPreviews.value = it }
+                }
             }
             if (backgroundUploadCoordinator != null && uploadCoordinatorJob == null) {
                 uploadCoordinatorJob = backgroundUploadCoordinator.start(scope)
@@ -424,9 +441,15 @@ class AudioCompanionRuntime(
     fun liveTranscriptPreview(segmentId: String): LiveTranscriptPreview? =
         liveTranscriber?.previewFor(segmentId)
 
-    /** Live preview progress as a flow so visible screens can update without a tab reload. */
+    /**
+     * Live preview progress as a flow so visible screens can update without a tab reload. Merges
+     * the local chunk-based previews with the real-time cloud previews (cloud overrides local for
+     * the same open segment); populated by a collector started in [start].
+     */
+    private val _liveTranscriptPreviews =
+        MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     val liveTranscriptPreviews: StateFlow<Map<String, LiveTranscriptPreview>> =
-        liveTranscriber?.previews ?: emptyLiveTranscriptPreviews.asStateFlow()
+        _liveTranscriptPreviews.asStateFlow()
 
     fun listTranscripts(): List<SegmentTranscript> = transcriptStore.list()
 
@@ -554,6 +577,7 @@ class AudioCompanionRuntime(
             if (live.processOnce()) processed = true
             live.prune { segmentId -> transcriptStore.load(segmentId) != null }
         }
+        cloudLiveTranscriber?.prune { segmentId -> transcriptStore.load(segmentId) != null }
         exportClosedSegmentsIfEnabled()
         // Shrink the foreground footprint between bursts: release the resident local model once it
         // has been idle. It reloads lazily on the next segment (selected-model changes are also

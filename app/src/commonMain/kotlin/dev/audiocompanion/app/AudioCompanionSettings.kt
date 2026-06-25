@@ -18,6 +18,8 @@ data class AudioCompanionSettings(
     val sonioxApiKey: String = "",
     /** Opt-in speaker diarization for cloud transcription (provider-dependent). */
     val diarizationEnabled: Boolean = false,
+    /** Opt-in real-time cloud transcription of the live segment (foreground; Soniox). */
+    val cloudLiveTranscriptionEnabled: Boolean = false,
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
     val remoteAiConsent: Boolean = false,
     /** When enabled, closed segments are decoded into WAV files in the platform export folder. */
@@ -39,6 +41,7 @@ interface AudioCompanionSettingsRepository {
     fun setOpenAiApiKey(apiKey: String)
     fun setSonioxApiKey(apiKey: String)
     fun setDiarizationEnabled(enabled: Boolean)
+    fun setCloudLiveTranscriptionEnabled(enabled: Boolean)
     fun setAiMode(mode: AiProcessingMode)
     fun setRemoteAiConsent(consented: Boolean)
     fun setAutomaticWavExportEnabled(enabled: Boolean)
