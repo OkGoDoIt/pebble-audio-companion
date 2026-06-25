@@ -53,6 +53,9 @@ expect suspend fun withHighPriorityTranscriptionThread(block: suspend () -> Stri
 expect suspend fun getFreeTranscriptionMemoryMb(): Long
 expect val minTranscriptionMemoryMb: Long
 
+/** Minimum process-available memory (MB) required to *load* a model, gated before init. */
+expect val minModelInitMemoryMb: Long
+
 class CactusLocalTranscriptionProvider(
     private val modelProvider: CactusModelPathProvider,
     private val fileSystem: kotlinx.io.files.FileSystem = SystemFileSystem,
@@ -180,6 +183,17 @@ class CactusLocalTranscriptionProvider(
             cactusDestroy(modelHandle)
             modelHandle = 0L
         }
+        // Gate model load on this process's remaining memory budget (jetsam headroom). Loading a
+        // model into a tight budget is a fast path to being killed; defer instead and retry later.
+        val availableMb = getFreeTranscriptionMemoryMb()
+        if (availableMb < minModelInitMemoryMb) {
+            mutableStatus.value = ProviderStatus.NotReady
+            println(
+                "Pebble Audio Companion local model load deferred: " +
+                    "${availableMb}MB < ${minModelInitMemoryMb}MB process budget",
+            )
+            throw TranscriptionException.ProviderUnavailable(id)
+        }
         modelHandle = try {
             cactusInit(path, null, false)
         } catch (e: Exception) {
@@ -194,6 +208,10 @@ class CactusLocalTranscriptionProvider(
     private suspend fun runNativeTranscribe(handle: Long, wavPath: String): NativeTranscription {
         val freeMemory = getFreeTranscriptionMemoryMb()
         if (freeMemory < minTranscriptionMemoryMb) {
+            println(
+                "Pebble Audio Companion local transcription deferred: " +
+                    "${freeMemory}MB < ${minTranscriptionMemoryMb}MB process budget",
+            )
             throw TranscriptionException.ProviderUnavailable(id)
         }
         val callerJob = coroutineContext[Job]

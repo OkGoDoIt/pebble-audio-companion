@@ -23,3 +23,5 @@ actual suspend fun getFreeTranscriptionMemoryMb(): Long {
 }
 
 actual val minTranscriptionMemoryMb: Long = 20
+
+actual val minModelInitMemoryMb: Long = 40
