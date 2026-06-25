@@ -159,8 +159,20 @@ class MainActivity : ComponentActivity() {
                         settingsRepository.setCloudTranscriptionConsent(it)
                         runtime.notifyTranscriptionConfigChanged()
                     },
+                    setCloudTranscriptionProvider = {
+                        settingsRepository.setCloudTranscriptionProvider(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
                     setOpenAiApiKey = {
                         settingsRepository.setOpenAiApiKey(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
+                    setSonioxApiKey = {
+                        settingsRepository.setSonioxApiKey(it)
+                        runtime.notifyTranscriptionConfigChanged()
+                    },
+                    setDiarizationEnabled = {
+                        settingsRepository.setDiarizationEnabled(it)
                         runtime.notifyTranscriptionConfigChanged()
                     },
                     setAiMode = settingsRepository::setAiMode,

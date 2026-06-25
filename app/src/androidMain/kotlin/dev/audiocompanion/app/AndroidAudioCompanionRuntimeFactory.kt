@@ -18,6 +18,8 @@ import dev.audiocompanion.transcription.CactusModelPathProvider
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
+import dev.audiocompanion.transcription.SelectableCloudTranscriptionProvider
+import dev.audiocompanion.transcription.SonioxTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
 import dev.audiocompanion.transcription.TranscriptionMode
@@ -60,10 +62,23 @@ class AndroidAudioCompanionRuntimeFactory(
             modelProvider = modelProvider,
             nowMs = nowMs,
         )
-        val remoteProvider = OpenAiTranscriptionProvider(
-            client = HttpClient(OkHttp),
-            apiKey = { settingsRepository.settings.value.openAiApiKey },
-            cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+        val cloudHttpClient = HttpClient(OkHttp)
+        val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent }
+        val diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled }
+        val remoteProvider = SelectableCloudTranscriptionProvider(
+            selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
+            openAi = OpenAiTranscriptionProvider(
+                client = cloudHttpClient,
+                apiKey = { settingsRepository.settings.value.openAiApiKey },
+                cloudConsent = cloudConsent,
+                diarizationEnabled = diarizationEnabled,
+            ),
+            soniox = SonioxTranscriptionProvider(
+                client = cloudHttpClient,
+                apiKey = { settingsRepository.settings.value.sonioxApiKey },
+                cloudConsent = cloudConsent,
+                diarizationEnabled = diarizationEnabled,
+            ),
         )
         val router = TranscriptionModeRouter(
             local = localProvider,

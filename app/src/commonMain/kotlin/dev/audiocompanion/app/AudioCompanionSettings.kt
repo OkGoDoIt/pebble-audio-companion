@@ -1,6 +1,7 @@
 package dev.audiocompanion.app
 
 import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
 import kotlinx.coroutines.flow.StateFlow
 
@@ -11,7 +12,12 @@ data class AudioCompanionSettings(
     val transcriptionMode: TranscriptionMode = TranscriptionMode.LocalFirst,
     val localTranscriptionModelId: String = LocalTranscriptionModels.DEFAULT_MODEL_ID,
     val cloudTranscriptionConsent: Boolean = false,
+    /** Which cloud speech-to-text backend the user has selected. */
+    val cloudTranscriptionProvider: CloudProvider = CloudProvider.OpenAi,
     val openAiApiKey: String = "",
+    val sonioxApiKey: String = "",
+    /** Opt-in speaker diarization for cloud transcription (provider-dependent). */
+    val diarizationEnabled: Boolean = false,
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
     val remoteAiConsent: Boolean = false,
     /** When enabled, closed segments are decoded into WAV files in the platform export folder. */
@@ -29,7 +35,10 @@ interface AudioCompanionSettingsRepository {
     fun setTranscriptionMode(mode: TranscriptionMode)
     fun setLocalTranscriptionModel(modelId: String)
     fun setCloudTranscriptionConsent(consented: Boolean)
+    fun setCloudTranscriptionProvider(provider: CloudProvider)
     fun setOpenAiApiKey(apiKey: String)
+    fun setSonioxApiKey(apiKey: String)
+    fun setDiarizationEnabled(enabled: Boolean)
     fun setAiMode(mode: AiProcessingMode)
     fun setRemoteAiConsent(consented: Boolean)
     fun setAutomaticWavExportEnabled(enabled: Boolean)
