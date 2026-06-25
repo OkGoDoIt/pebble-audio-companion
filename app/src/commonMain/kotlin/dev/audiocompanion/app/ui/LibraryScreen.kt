@@ -791,11 +791,25 @@ private fun timelineItemDurationMs(item: TranscriptTimelineItem): Long = when (i
     is TranscriptTimelineItem.Pause -> item.durationMs
 }
 
+/** Presents a raw provider speaker id ("1", "agent") as a friendly label ("Speaker 1", "Agent"). */
+internal fun speakerLabel(speaker: String): String {
+    val trimmed = speaker.trim()
+    if (trimmed.isEmpty()) return trimmed
+    return if (trimmed.all { it.isDigit() }) {
+        "Speaker $trimmed"
+    } else {
+        trimmed.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
+}
+
 private fun coalescedSpeechBlocks(
     segments: List<TranscriptSegment>,
     words: List<TranscriptWord>,
 ): List<TranscriptTimelineItem.Speech> {
-    val raw = if (words.isNotEmpty()) {
+    // Prefer word-level timings for the finest timeline, EXCEPT when diarization labeled the
+    // segments with speakers (words carry no speaker) — then segment-level keeps the speaker labels.
+    val hasSpeakers = segments.any { !it.speaker.isNullOrBlank() }
+    val raw = if (words.isNotEmpty() && !hasSpeakers) {
         words.map {
             TranscriptTimelineItem.Speech(
                 startMs = it.startMs.coerceAtLeast(0),
@@ -810,7 +824,7 @@ private fun coalescedSpeechBlocks(
                 startMs = it.startMs.coerceAtLeast(0),
                 endMs = it.endMs.coerceAtLeast(it.startMs),
                 text = it.text.trim(),
-                speaker = it.speaker,
+                speaker = it.speaker?.let(::speakerLabel),
             )
         }
     }.filter { it.text.isNotBlank() }.sortedBy { it.startMs }
