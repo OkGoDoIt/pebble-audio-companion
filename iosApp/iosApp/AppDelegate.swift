@@ -29,6 +29,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         scheduleProcessingTask()
     }
 
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        IosAudioCompanionBootstrap.shared.applicationDidReceiveMemoryWarning()
+    }
+
     private func handleProcessingTask(_ task: BGTask) {
         // Always chain the next opportunity first.
         scheduleProcessingTask()

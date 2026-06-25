@@ -15,6 +15,7 @@ import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.storage.TranscriptionState as SegmentTranscriptionState
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
+import dev.audiocompanion.transcription.LocalTranscriptionLifecycle
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TaskState
 import dev.audiocompanion.transcription.TranscriptionProcessor
@@ -45,6 +46,12 @@ data class AudioCompanionDiagnostics(
     val pauseRequested: Boolean = false,
     val freeStorageHintKb: UInt = 0u,
     val aiOutputCount: Int = 0,
+    /**
+     * True when the app is backgrounded: audio is still received, but local transcription/AI are
+     * deferred until the app returns to the foreground. Lets the UI show honest "paused" status
+     * instead of implying work is happening.
+     */
+    val transcriptionPausedInBackground: Boolean = false,
 )
 
 data class AudioCompanionSupportReport(
@@ -92,6 +99,11 @@ class AudioCompanionRuntime(
      * session's declarative reconcile so a restart reliably resumes the watch.
      */
     private val desiredEnabled: () -> Boolean = { true },
+    /**
+     * Releases the resident local transcription model on background/idle/memory pressure; null in
+     * tests and builds without a local model.
+     */
+    private val localTranscriptionLifecycle: LocalTranscriptionLifecycle? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -131,6 +143,38 @@ class AudioCompanionRuntime(
     private var transcriptionJob: Job? = null
     private val transcriptionWakeups = Channel<Unit>(Channel.CONFLATED)
 
+    /** Scope the processing loop runs on, captured at [start]; used to release the model promptly. */
+    private var processingScope: CoroutineScope? = null
+
+    /**
+     * Foreground/background processing policy (plan: "Split receive from process"). The receive
+     * path (BLE connect/subscribe/append/checkpoint) always runs regardless of this. This only
+     * gates the heavy processing loop so a short Core Bluetooth background wake stays cheap.
+     */
+    private val foreground = MutableStateFlow(true)
+
+    /**
+     * Switches the processing policy. Receiving is unaffected. On entering the background it stops
+     * decoding the live waveform, releases the local model promptly (interrupting any in-flight
+     * inference), and wakes the loop so it begins deferring; on returning to the foreground it
+     * wakes the loop to resume.
+     */
+    fun setForeground(value: Boolean) {
+        if (foreground.value == value) return
+        foreground.value = value
+        if (!value) {
+            liveMonitor?.setActive(false)
+            processingScope?.launch { localTranscriptionLifecycle?.releaseModel("background") }
+        }
+        transcriptionWakeups.trySend(Unit)
+        refreshDiagnostics()
+    }
+
+    /** Releases the resident local transcription model now (e.g. on a system memory warning). */
+    suspend fun releaseLocalModel(reason: String) {
+        localTranscriptionLifecycle?.releaseModel(reason)
+    }
+
     fun recoverDurableState() {
         recoverDurableStateIfNeeded()
     }
@@ -155,6 +199,7 @@ class AudioCompanionRuntime(
     suspend fun start(scope: CoroutineScope): Job =
         lifecycleMutex.withLock {
             recoverDurableStateIfNeeded()
+            processingScope = scope
             if (transcriptionJob == null) {
                 transcriptionJob = scope.launch { runTranscriptionLoop() }
             }
@@ -238,6 +283,7 @@ class AudioCompanionRuntime(
             pauseRequested = retention.pauseRequested,
             freeStorageHintKb = retention.freeStorageHintKb(),
             aiOutputCount = aiOutputStore.list().size,
+            transcriptionPausedInBackground = !foreground.value,
         )
     }
 
@@ -397,6 +443,14 @@ class AudioCompanionRuntime(
     }
 
     private suspend fun runTranscriptionPass(): Long {
+        if (!foreground.value) {
+            // Background: receive-only. Defer all heavy processing (local STT, live preview, AI
+            // enrichment, WAV export) and release the local model so a ~10s Bluetooth wake stays
+            // cheap and the app is not a jetsam target. Pending segments stay queued and are
+            // transcribed when the app returns to the foreground.
+            localTranscriptionLifecycle?.releaseModel("background")
+            return BACKGROUND_PROCESSING_SLEEP_MS
+        }
         // Segments parked while no provider was usable become eligible again the moment
         // one is (model downloaded, key added, mode changed).
         if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) {
@@ -420,6 +474,12 @@ class AudioCompanionRuntime(
             live.prune { segmentId -> transcriptStore.load(segmentId) != null }
         }
         exportClosedSegmentsIfEnabled()
+        // Shrink the foreground footprint between bursts: release the resident local model once it
+        // has been idle. It reloads lazily on the next segment (selected-model changes are also
+        // picked up here, since the reload uses the current model).
+        if (!processed) {
+            localTranscriptionLifecycle?.releaseModelIfIdle(nowMs(), LOCAL_MODEL_IDLE_TIMEOUT_MS)
+        }
         // Sleep until the poll interval elapses, a failed task's backoff expires, or a
         // config change (model downloaded, key/mode/consent changed) wakes the loop.
         return when {
@@ -460,6 +520,12 @@ class AudioCompanionRuntime(
         private const val TRANSCRIPTION_POLL_MS = 30_000L
         private const val LIVE_PREVIEW_POLL_MS = 5_000L
         private const val TRANSCRIPTION_FAILURE_BACKOFF_MS = 5_000L
+
+        /** Long idle sleep while backgrounded; [setForeground] wakes the loop on return. */
+        private const val BACKGROUND_PROCESSING_SLEEP_MS = 60_000L
+
+        /** Release the resident local model after this much foreground idle time. */
+        private const val LOCAL_MODEL_IDLE_TIMEOUT_MS = 30_000L
 
         fun segmentTranscriptionState(state: TaskState): SegmentTranscriptionState = when (state) {
             TaskState.Pending -> SegmentTranscriptionState.Pending

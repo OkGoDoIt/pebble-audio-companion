@@ -164,6 +164,7 @@ class AndroidAudioCompanionRuntimeFactory(
             desiredEnabled = {
                 settingsRepository.settings.value.backgroundReceiverEnabled
             },
+            localTranscriptionLifecycle = localProvider,
         )
     }
 
