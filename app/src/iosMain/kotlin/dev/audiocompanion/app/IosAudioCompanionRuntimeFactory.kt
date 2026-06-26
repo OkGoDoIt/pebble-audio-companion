@@ -18,10 +18,12 @@ import dev.audiocompanion.transcription.CactusModelPathProvider
 import dev.audiocompanion.transcription.CloudUploadJobStore
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
+import dev.audiocompanion.transcription.OpenAiRealtimeProvider
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
 import dev.audiocompanion.transcription.PcmWav
 import dev.audiocompanion.transcription.SegmentAudio
 import dev.audiocompanion.transcription.SelectableCloudTranscriptionProvider
+import dev.audiocompanion.transcription.SelectableStreamingTranscriptionProvider
 import dev.audiocompanion.transcription.SonioxRealtimeProvider
 import dev.audiocompanion.transcription.SonioxTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
@@ -147,13 +149,22 @@ class IosAudioCompanionRuntimeFactory(
             },
         )
         val liveAudioTap = LiveAudioTap()
+        val streamingClient = HttpClient(Darwin) { install(WebSockets) }
         val cloudLiveTranscriber = CloudLiveTranscriber(
             tap = liveAudioTap,
-            provider = SonioxRealtimeProvider(
-                client = HttpClient(Darwin) { install(WebSockets) },
-                apiKey = { settingsRepository.settings.value.sonioxApiKey },
-                cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
-                diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled },
+            provider = SelectableStreamingTranscriptionProvider(
+                selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
+                openAi = OpenAiRealtimeProvider(
+                    client = streamingClient,
+                    apiKey = { settingsRepository.settings.value.openAiApiKey },
+                    cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+                ),
+                soniox = SonioxRealtimeProvider(
+                    client = streamingClient,
+                    apiKey = { settingsRepository.settings.value.sonioxApiKey },
+                    cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+                    diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled },
+                ),
             ),
             enabled = { settingsRepository.settings.value.cloudLiveTranscriptionEnabled },
             nowMs = nowMs,
