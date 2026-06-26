@@ -5,7 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +37,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
@@ -589,27 +594,78 @@ private fun SpeechTimelineRow(
     item: TranscriptTimelineItem.Speech,
     onSeekMs: (Long) -> Unit,
 ) {
+    val speaker = item.speaker
+    val accent = speaker?.let(::speakerColor)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(IntrinsicSize.Min)
             .clickable { onSeekMs(item.startMs) },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        TimestampPill(timestamp)
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
-            item.speaker?.let { speaker ->
-                Text(
-                    text = speaker,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Text(
-                text = item.text,
-                style = MaterialTheme.typography.bodyLarge,
+        if (speaker == null || accent == null) {
+            TimestampPill(timestamp)
+        } else {
+            TranscriptSpeakerGutter(
+                timestamp = timestamp,
+                speaker = speaker,
+                color = accent,
             )
         }
+        if (accent != null) SpeakerAccentBar(accent)
+        Text(
+            text = item.text,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun TranscriptSpeakerGutter(timestamp: String?, speaker: String, color: Color) {
+    Column(
+        modifier = Modifier.width(82.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        TimestampPill(timestamp, width = 82.dp)
+        Text(
+            text = speaker,
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun SpeakerAccentBar(color: Color) {
+    Box(
+        modifier = Modifier
+            .width(3.dp)
+            .fillMaxHeight()
+            .background(color.copy(alpha = 0.82f), RoundedCornerShape(999.dp)),
+    )
+}
+
+internal fun speakerColor(speaker: String): Color {
+    val index = speakerColorIndex(speaker)
+    return speakerColors[index]
+}
+
+internal fun speakerColorIndex(speaker: String): Int {
+    val normalized = speaker.trim()
+    val speakerNumber = normalized
+        .removePrefix("Speaker ")
+        .takeIf { it.isNotBlank() && it.all(Char::isDigit) }
+        ?.toIntOrNull()
+    return if (speakerNumber != null && speakerNumber > 0) {
+        (speakerNumber - 1) % speakerColors.size
+    } else {
+        normalized.lowercase().fold(0) { acc, char -> acc * 31 + char.code }
+            .let { hash -> ((hash % speakerColors.size) + speakerColors.size) % speakerColors.size }
     }
 }
 
@@ -636,14 +692,14 @@ private fun PauseTimelineRow(timestamp: String?, item: TranscriptTimelineItem.Pa
 }
 
 @Composable
-private fun TimestampPill(text: String?, muted: Boolean = false) {
+private fun TimestampPill(text: String?, muted: Boolean = false, width: Dp = 72.dp) {
     if (text == null) {
-        Box(modifier = Modifier.width(72.dp))
+        Box(modifier = Modifier.width(width).height(26.dp))
         return
     }
     Box(
         modifier = Modifier
-            .width(72.dp)
+            .width(width)
             .background(
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (muted) 0.55f else 1f),
                 RoundedCornerShape(999.dp),
@@ -658,6 +714,15 @@ private fun TimestampPill(text: String?, muted: Boolean = false) {
         )
     }
 }
+
+private val speakerColors = listOf(
+    Color(0xFF6F55B5),
+    Color(0xFF007C89),
+    Color(0xFFB45F06),
+    Color(0xFF2E7D32),
+    Color(0xFFB3265D),
+    Color(0xFF1565C0),
+)
 
 sealed interface TranscriptTimelineItem {
     val startMs: Long
