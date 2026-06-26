@@ -601,7 +601,7 @@ private fun SpeechTimelineRow(
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
             .clickable { onSeekMs(item.startMs) },
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
         verticalAlignment = Alignment.Top,
     ) {
         if (speaker == null || accent == null) {
@@ -625,11 +625,11 @@ private fun SpeechTimelineRow(
 @Composable
 private fun TranscriptSpeakerGutter(timestamp: String?, speaker: String, color: Color) {
     Column(
-        modifier = Modifier.width(82.dp),
+        modifier = Modifier.width(68.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        TimestampPill(timestamp, width = 82.dp)
+        timestamp?.let { TimestampPill(it, width = 68.dp) }
         Text(
             text = speaker,
             style = MaterialTheme.typography.labelSmall,
@@ -678,7 +678,7 @@ private fun BreakTimelineRow() {
 private fun PauseTimelineRow(timestamp: String?, item: TranscriptTimelineItem.Pause) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         TimestampPill(timestamp, muted = true)
@@ -694,7 +694,7 @@ private fun PauseTimelineRow(timestamp: String?, item: TranscriptTimelineItem.Pa
 @Composable
 private fun TimestampPill(text: String?, muted: Boolean = false, width: Dp = 72.dp) {
     if (text == null) {
-        Box(modifier = Modifier.width(width).height(26.dp))
+        Box(modifier = Modifier.width(width))
         return
     }
     Box(
