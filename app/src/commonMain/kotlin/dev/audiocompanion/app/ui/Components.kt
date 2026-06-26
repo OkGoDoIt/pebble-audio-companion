@@ -30,6 +30,7 @@ import dev.audiocompanion.transcription.TranscriptionMode
 /** Semantic colors (ux plan Section 14): platform-leaning, restrained. */
 object StatusColors {
     val recording = Color(0xFF2E7D32) // green
+    val success = Color(0xFF2E7D32) // green (e.g. cloud connection OK)
     val info = Color(0xFF1565C0) // blue
     val warning = Color(0xFFB26A00) // amber
     val error = Color(0xFFC62828) // red

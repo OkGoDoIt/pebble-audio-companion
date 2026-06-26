@@ -163,6 +163,10 @@ object IosAudioCompanionBootstrap {
         scope.launch { ensureHandle().runtime.refreshDiagnostics() }
     }
 
+    fun testCloudConnection() {
+        scope.launch { ensureHandle().runtime.testCloudConnection() }
+    }
+
     /**
      * Runs one BGProcessingTask's worth of optional maintenance (retention cleanup + diagnostics),
      * then invokes [onComplete] so the host can call setTaskCompleted exactly once. Must never stop
@@ -238,6 +242,7 @@ fun MainViewController(): UIViewController {
             waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
             playbackState = runtime.playback?.state
                 ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
+            cloudHealth = runtime.cloudHealth,
             actions = AppActions(
                 pairWatch = {
                     // Goes through the bootstrap so the persisted enabled flag stays in sync
@@ -274,6 +279,7 @@ fun MainViewController(): UIViewController {
                 loadLiveTranscriptPreview = runtime::liveTranscriptPreview,
                 loadAnnotation = runtime::annotation,
                 loadAiOutputs = runtime::listAiOutputs,
+                reprocessSegment = runtime::reprocessSegment,
                 deleteSegment = runtime::deleteSegmentData,
                 deleteAiOutput = runtime::deleteAiOutput,
                 deleteAll = bootstrap::deleteAllLocalData,
@@ -320,6 +326,7 @@ fun MainViewController(): UIViewController {
                     settings.setSonioxApiKey(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
+                testCloudConnection = bootstrap::testCloudConnection,
                 setAiMode = settings::setAiMode,
                 setRemoteAiConsent = settings::setRemoteAiConsent,
                 setAutomaticWavExportEnabled = {

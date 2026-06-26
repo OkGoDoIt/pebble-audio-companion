@@ -37,7 +37,51 @@ class TranscriptionModeRouterTest {
         local: FakeProvider?,
         remote: FakeProvider?,
         mode: TranscriptionMode,
-    ) = TranscriptionModeRouter(local, remote, { mode })
+    ) = TranscriptionModeRouter(local, remote, mode = { mode })
+
+    @Test
+    fun remoteFirst_reportsOkOnRemoteSuccess() = runTest {
+        val outcomes = mutableListOf<CloudConnectivityResult>()
+        val router = TranscriptionModeRouter(
+            local = FakeProvider("local"),
+            remote = FakeProvider("remote"),
+            onRemoteOutcome = { outcomes += it },
+            mode = { TranscriptionMode.RemoteFirst },
+        )
+        router.transcribe(pcm, 16000)
+        assertEquals(1, outcomes.size)
+        assertTrue(outcomes.single() is CloudConnectivityResult.Ok)
+    }
+
+    @Test
+    fun remoteFirst_reportsFailedThenFallsBackToLocal() = runTest {
+        val outcomes = mutableListOf<CloudConnectivityResult>()
+        val router = TranscriptionModeRouter(
+            local = FakeProvider("local"),
+            remote = FakeProvider("remote", error = TranscriptionException.TranscriptionFailed("boom")),
+            onRemoteOutcome = { outcomes += it },
+            mode = { TranscriptionMode.RemoteFirst },
+        )
+        val result = router.transcribe(pcm, 16000)
+        // The cloud failure is reported (so the app can surface it) even though the user still
+        // gets a transcript via the silent local fallback.
+        assertTrue(outcomes.single() is CloudConnectivityResult.Failed)
+        assertEquals(TranscriptionMode.LocalOnly, result.modeUsed)
+        assertEquals("local", result.providerId)
+    }
+
+    @Test
+    fun localOnly_neverReportsCloudOutcome() = runTest {
+        val outcomes = mutableListOf<CloudConnectivityResult>()
+        val router = TranscriptionModeRouter(
+            local = FakeProvider("local"),
+            remote = FakeProvider("remote"),
+            onRemoteOutcome = { outcomes += it },
+            mode = { TranscriptionMode.LocalOnly },
+        )
+        router.transcribe(pcm, 16000)
+        assertTrue(outcomes.isEmpty())
+    }
 
     @Test
     fun localOnly_usesLocal_neverRemote() = runTest {

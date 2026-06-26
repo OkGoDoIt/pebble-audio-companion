@@ -20,11 +20,15 @@ class SelectableCloudTranscriptionProvider(
     private val selected: () -> CloudProvider,
     private val openAi: TranscriptionProvider,
     private val soniox: TranscriptionProvider,
-) : TranscriptionProvider, CloudUploadCapable {
+) : TranscriptionProvider, CloudUploadCapable, CloudConnectivityCheck {
     override val id: String get() = active().id
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
 
     override suspend fun isAvailable(): Boolean = active().isAvailable()
+
+    override suspend fun checkConnectivity(): CloudConnectivityResult =
+        (active() as? CloudConnectivityCheck)?.checkConnectivity()
+            ?: CloudConnectivityResult.Failed("The selected cloud provider cannot be tested.")
 
     override suspend fun transcribe(
         pcmChunks: Flow<ByteArray>,

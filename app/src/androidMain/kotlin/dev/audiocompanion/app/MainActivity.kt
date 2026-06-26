@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 waveformWindowMs = runtime.liveMonitor?.windowMs ?: 60_000,
                 playbackState = runtime.playback?.state
                     ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
+                cloudHealth = runtime.cloudHealth,
                 actions = AppActions(
                     pairWatch = { requestPermissionsAndAssociate() },
                     requestPermissions = { requestPermissionsOnly() },
@@ -113,6 +114,7 @@ class MainActivity : ComponentActivity() {
                     loadLiveTranscriptPreview = runtime::liveTranscriptPreview,
                     loadAnnotation = runtime::annotation,
                     loadAiOutputs = runtime::listAiOutputs,
+                    reprocessSegment = runtime::reprocessSegment,
                     deleteSegment = runtime::deleteSegmentData,
                     deleteAiOutput = runtime::deleteAiOutput,
                     deleteAll = {
@@ -169,6 +171,9 @@ class MainActivity : ComponentActivity() {
                     setSonioxApiKey = {
                         settingsRepository.setSonioxApiKey(it)
                         runtime.notifyTranscriptionConfigChanged()
+                    },
+                    testCloudConnection = {
+                        runtimeScope.launch { runtime.testCloudConnection() }
                     },
                     setAiMode = settingsRepository::setAiMode,
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,

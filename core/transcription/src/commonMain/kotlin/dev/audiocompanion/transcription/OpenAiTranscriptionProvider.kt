@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -11,6 +12,8 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.isSuccess
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,8 +41,9 @@ class OpenAiTranscriptionProvider(
      */
     private val diarizationEnabled: () -> Boolean = { false },
     private val endpointUrl: String = DEFAULT_ENDPOINT_URL,
+    private val modelsUrl: String = DEFAULT_MODELS_URL,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
-) : TranscriptionProvider, CloudUploadCapable {
+) : TranscriptionProvider, CloudUploadCapable, CloudConnectivityCheck {
     override val id: String = "openai"
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
 
@@ -53,6 +57,32 @@ class OpenAiTranscriptionProvider(
 
     override suspend fun isAvailable(): Boolean =
         cloudConsent() && !apiKey().isNullOrBlank()
+
+    override suspend fun checkConnectivity(): CloudConnectivityResult {
+        val key = apiKey()?.takeIf { it.isNotBlank() }
+            ?: return CloudConnectivityResult.NotConfigured(
+                "Add an OpenAI API key to use cloud transcription.",
+            )
+        return try {
+            val response = client.get(modelsUrl) {
+                header(HttpHeaders.Authorization, "Bearer $key")
+            }
+            when {
+                response.status.isSuccess() -> CloudConnectivityResult.Ok("OpenAI connected")
+                response.status == HttpStatusCode.Unauthorized ||
+                    response.status == HttpStatusCode.Forbidden ->
+                    CloudConnectivityResult.Failed("OpenAI rejected the API key.")
+                else -> CloudConnectivityResult.Failed(
+                    "OpenAI check failed (${response.status.value}): " +
+                        response.body<String>().take(160),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            CloudConnectivityResult.Failed("Could not reach OpenAI: ${t.message ?: "network error"}")
+        }
+    }
 
     override suspend fun transcribe(
         pcmChunks: Flow<ByteArray>,
@@ -331,6 +361,7 @@ class OpenAiTranscriptionProvider(
 
     companion object {
         const val DEFAULT_ENDPOINT_URL = "https://api.openai.com/v1/audio/transcriptions"
+        const val DEFAULT_MODELS_URL = "https://api.openai.com/v1/models"
         const val DEFAULT_MODEL = "gpt-4o-mini-transcribe"
 
         /** OpenAI's speaker-diarization model; returns `diarized_json` with per-segment speakers. */

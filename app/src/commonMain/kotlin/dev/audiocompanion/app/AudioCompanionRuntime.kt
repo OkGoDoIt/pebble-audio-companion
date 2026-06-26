@@ -117,6 +117,10 @@ class AudioCompanionRuntime(
     private val cloudLiveTranscriber: CloudLiveTranscriber? = null,
     /** Live-audio fan-out feeding [cloudLiveTranscriber]; null disables real-time streaming. */
     private val liveAudioTap: LiveAudioTap? = null,
+    /** Shared cloud-health state, written by the router and the explicit test; null in tests. */
+    private val cloudHealthMonitor: CloudHealthMonitor? = null,
+    /** The selected cloud provider's self-test, for the Settings connectivity check; null disables it. */
+    private val cloudConnectivityCheck: dev.audiocompanion.transcription.CloudConnectivityCheck? = null,
 ) {
     private val enrichmentWorker = SegmentEnrichmentWorker(
         annotations = annotationStore,
@@ -211,6 +215,49 @@ class AudioCompanionRuntime(
     /** Releases the resident local transcription model now (e.g. on a system memory warning). */
     suspend fun releaseLocalModel(reason: String) {
         localTranscriptionLifecycle?.releaseModel(reason)
+    }
+
+    /** App-wide cloud transcription health, for Settings status and the failure banner. */
+    val cloudHealth: StateFlow<CloudHealth> =
+        cloudHealthMonitor?.state ?: MutableStateFlow(CloudHealth()).asStateFlow()
+
+    /**
+     * Runs an authenticated probe against the currently-selected cloud provider and publishes the
+     * result to [cloudHealth]. Called when the user enters an API key, switches provider, or taps
+     * "Test connection" in Settings. No-op when no cloud provider is wired.
+     */
+    suspend fun testCloudConnection() {
+        val check = cloudConnectivityCheck ?: return
+        val monitor = cloudHealthMonitor ?: return
+        monitor.reportChecking()
+        try {
+            monitor.report(check.checkConnectivity())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            monitor.report(
+                dev.audiocompanion.transcription.CloudConnectivityResult.Failed(
+                    t.message ?: "Cloud connectivity test failed.",
+                ),
+            )
+        }
+    }
+
+    /**
+     * User-requested re-transcribe: forces the segment's task back to Pending (clearing prior
+     * attempts/terminal state) and wakes the loop so it re-runs under the *current* transcription
+     * mode — e.g. to upgrade an old on-device transcript to cloud accuracy after enabling cloud. The
+     * existing transcript stays visible until the new one replaces it. No-op for the open segment.
+     */
+    fun reprocessSegment(segmentId: String) {
+        val meta = store.readMeta(segmentId) ?: return
+        if (meta.isOpen) return
+        if (transcriptionQueue.requeue(segmentId) == null) {
+            transcriptionQueue.enqueue(segmentId)
+        }
+        store.updateTranscriptionState(segmentId, SegmentTranscriptionState.Pending)
+        transcriptionWakeups.trySend(Unit)
+        refreshDiagnostics()
     }
 
     /**

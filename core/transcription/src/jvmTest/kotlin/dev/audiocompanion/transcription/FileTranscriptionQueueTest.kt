@@ -143,6 +143,30 @@ class FileTranscriptionQueueTest {
     }
 
     @Test
+    fun requeueForcesTerminalTaskBackToPending() {
+        val root = tempRoot()
+        val q = queue(root)
+        q.enqueue("seg-1")
+        q.markRunning("seg-1")
+        q.markComplete(
+            "seg-1",
+            RoutedTranscription("text", TranscriptionMode.LocalOnly, "local", null),
+        )
+        assertEquals(TaskState.Complete, q.load("seg-1")?.state)
+
+        val requeued = q.requeue("seg-1")
+        assertEquals(TaskState.Pending, requeued?.state)
+        assertEquals(0, requeued?.attempts, "re-transcribe resets the attempt count")
+        assertEquals("seg-1", q.nextRunnable()?.segmentId)
+    }
+
+    @Test
+    fun requeueReturnsNullForUnknownSegment() {
+        val q = queue(tempRoot())
+        assertNull(q.requeue("missing"))
+    }
+
+    @Test
     fun noSpeechAndDisabledAreTerminal() {
         val root = tempRoot()
         val q = queue(root)
