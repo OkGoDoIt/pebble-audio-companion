@@ -525,11 +525,13 @@ class AudioCompanionRuntime(
      * Rolling live transcript of a still-recording (or just-closed, not yet fully transcribed)
      * segment, or null. UI-preview only; the durable transcript supersedes it.
      */
-    fun liveTranscript(segmentId: String): String? = liveTranscriber?.textFor(segmentId)
+    fun liveTranscript(segmentId: String): String? =
+        _liveTranscriptPreviews.value[segmentId]?.text?.takeIf { it.isNotBlank() }
+            ?: liveTranscriber?.textFor(segmentId)
 
     /** Full live-preview progress (text + transcribed boundary) for waveform coloring. */
     fun liveTranscriptPreview(segmentId: String): LiveTranscriptPreview? =
-        liveTranscriber?.previewFor(segmentId)
+        _liveTranscriptPreviews.value[segmentId] ?: liveTranscriber?.previewFor(segmentId)
 
     /**
      * Live preview progress as a flow so visible screens can update without a tab reload. Merges
