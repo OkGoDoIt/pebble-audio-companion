@@ -18,6 +18,13 @@ class TranscriptFormattingTest {
     }
 
     @Test
+    fun speakerColorIndexKeepsNumericSpeakersStableAndDistinct() {
+        assertEquals(0, speakerColorIndex("Speaker 1"))
+        assertEquals(1, speakerColorIndex("Speaker 2"))
+        assertEquals(speakerColorIndex("Speaker 1"), speakerColorIndex("Speaker 7"))
+    }
+
+    @Test
     fun transcriptParagraphsSplitsOnReadableSentenceBoundaries() {
         val text = "First sentence. Second sentence! third fragment continues. 42 starts here?"
 
