@@ -37,6 +37,8 @@ import platform.CoreBluetooth.CBUUID
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
+import platform.Foundation.NSUserDefaults
+import platform.Foundation.NSUUID
 import platform.Foundation.create
 import platform.darwin.dispatch_get_main_queue
 import platform.darwin.NSObject
@@ -64,7 +66,9 @@ object IosAudioCompanionGatt {
  * fast: no decode, no transcription, just forwarding whole protocol messages into flows.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-class IosAudioGattLink : AudioGattLink {
+class IosAudioGattLink(
+    private val defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,
+) : AudioGattLink {
     private val _connectionState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = _connectionState.asStateFlow()
     private val _lastError = MutableStateFlow<String?>(null)
@@ -228,6 +232,7 @@ class IosAudioGattLink : AudioGattLink {
         wantConnected = true
         peripheral = restored
         restored.delegate = delegate
+        rememberPeripheral(restored)
         _connectionState.value = LinkState.Connecting
         central.connectPeripheral(restored, options = null)
     }
@@ -241,6 +246,7 @@ class IosAudioGattLink : AudioGattLink {
         central.stopScan()
         peripheral = didDiscoverPeripheral
         didDiscoverPeripheral.delegate = delegate
+        rememberPeripheral(didDiscoverPeripheral)
         central.connectPeripheral(didDiscoverPeripheral, options = null)
     }
 
@@ -250,6 +256,7 @@ class IosAudioGattLink : AudioGattLink {
     ) {
         peripheral = didConnectPeripheral
         didConnectPeripheral.delegate = delegate
+        rememberPeripheral(didConnectPeripheral)
         _connectionState.value = LinkState.Connecting
         didConnectPeripheral.discoverServices(listOf(IosAudioCompanionGatt.SERVICE_UUID))
     }
@@ -388,22 +395,36 @@ class IosAudioGattLink : AudioGattLink {
     }
 
     private fun connectWhenPoweredOn(manager: CBCentralManager) {
-        val connected = listOf(
-            IosAudioCompanionGatt.SERVICE_UUID,
-            IosAudioCompanionGatt.PEBBLE_PAIRING_SERVICE_UUID,
-            IosAudioCompanionGatt.DEVICE_INFORMATION_SERVICE_UUID,
-            IosAudioCompanionGatt.BATTERY_SERVICE_UUID,
-        ).flatMap { serviceUuid ->
-            manager.retrieveConnectedPeripheralsWithServices(listOf(serviceUuid))
-                .filterIsInstance<CBPeripheral>()
+        restoredPeripheral(manager)?.let { stored ->
+            connectPeripheral(manager, stored)
+            return
         }
-            .distinctBy { it.identifier.UUIDString }
-        val existing = connected.firstOrNull { it.name?.contains("Pebble", ignoreCase = true) == true }
-            ?: connected.firstOrNull()
+
+        val connected = connectedPeripherals(
+            manager,
+            listOf(
+                IosAudioCompanionGatt.SERVICE_UUID,
+                IosAudioCompanionGatt.PEBBLE_PAIRING_SERVICE_UUID,
+            ),
+        )
+        val existing = connected.firstOrNull { it.isLikelyPebble() } ?: connected.firstOrNull()
         if (existing != null) {
-            peripheral = existing
-            existing.delegate = delegate
-            manager.connectPeripheral(existing, options = null)
+            connectPeripheral(manager, existing)
+            return
+        }
+
+        // Device Information and Battery are too generic to pick blindly: AirPods, keyboards, and
+        // other nearby devices may expose them. Use them only when iOS gives us a Pebble-looking
+        // name, otherwise fall back to the explicit foreground scan below.
+        val namedPebble = connectedPeripherals(
+            manager,
+            listOf(
+                IosAudioCompanionGatt.DEVICE_INFORMATION_SERVICE_UUID,
+                IosAudioCompanionGatt.BATTERY_SERVICE_UUID,
+            ),
+        ).firstOrNull { it.isLikelyPebble() }
+        if (namedPebble != null) {
+            connectPeripheral(manager, namedPebble)
         } else {
             manager.scanForPeripheralsWithServices(
                 listOf(
@@ -414,6 +435,36 @@ class IosAudioGattLink : AudioGattLink {
             )
         }
     }
+
+    private fun connectedPeripherals(
+        manager: CBCentralManager,
+        serviceUuids: List<CBUUID>,
+    ): List<CBPeripheral> = serviceUuids.flatMap { serviceUuid ->
+        manager.retrieveConnectedPeripheralsWithServices(listOf(serviceUuid))
+            .filterIsInstance<CBPeripheral>()
+    }.distinctBy { it.identifier.UUIDString }
+
+    private fun restoredPeripheral(manager: CBCentralManager): CBPeripheral? {
+        val uuidString = defaults.stringForKey(KEY_PERIPHERAL_IDENTIFIER) ?: return null
+        val uuid = NSUUID(uUIDString = uuidString)
+        return manager.retrievePeripheralsWithIdentifiers(listOf<NSUUID>(uuid))
+            .filterIsInstance<CBPeripheral>()
+            .firstOrNull()
+    }
+
+    private fun connectPeripheral(manager: CBCentralManager, target: CBPeripheral) {
+        peripheral = target
+        target.delegate = delegate
+        rememberPeripheral(target)
+        manager.connectPeripheral(target, options = null)
+    }
+
+    private fun rememberPeripheral(target: CBPeripheral) {
+        defaults.setObject(target.identifier.UUIDString, forKey = KEY_PERIPHERAL_IDENTIFIER)
+    }
+
+    private fun CBPeripheral.isLikelyPebble(): Boolean =
+        name?.contains("Pebble", ignoreCase = true) == true
 
     private fun failAndReset(message: String) {
         pendingInfoRead?.resumeWithException(IllegalStateException(message))
@@ -446,6 +497,10 @@ class IosAudioGattLink : AudioGattLink {
             bytes = allocArrayOf(this@toNSData),
             length = size.convert(),
         )
+    }
+
+    private companion object {
+        const val KEY_PERIPHERAL_IDENTIFIER = "ios_audio_companion_peripheral_identifier"
     }
 }
 
