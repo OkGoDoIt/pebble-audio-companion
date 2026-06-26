@@ -73,10 +73,12 @@ class SonioxRealtimeProvider(
         }
     }
 
-    private fun configJson(key: String, sampleRateHz: Int): String = buildJsonObject {
+    internal fun configJson(key: String, sampleRateHz: Int): String = buildJsonObject {
         put("api_key", key)
         put("model", model())
-        put("audio_format", "pcm_s16le")
+        // Soniox expects "s16le" for raw 16-bit little-endian PCM (NOT "pcm_s16le"); the wrong
+        // value makes the server reject the stream and the live socket fail.
+        put("audio_format", RAW_PCM_FORMAT)
         put("sample_rate", sampleRateHz)
         put("num_channels", 1)
         put("enable_speaker_diarization", diarizationEnabled())
@@ -96,6 +98,9 @@ class SonioxRealtimeProvider(
     companion object {
         const val DEFAULT_URL = "wss://stt-rt.soniox.com/transcribe-websocket"
         const val DEFAULT_MODEL = "stt-rt-v5"
+
+        /** Soniox raw-audio format token for 16-bit signed little-endian PCM. */
+        const val RAW_PCM_FORMAT = "s16le"
     }
 }
 

@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.transcription.CloudConnectivityResult
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.StreamingTranscriptionProvider
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +57,13 @@ class CloudLiveTranscriber(
     private val provider: StreamingTranscriptionProvider,
     private val enabled: () -> Boolean,
     private val nowMs: () -> Long,
+    /**
+     * Reports live-streaming outcomes so cloud health is visible: [CloudConnectivityResult.Ok] once a
+     * session produces an update, [CloudConnectivityResult.Failed] when the socket errors. Without
+     * this, a failing live socket silently falls back to the local preview (as it did before the
+     * Soniox audio_format fix).
+     */
+    private val onOutcome: (CloudConnectivityResult) -> Unit = {},
 ) {
     private val _previews = MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     val previews: StateFlow<Map<String, LiveTranscriptPreview>> = _previews.asStateFlow()
@@ -104,6 +112,11 @@ class CloudLiveTranscriber(
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
+                onOutcome(
+                    CloudConnectivityResult.Failed(
+                        t.message ?: "Live cloud transcription failed.",
+                    ),
+                )
                 logBackgroundFailure("cloud live transcription", t)
             }
         }
@@ -120,7 +133,12 @@ class CloudLiveTranscriber(
             frameSamples = event.frameSamples,
         )
         val pcm = decoder.decode(channel.receiveAsFlow())
+        var reportedOk = false
         provider.transcribeStream(pcm, event.sampleRateHz).collect { update ->
+            if (!reportedOk) {
+                onOutcome(CloudConnectivityResult.Ok())
+                reportedOk = true
+            }
             _previews.value = _previews.value + (
                 event.segmentId to LiveTranscriptPreview(
                     segmentId = event.segmentId,

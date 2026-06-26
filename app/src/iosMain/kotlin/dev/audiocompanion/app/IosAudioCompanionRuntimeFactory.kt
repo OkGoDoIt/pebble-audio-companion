@@ -167,6 +167,7 @@ class IosAudioCompanionRuntimeFactory(
             ),
             enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
             nowMs = nowMs,
+            onOutcome = cloudHealthMonitor::report,
         )
         val aiRouter = AiModeRouter(
             local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.

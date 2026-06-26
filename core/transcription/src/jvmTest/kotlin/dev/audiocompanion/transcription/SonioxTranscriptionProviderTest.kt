@@ -26,6 +26,23 @@ class SonioxTranscriptionProviderTest {
     )
 
     @Test
+    fun realtimeConfigUsesSonioxRawPcmFormat() {
+        // Regression guard: Soniox expects "s16le" for raw PCM. "pcm_s16le" makes the server reject
+        // the live stream, which silently fell back to local transcription.
+        val provider = SonioxRealtimeProvider(
+            client = HttpClient(MockEngine) {
+                engine { addHandler { error("no requests expected") } }
+            },
+            apiKey = { "test-key" },
+            cloudConsent = { true },
+        )
+        val config = provider.configJson("test-key", 16_000)
+        assertTrue(config.contains("\"audio_format\":\"s16le\""), "config was: $config")
+        assertTrue(!config.contains("pcm_s16le"), "must not use the invalid pcm_s16le token")
+        assertTrue(config.contains("\"sample_rate\":16000"))
+    }
+
+    @Test
     fun unavailableWithoutConsentOrKey() = runTest {
         val provider = SonioxTranscriptionProvider(
             client = HttpClient(MockEngine) {
