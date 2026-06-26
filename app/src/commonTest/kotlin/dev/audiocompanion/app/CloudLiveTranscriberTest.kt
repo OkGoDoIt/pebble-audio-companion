@@ -81,4 +81,47 @@ class CloudLiveTranscriberTest {
         advanceUntilIdle()
         tapJob.cancelAndJoin()
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun backgroundingDoesNotStopCloudStreamingProgress() = runTest {
+        val tap = LiveAudioTap()
+        val provider = FakeStreamingProvider()
+        val transcriber = CloudLiveTranscriber(
+            tap = tap,
+            provider = provider,
+            enabled = { true },
+            nowMs = { 123_000 },
+            decodePcm = { _, encoded -> encoded },
+        )
+        val tapJob = transcriber.start(this)
+        advanceUntilIdle()
+
+        tap.emit(
+            LiveAudioEvent.SegmentOpened(
+                segmentId = "seg-1",
+                sampleRateHz = 16_000,
+                bitRateBps = 9_800,
+                frameSamples = 320,
+            ),
+        )
+        advanceUntilIdle()
+        tap.emit(LiveAudioEvent.FramesAppended("seg-1", cloudFrames(3, firstSequence = 10u)))
+        assertTrue(provider.updates.tryEmit(StreamingTranscriptUpdate(finalText = "before background")))
+        advanceUntilIdle()
+
+        transcriber.setForeground(false)
+        tap.emit(LiveAudioEvent.FramesAppended("seg-1", cloudFrames(2, firstSequence = 13u)))
+        assertTrue(provider.updates.tryEmit(StreamingTranscriptUpdate(finalText = "after background")))
+        advanceUntilIdle()
+
+        val preview = transcriber.previews.value["seg-1"]
+        assertEquals("after background", preview?.text)
+        assertEquals(5, preview?.transcribedFrameCount)
+        assertEquals(15uL * 320uL, preview?.lastSampleIndexExclusive)
+
+        tap.emit(LiveAudioEvent.SegmentClosed("seg-1"))
+        advanceUntilIdle()
+        tapJob.cancelAndJoin()
+    }
 }
