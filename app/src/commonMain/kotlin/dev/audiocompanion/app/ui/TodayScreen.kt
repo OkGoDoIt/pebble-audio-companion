@@ -49,6 +49,9 @@ sealed interface TimelineItem {
 }
 
 private const val TODAY_TIMELINE_WINDOW_MS = 24L * 60 * 60 * 1000
+private const val TODAY_MAJOR_GAP_MIN_MS = 30_000L
+private const val TODAY_MAJOR_GAP_RATIO_FLOOR_MS = 5_000L
+private const val TODAY_MAJOR_GAP_RATIO_DENOMINATOR = 5L
 
 /** Derives the Today timeline: rolling 24-hour segments newest-first, plus any open segment. */
 fun buildTimeline(
@@ -65,20 +68,44 @@ fun buildTimeline(
         .filter { it.isOpen || it.receivedAtMs >= oldestVisibleMs }
         .sortedByDescending { it.receivedAtMs }
     return relevant.map { meta ->
+        val transcript = transcriptOf(meta.segmentId)
+        val liveText = liveTextOf(meta.segmentId)
         val annotation = annotationOf(meta.segmentId)
         TimelineItem.Segment(
             meta = meta,
             title = segmentTitle(
                 meta,
-                transcriptOf(meta.segmentId),
+                transcript,
                 annotation,
-                liveText = liveTextOf(meta.segmentId),
+                liveText = liveText,
             ),
             summary = annotation?.summary,
             stateLabel = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
-            gapSummary = gapSummary(meta),
+            gapSummary = todayGapSummary(meta, transcript, liveText),
         )
     }
+}
+
+/**
+ * Today is the at-a-glance surface: small recoverable interruptions should not crowd out useful
+ * transcript snippets. Keep the full gap details in Library/detail, but show Today attention copy
+ * when the segment has no transcript text or the missing audio is likely consequential.
+ */
+fun todayGapSummary(
+    meta: SegmentMeta,
+    transcript: SegmentTranscript?,
+    liveText: String? = null,
+): String? {
+    val summary = gapSummary(meta) ?: return null
+    val hasTranscriptText = !transcript?.text.isNullOrBlank() || !liveText.isNullOrBlank()
+    if (!hasTranscriptText) return summary
+
+    val gapMs = displayGapMs(meta)
+    val durationMs = segmentDurationMs(meta)
+    val isMajorByRatio = durationMs > 0 &&
+        gapMs >= TODAY_MAJOR_GAP_RATIO_FLOOR_MS &&
+        gapMs * TODAY_MAJOR_GAP_RATIO_DENOMINATOR >= durationMs
+    return if (gapMs >= TODAY_MAJOR_GAP_MIN_MS || isMajorByRatio) summary else null
 }
 
 /**

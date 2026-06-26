@@ -455,6 +455,90 @@ class TimelineTest {
     }
 
     @Test
+    fun todayGapSummaryHidesMinorLossWhenTranscriptExists() {
+        val segment = meta(
+            "seg-minor-loss",
+            nowMs,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 100u, // 2 s
+                    firstMissingSampleIndex = 3_200uL,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.MicConflict.raw,
+                ),
+            ),
+        )
+
+        assertTrue(gapSummary(segment)?.contains("2 sec") == true)
+        assertEquals(null, todayGapSummary(segment, transcript("seg-minor-loss", "Useful transcript text")))
+    }
+
+    @Test
+    fun todayGapSummaryKeepsMinorLossWhenNoTranscriptExists() {
+        val segment = meta(
+            "seg-no-transcript",
+            nowMs,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 50u, // 1 s
+                    firstMissingSampleIndex = 3_200uL,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.TransportReset.raw,
+                ),
+            ),
+        )
+
+        val summary = todayGapSummary(segment, transcript = null)
+        assertTrue(summary != null && summary.contains("1 sec"), "summary: $summary")
+    }
+
+    @Test
+    fun todayGapSummaryKeepsMajorLossEvenWithTranscript() {
+        val segment = meta(
+            "seg-major-loss",
+            nowMs,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 250u, // 5 s, half of this test segment.
+                    firstMissingSampleIndex = 3_200uL,
+                    origin = GapMeta.ORIGIN_SEQUENCE_SKIP,
+                ),
+            ),
+        )
+
+        val summary = todayGapSummary(segment, transcript("seg-major-loss", "Useful transcript text"))
+        assertTrue(summary != null && summary.contains("5 sec"), "summary: $summary")
+    }
+
+    @Test
+    fun timelineUsesTodayGapRules() {
+        val segment = meta(
+            "seg-with-transcript",
+            nowMs,
+            gaps = listOf(
+                GapMeta(
+                    firstMissingSequence = 10u,
+                    missingFrameCount = 100u, // 2 s
+                    firstMissingSampleIndex = 3_200uL,
+                    origin = GapMeta.ORIGIN_WATCH,
+                    reasonRaw = GapReason.MicConflict.raw,
+                ),
+            ),
+        )
+
+        val timeline = buildTimeline(
+            segments = listOf(segment),
+            transcriptOf = { transcript(it, "Useful transcript text") },
+            nowMs = nowMs,
+        )
+
+        assertEquals(null, (timeline.single() as TimelineItem.Segment).gapSummary)
+    }
+
+    @Test
     fun gapSummaryCapsImpossibleTotalsToSegmentDuration() {
         val withHugeGap = meta(
             "seg-gap",
