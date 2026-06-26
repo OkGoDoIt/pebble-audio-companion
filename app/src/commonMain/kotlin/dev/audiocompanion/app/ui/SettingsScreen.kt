@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +22,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -35,15 +39,19 @@ import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
+import dev.audiocompanion.app.CloudHealth
+import dev.audiocompanion.app.CloudHealthStatus
 import dev.audiocompanion.app.LocalTranscriptionModelOptionState
 import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.cloudTranscriptionEnabled
+import dev.audiocompanion.app.cloudTranscriptionKeyConfigured
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transport.ReceiverSessionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -56,6 +64,7 @@ fun SettingsScreen(
     localModel: LocalTranscriptionModelState,
     statusHeadline: String,
     exportDirectory: String?,
+    cloudHealth: CloudHealth = CloudHealth(),
     actions: AppActions,
 ) {
     var confirmRevoke by remember { mutableStateOf(false) }
@@ -260,6 +269,37 @@ fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (settings.cloudTranscriptionEnabled) {
+            // Auto-test shortly after the key/provider settles (debounced so it never fires mid-typing
+            // or per keystroke), plus a manual button. Result is shown inline below.
+            LaunchedEffect(
+                settings.cloudTranscriptionProvider,
+                settings.openAiApiKey,
+                settings.sonioxApiKey,
+                settings.cloudTranscriptionEnabled,
+            ) {
+                if (settings.cloudTranscriptionKeyConfigured()) {
+                    delay(700)
+                    actions.testCloudConnection()
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = actions.testCloudConnection,
+                    enabled = settings.cloudTranscriptionKeyConfigured() &&
+                        cloudHealth.status != CloudHealthStatus.Checking,
+                ) { Text("Test connection") }
+                if (cloudHealth.status == CloudHealthStatus.Checking) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+            }
+            cloudConnectionStatusLine(cloudHealth, settings)?.let { (text, color) ->
+                Text(text = text, style = MaterialTheme.typography.bodySmall, color = color)
+            }
+        }
         HorizontalDivider()
 
         SectionTitle("AI")
@@ -657,6 +697,38 @@ fun formatAudioExportResult(result: AudioExportResult): String =
         else ->
             "Exported ${result.fileCount} WAV files to ${result.directory}."
     }
+
+/** Inline cloud connectivity status under the Test button: (message, color), or null when idle. */
+@Composable
+fun cloudConnectionStatusLine(
+    cloudHealth: CloudHealth,
+    settings: AudioCompanionSettings,
+): Pair<String, Color>? = when (cloudHealth.status) {
+    CloudHealthStatus.Checking ->
+        "Testing ${cloudProviderShortName(settings.cloudTranscriptionProvider)}…" to
+            MaterialTheme.colorScheme.onSurfaceVariant
+    CloudHealthStatus.Ok ->
+        "Connected — ${cloudProviderShortName(settings.cloudTranscriptionProvider)} is working." to
+            StatusColors.success
+    CloudHealthStatus.Failed ->
+        (cloudHealth.message ?: "The cloud provider couldn't be reached.") to
+            MaterialTheme.colorScheme.error
+    CloudHealthStatus.NotConfigured ->
+        (cloudHealth.message ?: "Add an API key to use cloud transcription.") to
+            StatusColors.warning
+    CloudHealthStatus.Unknown ->
+        if (!settings.cloudTranscriptionKeyConfigured()) {
+            "Add a ${cloudProviderShortName(settings.cloudTranscriptionProvider)} API key to use cloud transcription." to
+                StatusColors.warning
+        } else {
+            null
+        }
+}
+
+private fun cloudProviderShortName(provider: CloudProvider): String = when (provider) {
+    CloudProvider.OpenAi -> "OpenAI"
+    CloudProvider.Soniox -> "Soniox"
+}
 
 fun transcriptionModeLabel(mode: TranscriptionMode): String = when (mode) {
     TranscriptionMode.LocalOnly -> "Local only"

@@ -94,10 +94,12 @@ class IosAudioCompanionRuntimeFactory(
                 diarizationEnabled = diarizationEnabled,
             ),
         )
+        val cloudHealthMonitor = CloudHealthMonitor(nowMs)
         val router = TranscriptionModeRouter(
             local = localProvider,
             remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
+            onRemoteOutcome = cloudHealthMonitor::report,
         )
         val uploadCoordinator = BackgroundCloudUploadCoordinator(
             uploader = IosBackgroundUploader.shared,
@@ -264,6 +266,8 @@ class IosAudioCompanionRuntimeFactory(
             backgroundUploadCoordinator = uploadCoordinator,
             cloudLiveTranscriber = cloudLiveTranscriber,
             liveAudioTap = liveAudioTap,
+            cloudHealthMonitor = cloudHealthMonitor,
+            cloudConnectivityCheck = remoteProvider,
         )
     }
 

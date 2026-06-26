@@ -31,6 +31,15 @@ data class RoutedTranscription(
 class TranscriptionModeRouter(
     private val local: TranscriptionProvider?,
     private val remote: TranscriptionProvider?,
+    /**
+     * Reports the outcome of every actual *remote* attempt so the app can surface cloud health
+     * (a silent local fallback otherwise hides that the cloud is failing). [CloudConnectivityResult.Ok]
+     * on success or no-speech (the cloud was reached); [CloudConnectivityResult.Failed] when the
+     * remote provider threw. Never fired for purely-local routes.
+     *
+     * Declared before [mode] so callers can keep passing `mode` as a trailing lambda.
+     */
+    private val onRemoteOutcome: (CloudConnectivityResult) -> Unit = {},
     private val mode: () -> TranscriptionMode,
 ) {
     var lastSuccessfulMode: TranscriptionMode? = null
@@ -49,7 +58,7 @@ class TranscriptionModeRouter(
                 runProvider(local, "local", pcmChunks, sampleRateHz, modeUsed = mode)
 
             TranscriptionMode.RemoteOnly ->
-                runProvider(remote, "remote", pcmChunks, sampleRateHz, modeUsed = mode)
+                reportingRemote { runProvider(remote, "remote", pcmChunks, sampleRateHz, modeUsed = mode) }
 
             TranscriptionMode.LocalFirst -> try {
                 runProvider(local, "local", pcmChunks, sampleRateHz, modeUsed = mode)
@@ -58,12 +67,14 @@ class TranscriptionModeRouter(
             } catch (e: TranscriptionException.NoSpeechDetected) {
                 throw e
             } catch (e: Throwable) {
-                runProvider(remote, "remote", pcmChunks, sampleRateHz,
-                    modeUsed = TranscriptionMode.RemoteOnly, suppressed = e)
+                reportingRemote {
+                    runProvider(remote, "remote", pcmChunks, sampleRateHz,
+                        modeUsed = TranscriptionMode.RemoteOnly, suppressed = e)
+                }
             }
 
             TranscriptionMode.RemoteFirst -> try {
-                runProvider(remote, "remote", pcmChunks, sampleRateHz, modeUsed = mode)
+                reportingRemote { runProvider(remote, "remote", pcmChunks, sampleRateHz, modeUsed = mode) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: TranscriptionException.NoSpeechDetected) {
@@ -76,6 +87,26 @@ class TranscriptionModeRouter(
         lastSuccessfulMode = result.modeUsed
         return result
     }
+
+    /**
+     * Runs a remote attempt and reports its outcome via [onRemoteOutcome]. No-speech counts as a
+     * reachable cloud (Ok); any other throw is reported Failed and re-thrown so the caller's
+     * fallback/error handling is unchanged.
+     */
+    private suspend fun reportingRemote(block: suspend () -> RoutedTranscription): RoutedTranscription =
+        try {
+            block().also { onRemoteOutcome(CloudConnectivityResult.Ok()) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: TranscriptionException.NoSpeechDetected) {
+            onRemoteOutcome(CloudConnectivityResult.Ok())
+            throw e
+        } catch (e: Throwable) {
+            onRemoteOutcome(
+                CloudConnectivityResult.Failed(e.message ?: "Cloud transcription failed."),
+            )
+            throw e
+        }
 
     private suspend fun runProvider(
         provider: TranscriptionProvider?,

@@ -189,6 +189,15 @@ class FileTranscriptionQueue(
         it.copy(state = TaskState.Disabled)
     }
 
+    /**
+     * Forces a task back to Pending for a user-requested re-transcribe, regardless of its current
+     * (possibly terminal) state, and clears the attempt count/error so it runs immediately under the
+     * current transcription mode. Returns null when no task exists for [segmentId].
+     */
+    fun requeue(segmentId: String): TranscriptionTask? = update(segmentId) {
+        it.copy(state = TaskState.Pending, attempts = 0, retryable = true, lastError = null)
+    }
+
     fun delete(segmentId: String) {
         fileSystem.delete(taskPath(segmentId), mustExist = false)
         fileSystem.delete(Path(queueDir, "$segmentId.task.json.tmp"), mustExist = false)

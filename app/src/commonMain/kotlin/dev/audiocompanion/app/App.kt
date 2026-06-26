@@ -1,6 +1,10 @@
 package dev.audiocompanion.app
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -25,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.ui.AiScreen
@@ -109,6 +114,7 @@ fun App(
     waveformBars: StateFlow<List<WaveformBar>> = MutableStateFlow(emptyList()),
     waveformWindowMs: Long = 60_000,
     playbackState: StateFlow<PlaybackUiState> = MutableStateFlow(PlaybackUiState()),
+    cloudHealth: StateFlow<CloudHealth> = MutableStateFlow(CloudHealth()),
     actions: AppActions = AppActions(),
 ) {
     MaterialTheme {
@@ -119,6 +125,7 @@ fun App(
         val currentLocalModel = localModelState.collectAsState().value
         val currentPlayback = playbackState.collectAsState().value
         val currentLivePreviews = liveTranscriptPreviews.collectAsState().value
+        val currentCloudHealth = cloudHealth.collectAsState().value
 
         // Wall-clock tick: keeps durations and "Recording now" ages fresh without forcing
         // durable file reads on every tick.
@@ -274,6 +281,20 @@ fun App(
             },
         ) { padding ->
             Surface(modifier = Modifier.fillMaxSize().padding(padding)) {
+              Column(modifier = Modifier.fillMaxSize()) {
+                // App-wide cloud failure surfacing: when cloud transcription is selected but the
+                // last cloud attempt/test failed, show a tappable banner on every tab except
+                // Settings (which already shows the detailed status).
+                if (tab != AppTab.Settings &&
+                    currentSettings.cloudTranscriptionEnabled &&
+                    currentCloudHealth.status == CloudHealthStatus.Failed
+                ) {
+                    CloudFailureBanner(
+                        message = currentCloudHealth.message,
+                        onOpenSettings = { tab = AppTab.Settings },
+                    )
+                }
+                Box(modifier = Modifier.weight(1f)) {
                 when (tab) {
                     AppTab.Today -> TodayScreen(
                         status = status,
@@ -319,6 +340,7 @@ fun App(
                         playback = currentPlayback,
                         selectedSegmentId = librarySegmentId,
                         onSelectSegment = { librarySegmentId = it },
+                        onReprocessSegment = actions.reprocessSegment,
                         onDeleteSegment = actions.deleteSegment,
                         onExportSegment = actions.exportSegmentAudio,
                         onShareFile = actions.shareFile,
@@ -351,10 +373,40 @@ fun App(
                         localModel = currentLocalModel,
                         statusHeadline = status.headline,
                         exportDirectory = actions.audioExportDirectory(),
+                        cloudHealth = currentCloudHealth,
                         actions = actions,
                     )
                 }
+                }
+              }
             }
+        }
+    }
+}
+
+@Composable
+private fun CloudFailureBanner(message: String?, onOpenSettings: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenSettings)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Text(
+                text = "Cloud transcription isn't working",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = (message?.takeIf { it.isNotBlank() }
+                    ?: "The selected cloud provider couldn't be reached.") +
+                    " Tap to open Settings.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

@@ -129,6 +129,7 @@ class CloudLiveTranscriber(
                     transcribedFrameCount = 0,
                     lastSampleIndexExclusive = 0u,
                     updatedAtMs = nowMs(),
+                    providerId = provider.id,
                 )
                 )
         }

@@ -25,6 +25,10 @@ data class LiveTranscriptPreview(
     /** Stream sample index the preview has consumed up to (for waveform coloring). */
     val lastSampleIndexExclusive: ULong,
     val updatedAtMs: Long,
+    /** Which engine produced this preview (e.g. "cactus-local", "soniox"); null when unknown. */
+    val providerId: String? = null,
+    /** Model/service identifier for the live source, when known. */
+    val modelUsed: String? = null,
 )
 
 /**
@@ -140,6 +144,8 @@ class LiveTranscriber(
                 transcribedFrameCount = done + chunk.size,
                 lastSampleIndexExclusive = chunk.last().sampleIndex + meta.frameSamples.toULong(),
                 updatedAtMs = nowMs(),
+                providerId = result?.providerId ?: existing?.providerId,
+                modelUsed = result?.modelUsed ?: existing?.modelUsed,
             ),
         )
         return true

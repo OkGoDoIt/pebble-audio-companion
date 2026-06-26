@@ -51,7 +51,7 @@ class SonioxTranscriptionProvider(
     private val maxPollAttempts: Int = DEFAULT_MAX_POLL_ATTEMPTS,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
     private val sleep: suspend (Long) -> Unit = { delay(it) },
-) : TranscriptionProvider, CloudUploadCapable {
+) : TranscriptionProvider, CloudUploadCapable, CloudConnectivityCheck {
     override val id: String = PROVIDER_ID
     override val status: StateFlow<ProviderStatus> = MutableStateFlow(ProviderStatus.Ready)
 
@@ -59,6 +59,33 @@ class SonioxTranscriptionProvider(
 
     override suspend fun isAvailable(): Boolean =
         cloudConsent() && !apiKey().isNullOrBlank()
+
+    override suspend fun checkConnectivity(): CloudConnectivityResult {
+        val key = apiKey()?.takeIf { it.isNotBlank() }
+            ?: return CloudConnectivityResult.NotConfigured(
+                "Add a Soniox API key to use cloud transcription.",
+            )
+        return try {
+            // Cheapest authenticated call: list transcriptions. 2xx = key accepted.
+            val response = client.get("$baseUrl/v1/transcriptions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+            }
+            when {
+                response.status.isSuccess() -> CloudConnectivityResult.Ok("Soniox connected")
+                response.status == HttpStatusCode.Unauthorized ||
+                    response.status == HttpStatusCode.Forbidden ->
+                    CloudConnectivityResult.Failed("Soniox rejected the API key.")
+                else -> CloudConnectivityResult.Failed(
+                    "Soniox check failed (${response.status.value}): " +
+                        response.body<String>().take(160),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            CloudConnectivityResult.Failed("Could not reach Soniox: ${t.message ?: "network error"}")
+        }
+    }
 
     override suspend fun transcribe(
         pcmChunks: Flow<ByteArray>,

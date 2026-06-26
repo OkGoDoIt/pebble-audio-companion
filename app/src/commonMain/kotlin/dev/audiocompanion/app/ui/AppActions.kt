@@ -44,6 +44,8 @@ class AppActions(
     val loadLiveTranscriptPreview: (segmentId: String) -> dev.audiocompanion.app.LiveTranscriptPreview? = { null },
     val loadAnnotation: (segmentId: String) -> SegmentAnnotation? = { null },
     val loadAiOutputs: () -> List<AiOutput> = { emptyList() },
+    /** User-requested re-transcribe of a closed segment under the current transcription mode. */
+    val reprocessSegment: (segmentId: String) -> Unit = {},
     // Content management
     val deleteSegment: (segmentId: String) -> Unit = {},
     val deleteAiOutput: (outputId: String) -> Unit = {},
@@ -70,6 +72,8 @@ class AppActions(
     val setCloudTranscriptionProvider: (CloudProvider) -> Unit = {},
     val setOpenAiApiKey: (String) -> Unit = {},
     val setSonioxApiKey: (String) -> Unit = {},
+    /** Runs an authenticated probe against the selected cloud provider; result lands in cloudHealth. */
+    val testCloudConnection: () -> Unit = {},
     val setAiMode: (AiProcessingMode) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
     val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},

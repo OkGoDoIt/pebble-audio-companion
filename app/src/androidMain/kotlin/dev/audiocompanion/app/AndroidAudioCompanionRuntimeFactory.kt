@@ -84,10 +84,12 @@ class AndroidAudioCompanionRuntimeFactory(
                 diarizationEnabled = diarizationEnabled,
             ),
         )
+        val cloudHealthMonitor = CloudHealthMonitor(nowMs)
         val router = TranscriptionModeRouter(
             local = localProvider,
             remote = remoteProvider,
             mode = { settingsRepository.settings.value.transcriptionMode },
+            onRemoteOutcome = cloudHealthMonitor::report,
         )
         val aiRouter = AiModeRouter(
             local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
@@ -207,6 +209,8 @@ class AndroidAudioCompanionRuntimeFactory(
             localTranscriptionLifecycle = localProvider,
             cloudLiveTranscriber = cloudLiveTranscriber,
             liveAudioTap = liveAudioTap,
+            cloudHealthMonitor = cloudHealthMonitor,
+            cloudConnectivityCheck = remoteProvider,
         )
     }
 

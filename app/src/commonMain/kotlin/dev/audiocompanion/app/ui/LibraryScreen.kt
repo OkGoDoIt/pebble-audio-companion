@@ -71,6 +71,7 @@ fun LibraryScreen(
     playback: PlaybackUiState,
     selectedSegmentId: String?,
     onSelectSegment: (String?) -> Unit,
+    onReprocessSegment: (String) -> Unit = {},
     onDeleteSegment: (String) -> Unit,
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onShareFile: (String) -> Unit = {},
@@ -101,6 +102,7 @@ fun LibraryScreen(
             },
             onExportSegment = onExportSegment,
             onShareFile = onShareFile,
+            onReprocess = { onReprocessSegment(selected.segmentId) },
             onPlaySegment = onPlaySegment,
             onPausePlayback = onPausePlayback,
             onStopPlayback = onStopPlayback,
@@ -260,6 +262,7 @@ fun SegmentDetailScreen(
     onDelete: () -> Unit,
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onShareFile: (String) -> Unit = {},
+    onReprocess: () -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -424,6 +427,13 @@ fun SegmentDetailScreen(
                 )
             }
             !liveTranscript.isNullOrBlank() -> {
+                liveTranscriptionSourceLabel(livePreview)?.let { source ->
+                    Text(
+                        text = source,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 TranscriptTimeline(
                     meta = meta,
                     text = liveTranscript,
@@ -460,12 +470,24 @@ fun SegmentDetailScreen(
             )
         }
 
+        // Re-transcribe a closed segment with the *current* settings — e.g. to upgrade an
+        // on-device transcript to cloud accuracy after enabling cloud transcription.
+        if (!meta.isOpen) {
+            OutlinedButton(onClick = onReprocess) { Text("Re-transcribe") }
+            Text(
+                text = "Runs transcription again using your current settings " +
+                    "(e.g. cloud for higher accuracy).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SectionTitle("Details")
         InfoRow("Source", "Pebble watch")
         InfoRow("Audio length", Formatting.duration(segmentDurationMs(meta)))
         transcript?.let {
-            InfoRow("Transcribed with", it.providerId + (it.modelUsed?.let { m -> " ($m)" } ?: ""))
-            InfoRow("Processing mode", it.modeUsed.toString())
+            // Only what actually produced the text matters: on-device + model, or cloud service.
+            InfoRow("Transcribed with", transcriptionSourceLabel(it.providerId, it.modelUsed))
             InfoRow("Transcribed", Formatting.relativeTime(it.createdAtMs, nowMs))
         }
         InfoRow(
@@ -950,6 +972,23 @@ private fun sampleOffsetMs(meta: SegmentMeta, sampleIndex: ULong): Long {
 
 private fun clockTimeFor(meta: SegmentMeta, offsetMs: Long): String =
     Formatting.timeOfDay(meta.receivedAtMs + offsetMs)
+
+/** Human-readable transcription source: on-device with model, or the cloud service used. */
+fun transcriptionSourceLabel(providerId: String, modelUsed: String?): String {
+    val service = when {
+        providerId == "cactus-local" -> "On-device"
+        providerId == "soniox" -> "Soniox (cloud)"
+        providerId.startsWith("openai") -> "OpenAI (cloud)"
+        else -> providerId
+    }
+    return modelUsed?.takeIf { it.isNotBlank() }?.let { "$service · $it" } ?: service
+}
+
+/** Source line for an in-progress live transcript ("Live · …"), or null when unknown. */
+fun liveTranscriptionSourceLabel(preview: LiveTranscriptPreview?): String? {
+    val providerId = preview?.providerId ?: return null
+    return "Live · " + transcriptionSourceLabel(providerId, preview.modelUsed)
+}
 
 @Composable
 private fun InterruptionDetails(meta: SegmentMeta) {
