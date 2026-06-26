@@ -178,6 +178,35 @@ class AudioReceiverSessionTest {
     }
 
     @Test
+    fun checkpointWriteFailureDoesNotTearDownStreamingSession() = runTest {
+        val fx = startSession()
+        authorize(fx)
+        fx.link.pushData(streamStart())
+        runCurrent()
+
+        fx.link.pushData(data(0u, 8))
+        runCurrent()
+        fx.link.failControlWrites = true
+
+        advanceTimeBy(600)
+        fx.link.pushData(data(8u, 1))
+        runCurrent()
+
+        assertEquals(ReceiverSessionState.Streaming(streamId), fx.session.state.value)
+        assertEquals(2, fx.sink.eventsOf<SinkEvent.Append>().size)
+        assertTrue(fx.checkpoints().isEmpty())
+
+        fx.link.failControlWrites = false
+        advanceTimeBy(600)
+        fx.link.pushData(data(9u, 1))
+        runCurrent()
+
+        val cp = fx.checkpoints().single()
+        assertEquals(9u, cp.highestContiguousSequencePersisted)
+        assertEquals(10uL * 320u, cp.persistedSampleIndex)
+    }
+
+    @Test
     fun pendingConsentThenOk() = runTest {
         val fx = startSession()
         fx.link.linkState.value = LinkState.Ready

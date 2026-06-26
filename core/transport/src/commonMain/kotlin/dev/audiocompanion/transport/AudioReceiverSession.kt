@@ -662,19 +662,28 @@ class AudioReceiverSession(
             (nowMs() - ctx.lastCheckpointAtMs) >= config.checkpointMinIntervalMs
         if (!due) return
         val token = takeToken() ?: return // a request is in flight; retry on the next append
-        link.writeControl(
-            Checkpoint(
-                requestToken = token,
-                streamId = ctx.streamId,
-                highestContiguousSequencePersisted = ctx.contiguousNext - 1u,
-                persistedSampleIndex = ctx.contiguousSampleIndex,
-                receiverFlags = policy.receiverFlags(),
-                freeStorageHintKb = policy.freeStorageHintKb(),
-            ).encode()
-        )
-        ctx.lastCheckpointAtMs = nowMs()
-        ctx.samplesSinceCheckpoint = 0u
-        ctx.checkpointedSinceLastChange = true
+        try {
+            link.writeControl(
+                Checkpoint(
+                    requestToken = token,
+                    streamId = ctx.streamId,
+                    highestContiguousSequencePersisted = ctx.contiguousNext - 1u,
+                    persistedSampleIndex = ctx.contiguousSampleIndex,
+                    receiverFlags = policy.receiverFlags(),
+                    freeStorageHintKb = policy.freeStorageHintKb(),
+                ).encode()
+            )
+            ctx.samplesSinceCheckpoint = 0u
+            ctx.checkpointedSinceLastChange = true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A checkpoint is recovery metadata, not the audio itself. If Core Bluetooth
+            // temporarily refuses a write, keep the stream alive and retry on the next cadence.
+            if (inFlightToken == token) inFlightToken = null
+        } finally {
+            ctx.lastCheckpointAtMs = nowMs()
+        }
     }
 
     private suspend fun closeOpenSegment(reason: SegmentCloseReason) {
