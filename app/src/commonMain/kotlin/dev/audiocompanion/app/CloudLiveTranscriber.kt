@@ -3,10 +3,12 @@ package dev.audiocompanion.app
 import dev.audiocompanion.transcription.CloudConnectivityResult
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.StreamingTranscriptionProvider
+import dev.audiocompanion.transport.SegmentFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -26,7 +28,7 @@ sealed interface LiveAudioEvent {
         val frameSamples: Int,
     ) : LiveAudioEvent
 
-    data class FramesAppended(val segmentId: String, val payloads: List<ByteArray>) : LiveAudioEvent
+    data class FramesAppended(val segmentId: String, val frames: List<SegmentFrame>) : LiveAudioEvent
     data class SegmentClosed(val segmentId: String) : LiveAudioEvent
 }
 
@@ -64,6 +66,16 @@ class CloudLiveTranscriber(
      * Soniox audio_format fix).
      */
     private val onOutcome: (CloudConnectivityResult) -> Unit = {},
+    private val decodePcm: (
+        LiveAudioEvent.SegmentOpened,
+        Flow<ByteArray>,
+    ) -> Flow<ByteArray> = { event, encoded ->
+        SpeexFrameDecoder(
+            sampleRateHz = event.sampleRateHz,
+            bitRateBps = event.bitRateBps,
+            frameSamples = event.frameSamples,
+        ).decode(encoded)
+    },
 ) {
     private val _previews = MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     val previews: StateFlow<Map<String, LiveTranscriptPreview>> = _previews.asStateFlow()
@@ -73,6 +85,9 @@ class CloudLiveTranscriber(
     private var activeSegmentId: String? = null
     private var frameChannel: Channel<ByteArray>? = null
     private var sessionJob: Job? = null
+    private var activeFrameSamples: Int = 320
+    private var streamedFrameCount: Int = 0
+    private var lastSampleIndexExclusive: ULong = 0u
 
     fun start(scope: CoroutineScope): Job {
         sessionScope = scope
@@ -92,7 +107,12 @@ class CloudLiveTranscriber(
             is LiveAudioEvent.SegmentOpened -> onOpened(event)
             is LiveAudioEvent.FramesAppended ->
                 if (event.segmentId == activeSegmentId) {
-                    event.payloads.forEach { frameChannel?.trySend(it) }
+                    streamedFrameCount += event.frames.size
+                    event.frames.lastOrNull()?.let { frame ->
+                        lastSampleIndexExclusive =
+                            frame.sampleIndex + activeFrameSamples.toULong()
+                    }
+                    event.frames.forEach { frameChannel?.trySend(it.payload) }
                 }
             is LiveAudioEvent.SegmentClosed ->
                 if (event.segmentId == activeSegmentId) stopSession()
@@ -105,6 +125,9 @@ class CloudLiveTranscriber(
         stopSession()
         val channel = Channel<ByteArray>(Channel.UNLIMITED)
         activeSegmentId = event.segmentId
+        activeFrameSamples = event.frameSamples
+        streamedFrameCount = 0
+        lastSampleIndexExclusive = 0u
         frameChannel = channel
         sessionJob = scope.launch {
             try {
@@ -127,12 +150,7 @@ class CloudLiveTranscriber(
         channel: Channel<ByteArray>,
     ) {
         if (!provider.isAvailable()) return
-        val decoder = SpeexFrameDecoder(
-            sampleRateHz = event.sampleRateHz,
-            bitRateBps = event.bitRateBps,
-            frameSamples = event.frameSamples,
-        )
-        val pcm = decoder.decode(channel.receiveAsFlow())
+        val pcm = decodePcm(event, channel.receiveAsFlow())
         var reportedOk = false
         provider.transcribeStream(pcm, event.sampleRateHz).collect { update ->
             if (!reportedOk) {
@@ -144,8 +162,8 @@ class CloudLiveTranscriber(
                     segmentId = event.segmentId,
                     text = update.displayText,
                     segments = update.segments,
-                    transcribedFrameCount = 0,
-                    lastSampleIndexExclusive = 0u,
+                    transcribedFrameCount = streamedFrameCount,
+                    lastSampleIndexExclusive = lastSampleIndexExclusive,
                     updatedAtMs = nowMs(),
                     providerId = provider.id,
                 )

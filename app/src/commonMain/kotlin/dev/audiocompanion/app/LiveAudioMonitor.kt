@@ -363,7 +363,7 @@ class TeeSegmentSink(
         val segmentId = store.openSegmentId
         monitor.onFrames(segmentId, frames, nowMs())
         if (tap != null && segmentId != null) {
-            tap.emit(LiveAudioEvent.FramesAppended(segmentId, frames.map { it.payload }))
+            tap.emit(LiveAudioEvent.FramesAppended(segmentId, frames))
         }
     }
 
