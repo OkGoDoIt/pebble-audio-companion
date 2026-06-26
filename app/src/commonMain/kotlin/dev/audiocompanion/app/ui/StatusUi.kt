@@ -14,7 +14,7 @@ import dev.audiocompanion.transport.ReceiverSessionState
 enum class StatusSeverity { Neutral, Info, Active, Warning, Error }
 
 /** What the one primary action in the status header should do. */
-enum class PrimaryAction { None, Start, Stop, PairWatch, Troubleshoot, SetUpAgain }
+enum class PrimaryAction { None, Start, Stop, PairWatch, Troubleshoot, SetUpAgain, Reconnect }
 
 data class StatusUiModel(
     val headline: String,
@@ -115,7 +115,7 @@ private fun statusForSessionState(
                 headline = "Waiting for Pebble",
                 supporting = "Trying to reconnect. The watch can buffer briefly.",
                 severity = StatusSeverity.Info,
-                primaryAction = PrimaryAction.Troubleshoot,
+                primaryAction = PrimaryAction.Reconnect,
             )
         }
 
@@ -128,16 +128,16 @@ private fun statusForSessionState(
 
     ReceiverSessionState.Connecting -> StatusUiModel(
         headline = "Connecting to your Pebble",
-        supporting = null,
+        supporting = "This usually takes a few seconds.",
         severity = StatusSeverity.Info,
-        primaryAction = PrimaryAction.None,
+        primaryAction = PrimaryAction.Reconnect,
     )
 
     ReceiverSessionState.Authorizing -> StatusUiModel(
         headline = "Authorizing receiver",
         supporting = null,
         severity = StatusSeverity.Info,
-        primaryAction = PrimaryAction.None,
+        primaryAction = PrimaryAction.Reconnect,
     )
 
     ReceiverSessionState.PendingConsent -> StatusUiModel(

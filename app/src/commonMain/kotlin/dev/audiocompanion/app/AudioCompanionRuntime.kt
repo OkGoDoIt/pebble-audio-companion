@@ -377,6 +377,15 @@ class AudioCompanionRuntime(
         }
     }
 
+    /**
+     * User-facing "Reconnect": force a fresh GATT session now without changing the recording
+     * intent. Used as the manual escape hatch when the link is stuck connecting or appears
+     * half-dead, complementing the automatic keepalive/watchdog recovery.
+     */
+    fun reconnect() {
+        link.resync()
+    }
+
     private fun consumeWatchEnableRequestPermission(): Boolean {
         val armed = watchEnableRequestArmed.value
         watchEnableRequestArmed.value = false

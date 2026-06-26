@@ -102,6 +102,10 @@ fun StatusHeader(
             PrimaryAction.SetUpAgain -> Button(onClick = { onPrimaryAction(PrimaryAction.SetUpAgain) }) {
                 Text("Set Up Again")
             }
+            // Calm secondary styling: an escape hatch while connecting, not an alarm.
+            PrimaryAction.Reconnect -> OutlinedButton(onClick = { onPrimaryAction(PrimaryAction.Reconnect) }) {
+                Text("Reconnect")
+            }
             PrimaryAction.Troubleshoot, PrimaryAction.None -> Unit
         }
     }

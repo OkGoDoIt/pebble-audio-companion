@@ -118,13 +118,33 @@ class StatusUiTest {
     }
 
     @Test
-    fun disconnectedWhileEnabledIsWaitingForPebble() {
+    fun disconnectedWhileEnabledIsWaitingForPebbleWithReconnect() {
         val status = statusUiModel(
             ReceiverSessionState.Disconnected,
             AudioCompanionSettings(backgroundReceiverEnabled = true),
             AudioCompanionDiagnostics(),
         )
         assertEquals("Waiting for Pebble", status.headline)
+        // The user must always have a manual escape hatch out of a stuck link.
+        assertEquals(PrimaryAction.Reconnect, status.primaryAction)
+    }
+
+    @Test
+    fun connectingAndAuthorizingOfferReconnect() {
+        val connecting = statusUiModel(
+            ReceiverSessionState.Connecting,
+            AudioCompanionSettings(backgroundReceiverEnabled = true),
+            AudioCompanionDiagnostics(),
+        )
+        assertEquals("Connecting to your Pebble", connecting.headline)
+        assertEquals(PrimaryAction.Reconnect, connecting.primaryAction)
+
+        val authorizing = statusUiModel(
+            ReceiverSessionState.Authorizing,
+            AudioCompanionSettings(backgroundReceiverEnabled = true),
+            AudioCompanionDiagnostics(),
+        )
+        assertEquals(PrimaryAction.Reconnect, authorizing.primaryAction)
     }
 
     @Test

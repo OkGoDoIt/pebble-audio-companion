@@ -263,6 +263,7 @@ fun MainViewController(): UIViewController {
                         bootstrap.stopReceiver()
                     }
                 },
+                reconnect = { readyHandle.runtime.reconnect() },
                 refreshDiagnostics = bootstrap::refreshDiagnostics,
                 setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
                 playSegment = { segmentId -> runtime.playback?.play(segmentId) },

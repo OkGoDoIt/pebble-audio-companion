@@ -261,6 +261,7 @@ fun App(
                 PrimaryAction.Start -> actions.setBackgroundReceiverEnabled(true)
                 PrimaryAction.Stop -> actions.setBackgroundReceiverEnabled(false)
                 PrimaryAction.PairWatch, PrimaryAction.SetUpAgain -> actions.pairWatch()
+                PrimaryAction.Reconnect -> actions.reconnect()
                 PrimaryAction.Troubleshoot -> tab = AppTab.Settings
                 PrimaryAction.None -> Unit
             }

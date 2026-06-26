@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
                             startService(AudioCompanionReceiverService.stopIntent(this))
                         }
                     },
+                    reconnect = { runtime.reconnect() },
                     refreshDiagnostics = { runtime.refreshDiagnostics() },
                     setWaveformActive = { active -> runtime.liveMonitor?.setActive(active) },
                     playSegment = { segmentId -> runtime.playback?.play(segmentId) },
