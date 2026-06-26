@@ -120,6 +120,7 @@ class AndroidAudioCompanionRuntimeFactory(
             ),
             enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
             nowMs = nowMs,
+            onOutcome = cloudHealthMonitor::report,
         )
         return AudioCompanionRuntime(
             link = link,
