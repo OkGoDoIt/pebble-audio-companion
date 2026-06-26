@@ -368,6 +368,27 @@ class AudioReceiverSessionTest {
     }
 
     @Test
+    fun reconnectingClearsConnectionFailedState() = runTest {
+        val fx = startSession()
+        fx.link.linkState.value = LinkState.Connecting
+        runCurrent()
+
+        fx.link.errorState.value = "Bluetooth is unavailable to this app right now."
+        fx.link.linkState.value = LinkState.Disconnected
+        runCurrent()
+
+        assertEquals(
+            ReceiverSessionState.ConnectionFailed("Bluetooth is unavailable to this app right now."),
+            fx.session.state.value,
+        )
+
+        fx.link.linkState.value = LinkState.Connecting
+        runCurrent()
+
+        assertEquals(ReceiverSessionState.Connecting, fx.session.state.value)
+    }
+
+    @Test
     fun onlyOneRequestInFlight_checkpointWaitsForAck() = runTest {
         val fx = startSession()
         authorize(fx)

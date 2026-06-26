@@ -26,8 +26,10 @@ import platform.CoreBluetooth.CBCharacteristic
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
 import platform.CoreBluetooth.CBManagerStatePoweredOff
 import platform.CoreBluetooth.CBManagerStatePoweredOn
+import platform.CoreBluetooth.CBManagerStateResetting
 import platform.CoreBluetooth.CBManagerStateUnauthorized
 import platform.CoreBluetooth.CBManagerStateUnsupported
+import platform.CoreBluetooth.CBManagerStateUnknown
 import platform.CoreBluetooth.CBPeripheral
 import platform.CoreBluetooth.CBPeripheralDelegateProtocol
 import platform.CoreBluetooth.CBService
@@ -192,6 +194,7 @@ class IosAudioGattLink : AudioGattLink {
         when (central.state) {
             CBManagerStatePoweredOn ->
                 if (wantConnected && connectionState.value != LinkState.Ready) {
+                    _lastError.value = null
                     _connectionState.value = LinkState.Connecting
                     connectWhenPoweredOn(central)
                 }
@@ -202,8 +205,16 @@ class IosAudioGattLink : AudioGattLink {
             CBManagerStateUnauthorized ->
                 if (wantConnected) failAndReset("Bluetooth access is off for this app. Turn it on in Settings.")
             CBManagerStateUnsupported ->
-                if (wantConnected) failAndReset("This device does not support Bluetooth LE.")
-            else -> {} // Resetting / Unknown: transient, wait for the next update.
+                if (wantConnected) failAndReset("Bluetooth is unavailable to this app right now.")
+            CBManagerStateUnknown,
+            CBManagerStateResetting ->
+                if (wantConnected) {
+                    // Core Bluetooth is still starting or briefly restarted its system service.
+                    // Clear stale failures so the main status does not keep showing an old error.
+                    _lastError.value = null
+                    _connectionState.value = LinkState.Connecting
+                }
+            else -> {}
         }
     }
 
