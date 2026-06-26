@@ -24,6 +24,12 @@ class AppActions(
     val startReceiver: () -> Unit = {},
     val stopReceiver: () -> Unit = {},
     val setBackgroundReceiverEnabled: (Boolean) -> Unit = {},
+    /**
+     * Force a fresh GATT session now (the user-facing "Reconnect"). Drops and rebuilds the link
+     * without changing the recording intent, so a stuck/half-dead connection can be kicked from
+     * the UI instead of waiting on automatic recovery.
+     */
+    val reconnect: () -> Unit = {},
     val refreshDiagnostics: () -> Unit = {},
     /** Live waveform decode runs only while the Today screen is visible. */
     val setWaveformActive: (Boolean) -> Unit = {},
