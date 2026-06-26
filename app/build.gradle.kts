@@ -51,6 +51,7 @@ kotlin {
             implementation(project(":adapter:ble-android"))
             implementation(libs.androidx.activity.compose)
             implementation(libs.androidx.core)
+            implementation(libs.androidx.work.runtime)
             implementation(libs.ktor.client.okhttp)
         }
         iosMain.dependencies {

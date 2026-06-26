@@ -151,6 +151,9 @@ class AudioCompanionRuntime(
     private val emptyLiveTranscriptPreviews =
         MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     private val lifecycleMutex = Mutex()
+    /** Serializes queue processing so the foreground loop and a triggered catch-up never run
+     *  `processNext` concurrently on the shared (process-singleton) runtime. */
+    private val processingMutex = Mutex()
     private var durableStateRecovered = false
     private var sessionJob: Job? = null
     private var transcriptionJob: Job? = null
@@ -367,6 +370,32 @@ class AudioCompanionRuntime(
         refreshDiagnostics()
     }
 
+    /**
+     * Processes up to [maxSegments] pending transcriptions now, regardless of foreground state, then
+     * releases the local model. This is the in-process catch-up the Android WorkManager worker runs
+     * when the app is otherwise idle (the analog of the iOS BGProcessing burst); it reuses the
+     * synchronous pipeline and is serialized against the foreground loop. Returns tasks advanced.
+     */
+    suspend fun runCatchUpNow(maxSegments: Int = BACKGROUND_CATCHUP_MAX_SEGMENTS): Int {
+        recoverDurableStateIfNeeded()
+        return processingMutex.withLock {
+            if (transcriptionProcessor.reconsiderDisabled().isNotEmpty()) refreshDiagnostics()
+            enqueueClosedSegmentsForTranscription()
+            var processed = 0
+            try {
+                while (processed < maxSegments && transcriptionProcessor.processNext() != null) {
+                    processed += 1
+                    refreshDiagnostics()
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    localTranscriptionLifecycle?.releaseModel("catch-up done")
+                }
+            }
+            processed
+        }
+    }
+
     fun refreshDiagnostics() {
         val tasks = transcriptionQueue.all()
         _diagnostics.value = AudioCompanionDiagnostics(
@@ -562,9 +591,11 @@ class AudioCompanionRuntime(
         }
         enqueueClosedSegmentsForTranscription()
         var processed = false
-        while (transcriptionProcessor.processNext() != null) {
-            processed = true
-            refreshDiagnostics()
+        processingMutex.withLock {
+            while (transcriptionProcessor.processNext() != null) {
+                processed = true
+                refreshDiagnostics()
+            }
         }
         // Row titles/summaries follow transcription (MVP requirement). The worker is a
         // no-op when AI is not configured; rows then show transcript snippets instead.

@@ -62,6 +62,9 @@ class MainActivity : ComponentActivity() {
         associator = AndroidAudioCompanionAssociator(this)
         settingsRepository = handle.settingsRepository
         runtime.recoverDurableState()
+        // Periodic in-process transcription catch-up for when the app is idle (no foreground
+        // service); the analog of the iOS BGProcessing burst.
+        CloudCatchUpWorker.schedule(applicationContext)
         setContent {
             App(
                 sessionState = runtime.state,
