@@ -25,9 +25,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import platform.Foundation.NSNotificationCenter
 import platform.Foundation.NSURL
 import platform.UIKit.UIActivityViewController
 import platform.UIKit.UIApplication
+import platform.UIKit.UIApplicationDidEnterBackgroundNotification
+import platform.UIKit.UIApplicationWillEnterForegroundNotification
 import platform.UIKit.UIViewController
 
 object IosAudioCompanionBootstrap {
@@ -49,6 +52,13 @@ object IosAudioCompanionBootstrap {
     }
 
     fun applicationDidFinishLaunching(launchedInBackground: Boolean) {
+        // The app uses the scene lifecycle (Info.plist UIApplicationSceneManifest), so UIKit does
+        // NOT call the app delegate's applicationWillEnterForeground/applicationDidEnterBackground.
+        // didFinishLaunching is still called, so register foreground/background observers here from
+        // the always-delivered UIApplication notifications. Without this, a Core Bluetooth
+        // background relaunch (which sets receive-only below) would leave the app stuck in
+        // receive-only mode even after the user reopens it — transcription would never run.
+        registerLifecycleObservers()
         scope.launch {
             val handle = ensureHandle()
             // Apply the receive-only policy before starting the receiver when we are launched
@@ -66,14 +76,42 @@ object IosAudioCompanionBootstrap {
         }
     }
 
+    private var lifecycleObserversRegistered = false
+
+    /**
+     * Subscribes to the UIApplication foreground/background notifications. These are delivered in
+     * both the app-delegate and scene lifecycles, unlike the app delegate's
+     * applicationWillEnterForeground/Background methods, which a scene-based app never receives.
+     * The bootstrap is a process-lived singleton, so the observers never need removing.
+     */
+    private fun registerLifecycleObservers() {
+        if (lifecycleObserversRegistered) return
+        lifecycleObserversRegistered = true
+        val center = NSNotificationCenter.defaultCenter
+        center.addObserverForName(
+            name = UIApplicationWillEnterForegroundNotification,
+            `object` = null,
+            queue = null,
+        ) { _ -> applicationWillEnterForeground() }
+        center.addObserverForName(
+            name = UIApplicationDidEnterBackgroundNotification,
+            `object` = null,
+            queue = null,
+        ) { _ -> applicationDidEnterBackground() }
+    }
+
     fun applicationWillEnterForeground() {
         scope.launch {
             val handle = ensureHandle()
             handle.runtime.setForeground(true)
-            handle.runtime.refreshDiagnostics()
             if (handle.settingsRepository.settings.value.backgroundReceiverEnabled) {
+                // start() is idempotent; this guarantees the processing loop is running so the
+                // reconcile below has a consumer to drain the queue.
                 handle.startReceiver()
             }
+            // Explicitly re-queue anything that closed while backgrounded and wake the loop, so
+            // reopening the app reliably resumes transcription (newest segment first).
+            handle.runtime.reconcilePendingTranscriptions()
         }
     }
 
@@ -270,10 +308,6 @@ fun MainViewController(): UIViewController {
                     readyHandle.localModelManager.refreshSelection()
                     runtime.notifyTranscriptionConfigChanged()
                 },
-                setCloudTranscriptionConsent = {
-                    settings.setCloudTranscriptionConsent(it)
-                    runtime.notifyTranscriptionConfigChanged()
-                },
                 setCloudTranscriptionProvider = {
                     settings.setCloudTranscriptionProvider(it)
                     runtime.notifyTranscriptionConfigChanged()
@@ -284,14 +318,6 @@ fun MainViewController(): UIViewController {
                 },
                 setSonioxApiKey = {
                     settings.setSonioxApiKey(it)
-                    runtime.notifyTranscriptionConfigChanged()
-                },
-                setDiarizationEnabled = {
-                    settings.setDiarizationEnabled(it)
-                    runtime.notifyTranscriptionConfigChanged()
-                },
-                setCloudLiveTranscriptionEnabled = {
-                    settings.setCloudLiveTranscriptionEnabled(it)
                     runtime.notifyTranscriptionConfigChanged()
                 },
                 setAiMode = settings::setAiMode,

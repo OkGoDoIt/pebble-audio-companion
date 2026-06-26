@@ -23,8 +23,8 @@ import kotlin.math.roundToLong
 /**
  * Cloud transcription provider for bounded, durable segment chunks.
  *
- * Uses OpenAI's Audio API `transcriptions` endpoint. PCM is uploaded only when the user has
- * explicitly enabled cloud transcription consent and provided an API key.
+ * Uses OpenAI's Audio API `transcriptions` endpoint. PCM is uploaded only when the current
+ * transcription mode can use cloud transcription and an API key is configured.
  */
 class OpenAiTranscriptionProvider(
     private val client: HttpClient,

@@ -40,7 +40,9 @@ Key constraints from those documents:
 - Android uses Companion Device Manager plus a connected-device foreground service.
 - iOS uses Core Bluetooth central mode with background restoration and quick notification handling.
 - Transcription supports `LocalOnly`, `RemoteOnly`, `LocalFirst`, and `RemoteFirst`.
-- Cloud transcription and AI require explicit separate consent.
+- Cloud transcription is controlled by transcription mode: `LocalOnly` stays local; every other
+  mode may use the selected cloud provider when a provider key is configured. Remote AI remains a
+  separate explicit consent.
 - Diagnostics must be useful without exposing audio, transcript text, or AI output by default.
 
 ## 3. External Design And Product Research
@@ -264,8 +266,7 @@ Controls:
 
 - Background audio: off by default; user can enable.
 - Retention: default 30 days and 2 GB.
-- Transcription: default `LocalFirst` when local model is installed or installable; otherwise `LocalOnly` with setup prompt or `RemoteOnly` disabled until cloud consent.
-- Cloud transcription: off.
+- Transcription: default `LocalFirst` when local model is installed or installable; otherwise `LocalOnly` with setup prompt or `RemoteOnly` disabled until a provider key is configured.
 - Remote AI: off.
 - Diagnostics content: off.
 
@@ -301,7 +302,7 @@ Main content:
 
 Bottom:
 
-- Light diagnostics summary if something needs attention: gaps, low storage, failed transcription, cloud consent needed, receiver downtime.
+- Light diagnostics summary if something needs attention: gaps, low storage, failed transcription, provider key needed, receiver downtime.
 
 
 ### Status Header
@@ -540,7 +541,6 @@ Recommended sections:
 4. Transcription
    - Mode: LocalOnly, RemoteOnly, LocalFirst, RemoteFirst.
    - Local model status and download/manage action.
-   - Cloud transcription consent.
    - Provider configuration.
    - Retry failed transcription.
 
@@ -828,7 +828,7 @@ Privacy must be a first-class surface.
 Defaults:
 
 - Background audio off.
-- Cloud transcription off.
+- Cloud transcription off when mode is `LocalOnly`.
 - Remote AI off.
 - Diagnostics content off (actually there will be no diagnostics shared with anyone, so we don't need a setting for this)
 - Sharing private by default.
@@ -836,7 +836,7 @@ Defaults:
 Consent surfaces:
 
 - Watch consent for receiver authorization.
-- App consent for cloud transcription.
+- Transcription mode and provider-key setup for cloud transcription.
 - App consent for remote AI.
 - Explicit confirmation for export/share.
 
@@ -863,7 +863,7 @@ Modes:
 
 - Local Only: "Keep audio on this phone. Transcription requires a local model."
 - Remote Only: "Send audio to the selected cloud provider for transcription."
-- Local First: "Try local transcription first, then use cloud if local is unavailable or fails and cloud consent is enabled."
+- Local First: "Try local transcription first, then use cloud if local is unavailable or fails."
 - Remote First: "Use cloud first, then local fallback if cloud is unavailable."
 
 Mode picker:
@@ -887,13 +887,13 @@ Segment list should summarize state:
 - "Transcript ready"
 - "No speech"
 - "Transcription failed"
-- "Waiting for cloud consent"
+- "Provider key needed"
 - "Local model needed"
 
 Failure detail:
 
 - Show likely reason and action.
-- Examples: install local model, add provider key, enable cloud consent, retry, delete.
+- Examples: install local model, add provider key, retry, delete.
 
 ## 19. AI UX
 
@@ -1042,15 +1042,15 @@ Actions:
 
 - "Got It"
 
-### Transcription Cloud Consent Missing
+### Transcription Provider Key Missing
 
 State:
 
-- Mode requires remote provider but cloud consent is off.
+- Mode can use a cloud provider, but the selected provider has no API key.
 
 Message:
 
-- "Cloud transcription is off. Enable it or switch to local transcription."
+- "Add a provider key or switch to local only."
 
 Actions:
 
@@ -1174,7 +1174,7 @@ Use:
 - "Confirm on your watch"
 - "Some audio was skipped"
 - "Stored on this phone"
-- "Cloud transcription is off"
+- "Provider key needed"
 - "Delete all local data"
 
 Avoid:
@@ -1218,7 +1218,7 @@ MVP should include:
 - Gap visibility.
 - Basic segment detail with metadata and transcript.
 - Transcription mode settings.
-- Cloud transcription consent and provider key entry.
+- Transcription mode, provider selection, and provider key entry.
 - AI manual templates from transcripts.
 - Privacy settings.
 - Retention settings.
@@ -1276,7 +1276,8 @@ The UX is ready for implementation polish when:
 - A user can revoke receiver access.
 - A user can see when audio is missing and why.
 - A user can find today's transcript and understand whether it used local or cloud processing.
-- Cloud transcription and remote AI are impossible to enable accidentally.
+- Cloud transcription requires choosing a non-local transcription mode; remote AI remains impossible
+  to enable accidentally.
 - Delete-all behavior is clear and complete.
 - Android foreground service status is understandable.
 - iOS background limitations are honestly represented.

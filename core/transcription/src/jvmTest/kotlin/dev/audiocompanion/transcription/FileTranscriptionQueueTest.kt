@@ -126,7 +126,7 @@ class FileTranscriptionQueueTest {
     }
 
     @Test
-    fun pendingIsPreferredOverRetryableFailed_oldestFirst() {
+    fun pendingIsPreferredOverRetryableFailed_newestFirst() {
         val root = tempRoot()
         val q = queue(root)
         q.enqueue("seg-old-failed")
@@ -137,7 +137,9 @@ class FileTranscriptionQueueTest {
         clock += 10
         q.enqueue("seg-b")
 
-        assertEquals("seg-a", q.nextRunnable()?.segmentId)
+        // Pending beats retryable-Failed, and among Pending the newest (seg-b) goes first so the
+        // user's most recent audio transcribes ahead of the older backlog.
+        assertEquals("seg-b", q.nextRunnable()?.segmentId)
     }
 
     @Test
