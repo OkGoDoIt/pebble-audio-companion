@@ -77,8 +77,8 @@ class IosAudioCompanionRuntimeFactory(
             nowMs = nowMs,
         )
         val cloudHttpClient = HttpClient(Darwin)
-        val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent }
-        val diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled }
+        val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionEnabled }
+        val diarizationEnabled = { settingsRepository.settings.value.speakerLabelsEnabled }
         val remoteProvider = SelectableCloudTranscriptionProvider(
             selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
             openAi = OpenAiTranscriptionProvider(
@@ -141,11 +141,8 @@ class IosAudioCompanionRuntimeFactory(
             nowMs = nowMs,
             cloudPrimary = {
                 val s = settingsRepository.settings.value
-                s.cloudTranscriptionConsent &&
-                    (
-                        s.transcriptionMode == TranscriptionMode.RemoteOnly ||
-                            s.transcriptionMode == TranscriptionMode.RemoteFirst
-                        )
+                s.transcriptionMode == TranscriptionMode.RemoteOnly ||
+                    s.transcriptionMode == TranscriptionMode.RemoteFirst
             },
         )
         val liveAudioTap = LiveAudioTap()
@@ -157,16 +154,16 @@ class IosAudioCompanionRuntimeFactory(
                 openAi = OpenAiRealtimeProvider(
                     client = streamingClient,
                     apiKey = { settingsRepository.settings.value.openAiApiKey },
-                    cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
+                    cloudConsent = cloudConsent,
                 ),
                 soniox = SonioxRealtimeProvider(
                     client = streamingClient,
                     apiKey = { settingsRepository.settings.value.sonioxApiKey },
-                    cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent },
-                    diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled },
+                    cloudConsent = cloudConsent,
+                    diarizationEnabled = diarizationEnabled,
                 ),
             ),
-            enabled = { settingsRepository.settings.value.cloudLiveTranscriptionEnabled },
+            enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
             nowMs = nowMs,
         )
         val aiRouter = AiModeRouter(

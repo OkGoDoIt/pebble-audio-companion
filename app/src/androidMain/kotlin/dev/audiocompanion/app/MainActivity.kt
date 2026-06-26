@@ -158,10 +158,6 @@ class MainActivity : ComponentActivity() {
                         handle.localModelManager.refreshSelection()
                         runtime.notifyTranscriptionConfigChanged()
                     },
-                    setCloudTranscriptionConsent = {
-                        settingsRepository.setCloudTranscriptionConsent(it)
-                        runtime.notifyTranscriptionConfigChanged()
-                    },
                     setCloudTranscriptionProvider = {
                         settingsRepository.setCloudTranscriptionProvider(it)
                         runtime.notifyTranscriptionConfigChanged()
@@ -172,14 +168,6 @@ class MainActivity : ComponentActivity() {
                     },
                     setSonioxApiKey = {
                         settingsRepository.setSonioxApiKey(it)
-                        runtime.notifyTranscriptionConfigChanged()
-                    },
-                    setDiarizationEnabled = {
-                        settingsRepository.setDiarizationEnabled(it)
-                        runtime.notifyTranscriptionConfigChanged()
-                    },
-                    setCloudLiveTranscriptionEnabled = {
-                        settingsRepository.setCloudLiveTranscriptionEnabled(it)
                         runtime.notifyTranscriptionConfigChanged()
                     },
                     setAiMode = settingsRepository::setAiMode,

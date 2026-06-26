@@ -18,7 +18,10 @@ import dev.audiocompanion.transcription.CactusModelPathProvider
 import dev.audiocompanion.transcription.FileTranscriptStore
 import dev.audiocompanion.transcription.FileTranscriptionQueue
 import dev.audiocompanion.transcription.OpenAiTranscriptionProvider
+import dev.audiocompanion.transcription.OpenAiRealtimeProvider
 import dev.audiocompanion.transcription.SelectableCloudTranscriptionProvider
+import dev.audiocompanion.transcription.SelectableStreamingTranscriptionProvider
+import dev.audiocompanion.transcription.SonioxRealtimeProvider
 import dev.audiocompanion.transcription.SonioxTranscriptionProvider
 import dev.audiocompanion.transcription.SpeexFrameDecoder
 import dev.audiocompanion.transcription.TranscriptionException
@@ -28,6 +31,7 @@ import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.ReceiverConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.websocket.WebSockets
 import java.security.SecureRandom
 import kotlinx.coroutines.flow.flow
 import kotlinx.io.files.Path
@@ -63,8 +67,8 @@ class AndroidAudioCompanionRuntimeFactory(
             nowMs = nowMs,
         )
         val cloudHttpClient = HttpClient(OkHttp)
-        val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionConsent }
-        val diarizationEnabled = { settingsRepository.settings.value.diarizationEnabled }
+        val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionEnabled }
+        val diarizationEnabled = { settingsRepository.settings.value.speakerLabelsEnabled }
         val remoteProvider = SelectableCloudTranscriptionProvider(
             selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
             openAi = OpenAiTranscriptionProvider(
@@ -93,6 +97,27 @@ class AndroidAudioCompanionRuntimeFactory(
                 remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
             ),
             mode = { settingsRepository.settings.value.aiMode },
+        )
+        val liveAudioTap = LiveAudioTap()
+        val streamingClient = HttpClient(OkHttp) { install(WebSockets) }
+        val cloudLiveTranscriber = CloudLiveTranscriber(
+            tap = liveAudioTap,
+            provider = SelectableStreamingTranscriptionProvider(
+                selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
+                openAi = OpenAiRealtimeProvider(
+                    client = streamingClient,
+                    apiKey = { settingsRepository.settings.value.openAiApiKey },
+                    cloudConsent = cloudConsent,
+                ),
+                soniox = SonioxRealtimeProvider(
+                    client = streamingClient,
+                    apiKey = { settingsRepository.settings.value.sonioxApiKey },
+                    cloudConsent = cloudConsent,
+                    diarizationEnabled = diarizationEnabled,
+                ),
+            ),
+            enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
+            nowMs = nowMs,
         )
         return AudioCompanionRuntime(
             link = link,
@@ -180,6 +205,8 @@ class AndroidAudioCompanionRuntimeFactory(
                 settingsRepository.settings.value.backgroundReceiverEnabled
             },
             localTranscriptionLifecycle = localProvider,
+            cloudLiveTranscriber = cloudLiveTranscriber,
+            liveAudioTap = liveAudioTap,
         )
     }
 

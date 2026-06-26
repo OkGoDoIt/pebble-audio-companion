@@ -37,6 +37,7 @@ import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.LocalTranscriptionModelOptionState
 import dev.audiocompanion.app.LocalTranscriptionModelState
+import dev.audiocompanion.app.cloudTranscriptionEnabled
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
@@ -235,12 +236,6 @@ fun SettingsScreen(
                 }
             }
         }
-        SettingsToggleRow(
-            title = "Cloud transcription",
-            subtitle = "Send audio to the configured cloud provider for transcription. Off by default.",
-            checked = settings.cloudTranscriptionConsent,
-            onCheckedChange = actions.setCloudTranscriptionConsent,
-        )
         ModePickerRow(
             title = "Cloud provider",
             value = cloudProviderLabel(settings.cloudTranscriptionProvider),
@@ -256,18 +251,14 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        SettingsToggleRow(
-            title = "Speaker labels",
-            subtitle = "Tag who is speaking (diarization) when the cloud provider supports it.",
-            checked = settings.diarizationEnabled,
-            onCheckedChange = actions.setDiarizationEnabled,
-        )
-        SettingsToggleRow(
-            title = "Live cloud transcription",
-            subtitle = "Stream the open recording to Soniox in real time while the app is open. " +
-                "Closed segments still transcribe normally.",
-            checked = settings.cloudLiveTranscriptionEnabled,
-            onCheckedChange = actions.setCloudLiveTranscriptionEnabled,
+        Text(
+            text = if (settings.cloudTranscriptionEnabled) {
+                "Cloud transcription, speaker labels, and live transcription are used automatically when the selected provider supports them."
+            } else {
+                "Local only keeps transcription on this phone. Cloud transcription is off in this mode."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         HorizontalDivider()
 
@@ -300,8 +291,8 @@ fun SettingsScreen(
 
         SectionTitle("Privacy")
         Text(
-            text = "Audio and transcripts stay on this phone unless you enable cloud " +
-                "transcription or remote AI above. Nothing is shared with analytics or " +
+            text = "Audio and transcripts stay on this phone unless the transcription mode uses " +
+                "cloud or you enable remote AI above. Nothing is shared with analytics or " +
                 "diagnostics services.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -677,7 +668,7 @@ fun transcriptionModeLabel(mode: TranscriptionMode): String = when (mode) {
 fun transcriptionModeDescription(mode: TranscriptionMode): String = when (mode) {
     TranscriptionMode.LocalOnly -> "Keep audio on this phone. Requires the local model."
     TranscriptionMode.RemoteOnly -> "Send audio to the cloud provider for transcription."
-    TranscriptionMode.LocalFirst -> "Try local first; use cloud if local is unavailable and cloud is enabled."
+    TranscriptionMode.LocalFirst -> "Try local first; use cloud if local is unavailable."
     TranscriptionMode.RemoteFirst -> "Use cloud first; fall back to local if cloud is unavailable."
 }
 

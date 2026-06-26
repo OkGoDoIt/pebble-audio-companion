@@ -214,6 +214,20 @@ class AudioCompanionRuntime(
     }
 
     /**
+     * Foreground-entry catch-up: re-scan durable storage so every closed, not-yet-transcribed
+     * segment is queued, then wake the processing loop. Segments that close while the app is
+     * backgrounded are only enqueued by the foreground pass, so opening the app must re-scan and
+     * enqueue them; the queue's newest-first ordering then transcribes the most recent audio first
+     * while the older backlog still drains. Safe to call repeatedly and independent of the receiver.
+     */
+    fun reconcilePendingTranscriptions() {
+        recoverDurableStateIfNeeded()
+        enqueueClosedSegmentsForTranscription()
+        transcriptionWakeups.trySend(Unit)
+        refreshDiagnostics()
+    }
+
+    /**
      * Bounded, opportunistic catch-up for an iOS BGProcessingTask window, where the app is
      * legitimately awake (unlike a ~10s Core Bluetooth wake). Transcribes up to [maxSegments] queued
      * segments, then releases the local model. Each step is still gated by the per-process memory

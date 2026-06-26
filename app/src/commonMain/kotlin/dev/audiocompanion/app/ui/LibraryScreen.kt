@@ -450,7 +450,7 @@ fun SegmentDetailScreen(
                     meta.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Failed ->
                         "Transcription failed. It will be retried."
                     meta.transcriptionState == dev.audiocompanion.storage.TranscriptionState.Disabled ->
-                        "Transcription is unavailable. Install the local model or enable cloud transcription in Settings."
+                        "Transcription is unavailable. Install the local model or add an API key for the selected cloud provider in Settings."
                     meta.isOpen ->
                         "Recording — the transcript will appear here as speech is recognized."
                     else -> "Audio is stored. The transcript will appear here after processing."

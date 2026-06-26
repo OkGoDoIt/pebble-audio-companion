@@ -101,14 +101,17 @@ class FileTranscriptionQueue(
     fun all(): List<TranscriptionTask> = ensureIndex().values.sortedBy { it.createdAtMs }
 
     /**
-     * Oldest Pending task, or a retryable Failed one whose backoff has elapsed. Failed tasks
-     * back off exponentially with [retryBackoffMs] so a persistently failing segment cannot
-     * spin the worker loop.
+     * Newest Pending task, or — when none is pending — the newest retryable Failed one whose
+     * backoff has elapsed. Newest-first so the audio the user most likely cares about (their most
+     * recent conversation) transcribes first; the older backlog still drains once the recent work
+     * is clear, so everything is eventually transcribed. Failed tasks back off exponentially with
+     * [retryBackoffMs] so a persistently failing segment cannot spin the worker loop.
      */
     fun nextRunnable(): TranscriptionTask? {
+        // all() is ascending by createdAtMs, so lastOrNull is the newest matching task.
         val tasks = all()
-        return tasks.firstOrNull { it.state == TaskState.Pending }
-            ?: tasks.firstOrNull {
+        return tasks.lastOrNull { it.state == TaskState.Pending }
+            ?: tasks.lastOrNull {
                 it.state == TaskState.Failed && it.retryable &&
                     nowMs() >= it.updatedAtMs + retryBackoffMs(it.attempts)
             }

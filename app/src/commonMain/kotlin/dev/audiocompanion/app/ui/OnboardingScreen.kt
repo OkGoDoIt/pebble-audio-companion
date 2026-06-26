@@ -311,16 +311,11 @@ private fun PrivacyDefaultsStep(
     onNext: () -> Unit,
 ) {
     Text(
-        text = "Choose your defaults. Everything stays on this phone unless you opt in to " +
-            "cloud processing. You can change all of this later in Settings.",
+        text = "Choose your defaults. Local only keeps transcription on this phone; the other " +
+            "transcription modes use the selected cloud provider when needed. You can change " +
+            "this later in Settings.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    SettingsToggleRow(
-        title = "Cloud transcription",
-        subtitle = "Send audio to a cloud provider for transcription. Off keeps audio local.",
-        checked = settings.cloudTranscriptionConsent,
-        onCheckedChange = actions.setCloudTranscriptionConsent,
     )
     SettingsToggleRow(
         title = "Remote AI",

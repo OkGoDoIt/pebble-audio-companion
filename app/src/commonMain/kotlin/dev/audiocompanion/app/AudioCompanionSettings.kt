@@ -11,15 +11,10 @@ data class AudioCompanionSettings(
     val retentionMaxBytes: Long = 2L * 1024 * 1024 * 1024,
     val transcriptionMode: TranscriptionMode = TranscriptionMode.LocalFirst,
     val localTranscriptionModelId: String = LocalTranscriptionModels.DEFAULT_MODEL_ID,
-    val cloudTranscriptionConsent: Boolean = false,
     /** Which cloud speech-to-text backend the user has selected. */
     val cloudTranscriptionProvider: CloudProvider = CloudProvider.OpenAi,
     val openAiApiKey: String = "",
     val sonioxApiKey: String = "",
-    /** Opt-in speaker diarization for cloud transcription (provider-dependent). */
-    val diarizationEnabled: Boolean = false,
-    /** Opt-in real-time cloud transcription of the live segment (foreground; Soniox). */
-    val cloudLiveTranscriptionEnabled: Boolean = false,
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
     val remoteAiConsent: Boolean = false,
     /** When enabled, closed segments are decoded into WAV files in the platform export folder. */
@@ -29,6 +24,21 @@ data class AudioCompanionSettings(
     val onboardingComplete: Boolean = false,
 )
 
+val AudioCompanionSettings.cloudTranscriptionEnabled: Boolean
+    get() = transcriptionMode != TranscriptionMode.LocalOnly
+
+val AudioCompanionSettings.speakerLabelsEnabled: Boolean
+    get() = cloudTranscriptionEnabled
+
+val AudioCompanionSettings.liveCloudTranscriptionEnabled: Boolean
+    get() = cloudTranscriptionEnabled
+
+fun AudioCompanionSettings.cloudTranscriptionKeyConfigured(): Boolean =
+    when (cloudTranscriptionProvider) {
+        CloudProvider.OpenAi -> openAiApiKey.isNotBlank()
+        CloudProvider.Soniox -> sonioxApiKey.isNotBlank()
+    }
+
 interface AudioCompanionSettingsRepository {
     val settings: StateFlow<AudioCompanionSettings>
 
@@ -36,12 +46,9 @@ interface AudioCompanionSettingsRepository {
     fun setRetentionDays(days: Int)
     fun setTranscriptionMode(mode: TranscriptionMode)
     fun setLocalTranscriptionModel(modelId: String)
-    fun setCloudTranscriptionConsent(consented: Boolean)
     fun setCloudTranscriptionProvider(provider: CloudProvider)
     fun setOpenAiApiKey(apiKey: String)
     fun setSonioxApiKey(apiKey: String)
-    fun setDiarizationEnabled(enabled: Boolean)
-    fun setCloudLiveTranscriptionEnabled(enabled: Boolean)
     fun setAiMode(mode: AiProcessingMode)
     fun setRemoteAiConsent(consented: Boolean)
     fun setAutomaticWavExportEnabled(enabled: Boolean)

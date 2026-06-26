@@ -66,7 +66,7 @@ on Android/iOS, and processes the durable transcription queue through the four-m
 local transcription is wired to the vendored Cactus STT runtime and resolves the
 `parakeet-tdt-0.6b-v3` model into the companion app's private files directory. Remote
 transcription is wired to OpenAI's audio transcription endpoint and is disabled unless the user has
-enabled cloud transcription consent and entered an API key in the app. The native iOS shell links
+selected a non-local transcription mode and entered the provider API key in the app. The native iOS shell links
 the same receiver runtime, starts the Core Bluetooth central at app launch, declares
 `bluetooth-central`, and registers a BGProcessing hook for deferred non-BLE work. The hardware
 lifecycle matrix in `docs/ios-lifecycle-validation.md` must still pass on physical devices before

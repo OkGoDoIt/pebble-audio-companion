@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.LocalTranscriptionModelState
+import dev.audiocompanion.app.cloudTranscriptionEnabled
+import dev.audiocompanion.app.cloudTranscriptionKeyConfigured
 import dev.audiocompanion.transcription.TranscriptionMode
 
 /** Semantic colors (ux plan Section 14): platform-leaning, restrained. */
@@ -158,22 +160,22 @@ fun transcriptionSetupMessage(
     localModel: LocalTranscriptionModelState,
 ): String? {
     val localReady = localModel.downloaded
-    val cloudReady = settings.cloudTranscriptionConsent && settings.openAiApiKey.isNotBlank()
+    val cloudReady = settings.cloudTranscriptionEnabled && settings.cloudTranscriptionKeyConfigured()
     return when (settings.transcriptionMode) {
         TranscriptionMode.LocalOnly ->
             if (localReady) null
             else "Local transcription model is not installed, so transcription will not run until you download it."
         TranscriptionMode.LocalFirst -> when {
             localReady -> null
-            cloudReady -> "Local transcription model is not installed. Transcription can use cloud while cloud consent and the API key stay enabled."
-            else -> "Local transcription model is not installed and cloud transcription is not configured, so transcription will not run."
+            cloudReady -> "Local transcription model is not installed. Transcription can use the selected cloud provider."
+            else -> "Local transcription model is not installed and the selected cloud provider needs an API key, so transcription will not run."
         }
         TranscriptionMode.RemoteOnly ->
             if (cloudReady) null
-            else "Cloud transcription is not configured. Add an API key and enable cloud transcription, or switch to a local mode after downloading a model."
+            else "Cloud transcription needs an API key for the selected provider, or switch to local only after downloading a model."
         TranscriptionMode.RemoteFirst -> when {
             cloudReady || localReady -> null
-            else -> "No transcription provider is ready. Download a local model or configure cloud transcription before transcripts can be created."
+            else -> "No transcription provider is ready. Download a local model or add an API key for the selected cloud provider."
         }
     }
 }
