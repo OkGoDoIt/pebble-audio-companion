@@ -50,9 +50,9 @@ class LiveAudioTap {
  * (e.g. Soniox realtime), and publishes a rolling [LiveTranscriptPreview] — the same preview surface
  * the local chunk-based transcriber uses, so the UI need not care which produced it.
  *
- * Foreground-only and opt-in: a live socket cannot survive iOS suspension, so [setForeground] stops
- * sessions in the background, and nothing runs unless [enabled] is true. The local live preview is
- * untouched when this is off.
+ * Opt-in and lightweight enough to keep running when the app backgrounds. Local transcription still
+ * pauses there to avoid resident-model memory pressure, but this path only decodes live frames and
+ * streams them to the selected cloud provider.
  */
 class CloudLiveTranscriber(
     private val tap: LiveAudioTap,
@@ -80,8 +80,8 @@ class CloudLiveTranscriber(
     private val _previews = MutableStateFlow<Map<String, LiveTranscriptPreview>>(emptyMap())
     val previews: StateFlow<Map<String, LiveTranscriptPreview>> = _previews.asStateFlow()
 
-    private var foreground = true
     private var sessionScope: CoroutineScope? = null
+    private var currentOpenSegment: LiveAudioEvent.SegmentOpened? = null
     private var activeSegmentId: String? = null
     private var frameChannel: Channel<ByteArray>? = null
     private var sessionJob: Job? = null
@@ -96,16 +96,16 @@ class CloudLiveTranscriber(
         }
     }
 
-    /** Receiving keeps going in the background, but streaming cannot — stop live sessions there. */
-    fun setForeground(value: Boolean) {
-        foreground = value
-        if (!value) stopSession()
-    }
+    /** Local transcription pauses in the background; cloud live streaming intentionally continues. */
+    fun setForeground(value: Boolean) = Unit
 
     private suspend fun handle(event: LiveAudioEvent) {
         when (event) {
             is LiveAudioEvent.SegmentOpened -> onOpened(event)
-            is LiveAudioEvent.FramesAppended ->
+            is LiveAudioEvent.FramesAppended -> {
+                if (event.segmentId == currentOpenSegment?.segmentId && activeSegmentId != event.segmentId) {
+                    currentOpenSegment?.let { maybeStartSession(it) }
+                }
                 if (event.segmentId == activeSegmentId) {
                     streamedFrameCount += event.frames.size
                     event.frames.lastOrNull()?.let { frame ->
@@ -114,13 +114,22 @@ class CloudLiveTranscriber(
                     }
                     event.frames.forEach { frameChannel?.trySend(it.payload) }
                 }
-            is LiveAudioEvent.SegmentClosed ->
+            }
+            is LiveAudioEvent.SegmentClosed -> {
+                if (event.segmentId == currentOpenSegment?.segmentId) currentOpenSegment = null
                 if (event.segmentId == activeSegmentId) stopSession()
+            }
         }
     }
 
     private fun onOpened(event: LiveAudioEvent.SegmentOpened) {
-        if (!foreground || !enabled()) return
+        currentOpenSegment = event
+        maybeStartSession(event)
+    }
+
+    private fun maybeStartSession(event: LiveAudioEvent.SegmentOpened) {
+        if (!enabled()) return
+        if (activeSegmentId == event.segmentId && frameChannel != null) return
         val scope = sessionScope ?: return
         stopSession()
         val channel = Channel<ByteArray>(Channel.UNLIMITED)
