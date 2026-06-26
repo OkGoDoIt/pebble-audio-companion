@@ -7,7 +7,7 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -43,7 +43,7 @@ class SonioxRealtimeProvider(
     override fun transcribeStream(
         pcm: Flow<ByteArray>,
         sampleRateHz: Int,
-    ): Flow<StreamingTranscriptUpdate> = flow {
+    ): Flow<StreamingTranscriptUpdate> = channelFlow {
         if (!cloudConsent()) throw TranscriptionException.ProviderUnavailable(id)
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException.ProviderUnavailable(id)
@@ -63,7 +63,7 @@ class SonioxRealtimeProvider(
                     message.errorMessage?.let {
                         throw TranscriptionException.TranscriptionFailed("Soniox realtime error: $it")
                     }
-                    emit(accumulator.accept(message.tokens, finished = message.finished))
+                    this@channelFlow.send(accumulator.accept(message.tokens, finished = message.finished))
                     if (message.finished) break
                 }
             } finally {

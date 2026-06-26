@@ -10,7 +10,7 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -42,7 +42,7 @@ class OpenAiRealtimeProvider(
     override fun transcribeStream(
         pcm: Flow<ByteArray>,
         sampleRateHz: Int,
-    ): Flow<StreamingTranscriptUpdate> = flow {
+    ): Flow<StreamingTranscriptUpdate> = channelFlow {
         if (!cloudConsent()) throw TranscriptionException.ProviderUnavailable(id)
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException.ProviderUnavailable(id)
@@ -69,8 +69,10 @@ class OpenAiRealtimeProvider(
                     if (frame !is Frame.Text) continue
                     val event = json.decodeFromString(OpenAiRtEvent.serializer(), frame.readText())
                     when (event.type) {
-                        DELTA_EVENT -> emit(accumulator.delta(event.delta.orEmpty()))
-                        COMPLETED_EVENT -> emit(accumulator.completed(event.transcript.orEmpty()))
+                        DELTA_EVENT -> this@channelFlow.send(accumulator.delta(event.delta.orEmpty()))
+                        COMPLETED_EVENT -> this@channelFlow.send(
+                            accumulator.completed(event.transcript.orEmpty()),
+                        )
                         ERROR_EVENT -> throw TranscriptionException.TranscriptionFailed(
                             "OpenAI realtime error: ${event.error?.message ?: "unknown"}",
                         )
