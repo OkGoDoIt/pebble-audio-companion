@@ -3,7 +3,9 @@ package dev.audiocompanion.app.ui
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptSegment
+import dev.audiocompanion.transcription.TranscriptionMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -246,6 +248,51 @@ class TranscriptFormattingTest {
         assertEquals(90_000, speech.last().endMs)
     }
 
+    @Test
+    fun librarySearchMatchReturnsTimedTranscriptSnippet() {
+        val transcript = testTranscript(
+            text = "They discussed lunch, then Austin apartment hunting near transit.",
+            segments = listOf(
+                TranscriptSegment("They discussed lunch", startMs = 0, endMs = 2_000),
+                TranscriptSegment("Austin apartment hunting near transit", startMs = 42_000, endMs = 47_000),
+            ),
+        )
+
+        val match = librarySearchMatch(
+            query = "Austin",
+            meta = testMeta(),
+            transcript = transcript,
+            annotation = null,
+            actionItems = emptyList(),
+            aiOutputs = emptyList(),
+        ) ?: throw AssertionError("expected transcript search match")
+
+        assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
+        assertEquals(42_000, match.startMs)
+        assertTrue(match.label.startsWith("Transcript match"))
+        assertTrue(match.snippet.contains("Austin"))
+    }
+
+    @Test
+    fun librarySearchMatchFallsBackToPlainTranscriptSnippetWithoutTimings() {
+        val transcript = testTranscript(
+            text = "Before the errand they talked about groceries. Later Austin called back.",
+        )
+
+        val match = librarySearchMatch(
+            query = "Austin",
+            meta = testMeta(),
+            transcript = transcript,
+            annotation = null,
+            actionItems = emptyList(),
+            aiOutputs = emptyList(),
+        ) ?: throw AssertionError("expected plain transcript search match")
+
+        assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
+        assertEquals(null, match.startMs)
+        assertTrue(match.snippet.contains("Austin"))
+    }
+
     private fun testMeta(gaps: List<GapMeta> = emptyList()) = SegmentMeta(
         segmentId = "seg",
         streamId = 1u,
@@ -263,5 +310,18 @@ class TranscriptFormattingTest {
         lastSampleIndexExclusive = 160_000UL,
         frameCount = 500,
         gaps = gaps,
+    )
+
+    private fun testTranscript(
+        text: String,
+        segments: List<TranscriptSegment> = emptyList(),
+    ) = SegmentTranscript(
+        segmentId = "seg",
+        text = text,
+        modeUsed = TranscriptionMode.LocalOnly,
+        providerId = "test",
+        modelUsed = null,
+        createdAtMs = 0,
+        segments = segments,
     )
 }

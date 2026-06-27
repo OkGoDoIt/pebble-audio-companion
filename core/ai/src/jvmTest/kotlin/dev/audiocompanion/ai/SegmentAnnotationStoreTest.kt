@@ -115,10 +115,30 @@ class SegmentAnnotationPromptTest {
     @Test
     fun parsesWellFormedResponse() {
         val parsed = SegmentAnnotationPrompt.parse(
-            "TITLE: Quarterly budget review\nSUMMARY: The team reviewed Q3 spend. Cuts were agreed.",
+            "TITLE: Quarterly budget review\n" +
+                "SUMMARY: The team reviewed Q3 spend. Cuts were agreed.\n" +
+                "TAGS: budget, work, finance",
         )
         assertEquals("Quarterly budget review", parsed.title)
         assertEquals("The team reviewed Q3 spend. Cuts were agreed.", parsed.summary)
+        assertEquals(listOf("budget", "work", "finance"), parsed.tags)
+    }
+
+    @Test
+    fun parsesStructuredResponseWithTags() {
+        val parsed = SegmentAnnotationPrompt.parse(
+            """
+            {
+              "title": "Quarterly budget review",
+              "summary": "The team reviewed Q3 spend and agreed on cuts.",
+              "tags": ["budget", "finance", "budget", "#work"]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("Quarterly budget review", parsed.title)
+        assertEquals("The team reviewed Q3 spend and agreed on cuts.", parsed.summary)
+        assertEquals(listOf("budget", "finance", "work"), parsed.tags)
     }
 
     @Test

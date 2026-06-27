@@ -92,18 +92,51 @@ class OpenAiChatAiProvider(
     }
 
     private fun responseTextConfig(prompt: AiPromptTemplate): ResponseTextConfig? =
-        if (prompt.id == AiPromptTemplates.ActionItems.id) {
-            ResponseTextConfig(
-                format = ResponseFormat(
-                    type = "json_schema",
+        when (prompt.id) {
+            AiPromptTemplates.ActionItems.id -> ResponseTextConfig(
+                format = jsonSchemaFormat(
                     name = "action_items",
                     schema = actionItemsSchema(),
-                    strict = true,
                 ),
             )
-        } else {
-            null
+            SegmentAnnotationPrompt.TEMPLATE_ID,
+            SegmentAnnotationPrompt.LIVE_TEMPLATE_ID -> ResponseTextConfig(
+                format = jsonSchemaFormat(
+                    name = "segment_annotation",
+                    schema = segmentAnnotationSchema(),
+                ),
+            )
+            else -> null
         }
+
+    private fun jsonSchemaFormat(name: String, schema: JsonObject): ResponseFormat =
+        ResponseFormat(
+            type = "json_schema",
+            name = name,
+            schema = schema,
+            strict = true,
+        )
+
+    private fun segmentAnnotationSchema(): JsonObject = buildJsonObject {
+        put("type", JsonPrimitive("object"))
+        put("additionalProperties", JsonPrimitive(false))
+        put(
+            "required",
+            buildJsonArray {
+                add(JsonPrimitive("title"))
+                add(JsonPrimitive("summary"))
+                add(JsonPrimitive("tags"))
+            },
+        )
+        put("properties", buildJsonObject {
+            put("title", schemaString("Specific plain title, at most 8 words."))
+            put("summary", schemaString("One to three concise factual sentences."))
+            put("tags", buildJsonObject {
+                put("type", JsonPrimitive("array"))
+                put("items", schemaString("Short reusable topic tag or proper noun."))
+            })
+        })
+    }
 
     private fun actionItemsSchema(): JsonObject = buildJsonObject {
         put("type", JsonPrimitive("object"))

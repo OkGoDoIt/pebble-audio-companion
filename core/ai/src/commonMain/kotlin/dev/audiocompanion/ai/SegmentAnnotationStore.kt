@@ -36,7 +36,7 @@ data class SegmentAnnotation(
     /** Final-pass attempts only, so a broken provider cannot spin the authoritative pass forever. */
     val finalAttempts: Int = 0,
 ) {
-    val hasContent: Boolean get() = !title.isNullOrBlank() || !summary.isNullOrBlank()
+    val hasContent: Boolean get() = !title.isNullOrBlank() || !summary.isNullOrBlank() || tags.isNotEmpty()
 }
 
 /**

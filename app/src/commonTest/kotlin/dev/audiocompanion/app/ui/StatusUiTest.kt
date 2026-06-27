@@ -1,5 +1,8 @@
 package dev.audiocompanion.app.ui
 
+import dev.audiocompanion.ai.ActionItem
+import dev.audiocompanion.ai.AiOutput
+import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionDiagnostics
@@ -670,6 +673,75 @@ class TimelineTest {
     @Test
     fun segmentDurationPrefersSampleCounters() {
         assertEquals(10_000, segmentDurationMs(meta("seg-1", nowMs)))
+    }
+
+    @Test
+    fun libraryTagsAreFrequencySortedAndDeduped() {
+        val tags = libraryTags(
+            listOf(
+                SegmentAnnotation(segmentId = "seg-1", tags = listOf("work", "budget"), createdAtMs = nowMs),
+                SegmentAnnotation(segmentId = "seg-2", tags = listOf("Work", "planning"), createdAtMs = nowMs),
+                SegmentAnnotation(segmentId = "seg-3", tags = listOf("budget"), createdAtMs = nowMs),
+            ),
+        )
+
+        assertEquals(listOf("budget", "work", "planning"), tags)
+    }
+
+    @Test
+    fun librarySearchMatchesTagsActionsAndAiOutputs() {
+        val annotation = SegmentAnnotation(
+            segmentId = "seg-1",
+            title = "Theater compensation",
+            summary = "Discussed salary review.",
+            tags = listOf("salary", "theater"),
+            createdAtMs = nowMs,
+        )
+        val action = ActionItem(
+            id = "action-1",
+            text = "Follow up with Paul about raise timing.",
+            sourceSegmentId = "seg-1",
+            createdAtMs = nowMs,
+        )
+        val output = AiOutput(
+            outputId = "ai-1",
+            requestId = "ai-1",
+            promptTemplateId = "ask",
+            promptTitle = "Ask",
+            segmentIds = listOf("seg-1"),
+            text = "The unresolved point was whether bar work counts as compensation.",
+            modeUsed = AiProcessingMode.LocalOnly,
+            providerId = "local",
+            createdAtMs = nowMs,
+            userConsentedToRemote = false,
+        )
+
+        assertTrue(segmentMatchesLibraryQuery("salary", null, annotation, emptyList(), emptyList()))
+        assertTrue(segmentMatchesLibraryQuery("Paul", null, annotation, listOf(action), emptyList()))
+        assertTrue(segmentMatchesLibraryQuery("compensation", null, annotation, emptyList(), listOf(output)))
+        assertTrue(annotationHasTag(annotation, "THEATER"))
+    }
+
+    @Test
+    fun todayOpenActionItemsOnlyIncludesVisibleUndoneItems() {
+        val visible = meta("seg-visible", nowMs)
+        val hidden = meta("seg-hidden", nowMs)
+        val timeline = buildTimeline(
+            segments = listOf(visible),
+            transcriptOf = { null },
+            nowMs = nowMs,
+        )
+        val items = todayOpenActionItems(
+            listOf(
+                ActionItem("a", "Visible", false, "seg-visible", nowMs),
+                ActionItem("b", "Done", true, "seg-visible", nowMs + 1),
+                ActionItem("c", "Hidden", false, "seg-hidden", nowMs + 2),
+            ),
+            timeline,
+        )
+
+        assertEquals(listOf("a"), items.map { it.id })
+        assertTrue(hidden.segmentId !in timeline.map { (it as TimelineItem.Segment).meta.segmentId })
     }
 }
 

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -25,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.ActionItem
 import dev.audiocompanion.ai.AiPlainText
 import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.SegmentAnnotation
@@ -175,7 +177,10 @@ fun TodayScreen(
     onStopPlayback: () -> Unit,
     /** Today's AI daily digest, when generated. */
     dailyDigest: DailyDigest? = null,
+    actionItems: List<ActionItem> = emptyList(),
+    onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
 ) {
+    val openActionItems = todayOpenActionItems(actionItems, timeline).take(3)
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text(
             text = "Today",
@@ -237,6 +242,16 @@ fun TodayScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
             ) {
+                if (openActionItems.isNotEmpty()) {
+                    item(key = "ai-next-up") {
+                        TodayActionItemsRow(
+                            items = openActionItems,
+                            onOpenSegment = onOpenSegment,
+                            onSetDone = onSetActionItemDone,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
                 dailyDigest?.let { digest ->
                     val preview = dailyDigestPreviewText(digest)
                     if (!preview.isNullOrBlank()) {
@@ -262,6 +277,57 @@ fun TodayScreen(
                             onPausePlayback = onPausePlayback,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+fun todayOpenActionItems(
+    actionItems: List<ActionItem>,
+    timeline: List<TimelineItem>,
+): List<ActionItem> {
+    val visibleSegmentIds = timeline
+        .filterIsInstance<TimelineItem.Segment>()
+        .map { it.meta.segmentId }
+        .toSet()
+    return actionItems
+        .filter { !it.done && it.sourceSegmentId in visibleSegmentIds }
+        .sortedByDescending { it.createdAtMs }
+}
+
+@Composable
+private fun TodayActionItemsRow(
+    items: List<ActionItem>,
+    onOpenSegment: (String) -> Unit,
+    onSetDone: (String, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Needs follow-up", style = MaterialTheme.typography.titleSmall)
+            items.forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Checkbox(
+                        checked = item.done,
+                        onCheckedChange = { onSetDone(item.id, it) },
+                    )
+                    Text(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onOpenSegment(item.sourceSegmentId) },
+                    )
                 }
             }
         }

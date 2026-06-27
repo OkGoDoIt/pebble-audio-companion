@@ -228,7 +228,7 @@ fun App(
                         liveTranscripts = liveTranscriptsMap,
                         livePreviews = livePreviewsMap,
                         annotations = annotationsMap,
-                        aiOutputs = if (tab == AppTab.Ai) {
+                        aiOutputs = if (tab == AppTab.Ai || tab == AppTab.Library) {
                             actions.loadAiOutputs()
                         } else {
                             previousAiOutputs
@@ -332,6 +332,7 @@ fun App(
                         dailyDigest = dailyDigests.firstOrNull {
                             Formatting.isSameLocalDay(it.createdAtMs, nowMs)
                         },
+                        actionItems = actionItems,
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
                         waveformWindowMs = waveformWindowMs,
@@ -352,6 +353,7 @@ fun App(
                         onPlaySegment = actions.playSegment,
                         onPausePlayback = actions.pausePlayback,
                         onStopPlayback = actions.stopPlayback,
+                        onSetActionItemDone = actions.setActionItemDone,
                     )
 
                     AppTab.Library -> LibraryScreen(
@@ -364,6 +366,8 @@ fun App(
                                 ?: livePreviews[segmentId]?.transcribedFrameCount?.toLong()
                         },
                         annotationOf = { annotations[it] },
+                        actionItems = actionItems,
+                        aiOutputs = aiOutputs,
                         settings = currentSettings,
                         localModel = currentLocalModel,
                         nowMs = nowMs,
@@ -374,6 +378,14 @@ fun App(
                         onDeleteSegment = actions.deleteSegment,
                         onExportSegment = actions.exportSegmentAudio,
                         onShareFile = actions.shareFile,
+                        onRunSegmentAi = { template, segmentId ->
+                            actions.runAi(template, listOf(segmentId))
+                        },
+                        onSetActionItemDone = actions.setActionItemDone,
+                        onAskAboutSegment = { segmentId ->
+                            librarySegmentId = segmentId
+                            tab = AppTab.Ai
+                        },
                         onPlaySegment = actions.playSegment,
                         onPausePlayback = actions.pausePlayback,
                         onStopPlayback = actions.stopPlayback,

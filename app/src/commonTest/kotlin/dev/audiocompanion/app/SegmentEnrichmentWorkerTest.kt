@@ -6,6 +6,7 @@ import dev.audiocompanion.ai.AiProvider
 import dev.audiocompanion.ai.AiProviderResult
 import dev.audiocompanion.ai.AiRunRequest
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.CloseReasonMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.storage.TranscriptionState
@@ -22,7 +23,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private class FakeAiProvider(
-    var response: String = "TITLE: Team sync\nSUMMARY: Discussed the plan.",
+    var response: String = "TITLE: Team sync\nSUMMARY: Discussed the plan.\nTAGS: work, planning",
     var error: Exception? = null,
 ) : AiProvider {
     override val id: String = "fake"
@@ -96,8 +97,39 @@ class SegmentEnrichmentWorkerTest {
         val annotation = store.load("seg-1")
         assertEquals("Team sync", annotation?.title)
         assertEquals("Discussed the plan.", annotation?.summary)
+        assertEquals(listOf("work", "planning"), annotation?.tags)
         assertEquals(AiProcessingMode.LocalOnly, annotation?.modeUsed)
         assertEquals("fake", annotation?.providerId)
+    }
+
+    @Test
+    fun finalizedAnnotationWithoutTagsIsBackfilled() = runTest {
+        val store = FileSegmentAnnotationStore(SystemFileSystem, tempRoot()) { clock++ }
+        store.save(
+            SegmentAnnotation(
+                segmentId = "seg-1",
+                title = "Old title",
+                summary = "Old summary",
+                tags = emptyList(),
+                createdAtMs = 0,
+                isFinal = true,
+                attempts = 1,
+                finalAttempts = 1,
+            ),
+        )
+        val provider = FakeAiProvider(
+            response = "TITLE: Team sync\nSUMMARY: Discussed the plan.\nTAGS: work, planning",
+        )
+
+        val annotated = worker(store, provider)
+            .enrich(listOf(meta("seg-1")), transcriptOf = { transcript(it) })
+
+        assertEquals(listOf("seg-1"), annotated)
+        assertEquals(1, provider.runCount)
+        val annotation = store.load("seg-1")
+        assertEquals(true, annotation?.isFinal)
+        assertEquals(listOf("work", "planning"), annotation?.tags)
+        assertEquals(2, annotation?.finalAttempts)
     }
 
     @Test
@@ -225,12 +257,13 @@ class SegmentEnrichmentWorkerTest {
         assertEquals(1, provider.runCount)
 
         // Segment closes and finishes transcribing: authoritative final pass overrides.
-        provider.response = "TITLE: Final title\nSUMMARY: The authoritative summary."
+        provider.response = "TITLE: Final title\nSUMMARY: The authoritative summary.\nTAGS: work, plan"
         worker.enrich(listOf(meta("seg-1", state = TranscriptionState.Complete)), transcriptOf = { transcript(it) })
         val finalAnnotation = store.load("seg-1")
         assertEquals(true, finalAnnotation?.isFinal)
         assertEquals("Final title", finalAnnotation?.title)
         assertEquals("The authoritative summary.", finalAnnotation?.summary)
+        assertEquals(listOf("work", "plan"), finalAnnotation?.tags)
         assertEquals(2, provider.runCount)
 
         // The final pass runs exactly once.
