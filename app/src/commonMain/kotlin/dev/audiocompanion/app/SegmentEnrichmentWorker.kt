@@ -77,7 +77,9 @@ class SegmentEnrichmentWorker(
         if (!meta.isOpen && meta.transcriptionState == TranscriptionState.Complete) {
             val durable = transcriptOf(meta.segmentId)?.text?.trim()
             if (durable.isNullOrBlank()) return Plan.None
-            if (existing?.isFinal == true) return Plan.None
+            // Older final annotations were title/summary only. Treat tagless finals as due for
+            // one structured final pass so library tags backfill automatically.
+            if (existing?.isFinal == true && existing.tags.isNotEmpty()) return Plan.None
             if ((existing?.finalAttempts ?: 0) >= MAX_ATTEMPTS) return Plan.None
             return Plan.Generate(durable, isFinal = true)
         }

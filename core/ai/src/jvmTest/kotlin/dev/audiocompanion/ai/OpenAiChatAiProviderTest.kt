@@ -137,6 +137,46 @@ class OpenAiChatAiProviderTest {
     }
 
     @Test
+    fun segmentAnnotationRequestsStructuredTags() = runTest {
+        lateinit var captured: HttpRequestData
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler {
+                    captured = it
+                    respond(
+                        content = ByteReadChannel(
+                            """
+                            {
+                              "model": "gpt-5.4-mini",
+                              "output_text": "{\"title\":\"Budget review\",\"summary\":\"They discussed Q3 spend.\",\"tags\":[\"budget\",\"finance\"]}"
+                            }
+                            """.trimIndent(),
+                        ),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }
+        }
+        val provider = OpenAiChatAiProvider(
+            client = client,
+            apiKey = { "test-key" },
+            remoteConsent = { true },
+        )
+
+        val result = provider.run(request(SegmentAnnotationPrompt.template))
+
+        assertTrue(result.text.contains("\"tags\""))
+        val body = captured.body.toByteArray().decodeToString().filterNot { it.isWhitespace() }
+        assertTrue(body.contains("\"type\":\"json_schema\""))
+        assertTrue(body.contains("\"name\":\"segment_annotation\""))
+        assertTrue(body.contains("\"title\""))
+        assertTrue(body.contains("\"summary\""))
+        assertTrue(body.contains("\"tags\""))
+        assertTrue(body.contains("\"strict\":true"))
+    }
+
+    @Test
     fun sendsConfiguredModelInRequestBody() = runTest {
         lateinit var captured: HttpRequestData
         var selectedModel = "gpt-5.4-mini"

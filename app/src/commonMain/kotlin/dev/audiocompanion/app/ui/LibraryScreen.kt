@@ -1,10 +1,12 @@
 package dev.audiocompanion.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -16,10 +18,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -38,10 +46,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.ActionItem
+import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPlainText
+import dev.audiocompanion.ai.AiPromptTemplate
+import dev.audiocompanion.ai.AiPromptTemplates
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
@@ -54,11 +69,14 @@ import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptSegment
 import dev.audiocompanion.transcription.TranscriptWord
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class LibraryFilter(val label: String) {
     All("All"),
     Today("Today"),
+    Actions("Actions"),
+    Ai("AI"),
     Gaps("Gaps"),
     Untranscribed("Untranscribed"),
 }
@@ -71,6 +89,8 @@ fun LibraryScreen(
     livePreviewOf: (String) -> LiveTranscriptPreview? = { null },
     liveTranscribedFrameCountOf: (String) -> Long? = { null },
     annotationOf: (String) -> SegmentAnnotation?,
+    actionItems: List<ActionItem> = emptyList(),
+    aiOutputs: List<AiOutput> = emptyList(),
     settings: AudioCompanionSettings,
     localModel: LocalTranscriptionModelState,
     nowMs: Long,
@@ -81,6 +101,11 @@ fun LibraryScreen(
     onDeleteSegment: (String) -> Unit,
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onShareFile: (String) -> Unit = {},
+    onRunSegmentAi: suspend (AiPromptTemplate, String) -> Result<AiOutput> = { _, _ ->
+        Result.failure(IllegalStateException("AI is not wired"))
+    },
+    onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
+    onAskAboutSegment: (String) -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -88,6 +113,8 @@ fun LibraryScreen(
     onCyclePlaybackSpeed: () -> Unit,
     loadWaveform: suspend (String) -> SegmentWaveform? = { null },
 ) {
+    var selectedSearchQuery by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedSearchOffsetMs by rememberSaveable { mutableStateOf<Long?>(null) }
     val selected = selectedSegmentId?.let { id -> segments.firstOrNull { it.segmentId == id } }
     if (selected != null) {
         SegmentDetailScreen(
@@ -97,18 +124,31 @@ fun LibraryScreen(
             livePreview = livePreviewOf(selected.segmentId),
             liveTranscribedFrameCount = liveTranscribedFrameCountOf(selected.segmentId),
             annotation = annotationOf(selected.segmentId),
+            searchQuery = selectedSearchQuery,
+            initialSearchOffsetMs = selectedSearchOffsetMs,
+            actionItems = actionItemsForSegment(actionItems, selected.segmentId),
+            relatedAiOutputs = aiOutputsForSegment(aiOutputs, selected.segmentId),
             settings = settings,
             localModel = localModel,
             nowMs = nowMs,
             playback = playback,
-            onBack = { onSelectSegment(null) },
+            onBack = {
+                selectedSearchQuery = null
+                selectedSearchOffsetMs = null
+                onSelectSegment(null)
+            },
             onDelete = {
                 onDeleteSegment(selected.segmentId)
+                selectedSearchQuery = null
+                selectedSearchOffsetMs = null
                 onSelectSegment(null)
             },
             onExportSegment = onExportSegment,
             onShareFile = onShareFile,
             onReprocess = { onReprocessSegment(selected.segmentId) },
+            onRunSegmentAi = onRunSegmentAi,
+            onSetActionItemDone = onSetActionItemDone,
+            onAskAboutSegment = { onAskAboutSegment(selected.segmentId) },
             onPlaySegment = onPlaySegment,
             onPausePlayback = onPausePlayback,
             onStopPlayback = onStopPlayback,
@@ -121,31 +161,41 @@ fun LibraryScreen(
 
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(LibraryFilter.All) }
+    var selectedTag by rememberSaveable { mutableStateOf<String?>(null) }
+    val availableTags = libraryTags(segments.mapNotNull { annotationOf(it.segmentId) })
 
-    val visible = remember(segments, query, filter, nowMs) {
-        segments
-            .sortedByDescending { it.receivedAtMs }
-            .filter { meta ->
-                when (filter) {
-                    LibraryFilter.All -> true
-                    LibraryFilter.Today -> Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)
-                    // Silence the watch skipped to save power is not a gap, so a segment that
-                    // only has those does not belong in the "Gaps" filter.
-                    LibraryFilter.Gaps -> visibleLossGaps(meta).isNotEmpty()
-                    LibraryFilter.Untranscribed -> !meta.isFullyTranscribed
-                }
+    val visible = segments
+        .sortedByDescending { it.receivedAtMs }
+        .filter { meta ->
+            val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
+            val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
+            when (filter) {
+                LibraryFilter.All -> true
+                LibraryFilter.Today -> Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)
+                LibraryFilter.Actions -> segmentActionItems.any { !it.done }
+                LibraryFilter.Ai -> annotationOf(meta.segmentId)?.hasContent == true ||
+                    relatedOutputs.isNotEmpty()
+                // Silence the watch skipped to save power is not a gap, so a segment that
+                // only has those does not belong in the "Gaps" filter.
+                LibraryFilter.Gaps -> visibleLossGaps(meta).isNotEmpty()
+                LibraryFilter.Untranscribed -> !meta.isFullyTranscribed
             }
-            .filter { meta ->
-                if (query.isBlank()) true
-                else {
-                    val transcript = transcriptOf(meta.segmentId)?.text.orEmpty()
-                    val annotation = annotationOf(meta.segmentId)
-                    transcript.contains(query, ignoreCase = true) ||
-                        annotation?.title.orEmpty().contains(query, ignoreCase = true) ||
-                        annotation?.summary.orEmpty().contains(query, ignoreCase = true)
-                }
+        }
+        .filter { meta ->
+            selectedTag == null || annotationHasTag(annotationOf(meta.segmentId), selectedTag)
+        }
+        .filter { meta ->
+            if (query.isBlank()) true
+            else {
+                segmentMatchesLibraryQuery(
+                    query = query,
+                    transcript = transcriptOf(meta.segmentId),
+                    annotation = annotationOf(meta.segmentId),
+                    actionItems = actionItemsForSegment(actionItems, meta.segmentId),
+                    aiOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId),
+                )
             }
-    }
+        }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text(
@@ -156,12 +206,13 @@ fun LibraryScreen(
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("Search transcripts") },
+            label = { Text("Search transcripts, summaries, tags") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.padding(vertical = 8.dp),
         ) {
             LibraryFilter.entries.forEach { candidate ->
@@ -170,6 +221,23 @@ fun LibraryScreen(
                     onClick = { filter = candidate },
                     label = { Text(candidate.label) },
                 )
+            }
+        }
+        if (availableTags.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                availableTags.take(16).forEach { tag ->
+                    FilterChip(
+                        selected = selectedTag.equals(tag, ignoreCase = true),
+                        onClick = {
+                            selectedTag = if (selectedTag.equals(tag, ignoreCase = true)) null else tag
+                        },
+                        label = { Text(tag) },
+                    )
+                }
             }
         }
         if (visible.isEmpty()) {
@@ -190,13 +258,39 @@ fun LibraryScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
             ) {
                 items(visible, key = { it.segmentId }) { meta ->
+                    val transcript = transcriptOf(meta.segmentId)
+                    val annotation = annotationOf(meta.segmentId)
+                    val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
+                    val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
+                    val searchMatch = librarySearchMatch(
+                        query = query,
+                        meta = meta,
+                        transcript = transcript,
+                        annotation = annotation,
+                        actionItems = segmentActionItems,
+                        aiOutputs = relatedOutputs,
+                    )
                     LibrarySegmentRow(
                         meta = meta,
-                        transcript = transcriptOf(meta.segmentId),
+                        transcript = transcript,
                         liveText = liveTranscriptOf(meta.segmentId),
-                        annotation = annotationOf(meta.segmentId),
+                        annotation = annotation,
+                        actionItems = segmentActionItems,
+                        relatedAiOutputs = relatedOutputs,
+                        searchQuery = query,
+                        searchMatch = searchMatch,
                         nowMs = nowMs,
-                        onClick = { onSelectSegment(meta.segmentId) },
+                        onClick = {
+                            if (searchMatch?.kind == LibrarySearchMatchKind.Transcript) {
+                                selectedSearchQuery = query.trim().takeIf { it.isNotBlank() }
+                                selectedSearchOffsetMs = searchMatch.startMs
+                            } else {
+                                selectedSearchQuery = null
+                                selectedSearchOffsetMs = null
+                            }
+                            onSelectSegment(meta.segmentId)
+                        },
+                        onTagClick = { selectedTag = it },
                     )
                 }
             }
@@ -210,8 +304,13 @@ private fun LibrarySegmentRow(
     transcript: SegmentTranscript?,
     liveText: String?,
     annotation: SegmentAnnotation?,
+    actionItems: List<ActionItem>,
+    relatedAiOutputs: List<AiOutput>,
+    searchQuery: String,
+    searchMatch: LibrarySearchMatch?,
     nowMs: Long,
     onClick: () -> Unit,
+    onTagClick: (String) -> Unit = {},
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -226,6 +325,7 @@ private fun LibrarySegmentRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            SegmentTagRow(annotation?.tags.orEmpty(), onTagClick = onTagClick)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} " +
@@ -247,8 +347,211 @@ private fun LibrarySegmentRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            searchMatch?.let { match ->
+                SearchMatchRow(match = match, query = searchQuery)
+            }
+            LibraryAiSignalRow(actionItems = actionItems, relatedAiOutputs = relatedAiOutputs)
         }
     }
+}
+
+@Composable
+private fun SearchMatchRow(match: LibrarySearchMatch, query: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = match.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = StatusColors.info,
+        )
+        SearchHighlightedText(
+            text = match.snippet,
+            query = query,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+        )
+    }
+}
+
+@Composable
+private fun SegmentTagRow(tags: List<String>, onTagClick: (String) -> Unit = {}) {
+    val cleanTags = tags.mapNotNull { AiPlainText.clean(it, maxChars = 28) }.take(4)
+    if (cleanTags.isEmpty()) return
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        cleanTags.forEach { tag ->
+            AssistChip(onClick = { onTagClick(tag) }, label = { Text(tag) })
+        }
+    }
+}
+
+@Composable
+private fun LibraryAiSignalRow(actionItems: List<ActionItem>, relatedAiOutputs: List<AiOutput>) {
+    val openActions = actionItems.count { !it.done }
+    if (openActions == 0 && relatedAiOutputs.isEmpty()) return
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (openActions > 0) {
+            Text(
+                text = "$openActions action${if (openActions == 1) "" else "s"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = StatusColors.warning,
+            )
+        }
+        if (relatedAiOutputs.isNotEmpty()) {
+            Text(
+                text = "${relatedAiOutputs.size} AI output${if (relatedAiOutputs.size == 1) "" else "s"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+fun libraryTags(annotations: List<SegmentAnnotation>): List<String> {
+    val counts = linkedMapOf<String, Pair<String, Int>>()
+    annotations
+        .flatMap { it.tags }
+        .mapNotNull { AiPlainText.clean(it, maxChars = 32) }
+        .forEach { tag ->
+            val key = tag.lowercase()
+            val existing = counts[key]
+            counts[key] = (existing?.first ?: tag) to ((existing?.second ?: 0) + 1)
+        }
+    return counts.values
+        .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first.lowercase() })
+        .map { it.first }
+}
+
+fun annotationHasTag(annotation: SegmentAnnotation?, tag: String?): Boolean {
+    if (annotation == null || tag.isNullOrBlank()) return false
+    return annotation.tags.any { it.equals(tag, ignoreCase = true) }
+}
+
+fun actionItemsForSegment(actionItems: List<ActionItem>, segmentId: String): List<ActionItem> =
+    actionItems.filter { it.sourceSegmentId == segmentId }
+
+fun aiOutputsForSegment(aiOutputs: List<AiOutput>, segmentId: String): List<AiOutput> =
+    aiOutputs.filter { segmentId in it.segmentIds }
+
+fun segmentMatchesLibraryQuery(
+    query: String,
+    transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation?,
+    actionItems: List<ActionItem>,
+    aiOutputs: List<AiOutput>,
+): Boolean {
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) return true
+    fun String?.matchesQuery(): Boolean = this?.contains(trimmed, ignoreCase = true) == true
+    return transcript?.text.matchesQuery() ||
+        annotation?.title.matchesQuery() ||
+        annotation?.summary.matchesQuery() ||
+        annotation?.tags.orEmpty().any { it.matchesQuery() } ||
+        actionItems.any { it.text.matchesQuery() } ||
+        aiOutputs.any { it.promptTitle.matchesQuery() || it.text.matchesQuery() }
+}
+
+enum class LibrarySearchMatchKind {
+    Transcript,
+    Title,
+    Summary,
+    Tag,
+    ActionItem,
+    AiOutput,
+}
+
+data class LibrarySearchMatch(
+    val kind: LibrarySearchMatchKind,
+    val label: String,
+    val snippet: String,
+    val startMs: Long? = null,
+)
+
+fun librarySearchMatch(
+    query: String,
+    meta: SegmentMeta,
+    transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation?,
+    actionItems: List<ActionItem>,
+    aiOutputs: List<AiOutput>,
+): LibrarySearchMatch? {
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) return null
+    transcriptSearchMatch(trimmed, meta, transcript)?.let { return it }
+    searchSnippet(annotation?.title, trimmed)?.let {
+        return LibrarySearchMatch(LibrarySearchMatchKind.Title, "Title match", it)
+    }
+    searchSnippet(annotation?.summary, trimmed)?.let {
+        return LibrarySearchMatch(LibrarySearchMatchKind.Summary, "Summary match", it)
+    }
+    annotation?.tags.orEmpty().firstNotNullOfOrNull { tag ->
+        searchSnippet(tag, trimmed)?.let {
+            LibrarySearchMatch(LibrarySearchMatchKind.Tag, "Tag match", it)
+        }
+    }?.let { return it }
+    actionItems.firstNotNullOfOrNull { item ->
+        searchSnippet(item.text, trimmed)?.let {
+            LibrarySearchMatch(LibrarySearchMatchKind.ActionItem, "Action item match", it)
+        }
+    }?.let { return it }
+    aiOutputs.firstNotNullOfOrNull { output ->
+        searchSnippet(output.promptTitle, trimmed)?.let {
+            LibrarySearchMatch(LibrarySearchMatchKind.AiOutput, "AI output match", it)
+        } ?: searchSnippet(output.text, trimmed)?.let {
+            LibrarySearchMatch(LibrarySearchMatchKind.AiOutput, "AI output match", it)
+        }
+    }?.let { return it }
+    return null
+}
+
+private fun transcriptSearchMatch(
+    query: String,
+    meta: SegmentMeta,
+    transcript: SegmentTranscript?,
+): LibrarySearchMatch? {
+    if (transcript == null) return null
+    val timedMatch = transcriptTimelineItems(meta, transcript.segments, transcript.words)
+        .filterIsInstance<TranscriptTimelineItem.Speech>()
+        .firstNotNullOfOrNull { speech ->
+            searchSnippet(speech.text, query)?.let { snippet ->
+                LibrarySearchMatch(
+                    kind = LibrarySearchMatchKind.Transcript,
+                    label = "Transcript match · ${clockTimeFor(meta, speech.startMs)}",
+                    snippet = snippet,
+                    startMs = speech.startMs,
+                )
+            }
+        }
+    if (timedMatch != null) return timedMatch
+    return searchSnippet(transcript.text, query)?.let { snippet ->
+        LibrarySearchMatch(
+            kind = LibrarySearchMatchKind.Transcript,
+            label = "Transcript match",
+            snippet = snippet,
+        )
+    }
+}
+
+fun searchSnippet(text: String?, query: String, maxChars: Int = 170): String? {
+    val normalized = text
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        .orEmpty()
+    if (normalized.isBlank()) return null
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) return null
+    val index = normalized.indexOf(trimmed, ignoreCase = true)
+    if (index < 0) return null
+    val radius = ((maxChars - trimmed.length) / 2).coerceAtLeast(24)
+    var start = (index - radius).coerceAtLeast(0)
+    var end = (index + trimmed.length + radius).coerceAtMost(normalized.length)
+    while (start > 0 && !normalized[start - 1].isWhitespace()) start--
+    while (end < normalized.length && !normalized[end].isWhitespace()) end++
+    val prefix = if (start > 0) "..." else ""
+    val suffix = if (end < normalized.length) "..." else ""
+    return prefix + normalized.substring(start, end).trim() + suffix
 }
 
 @Composable
@@ -260,6 +563,10 @@ fun SegmentDetailScreen(
     /** Live-transcribed frame count of the open segment, for waveform coloring. */
     liveTranscribedFrameCount: Long? = null,
     annotation: SegmentAnnotation?,
+    searchQuery: String? = null,
+    initialSearchOffsetMs: Long? = null,
+    actionItems: List<ActionItem> = emptyList(),
+    relatedAiOutputs: List<AiOutput> = emptyList(),
     settings: AudioCompanionSettings,
     localModel: LocalTranscriptionModelState,
     nowMs: Long,
@@ -269,6 +576,11 @@ fun SegmentDetailScreen(
     onExportSegment: suspend (String) -> Result<AudioExportResult>,
     onShareFile: (String) -> Unit = {},
     onReprocess: () -> Unit = {},
+    onRunSegmentAi: suspend (AiPromptTemplate, String) -> Result<AiOutput> = { _, _ ->
+        Result.failure(IllegalStateException("AI is not wired"))
+    },
+    onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
+    onAskAboutSegment: () -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -279,7 +591,13 @@ fun SegmentDetailScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     var exportMessage by remember(meta.segmentId) { mutableStateOf<String?>(null) }
     var exporting by remember(meta.segmentId) { mutableStateOf(false) }
+    var aiRunMessage by remember(meta.segmentId) { mutableStateOf<String?>(null) }
+    var runningAiTemplateId by remember(meta.segmentId) { mutableStateOf<String?>(null) }
+    var searchTargetApplied by remember(meta.segmentId, searchQuery, initialSearchOffsetMs) {
+        mutableStateOf(false)
+    }
     val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
     // Decoded off the UI path; re-built when more audio is stored (open segment grows).
     var waveform by remember(meta.segmentId) { mutableStateOf<SegmentWaveform?>(null) }
     LaunchedEffect(meta.segmentId, meta.frameCount) {
@@ -288,7 +606,7 @@ fun SegmentDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -406,6 +724,35 @@ fun SegmentDetailScreen(
             SectionTitle("AI Summary")
             Text(text = summary, style = MaterialTheme.typography.bodyMedium)
         }
+        val annotationTags = annotation?.tags.orEmpty()
+        if (annotationTags.isNotEmpty()) {
+            SegmentTagRow(annotationTags)
+        }
+        SectionTitle("AI")
+        SegmentAiActions(
+            canRun = !meta.isOpen && transcript != null,
+            runningTemplateId = runningAiTemplateId,
+            message = aiRunMessage,
+            onAskAboutSegment = onAskAboutSegment,
+            onRunTemplate = { template ->
+                if (runningAiTemplateId != null) return@SegmentAiActions
+                runningAiTemplateId = template.id
+                aiRunMessage = null
+                scope.launch {
+                    val result = onRunSegmentAi(template, meta.segmentId)
+                    runningAiTemplateId = null
+                    aiRunMessage = result.fold(
+                        onSuccess = { "${template.title} saved." },
+                        onFailure = { "AI failed: ${it.message ?: it::class.simpleName}" },
+                    )
+                }
+            },
+        )
+        SegmentActionItems(
+            items = actionItems,
+            onSetDone = onSetActionItemDone,
+        )
+        SegmentRelatedAiOutputs(outputs = relatedAiOutputs, nowMs = nowMs)
 
         SectionTitle("Transcript")
         transcriptionSetupMessage(settings, localModel)?.let { message ->
@@ -429,6 +776,14 @@ fun SegmentDetailScreen(
                     text = transcript.text,
                     segments = transcript.segments,
                     words = transcript.words,
+                    searchQuery = searchQuery,
+                    initialSearchOffsetMs = initialSearchOffsetMs,
+                    onInitialTargetVisible = { targetMs ->
+                        if (!searchTargetApplied) {
+                            searchTargetApplied = true
+                            onSeekPlayback(meta.segmentId, targetMs)
+                        }
+                    },
                     onSeekMs = { onSeekPlayback(meta.segmentId, it) },
                 )
             }
@@ -521,17 +876,148 @@ fun SegmentDetailScreen(
 }
 
 @Composable
+private fun SegmentAiActions(
+    canRun: Boolean,
+    runningTemplateId: String?,
+    message: String?,
+    onAskAboutSegment: () -> Unit,
+    onRunTemplate: (AiPromptTemplate) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                enabled = canRun,
+                onClick = onAskAboutSegment,
+            ) {
+                Text("Ask about this")
+            }
+            OutlinedButton(
+                enabled = canRun && runningTemplateId == null,
+                onClick = { onRunTemplate(AiPromptTemplates.ActionItems) },
+            ) {
+                Text("Extract actions")
+            }
+            OutlinedButton(
+                enabled = canRun && runningTemplateId == null,
+                onClick = { onRunTemplate(AiPromptTemplates.MeetingNotes) },
+            ) {
+                Text("Meeting notes")
+            }
+        }
+        if (!canRun) {
+            Text(
+                text = "AI actions become available after this segment has a durable transcript.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (runningTemplateId != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator()
+                Text("Running AI…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        message?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SegmentActionItems(
+    items: List<ActionItem>,
+    onSetDone: (String, Boolean) -> Unit,
+) {
+    if (items.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Action items", style = MaterialTheme.typography.titleSmall)
+        items.sortedWith(compareBy<ActionItem> { it.done }.thenByDescending { it.createdAtMs })
+            .forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Checkbox(
+                        checked = item.done,
+                        onCheckedChange = { onSetDone(item.id, it) },
+                    )
+                    Text(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (item.done) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+    }
+}
+
+@Composable
+private fun SegmentRelatedAiOutputs(outputs: List<AiOutput>, nowMs: Long) {
+    if (outputs.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Related AI outputs", style = MaterialTheme.typography.titleSmall)
+        outputs.sortedByDescending { it.createdAtMs }.take(4).forEach { output ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(output.promptTitle, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = listOfNotNull(
+                        Formatting.relativeTime(output.createdAtMs, nowMs),
+                        output.modelUsed?.takeIf { it.isNotBlank() },
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                AiPlainText.clean(output.text, maxChars = 160)?.let { preview ->
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TranscriptTimeline(
     meta: SegmentMeta,
     text: String,
     segments: List<TranscriptSegment>,
     words: List<TranscriptWord>,
+    searchQuery: String? = null,
+    initialSearchOffsetMs: Long? = null,
+    onInitialTargetVisible: (Long) -> Unit = {},
     onSeekMs: (Long) -> Unit,
 ) {
     val timed = transcriptTimelineItems(meta, segments, words)
     if (timed.isEmpty()) {
-        TranscriptParagraphs(text = text)
+        TranscriptParagraphs(text = text, searchQuery = searchQuery)
         return
+    }
+    val cleanSearchQuery = searchQuery?.trim()?.takeIf { it.isNotBlank() }
+    val targetStartMs = initialSearchOffsetMs ?: cleanSearchQuery?.let { query ->
+        timed.filterIsInstance<TranscriptTimelineItem.Speech>()
+            .firstOrNull { it.text.contains(query, ignoreCase = true) }
+            ?.startMs
     }
     SelectionContainer {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -543,6 +1029,9 @@ private fun TranscriptTimeline(
                         SpeechTimelineRow(
                             timestamp = timestamp.takeIf { it != previousTimestamp },
                             item = item,
+                            searchQuery = cleanSearchQuery,
+                            highlighted = item.startMs == targetStartMs,
+                            onInitialTargetVisible = onInitialTargetVisible,
                             onSeekMs = onSeekMs,
                         )
                         previousTimestamp = timestamp
@@ -563,12 +1052,19 @@ private fun TranscriptTimeline(
 }
 
 @Composable
-private fun TranscriptParagraphs(text: String) {
+private fun TranscriptParagraphs(text: String, searchQuery: String? = null) {
     val paragraphs = transcriptParagraphs(text)
+    val cleanSearchQuery = searchQuery?.trim()?.takeIf { it.isNotBlank() }
+    val targetIndex = cleanSearchQuery?.let { query ->
+        paragraphs.indexOfFirst { it.contains(query, ignoreCase = true) }.takeIf { it >= 0 }
+    }
     SelectionContainer {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             paragraphs.forEachIndexed { index, paragraph ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SearchTargetColumn(
+                    active = index == targetIndex,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     if (paragraphs.size > 1) {
                         Text(
                             text = "Transcript section ${index + 1}",
@@ -576,8 +1072,9 @@ private fun TranscriptParagraphs(text: String) {
                             color = StatusColors.info,
                         )
                     }
-                    Text(
+                    SearchHighlightedText(
                         text = paragraph,
+                        query = cleanSearchQuery,
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 }
@@ -590,16 +1087,73 @@ private fun TranscriptParagraphs(text: String) {
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun SearchTargetColumn(
+    active: Boolean,
+    verticalArrangement: Arrangement.Vertical,
+    content: @Composable () -> Unit,
+) {
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(active) {
+        if (active) {
+            delay(120)
+            requester.bringIntoView()
+        }
+    }
+    Column(
+        modifier = if (active) {
+            Modifier
+                .bringIntoViewRequester(requester)
+                .background(
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.24f),
+                    RoundedCornerShape(6.dp),
+                )
+                .padding(6.dp)
+        } else {
+            Modifier
+        },
+        verticalArrangement = verticalArrangement,
+    ) {
+        content()
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun SpeechTimelineRow(
     timestamp: String?,
     item: TranscriptTimelineItem.Speech,
+    searchQuery: String?,
+    highlighted: Boolean,
+    onInitialTargetVisible: (Long) -> Unit,
     onSeekMs: (Long) -> Unit,
 ) {
     val speaker = item.speaker
     val accent = speaker?.let(::speakerColor)
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlighted, item.startMs) {
+        if (highlighted) {
+            delay(120)
+            requester.bringIntoView()
+            onInitialTargetVisible(item.startMs)
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (highlighted) {
+                    Modifier
+                        .bringIntoViewRequester(requester)
+                        .background(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.24f),
+                            RoundedCornerShape(6.dp),
+                        )
+                        .padding(vertical = 3.dp)
+                } else {
+                    Modifier
+                },
+            )
             .height(IntrinsicSize.Min)
             .clickable { onSeekMs(item.startMs) },
         horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -615,12 +1169,53 @@ private fun SpeechTimelineRow(
             )
         }
         if (accent != null) SpeakerAccentBar(accent)
-        Text(
+        SearchHighlightedText(
             text = item.text,
+            query = searchQuery,
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.weight(1f),
         )
     }
+}
+
+@Composable
+private fun SearchHighlightedText(
+    text: String,
+    query: String?,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    maxLines: Int = Int.MAX_VALUE,
+) {
+    val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() }
+    val start = cleanQuery?.let { text.indexOf(it, ignoreCase = true) } ?: -1
+    if (cleanQuery == null || start < 0) {
+        Text(
+            text = text,
+            style = style,
+            color = color,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            modifier = modifier,
+        )
+        return
+    }
+    val highlightColor = MaterialTheme.colorScheme.primaryContainer
+    val annotated = buildAnnotatedString {
+        append(text.substring(0, start))
+        pushStyle(SpanStyle(background = highlightColor))
+        append(text.substring(start, start + cleanQuery.length))
+        pop()
+        append(text.substring(start + cleanQuery.length))
+    }
+    Text(
+        text = annotated,
+        style = style,
+        color = color,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier,
+    )
 }
 
 @Composable

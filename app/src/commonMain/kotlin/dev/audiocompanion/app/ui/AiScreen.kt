@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -110,6 +111,9 @@ fun AiScreen(
     var running by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(selectedSegmentIds) {
+        if (selectedSegmentIds.isNotEmpty()) scope = AiScope.Selected
+    }
 
     val transcribedSegmentIds = remember(segments, scope, nowMs, selectedSegmentIds) {
         val closed = segments.filter { !it.isOpen }
@@ -187,12 +191,30 @@ fun AiScreen(
         }
 
         SectionTitle("Ask")
+        if (scope == AiScope.Selected && selectedSegmentIds.isNotEmpty()) {
+            Text(
+                text = "${selectedSegmentIds.size} selected segment${if (selectedSegmentIds.size == 1) "" else "s"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         OutlinedTextField(
             value = askQuestion,
             onValueChange = { askQuestion = it },
             label = { Text("Question about selected transcripts") },
             modifier = Modifier.fillMaxWidth(),
         )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            suggestedQuestions(scope).forEach { question ->
+                AssistChip(
+                    onClick = { askQuestion = question },
+                    label = { Text(question) },
+                )
+            }
+        }
         Button(
             onClick = {
                 if (running || askQuestion.isBlank()) return@Button
@@ -310,6 +332,25 @@ fun AiScreen(
         }
     }
 }
+
+private fun suggestedQuestions(scope: AiScope): List<String> =
+    when (scope) {
+        AiScope.Selected -> listOf(
+            "What were the main points?",
+            "What needs follow-up?",
+            "What decisions were made?",
+        )
+        AiScope.Today -> listOf(
+            "What did I talk about today?",
+            "What needs follow-up?",
+            "What changed since this morning?",
+        )
+        AiScope.All, AiScope.DateRange -> listOf(
+            "Find related conversations",
+            "What commitments are still open?",
+            "Summarize the recurring themes",
+        )
+    }
 
 private fun aiErrorMessage(e: Throwable): String =
     when (e) {
