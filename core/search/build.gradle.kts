@@ -25,6 +25,9 @@ kotlin {
         }
         androidMain.dependencies {
             implementation(libs.androidx.core)
+            implementation(libs.androidx.appsearch)
+            implementation(libs.androidx.appsearch.local.storage)
+            implementation(libs.coroutines.guava)
         }
     }
 }

@@ -25,10 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okio.FileSystem
+import okio.Path.Companion.toPath
 import platform.Foundation.NSNotificationCenter
-import platform.Foundation.NSFileManager
-import platform.Foundation.NSString
-import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
 import platform.UIKit.UIActivityViewController
@@ -376,6 +375,8 @@ fun MainViewController(): UIViewController {
                     runtime.setPersonalContextProfileText(text)
                 },
                 clearPersonalContext = { runtime.clearPersonalContext() },
+                importPersonalContacts = { runtime.importContactsIntoPersonalContext() },
+                importPersonalCalendar = { runtime.importCalendarIntoPersonalContext() },
                 refreshLocalModel = readyHandle.localModelManager::refresh,
                 downloadLocalModel = readyHandle.localModelManager::download,
                 cancelModelDownload = readyHandle.localModelManager::cancelDownload,
@@ -425,12 +426,9 @@ private fun shareText(text: String, title: String) {
 private fun exportTextToFile(text: String, filename: String): String {
     val safeName = filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")
     val path = NSTemporaryDirectory() + safeName
-    (text as NSString).writeToFile(
-        path = path,
-        atomically = true,
-        encoding = NSUTF8StringEncoding,
-        error = null,
-    )
+    FileSystem.SYSTEM.write(path.toPath()) {
+        writeUtf8(text)
+    }
     return path
 }
 

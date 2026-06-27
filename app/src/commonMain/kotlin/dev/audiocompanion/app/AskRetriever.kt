@@ -13,12 +13,15 @@ class AskRetriever(
         val segmentId: String,
         val text: String,
         val startTimeMs: Long? = null,
+        val endTimeMs: Long? = null,
+        val gapSummary: String? = null,
         val score: Float = 0f,
     )
 
     suspend fun retrieve(
         query: String,
         excerpts: List<TranscriptExcerpt>,
+        gapSummaries: Map<String, String?> = emptyMap(),
         maxChunks: Int = 12,
     ): List<RetrievedChunk> {
         val hits = index?.takeIf { it.isAvailable() }?.search(query, limit = maxChunks).orEmpty()
@@ -29,6 +32,8 @@ class AskRetriever(
                     segmentId = excerpt.segmentId,
                     text = excerpt.text,
                     startTimeMs = excerpt.startTimeMs,
+                    endTimeMs = excerpt.endTimeMs,
+                    gapSummary = gapSummaries[excerpt.segmentId],
                     score = hit.score,
                 )
             }
@@ -41,6 +46,8 @@ class AskRetriever(
                     segmentId = excerpt.segmentId,
                     text = excerpt.text,
                     startTimeMs = excerpt.startTimeMs,
+                    endTimeMs = excerpt.endTimeMs,
+                    gapSummary = gapSummaries[excerpt.segmentId],
                 )
             }
         return (fromIndex + remainder).take(maxChunks)
@@ -48,7 +55,13 @@ class AskRetriever(
 
     fun formatForPrompt(chunks: List<RetrievedChunk>): String =
         chunks.joinToString("\n\n") { chunk ->
-            val time = chunk.startTimeMs?.let { " @${it}ms" } ?: ""
-            "[segment ${chunk.segmentId}$time]\n${chunk.text}"
+            val time = when {
+                chunk.startTimeMs != null && chunk.endTimeMs != null ->
+                    " @${chunk.startTimeMs}-${chunk.endTimeMs}ms"
+                chunk.startTimeMs != null -> " @${chunk.startTimeMs}ms"
+                else -> ""
+            }
+            val gaps = chunk.gapSummary?.let { "\nGAPS: $it" }.orEmpty()
+            "[segment ${chunk.segmentId}$time]$gaps\n${chunk.text}"
         }
 }

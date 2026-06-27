@@ -11,9 +11,11 @@ import dev.audiocompanion.ai.RuleTriggerKind
 import dev.audiocompanion.ai.TranscriptExcerpt
 import dev.audiocompanion.storage.SegmentStore
 import dev.audiocompanion.transcription.FileTranscriptStore
-import java.time.LocalTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
 
 /**
  * Evaluates user-authored rules against durable transcripts with cost controls (M7).
@@ -23,8 +25,8 @@ class RuleEvaluator(
     private val segmentStore: SegmentStore,
     private val transcriptStore: FileTranscriptStore,
     private val aiRouter: AiModeRouter?,
-    private val zoneId: ZoneId = ZoneId.systemDefault(),
-    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
 ) {
     suspend fun evaluateDueRules(): List<RuleRun> {
         val router = aiRouter ?: return emptyList()
@@ -80,9 +82,9 @@ class RuleEvaluator(
         when (rule.trigger.kind) {
             RuleTriggerKind.Manual -> false
             RuleTriggerKind.TimeOfDay -> {
-                val now = LocalTime.now(zoneId)
-                val target = LocalTime.parse(rule.trigger.value, DateTimeFormatter.ofPattern("HH:mm"))
-                now.hour == target.hour && now.minute == target.minute
+                val now = localMinuteOfDay(nowMs())
+                val target = parseMinuteOfDay(rule.trigger.value) ?: return false
+                now == target
             }
             RuleTriggerKind.Keyword, RuleTriggerKind.MeetingWindow -> false
         }
@@ -97,10 +99,14 @@ class RuleEvaluator(
         val start = rule.costLimits.quietHoursStart
         val end = rule.costLimits.quietHoursEnd
         if (start.isNullOrBlank() || end.isNullOrBlank()) return false
-        val now = LocalTime.now(zoneId)
-        val startT = LocalTime.parse(start, DateTimeFormatter.ofPattern("HH:mm"))
-        val endT = LocalTime.parse(end, DateTimeFormatter.ofPattern("HH:mm"))
-        return now.isAfter(startT) && now.isBefore(endT)
+        val now = localMinuteOfDay(nowMs())
+        val startMinute = parseMinuteOfDay(start) ?: return false
+        val endMinute = parseMinuteOfDay(end) ?: return false
+        return if (startMinute <= endMinute) {
+            now in (startMinute + 1) until endMinute
+        } else {
+            now > startMinute || now < endMinute
+        }
     }
 
     private fun loadExcerpts(): List<TranscriptExcerpt> =
@@ -117,8 +123,22 @@ class RuleEvaluator(
             }
 
     private fun startOfLocalDayMs(): Long {
-        val today = java.time.LocalDate.now(zoneId)
-        return today.atStartOfDay(zoneId).toInstant().toEpochMilli()
+        val today = Instant.fromEpochMilliseconds(nowMs()).toLocalDateTime(timeZone).date
+        return today.atStartOfDayIn(timeZone).toEpochMilliseconds()
+    }
+
+    private fun localMinuteOfDay(epochMs: Long): Int {
+        val time = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(timeZone).time
+        return time.hour * 60 + time.minute
+    }
+
+    private fun parseMinuteOfDay(value: String): Int? {
+        val parts = value.split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        if (hour !in 0..23 || minute !in 0..59) return null
+        return hour * 60 + minute
     }
 
     private fun recordRun(

@@ -133,6 +133,7 @@ class AudioCompanionRuntime(
     private val liveAudioTap: LiveAudioTap? = null,
     /** User-owned personal context for transcription biasing and AI grounding; null in bare tests. */
     private val personalContextCoordinator: PersonalContextCoordinator? = null,
+    private val personalContextImporter: PersonalContextImporter? = null,
     private val digestStore: FileDailyDigestStore? = null,
     private val actionItemStore: FileActionItemStore? = null,
     private val customTemplateStore: FileCustomTemplateStore? = null,
@@ -526,11 +527,18 @@ class AudioCompanionRuntime(
         link.disconnect()
         playback?.stop()
         store.closeSegment(SegmentCloseReason.Interrupted)
+        transcriptIndexDonator?.removeAll()
         store.listSegments().forEach { store.deleteSegment(it.segmentId) }
         transcriptionQueue.deleteAll()
         transcriptStore.deleteAll()
         annotationStore.deleteAll()
         aiOutputStore.deleteAll()
+        digestStore?.deleteAll()
+        actionItemStore?.deleteAll()
+        customTemplateStore?.deleteAll()
+        ruleStore?.deleteAll()
+        speakerIdentityStore?.deleteAll()
+        personalContextCoordinator?.clear(processingScope ?: CoroutineScope(NonCancellable))
         resumeStore.clear()
         refreshDiagnostics()
     }
@@ -547,8 +555,25 @@ class AudioCompanionRuntime(
         transcriptStore.delete(segmentId)
         annotationStore.delete(segmentId)
         aiOutputStore.list()
-            .filter { it.segmentIds == listOf(segmentId) }
+            .filter { segmentId in it.segmentIds }
             .forEach { aiOutputStore.delete(it.outputId) }
+        val removedActionItemIds = actionItemStore?.let { store ->
+            store.list()
+                .filter { it.sourceSegmentId == segmentId }
+                .onEach { store.delete(it.id) }
+                .map { it.id }
+        }.orEmpty()
+        val removedDigestIds = digestStore?.let { store ->
+            store.list()
+                .filter { segmentId in it.segmentIds }
+                .onEach { store.delete(it.dateKey) }
+                .map { "day-${it.dateKey}" }
+        }.orEmpty()
+        processingScope?.launch {
+            transcriptIndexDonator?.remove(segmentId)
+            removedActionItemIds.forEach { transcriptIndexDonator?.remove(it) }
+            removedDigestIds.forEach { transcriptIndexDonator?.remove(it) }
+        }
         refreshDiagnostics()
     }
 
@@ -652,25 +677,32 @@ class AudioCompanionRuntime(
         val router = aiRouter ?: throw AiException.ProviderUnavailable("none-configured")
         val excerpts = segmentIds.mapNotNull { segmentId ->
             transcriptStore.load(segmentId)?.let { transcript ->
+                val meta = store.readMeta(segmentId)
                 TranscriptExcerpt(
                     segmentId = segmentId,
                     text = transcript.text,
-                    startTimeMs = store.readMeta(segmentId)?.startTimeMs?.toLong(),
+                    startTimeMs = meta?.startTimeMs?.toLong(),
+                    endTimeMs = meta?.let { segmentEndTimeMs(it) },
                 )
             }
         }
         if (excerpts.isEmpty()) {
             throw AiException.ProviderFailed("No transcripts available for the selected segments")
         }
-        val chunks = askRetriever?.retrieve(question, excerpts)
+        val gapSummaries = segmentIds.associateWith { id ->
+            store.readMeta(id)?.let(::askGapSummary)
+        }
+        val chunks = askRetriever?.retrieve(question, excerpts, gapSummaries = gapSummaries)
             ?: excerpts.map { excerpt ->
                 AskRetriever.RetrievedChunk(
                     segmentId = excerpt.segmentId,
                     text = excerpt.text,
                     startTimeMs = excerpt.startTimeMs,
+                    endTimeMs = excerpt.endTimeMs,
+                    gapSummary = gapSummaries[excerpt.segmentId],
                 )
             }
-        val context = askRetriever?.formatForPrompt(chunks) ?: excerpts.joinToString("\n\n") { it.text }
+        val context = (askRetriever ?: AskRetriever()).formatForPrompt(chunks)
         val request = AiRunRequest(
             requestId = "ask-${nowMs()}-${aiRunCounter++}",
             prompt = AiPromptTemplate(
@@ -685,6 +717,16 @@ class AudioCompanionRuntime(
         val output = aiOutputStore.save(request, augmented, userConsentedToRemote)
         refreshDiagnostics()
         return output
+    }
+
+    private fun segmentEndTimeMs(meta: SegmentMeta): Long =
+        meta.startTimeMs.toLong() + (meta.frameCount * meta.frameDurationMs)
+
+    private fun askGapSummary(meta: SegmentMeta): String? {
+        if (meta.gaps.isEmpty()) return null
+        val missingMs = meta.gaps.sumOf { it.missingFrameCount.toLong() * meta.frameDurationMs }
+        return "${meta.gaps.size} gap${if (meta.gaps.size == 1) "" else "s"}, " +
+            "about ${missingMs}ms missing; answer may be incomplete for this segment."
     }
 
     fun updateAiOutputText(outputId: String, text: String): AiOutput? {
@@ -785,6 +827,32 @@ class AudioCompanionRuntime(
         val coordinator = personalContextCoordinator ?: return
         val scope = processingScope ?: return
         coordinator.clear(scope)
+    }
+
+    fun importContactsIntoPersonalContext() {
+        importPersonalContext { importer, timestamp -> importer.importContacts(timestamp) }
+    }
+
+    fun importCalendarIntoPersonalContext() {
+        importPersonalContext { importer, timestamp -> importer.importCalendar(timestamp) }
+    }
+
+    private fun importPersonalContext(
+        block: suspend (PersonalContextImporter, Long) -> PersonalContextImport,
+    ) {
+        val coordinator = personalContextCoordinator ?: return
+        val importer = personalContextImporter ?: return
+        val scope = processingScope ?: return
+        scope.launch {
+            try {
+                val imported = block(importer, nowMs())
+                coordinator.mergeImported(imported, scope)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                logBackgroundFailure("personal context import", t)
+            }
+        }
     }
 
     suspend fun generateDailyDigests() {

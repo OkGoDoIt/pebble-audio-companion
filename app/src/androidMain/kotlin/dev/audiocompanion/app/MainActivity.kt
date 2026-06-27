@@ -15,6 +15,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import dev.audiocompanion.adapter.ble.AndroidAudioCompanionAssociator
 import dev.audiocompanion.app.ui.AppActions
@@ -53,6 +54,18 @@ class MainActivity : ComponentActivity() {
             associateAfterPermissions = false
             associateWatch()
         }
+    }
+
+    private val contactsPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) runtime.importContactsIntoPersonalContext()
+    }
+
+    private val calendarPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) runtime.importCalendarIntoPersonalContext()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -216,6 +229,8 @@ class MainActivity : ComponentActivity() {
                         runtime.setPersonalContextProfileText(text)
                     },
                     clearPersonalContext = { runtime.clearPersonalContext() },
+                    importPersonalContacts = { importPersonalContacts() },
+                    importPersonalCalendar = { importPersonalCalendar() },
                     refreshLocalModel = handle.localModelManager::refresh,
                     downloadLocalModel = handle.localModelManager::download,
                     cancelModelDownload = handle.localModelManager::cancelDownload,
@@ -253,6 +268,26 @@ class MainActivity : ComponentActivity() {
         } else {
             associateAfterPermissions = true
             permissionLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    private fun importPersonalContacts() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            runtime.importContactsIntoPersonalContext()
+        } else {
+            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+        }
+    }
+
+    private fun importPersonalCalendar() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            runtime.importCalendarIntoPersonalContext()
+        } else {
+            calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
         }
     }
 

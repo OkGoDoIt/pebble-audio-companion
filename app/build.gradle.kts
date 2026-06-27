@@ -52,6 +52,7 @@ kotlin {
             implementation(project(":adapter:ble-android"))
             implementation(libs.androidx.activity.compose)
             implementation(libs.androidx.core)
+            implementation(libs.androidx.core.google.shortcuts)
             implementation(libs.androidx.work.runtime)
             implementation(libs.ktor.client.okhttp)
             // On-device AI (Gemini Nano via AICore). Absent at runtime on unsupported devices, which

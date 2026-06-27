@@ -377,6 +377,35 @@ fun SettingsScreen(
                 Text("Clear")
             }
         }
+        if (personalContext.people.isNotEmpty() || personalContext.orgs.isNotEmpty()) {
+            Text(
+                text = "${personalContext.people.size} people and ${personalContext.orgs.size} organizations imported.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = actions.importPersonalContacts,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Import Contacts")
+            }
+            OutlinedButton(
+                onClick = actions.importPersonalCalendar,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Import Calendar")
+            }
+        }
+        Text(
+            text = "Imports only run when you tap them. You can clear all imported context here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         HorizontalDivider()
 
         SectionTitle("Privacy")

@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Kotlin side reports on-device AI unavailable and falls back to the cloud / snippets.
         OnDeviceAIBridge.registerIfAvailable()
         SpotlightBridge.register()
+        PersonalContextImportBridgeRegistrar.register()
 
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: processingTaskIdentifier,

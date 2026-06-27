@@ -19,13 +19,22 @@ object PersonalContextFormatting {
 
     fun transcriptionText(context: PersonalContext, budgetChars: Int = SONIOX_TEXT_BUDGET_CHARS): String? {
         if (!context.biasTranscription) return null
-        val raw = context.profileText?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val raw = context.contextTextForGrounding().takeIf { it.isNotBlank() } ?: return null
         return clamp(raw, budgetChars)
     }
 
     fun transcriptionTerms(context: PersonalContext, maxTerms: Int = MAX_DERIVED_TERMS): List<String> {
         if (!context.biasTranscription) return emptyList()
-        return context.derivedTerms.take(maxTerms).filter { it.isNotBlank() }
+        val importedTerms = buildList {
+            addAll(context.terms.map { it.text })
+            addAll(context.people.flatMap { person -> listOf(person.name) + person.aliases })
+            addAll(context.orgs)
+        }
+        return (context.derivedTerms + importedTerms)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(maxTerms)
     }
 
     fun openAiSttPrompt(context: PersonalContext): String? {
@@ -37,13 +46,33 @@ object PersonalContextFormatting {
 
     fun aiGroundingBlock(context: PersonalContext, budgetChars: Int = AI_GROUNDING_BUDGET_CHARS): String? {
         if (!context.groundAi) return null
-        val raw = context.profileText?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val raw = context.contextTextForGrounding().takeIf { it.isNotBlank() } ?: return null
         val block = buildString {
             appendLine("About the user / known context:")
             append(clamp(raw, budgetChars - 40))
         }.trim()
         return block.takeIf { it.length > 20 }
     }
+
+    private fun PersonalContext.contextTextForGrounding(): String = buildString {
+        profileText?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            appendLine(it)
+        }
+        if (people.isNotEmpty()) {
+            appendLine("Known people:")
+            people.take(50).forEach { person ->
+                val detail = listOfNotNull(person.role, person.organization, person.relationship)
+                    .joinToString(", ")
+                append("- ").append(person.name)
+                if (person.aliases.isNotEmpty()) append(" (aka ${person.aliases.joinToString(", ")})")
+                if (detail.isNotBlank()) append(": ").append(detail)
+                appendLine()
+            }
+        }
+        if (orgs.isNotEmpty()) appendLine("Organizations: ${orgs.take(40).joinToString(", ")}")
+        if (topics.isNotEmpty()) appendLine("Topics: ${topics.take(40).joinToString(", ")}")
+        if (terms.isNotEmpty()) appendLine("Vocabulary: ${terms.take(40).joinToString(", ") { it.text }}")
+    }.trim()
 
     private fun clamp(text: String, maxChars: Int): String =
         if (text.length <= maxChars) text else text.take(maxChars - 3) + "..."

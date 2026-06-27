@@ -32,4 +32,8 @@ enum NativeSpotlightDonation {
     static func remove(id: String) {
         CSSearchableIndex(name: indexName).deleteSearchableItems(withIdentifiers: [id]) { _ in }
     }
+
+    static func removeAll() {
+        CSSearchableIndex(name: indexName).deleteAllSearchableItems { _ in }
+    }
 }

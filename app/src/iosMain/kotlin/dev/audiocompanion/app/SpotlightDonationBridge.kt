@@ -37,6 +37,8 @@ interface SpotlightDonationBridge {
     }
 
     fun remove(id: String)
+
+    fun removeAll()
 }
 
 object SpotlightDonationBridgeRegistry {

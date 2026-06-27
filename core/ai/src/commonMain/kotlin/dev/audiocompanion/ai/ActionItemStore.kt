@@ -51,6 +51,13 @@ class FileActionItemStore(
         fileSystem.delete(path(id), mustExist = false)
     }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(itemsDir)) return
+        fileSystem.list(itemsDir)
+            .filter { it.name.endsWith(SUFFIX) || it.name.endsWith("$SUFFIX.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     fun setDone(id: String, done: Boolean): ActionItem? {
         val existing = load(id) ?: return null
         return save(existing.copy(done = done))

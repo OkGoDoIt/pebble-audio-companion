@@ -13,9 +13,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
 
 /**
  * Generates one daily digest per local calendar day from closed segments. Runs on a slow interval
@@ -27,8 +28,8 @@ class DailyRecapEngine(
     private val transcriptStore: FileTranscriptStore,
     private val digestStore: FileDailyDigestStore,
     private val aiRouter: AiModeRouter?,
-    private val zoneId: ZoneId = ZoneId.systemDefault(),
-    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val intervalMs: Long = 15 * 60 * 1000L,
 ) {
     private var job: Job? = null
@@ -88,5 +89,5 @@ class DailyRecapEngine(
     }
 
     private fun dayKey(startMs: Long): String =
-        Instant.ofEpochMilli(startMs).atZone(zoneId).format(DateTimeFormatter.ISO_LOCAL_DATE)
+        Instant.fromEpochMilliseconds(startMs).toLocalDateTime(timeZone).date.toString()
 }
