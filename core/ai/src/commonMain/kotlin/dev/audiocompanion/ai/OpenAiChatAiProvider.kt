@@ -42,22 +42,7 @@ class OpenAiChatAiProvider(
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw AiException.ProviderUnavailable(id)
 
-        val userContent = buildString {
-            append(request.prompt.userPrompt.trim())
-            append("\n\n")
-            for (transcript in request.transcripts) {
-                append("--- Transcript segment ")
-                append(transcript.segmentId)
-                transcript.startTimeMs?.let { append(" (starts at epoch ms $it)") }
-                append(" ---\n")
-                append(transcript.text.trim())
-                append("\n\n")
-            }
-        }.let { content ->
-            // Bound payload size; transcripts of an always-on recorder can be very large.
-            if (content.length <= maxInputChars) content
-            else content.take(maxInputChars) + "\n[transcript truncated for length]"
-        }
+        val userContent = AiTranscriptFormatting.buildUserContent(request, maxInputChars)
 
         val payload = ChatRequest(
             model = model(),
