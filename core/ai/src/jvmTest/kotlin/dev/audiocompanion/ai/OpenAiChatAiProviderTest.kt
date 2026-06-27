@@ -69,7 +69,7 @@ class OpenAiChatAiProviderTest {
                             """
                             {
                               "model": "gpt-4o-mini-2024",
-                              "output_text": "- Bob: ship the fix by Friday",
+                              "output_text": "{\"items\":[{\"task\":\"Ship the fix\",\"owner\":\"Bob\",\"due\":\"Friday\",\"sourceSegmentId\":\"seg-1\"}]}",
                               "usage": {"input_tokens": 42, "output_tokens": 12}
                             }
                             """.trimIndent(),
@@ -88,7 +88,8 @@ class OpenAiChatAiProviderTest {
 
         val result = provider.run(request())
 
-        assertEquals("- Bob: ship the fix by Friday", result.text)
+        assertTrue(result.text.contains("\"items\""))
+        assertTrue(result.text.contains("\"Ship the fix\""))
         assertEquals("gpt-4o-mini-2024", result.modelUsed)
         assertEquals(42, result.inputTokens)
         assertEquals(12, result.outputTokens)
@@ -99,6 +100,40 @@ class OpenAiChatAiProviderTest {
             body.contains("We agreed Bob ships the fix Friday."),
             "request body should contain the transcript text",
         )
+        val compactBody = body.filterNot { it.isWhitespace() }
+        assertTrue(compactBody.contains("\"text\""))
+        assertTrue(compactBody.contains("\"format\""))
+        assertTrue(compactBody.contains("\"type\":\"json_schema\""))
+        assertTrue(compactBody.contains("\"name\":\"action_items\""))
+        assertTrue(compactBody.contains("\"strict\":true"))
+        assertTrue(compactBody.contains("\"sourceSegmentId\""))
+    }
+
+    @Test
+    fun nonActionTemplatesDoNotRequestJsonSchema() = runTest {
+        lateinit var captured: HttpRequestData
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler {
+                    captured = it
+                    respond(
+                        content = ByteReadChannel("""{"output_text": "Plain summary", "model": "gpt-5.4-mini"}"""),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }
+        }
+        val provider = OpenAiChatAiProvider(
+            client = client,
+            apiKey = { "test-key" },
+            remoteConsent = { true },
+        )
+
+        provider.run(request(AiPromptTemplates.DailySummary))
+
+        val body = captured.body.toByteArray().decodeToString()
+        assertTrue(!body.contains("\"json_schema\""), "free-form outputs should not request JSON schema")
     }
 
     @Test

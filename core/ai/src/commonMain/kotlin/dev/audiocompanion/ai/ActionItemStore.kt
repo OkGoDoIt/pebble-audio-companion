@@ -17,6 +17,19 @@ data class ActionItem(
     val createdAtMs: Long,
 )
 
+@Serializable
+data class ExtractedActionItems(
+    val items: List<ExtractedActionItem>,
+)
+
+@Serializable
+data class ExtractedActionItem(
+    val task: String,
+    val owner: String = "",
+    val due: String = "",
+    val sourceSegmentId: String = "",
+)
+
 class FileActionItemStore(
     private val fileSystem: FileSystem,
     root: Path,
@@ -79,15 +92,22 @@ class FileActionItemStore(
 
 /** Parses action-item template output into structured items. */
 object ActionItemParser {
+    private val json = Json { ignoreUnknownKeys = true }
+
     fun parse(raw: String, sourceSegmentId: String, nowMs: Long, idPrefix: String = sourceSegmentId): List<ActionItem> {
+        parseStructured(raw, sourceSegmentId, nowMs, idPrefix)?.let { return it }
+        if (raw.contains("no action items", ignoreCase = true)) return emptyList()
         val lines = raw.lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .map { line ->
-                line.removePrefix("-").removePrefix("*").trim()
-                    .removePrefix("[ ]").removePrefix("[x]").removePrefix("[X]").trim()
+            .mapNotNull(::cleanActionLine)
+            .filterNot { line ->
+                val normalized = line.lowercase()
+                normalized.startsWith("here are ") ||
+                    normalized.startsWith("action items") ||
+                    normalized.startsWith("owner:") ||
+                    normalized == "tasks" ||
+                    normalized == "task"
             }
-            .filter { it.isNotBlank() }
+            .distinct()
         return lines.mapIndexed { index, text ->
             ActionItem(
                 id = "$idPrefix-action-$index",
@@ -96,5 +116,63 @@ object ActionItemParser {
                 createdAtMs = nowMs,
             )
         }
+    }
+
+    fun parseStructured(
+        raw: String,
+        fallbackSourceSegmentId: String,
+        nowMs: Long,
+        idPrefix: String = fallbackSourceSegmentId,
+    ): List<ActionItem>? {
+        val parsed = runCatching {
+            json.decodeFromString(ExtractedActionItems.serializer(), raw.trim())
+        }.getOrNull() ?: return null
+        return parsed.items
+            .mapIndexedNotNull { index, item ->
+                val task = item.task.trim()
+                if (task.isBlank()) return@mapIndexedNotNull null
+                val owner = item.owner.trim()
+                val due = item.due.trim()
+                val text = buildString {
+                    append(task)
+                    if (owner.isNotBlank()) append(". Owner: ").append(owner)
+                    if (due.isNotBlank()) append(". Due: ").append(due)
+                }
+                ActionItem(
+                    id = "$idPrefix-action-$index",
+                    text = text,
+                    sourceSegmentId = item.sourceSegmentId.trim().ifBlank { fallbackSourceSegmentId },
+                    createdAtMs = nowMs,
+                )
+            }
+    }
+
+    fun displayText(items: List<ActionItem>): String =
+        if (items.isEmpty()) {
+            "No action items found."
+        } else {
+            items.joinToString("\n") { "- [ ] ${it.text}" }
+        }
+
+    private fun cleanActionLine(rawLine: String): String? {
+        var line = rawLine.trim()
+        if (line.isBlank()) return null
+        line = line
+            .replace(Regex("^#{1,6}\\s+"), "")
+            .replace(Regex("^[-*+]\\s*"), "")
+            .replace(Regex("^\\d+[.)]\\s*"), "")
+            .replace(Regex("^\\[\\s*[xX]?\\s*]\\s*"), "")
+            .trim()
+        if (line.isBlank()) return null
+        line = line
+            .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+            .replace(Regex("\\*([^*]+)\\*"), "$1")
+            .replace(Regex("__([^_]+)__"), "$1")
+            .replace(Regex("_([^_]+)_"), "$1")
+            .replace(Regex("\\s+—\\s+Owner:", RegexOption.IGNORE_CASE), ". Owner:")
+            .replace(Regex("\\s+-\\s+Owner:", RegexOption.IGNORE_CASE), ". Owner:")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        return line.takeIf { it.isNotBlank() }
     }
 }

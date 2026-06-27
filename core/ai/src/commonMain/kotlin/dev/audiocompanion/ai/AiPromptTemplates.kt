@@ -31,9 +31,11 @@ object AiPromptTemplates {
     val ActionItems = AiPromptTemplate(
         id = "action-items",
         title = "Action items",
-        systemPrompt = "$COMMON_SYSTEM_RULES Extract action items as a checklist. Each item " +
-            "states the task, the owner if mentioned, and any deadline mentioned. If there are " +
-            "no action items, say so plainly.",
+        systemPrompt = "$COMMON_SYSTEM_RULES Extract only real commitments or follow-up tasks " +
+            "as a plain checklist. Do not include headings, introductory text, numbering, " +
+            "Markdown emphasis, nested bullets, or transcript-summary bullets. Use one item " +
+            "per line in this exact shape: - Task text. Owner: Name if known. Due: deadline " +
+            "if known. If there are no action items, say: No action items found.",
         userPrompt = "Extract the action items from these transcripts.",
     )
 

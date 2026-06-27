@@ -661,10 +661,13 @@ class AudioCompanionRuntime(
             transcripts = transcripts,
         )
         val result = router.run(request)
-        val output = aiOutputStore.save(request, result, userConsentedToRemote)
-        if (prompt.id == AiPromptTemplates.ActionItems.id) {
-            persistActionItems(result.text, segmentIds)
+        val outputResult = if (prompt.id == AiPromptTemplates.ActionItems.id) {
+            val items = persistActionItems(result.text, segmentIds)
+            result.copy(text = ActionItemParser.displayText(items))
+        } else {
+            result
         }
+        val output = aiOutputStore.save(request, outputResult, userConsentedToRemote)
         refreshDiagnostics()
         return output
     }
@@ -797,14 +800,17 @@ class AudioCompanionRuntime(
         }
     }
 
-    private suspend fun persistActionItems(raw: String, segmentIds: List<String>) {
-        val store = actionItemStore ?: return
+    private suspend fun persistActionItems(raw: String, segmentIds: List<String>): List<ActionItem> {
+        val store = actionItemStore ?: return emptyList()
         val donator = transcriptIndexDonator
-        val sourceId = segmentIds.firstOrNull() ?: return
+        val sourceId = segmentIds.firstOrNull() ?: return emptyList()
+        val savedItems = mutableListOf<ActionItem>()
         ActionItemParser.parse(raw, sourceId, nowMs()).forEach { item ->
             val saved = store.save(item)
+            savedItems += saved
             donator?.donateActionItem(saved)
         }
+        return savedItems
     }
 
     fun listAiOutputs(): List<AiOutput> = aiOutputStore.list()

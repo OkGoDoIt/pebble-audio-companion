@@ -12,6 +12,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * Remote AI provider over OpenAI's Responses API (`/v1/responses`).
@@ -52,6 +56,7 @@ class OpenAiChatAiProvider(
             instructions = instructions,
             input = userContent,
             reasoning = ReasoningConfig(effort = reasoningEffort),
+            text = responseTextConfig(request.prompt),
         )
         val response: HttpResponse = client.post(endpointUrl) {
             header(HttpHeaders.Authorization, "Bearer $key")
@@ -86,6 +91,55 @@ class OpenAiChatAiProvider(
         }
     }
 
+    private fun responseTextConfig(prompt: AiPromptTemplate): ResponseTextConfig? =
+        if (prompt.id == AiPromptTemplates.ActionItems.id) {
+            ResponseTextConfig(
+                format = ResponseFormat(
+                    type = "json_schema",
+                    name = "action_items",
+                    schema = actionItemsSchema(),
+                    strict = true,
+                ),
+            )
+        } else {
+            null
+        }
+
+    private fun actionItemsSchema(): JsonObject = buildJsonObject {
+        put("type", JsonPrimitive("object"))
+        put("additionalProperties", JsonPrimitive(false))
+        put("required", buildJsonArray { add(JsonPrimitive("items")) })
+        put("properties", buildJsonObject {
+            put("items", buildJsonObject {
+                put("type", JsonPrimitive("array"))
+                put("items", buildJsonObject {
+                    put("type", JsonPrimitive("object"))
+                    put("additionalProperties", JsonPrimitive(false))
+                    put(
+                        "required",
+                        buildJsonArray {
+                            add(JsonPrimitive("task"))
+                            add(JsonPrimitive("owner"))
+                            add(JsonPrimitive("due"))
+                            add(JsonPrimitive("sourceSegmentId"))
+                        },
+                    )
+                    put("properties", buildJsonObject {
+                        put("task", schemaString("Concrete action or follow-up task. Empty only if omitted from items."))
+                        put("owner", schemaString("Responsible person or team if stated, otherwise empty string."))
+                        put("due", schemaString("Deadline if stated, otherwise empty string."))
+                        put("sourceSegmentId", schemaString("Transcript segment id supporting the item, otherwise empty string."))
+                    })
+                })
+            })
+        })
+    }
+
+    private fun schemaString(description: String): JsonObject = buildJsonObject {
+        put("type", JsonPrimitive("string"))
+        put("description", JsonPrimitive(description))
+    }
+
     @Serializable
     private data class ReasoningConfig(val effort: String)
 
@@ -95,6 +149,18 @@ class OpenAiChatAiProvider(
         val instructions: String,
         val input: String,
         val reasoning: ReasoningConfig? = null,
+        val text: ResponseTextConfig? = null,
+    )
+
+    @Serializable
+    private data class ResponseTextConfig(val format: ResponseFormat)
+
+    @Serializable
+    private data class ResponseFormat(
+        val type: String,
+        val name: String,
+        val schema: JsonObject,
+        val strict: Boolean,
     )
 
     @Serializable
