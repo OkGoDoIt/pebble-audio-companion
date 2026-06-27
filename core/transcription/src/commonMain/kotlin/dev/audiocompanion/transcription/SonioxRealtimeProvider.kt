@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * Real-time (streaming) transcription over the Soniox WebSocket API
@@ -32,6 +33,8 @@ class SonioxRealtimeProvider(
     private val cloudConsent: () -> Boolean,
     private val diarizationEnabled: () -> Boolean = { false },
     private val languageHints: () -> List<String> = { emptyList() },
+    private val contextText: () -> String? = { null },
+    private val contextTerms: () -> List<String> = { emptyList() },
     private val model: () -> String = { DEFAULT_MODEL },
     private val url: String = DEFAULT_URL,
 ) : StreamingTranscriptionProvider {
@@ -85,6 +88,10 @@ class SonioxRealtimeProvider(
         val hints = languageHints()
         if (hints.isNotEmpty()) {
             putJsonArray("language_hints") { hints.forEach { add(JsonPrimitive(it)) } }
+        }
+        val contextObj = buildSonioxContextJsonObject(contextText(), contextTerms())
+        if (contextObj != null) {
+            putJsonObject("context") { contextObj.forEach { (k, v) -> put(k, v) } }
         }
     }.let { json.encodeToString(JsonObject.serializer(), it) }
 

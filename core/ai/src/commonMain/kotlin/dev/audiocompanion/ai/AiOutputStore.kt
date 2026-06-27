@@ -22,6 +22,7 @@ data class AiOutput(
     val outputTokens: Int? = null,
     val createdAtMs: Long,
     val userConsentedToRemote: Boolean,
+    val editedAtMs: Long? = null,
 )
 
 /**
@@ -101,6 +102,13 @@ class FileAiOutputStore(
     fun delete(outputId: String) {
         fileSystem.delete(outputPath(outputId), mustExist = false)
         index = index?.minus(outputId)
+    }
+
+    fun updateText(outputId: String, text: String): AiOutput? {
+        val existing = load(outputId) ?: return null
+        val updated = existing.copy(text = text, editedAtMs = nowMs())
+        write(updated)
+        return updated
     }
 
     fun deleteAll() {

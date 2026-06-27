@@ -15,9 +15,10 @@ object SegmentAnnotationPrompt {
             "meaning, but never invent facts, names, or events that are not supported by the " +
             "text. Prefer general phrasing when a detail is clearly garbled rather than guessing " +
             "a specific wrong word.\n" +
-            "Respond with exactly two lines and nothing else:\n" +
+            "Respond with exactly three lines and nothing else:\n" +
             "TITLE: a specific, plain title of at most 8 words (no quotes, no trailing period)\n" +
             "SUMMARY: 1-3 plain sentences summarizing what was discussed\n" +
+            "TAGS: 2-3 short topic tags, comma-separated (e.g. work, budget, Sarah)\n" +
             "If the transcript is too short or unclear to summarize, still produce your best " +
             "honest label, e.g. TITLE: Brief unclear conversation."
 
@@ -43,11 +44,12 @@ object SegmentAnnotationPrompt {
     /** The prompt to use for a given pass: [liveTemplate] while recording, [template] when final. */
     fun forPass(live: Boolean): AiPromptTemplate = if (live) liveTemplate else template
 
-    data class Parsed(val title: String?, val summary: String?)
+    data class Parsed(val title: String?, val summary: String?, val tags: List<String> = emptyList())
 
     fun parse(text: String): Parsed {
         var title: String? = null
         var summary: String? = null
+        var tags: List<String> = emptyList()
         for (line in text.lineSequence()) {
             val trimmed = line.trim()
             when {
@@ -55,6 +57,12 @@ object SegmentAnnotationPrompt {
                     title = trimmed.substring("TITLE:".length).trim().ifBlank { null }
                 trimmed.startsWith("SUMMARY:", ignoreCase = true) && summary == null ->
                     summary = trimmed.substring("SUMMARY:".length).trim().ifBlank { null }
+                trimmed.startsWith("TAGS:", ignoreCase = true) && tags.isEmpty() ->
+                    tags = trimmed.substring("TAGS:".length)
+                        .split(',', ';')
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .take(3)
             }
         }
         if (title == null && summary == null) {
@@ -63,7 +71,11 @@ object SegmentAnnotationPrompt {
             title = lines.firstOrNull()?.take(MAX_TITLE_CHARS)
             summary = lines.drop(1).joinToString(" ").ifBlank { null }
         }
-        return Parsed(title = title?.take(MAX_TITLE_CHARS), summary = summary?.take(MAX_SUMMARY_CHARS))
+        return Parsed(
+            title = title?.take(MAX_TITLE_CHARS),
+            summary = summary?.take(MAX_SUMMARY_CHARS),
+            tags = tags,
+        )
     }
 
     private const val MAX_TITLE_CHARS = 80

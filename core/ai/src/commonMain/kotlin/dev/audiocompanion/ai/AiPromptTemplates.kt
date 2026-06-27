@@ -54,12 +54,39 @@ object AiPromptTemplates {
         userPrompt = "Draft a follow-up email based on these transcripts.",
     )
 
+    val StudyNotes = AiPromptTemplate(
+        id = "study-notes",
+        title = "Study notes",
+        systemPrompt = "$COMMON_SYSTEM_RULES Produce clear study notes: key concepts, " +
+            "definitions, and takeaways organized for review.",
+        userPrompt = "Create study notes from these transcripts.",
+    )
+
+    val InterviewHighlights = AiPromptTemplate(
+        id = "interview-highlights",
+        title = "Interview highlights",
+        systemPrompt = "$COMMON_SYSTEM_RULES Summarize interview highlights: candidate " +
+            "strengths, concerns, and notable quotes. Be factual.",
+        userPrompt = "Summarize interview highlights from these transcripts.",
+    )
+
+    val Ask = AiPromptTemplate(
+        id = "ask",
+        title = "Ask",
+        systemPrompt = "$COMMON_SYSTEM_RULES Answer the user's question using only the " +
+            "provided transcripts. Cite segment ids and times when relevant. If audio gaps " +
+            "matter, say so honestly. Never fabricate.",
+        userPrompt = "Answer this question based on the transcripts:",
+    )
+
     val builtIn: List<AiPromptTemplate> = listOf(
         DailySummary,
         MeetingNotes,
         ActionItems,
         Decisions,
         FollowUpEmail,
+        StudyNotes,
+        InterviewHighlights,
     )
 
     fun custom(prompt: String): AiPromptTemplate = AiPromptTemplate(
