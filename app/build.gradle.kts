@@ -33,6 +33,7 @@ kotlin {
             implementation(project(":core:storage"))
             implementation(project(":core:transcription"))
             implementation(project(":core:ai"))
+            implementation(project(":core:search"))
             implementation(libs.coroutines)
             implementation(libs.kotlinx.datetime)
             implementation(libs.kotlinx.io.core)

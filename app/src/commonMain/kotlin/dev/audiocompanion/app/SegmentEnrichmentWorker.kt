@@ -128,6 +128,7 @@ class SegmentEnrichmentWorker(
                     segmentId = meta.segmentId,
                     title = parsed.title,
                     summary = parsed.summary,
+                    tags = parsed.tags,
                     modeUsed = result.modeUsed,
                     providerId = result.providerId,
                     modelUsed = result.modelUsed,

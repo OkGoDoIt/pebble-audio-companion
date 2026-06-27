@@ -37,6 +37,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.AiProcessingMode
+import dev.audiocompanion.ai.PersonalContext
 import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
@@ -66,6 +67,7 @@ fun SettingsScreen(
     statusHeadline: String,
     exportDirectory: String?,
     cloudHealth: CloudHealth = CloudHealth(),
+    personalContext: PersonalContext = PersonalContext(),
     actions: AppActions,
 ) {
     var confirmRevoke by remember { mutableStateOf(false) }
@@ -79,6 +81,10 @@ fun SettingsScreen(
     var detailedDiagnosticsText by remember { mutableStateOf<String?>(null) }
     var exportResultText by remember { mutableStateOf<String?>(null) }
     var exportingAll by remember { mutableStateOf(false) }
+    var profileDraft by remember { mutableStateOf(personalContext.profileText.orEmpty()) }
+    LaunchedEffect(personalContext.profileText) {
+        profileDraft = personalContext.profileText.orEmpty()
+    }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -334,6 +340,43 @@ fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        HorizontalDivider()
+
+        SectionTitle("About you")
+        Text(
+            text = "Paste anything that helps the app understand you — names, jargon, your role. " +
+                "Stored on this phone. Only a minimal slice is sent when you already use cloud " +
+                "transcription or remote AI.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = profileDraft,
+            onValueChange = { profileDraft = it },
+            label = { Text("About you") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 4,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = { actions.setPersonalContextProfileText(profileDraft) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Save")
+            }
+            OutlinedButton(
+                onClick = {
+                    profileDraft = ""
+                    actions.clearPersonalContext()
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear")
+            }
+        }
         HorizontalDivider()
 
         SectionTitle("Privacy")

@@ -1,13 +1,27 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.ai.ActionItem
+import dev.audiocompanion.ai.ActionItemParser
 import dev.audiocompanion.ai.AiException
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
+import dev.audiocompanion.ai.AiPromptTemplates
 import dev.audiocompanion.ai.AiRunRequest
+import dev.audiocompanion.ai.DailyDigest
+import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileCustomTemplateStore
+import dev.audiocompanion.ai.FileDailyDigestStore
+import dev.audiocompanion.ai.FileRuleStore
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.FileSpeakerIdentityStore
+import dev.audiocompanion.ai.PersonalContext
+import dev.audiocompanion.ai.Rule
+import dev.audiocompanion.ai.RuleRun
+import dev.audiocompanion.ai.SavedAiTemplate
 import dev.audiocompanion.ai.SegmentAnnotation
+import dev.audiocompanion.ai.SpeakerIdentity
 import dev.audiocompanion.ai.TranscriptExcerpt
 import dev.audiocompanion.storage.RetentionManager
 import dev.audiocompanion.storage.SegmentMeta
@@ -117,6 +131,17 @@ class AudioCompanionRuntime(
     private val cloudLiveTranscriber: CloudLiveTranscriber? = null,
     /** Live-audio fan-out feeding [cloudLiveTranscriber]; null disables real-time streaming. */
     private val liveAudioTap: LiveAudioTap? = null,
+    /** User-owned personal context for transcription biasing and AI grounding; null in bare tests. */
+    private val personalContextCoordinator: PersonalContextCoordinator? = null,
+    private val digestStore: FileDailyDigestStore? = null,
+    private val actionItemStore: FileActionItemStore? = null,
+    private val customTemplateStore: FileCustomTemplateStore? = null,
+    private val ruleStore: FileRuleStore? = null,
+    private val speakerIdentityStore: FileSpeakerIdentityStore? = null,
+    val navigationState: NavigationState = NavigationState(),
+    private val transcriptIndexDonator: TranscriptIndexDonator? = null,
+    private val askRetriever: AskRetriever? = null,
+    private val ruleEvaluator: RuleEvaluator? = null,
     /** Shared cloud-health state, written by the router and the explicit test; null in tests. */
     private val cloudHealthMonitor: CloudHealthMonitor? = null,
     /** The selected cloud provider's self-test, for the Settings connectivity check; null disables it. */
@@ -127,6 +152,8 @@ class AudioCompanionRuntime(
         router = aiRouter,
         nowMs = nowMs,
     )
+    private var dailyRecapEngine: DailyRecapEngine? = null
+    private val defaultPersonalContextFlow = MutableStateFlow(PersonalContext()).asStateFlow()
     private val watchEnableRequestArmed = MutableStateFlow(false)
 
     private val session = AudioReceiverSession(
@@ -334,6 +361,16 @@ class AudioCompanionRuntime(
         lifecycleMutex.withLock {
             recoverDurableStateIfNeeded()
             processingScope = scope
+            if (dailyRecapEngine == null && digestStore != null) {
+                dailyRecapEngine = DailyRecapEngine(
+                    scope = scope,
+                    segmentStore = store,
+                    transcriptStore = transcriptStore,
+                    digestStore = digestStore,
+                    aiRouter = aiRouter,
+                    nowMs = nowMs,
+                ).also { it.start() }
+            }
             if (transcriptionJob == null) {
                 transcriptionJob = scope.launch { runTranscriptionLoop() }
             }
@@ -600,8 +637,132 @@ class AudioCompanionRuntime(
         )
         val result = router.run(request)
         val output = aiOutputStore.save(request, result, userConsentedToRemote)
+        if (prompt.id == AiPromptTemplates.ActionItems.id) {
+            persistActionItems(result.text, segmentIds)
+        }
         refreshDiagnostics()
         return output
+    }
+
+    suspend fun runAsk(
+        question: String,
+        segmentIds: List<String>,
+        userConsentedToRemote: Boolean,
+    ): AiOutput {
+        val router = aiRouter ?: throw AiException.ProviderUnavailable("none-configured")
+        val excerpts = segmentIds.mapNotNull { segmentId ->
+            transcriptStore.load(segmentId)?.let { transcript ->
+                TranscriptExcerpt(
+                    segmentId = segmentId,
+                    text = transcript.text,
+                    startTimeMs = store.readMeta(segmentId)?.startTimeMs?.toLong(),
+                )
+            }
+        }
+        if (excerpts.isEmpty()) {
+            throw AiException.ProviderFailed("No transcripts available for the selected segments")
+        }
+        val chunks = askRetriever?.retrieve(question, excerpts)
+            ?: excerpts.map { excerpt ->
+                AskRetriever.RetrievedChunk(
+                    segmentId = excerpt.segmentId,
+                    text = excerpt.text,
+                    startTimeMs = excerpt.startTimeMs,
+                )
+            }
+        val context = askRetriever?.formatForPrompt(chunks) ?: excerpts.joinToString("\n\n") { it.text }
+        val request = AiRunRequest(
+            requestId = "ask-${nowMs()}-${aiRunCounter++}",
+            prompt = AiPromptTemplate(
+                id = AiPromptTemplates.Ask.id,
+                title = AiPromptTemplates.Ask.title,
+                systemPrompt = AiPromptTemplates.Ask.systemPrompt,
+                userPrompt = "Question: $question\n\nTranscripts:\n$context",
+            ),
+            transcripts = excerpts,
+        )
+        val augmented = router.run(request)
+        val output = aiOutputStore.save(request, augmented, userConsentedToRemote)
+        refreshDiagnostics()
+        return output
+    }
+
+    fun updateAiOutputText(outputId: String, text: String): AiOutput? {
+        val updated = aiOutputStore.updateText(outputId, text)
+        if (updated != null) refreshDiagnostics()
+        return updated
+    }
+
+    fun listDailyDigests(): List<DailyDigest> = digestStore?.list().orEmpty()
+
+    fun listActionItems(): List<ActionItem> = actionItemStore?.list().orEmpty()
+
+    fun setActionItemDone(id: String, done: Boolean): ActionItem? =
+        actionItemStore?.setDone(id, done)
+
+    fun listCustomTemplates(): List<SavedAiTemplate> = customTemplateStore?.list().orEmpty()
+
+    fun saveCustomTemplate(title: String, userPrompt: String): SavedAiTemplate? {
+        val store = customTemplateStore ?: return null
+        return store.save(
+            SavedAiTemplate(
+                id = "custom-${nowMs()}",
+                title = title,
+                systemPrompt = AiPromptTemplates.custom(userPrompt).systemPrompt,
+                userPrompt = userPrompt,
+                createdAtMs = nowMs(),
+            ),
+        )
+    }
+
+    fun deleteCustomTemplate(id: String) {
+        customTemplateStore?.delete(id)
+    }
+
+    fun listRules(): List<Rule> = ruleStore?.listRules().orEmpty()
+
+    fun saveRule(rule: Rule): Rule? = ruleStore?.saveRule(rule)
+
+    fun deleteRule(id: String) {
+        ruleStore?.deleteRule(id)
+    }
+
+    fun listRuleRuns(ruleId: String? = null): List<RuleRun> = ruleStore?.listRuns(ruleId).orEmpty()
+
+    fun listSpeakerIdentities(): List<SpeakerIdentity> = speakerIdentityStore?.list().orEmpty()
+
+    fun saveSpeakerIdentity(speakerLabel: String, displayName: String): SpeakerIdentity? {
+        val store = speakerIdentityStore ?: return null
+        return store.save(
+            SpeakerIdentity(
+                speakerLabel = speakerLabel,
+                displayName = displayName,
+                updatedAtMs = nowMs(),
+            ),
+        )
+    }
+
+    private suspend fun donateEnrichedSegments() {
+        val donator = transcriptIndexDonator ?: return
+        store.listSegments().forEach { meta ->
+            val annotation = annotationStore.load(meta.segmentId) ?: return@forEach
+            donator.donateSegment(
+                segmentId = meta.segmentId,
+                annotation = annotation,
+                fullTranscript = transcriptStore.load(meta.segmentId)?.text,
+                startDateMs = meta.startTimeMs.toLong(),
+            )
+        }
+    }
+
+    private suspend fun persistActionItems(raw: String, segmentIds: List<String>) {
+        val store = actionItemStore ?: return
+        val donator = transcriptIndexDonator
+        val sourceId = segmentIds.firstOrNull() ?: return
+        ActionItemParser.parse(raw, sourceId, nowMs()).forEach { item ->
+            val saved = store.save(item)
+            donator?.donateActionItem(saved)
+        }
     }
 
     fun listAiOutputs(): List<AiOutput> = aiOutputStore.list()
@@ -609,6 +770,25 @@ class AudioCompanionRuntime(
     fun deleteAiOutput(outputId: String) {
         aiOutputStore.delete(outputId)
         refreshDiagnostics()
+    }
+
+    val personalContext: StateFlow<PersonalContext> =
+        personalContextCoordinator?.state ?: defaultPersonalContextFlow
+
+    fun setPersonalContextProfileText(text: String?) {
+        val coordinator = personalContextCoordinator ?: return
+        val scope = processingScope ?: return
+        coordinator.setProfileText(text, scope)
+    }
+
+    fun clearPersonalContext() {
+        val coordinator = personalContextCoordinator ?: return
+        val scope = processingScope ?: return
+        coordinator.clear(scope)
+    }
+
+    suspend fun generateDailyDigests() {
+        dailyRecapEngine?.generateMissingDigests()
     }
 
     private var aiRunCounter = 0
@@ -674,6 +854,13 @@ class AudioCompanionRuntime(
         // worker is a no-op when AI is not configured; rows then show transcript snippets instead.
         if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load, ::liveTranscript).isNotEmpty()) {
             refreshDiagnostics()
+            donateEnrichedSegments()
+        }
+        digestStore?.let { store ->
+            runCatching { dailyRecapEngine?.generateMissingDigests() }
+        }
+        ruleEvaluator?.let { evaluator ->
+            runCatching { evaluator.evaluateDueRules() }
         }
         // Live preview of the open segment, after the durable closed-segment work (same
         // loop, so a possibly single-instance native model is never used concurrently).

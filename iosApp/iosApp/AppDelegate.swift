@@ -1,5 +1,6 @@
 import AudioCompanionApp
 import BackgroundTasks
+import CoreSpotlight
 import UIKit
 
 #if canImport(FoundationModels)
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // is not registered — older iOS, ineligible device, or an SDK without FoundationModels — the
         // Kotlin side reports on-device AI unavailable and falls back to the cloud / snippets.
         OnDeviceAIBridge.registerIfAvailable()
+        SpotlightBridge.register()
 
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: processingTaskIdentifier,
@@ -57,6 +59,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // A background transcription upload finished while suspended. Let the runtime reconnect to
         // the session and process the outcome; call the system handler when events have drained.
         IosAudioCompanionBootstrap.shared.handleBackgroundUrlSessionEvents(completion: completionHandler)
+    }
+
+    func application(
+        _ application: UIApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+    ) -> Bool {
+        if userActivity.activityType == CSSearchableItemActionType {
+            if let segmentId = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String {
+                IosAudioCompanionBootstrap.shared.openLibrarySegment(segmentId: segmentId)
+                return true
+            }
+        }
+        return false
     }
 
     private func handleProcessingTask(_ task: BGTask) {

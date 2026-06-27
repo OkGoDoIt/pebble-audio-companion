@@ -4,10 +4,18 @@ import android.content.Context
 import android.os.Build
 import android.util.Base64
 import dev.audiocompanion.ai.AiModeRouter
+import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileCustomTemplateStore
+import dev.audiocompanion.ai.FileDailyDigestStore
+import dev.audiocompanion.ai.FilePersonalContextStore
+import dev.audiocompanion.ai.FileRuleStore
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.FileSpeakerIdentityStore
+import dev.audiocompanion.search.createAndroidTranscriptIndex
 import dev.audiocompanion.ai.OnDeviceAiProvider
 import dev.audiocompanion.ai.OpenAiChatAiProvider
+import dev.audiocompanion.ai.PersonalContextTermExtractor
 import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
@@ -70,6 +78,12 @@ class AndroidAudioCompanionRuntimeFactory(
         val cloudHttpClient = HttpClient(OkHttp)
         val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionEnabled }
         val diarizationEnabled = { settingsRepository.settings.value.speakerLabelsEnabled }
+        val personalContextStore = FilePersonalContextStore(SystemFileSystem, root)
+        var personalContextCoordinator: PersonalContextCoordinator? = null
+        val personalContextText = { personalContextCoordinator?.transcriptionText() }
+        val personalContextTerms = { personalContextCoordinator?.transcriptionTerms() ?: emptyList() }
+        val sttPrompt = { personalContextCoordinator?.openAiSttPrompt() }
+        val aiGrounding = { personalContextCoordinator?.aiGroundingBlock() }
         val remoteProvider = SelectableCloudTranscriptionProvider(
             selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
             openAi = OpenAiTranscriptionProvider(
@@ -77,12 +91,15 @@ class AndroidAudioCompanionRuntimeFactory(
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 cloudConsent = cloudConsent,
                 diarizationEnabled = diarizationEnabled,
+                sttPrompt = sttPrompt,
             ),
             soniox = SonioxTranscriptionProvider(
                 client = cloudHttpClient,
                 apiKey = { settingsRepository.settings.value.sonioxApiKey },
                 cloudConsent = cloudConsent,
                 diarizationEnabled = diarizationEnabled,
+                contextText = personalContextText,
+                contextTerms = personalContextTerms,
             ),
         )
         val cloudHealthMonitor = CloudHealthMonitor(nowMs)
@@ -95,15 +112,24 @@ class AndroidAudioCompanionRuntimeFactory(
         val aiRouter = AiModeRouter(
             // On-device Gemini Nano (ML Kit GenAI). Reports unavailable on unsupported devices, so
             // LocalOnly/LocalFirst degrade gracefully.
-            local = OnDeviceAiProvider(AndroidGeminiNanoLanguageModel()),
+            local = OnDeviceAiProvider(
+                AndroidGeminiNanoLanguageModel(),
+                grounding = aiGrounding,
+            ),
             remote = OpenAiChatAiProvider(
                 client = HttpClient(OkHttp),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
                 model = { settingsRepository.settings.value.aiModel },
+                grounding = aiGrounding,
             ),
             mode = { settingsRepository.settings.value.aiMode },
         )
+        personalContextCoordinator = PersonalContextCoordinator(
+            store = personalContextStore,
+            extractor = PersonalContextTermExtractor(aiRouter),
+        )
+        personalContextCoordinator!!.reloadFromDisk()
         val liveAudioTap = LiveAudioTap()
         val streamingClient = HttpClient(OkHttp) { install(WebSockets) }
         val cloudLiveTranscriber = CloudLiveTranscriber(
@@ -120,11 +146,28 @@ class AndroidAudioCompanionRuntimeFactory(
                     apiKey = { settingsRepository.settings.value.sonioxApiKey },
                     cloudConsent = cloudConsent,
                     diarizationEnabled = diarizationEnabled,
+                    contextText = personalContextText,
+                    contextTerms = personalContextTerms,
                 ),
             ),
             enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
             nowMs = nowMs,
             onOutcome = cloudHealthMonitor::report,
+        )
+        val digestStore = FileDailyDigestStore(SystemFileSystem, root, nowMs)
+        val actionItemStore = FileActionItemStore(SystemFileSystem, root, nowMs)
+        val customTemplateStore = FileCustomTemplateStore(SystemFileSystem, root, nowMs)
+        val ruleStore = FileRuleStore(SystemFileSystem, root, nowMs)
+        val speakerIdentityStore = FileSpeakerIdentityStore(SystemFileSystem, root, nowMs)
+        val transcriptIndex = createAndroidTranscriptIndex(appContext)
+        val transcriptIndexDonator = TranscriptIndexDonator(transcriptIndex)
+        val askRetriever = AskRetriever(transcriptIndex)
+        val ruleEvaluator = RuleEvaluator(
+            ruleStore = ruleStore,
+            segmentStore = store,
+            transcriptStore = transcriptStore,
+            aiRouter = aiRouter,
+            nowMs = nowMs,
         )
         return AudioCompanionRuntime(
             link = link,
@@ -216,6 +259,15 @@ class AndroidAudioCompanionRuntimeFactory(
             liveAudioTap = liveAudioTap,
             cloudHealthMonitor = cloudHealthMonitor,
             cloudConnectivityCheck = remoteProvider,
+            personalContextCoordinator = personalContextCoordinator,
+            digestStore = digestStore,
+            actionItemStore = actionItemStore,
+            customTemplateStore = customTemplateStore,
+            ruleStore = ruleStore,
+            speakerIdentityStore = speakerIdentityStore,
+            transcriptIndexDonator = transcriptIndexDonator,
+            askRetriever = askRetriever,
+            ruleEvaluator = ruleEvaluator,
         )
     }
 

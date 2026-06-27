@@ -30,10 +30,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.ActionItem
 import dev.audiocompanion.ai.AiOutput
+import dev.audiocompanion.ai.DailyDigest
+import dev.audiocompanion.ai.SavedAiTemplate
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.ui.AiScreen
+import dev.audiocompanion.ai.PersonalContext
 import dev.audiocompanion.app.ui.AppActions
+import dev.audiocompanion.app.ui.Formatting
 import dev.audiocompanion.app.ui.LibraryScreen
 import dev.audiocompanion.app.ui.OnboardingScreen
 import dev.audiocompanion.app.ui.PrimaryAction
@@ -76,6 +81,9 @@ private data class DurableContentSnapshot(
     val livePreviews: Map<String, LiveTranscriptPreview?> = emptyMap(),
     val annotations: Map<String, SegmentAnnotation?> = emptyMap(),
     val aiOutputs: List<AiOutput> = emptyList(),
+    val dailyDigests: List<DailyDigest> = emptyList(),
+    val actionItems: List<ActionItem> = emptyList(),
+    val customTemplates: List<SavedAiTemplate> = emptyList(),
     /** Built off the UI thread alongside the durable reads: buildTimeline is O(segments) and was
      * freezing the main thread when computed in composition over a large/gappy library. */
     val todayTimeline: List<TimelineItem> = emptyList(),
@@ -115,6 +123,8 @@ fun App(
     waveformWindowMs: Long = 60_000,
     playbackState: StateFlow<PlaybackUiState> = MutableStateFlow(PlaybackUiState()),
     cloudHealth: StateFlow<CloudHealth> = MutableStateFlow(CloudHealth()),
+    personalContext: StateFlow<PersonalContext> = MutableStateFlow(PersonalContext()),
+    navigationRequest: StateFlow<AppNavigationRequest?> = MutableStateFlow(null),
     actions: AppActions = AppActions(),
 ) {
     MaterialTheme {
@@ -126,6 +136,8 @@ fun App(
         val currentPlayback = playbackState.collectAsState().value
         val currentLivePreviews = liveTranscriptPreviews.collectAsState().value
         val currentCloudHealth = cloudHealth.collectAsState().value
+        val currentPersonalContext = personalContext.collectAsState().value
+        val pendingNavigation = navigationRequest.collectAsState().value
 
         // Wall-clock tick: keeps durations and "Recording now" ages fresh without forcing
         // durable file reads on every tick.
@@ -151,6 +163,14 @@ fun App(
 
         var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
         var librarySegmentId by rememberSaveable { mutableStateOf<String?>(null) }
+
+        LaunchedEffect(pendingNavigation) {
+            pendingNavigation?.let { req ->
+                tab = req.tab
+                librarySegmentId = req.librarySegmentId
+                actions.consumeNavigationRequest()
+            }
+        }
 
         // The live waveform decodes only while Today is visible (ux plan Section 8).
         DisposableEffect(tab) {
@@ -213,6 +233,9 @@ fun App(
                         } else {
                             previousAiOutputs
                         },
+                        dailyDigests = actions.loadDailyDigests(),
+                        actionItems = actions.loadActionItems(),
+                        customTemplates = actions.loadCustomTemplates(),
                         todayTimeline = timeline,
                     )
                 }
@@ -228,6 +251,9 @@ fun App(
         val livePreviews = durableContent.livePreviews
         val annotations = durableContent.annotations
         val aiOutputs = durableContent.aiOutputs
+        val dailyDigests = durableContent.dailyDigests
+        val actionItems = durableContent.actionItems
+        val customTemplates = durableContent.customTemplates
         // Built off the UI thread in the durable reload above (see DurableContentSnapshot).
         val todayTimeline = durableContent.todayTimeline
         val displayedTodayTimeline =
@@ -303,6 +329,9 @@ fun App(
                         settings = currentSettings,
                         localModel = currentLocalModel,
                         timeline = displayedTodayTimeline,
+                        dailyDigest = dailyDigests.firstOrNull {
+                            Formatting.isSameLocalDay(it.createdAtMs, nowMs)
+                        },
                         nowMs = nowMs,
                         waveformBars = currentWaveformBars,
                         waveformWindowMs = waveformWindowMs,
@@ -356,12 +385,21 @@ fun App(
                     AppTab.Ai -> AiScreen(
                         segments = segments,
                         aiOutputs = aiOutputs,
-                        // Only the remote provider exists today; configured = consent + key.
                         aiConfigured = currentSettings.remoteAiConsent &&
                             currentSettings.openAiApiKey.isNotBlank(),
                         nowMs = nowMs,
+                        dailyDigests = dailyDigests,
+                        actionItems = actionItems,
+                        customTemplates = customTemplates,
+                        selectedSegmentIds = listOfNotNull(librarySegmentId),
                         onRunAi = actions.runAi,
+                        onRunAsk = actions.runAsk,
                         onDeleteOutput = actions.deleteAiOutput,
+                        onUpdateOutput = actions.updateAiOutput,
+                        onShareText = actions.shareText,
+                        onExportText = actions.exportText,
+                        onSetActionItemDone = actions.setActionItemDone,
+                        onOpenSegment = actions.openLibrarySegment,
                         onRefresh = actions.refreshDiagnostics,
                     )
 
@@ -375,6 +413,7 @@ fun App(
                         statusHeadline = status.headline,
                         exportDirectory = actions.audioExportDirectory(),
                         cloudHealth = currentCloudHealth,
+                        personalContext = currentPersonalContext,
                         actions = actions,
                     )
                 }

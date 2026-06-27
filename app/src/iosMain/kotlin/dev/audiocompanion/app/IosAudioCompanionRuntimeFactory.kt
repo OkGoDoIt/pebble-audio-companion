@@ -4,10 +4,18 @@ package dev.audiocompanion.app
 
 import dev.audiocompanion.adapter.ble.IosAudioGattLink
 import dev.audiocompanion.ai.AiModeRouter
+import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
+import dev.audiocompanion.ai.FileCustomTemplateStore
+import dev.audiocompanion.ai.FileDailyDigestStore
+import dev.audiocompanion.ai.FilePersonalContextStore
+import dev.audiocompanion.ai.FileRuleStore
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.FileSpeakerIdentityStore
+import dev.audiocompanion.search.createIosTranscriptIndex
 import dev.audiocompanion.ai.OnDeviceAiProvider
 import dev.audiocompanion.ai.OpenAiChatAiProvider
+import dev.audiocompanion.ai.PersonalContextTermExtractor
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
 import dev.audiocompanion.storage.FreeSpaceProvider
@@ -80,6 +88,12 @@ class IosAudioCompanionRuntimeFactory(
         val cloudHttpClient = HttpClient(Darwin)
         val cloudConsent = { settingsRepository.settings.value.cloudTranscriptionEnabled }
         val diarizationEnabled = { settingsRepository.settings.value.speakerLabelsEnabled }
+        val personalContextStore = FilePersonalContextStore(SystemFileSystem, root)
+        var personalContextCoordinator: PersonalContextCoordinator? = null
+        val personalContextText = { personalContextCoordinator?.transcriptionText() }
+        val personalContextTerms = { personalContextCoordinator?.transcriptionTerms() ?: emptyList() }
+        val sttPrompt = { personalContextCoordinator?.openAiSttPrompt() }
+        val aiGrounding = { personalContextCoordinator?.aiGroundingBlock() }
         val remoteProvider = SelectableCloudTranscriptionProvider(
             selected = { settingsRepository.settings.value.cloudTranscriptionProvider },
             openAi = OpenAiTranscriptionProvider(
@@ -87,12 +101,15 @@ class IosAudioCompanionRuntimeFactory(
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 cloudConsent = cloudConsent,
                 diarizationEnabled = diarizationEnabled,
+                sttPrompt = sttPrompt,
             ),
             soniox = SonioxTranscriptionProvider(
                 client = cloudHttpClient,
                 apiKey = { settingsRepository.settings.value.sonioxApiKey },
                 cloudConsent = cloudConsent,
                 diarizationEnabled = diarizationEnabled,
+                contextText = personalContextText,
+                contextTerms = personalContextTerms,
             ),
         )
         val cloudHealthMonitor = CloudHealthMonitor(nowMs)
@@ -164,6 +181,8 @@ class IosAudioCompanionRuntimeFactory(
                     apiKey = { settingsRepository.settings.value.sonioxApiKey },
                     cloudConsent = cloudConsent,
                     diarizationEnabled = diarizationEnabled,
+                    contextText = personalContextText,
+                    contextTerms = personalContextTerms,
                 ),
             ),
             enabled = { settingsRepository.settings.value.liveCloudTranscriptionEnabled },
@@ -174,14 +193,49 @@ class IosAudioCompanionRuntimeFactory(
             // On-device Apple Foundation Models (iOS 26+) via the Swift-registered bridge. Reports
             // unavailable when the bridge is not registered (older iOS / ineligible device), so
             // LocalOnly/LocalFirst degrade gracefully.
-            local = OnDeviceAiProvider(IosFoundationModelsLanguageModel()),
+            local = OnDeviceAiProvider(
+                IosFoundationModelsLanguageModel(),
+                grounding = aiGrounding,
+            ),
             remote = OpenAiChatAiProvider(
                 client = HttpClient(Darwin),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
                 model = { settingsRepository.settings.value.aiModel },
+                grounding = aiGrounding,
             ),
             mode = { settingsRepository.settings.value.aiMode },
+        )
+        personalContextCoordinator = PersonalContextCoordinator(
+            store = personalContextStore,
+            extractor = PersonalContextTermExtractor(aiRouter),
+        )
+        personalContextCoordinator!!.reloadFromDisk()
+        val digestStore = FileDailyDigestStore(SystemFileSystem, root, nowMs)
+        val actionItemStore = FileActionItemStore(SystemFileSystem, root, nowMs)
+        val customTemplateStore = FileCustomTemplateStore(SystemFileSystem, root, nowMs)
+        val ruleStore = FileRuleStore(SystemFileSystem, root, nowMs)
+        val speakerIdentityStore = FileSpeakerIdentityStore(SystemFileSystem, root, nowMs)
+        val transcriptIndex = createIosTranscriptIndex()
+        val transcriptIndexDonator = TranscriptIndexDonator(
+            transcriptIndex,
+            spotlightDonate = { item ->
+                SpotlightDonationBridgeRegistry.bridge?.donateSegment(
+                    id = item.id,
+                    title = item.title,
+                    summary = item.summary,
+                    tags = item.tags,
+                    creationMs = item.contentCreationDateMs,
+                )
+            },
+        )
+        val askRetriever = AskRetriever(transcriptIndex)
+        val ruleEvaluator = RuleEvaluator(
+            ruleStore = ruleStore,
+            segmentStore = store,
+            transcriptStore = transcriptStore,
+            aiRouter = aiRouter,
+            nowMs = nowMs,
         )
         return AudioCompanionRuntime(
             link = link,
@@ -274,6 +328,15 @@ class IosAudioCompanionRuntimeFactory(
             liveAudioTap = liveAudioTap,
             cloudHealthMonitor = cloudHealthMonitor,
             cloudConnectivityCheck = remoteProvider,
+            personalContextCoordinator = personalContextCoordinator,
+            digestStore = digestStore,
+            actionItemStore = actionItemStore,
+            customTemplateStore = customTemplateStore,
+            ruleStore = ruleStore,
+            speakerIdentityStore = speakerIdentityStore,
+            transcriptIndexDonator = transcriptIndexDonator,
+            askRetriever = askRetriever,
+            ruleEvaluator = ruleEvaluator,
         )
     }
 
