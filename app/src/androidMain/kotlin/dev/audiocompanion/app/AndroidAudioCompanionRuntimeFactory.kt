@@ -260,6 +260,7 @@ class AndroidAudioCompanionRuntimeFactory(
             cloudHealthMonitor = cloudHealthMonitor,
             cloudConnectivityCheck = remoteProvider,
             personalContextCoordinator = personalContextCoordinator,
+            personalContextImporter = AndroidPersonalContextImporter(appContext),
             digestStore = digestStore,
             actionItemStore = actionItemStore,
             customTemplateStore = customTemplateStore,

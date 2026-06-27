@@ -102,6 +102,8 @@ class AppActions(
     /** Saves pasted personal context (profile text) and refreshes derived STT terms. */
     val setPersonalContextProfileText: (String) -> Unit = {},
     val clearPersonalContext: () -> Unit = {},
+    val importPersonalContacts: () -> Unit = {},
+    val importPersonalCalendar: () -> Unit = {},
     // Local transcription model
     val refreshLocalModel: () -> Unit = {},
     val downloadLocalModel: () -> Unit = {},

@@ -100,6 +100,19 @@ class FileRuleStore(
         fileSystem.delete(Path(ruleDir, "$id$RULE_SUFFIX"), mustExist = false)
     }
 
+    fun deleteAll() {
+        if (fileSystem.exists(ruleDir)) {
+            fileSystem.list(ruleDir)
+                .filter { it.name.endsWith(RULE_SUFFIX) || it.name.endsWith("$RULE_SUFFIX.tmp") }
+                .forEach { fileSystem.delete(it, mustExist = false) }
+        }
+        if (fileSystem.exists(runDir)) {
+            fileSystem.list(runDir)
+                .filter { it.name.endsWith(RUN_SUFFIX) || it.name.endsWith("$RUN_SUFFIX.tmp") }
+                .forEach { fileSystem.delete(it, mustExist = false) }
+        }
+    }
+
     fun saveRun(run: RuleRun): RuleRun {
         writeRun(run)
         return run

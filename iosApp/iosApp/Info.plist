@@ -34,6 +34,14 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Pebble Audio Companion uses Bluetooth to receive the dedicated watch audio stream that you authorize on your Pebble.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Pebble Audio can import selected names and organizations to improve transcription accuracy and AI answers. Imports only happen when you tap Import Contacts.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Pebble Audio can import event titles and attendee names to improve transcription context. Imports only happen when you tap Import Calendar.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Pebble Audio can create reminders only when you explicitly choose an integration action.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Pebble Audio can add calendar items only when you explicitly choose an integration action.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

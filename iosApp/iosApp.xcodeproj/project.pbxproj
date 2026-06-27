@@ -11,6 +11,10 @@
 		AC0100020000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0200020000000000000001 /* AppDelegate.swift */; };
 		AC0100030000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0200030000000000000001 /* ContentView.swift */; };
 		AC0100040000000000000001 /* AudioCompanionApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC0200040000000000000001 /* AudioCompanionApp.framework */; };
+		AC0100070000000000000001 /* SpotlightBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0200070000000000000001 /* SpotlightBridge.swift */; };
+		AC0100080000000000000001 /* SpotlightDonationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0200080000000000000001 /* SpotlightDonationBridge.swift */; };
+		AC0100090000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC0200090000000000000001 /* PrivacyInfo.xcprivacy */; };
+		AC01000A0000000000000001 /* PersonalContextImportBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC02000A0000000000000001 /* PersonalContextImportBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +24,10 @@
 		AC0200040000000000000001 /* AudioCompanionApp.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = AudioCompanionApp.framework; sourceTree = DERIVED_FILE_DIR; };
 		AC0200050000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AC0200060000000000000001 /* Pebble Audio Companion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Pebble Audio Companion.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC0200070000000000000001 /* SpotlightBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotlightBridge.swift; sourceTree = "<group>"; };
+		AC0200080000000000000001 /* SpotlightDonationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotlightDonationBridge.swift; sourceTree = "<group>"; };
+		AC0200090000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		AC02000A0000000000000001 /* PersonalContextImportBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalContextImportBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -50,6 +58,10 @@
 				AC0200020000000000000001 /* AppDelegate.swift */,
 				AC0200030000000000000001 /* ContentView.swift */,
 				AC0200050000000000000001 /* Info.plist */,
+				AC0200070000000000000001 /* SpotlightBridge.swift */,
+				AC0200080000000000000001 /* SpotlightDonationBridge.swift */,
+				AC02000A0000000000000001 /* PersonalContextImportBridge.swift */,
+				AC0200090000000000000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = iosApp;
 			sourceTree = "<group>";
@@ -129,6 +141,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AC0100090000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -164,6 +177,9 @@
 			files = (
 				AC0100020000000000000001 /* AppDelegate.swift in Sources */,
 				AC0100030000000000000001 /* ContentView.swift in Sources */,
+				AC0100070000000000000001 /* SpotlightBridge.swift in Sources */,
+				AC0100080000000000000001 /* SpotlightDonationBridge.swift in Sources */,
+				AC01000A0000000000000001 /* PersonalContextImportBridge.swift in Sources */,
 				AC0100010000000000000001 /* AudioCompanionIOSApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

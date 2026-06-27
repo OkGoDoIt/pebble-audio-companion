@@ -228,6 +228,12 @@ class IosAudioCompanionRuntimeFactory(
                     creationMs = item.contentCreationDateMs,
                 )
             },
+            spotlightRemove = { id ->
+                SpotlightDonationBridgeRegistry.bridge?.remove(id)
+            },
+            spotlightRemoveAll = {
+                SpotlightDonationBridgeRegistry.bridge?.removeAll()
+            },
         )
         val askRetriever = AskRetriever(transcriptIndex)
         val ruleEvaluator = RuleEvaluator(
@@ -329,6 +335,7 @@ class IosAudioCompanionRuntimeFactory(
             cloudHealthMonitor = cloudHealthMonitor,
             cloudConnectivityCheck = remoteProvider,
             personalContextCoordinator = personalContextCoordinator,
+            personalContextImporter = IosPersonalContextImporter(),
             digestStore = digestStore,
             actionItemStore = actionItemStore,
             customTemplateStore = customTemplateStore,

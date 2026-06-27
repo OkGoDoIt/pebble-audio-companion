@@ -335,8 +335,10 @@ Dependency summary: 2A is independent (do first). 2B/Section 6 are intertwined (
 - Diagnostics and support bundles exclude audio, transcript text, and AI output text by default.
 - Remote AI calls require explicit provider consent and show provider/model provenance.
 - **Delete-all** must delete audio segments, transcripts, transcription tasks, AI outputs, queued
-  runs, **and every new store this roadmap adds** (Personal Context, DailyDigest, ActionItems, the
-  vector index, donated OS search items).
+  runs, **and every new store this roadmap adds**: Personal Context, DailyDigest, ActionItems,
+  custom templates, rules, speaker identities, the local/vector index, and donated OS search items.
+- Segment deletion must also remove downstream AI artifacts whose source set contains that segment:
+  derived action items, daily digests, AI outputs, and donated search entries.
 - Each new source (Contacts, Calendar) and each OS donation is a privacy decision: just-in-time
   consent, per-source delete, exclude-from-index toggle, full-transcript indexing opt-in only.
 - Voice fingerprinting (Phase 3) is the most sensitive feature: on-device only, opt-in, deletable;

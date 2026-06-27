@@ -51,6 +51,22 @@ class PersonalContextCoordinator(
         scope.launch { refreshDerivedTermsIfNeeded() }
     }
 
+    fun mergeImported(imported: PersonalContextImport, scope: CoroutineScope): PersonalContext {
+        val current = snapshot()
+        val saved = store.save(
+            current.copy(
+                people = (current.people + imported.people).distinctBy { it.id }.sortedBy { it.name },
+                orgs = (current.orgs + imported.orgs).distinct().sorted(),
+                topics = (current.topics + imported.topics).distinct().sorted(),
+                terms = (current.terms + imported.terms).distinctBy { it.text.lowercase() }.sortedBy { it.text },
+                sources = (current.sources + imported.sources).distinctBy { it.id },
+            ),
+        )
+        _state.value = saved
+        scope.launch { refreshDerivedTermsIfNeeded() }
+        return saved
+    }
+
     suspend fun refreshDerivedTermsIfNeeded() {
         val current = snapshot()
         val refreshed = extractor.refreshDerivedTerms(current)

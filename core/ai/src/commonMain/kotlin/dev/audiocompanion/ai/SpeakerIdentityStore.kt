@@ -48,6 +48,13 @@ class FileSpeakerIdentityStore(
                 runCatching { json.decodeFromString(SpeakerIdentity.serializer(), text) }.getOrNull()
             }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(dir)) return
+        fileSystem.list(dir)
+            .filter { it.name.endsWith(SUFFIX) || it.name.endsWith("$SUFFIX.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     private fun write(identity: SpeakerIdentity) {
         fileSystem.createDirectories(dir)
         val tmp = Path(dir, "${identity.speakerLabel.hashCode()}$SUFFIX.tmp")

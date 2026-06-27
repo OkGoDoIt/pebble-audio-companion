@@ -51,6 +51,13 @@ class FileCustomTemplateStore(
         fileSystem.delete(path(id), mustExist = false)
     }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(templateDir)) return
+        fileSystem.list(templateDir)
+            .filter { it.name.endsWith(SUFFIX) || it.name.endsWith("$SUFFIX.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     private fun write(template: SavedAiTemplate) {
         fileSystem.createDirectories(templateDir)
         val tmp = Path(templateDir, "${template.id}$SUFFIX.tmp")

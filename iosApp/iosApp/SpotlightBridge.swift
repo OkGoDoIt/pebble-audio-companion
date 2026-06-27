@@ -30,6 +30,10 @@ final class KotlinSpotlightBridge: NSObject, SpotlightDonationBridge {
         NativeSpotlightDonation.remove(id: id)
     }
 
+    func removeAll() {
+        NativeSpotlightDonation.removeAll()
+    }
+
     func donateDigest(digest: AiDailyDigest) {
         NativeSpotlightDonation.donate(
             id: "day-\(digest.dateKey)",

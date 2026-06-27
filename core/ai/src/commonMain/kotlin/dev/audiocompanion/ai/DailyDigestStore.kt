@@ -59,6 +59,13 @@ class FileDailyDigestStore(
         fileSystem.delete(path(dateKey), mustExist = false)
     }
 
+    fun deleteAll() {
+        if (!fileSystem.exists(digestDir)) return
+        fileSystem.list(digestDir)
+            .filter { it.name.endsWith(SUFFIX) || it.name.endsWith("$SUFFIX.tmp") }
+            .forEach { fileSystem.delete(it, mustExist = false) }
+    }
+
     private fun write(digest: DailyDigest) {
         fileSystem.createDirectories(digestDir)
         val tmp = Path(digestDir, "${digest.dateKey}$SUFFIX.tmp")
