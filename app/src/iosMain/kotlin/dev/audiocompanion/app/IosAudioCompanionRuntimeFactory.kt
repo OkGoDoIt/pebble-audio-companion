@@ -6,6 +6,7 @@ import dev.audiocompanion.adapter.ble.IosAudioGattLink
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.OnDeviceAiProvider
 import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.storage.FileReceiverResumeStore
@@ -170,7 +171,10 @@ class IosAudioCompanionRuntimeFactory(
             onOutcome = cloudHealthMonitor::report,
         )
         val aiRouter = AiModeRouter(
-            local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
+            // On-device Apple Foundation Models (iOS 26+) via the Swift-registered bridge. Reports
+            // unavailable when the bridge is not registered (older iOS / ineligible device), so
+            // LocalOnly/LocalFirst degrade gracefully.
+            local = OnDeviceAiProvider(IosFoundationModelsLanguageModel()),
             remote = OpenAiChatAiProvider(
                 client = HttpClient(Darwin),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
