@@ -10,10 +10,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -91,72 +95,76 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = Spacing.screenH),
+        verticalArrangement = Arrangement.spacedBy(Spacing.tight),
     ) {
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(top = 16.dp),
-        )
+        ScreenTitle("Settings")
 
-        SectionTitle("Watch")
-        InfoRow("Status", statusHeadline)
-        InfoRow("Watch reports", watchServiceStateLabel(watchServiceState))
-        SettingsToggleRow(
-            title = "Background audio",
-            subtitle = "Receive and store watch audio, including while this app is in the background.",
-            checked = settings.backgroundReceiverEnabled,
-            onCheckedChange = actions.setBackgroundReceiverEnabled,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = actions.pairWatch) { Text("Find Watch") }
+        GroupHeader("Watch")
+        SettingsGroup {
+            SettingsRow(title = "Status", value = statusHeadline)
+            RowDivider()
+            SettingsRow(title = "Watch reports", value = watchServiceStateLabel(watchServiceState))
+            RowDivider()
+            GroupedToggleRow(
+                title = "Background audio",
+                subtitle = "Receive and store watch audio, even while this app is in the background.",
+                checked = settings.backgroundReceiverEnabled,
+                onCheckedChange = actions.setBackgroundReceiverEnabled,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = actions.pairWatch, modifier = Modifier.weight(1f)) {
+                Text("Find Watch")
+            }
             if (sessionState == ReceiverSessionState.Disconnected && settings.backgroundReceiverEnabled) {
-                OutlinedButton(onClick = actions.startReceiver) { Text("Reconnect") }
+                OutlinedButton(onClick = actions.startReceiver, modifier = Modifier.weight(1f)) {
+                    Text("Reconnect")
+                }
             }
         }
         TextButton(onClick = { confirmRevoke = true }) {
             Text("Revoke receiver", color = MaterialTheme.colorScheme.error)
         }
-        HorizontalDivider()
 
-        SectionTitle("Storage & Retention")
-        InfoRow("Stored segments", diagnostics.segmentCount.toString())
-        InfoRow("Free phone storage", Formatting.storageSize(diagnostics.freeStorageHintKb.toLong() * 1024))
-        InfoRow("Export folder", exportDirectory ?: "Unavailable")
+        GroupHeader("Storage & Retention")
+        SettingsGroup {
+            SettingsRow(title = "Stored segments", value = diagnostics.segmentCount.toString())
+            RowDivider()
+            SettingsRow(
+                title = "Free phone storage",
+                value = Formatting.storageSize(diagnostics.freeStorageHintKb.toLong() * 1024),
+            )
+            RowDivider()
+            SettingsRow(
+                title = "Keep audio",
+                subtitle = "Delete recordings older than this.",
+                trailing = {
+                    Stepper(
+                        label = "${settings.retentionDays} days",
+                        onMinus = { actions.setRetentionDays((settings.retentionDays - 7).coerceAtLeast(1)) },
+                        onPlus = { actions.setRetentionDays((settings.retentionDays + 7).coerceAtMost(365)) },
+                    )
+                },
+            )
+            RowDivider()
+            GroupedToggleRow(
+                title = "Auto-export WAV files",
+                subtitle = "Write plain audio files for closed segments to the export folder. Off by default — WAV uses much more storage.",
+                checked = settings.automaticWavExportEnabled,
+                onCheckedChange = actions.setAutomaticWavExportEnabled,
+            )
+        }
         if (diagnostics.lowStorage) {
-            Text(
-                text = "Phone storage is low. Receiving will pause if it drops further.",
-                style = MaterialTheme.typography.bodySmall,
-                color = StatusColors.warning,
-            )
+            HelperText("Phone storage is low. Receiving will pause if it drops further.", StatusColors.warning)
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(onClick = {
-                actions.setRetentionDays((settings.retentionDays - 7).coerceAtLeast(1))
-            }) { Text("-") }
-            Text(
-                text = "Keep audio ${settings.retentionDays} days",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            OutlinedButton(onClick = {
-                actions.setRetentionDays((settings.retentionDays + 7).coerceAtMost(365))
-            }) { Text("+") }
-        }
-        TextButton(onClick = { confirmDeleteAll = true }) {
-            Text("Delete all local data", color = MaterialTheme.colorScheme.error)
-        }
-        SettingsToggleRow(
-            title = "Auto-export WAV files",
-            subtitle = "Write normal audio files for closed segments into the export folder. Off by default because WAV uses much more storage.",
-            checked = settings.automaticWavExportEnabled,
-            onCheckedChange = actions.setAutomaticWavExportEnabled,
-        )
+        exportDirectory?.let { HelperText("Export folder: $it") }
         OutlinedButton(
             enabled = !exportingAll,
+            modifier = Modifier.fillMaxWidth(),
             onClick = {
                 exportingAll = true
                 scope.launch {
@@ -171,28 +179,40 @@ fun SettingsScreen(
         ) {
             Text(if (exportingAll) "Exporting…" else "Export all audio")
         }
-        exportResultText?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        exportResultText?.let { HelperText(it) }
+        TextButton(onClick = { confirmDeleteAll = true }) {
+            Text("Delete all local data", color = MaterialTheme.colorScheme.error)
+        }
+
+        GroupHeader("Transcription")
+        SettingsGroup {
+            SettingsRow(
+                title = "Mode",
+                value = transcriptionModeLabel(settings.transcriptionMode),
+                valueColor = MaterialTheme.colorScheme.primary,
+                onClick = { showTranscriptionModePicker = true },
+            )
+            RowDivider()
+            SettingsRow(
+                title = "Local model",
+                value = localModel.selectedOption?.let {
+                    "${it.model.shortLabel} · ${Formatting.storageSize(it.model.downloadBytes)}"
+                } ?: "Choose model",
+                valueColor = MaterialTheme.colorScheme.primary,
+                onClick = { if (!localModel.downloading) showLocalModelPicker = true },
+            )
+            RowDivider()
+            SettingsRow(
+                title = "On-device model",
+                value = when {
+                    localModel.installing -> "Installing…"
+                    localModel.downloading -> "Downloading…"
+                    localModel.downloaded -> "Installed"
+                    localModel.errorMessage != null -> "Error"
+                    else -> "Not installed"
+                },
             )
         }
-        HorizontalDivider()
-
-        SectionTitle("Transcription")
-        ModePickerRow(
-            title = "Mode",
-            value = transcriptionModeLabel(settings.transcriptionMode),
-            onClick = { showTranscriptionModePicker = true },
-        )
-        ModePickerRow(
-            title = "Local model",
-            value = localModel.selectedOption?.let {
-                "${it.model.shortLabel} · ${Formatting.storageSize(it.model.downloadBytes)}"
-            } ?: "Choose model",
-            onClick = { if (!localModel.downloading) showLocalModelPicker = true },
-        )
         localModel.selectedOption?.model?.let { model ->
             Text(
                 text = model.description,
@@ -200,64 +220,60 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        InfoRow(
-            "On-device model",
-            when {
-                localModel.installing -> "Installing…"
-                localModel.downloading -> "Downloading…"
-                localModel.downloaded -> "Installed (${localModel.selectedOption?.model?.displayName ?: localModel.modelName})"
-                localModel.errorMessage != null -> "Error"
-                else -> "Not installed"
-            },
-        )
         if (localModel.downloading) {
             if (localModel.totalBytes > 0) {
                 LinearProgressIndicator(
                     progress = {
-                        (localModel.downloadedBytes.toFloat() / localModel.totalBytes)
-                            .coerceIn(0f, 1f)
+                        (localModel.downloadedBytes.toFloat() / localModel.totalBytes).coerceIn(0f, 1f)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(
-                    text = "${Formatting.storageSize(localModel.downloadedBytes)} of " +
+                HelperText(
+                    "${Formatting.storageSize(localModel.downloadedBytes)} of " +
                         Formatting.storageSize(localModel.totalBytes),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
-        localModel.errorMessage?.let {
-            Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
+        localModel.errorMessage?.let { HelperText(it, MaterialTheme.colorScheme.error) }
         if (!localModel.downloaded && !localModel.downloading) {
-            Text(
-                text = "Transcribes on this phone with no audio leaving the device. " +
-                    "Choose the model size that fits this phone, then download on Wi-Fi.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            HelperText(
+                "Transcribes on this phone with no audio leaving the device. Choose the model " +
+                    "size that fits this phone, then download on Wi-Fi.",
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             if (localModel.downloading) {
-                OutlinedButton(onClick = actions.cancelModelDownload) { Text("Cancel") }
+                OutlinedButton(onClick = actions.cancelModelDownload, modifier = Modifier.weight(1f)) {
+                    Text("Cancel")
+                }
             } else {
-                OutlinedButton(onClick = actions.refreshLocalModel) { Text("Check") }
+                OutlinedButton(onClick = actions.refreshLocalModel, modifier = Modifier.weight(1f)) {
+                    Text("Check")
+                }
                 Button(
                     enabled = !localModel.downloaded,
                     onClick = actions.downloadLocalModel,
+                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("Download selected")
+                    Text("Download")
                 }
             }
         }
-        ModePickerRow(
-            title = "Cloud provider",
-            value = cloudProviderLabel(settings.cloudTranscriptionProvider),
-            onClick = { showCloudProviderPicker = true },
-        )
+
+        GroupHeader("Cloud transcription")
+        SettingsGroup {
+            SettingsRow(
+                title = "Provider",
+                value = cloudProviderLabel(settings.cloudTranscriptionProvider),
+                valueColor = MaterialTheme.colorScheme.primary,
+                onClick = { showCloudProviderPicker = true },
+            )
+        }
         if (settings.cloudTranscriptionProvider == CloudProvider.Soniox) {
             OutlinedTextField(
                 value = settings.sonioxApiKey,
@@ -268,14 +284,12 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        Text(
-            text = if (settings.cloudTranscriptionEnabled) {
+        HelperText(
+            if (settings.cloudTranscriptionEnabled) {
                 "Cloud transcription, speaker labels, and live transcription are used automatically when the selected provider supports them."
             } else {
                 "Local only keeps transcription on this phone. Cloud transcription is off in this mode."
             },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (settings.cloudTranscriptionEnabled) {
             // Auto-test shortly after the key/provider settles (debounced so it never fires mid-typing
@@ -308,25 +322,30 @@ fun SettingsScreen(
                 Text(text = text, style = MaterialTheme.typography.bodySmall, color = color)
             }
         }
-        HorizontalDivider()
 
-        SectionTitle("AI")
-        ModePickerRow(
-            title = "Mode",
-            value = aiModeLabel(settings.aiMode),
-            onClick = { showAiModePicker = true },
-        )
-        ModePickerRow(
-            title = "Model",
-            value = aiModelLabel(settings.aiModel),
-            onClick = { showAiModelPicker = true },
-        )
-        SettingsToggleRow(
-            title = "Remote AI",
-            subtitle = "Send transcripts to the configured AI provider when you run AI. Off by default.",
-            checked = settings.remoteAiConsent,
-            onCheckedChange = actions.setRemoteAiConsent,
-        )
+        GroupHeader("AI")
+        SettingsGroup {
+            SettingsRow(
+                title = "Mode",
+                value = aiModeLabel(settings.aiMode),
+                valueColor = MaterialTheme.colorScheme.primary,
+                onClick = { showAiModePicker = true },
+            )
+            RowDivider()
+            SettingsRow(
+                title = "Model",
+                value = aiModelLabel(settings.aiModel),
+                valueColor = MaterialTheme.colorScheme.primary,
+                onClick = { showAiModelPicker = true },
+            )
+            RowDivider()
+            GroupedToggleRow(
+                title = "Remote AI",
+                subtitle = "Send transcripts to the configured AI provider when you run AI. Off by default.",
+                checked = settings.remoteAiConsent,
+                onCheckedChange = actions.setRemoteAiConsent,
+            )
+        }
         OutlinedTextField(
             value = settings.openAiApiKey,
             onValueChange = actions.setOpenAiApiKey,
@@ -335,20 +354,13 @@ fun SettingsScreen(
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )
-        Text(
-            text = "One key is used for both cloud transcription and remote AI.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HorizontalDivider()
+        HelperText("One key is used for both cloud transcription and remote AI.")
 
-        SectionTitle("About you")
-        Text(
-            text = "Paste anything that helps the app understand you — names, jargon, your role. " +
+        GroupHeader("About you")
+        HelperText(
+            "Paste anything that helps the app understand you — names, jargon, your role. " +
                 "Stored on this phone. Only a minimal slice is sent when you already use cloud " +
                 "transcription or remote AI.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
             value = profileDraft,
@@ -378,76 +390,87 @@ fun SettingsScreen(
             }
         }
         if (personalContext.people.isNotEmpty() || personalContext.orgs.isNotEmpty()) {
-            Text(
-                text = "${personalContext.people.size} people and ${personalContext.orgs.size} organizations imported.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            HelperText("${personalContext.people.size} people and ${personalContext.orgs.size} organizations imported.")
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = { actions.setPersonalContextProfileText(profileDraft) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Save")
+            }
+            OutlinedButton(
+                onClick = {
+                    profileDraft = ""
+                    actions.clearPersonalContext()
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = actions.importPersonalContacts, modifier = Modifier.weight(1f)) {
+                Text("Import Contacts")
+            }
+            OutlinedButton(onClick = actions.importPersonalCalendar, modifier = Modifier.weight(1f)) {
+                Text("Import Calendar")
+            }
+        }
+        HelperText("Imports only run when you tap them. You can clear all imported context here.")
+
+        GroupHeader("Privacy")
+        HelperText(
+            "Audio and transcripts stay on this phone unless the transcription mode uses cloud or " +
+                "you enable remote AI above. Nothing is shared with analytics or diagnostics services.",
+        )
+        HelperText("You are responsible for following recording and consent laws where you use this feature.")
+
+        GroupHeader("Diagnostics")
+        SettingsGroup {
+            SettingsRow(title = "Receiver", value = statusHeadline)
+            RowDivider()
+            SettingsRow(
+                title = "Transcription queue",
+                value = "${diagnostics.queuedTranscriptionTasks} waiting · ${diagnostics.failedTranscriptionTasks} failed",
             )
+            RowDivider()
+            SettingsRow(title = "AI outputs", value = diagnostics.aiOutputCount.toString())
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             OutlinedButton(
-                onClick = actions.importPersonalContacts,
                 modifier = Modifier.weight(1f),
-            ) {
-                Text("Import Contacts")
-            }
+                onClick = {
+                    supportReportText = actions.exportSupportReport()?.let { formatSupportReport(it) }
+                },
+            ) { Text("Support report") }
             OutlinedButton(
-                onClick = actions.importPersonalCalendar,
                 modifier = Modifier.weight(1f),
-            ) {
-                Text("Import Calendar")
-            }
+                onClick = {
+                    detailedDiagnosticsText = formatDetailedDiagnostics(
+                        sessionState = sessionState,
+                        settings = settings,
+                        diagnostics = diagnostics,
+                        watchServiceState = watchServiceState,
+                        segments = segments,
+                    )
+                },
+            ) { Text("Detailed logs") }
         }
-        Text(
-            text = "Imports only run when you tap them. You can clear all imported context here.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HorizontalDivider()
-
-        SectionTitle("Privacy")
-        Text(
-            text = "Audio and transcripts stay on this phone unless the transcription mode uses " +
-                "cloud or you enable remote AI above. Nothing is shared with analytics or " +
-                "diagnostics services.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "You are responsible for following recording and consent laws where you " +
-                "use this feature.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HorizontalDivider()
-
-        SectionTitle("Diagnostics")
-        InfoRow("Receiver", statusHeadline)
-        InfoRow(
-            "Transcription queue",
-            "${diagnostics.queuedTranscriptionTasks} waiting, ${diagnostics.failedTranscriptionTasks} failed",
-        )
-        InfoRow("AI outputs", diagnostics.aiOutputCount.toString())
-        OutlinedButton(onClick = {
-            supportReportText = actions.exportSupportReport()?.let { formatSupportReport(it) }
-        }) { Text("View support report") }
-        OutlinedButton(onClick = {
-            detailedDiagnosticsText = formatDetailedDiagnostics(
-                sessionState = sessionState,
-                settings = settings,
-                diagnostics = diagnostics,
-                watchServiceState = watchServiceState,
-                segments = segments,
-            )
-        }) { Text("View detailed logs") }
         Text(
             text = "Diagnostics contain status counters and gap metadata only — never audio or transcript text.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 24.dp),
+            modifier = Modifier.padding(top = Spacing.hair, bottom = 24.dp),
         )
     }
 
@@ -634,18 +657,32 @@ private fun LocalModelPickerDialog(
     )
 }
 
+/** Loose helper/caption text between grouped settings cards. */
 @Composable
-private fun ModePickerRow(title: String, value: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(text = title, style = MaterialTheme.typography.bodyLarge)
+private fun HelperText(text: String, color: Color = Color.Unspecified) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (color == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color,
+        modifier = Modifier.padding(horizontal = 4.dp),
+    )
+}
+
+/** Compact −/value/+ stepper used as a settings-row trailing control. */
+@Composable
+private fun Stepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onMinus, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Filled.Remove, contentDescription = "Decrease", modifier = Modifier.size(18.dp))
+        }
         Text(
-            text = value,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.primary,
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 4.dp),
         )
+        IconButton(onClick = onPlus, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Filled.Add, contentDescription = "Increase", modifier = Modifier.size(18.dp))
+        }
     }
 }
 
