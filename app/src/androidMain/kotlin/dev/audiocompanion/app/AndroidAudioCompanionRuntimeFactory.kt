@@ -6,6 +6,7 @@ import android.util.Base64
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.ai.FileSegmentAnnotationStore
+import dev.audiocompanion.ai.OnDeviceAiProvider
 import dev.audiocompanion.ai.OpenAiChatAiProvider
 import dev.audiocompanion.adapter.ble.AndroidAudioGattLink
 import dev.audiocompanion.protocol.ProtocolConstants
@@ -92,7 +93,9 @@ class AndroidAudioCompanionRuntimeFactory(
             onRemoteOutcome = cloudHealthMonitor::report,
         )
         val aiRouter = AiModeRouter(
-            local = null, // No local LLM yet; LocalOnly/LocalFirst surface as unavailable.
+            // On-device Gemini Nano (ML Kit GenAI). Reports unavailable on unsupported devices, so
+            // LocalOnly/LocalFirst degrade gracefully.
+            local = OnDeviceAiProvider(AndroidGeminiNanoLanguageModel()),
             remote = OpenAiChatAiProvider(
                 client = HttpClient(OkHttp),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
