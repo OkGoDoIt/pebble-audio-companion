@@ -6,18 +6,42 @@ package dev.audiocompanion.ai
  * still yields usable row text.
  */
 object SegmentAnnotationPrompt {
+    private const val SYSTEM_PROMPT =
+        "You label transcripts of background audio captured by the user's own always-on " +
+            "wearable microphone. The audio is recorded from a low-quality microphone in noisy, " +
+            "real-world conditions and then transcribed automatically, so the text very likely " +
+            "contains misheard words, garbled names, run-on fragments, and annotated gaps where " +
+            "audio was missing. Read past these errors and infer the most plausible intended " +
+            "meaning, but never invent facts, names, or events that are not supported by the " +
+            "text. Prefer general phrasing when a detail is clearly garbled rather than guessing " +
+            "a specific wrong word.\n" +
+            "Respond with exactly two lines and nothing else:\n" +
+            "TITLE: a specific, plain title of at most 8 words (no quotes, no trailing period)\n" +
+            "SUMMARY: 1-3 plain sentences summarizing what was discussed\n" +
+            "If the transcript is too short or unclear to summarize, still produce your best " +
+            "honest label, e.g. TITLE: Brief unclear conversation."
+
+    /** Closed-segment, authoritative pass over the complete durable transcript. */
     val template = AiPromptTemplate(
         id = "segment-annotation",
         title = "Segment title and summary",
-        systemPrompt = "You label transcripts of background audio captured by the user's own " +
-            "wearable microphone. Transcripts may contain transcription errors and gaps. " +
-            "Respond with exactly two lines:\n" +
-            "TITLE: a specific title of at most 8 words (no quotes, no trailing period)\n" +
-            "SUMMARY: 1-3 plain sentences summarizing what was said\n" +
-            "Do not invent content. If the transcript is too short or unclear, still produce " +
-            "your best honest label, e.g. TITLE: Brief unclear conversation.",
-        userPrompt = "Create the title and summary for this transcript.",
+        systemPrompt = SYSTEM_PROMPT,
+        userPrompt = "This is the complete transcript of a finished conversation. Create the " +
+            "authoritative title and summary for it.",
     )
+
+    /** In-progress pass while the conversation is still being recorded and transcribed. */
+    val liveTemplate = AiPromptTemplate(
+        id = "segment-annotation-live",
+        title = "Segment title and summary (live)",
+        systemPrompt = SYSTEM_PROMPT,
+        userPrompt = "This conversation is still ongoing and only partially transcribed. " +
+            "Summarize what has been discussed so far; a later pass will produce the final " +
+            "version.",
+    )
+
+    /** The prompt to use for a given pass: [liveTemplate] while recording, [template] when final. */
+    fun forPass(live: Boolean): AiPromptTemplate = if (live) liveTemplate else template
 
     data class Parsed(val title: String?, val summary: String?)
 

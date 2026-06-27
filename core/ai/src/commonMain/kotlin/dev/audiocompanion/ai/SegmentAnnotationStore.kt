@@ -21,9 +21,19 @@ data class SegmentAnnotation(
     val providerId: String? = null,
     val modelUsed: String? = null,
     val createdAtMs: Long,
-    /** Failed generation bookkeeping so the worker does not retry forever. */
+    /** Total generation attempts (live + final) so far; informational. */
     val attempts: Int = 0,
     val lastError: String? = null,
+    /**
+     * True once the annotation was generated from the complete, durable transcript of a closed
+     * segment. While a conversation is still live, provisional annotations are refreshed and stay
+     * `false` until the authoritative final pass replaces them.
+     */
+    val isFinal: Boolean = false,
+    /** Length of the transcript text last summarized; drives the live-refresh growth gate. */
+    val sourceCharCount: Int = 0,
+    /** Final-pass attempts only, so a broken provider cannot spin the authoritative pass forever. */
+    val finalAttempts: Int = 0,
 ) {
     val hasContent: Boolean get() = !title.isNullOrBlank() || !summary.isNullOrBlank()
 }

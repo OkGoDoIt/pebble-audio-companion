@@ -102,6 +102,46 @@ class OpenAiChatAiProviderTest {
     }
 
     @Test
+    fun sendsConfiguredModelInRequestBody() = runTest {
+        lateinit var captured: HttpRequestData
+        var selectedModel = "gpt-5.5-mini"
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler {
+                    captured = it
+                    respond(
+                        content = ByteReadChannel(
+                            """{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}""",
+                        ),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }
+        }
+        val provider = OpenAiChatAiProvider(
+            client = client,
+            apiKey = { "test-key" },
+            remoteConsent = { true },
+            model = { selectedModel },
+        )
+
+        provider.run(request())
+        assertTrue(
+            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.5-mini\""),
+            "request should carry the configured model",
+        )
+
+        // The lambda is read per request, so a settings change takes effect on the next call.
+        selectedModel = "gpt-5.5"
+        provider.run(request())
+        assertTrue(
+            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.5\""),
+            "model change should apply to the next request",
+        )
+    }
+
+    @Test
     fun nonOkResponseFailsWithProviderFailed() = runTest {
         val client = HttpClient(MockEngine) {
             engine {

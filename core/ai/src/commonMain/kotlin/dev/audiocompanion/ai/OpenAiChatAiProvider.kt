@@ -117,7 +117,7 @@ class OpenAiChatAiProvider(
 
     companion object {
         const val DEFAULT_ENDPOINT_URL = "https://api.openai.com/v1/chat/completions"
-        const val DEFAULT_MODEL = "gpt-4o-mini"
+        val DEFAULT_MODEL = AiModels.DEFAULT_MODEL_ID
         private const val DEFAULT_MAX_INPUT_CHARS = 240_000
     }
 }
