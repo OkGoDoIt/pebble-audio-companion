@@ -2,6 +2,10 @@ import AudioCompanionApp
 import BackgroundTasks
 import UIKit
 
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
 final class AppDelegate: NSObject, UIApplicationDelegate {
     private let processingTaskIdentifier = "dev.audiocompanion.app.receiver-processing"
 
@@ -9,6 +13,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Register the on-device Apple Foundation Models bridge (iOS 26+ eligible devices). If this
+        // is not registered — older iOS, ineligible device, or an SDK without FoundationModels — the
+        // Kotlin side reports on-device AI unavailable and falls back to the cloud / snippets.
+        OnDeviceAIBridge.registerIfAvailable()
+
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: processingTaskIdentifier,
             using: nil
@@ -83,3 +92,58 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         try? BGTaskScheduler.shared.submit(request)
     }
 }
+
+/// Registers the Swift implementation of the Kotlin `OnDeviceLanguageModelBridge` so the shared
+/// runtime can use Apple's on-device Foundation Models for segment titles/summaries.
+///
+/// NOTE: The bridge below uses the FoundationModels framework (iOS 26 SDK / Xcode 26). It compiles
+/// out cleanly on older SDKs via `#if canImport(FoundationModels)` and is gated at runtime by
+/// `#available`. It has not been compiled in this workspace (no Xcode); verify on an iOS 26 build.
+enum OnDeviceAIBridge {
+    static func registerIfAvailable() {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            IosOnDeviceModelRegistry.shared.bridge = FoundationModelsBridge()
+        }
+        #endif
+    }
+}
+
+#if canImport(FoundationModels)
+@available(iOS 26.0, *)
+final class FoundationModelsBridge: NSObject, OnDeviceLanguageModelBridge {
+    func availability(callback: @escaping (KotlinInt) -> Void) {
+        let code: Int32
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            code = 0 // AVAILABILITY_AVAILABLE
+        case .unavailable(.modelNotReady):
+            code = 2 // AVAILABILITY_DOWNLOADING (model still downloading / initializing)
+        case .unavailable:
+            code = 3 // AVAILABILITY_UNAVAILABLE (deviceNotEligible / appleIntelligenceNotEnabled / other)
+        @unknown default:
+            code = 3
+        }
+        callback(KotlinInt(int: code))
+    }
+
+    func generate(
+        instructions: String,
+        prompt: String,
+        maxOutputTokens: Int32,
+        onResult: @escaping (String?, String?) -> Void
+    ) {
+        Task {
+            do {
+                let session = LanguageModelSession(instructions: instructions)
+                // The annotation prompt already asks for a short two-line answer, so we rely on that
+                // rather than a token cap (kept in the signature for parity with Android).
+                let response = try await session.respond(to: prompt)
+                onResult(response.content, nil)
+            } catch {
+                onResult(nil, error.localizedDescription)
+            }
+        }
+    }
+}
+#endif
