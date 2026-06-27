@@ -187,7 +187,15 @@ fun App(
         // The previous snapshot remains visible while storage refreshes; first launch can paint
         // immediately instead of blocking on a large library.
         var durableContent by remember { mutableStateOf(DurableContentSnapshot()) }
-        LaunchedEffect(currentDiagnostics, tab, currentLivePreviews) {
+        // Deliberately NOT keyed on currentLivePreviews. Live previews tick continuously while a
+        // segment records; with a large library the per-segment durable reads here take long
+        // enough that a new preview would cancel the reload before it finished, and withContext
+        // throws on its cancelled exit so durableContent never updates — making every transcript,
+        // summary, and tag look like it vanished. Durable content only changes on real events
+        // (segment open/close, transcription complete, AI output saved), all of which already move
+        // currentDiagnostics. The live transcript stays real-time through the separate
+        // currentLivePreviews collectAsState overlay at each call site below.
+        LaunchedEffect(currentDiagnostics, tab) {
             val previousAiOutputs = durableContent.aiOutputs
             try {
                 durableContent = withContext(Dispatchers.Default) {
@@ -362,7 +370,9 @@ fun App(
                     AppTab.Library -> LibraryScreen(
                         segments = segments,
                         transcriptOf = { transcripts[it] },
-                        liveTranscriptOf = { liveTranscripts[it] },
+                        // Overlay the live (collectAsState) preview so the open segment's live
+                        // transcript stays real-time without re-keying the durable reload on it.
+                        liveTranscriptOf = { currentLivePreviews[it]?.text ?: liveTranscripts[it] },
                         livePreviewOf = { currentLivePreviews[it] ?: livePreviews[it] },
                         liveTranscribedFrameCountOf = { segmentId ->
                             currentLivePreviews[segmentId]?.transcribedFrameCount?.toLong()
