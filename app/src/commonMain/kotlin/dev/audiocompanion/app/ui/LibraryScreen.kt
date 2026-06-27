@@ -31,12 +31,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -1249,18 +1253,19 @@ fun SegmentDetailScreen(
             text = segmentTitle(meta, transcript, annotation, liveTranscript),
             style = MaterialTheme.typography.headlineSmall,
         )
-        Text(
-            text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} " +
-                "${Formatting.timeOfDay(meta.receivedAtMs)} · " +
-                Formatting.duration(segmentDurationMs(meta)),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = if (meta.isOpen) "Recording now" else transcriptionStateLabel(meta.transcriptionState),
-            style = MaterialTheme.typography.bodyMedium,
-            color = segmentStateColor(meta),
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} · " +
+                    "${Formatting.timeOfDay(meta.receivedAtMs)} · " +
+                    Formatting.duration(segmentDurationMs(meta)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SegmentStateBadge(meta)
+        }
 
         if (meta.frameCount > 0) {
             SectionTitle("Audio")
@@ -2438,21 +2443,11 @@ private fun PlaybackControls(
     // The waveform above is the one and only progress bar: it draws the playback cursor and
     // seeks on tap, so there is deliberately no second Slider here.
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "${Formatting.duration(positionMs)} / ${Formatting.duration(durationMs)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "Speed ${if (selected) playback.speed else 1f}x",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Text(
+            text = "${Formatting.duration(positionMs)} / ${Formatting.duration(durationMs)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (meta.isOpen) {
             Text(
                 text = "Still recording — playback follows what has been stored so far.",
@@ -2460,22 +2455,30 @@ private fun PlaybackControls(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    if (selected && playback.playing) onPausePlayback() else onPlaySegment(meta.segmentId)
-                },
+        val isPlaying = selected && playback.playing
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilledTonalButton(
+                onClick = { if (isPlaying) onPausePlayback() else onPlaySegment(meta.segmentId) },
+                modifier = Modifier.weight(1f),
             ) {
-                Text(if (selected && playback.playing) "Pause" else "Play")
+                Icon(
+                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(if (isPlaying) "Pause" else "Play", modifier = Modifier.padding(start = 6.dp))
             }
             OutlinedButton(
                 onClick = onStopPlayback,
                 enabled = selected && (playback.playing || playback.positionMs > 0),
             ) {
-                Text("Stop")
+                Icon(Icons.Filled.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
             }
             OutlinedButton(onClick = onCyclePlaybackSpeed) {
-                Text("Speed")
+                Text("${if (selected) playback.speed else 1f}×")
             }
         }
     }
