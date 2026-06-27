@@ -1,6 +1,8 @@
 package dev.audiocompanion.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -10,14 +12,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -153,22 +160,26 @@ fun AiScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = Spacing.screenH),
+        verticalArrangement = Arrangement.spacedBy(Spacing.tight),
     ) {
-        Text(
-            text = "AI",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(top = 16.dp),
-        )
+        ScreenTitle("AI")
 
         if (!aiConfigured) {
-            Text(
-                text = "Set up AI in Settings: choose a processing mode and, for remote AI, " +
-                    "enable consent and add a provider key.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                color = StatusColors.warning.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, StatusColors.warning.copy(alpha = 0.25f)),
+            ) {
+                Text(
+                    text = "Set up AI in Settings: choose a processing mode and, for remote AI, " +
+                        "enable consent and add a provider key.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
         }
 
         if (actionItems.isNotEmpty()) {
@@ -194,53 +205,60 @@ fun AiScreen(
         }
 
         SectionTitle("Ask")
-        if (scope == AiScope.Selected && selectedSegmentIds.isNotEmpty()) {
-            Text(
-                text = "${selectedSegmentIds.size} selected segment${if (selectedSegmentIds.size == 1) "" else "s"}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        OutlinedTextField(
-            value = askQuestion,
-            onValueChange = { askQuestion = it },
-            label = { Text("Question about selected transcripts") },
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
-            suggestedQuestions(scope).forEach { question ->
-                AssistChip(
-                    onClick = { askQuestion = question },
-                    label = { Text(question) },
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(Spacing.tight),
+            ) {
+                OutlinedTextField(
+                    value = askQuestion,
+                    onValueChange = { askQuestion = it },
+                    placeholder = { Text("Ask anything about these transcripts") },
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-            }
-        }
-        Button(
-            onClick = {
-                if (running || askQuestion.isBlank()) return@Button
-                running = true
-                coroutineScope.launch {
-                    val result = onRunAsk(askQuestion, transcribedSegmentIds)
-                    running = false
-                    result.fold(
-                        onSuccess = { output ->
-                            onRefresh()
-                            onSelectOutput(output.outputId)
-                        },
-                        onFailure = { e -> errorMessage = aiErrorMessage(e) },
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    suggestedQuestions(scope).forEach { question ->
+                        AssistChip(onClick = { askQuestion = question }, label = { Text(question) })
+                    }
                 }
-            },
-            enabled = !running && askQuestion.isNotBlank() && transcribedSegmentIds.isNotEmpty(),
-        ) {
-            Text("Ask")
+                Button(
+                    onClick = {
+                        if (running || askQuestion.isBlank()) return@Button
+                        running = true
+                        coroutineScope.launch {
+                            val result = onRunAsk(askQuestion, transcribedSegmentIds)
+                            running = false
+                            result.fold(
+                                onSuccess = { output ->
+                                    onRefresh()
+                                    onSelectOutput(output.outputId)
+                                },
+                                onFailure = { e -> errorMessage = aiErrorMessage(e) },
+                            )
+                        }
+                    },
+                    enabled = !running && askQuestion.isNotBlank() && transcribedSegmentIds.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Ask")
+                }
+            }
         }
 
         SectionTitle("Scope")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             AiScope.entries.forEach { candidate ->
                 FilterChip(
                     selected = scope == candidate,
@@ -251,7 +269,8 @@ fun AiScreen(
             }
         }
         Text(
-            text = "${transcribedSegmentIds.size} segment${if (transcribedSegmentIds.size == 1) "" else "s"} in scope",
+            text = "${transcribedSegmentIds.size} segment${if (transcribedSegmentIds.size == 1) "" else "s"} in scope" +
+                if (scope == AiScope.Selected && selectedSegmentIds.isNotEmpty()) " · ${selectedSegmentIds.size} selected" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -263,13 +282,28 @@ fun AiScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(enabled = !running && transcribedSegmentIds.isNotEmpty()) { run(template) },
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(text = template.title, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        text = template.userPrompt,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = template.title, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = template.userPrompt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                 }
             }
@@ -320,14 +354,29 @@ fun AiScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onSelectOutput(output.outputId) },
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = output.promptTitle, style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            text = "${Formatting.relativeTime(output.createdAtMs, nowMs)} · " +
-                                "${output.segmentIds.size} segment${if (output.segmentIds.size == 1) "" else "s"}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = output.promptTitle, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "${Formatting.relativeTime(output.createdAtMs, nowMs)} · " +
+                                    "${output.segmentIds.size} segment${if (output.segmentIds.size == 1) "" else "s"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         )
                     }
                 }
