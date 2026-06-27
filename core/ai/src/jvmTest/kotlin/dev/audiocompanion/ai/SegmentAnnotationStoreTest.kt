@@ -47,6 +47,43 @@ class SegmentAnnotationStoreTest {
     }
 
     @Test
+    fun roundTripsFinalAndLiveRefreshFields() {
+        val store = store(tempRoot())
+        store.save(
+            SegmentAnnotation(
+                segmentId = "seg-1",
+                title = "Final",
+                createdAtMs = 0,
+                isFinal = true,
+                sourceCharCount = 1234,
+                finalAttempts = 1,
+            ),
+        )
+
+        val loaded = store.load("seg-1")
+        assertEquals(true, loaded?.isFinal)
+        assertEquals(1234, loaded?.sourceCharCount)
+        assertEquals(1, loaded?.finalAttempts)
+    }
+
+    @Test
+    fun newFieldsDefaultForLegacyAnnotations() {
+        // An annotation file written before the live/final fields existed.
+        val root = tempRoot()
+        val dir = Path(Path(root, "ai"), "annotations")
+        SystemFileSystem.createDirectories(dir)
+        File(dir.toString(), "seg-1.annotation.json").writeText(
+            """{"segmentId":"seg-1","title":"Legacy","createdAtMs":1,"attempts":1}""",
+        )
+
+        val loaded = store(root).load("seg-1")
+        assertEquals("Legacy", loaded?.title)
+        assertEquals(false, loaded?.isFinal)
+        assertEquals(0, loaded?.sourceCharCount)
+        assertEquals(0, loaded?.finalAttempts)
+    }
+
+    @Test
     fun failureRecordHasNoContent() {
         val store = store(tempRoot())
         store.save(
