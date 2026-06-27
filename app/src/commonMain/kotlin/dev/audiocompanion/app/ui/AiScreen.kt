@@ -3,12 +3,14 @@ package dev.audiocompanion.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -29,6 +31,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiException
 import dev.audiocompanion.ai.AiOutput
@@ -92,6 +99,7 @@ fun AiScreen(
             onUpdate = onUpdateOutput,
             onShareText = onShareText,
             onExportText = onExportText,
+            onOpenSegment = onOpenSegment,
         )
         return
     }
@@ -322,6 +330,7 @@ private fun AiOutputDetail(
     onUpdate: (String, String) -> Unit,
     onShareText: (String, String) -> Unit,
     onExportText: suspend (String, String) -> Result<String>,
+    onOpenSegment: (String) -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
@@ -360,7 +369,24 @@ private fun AiOutputDetail(
                 Text("Save edit")
             }
         } else {
-            Text(text = output.text, style = MaterialTheme.typography.bodyMedium)
+            AiMarkdownText(output.text)
+            val referencedSegments = remember(output.text, output.segmentIds) {
+                referencedSegmentIds(output.text, output.segmentIds)
+            }
+            if (referencedSegments.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    referencedSegments.forEach { segmentId ->
+                        AssistChip(
+                            onClick = { onOpenSegment(segmentId) },
+                            label = { Text(shortSegmentLabel(segmentId)) },
+                        )
+                    }
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = {
@@ -385,11 +411,9 @@ private fun AiOutputDetail(
         InfoRow("Created", Formatting.relativeTime(output.createdAtMs, nowMs))
         output.editedAtMs?.let { InfoRow("Edited", Formatting.relativeTime(it, nowMs)) }
         InfoRow("Provider", output.providerId + (output.modelUsed?.let { " ($it)" } ?: ""))
-        InfoRow("Mode used", output.modeUsed.toString())
         InfoRow("Source segments", output.segmentIds.size.toString())
         output.inputTokens?.let { InfoRow("Input tokens", it.toString()) }
         output.outputTokens?.let { InfoRow("Output tokens", it.toString()) }
-        InfoRow("Sent to remote provider", if (output.userConsentedToRemote) "Yes (with consent)" else "No")
 
         if (confirmDelete) {
             ConfirmDialog(
@@ -402,3 +426,104 @@ private fun AiOutputDetail(
         }
     }
 }
+
+@Composable
+private fun AiMarkdownText(text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        markdownBlocks(text).forEach { block ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (block.marker != null) {
+                    Text(
+                        text = block.marker,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = basicMarkdown(block.text),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}
+
+private data class MarkdownBlock(val marker: String?, val text: String)
+
+private fun markdownBlocks(text: String): List<MarkdownBlock> =
+    text.lines()
+        .map { it.trimEnd() }
+        .fold(mutableListOf<MarkdownBlock>()) { blocks, rawLine ->
+            val line = rawLine.trim()
+            when {
+                line.isBlank() -> blocks
+                line.startsWith("- [ ] ") ->
+                    blocks += MarkdownBlock("☐", line.removePrefix("- [ ] ").trim())
+                line.startsWith("- [x] ", ignoreCase = true) ->
+                    blocks += MarkdownBlock("☑", line.substringAfter("] ").trim())
+                line.startsWith("- ") ->
+                    blocks += MarkdownBlock("•", line.removePrefix("- ").trim())
+                line.matches(Regex("^\\d+[.)]\\s+.*")) -> {
+                    val marker = line.substringBefore(' ').let {
+                        if (it.endsWith(".") || it.endsWith(")")) it else "$it."
+                    }
+                    blocks += MarkdownBlock(marker, line.replaceFirst(Regex("^\\d+[.)]\\s+"), ""))
+                }
+                blocks.lastOrNull()?.marker != null && rawLine.startsWith("  ") -> {
+                    val previous = blocks.removeAt(blocks.lastIndex)
+                    blocks += previous.copy(text = previous.text + " " + line)
+                }
+                else -> blocks += MarkdownBlock(null, line)
+            }
+            blocks
+        }
+
+private fun basicMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+    var index = 0
+    while (index < text.length) {
+        val boldStart = text.indexOf("**", index)
+        val italicStart = text.indexOf("*", index).takeIf { it >= 0 && text.getOrNull(it + 1) != '*' } ?: -1
+        val next = listOf(boldStart, italicStart).filter { it >= 0 }.minOrNull() ?: -1
+        if (next < 0) {
+            append(text.substring(index))
+            break
+        }
+        append(text.substring(index, next))
+        if (next == boldStart) {
+            val end = text.indexOf("**", next + 2)
+            if (end < 0) {
+                append(text.substring(next))
+                break
+            }
+            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
+                append(text.substring(next + 2, end))
+            }
+            index = end + 2
+        } else {
+            val end = text.indexOf("*", next + 1)
+            if (end < 0) {
+                append(text.substring(next))
+                break
+            }
+            withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                append(text.substring(next + 1, end))
+            }
+            index = end + 1
+        }
+    }
+}
+
+private fun referencedSegmentIds(text: String, sourceSegmentIds: List<String>): List<String> {
+    val direct = Regex("\\bseg-[A-Za-z0-9_-]+\\b")
+        .findAll(text)
+        .map { it.value.trimEnd('.', ',', ')') }
+        .toList()
+    return (direct + sourceSegmentIds).distinct()
+}
+
+private fun shortSegmentLabel(segmentId: String): String =
+    if (segmentId.length <= 14) segmentId else segmentId.take(8) + "…" + segmentId.takeLast(4)
