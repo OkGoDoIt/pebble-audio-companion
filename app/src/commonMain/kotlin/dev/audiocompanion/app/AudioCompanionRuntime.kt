@@ -669,9 +669,10 @@ class AudioCompanionRuntime(
                 refreshDiagnostics()
             }
         }
-        // Row titles/summaries follow transcription (MVP requirement). The worker is a
-        // no-op when AI is not configured; rows then show transcript snippets instead.
-        if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load).isNotEmpty()) {
+        // Row titles/summaries: a provisional pass refreshes the open segment from the live
+        // preview, and a final authoritative pass follows transcription of closed segments. The
+        // worker is a no-op when AI is not configured; rows then show transcript snippets instead.
+        if (enrichmentWorker.enrich(store.listSegments(), transcriptStore::load, ::liveTranscript).isNotEmpty()) {
             refreshDiagnostics()
         }
         // Live preview of the open segment, after the durable closed-segment work (same
