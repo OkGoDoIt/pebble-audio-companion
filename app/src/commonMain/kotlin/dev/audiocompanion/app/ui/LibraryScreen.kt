@@ -1,5 +1,6 @@
 package dev.audiocompanion.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
@@ -31,18 +32,20 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -223,23 +226,41 @@ fun LibraryScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        Text(
-            text = "Library",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-        )
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = Spacing.screenH)) {
+        ScreenTitle("Library")
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("Search transcripts, summaries, tags") },
+            placeholder = { Text("Search transcripts, summaries, tags") },
+            leadingIcon = {
+                Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(20.dp))
+            },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { query = "" }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
+                    }
+                }
+            } else {
+                null
+            },
             singleLine = true,
+            shape = MaterialTheme.shapes.large,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+            ),
             modifier = Modifier.fillMaxWidth(),
         )
-        FlowRow(
+        // Single scrollable row instead of a wrapping block — keeps the list higher above the fold.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(vertical = Spacing.tight),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(vertical = 8.dp),
         ) {
             LibraryFilter.entries.forEach { candidate ->
                 FilterChip(
@@ -485,39 +506,49 @@ private fun LibrarySegmentRow(
     onClick: () -> Unit,
     onTagClick: (String) -> Unit = {},
 ) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = segmentTitle(meta, transcript, annotation, liveText),
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                SegmentStateBadge(meta)
+            }
             Text(
-                text = segmentTitle(meta, transcript, annotation, liveText),
-                style = MaterialTheme.typography.bodyLarge,
+                text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} · " +
+                    "${Formatting.timeOfDay(meta.receivedAtMs)} · " +
+                    Formatting.duration(segmentDurationMs(meta)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             AiPlainText.clean(annotation?.summary)?.let { summary ->
                 Text(
                     text = summary,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             SegmentTagRow(annotation?.tags.orEmpty(), onTagClick = onTagClick)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "${Formatting.shortDate(meta.receivedAtMs, nowMs)} " +
-                        "${Formatting.timeOfDay(meta.receivedAtMs)} · " +
-                        Formatting.duration(segmentDurationMs(meta)),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = segmentStateColor(meta),
-                )
-            }
             gapSummary(meta)?.let { summary ->
                 Text(
                     text = summary,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = StatusColors.warning,
                 )
             }
             searchMatch?.let { match ->
@@ -640,12 +671,24 @@ private fun SegmentTagRow(tags: List<String>, onTagClick: (String) -> Unit = {})
     if (cleanTags.isEmpty()) return
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        cleanTags.forEach { tag ->
-            AssistChip(onClick = { onTagClick(tag) }, label = { Text(tag) })
-        }
+        cleanTags.forEach { tag -> TagChip(tag, onClick = { onTagClick(tag) }) }
     }
+}
+
+/** Compact, lightweight tag pill — quieter than an AssistChip so dense cards stay calm. */
+@Composable
+private fun TagChip(tag: String, onClick: () -> Unit) {
+    Text(
+        text = tag,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
