@@ -79,6 +79,8 @@ class MainActivity : ComponentActivity() {
                 playbackState = runtime.playback?.state
                     ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
                 cloudHealth = runtime.cloudHealth,
+                personalContext = runtime.personalContext,
+                navigationRequest = runtime.navigationState.pending,
                 actions = AppActions(
                     pairWatch = { requestPermissionsAndAssociate() },
                     requestPermissions = { requestPermissionsOnly() },
@@ -142,6 +144,10 @@ class MainActivity : ComponentActivity() {
                         runCatching { runtime.exportAllAudio() }
                     },
                     shareFile = ::shareFile,
+                    shareText = ::shareText,
+                    exportText = { text, filename ->
+                        runCatching { exportTextToFile(text, filename) }
+                    },
                     runAi = { template, segmentIds ->
                         runCatching {
                             runtime.runAi(
@@ -150,6 +156,29 @@ class MainActivity : ComponentActivity() {
                                 userConsentedToRemote = settingsRepository.settings.value.remoteAiConsent,
                             )
                         }
+                    },
+                    runAsk = { question, segmentIds ->
+                        runCatching {
+                            runtime.runAsk(
+                                question = question,
+                                segmentIds = segmentIds,
+                                userConsentedToRemote = settingsRepository.settings.value.remoteAiConsent,
+                            )
+                        }
+                    },
+                    updateAiOutput = { id, text -> runtime.updateAiOutputText(id, text) },
+                    loadDailyDigests = runtime::listDailyDigests,
+                    loadActionItems = runtime::listActionItems,
+                    setActionItemDone = { id, done -> runtime.setActionItemDone(id, done) },
+                    loadCustomTemplates = runtime::listCustomTemplates,
+                    saveCustomTemplate = { title, prompt ->
+                        runtime.saveCustomTemplate(title, prompt)
+                    },
+                    openLibrarySegment = { segmentId ->
+                        runtime.navigationState.openLibrarySegment(segmentId)
+                    },
+                    consumeNavigationRequest = {
+                        runtime.navigationState.consumePending()
                     },
                     setRetentionDays = settingsRepository::setRetentionDays,
                     setTranscriptionMode = {
@@ -183,6 +212,10 @@ class MainActivity : ComponentActivity() {
                         settingsRepository.setAutomaticWavExportEnabled(it)
                         runtime.notifyExportConfigChanged()
                     },
+                    setPersonalContextProfileText = { text ->
+                        runtime.setPersonalContextProfileText(text)
+                    },
+                    clearPersonalContext = { runtime.clearPersonalContext() },
                     refreshLocalModel = handle.localModelManager::refresh,
                     downloadLocalModel = handle.localModelManager::download,
                     cancelModelDownload = handle.localModelManager::cancelDownload,
@@ -289,5 +322,22 @@ class MainActivity : ComponentActivity() {
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startActivity(Intent.createChooser(sendIntent, "Share WAV"))
+    }
+
+    private fun shareText(text: String, title: String) {
+        val sendIntent = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, title)
+            .putExtra(Intent.EXTRA_TEXT, text)
+        startActivity(Intent.createChooser(sendIntent, "Share"))
+    }
+
+    private fun exportTextToFile(text: String, filename: String): String {
+        val dir = File(getExternalFilesDir(null), "exports")
+        dir.mkdirs()
+        val safeName = filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val file = File(dir, safeName)
+        file.writeText(text)
+        return file.absolutePath
     }
 }

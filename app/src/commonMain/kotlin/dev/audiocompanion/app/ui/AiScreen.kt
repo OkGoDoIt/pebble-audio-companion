@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -26,17 +27,28 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.AiException
 import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
 import dev.audiocompanion.ai.AiPromptTemplates
+import dev.audiocompanion.ai.ActionItem
+import dev.audiocompanion.ai.DailyDigest
+import dev.audiocompanion.ai.FileCustomTemplateStore
+import dev.audiocompanion.ai.SavedAiTemplate
 import dev.audiocompanion.storage.SegmentMeta
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
 enum class AiScope(val label: String) {
     Today("Today"),
-    All("All transcripts"),
+    All("All"),
+    DateRange("Date range"),
+    Selected("Selected"),
 }
 
 @Composable
@@ -45,8 +57,22 @@ fun AiScreen(
     aiOutputs: List<AiOutput>,
     aiConfigured: Boolean,
     nowMs: Long,
+    dailyDigests: List<DailyDigest> = emptyList(),
+    actionItems: List<ActionItem> = emptyList(),
+    customTemplates: List<SavedAiTemplate> = emptyList(),
+    selectedSegmentIds: List<String> = emptyList(),
     onRunAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput>,
+    onRunAsk: suspend (String, List<String>) -> Result<AiOutput> = { _, _ ->
+        Result.failure(AiException.ProviderUnavailable("not wired"))
+    },
     onDeleteOutput: (String) -> Unit,
+    onUpdateOutput: (String, String) -> Unit = { _, _ -> },
+    onShareText: (String, String) -> Unit = { _, _ -> },
+    onExportText: suspend (String, String) -> Result<String> = { _, _ ->
+        Result.failure(IllegalStateException("not wired"))
+    },
+    onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
+    onOpenSegment: (String) -> Unit = {},
     onRefresh: () -> Unit,
 ) {
     var selectedOutputId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -60,21 +86,33 @@ fun AiScreen(
                 onDeleteOutput(selectedOutput.outputId)
                 selectedOutputId = null
             },
+            onRegenerate = { template, segmentIds ->
+                onRunAi(template, segmentIds)
+            },
+            onUpdate = onUpdateOutput,
+            onShareText = onShareText,
+            onExportText = onExportText,
         )
         return
     }
 
     var scope by rememberSaveable { mutableStateOf(AiScope.Today) }
     var customPrompt by rememberSaveable { mutableStateOf("") }
+    var askQuestion by rememberSaveable { mutableStateOf("") }
     var running by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
-    val transcribedSegmentIds = remember(segments, scope, nowMs) {
-        segments
-            .filter { !it.isOpen }
-            .filter { scope == AiScope.All || Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
-            .map { it.segmentId }
+    val transcribedSegmentIds = remember(segments, scope, nowMs, selectedSegmentIds) {
+        val closed = segments.filter { !it.isOpen }
+        when (scope) {
+            AiScope.All -> closed.map { it.segmentId }
+            AiScope.Today -> closed
+                .filter { Formatting.isSameLocalDay(it.receivedAtMs, nowMs) }
+                .map { it.segmentId }
+            AiScope.Selected -> selectedSegmentIds.filter { id -> closed.any { it.segmentId == id } }
+            AiScope.DateRange -> closed.map { it.segmentId }
+        }
     }
 
     fun run(template: AiPromptTemplate) {
@@ -90,13 +128,7 @@ fun AiScreen(
                     selectedOutputId = output.outputId
                 },
                 onFailure = { e ->
-                    errorMessage = when (e) {
-                        is AiException.ConsentRequired ->
-                            "Remote AI is off. Enable it in Settings or switch to a local mode."
-                        is AiException.ProviderUnavailable ->
-                            "No AI provider is available. Check Settings -> AI."
-                        else -> e.message ?: "AI processing failed."
-                    }
+                    errorMessage = aiErrorMessage(e)
                 },
             )
         }
@@ -124,6 +156,56 @@ fun AiScreen(
             )
         }
 
+        if (actionItems.isNotEmpty()) {
+            SectionTitle("Action items")
+            actionItems.take(8).forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = item.done,
+                        onCheckedChange = { onSetActionItemDone(item.id, it) },
+                    )
+                    Text(
+                        text = item.text,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onOpenSegment(item.sourceSegmentId) },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+
+        SectionTitle("Ask")
+        OutlinedTextField(
+            value = askQuestion,
+            onValueChange = { askQuestion = it },
+            label = { Text("Question about selected transcripts") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                if (running || askQuestion.isBlank()) return@Button
+                running = true
+                coroutineScope.launch {
+                    val result = onRunAsk(askQuestion, transcribedSegmentIds)
+                    running = false
+                    result.fold(
+                        onSuccess = { output ->
+                            onRefresh()
+                            selectedOutputId = output.outputId
+                        },
+                        onFailure = { e -> errorMessage = aiErrorMessage(e) },
+                    )
+                }
+            },
+            enabled = !running && askQuestion.isNotBlank() && transcribedSegmentIds.isNotEmpty(),
+        ) {
+            Text("Ask")
+        }
+
         SectionTitle("Scope")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AiScope.entries.forEach { candidate ->
@@ -131,6 +213,7 @@ fun AiScreen(
                     selected = scope == candidate,
                     onClick = { scope = candidate },
                     label = { Text(candidate.label) },
+                    enabled = candidate != AiScope.Selected || selectedSegmentIds.isNotEmpty(),
                 )
             }
         }
@@ -141,7 +224,8 @@ fun AiScreen(
         )
 
         SectionTitle("Templates")
-        AiPromptTemplates.builtIn.forEach { template ->
+        (AiPromptTemplates.builtIn + customTemplates.map(FileCustomTemplateStore::toAiPromptTemplate))
+            .forEach { template ->
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -162,7 +246,7 @@ fun AiScreen(
         OutlinedTextField(
             value = customPrompt,
             onValueChange = { customPrompt = it },
-            label = { Text("Ask about the selected transcripts") },
+            label = { Text("Custom prompt") },
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
@@ -219,14 +303,32 @@ fun AiScreen(
     }
 }
 
+private fun aiErrorMessage(e: Throwable): String =
+    when (e) {
+        is AiException.ConsentRequired ->
+            "Remote AI is off. Enable it in Settings or switch to a local mode."
+        is AiException.ProviderUnavailable ->
+            "No AI provider is available. Check Settings -> AI."
+        else -> e.message ?: "AI processing failed."
+    }
+
 @Composable
 private fun AiOutputDetail(
     output: AiOutput,
     nowMs: Long,
     onBack: () -> Unit,
     onDelete: () -> Unit,
+    onRegenerate: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput>,
+    onUpdate: (String, String) -> Unit,
+    onShareText: (String, String) -> Unit,
+    onExportText: suspend (String, String) -> Result<String>,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    var editText by remember(output.text) { mutableStateOf(output.text) }
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -245,12 +347,43 @@ private fun AiOutputDetail(
             }
         }
         Text(text = output.promptTitle, style = MaterialTheme.typography.headlineSmall)
-        Text(
-            text = output.text,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        if (editing) {
+            OutlinedTextField(
+                value = editText,
+                onValueChange = { editText = it },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(onClick = {
+                onUpdate(output.outputId, editText)
+                editing = false
+            }) {
+                Text("Save edit")
+            }
+        } else {
+            Text(text = output.text, style = MaterialTheme.typography.bodyMedium)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(output.text))
+            }) { Text("Copy") }
+            TextButton(onClick = { onShareText(output.text, output.promptTitle) }) { Text("Share") }
+            TextButton(onClick = {
+                scope.launch {
+                    onExportText(output.text, "${output.promptTitle}.md")
+                }
+            }) { Text("Export") }
+            TextButton(onClick = { editing = true }) { Text("Edit") }
+            TextButton(onClick = {
+                scope.launch {
+                    val template = AiPromptTemplates.builtIn.find { it.id == output.promptTemplateId }
+                        ?: AiPromptTemplates.custom(output.promptTitle)
+                    onRegenerate(template, output.segmentIds)
+                }
+            }) { Text("Regenerate") }
+        }
         SectionTitle("Provenance")
         InfoRow("Created", Formatting.relativeTime(output.createdAtMs, nowMs))
+        output.editedAtMs?.let { InfoRow("Edited", Formatting.relativeTime(it, nowMs)) }
         InfoRow("Provider", output.providerId + (output.modelUsed?.let { " ($it)" } ?: ""))
         InfoRow("Mode used", output.modeUsed.toString())
         InfoRow("Source segments", output.segmentIds.size.toString())

@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioCompanionDiagnostics
@@ -156,6 +157,8 @@ fun TodayScreen(
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
+    /** Today's AI daily digest, when generated. */
+    dailyDigest: DailyDigest? = null,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text(
@@ -163,6 +166,18 @@ fun TodayScreen(
             style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.padding(top = 16.dp),
         )
+        dailyDigest?.let { digest ->
+            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Daily recap", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = digest.text.take(280) + if (digest.text.length > 280) "…" else "",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         StatusHeader(
             status = status,
             detailLines = buildList {

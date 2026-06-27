@@ -26,6 +26,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import platform.Foundation.NSNotificationCenter
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSString
+import platform.Foundation.NSUTF8StringEncoding
+import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
 import platform.UIKit.UIActivityViewController
 import platform.UIKit.UIApplication
@@ -163,6 +167,12 @@ object IosAudioCompanionBootstrap {
         scope.launch { ensureHandle().runtime.refreshDiagnostics() }
     }
 
+    fun openLibrarySegment(segmentId: String) {
+        scope.launch {
+            ensureHandle().runtime.navigationState.openLibrarySegment(segmentId)
+        }
+    }
+
     fun testCloudConnection() {
         scope.launch { ensureHandle().runtime.testCloudConnection() }
     }
@@ -243,6 +253,8 @@ fun MainViewController(): UIViewController {
             playbackState = runtime.playback?.state
                 ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackUiState()),
             cloudHealth = runtime.cloudHealth,
+            personalContext = runtime.personalContext,
+            navigationRequest = runtime.navigationState.pending,
             actions = AppActions(
                 pairWatch = {
                     // Goes through the bootstrap so the persisted enabled flag stays in sync
@@ -296,6 +308,10 @@ fun MainViewController(): UIViewController {
                     runCatching { runtime.exportAllAudio() }
                 },
                 shareFile = ::shareFile,
+                shareText = ::shareText,
+                exportText = { text, filename ->
+                    runCatching { exportTextToFile(text, filename) }
+                },
                 runAi = { template, segmentIds ->
                     runCatching {
                         runtime.runAi(
@@ -304,6 +320,27 @@ fun MainViewController(): UIViewController {
                             userConsentedToRemote = settings.settings.value.remoteAiConsent,
                         )
                     }
+                },
+                runAsk = { question, segmentIds ->
+                    runCatching {
+                        runtime.runAsk(
+                            question = question,
+                            segmentIds = segmentIds,
+                            userConsentedToRemote = settings.settings.value.remoteAiConsent,
+                        )
+                    }
+                },
+                updateAiOutput = { id, text -> runtime.updateAiOutputText(id, text) },
+                loadDailyDigests = runtime::listDailyDigests,
+                loadActionItems = runtime::listActionItems,
+                setActionItemDone = { id, done -> runtime.setActionItemDone(id, done) },
+                loadCustomTemplates = runtime::listCustomTemplates,
+                saveCustomTemplate = { title, prompt -> runtime.saveCustomTemplate(title, prompt) },
+                openLibrarySegment = { segmentId ->
+                    runtime.navigationState.openLibrarySegment(segmentId)
+                },
+                consumeNavigationRequest = {
+                    runtime.navigationState.consumePending()
                 },
                 setRetentionDays = settings::setRetentionDays,
                 setTranscriptionMode = {
@@ -335,6 +372,10 @@ fun MainViewController(): UIViewController {
                     settings.setAutomaticWavExportEnabled(it)
                     runtime.notifyExportConfigChanged()
                 },
+                setPersonalContextProfileText = { text ->
+                    runtime.setPersonalContextProfileText(text)
+                },
+                clearPersonalContext = { runtime.clearPersonalContext() },
                 refreshLocalModel = readyHandle.localModelManager::refresh,
                 downloadLocalModel = readyHandle.localModelManager::download,
                 cancelModelDownload = readyHandle.localModelManager::cancelDownload,
@@ -371,6 +412,26 @@ private fun shareFile(path: String) {
         applicationActivities = null,
     )
     topViewController()?.presentViewController(controller, animated = true, completion = null)
+}
+
+private fun shareText(text: String, title: String) {
+    val controller = UIActivityViewController(
+        activityItems = listOf(text),
+        applicationActivities = null,
+    )
+    topViewController()?.presentViewController(controller, animated = true, completion = null)
+}
+
+private fun exportTextToFile(text: String, filename: String): String {
+    val safeName = filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+    val path = NSTemporaryDirectory() + safeName
+    (text as NSString).writeToFile(
+        path = path,
+        atomically = true,
+        encoding = NSUTF8StringEncoding,
+        error = null,
+    )
+    return path
 }
 
 private fun topViewController(): UIViewController? {

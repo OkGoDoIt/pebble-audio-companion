@@ -67,10 +67,25 @@ class AppActions(
     },
     /** Opens the platform share sheet for an exported file (UIActivityViewController / ACTION_SEND). */
     val shareFile: (path: String) -> Unit = {},
+    val shareText: (text: String, title: String) -> Unit = { _, _ -> },
+    val exportText: (text: String, filename: String) -> Result<String> = { _, _ ->
+        Result.failure(IllegalStateException("text export is not wired"))
+    },
     // AI
     val runAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput> = { _, _ ->
         Result.failure(AiException.ProviderUnavailable("not wired"))
     },
+    val runAsk: suspend (String, List<String>) -> Result<AiOutput> = { _, _ ->
+        Result.failure(AiException.ProviderUnavailable("not wired"))
+    },
+    val updateAiOutput: (String, String) -> Unit = { _, _ -> },
+    val loadDailyDigests: () -> List<dev.audiocompanion.ai.DailyDigest> = { emptyList() },
+    val loadActionItems: () -> List<dev.audiocompanion.ai.ActionItem> = { emptyList() },
+    val setActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
+    val loadCustomTemplates: () -> List<dev.audiocompanion.ai.SavedAiTemplate> = { emptyList() },
+    val saveCustomTemplate: (String, String) -> Unit = { _, _ -> },
+    val openLibrarySegment: (String) -> Unit = {},
+    val consumeNavigationRequest: () -> Unit = {},
     // Settings
     val setRetentionDays: (Int) -> Unit = {},
     val setTranscriptionMode: (TranscriptionMode) -> Unit = {},
@@ -84,6 +99,9 @@ class AppActions(
     val setAiModel: (String) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
     val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},
+    /** Saves pasted personal context (profile text) and refreshes derived STT terms. */
+    val setPersonalContextProfileText: (String) -> Unit = {},
+    val clearPersonalContext: () -> Unit = {},
     // Local transcription model
     val refreshLocalModel: () -> Unit = {},
     val downloadLocalModel: () -> Unit = {},
