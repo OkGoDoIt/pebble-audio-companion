@@ -175,6 +175,7 @@ class IosAudioCompanionRuntimeFactory(
                 client = HttpClient(Darwin),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
+                model = { settingsRepository.settings.value.aiModel },
             ),
             mode = { settingsRepository.settings.value.aiMode },
         )

@@ -81,6 +81,7 @@ class AppActions(
     /** Runs an authenticated probe against the selected cloud provider; result lands in cloudHealth. */
     val testCloudConnection: () -> Unit = {},
     val setAiMode: (AiProcessingMode) -> Unit = {},
+    val setAiModel: (String) -> Unit = {},
     val setRemoteAiConsent: (Boolean) -> Unit = {},
     val setAutomaticWavExportEnabled: (Boolean) -> Unit = {},
     // Local transcription model

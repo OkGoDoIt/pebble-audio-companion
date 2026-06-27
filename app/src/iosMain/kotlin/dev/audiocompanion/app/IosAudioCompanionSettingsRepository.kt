@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
@@ -47,6 +48,10 @@ class IosAudioCompanionSettingsRepository(
         update { it.copy(aiMode = mode) }
     }
 
+    override fun setAiModel(modelId: String) {
+        update { it.copy(aiModel = AiModels.byId(modelId).id) }
+    }
+
     override fun setRemoteAiConsent(consented: Boolean) {
         update { it.copy(remoteAiConsent = consented) }
     }
@@ -86,6 +91,7 @@ class IosAudioCompanionSettingsRepository(
         openAiApiKey = defaults.stringForKey(KEY_OPENAI_API_KEY).orEmpty(),
         sonioxApiKey = defaults.stringForKey(KEY_SONIOX_API_KEY).orEmpty(),
         aiMode = enumValueOrDefault(defaults.stringForKey(KEY_AI_MODE), AiProcessingMode.LocalOnly),
+        aiModel = AiModels.byId(defaults.stringForKey(KEY_AI_MODEL)).id,
         remoteAiConsent = defaults.boolForKey(KEY_REMOTE_AI_CONSENT),
         automaticWavExportEnabled = defaults.boolForKey(KEY_AUTOMATIC_WAV_EXPORT),
         diagnosticsIncludeContent = defaults.boolForKey(KEY_DIAGNOSTICS_INCLUDE_CONTENT),
@@ -101,6 +107,7 @@ class IosAudioCompanionSettingsRepository(
         defaults.setObject(settings.openAiApiKey, forKey = KEY_OPENAI_API_KEY)
         defaults.setObject(settings.sonioxApiKey, forKey = KEY_SONIOX_API_KEY)
         defaults.setObject(settings.aiMode.name, forKey = KEY_AI_MODE)
+        defaults.setObject(settings.aiModel, forKey = KEY_AI_MODEL)
         defaults.setBool(settings.remoteAiConsent, forKey = KEY_REMOTE_AI_CONSENT)
         defaults.setBool(settings.automaticWavExportEnabled, forKey = KEY_AUTOMATIC_WAV_EXPORT)
         defaults.setBool(settings.diagnosticsIncludeContent, forKey = KEY_DIAGNOSTICS_INCLUDE_CONTENT)
@@ -119,6 +126,7 @@ class IosAudioCompanionSettingsRepository(
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_SONIOX_API_KEY = "soniox_api_key"
         private const val KEY_AI_MODE = "ai_mode"
+        private const val KEY_AI_MODEL = "ai_model"
         private const val KEY_REMOTE_AI_CONSENT = "remote_ai_consent"
         private const val KEY_AUTOMATIC_WAV_EXPORT = "automatic_wav_export"
         private const val KEY_DIAGNOSTICS_INCLUDE_CONTENT = "diagnostics_include_content"

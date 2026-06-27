@@ -329,6 +329,7 @@ fun MainViewController(): UIViewController {
                 },
                 testCloudConnection = bootstrap::testCloudConnection,
                 setAiMode = settings::setAiMode,
+                setAiModel = settings::setAiModel,
                 setRemoteAiConsent = settings::setRemoteAiConsent,
                 setAutomaticWavExportEnabled = {
                     settings.setAutomaticWavExportEnabled(it)

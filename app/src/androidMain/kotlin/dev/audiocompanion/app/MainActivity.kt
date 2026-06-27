@@ -177,6 +177,7 @@ class MainActivity : ComponentActivity() {
                         runtimeScope.launch { runtime.testCloudConnection() }
                     },
                     setAiMode = settingsRepository::setAiMode,
+                    setAiModel = settingsRepository::setAiModel,
                     setRemoteAiConsent = settingsRepository::setRemoteAiConsent,
                     setAutomaticWavExportEnabled = {
                         settingsRepository.setAutomaticWavExportEnabled(it)
