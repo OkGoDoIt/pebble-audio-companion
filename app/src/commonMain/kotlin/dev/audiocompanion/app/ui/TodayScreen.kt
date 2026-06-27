@@ -23,7 +23,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.AiPlainText
 import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionSettings
@@ -80,7 +82,7 @@ fun buildTimeline(
                 annotation,
                 liveText = liveText,
             ),
-            summary = annotation?.summary,
+            summary = null,
             stateLabel = if (meta.isOpen) "Recording" else transcriptionStateLabel(meta.transcriptionState),
             gapSummary = todayGapSummary(meta, transcript, liveText),
         )
@@ -119,7 +121,7 @@ fun segmentTitle(
     annotation: SegmentAnnotation? = null,
     liveText: String? = null,
 ): String {
-    annotation?.title?.takeIf { it.isNotBlank() }?.let { return it }
+    AiPlainText.clean(annotation?.title)?.let { return it }
     transcriptSnippet(transcript?.text)?.let { return it }
     // While recording, the freshest words are the interesting ones: show the tail.
     transcriptSnippet(liveText, tail = meta.isOpen)?.let { return it }
@@ -135,6 +137,20 @@ fun transcriptSnippet(text: String?, tail: Boolean = false): String? {
         tail -> "…" + snippet.takeLast(64).trimStart()
         else -> snippet.take(64).trimEnd() + "…"
     }
+}
+
+/** Compact recap text for the Today feed. Full digest text lives in the AI/Library surfaces. */
+fun dailyDigestPreviewText(digest: DailyDigest): String? {
+    val lines = digest.text
+        .lineSequence()
+        .mapNotNull { AiPlainText.cleanLine(it) }
+        .filterNot { line ->
+            line.equals("Daily recap", ignoreCase = true) ||
+                line.startsWith("Here's a chronological summary", ignoreCase = true) ||
+                line.startsWith("Here is a chronological summary", ignoreCase = true)
+        }
+        .toList()
+    return AiPlainText.clean(lines.joinToString(" "), maxChars = 220)
 }
 
 @Composable
@@ -166,18 +182,6 @@ fun TodayScreen(
             style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.padding(top = 16.dp),
         )
-        dailyDigest?.let { digest ->
-            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Daily recap", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = digest.text.take(280) + if (digest.text.length > 280) "…" else "",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
         StatusHeader(
             status = status,
             detailLines = buildList {
@@ -225,7 +229,7 @@ fun TodayScreen(
             )
         }
         HorizontalDivider()
-        if (timeline.isEmpty()) {
+        if (timeline.isEmpty() && dailyDigest == null) {
             TodayEmptyState(status)
         } else {
             LazyColumn(
@@ -233,6 +237,20 @@ fun TodayScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
             ) {
+                dailyDigest?.let { digest ->
+                    val preview = dailyDigestPreviewText(digest)
+                    if (!preview.isNullOrBlank()) {
+                        item(key = "daily-recap-${digest.dateKey}") {
+                            DailyRecapRow(
+                                preview = preview,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+                if (timeline.isEmpty()) {
+                    item(key = "empty") { TodayEmptyState(status) }
+                }
                 items(timeline, key = { it.key }) { item ->
                     when (item) {
                         is TimelineItem.Segment -> TimelineSegmentRow(
@@ -246,6 +264,25 @@ fun TodayScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DailyRecapRow(preview: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("Daily recap", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -337,13 +374,6 @@ fun TimelineSegmentRow(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(text = item.title, style = MaterialTheme.typography.bodyLarge)
-                item.summary?.takeIf { it.isNotBlank() }?.let { summary ->
-                    Text(
-                        text = summary,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,

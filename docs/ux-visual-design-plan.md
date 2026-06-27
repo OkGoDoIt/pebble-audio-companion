@@ -344,7 +344,18 @@ The waveform should be a real-time visual representation of the last ~60 Seconds
 
 ### Today Timeline
 
-The timeline should be a list of today's captured segments, complete with an AI generated summary of the transcript of each segment (or just a snippet of the transcript if there is no AI generated summary). Remember this is An always recording lifelogger, not something we turn on specifically to record a specific event like a meeting. So the timeline should be more based on the time and less based on specific events. Detected silent periods, gaps in audio, and AI-delineated new conversation topics are the appropriate breakpoints between segments.
+The timeline should be a list of today's captured segments. Segment rows should stay compact:
+show the AI-generated title, time, duration, transcription state, playback affordance, and any
+meaningful gap note. Do not show the medium-length per-segment summary in Today; that belongs in
+Library/detail where there is room to read it. If no AI title exists, use a short transcript snippet
+as the row title. Remember this is an always-recording lifelogger, not something we turn on
+specifically to record a specific event like a meeting. So the timeline should be more based on the
+time and less based on specific events. Detected silent periods, gaps in audio, and AI-delineated
+new conversation topics are the appropriate breakpoints between segments.
+
+The daily recap, when present, should appear as a compact item in the same scrollable feed rather
+than as a fixed header. Keep it to a short plain-text preview; full AI output belongs in the AI or
+day-detail surfaces.
 
 The timeline should present captured audio as time blocks:
 

@@ -1,5 +1,7 @@
 package dev.audiocompanion.app.ui
 
+import dev.audiocompanion.ai.DailyDigest
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionDiagnostics
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.protocol.AuthStatus
@@ -556,6 +558,63 @@ class TimelineTest {
         )
 
         assertEquals(null, (timeline.single() as TimelineItem.Segment).gapSummary)
+    }
+
+    @Test
+    fun timelineDoesNotExposeMediumAnnotationSummary() {
+        val timeline = buildTimeline(
+            segments = listOf(meta("seg-summary", nowMs)),
+            transcriptOf = { transcript(it, "Useful transcript text") },
+            nowMs = nowMs,
+            annotationOf = {
+                SegmentAnnotation(
+                    segmentId = it,
+                    title = "Useful title",
+                    summary = "A medium-length summary belongs in Library detail, not Today.",
+                    createdAtMs = nowMs,
+                )
+            },
+        )
+
+        val item = timeline.single() as TimelineItem.Segment
+        assertEquals("Useful title", item.title)
+        assertEquals(null, item.summary)
+    }
+
+    @Test
+    fun segmentTitleCleansStoredMarkdownAnnotationTitle() {
+        val title = segmentTitle(
+            meta("seg-markdown-title", nowMs),
+            transcript = null,
+            annotation = SegmentAnnotation(
+                segmentId = "seg-markdown-title",
+                title = "**TITLE:** Troubleshooting account setup",
+                createdAtMs = nowMs,
+            ),
+        )
+
+        assertEquals("Troubleshooting account setup", title)
+    }
+
+    @Test
+    fun dailyDigestPreviewCleansMarkdownAndBoilerplate() {
+        val preview = dailyDigestPreviewText(
+            DailyDigest(
+                dateKey = "2026-06-27",
+                text = "Here's a chronological summary of what happened in the transcripts:\n\n" +
+                    "### Early / test audio\n" +
+                    "- There were several brief test recordings.\n\n" +
+                    "### Arrival at Anthropic\n" +
+                    "- They discussed the meeting agenda.",
+                createdAtMs = nowMs,
+            ),
+        )
+
+        assertEquals(
+            "Early / test audio There were several brief test recordings. " +
+                "Arrival at Anthropic They discussed the meeting agenda.",
+            preview,
+        )
     }
 
     @Test

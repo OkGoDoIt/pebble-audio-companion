@@ -41,13 +41,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.AiPlainText
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.LiveTranscriptPreview
 import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.PlaybackUiState
 import dev.audiocompanion.app.SegmentWaveform
-import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
@@ -218,7 +219,7 @@ private fun LibrarySegmentRow(
                 text = segmentTitle(meta, transcript, annotation, liveText),
                 style = MaterialTheme.typography.bodyLarge,
             )
-            annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+            AiPlainText.clean(annotation?.summary)?.let { summary ->
                 Text(
                     text = summary,
                     style = MaterialTheme.typography.bodySmall,
@@ -401,7 +402,7 @@ fun SegmentDetailScreen(
             }
         }
 
-        annotation?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+        AiPlainText.clean(annotation?.summary)?.let { summary ->
             SectionTitle("AI Summary")
             Text(text = summary, style = MaterialTheme.typography.bodyMedium)
         }
