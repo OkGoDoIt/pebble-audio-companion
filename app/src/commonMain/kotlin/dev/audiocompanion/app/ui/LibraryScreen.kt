@@ -3,6 +3,7 @@ package dev.audiocompanion.app.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +14,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,6 +26,11 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -30,6 +38,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -39,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -69,8 +80,10 @@ import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptSegment
 import dev.audiocompanion.transcription.TranscriptWord
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 enum class LibraryFilter(val label: String) {
@@ -107,6 +120,7 @@ fun LibraryScreen(
     },
     onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
     onAskAboutSegment: (String) -> Unit = {},
+    onOpenAiOutput: (String) -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -116,6 +130,11 @@ fun LibraryScreen(
 ) {
     var selectedSearchQuery by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedSearchOffsetMs by rememberSaveable { mutableStateOf<Long?>(null) }
+    // Hoisted above the detail branch so a tag tapped inside Segment Detail can drop the user
+    // back into the list filtered by that tag.
+    var query by rememberSaveable { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf(LibraryFilter.All) }
+    var selectedTag by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = selectedSegmentId?.let { id -> segments.firstOrNull { it.segmentId == id } }
     if (selected != null) {
         SegmentDetailScreen(
@@ -150,6 +169,13 @@ fun LibraryScreen(
             onRunSegmentAi = onRunSegmentAi,
             onSetActionItemDone = onSetActionItemDone,
             onAskAboutSegment = { onAskAboutSegment(selected.segmentId) },
+            onOpenAiOutput = onOpenAiOutput,
+            onTagFilter = { tag ->
+                selectedTag = tag
+                selectedSearchQuery = null
+                selectedSearchOffsetMs = null
+                onSelectSegment(null)
+            },
             onPlaySegment = onPlaySegment,
             onPausePlayback = onPausePlayback,
             onStopPlayback = onStopPlayback,
@@ -160,61 +186,42 @@ fun LibraryScreen(
         return
     }
 
-    var query by rememberSaveable { mutableStateOf("") }
-    var filter by rememberSaveable { mutableStateOf(LibraryFilter.All) }
-    var selectedTag by rememberSaveable { mutableStateOf<String?>(null) }
-    val availableTags = libraryTags(segments.mapNotNull { annotationOf(it.segmentId) })
-
-    val visible = segments
-        .sortedByDescending { it.receivedAtMs }
-        .filter { meta ->
-            val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
-            val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
-            when (filter) {
-                LibraryFilter.All -> true
-                LibraryFilter.Today -> Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)
-                LibraryFilter.Actions -> segmentActionItems.any { !it.done }
-                LibraryFilter.Ai -> annotationOf(meta.segmentId)?.hasContent == true ||
-                    relatedOutputs.isNotEmpty()
-                // Silence the watch skipped to save power is not a gap, so a segment that
-                // only has those does not belong in the "Gaps" filter.
-                LibraryFilter.Gaps -> visibleLossGaps(meta).isNotEmpty()
-                LibraryFilter.Untranscribed -> !meta.isFullyTranscribed
-            }
+    val tagCounts = libraryTagCounts(segments.mapNotNull { annotationOf(it.segmentId) })
+    val debouncedQuery by produceState(initialValue = query, query) {
+        if (query.isBlank()) {
+            value = query
+        } else {
+            delay(LIBRARY_SEARCH_DEBOUNCE_MS)
+            value = query
         }
-        .filter { meta ->
-            selectedTag == null || annotationHasTag(annotationOf(meta.segmentId), selectedTag)
+    }
+    val visible by produceState(
+        initialValue = emptyList<LibrarySegmentSearchResult>(),
+        segments,
+        actionItems,
+        aiOutputs,
+        filter,
+        selectedTag,
+        debouncedQuery,
+        nowMs,
+    ) {
+        val searchInputs = librarySearchInputs(
+            segments = segments,
+            transcriptOf = transcriptOf,
+            annotationOf = annotationOf,
+            actionItems = actionItems,
+            aiOutputs = aiOutputs,
+        )
+        value = withContext(Dispatchers.Default) {
+            libraryVisibleResults(
+                inputs = searchInputs,
+                filter = filter,
+                selectedTag = selectedTag,
+                query = debouncedQuery,
+                nowMs = nowMs,
+            )
         }
-        .mapNotNull { meta ->
-            val transcript = transcriptOf(meta.segmentId)
-            val annotation = annotationOf(meta.segmentId)
-            val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
-            val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
-            if (query.isBlank()) {
-                LibrarySegmentSearchResult(meta = meta, match = null)
-            } else {
-                librarySearchMatch(
-                    query = query,
-                    meta = meta,
-                    transcript = transcript,
-                    annotation = annotation,
-                    actionItems = segmentActionItems,
-                    aiOutputs = relatedOutputs,
-                )?.let { match ->
-                    LibrarySegmentSearchResult(meta = meta, match = match)
-                }
-            }
-        }
-        .let { results ->
-            if (query.isBlank()) {
-                results
-            } else {
-                results.sortedWith(
-                    compareByDescending<LibrarySegmentSearchResult> { it.match?.score ?: 0 }
-                        .thenByDescending { it.meta.receivedAtMs },
-                )
-            }
-        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text(
@@ -242,22 +249,12 @@ fun LibraryScreen(
                 )
             }
         }
-        if (availableTags.isNotEmpty()) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(bottom = 8.dp),
-            ) {
-                availableTags.take(16).forEach { tag ->
-                    FilterChip(
-                        selected = selectedTag.equals(tag, ignoreCase = true),
-                        onClick = {
-                            selectedTag = if (selectedTag.equals(tag, ignoreCase = true)) null else tag
-                        },
-                        label = { Text(tag) },
-                    )
-                }
-            }
+        if (tagCounts.isNotEmpty()) {
+            LibraryTagFilter(
+                tagCounts = tagCounts,
+                selectedTag = selectedTag,
+                onSelectTag = { tag -> selectedTag = tag },
+            )
         }
         if (visible.isEmpty()) {
             Text(
@@ -290,13 +287,13 @@ fun LibraryScreen(
                         annotation = annotation,
                         actionItems = segmentActionItems,
                         relatedAiOutputs = relatedOutputs,
-                        searchQuery = query,
+                        searchQuery = debouncedQuery,
                         searchMatch = searchMatch,
                         nowMs = nowMs,
                         onClick = {
                             if (searchMatch?.kind == LibrarySearchMatchKind.Transcript) {
                                 selectedSearchQuery = searchMatch.highlightTerm
-                                    ?: query.trim().takeIf { it.isNotBlank() }
+                                    ?: debouncedQuery.trim().takeIf { it.isNotBlank() }
                                 selectedSearchOffsetMs = searchMatch.startMs
                             } else {
                                 selectedSearchQuery = null
@@ -306,6 +303,168 @@ fun LibraryScreen(
                         },
                         onTagClick = { selectedTag = it },
                     )
+                }
+            }
+        }
+    }
+}
+
+private const val TOP_LIBRARY_TAGS = 6
+
+/**
+ * Compact tag filter: a single horizontally-scrollable row of the most common tags plus an
+ * "All tags" control that reveals a type-to-filter picker. Replaces the old wall of every tag,
+ * which could fill the whole screen once a library accumulated dozens of them.
+ */
+@Composable
+private fun LibraryTagFilter(
+    tagCounts: List<LibraryTagCount>,
+    selectedTag: String?,
+    onSelectTag: (String?) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var tagQuery by rememberSaveable { mutableStateOf("") }
+    val topTags = tagCounts.take(TOP_LIBRARY_TAGS)
+    val selectedInTop = selectedTag != null &&
+        topTags.any { it.tag.equals(selectedTag, ignoreCase = true) }
+    val hasMore = tagCounts.size > topTags.size
+
+    Column(
+        modifier = Modifier.padding(bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // A selected tag that isn't among the common ones still needs to be visible and
+            // removable, so surface it first as a chip with a clear affordance.
+            if (selectedTag != null && !selectedInTop) {
+                InputChip(
+                    selected = true,
+                    onClick = { onSelectTag(null) },
+                    label = { Text(selectedTag) },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Clear tag filter",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+            }
+            topTags.forEach { (tag, _) ->
+                val isSelected = selectedTag.equals(tag, ignoreCase = true)
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelectTag(if (isSelected) null else tag) },
+                    label = { Text(tag) },
+                )
+            }
+            if (hasMore) {
+                FilterChip(
+                    selected = expanded,
+                    onClick = {
+                        expanded = !expanded
+                        if (!expanded) tagQuery = ""
+                    },
+                    label = { Text("All tags") },
+                    trailingIcon = {
+                        Icon(
+                            if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                )
+            }
+        }
+        if (expanded && hasMore) {
+            TagPickerPanel(
+                tagCounts = tagCounts,
+                tagQuery = tagQuery,
+                onQueryChange = { tagQuery = it },
+                selectedTag = selectedTag,
+                onPick = { tag ->
+                    onSelectTag(tag)
+                    expanded = false
+                    tagQuery = ""
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TagPickerPanel(
+    tagCounts: List<LibraryTagCount>,
+    tagQuery: String,
+    onQueryChange: (String) -> Unit,
+    selectedTag: String?,
+    onPick: (String?) -> Unit,
+) {
+    val filtered = remember(tagCounts, tagQuery) {
+        val q = tagQuery.trim()
+        if (q.isBlank()) tagCounts else tagCounts.filter { it.tag.contains(q, ignoreCase = true) }
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            OutlinedTextField(
+                value = tagQuery,
+                onValueChange = onQueryChange,
+                label = { Text("Filter tags") },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (selectedTag != null) {
+                TextButton(onClick = { onPick(null) }) { Text("Clear tag filter") }
+            }
+            if (filtered.isEmpty()) {
+                Text(
+                    text = "No tags match \"${tagQuery.trim()}\".",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    filtered.forEach { (tag, count) ->
+                        val isSelected = selectedTag.equals(tag, ignoreCase = true)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(if (isSelected) null else tag) }
+                                .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = tag,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = count.toString(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -392,6 +551,89 @@ private data class LibrarySegmentSearchResult(
     val match: LibrarySearchMatch?,
 )
 
+private data class LibrarySegmentSearchInput(
+    val meta: SegmentMeta,
+    val transcript: SegmentTranscript?,
+    val annotation: SegmentAnnotation?,
+    val actionItems: List<ActionItem>,
+    val aiOutputs: List<AiOutput>,
+)
+
+private fun librarySearchInputs(
+    segments: List<SegmentMeta>,
+    transcriptOf: (String) -> SegmentTranscript?,
+    annotationOf: (String) -> SegmentAnnotation?,
+    actionItems: List<ActionItem>,
+    aiOutputs: List<AiOutput>,
+): List<LibrarySegmentSearchInput> {
+    val actionsBySegment = actionItems.groupBy { it.sourceSegmentId }
+    val outputsBySegment = linkedMapOf<String, MutableList<AiOutput>>()
+    aiOutputs.forEach { output ->
+        output.segmentIds.forEach { segmentId ->
+            outputsBySegment.getOrPut(segmentId) { mutableListOf() } += output
+        }
+    }
+    return segments.map { meta ->
+        LibrarySegmentSearchInput(
+            meta = meta,
+            transcript = transcriptOf(meta.segmentId),
+            annotation = annotationOf(meta.segmentId),
+            actionItems = actionsBySegment[meta.segmentId].orEmpty(),
+            aiOutputs = outputsBySegment[meta.segmentId].orEmpty(),
+        )
+    }
+}
+
+private fun libraryVisibleResults(
+    inputs: List<LibrarySegmentSearchInput>,
+    filter: LibraryFilter,
+    selectedTag: String?,
+    query: String,
+    nowMs: Long,
+): List<LibrarySegmentSearchResult> {
+    val filtered = inputs
+        .sortedByDescending { it.meta.receivedAtMs }
+        .filter { input ->
+            when (filter) {
+                LibraryFilter.All -> true
+                LibraryFilter.Today -> Formatting.isSameLocalDay(input.meta.receivedAtMs, nowMs)
+                LibraryFilter.Actions -> input.actionItems.any { !it.done }
+                LibraryFilter.Ai -> input.annotation?.hasContent == true || input.aiOutputs.isNotEmpty()
+                // Silence the watch skipped to save power is not a gap, so a segment that
+                // only has those does not belong in the "Gaps" filter.
+                LibraryFilter.Gaps -> visibleLossGaps(input.meta).isNotEmpty()
+                LibraryFilter.Untranscribed -> !input.meta.isFullyTranscribed
+            }
+        }
+        .filter { input ->
+            selectedTag == null || annotationHasTag(input.annotation, selectedTag)
+        }
+
+    if (query.isBlank()) {
+        return filtered.map { input ->
+            LibrarySegmentSearchResult(meta = input.meta, match = null)
+        }
+    }
+
+    return filtered
+        .mapNotNull { input ->
+            librarySearchMatch(
+                query = query,
+                meta = input.meta,
+                transcript = input.transcript,
+                annotation = input.annotation,
+                actionItems = input.actionItems,
+                aiOutputs = input.aiOutputs,
+            )?.let { match ->
+                LibrarySegmentSearchResult(meta = input.meta, match = match)
+            }
+        }
+        .sortedWith(
+            compareByDescending<LibrarySegmentSearchResult> { it.match?.score ?: 0 }
+                .thenByDescending { it.meta.receivedAtMs },
+        )
+}
+
 @Composable
 private fun SegmentTagRow(tags: List<String>, onTagClick: (String) -> Unit = {}) {
     val cleanTags = tags.mapNotNull { AiPlainText.clean(it, maxChars = 28) }.take(4)
@@ -428,7 +670,10 @@ private fun LibraryAiSignalRow(actionItems: List<ActionItem>, relatedAiOutputs: 
     }
 }
 
-fun libraryTags(annotations: List<SegmentAnnotation>): List<String> {
+/** A library tag with how many segments carry it, frequency-sorted. */
+data class LibraryTagCount(val tag: String, val count: Int)
+
+fun libraryTagCounts(annotations: List<SegmentAnnotation>): List<LibraryTagCount> {
     val counts = linkedMapOf<String, Pair<String, Int>>()
     annotations
         .flatMap { it.tags }
@@ -440,8 +685,11 @@ fun libraryTags(annotations: List<SegmentAnnotation>): List<String> {
         }
     return counts.values
         .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first.lowercase() })
-        .map { it.first }
+        .map { LibraryTagCount(it.first, it.second) }
 }
+
+fun libraryTags(annotations: List<SegmentAnnotation>): List<String> =
+    libraryTagCounts(annotations).map { it.tag }
 
 fun annotationHasTag(annotation: SegmentAnnotation?, tag: String?): Boolean {
     if (annotation == null || tag.isNullOrBlank()) return false
@@ -882,6 +1130,7 @@ fun searchSnippet(text: String?, query: String, maxChars: Int = 170): String? {
 
 private const val MAX_FUZZY_TOKENS_PER_FIELD = 2_500
 private const val MAX_FUZZY_TOKEN_CHARS = 36
+private const val LIBRARY_SEARCH_DEBOUNCE_MS = 180L
 
 @Composable
 fun SegmentDetailScreen(
@@ -910,6 +1159,8 @@ fun SegmentDetailScreen(
     },
     onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
     onAskAboutSegment: () -> Unit = {},
+    onOpenAiOutput: (String) -> Unit = {},
+    onTagFilter: (String) -> Unit = {},
     onPlaySegment: (String) -> Unit,
     onPausePlayback: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -1055,33 +1306,45 @@ fun SegmentDetailScreen(
         }
         val annotationTags = annotation?.tags.orEmpty()
         if (annotationTags.isNotEmpty()) {
-            SegmentTagRow(annotationTags)
+            SegmentTagRow(annotationTags, onTagClick = onTagFilter)
         }
-        SectionTitle("AI")
-        SegmentAiActions(
-            canRun = !meta.isOpen && transcript != null,
-            runningTemplateId = runningAiTemplateId,
-            message = aiRunMessage,
-            onAskAboutSegment = onAskAboutSegment,
-            onRunTemplate = { template ->
-                if (runningAiTemplateId != null) return@SegmentAiActions
-                runningAiTemplateId = template.id
-                aiRunMessage = null
-                scope.launch {
-                    val result = onRunSegmentAi(template, meta.segmentId)
-                    runningAiTemplateId = null
-                    aiRunMessage = result.fold(
-                        onSuccess = { "${template.title} saved." },
-                        onFailure = { "AI failed: ${it.message ?: it::class.simpleName}" },
-                    )
-                }
-            },
-        )
-        SegmentActionItems(
-            items = actionItems,
-            onSetDone = onSetActionItemDone,
-        )
-        SegmentRelatedAiOutputs(outputs = relatedAiOutputs, nowMs = nowMs)
+        // Only surface the AI section when there's something actionable: the run actions when the
+        // segment has a durable transcript, or saved outputs/actions to show. An empty disabled
+        // block was just wasting space (user feedback).
+        val canRunAi = !meta.isOpen && transcript != null
+        val hasAiContent = actionItems.isNotEmpty() || relatedAiOutputs.isNotEmpty()
+        if (canRunAi || hasAiContent) {
+            SectionTitle("AI")
+            if (canRunAi) {
+                SegmentAiActions(
+                    runningTemplateId = runningAiTemplateId,
+                    message = aiRunMessage,
+                    onAskAboutSegment = onAskAboutSegment,
+                    onRunTemplate = { template ->
+                        if (runningAiTemplateId != null) return@SegmentAiActions
+                        runningAiTemplateId = template.id
+                        aiRunMessage = null
+                        scope.launch {
+                            val result = onRunSegmentAi(template, meta.segmentId)
+                            runningAiTemplateId = null
+                            aiRunMessage = result.fold(
+                                onSuccess = { "${template.title} saved." },
+                                onFailure = { "AI failed: ${it.message ?: it::class.simpleName}" },
+                            )
+                        }
+                    },
+                )
+            }
+            SegmentActionItems(
+                items = actionItems,
+                onSetDone = onSetActionItemDone,
+            )
+            SegmentRelatedAiOutputs(
+                outputs = relatedAiOutputs,
+                nowMs = nowMs,
+                onOpenOutput = onOpenAiOutput,
+            )
+        }
 
         SectionTitle("Transcript")
         transcriptionSetupMessage(settings, localModel)?.let { message ->
@@ -1188,8 +1451,6 @@ fun SegmentDetailScreen(
             ),
         )
         InterruptionDetails(meta)
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-        OutlinedButton(onClick = onBack) { Text("Back to Library") }
 
         if (confirmDelete) {
             ConfirmDialog(
@@ -1206,42 +1467,42 @@ fun SegmentDetailScreen(
 
 @Composable
 private fun SegmentAiActions(
-    canRun: Boolean,
     runningTemplateId: String?,
     message: String?,
     onAskAboutSegment: () -> Unit,
     onRunTemplate: (AiPromptTemplate) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        FlowRow(
+        // One compact row of equal-weight actions: Ask is primary, the two templates are
+        // one-tap runs. Short labels keep all three on a single line on a phone.
+        val compactPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
-                enabled = canRun,
                 onClick = onAskAboutSegment,
+                contentPadding = compactPadding,
+                modifier = Modifier.weight(1f),
             ) {
-                Text("Ask about this")
+                Text("Ask", maxLines = 1)
             }
             OutlinedButton(
-                enabled = canRun && runningTemplateId == null,
+                enabled = runningTemplateId == null,
                 onClick = { onRunTemplate(AiPromptTemplates.ActionItems) },
+                contentPadding = compactPadding,
+                modifier = Modifier.weight(1f),
             ) {
-                Text("Extract actions")
+                Text("Actions", maxLines = 1)
             }
             OutlinedButton(
-                enabled = canRun && runningTemplateId == null,
+                enabled = runningTemplateId == null,
                 onClick = { onRunTemplate(AiPromptTemplates.MeetingNotes) },
+                contentPadding = compactPadding,
+                modifier = Modifier.weight(1f),
             ) {
-                Text("Meeting notes")
+                Text("Notes", maxLines = 1)
             }
-        }
-        if (!canRun) {
-            Text(
-                text = "AI actions become available after this segment has a durable transcript.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         if (runningTemplateId != null) {
             Row(
@@ -1297,18 +1558,26 @@ private fun SegmentActionItems(
 }
 
 @Composable
-private fun SegmentRelatedAiOutputs(outputs: List<AiOutput>, nowMs: Long) {
+private fun SegmentRelatedAiOutputs(
+    outputs: List<AiOutput>,
+    nowMs: Long,
+    onOpenOutput: (String) -> Unit,
+) {
     if (outputs.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Related AI outputs", style = MaterialTheme.typography.titleSmall)
+        // Tapping an output jumps to the full answer in the AI tab. Model name is intentionally
+        // omitted here — it's noise in a list; the full provenance lives on the output detail.
         outputs.sortedByDescending { it.createdAtMs }.take(4).forEach { output ->
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenOutput(output.outputId) },
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(output.promptTitle, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    text = listOfNotNull(
-                        Formatting.relativeTime(output.createdAtMs, nowMs),
-                        output.modelUsed?.takeIf { it.isNotBlank() },
-                    ).joinToString(" · "),
+                    text = Formatting.relativeTime(output.createdAtMs, nowMs),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
