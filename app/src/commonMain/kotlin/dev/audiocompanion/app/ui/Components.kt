@@ -1,18 +1,28 @@
 package dev.audiocompanion.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,6 +35,8 @@ import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.app.LocalTranscriptionModelState
 import dev.audiocompanion.app.cloudTranscriptionEnabled
 import dev.audiocompanion.app.cloudTranscriptionKeyConfigured
+import dev.audiocompanion.storage.SegmentMeta
+import dev.audiocompanion.storage.TranscriptionState
 import dev.audiocompanion.transcription.TranscriptionMode
 
 /** Semantic colors (ux plan Section 14): platform-leaning, restrained. */
@@ -116,7 +128,156 @@ fun SectionTitle(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+        modifier = Modifier.padding(top = Spacing.section, bottom = Spacing.tight),
+    )
+}
+
+/** Large screen title with consistent top spacing (Today / Library / AI / Settings). */
+@Composable
+fun ScreenTitle(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.headlineMedium,
+        modifier = modifier.padding(top = 12.dp, bottom = Spacing.tight),
+    )
+}
+
+/** A muted, slightly-tracked group label sitting above a [SettingsGroup]. */
+@Composable
+fun GroupHeader(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(start = 4.dp, top = Spacing.section, bottom = Spacing.tight),
+    )
+}
+
+/** Small tinted status pill (e.g. "Recording", "Transcript ready"). Background derives from [color]. */
+@Composable
+fun StatusBadge(text: String, color: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(color.copy(alpha = 0.13f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(text = text, style = MaterialTheme.typography.labelMedium, color = color)
+    }
+}
+
+/** Short badge label + color for a segment's current state. */
+fun segmentBadge(meta: SegmentMeta): Pair<String, Color> = when {
+    meta.isOpen -> "Recording" to StatusColors.recording
+    else -> when (meta.transcriptionState) {
+        TranscriptionState.Complete -> "Transcript" to StatusColors.info
+        TranscriptionState.Running, TranscriptionState.Uploading -> "Transcribing" to StatusColors.info
+        TranscriptionState.Pending -> "Queued" to StatusColors.neutral
+        TranscriptionState.NoSpeech -> "No speech" to StatusColors.neutral
+        TranscriptionState.Failed -> "Failed" to StatusColors.error
+        TranscriptionState.Disabled -> "Unavailable" to StatusColors.warning
+    }
+}
+
+@Composable
+fun SegmentStateBadge(meta: SegmentMeta, modifier: Modifier = Modifier) {
+    val (label, color) = segmentBadge(meta)
+    StatusBadge(text = label, color = color, modifier = modifier)
+}
+
+/**
+ * iOS-style inset grouped container: a bordered, rounded surface that wraps a column of
+ * [SettingsRow]/toggle rows separated by [RowDivider]. Replaces the old flat run of rows + full
+ * dividers with crisp cards.
+ */
+@Composable
+fun SettingsGroup(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(content = content)
+    }
+}
+
+/** Inset hairline divider between rows inside a [SettingsGroup]. */
+@Composable
+fun RowDivider() {
+    HorizontalDivider(
+        color = MaterialTheme.colorScheme.outlineVariant,
+        modifier = Modifier.padding(start = 16.dp),
+    )
+}
+
+/**
+ * One row inside a [SettingsGroup]: title (+ optional subtitle), an optional trailing value, and an
+ * optional chevron when tappable. Pass [trailing] for custom trailing content (e.g. a Switch).
+ */
+@Composable
+fun SettingsRow(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    value: String? = null,
+    valueColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        when {
+            trailing != null -> trailing()
+            value != null -> Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = valueColor,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            )
+        }
+        if (onClick != null && trailing == null) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** Toggle row sized to sit inside a [SettingsGroup]. */
+@Composable
+fun GroupedToggleRow(
+    title: String,
+    subtitle: String?,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    SettingsRow(
+        title = title,
+        subtitle = subtitle,
+        trailing = { Switch(checked = checked, onCheckedChange = onCheckedChange) },
     )
 }
 
