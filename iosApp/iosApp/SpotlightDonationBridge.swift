@@ -2,7 +2,7 @@ import CoreSpotlight
 import Foundation
 
 /// Donates searchable items to Core Spotlight from the Swift shell (M3).
-enum SpotlightDonationBridge {
+enum NativeSpotlightDonation {
     static let indexName = "dev.audiocompanion.transcripts"
 
     static func donate(
