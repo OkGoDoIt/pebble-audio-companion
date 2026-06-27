@@ -17,6 +17,7 @@ data class SegmentAnnotation(
     val segmentId: String,
     val title: String? = null,
     val summary: String? = null,
+    val tags: List<String> = emptyList(),
     val modeUsed: AiProcessingMode? = null,
     val providerId: String? = null,
     val modelUsed: String? = null,

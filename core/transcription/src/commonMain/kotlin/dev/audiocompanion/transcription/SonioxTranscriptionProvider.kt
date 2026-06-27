@@ -45,6 +45,8 @@ class SonioxTranscriptionProvider(
     private val cloudConsent: () -> Boolean,
     private val diarizationEnabled: () -> Boolean = { false },
     private val languageHints: () -> List<String> = { emptyList() },
+    private val contextText: () -> String? = { null },
+    private val contextTerms: () -> List<String> = { emptyList() },
     private val model: () -> String = { DEFAULT_MODEL },
     private val baseUrl: String = DEFAULT_BASE_URL,
     private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
@@ -205,6 +207,7 @@ class SonioxTranscriptionProvider(
             fileId = fileId,
             enableSpeakerDiarization = diarizationEnabled(),
             languageHints = languageHints().ifEmpty { null },
+            context = sonioxContextFrom(contextText, contextTerms),
         )
         val response: HttpResponse = client.post("$baseUrl/v1/transcriptions") {
             header(HttpHeaders.Authorization, "Bearer $key")
@@ -339,6 +342,7 @@ class SonioxTranscriptionProvider(
         val enableSpeakerDiarization: Boolean = false,
         @kotlinx.serialization.SerialName("language_hints")
         val languageHints: List<String>? = null,
+        val context: SonioxContext? = null,
     )
 
     @Serializable

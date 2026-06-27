@@ -50,6 +50,7 @@ class OnDeviceAiProvider(
     private val model: OnDeviceLanguageModel?,
     private val maxInputChars: Int = DEFAULT_MAX_INPUT_CHARS,
     private val maxOutputTokens: Int? = DEFAULT_MAX_OUTPUT_TOKENS,
+    private val grounding: () -> String? = { null },
 ) : AiProvider {
     override val id: String = model?.id ?: "on-device"
 
@@ -62,9 +63,10 @@ class OnDeviceAiProvider(
             throw AiException.ProviderUnavailable(id)
         }
         val userContent = AiTranscriptFormatting.buildUserContent(request, maxInputChars)
+        val instructions = buildInstructions(request.prompt.systemPrompt)
         val text = try {
             activeModel.generate(
-                instructions = request.prompt.systemPrompt,
+                instructions = instructions,
                 prompt = userContent,
                 maxOutputTokens = maxOutputTokens,
             )
@@ -80,6 +82,15 @@ class OnDeviceAiProvider(
             throw AiException.ProviderFailed("On-device AI returned an empty completion")
         }
         return AiProviderResult(text = trimmed, modelUsed = activeModel.id)
+    }
+
+    private fun buildInstructions(systemPrompt: String): String {
+        val groundingBlock = grounding()?.trim()
+        return if (groundingBlock.isNullOrEmpty()) {
+            systemPrompt
+        } else {
+            "$groundingBlock\n\n$systemPrompt"
+        }
     }
 
     companion object {

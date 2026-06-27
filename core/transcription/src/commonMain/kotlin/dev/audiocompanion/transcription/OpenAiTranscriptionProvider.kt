@@ -40,6 +40,8 @@ class OpenAiTranscriptionProvider(
      * since only the diarize model returns speaker labels. The tradeoff is no word-level timings.
      */
     private val diarizationEnabled: () -> Boolean = { false },
+    /** Bounded keyword list for STT steering; ignored for diarize models. */
+    private val sttPrompt: () -> String? = { null },
     private val endpointUrl: String = DEFAULT_ENDPOINT_URL,
     private val modelsUrl: String = DEFAULT_MODELS_URL,
     private val maxUploadBytes: Int = DEFAULT_MAX_UPLOAD_BYTES,
@@ -150,6 +152,11 @@ class OpenAiTranscriptionProvider(
     /** The diarize model takes precedence when diarization is on; only it returns speakers. */
     private fun effectiveModel(): String = if (diarizationEnabled()) DIARIZE_MODEL else model()
 
+    private fun sttPromptForModel(modelValue: String): String? {
+        if (modelValue.contains("diarize", ignoreCase = true)) return null
+        return sttPrompt()?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
     private fun responseFormat(model: String): String = when (model) {
         DIARIZE_MODEL -> "diarized_json"
         "whisper-1" -> "verbose_json"
@@ -174,6 +181,7 @@ class OpenAiTranscriptionProvider(
         }
         val modelValue = effectiveModel()
         val format = responseFormat(modelValue)
+        val promptValue = sttPromptForModel(modelValue)
         val response: HttpResponse = client.post(endpointUrl) {
             header(HttpHeaders.Authorization, "Bearer $key")
             setBody(
@@ -185,6 +193,7 @@ class OpenAiTranscriptionProvider(
                             append("timestamp_granularities[]", "segment")
                             append("timestamp_granularities[]", "word")
                         }
+                        promptValue?.let { append("prompt", it) }
                         append(
                             "file",
                             wav,
@@ -233,6 +242,7 @@ class OpenAiTranscriptionProvider(
         if (wav.size > maxUploadBytes) return null
         val modelValue = effectiveModel()
         val format = responseFormat(modelValue)
+        val promptValue = sttPromptForModel(modelValue)
         val fields = buildList {
             add("model" to modelValue)
             add("response_format" to format)
@@ -240,6 +250,7 @@ class OpenAiTranscriptionProvider(
                 add("timestamp_granularities[]" to "segment")
                 add("timestamp_granularities[]" to "word")
             }
+            promptValue?.let { add("prompt" to it) }
         }
         return CloudUploadPlan(
             url = endpointUrl,

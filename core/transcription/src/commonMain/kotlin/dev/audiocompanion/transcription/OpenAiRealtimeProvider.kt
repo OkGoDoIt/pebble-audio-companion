@@ -51,7 +51,6 @@ class OpenAiRealtimeProvider(
             urlString = url,
             request = {
                 header("Authorization", "Bearer $key")
-                header("OpenAI-Beta", "realtime=v1")
             },
         ) {
             send(Frame.Text(sessionConfig()))
@@ -111,7 +110,7 @@ class OpenAiRealtimeProvider(
 
     companion object {
         const val DEFAULT_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
-        const val DEFAULT_MODEL = "gpt-4o-transcribe"
+        const val DEFAULT_MODEL = "gpt-realtime-whisper"
         const val TARGET_SAMPLE_RATE = 24_000
         private const val DELTA_EVENT = "conversation.item.input_audio_transcription.delta"
         private const val COMPLETED_EVENT = "conversation.item.input_audio_transcription.completed"

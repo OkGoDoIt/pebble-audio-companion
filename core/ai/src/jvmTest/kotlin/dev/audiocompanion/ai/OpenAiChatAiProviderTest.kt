@@ -69,8 +69,8 @@ class OpenAiChatAiProviderTest {
                             """
                             {
                               "model": "gpt-4o-mini-2024",
-                              "choices": [{"message": {"role": "assistant", "content": "- Bob: ship the fix by Friday"}}],
-                              "usage": {"prompt_tokens": 42, "completion_tokens": 12}
+                              "output_text": "- Bob: ship the fix by Friday",
+                              "usage": {"input_tokens": 42, "output_tokens": 12}
                             }
                             """.trimIndent(),
                         ),
@@ -104,14 +104,14 @@ class OpenAiChatAiProviderTest {
     @Test
     fun sendsConfiguredModelInRequestBody() = runTest {
         lateinit var captured: HttpRequestData
-        var selectedModel = "gpt-5.5-mini"
+        var selectedModel = "gpt-5.4-mini"
         val client = HttpClient(MockEngine) {
             engine {
                 addHandler {
                     captured = it
                     respond(
                         content = ByteReadChannel(
-                            """{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}""",
+                            """{"output_text": "ok", "model": "gpt-5.4-mini"}""",
                         ),
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
@@ -128,7 +128,7 @@ class OpenAiChatAiProviderTest {
 
         provider.run(request())
         assertTrue(
-            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.5-mini\""),
+            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.4-mini\""),
             "request should carry the configured model",
         )
 
@@ -172,7 +172,7 @@ class OpenAiChatAiProviderTest {
                     captured = it
                     respond(
                         content = ByteReadChannel(
-                            """{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}""",
+                            """{"output_text": "ok", "model": "gpt-5.4-mini"}""",
                         ),
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
