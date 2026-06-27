@@ -719,6 +719,8 @@ class TimelineTest {
         assertTrue(segmentMatchesLibraryQuery("salary", null, annotation, emptyList(), emptyList()))
         assertTrue(segmentMatchesLibraryQuery("Owen", null, annotation, listOf(action), emptyList()))
         assertTrue(segmentMatchesLibraryQuery("compensation", null, annotation, emptyList(), listOf(output)))
+        assertTrue(segmentMatchesLibraryQuery("Owen compensation", null, annotation, listOf(action), emptyList()))
+        assertTrue(segmentMatchesLibraryQuery("Owen compensaton", null, annotation, listOf(action), emptyList()))
         assertTrue(annotationHasTag(annotation, "STUDIO"))
     }
 

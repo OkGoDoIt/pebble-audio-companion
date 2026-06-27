@@ -1,5 +1,6 @@
 package dev.audiocompanion.app.ui
 
+import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
@@ -291,6 +292,83 @@ class TranscriptFormattingTest {
         assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
         assertEquals(null, match.startMs)
         assertTrue(match.snippet.contains("Oliver"))
+    }
+
+    @Test
+    fun librarySearchMatchSupportsOutOfOrderMultiTermTranscriptQueries() {
+        val transcript = testTranscript(
+            text = "They discussed lunch, then Oliver garden work near transit.",
+            segments = listOf(
+                TranscriptSegment("They discussed lunch", startMs = 0, endMs = 2_000),
+                TranscriptSegment("Oliver garden work near transit", startMs = 42_000, endMs = 47_000),
+            ),
+        )
+
+        val match = librarySearchMatch(
+            query = "transit Oliver",
+            meta = testMeta(),
+            transcript = transcript,
+            annotation = null,
+            actionItems = emptyList(),
+            aiOutputs = emptyList(),
+        ) ?: throw AssertionError("expected multi-term transcript search match")
+
+        assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
+        assertEquals(42_000, match.startMs)
+        assertTrue(match.snippet.contains("Oliver"))
+        assertTrue(match.snippet.contains("transit"))
+    }
+
+    @Test
+    fun librarySearchMatchSupportsFuzzyTranscriptTerms() {
+        val transcript = testTranscript(
+            text = "They discussed lunch, then Oliver garden work near transit.",
+            segments = listOf(
+                TranscriptSegment("They discussed lunch", startMs = 0, endMs = 2_000),
+                TranscriptSegment("Oliver garden work near transit", startMs = 42_000, endMs = 47_000),
+            ),
+        )
+
+        val match = librarySearchMatch(
+            query = "Olivr",
+            meta = testMeta(),
+            transcript = transcript,
+            annotation = null,
+            actionItems = emptyList(),
+            aiOutputs = emptyList(),
+        ) ?: throw AssertionError("expected fuzzy transcript search match")
+
+        assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
+        assertEquals(42_000, match.startMs)
+        assertEquals("Oliver", match.highlightTerm)
+        assertTrue(match.snippet.contains("Oliver"))
+    }
+
+    @Test
+    fun librarySearchMatchPrefersTranscriptContextWhenTitleAlsoMatches() {
+        val transcript = testTranscript(
+            text = "They discussed lunch, then Oliver garden work near transit.",
+            segments = listOf(
+                TranscriptSegment("They discussed lunch", startMs = 0, endMs = 2_000),
+                TranscriptSegment("Oliver garden work near transit", startMs = 42_000, endMs = 47_000),
+            ),
+        )
+
+        val match = librarySearchMatch(
+            query = "Oliver",
+            meta = testMeta(),
+            transcript = transcript,
+            annotation = SegmentAnnotation(
+                segmentId = "seg",
+                title = "Oliver plans",
+                createdAtMs = 0,
+            ),
+            actionItems = emptyList(),
+            aiOutputs = emptyList(),
+        ) ?: throw AssertionError("expected transcript search match")
+
+        assertEquals(LibrarySearchMatchKind.Transcript, match.kind)
+        assertEquals(42_000, match.startMs)
     }
 
     private fun testMeta(gaps: List<GapMeta> = emptyList()) = SegmentMeta(
