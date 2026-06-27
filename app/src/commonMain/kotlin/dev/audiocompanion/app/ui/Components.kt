@@ -76,49 +76,72 @@ fun StatusHeader(
     detailLines: List<String> = emptyList(),
     onPrimaryAction: (PrimaryAction) -> Unit = {},
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    val accent = status.severity.color()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        // A faint wash of the severity color so the hero state reads instantly without shouting.
+        color = accent.copy(alpha = 0.07f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.22f)),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(Spacing.tight),
         ) {
-            StatusDot(status.severity)
-            Text(text = status.headline, style = MaterialTheme.typography.titleLarge)
-        }
-        status.supporting?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        detailLines.forEach { line ->
-            Text(
-                text = line,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        when (status.primaryAction) {
-            PrimaryAction.Start -> Button(onClick = { onPrimaryAction(PrimaryAction.Start) }) {
-                Text("Start Recording")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatusDot(status.severity)
+                Text(
+                    text = status.headline,
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f),
+                )
             }
-            PrimaryAction.Stop -> OutlinedButton(onClick = { onPrimaryAction(PrimaryAction.Stop) }) {
-                Text("Stop")
+            status.supporting?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            PrimaryAction.PairWatch -> Button(onClick = { onPrimaryAction(PrimaryAction.PairWatch) }) {
-                Text("Find Watch")
+            if (detailLines.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    detailLines.forEach { line ->
+                        Text(
+                            text = line,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
-            PrimaryAction.SetUpAgain -> Button(onClick = { onPrimaryAction(PrimaryAction.SetUpAgain) }) {
-                Text("Set Up Again")
+            val primaryModifier = Modifier.fillMaxWidth().padding(top = Spacing.hair)
+            when (status.primaryAction) {
+                PrimaryAction.Start -> Button(
+                    onClick = { onPrimaryAction(PrimaryAction.Start) },
+                    modifier = primaryModifier,
+                ) { Text("Start Recording") }
+                PrimaryAction.Stop -> OutlinedButton(
+                    onClick = { onPrimaryAction(PrimaryAction.Stop) },
+                    modifier = primaryModifier,
+                ) { Text("Stop") }
+                PrimaryAction.PairWatch -> Button(
+                    onClick = { onPrimaryAction(PrimaryAction.PairWatch) },
+                    modifier = primaryModifier,
+                ) { Text("Find Watch") }
+                PrimaryAction.SetUpAgain -> Button(
+                    onClick = { onPrimaryAction(PrimaryAction.SetUpAgain) },
+                    modifier = primaryModifier,
+                ) { Text("Set Up Again") }
+                // Calm secondary styling: an escape hatch while connecting, not an alarm.
+                PrimaryAction.Reconnect -> OutlinedButton(
+                    onClick = { onPrimaryAction(PrimaryAction.Reconnect) },
+                    modifier = primaryModifier,
+                ) { Text("Reconnect") }
+                PrimaryAction.Troubleshoot, PrimaryAction.None -> Unit
             }
-            // Calm secondary styling: an escape hatch while connecting, not an alarm.
-            PrimaryAction.Reconnect -> OutlinedButton(onClick = { onPrimaryAction(PrimaryAction.Reconnect) }) {
-                Text("Reconnect")
-            }
-            PrimaryAction.Troubleshoot, PrimaryAction.None -> Unit
         }
     }
 }
