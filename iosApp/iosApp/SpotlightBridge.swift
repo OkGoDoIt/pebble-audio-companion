@@ -16,7 +16,7 @@ final class KotlinSpotlightBridge: NSObject, SpotlightDonationBridge {
         tags: [String],
         creationMs: Int64
     ) {
-        SpotlightDonationBridge.donate(
+        NativeSpotlightDonation.donate(
             id: id,
             domain: "segment",
             title: title,
@@ -27,6 +27,28 @@ final class KotlinSpotlightBridge: NSObject, SpotlightDonationBridge {
     }
 
     func remove(id: String) {
-        SpotlightDonationBridge.remove(id: id)
+        NativeSpotlightDonation.remove(id: id)
+    }
+
+    func donateDigest(digest: AiDailyDigest) {
+        NativeSpotlightDonation.donate(
+            id: "day-\(digest.dateKey)",
+            domain: "day",
+            title: digest.dateKey,
+            summary: String(digest.text.prefix(500)),
+            tags: [],
+            creationMs: digest.createdAtMs
+        )
+    }
+
+    func donateActionItem(item: AiActionItem) {
+        NativeSpotlightDonation.donate(
+            id: item.id,
+            domain: "action",
+            title: item.text,
+            summary: nil,
+            tags: [],
+            creationMs: item.createdAtMs
+        )
     }
 }
