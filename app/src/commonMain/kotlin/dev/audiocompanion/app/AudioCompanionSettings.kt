@@ -1,5 +1,6 @@
 package dev.audiocompanion.app
 
+import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.transcription.CloudProvider
 import dev.audiocompanion.transcription.TranscriptionMode
@@ -16,6 +17,8 @@ data class AudioCompanionSettings(
     val openAiApiKey: String = "",
     val sonioxApiKey: String = "",
     val aiMode: AiProcessingMode = AiProcessingMode.LocalOnly,
+    /** Remote AI model used for automatic titles/summaries and the manual AI flow. */
+    val aiModel: String = AiModels.DEFAULT_MODEL_ID,
     val remoteAiConsent: Boolean = false,
     /** When enabled, closed segments are decoded into WAV files in the platform export folder. */
     val automaticWavExportEnabled: Boolean = false,
@@ -50,6 +53,7 @@ interface AudioCompanionSettingsRepository {
     fun setOpenAiApiKey(apiKey: String)
     fun setSonioxApiKey(apiKey: String)
     fun setAiMode(mode: AiProcessingMode)
+    fun setAiModel(modelId: String)
     fun setRemoteAiConsent(consented: Boolean)
     fun setAutomaticWavExportEnabled(enabled: Boolean)
     fun setDiagnosticsIncludeContent(includeContent: Boolean)

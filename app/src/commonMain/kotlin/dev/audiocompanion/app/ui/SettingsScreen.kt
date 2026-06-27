@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.app.AudioExportResult
 import dev.audiocompanion.app.AudioCompanionDiagnostics
@@ -73,6 +74,7 @@ fun SettingsScreen(
     var showLocalModelPicker by remember { mutableStateOf(false) }
     var showCloudProviderPicker by remember { mutableStateOf(false) }
     var showAiModePicker by remember { mutableStateOf(false) }
+    var showAiModelPicker by remember { mutableStateOf(false) }
     var supportReportText by remember { mutableStateOf<String?>(null) }
     var detailedDiagnosticsText by remember { mutableStateOf<String?>(null) }
     var exportResultText by remember { mutableStateOf<String?>(null) }
@@ -308,6 +310,11 @@ fun SettingsScreen(
             value = aiModeLabel(settings.aiMode),
             onClick = { showAiModePicker = true },
         )
+        ModePickerRow(
+            title = "Model",
+            value = aiModelLabel(settings.aiModel),
+            onClick = { showAiModelPicker = true },
+        )
         SettingsToggleRow(
             title = "Remote AI",
             subtitle = "Send transcripts to the configured AI provider when you run AI. Off by default.",
@@ -470,6 +477,21 @@ fun SettingsScreen(
             onDismiss = { showAiModePicker = false },
         )
     }
+    if (showAiModelPicker) {
+        SingleChoiceDialog(
+            title = "AI model",
+            options = AiModels.all.map { it.id to aiModelLabel(it.id) },
+            descriptions = AiModels.all.associate { it.id to it.description },
+            selected = AiModels.byId(settings.aiModel).id,
+            onSelect = actions.setAiModel,
+            onDismiss = { showAiModelPicker = false },
+        )
+    }
+}
+
+/** Display label for a model id; resolves unknown ids to the default spec. */
+fun aiModelLabel(modelId: String): String = AiModels.byId(modelId).let { spec ->
+    spec.displayName + if (spec.recommended) " (Recommended)" else ""
 }
 
 fun cloudProviderLabel(provider: CloudProvider): String = when (provider) {
