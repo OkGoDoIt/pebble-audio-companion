@@ -131,6 +131,34 @@ class SegmentAnnotationPromptTest {
     }
 
     @Test
+    fun parsesMarkdownWrappedLabelsAsPlainText() {
+        val parsed = SegmentAnnotationPrompt.parse(
+            "**TITLE:** Troubleshooting printer driver setup\n" +
+                "**SUMMARY:** The user is frustrated with driver setup and slow page loading.",
+        )
+        assertEquals("Troubleshooting printer driver setup", parsed.title)
+        assertEquals(
+            "The user is frustrated with driver setup and slow page loading.",
+            parsed.summary,
+        )
+    }
+
+    @Test
+    fun parsesMultilineSummaryWithoutMarkdown() {
+        val parsed = SegmentAnnotationPrompt.parse(
+            "TITLE: Weekend cycling\n" +
+                "SUMMARY:\n" +
+                "- They talked about trail conditions.\n" +
+                "- They also discussed fitness routines.",
+        )
+        assertEquals("Weekend cycling", parsed.title)
+        assertEquals(
+            "They talked about trail conditions. They also discussed fitness routines.",
+            parsed.summary,
+        )
+    }
+
+    @Test
     fun fallsBackToFirstLineAsTitle() {
         val parsed = SegmentAnnotationPrompt.parse("Planning discussion\nThey planned the sprint.")
         assertEquals("Planning discussion", parsed.title)

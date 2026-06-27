@@ -14,9 +14,9 @@ object AiPromptTemplates {
     val DailySummary = AiPromptTemplate(
         id = "daily-summary",
         title = "Daily summary",
-        systemPrompt = "$COMMON_SYSTEM_RULES Produce a clear summary of the day's captured " +
-            "conversations and events, organized chronologically with approximate times when " +
-            "available.",
+        systemPrompt = "$COMMON_SYSTEM_RULES Produce a short plain-text recap of the day's " +
+            "captured conversations and events. Use 2-4 concise sentences. Do not use Markdown, " +
+            "headings, bullets, bold text, or numbered lists.",
         userPrompt = "Summarize what happened in these transcripts.",
     )
 

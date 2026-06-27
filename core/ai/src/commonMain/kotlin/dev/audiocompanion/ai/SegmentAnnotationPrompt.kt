@@ -15,7 +15,8 @@ object SegmentAnnotationPrompt {
             "meaning, but never invent facts, names, or events that are not supported by the " +
             "text. Prefer general phrasing when a detail is clearly garbled rather than guessing " +
             "a specific wrong word.\n" +
-            "Respond with exactly three lines and nothing else:\n" +
+            "Respond in plain text only. Do not use Markdown, bullets, headings, bold text, or " +
+            "numbered lists. Respond with exactly three lines and nothing else:\n" +
             "TITLE: a specific, plain title of at most 8 words (no quotes, no trailing period)\n" +
             "SUMMARY: 1-3 plain sentences summarizing what was discussed\n" +
             "TAGS: 2-3 short topic tags, comma-separated (e.g. work, budget, Sarah)\n" +
@@ -48,36 +49,50 @@ object SegmentAnnotationPrompt {
 
     fun parse(text: String): Parsed {
         var title: String? = null
-        var summary: String? = null
+        val summaryParts = mutableListOf<String>()
         var tags: List<String> = emptyList()
+        var activeField: String? = null
         for (line in text.lineSequence()) {
             val trimmed = line.trim()
-            when {
-                trimmed.startsWith("TITLE:", ignoreCase = true) && title == null ->
-                    title = trimmed.substring("TITLE:".length).trim().ifBlank { null }
-                trimmed.startsWith("SUMMARY:", ignoreCase = true) && summary == null ->
-                    summary = trimmed.substring("SUMMARY:".length).trim().ifBlank { null }
-                trimmed.startsWith("TAGS:", ignoreCase = true) && tags.isEmpty() ->
-                    tags = trimmed.substring("TAGS:".length)
-                        .split(',', ';')
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                        .take(3)
+            val match = FIELD_LINE.matchEntire(trimmed)
+            if (match != null) {
+                val field = match.groupValues[1].uppercase()
+                val value = AiPlainText.clean(match.groupValues[2])
+                activeField = field
+                when (field) {
+                    "TITLE" -> if (title == null) title = value
+                    "SUMMARY" -> if (!value.isNullOrBlank()) summaryParts += value
+                    "TAGS" -> if (tags.isEmpty()) {
+                        tags = match.groupValues[2]
+                            .split(',', ';')
+                            .mapNotNull { AiPlainText.clean(it) }
+                            .filter { it.isNotBlank() }
+                            .take(3)
+                    }
+                }
+            } else if (activeField == "SUMMARY") {
+                AiPlainText.cleanLine(trimmed)?.let { summaryParts += it }
             }
         }
+        var summary = summaryParts.joinToString(" ").ifBlank { null }
         if (title == null && summary == null) {
             // Lenient fallback: first non-blank line is the title, the rest the summary.
-            val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
+            val lines = text.lines().mapNotNull { AiPlainText.cleanLine(it) }
             title = lines.firstOrNull()?.take(MAX_TITLE_CHARS)
             summary = lines.drop(1).joinToString(" ").ifBlank { null }
         }
         return Parsed(
-            title = title?.take(MAX_TITLE_CHARS),
-            summary = summary?.take(MAX_SUMMARY_CHARS),
+            title = AiPlainText.clean(title, MAX_TITLE_CHARS),
+            summary = AiPlainText.clean(summary, MAX_SUMMARY_CHARS),
             tags = tags,
         )
     }
 
+    private val FIELD_LINE = Regex(
+        "^\\s*(?:#{1,6}\\s*)?(?:[-*]\\s*)?(?:\\*\\*)?\\s*(TITLE|SUMMARY|TAGS)" +
+            "\\s*:?\\s*(?:\\*\\*)?\\s*:?\\s*(.*)$",
+        RegexOption.IGNORE_CASE,
+    )
     private const val MAX_TITLE_CHARS = 80
     private const val MAX_SUMMARY_CHARS = 600
 }
