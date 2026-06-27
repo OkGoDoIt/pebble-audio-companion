@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.app.ui.AppActions
+import dev.audiocompanion.app.ui.AudioCompanionTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -387,7 +388,7 @@ fun MainViewController(): UIViewController {
 
 @Composable
 private fun StartupScreen() {
-    MaterialTheme {
+    AudioCompanionTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),

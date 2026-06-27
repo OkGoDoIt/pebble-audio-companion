@@ -38,6 +38,7 @@ import dev.audiocompanion.ai.SegmentAnnotation
 import dev.audiocompanion.app.ui.AiScreen
 import dev.audiocompanion.ai.PersonalContext
 import dev.audiocompanion.app.ui.AppActions
+import dev.audiocompanion.app.ui.AudioCompanionTheme
 import dev.audiocompanion.app.ui.Formatting
 import dev.audiocompanion.app.ui.LibraryScreen
 import dev.audiocompanion.app.ui.OnboardingScreen
@@ -127,7 +128,7 @@ fun App(
     navigationRequest: StateFlow<AppNavigationRequest?> = MutableStateFlow(null),
     actions: AppActions = AppActions(),
 ) {
-    MaterialTheme {
+    AudioCompanionTheme {
         val state = sessionState.collectAsState().value
         val currentDiagnostics = diagnostics.collectAsState().value
         val currentWatchState = watchServiceState.collectAsState().value
@@ -158,7 +159,7 @@ fun App(
                     actions = actions,
                 )
             }
-            return@MaterialTheme
+            return@AudioCompanionTheme
         }
 
         var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
