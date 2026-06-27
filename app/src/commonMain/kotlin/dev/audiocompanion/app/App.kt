@@ -163,6 +163,9 @@ fun App(
 
         var tab by rememberSaveable { mutableStateOf(AppTab.Today) }
         var librarySegmentId by rememberSaveable { mutableStateOf<String?>(null) }
+        // Which saved AI output the AI tab is showing in detail; set by a Library "Related AI
+        // output" tap so the cross-tab jump lands on the full answer.
+        var aiOutputId by rememberSaveable { mutableStateOf<String?>(null) }
 
         LaunchedEffect(pendingNavigation) {
             pendingNavigation?.let { req ->
@@ -384,6 +387,11 @@ fun App(
                         onSetActionItemDone = actions.setActionItemDone,
                         onAskAboutSegment = { segmentId ->
                             librarySegmentId = segmentId
+                            aiOutputId = null
+                            tab = AppTab.Ai
+                        },
+                        onOpenAiOutput = { outputId ->
+                            aiOutputId = outputId
                             tab = AppTab.Ai
                         },
                         onPlaySegment = actions.playSegment,
@@ -404,6 +412,8 @@ fun App(
                         actionItems = actionItems,
                         customTemplates = customTemplates,
                         selectedSegmentIds = listOfNotNull(librarySegmentId),
+                        selectedOutputId = aiOutputId,
+                        onSelectOutput = { aiOutputId = it },
                         onRunAi = actions.runAi,
                         onRunAsk = actions.runAsk,
                         onDeleteOutput = actions.deleteAiOutput,

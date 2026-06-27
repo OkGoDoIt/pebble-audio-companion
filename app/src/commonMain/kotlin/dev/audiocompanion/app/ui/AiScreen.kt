@@ -69,6 +69,10 @@ fun AiScreen(
     actionItems: List<ActionItem> = emptyList(),
     customTemplates: List<SavedAiTemplate> = emptyList(),
     selectedSegmentIds: List<String> = emptyList(),
+    // Output selection is lifted to the host so other tabs (e.g. a Library "Related AI output"
+    // tap) can deep-link straight to a specific saved output.
+    selectedOutputId: String? = null,
+    onSelectOutput: (String?) -> Unit = {},
     onRunAi: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput>,
     onRunAsk: suspend (String, List<String>) -> Result<AiOutput> = { _, _ ->
         Result.failure(AiException.ProviderUnavailable("not wired"))
@@ -83,16 +87,15 @@ fun AiScreen(
     onOpenSegment: (String) -> Unit = {},
     onRefresh: () -> Unit,
 ) {
-    var selectedOutputId by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedOutput = selectedOutputId?.let { id -> aiOutputs.firstOrNull { it.outputId == id } }
     if (selectedOutput != null) {
         AiOutputDetail(
             output = selectedOutput,
             nowMs = nowMs,
-            onBack = { selectedOutputId = null },
+            onBack = { onSelectOutput(null) },
             onDelete = {
                 onDeleteOutput(selectedOutput.outputId)
-                selectedOutputId = null
+                onSelectOutput(null)
             },
             onRegenerate = { template, segmentIds ->
                 onRunAi(template, segmentIds)
@@ -137,7 +140,7 @@ fun AiScreen(
             result.fold(
                 onSuccess = { output ->
                     onRefresh()
-                    selectedOutputId = output.outputId
+                    onSelectOutput(output.outputId)
                 },
                 onFailure = { e ->
                     errorMessage = aiErrorMessage(e)
@@ -225,7 +228,7 @@ fun AiScreen(
                     result.fold(
                         onSuccess = { output ->
                             onRefresh()
-                            selectedOutputId = output.outputId
+                            onSelectOutput(output.outputId)
                         },
                         onFailure = { e -> errorMessage = aiErrorMessage(e) },
                     )
@@ -316,7 +319,7 @@ fun AiScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { selectedOutputId = output.outputId },
+                        .clickable { onSelectOutput(output.outputId) },
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(text = output.promptTitle, style = MaterialTheme.typography.bodyLarge)
