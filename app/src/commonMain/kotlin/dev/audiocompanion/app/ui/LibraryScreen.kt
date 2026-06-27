@@ -71,6 +71,7 @@ import dev.audiocompanion.transcription.TranscriptSegment
 import dev.audiocompanion.transcription.TranscriptWord
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 enum class LibraryFilter(val label: String) {
     All("All"),
@@ -184,15 +185,33 @@ fun LibraryScreen(
         .filter { meta ->
             selectedTag == null || annotationHasTag(annotationOf(meta.segmentId), selectedTag)
         }
-        .filter { meta ->
-            if (query.isBlank()) true
-            else {
-                segmentMatchesLibraryQuery(
+        .mapNotNull { meta ->
+            val transcript = transcriptOf(meta.segmentId)
+            val annotation = annotationOf(meta.segmentId)
+            val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
+            val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
+            if (query.isBlank()) {
+                LibrarySegmentSearchResult(meta = meta, match = null)
+            } else {
+                librarySearchMatch(
                     query = query,
-                    transcript = transcriptOf(meta.segmentId),
-                    annotation = annotationOf(meta.segmentId),
-                    actionItems = actionItemsForSegment(actionItems, meta.segmentId),
-                    aiOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId),
+                    meta = meta,
+                    transcript = transcript,
+                    annotation = annotation,
+                    actionItems = segmentActionItems,
+                    aiOutputs = relatedOutputs,
+                )?.let { match ->
+                    LibrarySegmentSearchResult(meta = meta, match = match)
+                }
+            }
+        }
+        .let { results ->
+            if (query.isBlank()) {
+                results
+            } else {
+                results.sortedWith(
+                    compareByDescending<LibrarySegmentSearchResult> { it.match?.score ?: 0 }
+                        .thenByDescending { it.meta.receivedAtMs },
                 )
             }
         }
@@ -257,19 +276,13 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
             ) {
-                items(visible, key = { it.segmentId }) { meta ->
+                items(visible, key = { it.meta.segmentId }) { result ->
+                    val meta = result.meta
                     val transcript = transcriptOf(meta.segmentId)
                     val annotation = annotationOf(meta.segmentId)
                     val segmentActionItems = actionItemsForSegment(actionItems, meta.segmentId)
                     val relatedOutputs = aiOutputsForSegment(aiOutputs, meta.segmentId)
-                    val searchMatch = librarySearchMatch(
-                        query = query,
-                        meta = meta,
-                        transcript = transcript,
-                        annotation = annotation,
-                        actionItems = segmentActionItems,
-                        aiOutputs = relatedOutputs,
-                    )
+                    val searchMatch = result.match
                     LibrarySegmentRow(
                         meta = meta,
                         transcript = transcript,
@@ -282,7 +295,8 @@ fun LibraryScreen(
                         nowMs = nowMs,
                         onClick = {
                             if (searchMatch?.kind == LibrarySearchMatchKind.Transcript) {
-                                selectedSearchQuery = query.trim().takeIf { it.isNotBlank() }
+                                selectedSearchQuery = searchMatch.highlightTerm
+                                    ?: query.trim().takeIf { it.isNotBlank() }
                                 selectedSearchOffsetMs = searchMatch.startMs
                             } else {
                                 selectedSearchQuery = null
@@ -365,13 +379,18 @@ private fun SearchMatchRow(match: LibrarySearchMatch, query: String) {
         )
         SearchHighlightedText(
             text = match.snippet,
-            query = query,
+            query = match.highlightTerm ?: query,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 3,
         )
     }
 }
+
+private data class LibrarySegmentSearchResult(
+    val meta: SegmentMeta,
+    val match: LibrarySearchMatch?,
+)
 
 @Composable
 private fun SegmentTagRow(tags: List<String>, onTagClick: (String) -> Unit = {}) {
@@ -442,15 +461,23 @@ fun segmentMatchesLibraryQuery(
     actionItems: List<ActionItem>,
     aiOutputs: List<AiOutput>,
 ): Boolean {
-    val trimmed = query.trim()
-    if (trimmed.isBlank()) return true
-    fun String?.matchesQuery(): Boolean = this?.contains(trimmed, ignoreCase = true) == true
-    return transcript?.text.matchesQuery() ||
-        annotation?.title.matchesQuery() ||
-        annotation?.summary.matchesQuery() ||
-        annotation?.tags.orEmpty().any { it.matchesQuery() } ||
-        actionItems.any { it.text.matchesQuery() } ||
-        aiOutputs.any { it.promptTitle.matchesQuery() || it.text.matchesQuery() }
+    val parts = libraryQueryParts(query) ?: return true
+    val searchableText = buildList {
+        add(transcript?.text)
+        add(annotation?.title)
+        add(annotation?.summary)
+        addAll(annotation?.tags.orEmpty())
+        addAll(actionItems.map { it.text })
+        aiOutputs.forEach { output ->
+            add(output.promptTitle)
+            add(output.text)
+        }
+    }
+    if (searchableText.any { scoreLibraryText(parts, it, weight = 0) != null }) return true
+    return parts.terms.size > 1 &&
+        parts.terms.all { term ->
+            searchableText.any { scoreLibraryTermText(term, it, weight = 0) != null }
+        }
 }
 
 enum class LibrarySearchMatchKind {
@@ -467,6 +494,8 @@ data class LibrarySearchMatch(
     val label: String,
     val snippet: String,
     val startMs: Long? = null,
+    val highlightTerm: String? = null,
+    val score: Int = 0,
 )
 
 fun librarySearchMatch(
@@ -477,82 +506,382 @@ fun librarySearchMatch(
     actionItems: List<ActionItem>,
     aiOutputs: List<AiOutput>,
 ): LibrarySearchMatch? {
-    val trimmed = query.trim()
-    if (trimmed.isBlank()) return null
-    transcriptSearchMatch(trimmed, meta, transcript)?.let { return it }
-    searchSnippet(annotation?.title, trimmed)?.let {
-        return LibrarySearchMatch(LibrarySearchMatchKind.Title, "Title match", it)
-    }
-    searchSnippet(annotation?.summary, trimmed)?.let {
-        return LibrarySearchMatch(LibrarySearchMatchKind.Summary, "Summary match", it)
-    }
-    annotation?.tags.orEmpty().firstNotNullOfOrNull { tag ->
-        searchSnippet(tag, trimmed)?.let {
-            LibrarySearchMatch(LibrarySearchMatchKind.Tag, "Tag match", it)
-        }
-    }?.let { return it }
-    actionItems.firstNotNullOfOrNull { item ->
-        searchSnippet(item.text, trimmed)?.let {
-            LibrarySearchMatch(LibrarySearchMatchKind.ActionItem, "Action item match", it)
-        }
-    }?.let { return it }
-    aiOutputs.firstNotNullOfOrNull { output ->
-        searchSnippet(output.promptTitle, trimmed)?.let {
-            LibrarySearchMatch(LibrarySearchMatchKind.AiOutput, "AI output match", it)
-        } ?: searchSnippet(output.text, trimmed)?.let {
-            LibrarySearchMatch(LibrarySearchMatchKind.AiOutput, "AI output match", it)
-        }
-    }?.let { return it }
-    return null
-}
-
-private fun transcriptSearchMatch(
-    query: String,
-    meta: SegmentMeta,
-    transcript: SegmentTranscript?,
-): LibrarySearchMatch? {
-    if (transcript == null) return null
-    val timedMatch = transcriptTimelineItems(meta, transcript.segments, transcript.words)
-        .filterIsInstance<TranscriptTimelineItem.Speech>()
-        .firstNotNullOfOrNull { speech ->
-            searchSnippet(speech.text, query)?.let { snippet ->
-                LibrarySearchMatch(
-                    kind = LibrarySearchMatchKind.Transcript,
-                    label = "Transcript match · ${clockTimeFor(meta, speech.startMs)}",
-                    snippet = snippet,
-                    startMs = speech.startMs,
-                )
+    val parts = libraryQueryParts(query) ?: return null
+    val candidates = librarySearchCandidates(meta, transcript, annotation, actionItems, aiOutputs)
+    return candidates
+        .mapIndexedNotNull { index, candidate ->
+            scoreLibraryCandidate(parts, candidate)?.let { score ->
+                ScoredLibrarySearchCandidate(index, candidate, score)
             }
         }
-    if (timedMatch != null) return timedMatch
-    return searchSnippet(transcript.text, query)?.let { snippet ->
-        LibrarySearchMatch(
-            kind = LibrarySearchMatchKind.Transcript,
-            label = "Transcript match",
-            snippet = snippet,
+        .sortedWith(
+            compareByDescending<ScoredLibrarySearchCandidate> { it.textScore.score }
+                .thenBy { it.index },
         )
-    }
+        .firstOrNull()
+        ?.toMatch()
+        ?: aggregateLibrarySearchMatch(parts, candidates)?.toMatch()
 }
 
-fun searchSnippet(text: String?, query: String, maxChars: Int = 170): String? {
-    val normalized = text
+private fun librarySearchCandidates(
+    meta: SegmentMeta,
+    transcript: SegmentTranscript?,
+    annotation: SegmentAnnotation?,
+    actionItems: List<ActionItem>,
+    aiOutputs: List<AiOutput>,
+): List<LibrarySearchCandidate> {
+    val candidates = mutableListOf<LibrarySearchCandidate>()
+    if (transcript != null) {
+        transcriptTimelineItems(meta, transcript.segments, transcript.words)
+            .filterIsInstance<TranscriptTimelineItem.Speech>()
+            .forEach { speech ->
+                candidates += LibrarySearchCandidate(
+                    kind = LibrarySearchMatchKind.Transcript,
+                    label = "Transcript match · ${clockTimeFor(meta, speech.startMs)}",
+                    text = speech.text,
+                    startMs = speech.startMs,
+                    weight = 920,
+                )
+            }
+        candidates += LibrarySearchCandidate(
+            kind = LibrarySearchMatchKind.Transcript,
+            label = "Transcript match",
+            text = transcript.text,
+            weight = 880,
+        )
+    }
+    candidates += LibrarySearchCandidate(
+        kind = LibrarySearchMatchKind.Title,
+        label = "Title match",
+        text = annotation?.title,
+        weight = 850,
+    )
+    candidates += LibrarySearchCandidate(
+        kind = LibrarySearchMatchKind.Summary,
+        label = "Summary match",
+        text = annotation?.summary,
+        weight = 580,
+    )
+    annotation?.tags.orEmpty().forEach { tag ->
+        candidates += LibrarySearchCandidate(
+            kind = LibrarySearchMatchKind.Tag,
+            label = "Tag match",
+            text = tag,
+            weight = 760,
+        )
+    }
+    actionItems.forEach { item ->
+        candidates += LibrarySearchCandidate(
+            kind = LibrarySearchMatchKind.ActionItem,
+            label = "Action item match",
+            text = item.text,
+            weight = 620,
+        )
+    }
+    aiOutputs.forEach { output ->
+        candidates += LibrarySearchCandidate(
+            kind = LibrarySearchMatchKind.AiOutput,
+            label = "AI output match",
+            text = output.promptTitle,
+            weight = 520,
+        )
+        candidates += LibrarySearchCandidate(
+            kind = LibrarySearchMatchKind.AiOutput,
+            label = "AI output match",
+            text = output.text,
+            weight = 480,
+        )
+    }
+    return candidates
+}
+
+private data class LibrarySearchCandidate(
+    val kind: LibrarySearchMatchKind,
+    val label: String,
+    val text: String?,
+    val weight: Int,
+    val startMs: Long? = null,
+)
+
+private data class ScoredLibrarySearchCandidate(
+    val index: Int,
+    val candidate: LibrarySearchCandidate,
+    val textScore: LibraryTextSearchScore,
+) {
+    fun toMatch(): LibrarySearchMatch = LibrarySearchMatch(
+        kind = candidate.kind,
+        label = candidate.label,
+        snippet = textScore.snippet,
+        startMs = candidate.startMs,
+        highlightTerm = textScore.highlightTerm,
+        score = textScore.score,
+    )
+}
+
+private data class LibraryQueryParts(
+    val phrase: String,
+    val terms: List<String>,
+)
+
+private data class LibraryTextSearchScore(
+    val score: Int,
+    val snippet: String,
+    val highlightTerm: String,
+)
+
+private data class LibraryTermMatch(
+    val start: Int,
+    val end: Int,
+    val text: String,
+    val exact: Boolean,
+    val distance: Int,
+)
+
+private data class LibrarySearchToken(
+    val text: String,
+    val start: Int,
+    val end: Int,
+)
+
+private fun libraryQueryParts(query: String): LibraryQueryParts? {
+    val phrase = normalizeSearchText(query)
+    if (phrase.isBlank()) return null
+    val terms = searchTokens(phrase)
+        .map { it.text.lowercase() }
+        .filter { it.length >= 2 }
+        .distinct()
+    return LibraryQueryParts(phrase = phrase, terms = terms)
+}
+
+private fun scoreLibraryCandidate(
+    parts: LibraryQueryParts,
+    candidate: LibrarySearchCandidate,
+): LibraryTextSearchScore? =
+    scoreLibraryText(parts = parts, text = candidate.text, weight = candidate.weight)
+
+private fun aggregateLibrarySearchMatch(
+    parts: LibraryQueryParts,
+    candidates: List<LibrarySearchCandidate>,
+): ScoredLibrarySearchCandidate? {
+    if (parts.terms.size < 2) return null
+    val bestPerTerm = parts.terms.map { term ->
+        candidates
+            .mapIndexedNotNull { index, candidate ->
+                scoreLibraryTerm(candidate = candidate, term = term)?.let { score ->
+                    ScoredLibrarySearchCandidate(index, candidate, score)
+                }
+            }
+            .sortedWith(
+                compareByDescending<ScoredLibrarySearchCandidate> { it.textScore.score }
+                    .thenBy { it.index },
+            )
+            .firstOrNull()
+            ?: return null
+    }
+    val display = bestPerTerm
+        .sortedWith(
+            compareByDescending<ScoredLibrarySearchCandidate> { it.textScore.score }
+                .thenBy { it.index },
+        )
+        .first()
+    val fieldSpreadPenalty = (bestPerTerm.map { it.index }.distinct().size - 1).coerceAtLeast(0) * 80
+    val coverageScore = 4_500 +
+        bestPerTerm.sumOf { (it.textScore.score / 20).coerceAtMost(140) } -
+        fieldSpreadPenalty +
+        display.candidate.weight
+    return display.copy(textScore = display.textScore.copy(score = coverageScore))
+}
+
+private fun scoreLibraryTerm(
+    candidate: LibrarySearchCandidate,
+    term: String,
+): LibraryTextSearchScore? =
+    scoreLibraryTermText(term = term, text = candidate.text, weight = candidate.weight)
+
+private fun scoreLibraryText(
+    parts: LibraryQueryParts,
+    text: String?,
+    weight: Int,
+): LibraryTextSearchScore? {
+    val normalized = normalizeSearchText(text)
+    if (normalized.isBlank()) return null
+
+    val phraseIndex = normalized.indexOf(parts.phrase, ignoreCase = true)
+    if (phraseIndex >= 0) {
+        val highlightTerm = normalized.substring(phraseIndex, phraseIndex + parts.phrase.length)
+        return LibraryTextSearchScore(
+            score = weight + 10_000 + parts.phrase.length.coerceAtMost(160),
+            snippet = snippetAround(normalized, phraseIndex, parts.phrase.length),
+            highlightTerm = highlightTerm,
+        )
+    }
+
+    if (parts.terms.isEmpty()) return null
+    val tokens = searchTokens(normalized)
+    val matches = parts.terms.map { term ->
+        exactTermMatch(normalized, term) ?: fuzzyTermMatch(tokens, term) ?: return null
+    }
+    val first = matches.minBy { it.start }
+    val spanStart = matches.minOf { it.start }
+    val spanEnd = matches.maxOf { it.end }
+    val proximityBonus = (240 - ((spanEnd - spanStart) / 8)).coerceIn(0, 240)
+    val exactCount = matches.count { it.exact }
+    val fuzzyCount = matches.size - exactCount
+    val distancePenalty = matches.sumOf { it.distance } * 45
+    return LibraryTextSearchScore(
+        score = weight + 6_000 + (exactCount * 220) + (fuzzyCount * 110) +
+            proximityBonus - distancePenalty,
+        snippet = snippetAround(normalized, first.start, (first.end - first.start).coerceAtLeast(1)),
+        highlightTerm = first.text,
+    )
+}
+
+private fun scoreLibraryTermText(
+    term: String,
+    text: String?,
+    weight: Int,
+): LibraryTextSearchScore? {
+    val normalized = normalizeSearchText(text)
+    if (normalized.isBlank()) return null
+    val match = exactTermMatch(normalized, term)
+        ?: fuzzyTermMatch(searchTokens(normalized), term)
+        ?: return null
+    val score = weight + if (match.exact) {
+        1_000
+    } else {
+        740 - (match.distance * 80)
+    }
+    return LibraryTextSearchScore(
+        score = score,
+        snippet = snippetAround(normalized, match.start, (match.end - match.start).coerceAtLeast(1)),
+        highlightTerm = match.text,
+    )
+}
+
+private fun exactTermMatch(text: String, term: String): LibraryTermMatch? {
+    val index = text.indexOf(term, ignoreCase = true)
+    if (index < 0) return null
+    val end = (index + term.length).coerceAtMost(text.length)
+    return LibraryTermMatch(
+        start = index,
+        end = end,
+        text = text.substring(index, end),
+        exact = true,
+        distance = 0,
+    )
+}
+
+private fun fuzzyTermMatch(tokens: List<LibrarySearchToken>, term: String): LibraryTermMatch? {
+    if (term.length < 3) return null
+    val threshold = fuzzyDistanceThreshold(term)
+    return tokens
+        .asSequence()
+        .take(MAX_FUZZY_TOKENS_PER_FIELD)
+        .filter { token ->
+            token.text.length <= MAX_FUZZY_TOKEN_CHARS &&
+                abs(token.text.length - term.length) <= threshold
+        }
+        .mapNotNull { token ->
+            val distance = levenshteinDistanceAtMost(term, token.text.lowercase(), threshold)
+            if (distance <= threshold) {
+                LibraryTermMatch(
+                    start = token.start,
+                    end = token.end,
+                    text = token.text,
+                    exact = false,
+                    distance = distance,
+                )
+            } else {
+                null
+            }
+        }
+        .sortedWith(compareBy<LibraryTermMatch> { it.distance }.thenBy { it.start })
+        .firstOrNull()
+}
+
+private fun fuzzyDistanceThreshold(term: String): Int = when {
+    term.length <= 4 -> 1
+    term.length <= 8 -> 2
+    else -> 3
+}
+
+private fun levenshteinDistanceAtMost(a: String, b: String, maxDistance: Int): Int {
+    if (abs(a.length - b.length) > maxDistance) return maxDistance + 1
+    var previous = IntArray(b.length + 1) { it }
+    var current = IntArray(b.length + 1)
+    for (i in 1..a.length) {
+        current[0] = i
+        var rowMin = current[0]
+        for (j in 1..b.length) {
+            val substitutionCost = if (a[i - 1] == b[j - 1]) 0 else 1
+            current[j] = minOf(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + substitutionCost,
+            )
+            rowMin = minOf(rowMin, current[j])
+        }
+        if (rowMin > maxDistance) return maxDistance + 1
+        val swap = previous
+        previous = current
+        current = swap
+    }
+    return previous[b.length]
+}
+
+private fun normalizeSearchText(text: String?): String =
+    text
         ?.replace(Regex("\\s+"), " ")
         ?.trim()
         .orEmpty()
-    if (normalized.isBlank()) return null
-    val trimmed = query.trim()
-    if (trimmed.isBlank()) return null
-    val index = normalized.indexOf(trimmed, ignoreCase = true)
-    if (index < 0) return null
-    val radius = ((maxChars - trimmed.length) / 2).coerceAtLeast(24)
+
+private fun searchTokens(text: String): List<LibrarySearchToken> {
+    val tokens = mutableListOf<LibrarySearchToken>()
+    var start: Int? = null
+    text.forEachIndexed { index, char ->
+        if (char.isLetterOrDigit()) {
+            if (start == null) start = index
+        } else {
+            start?.let { tokenStart ->
+                tokens += LibrarySearchToken(text.substring(tokenStart, index), tokenStart, index)
+                start = null
+            }
+        }
+    }
+    start?.let { tokenStart ->
+        tokens += LibrarySearchToken(text.substring(tokenStart), tokenStart, text.length)
+    }
+    return tokens
+}
+
+private fun snippetAround(
+    normalized: String,
+    index: Int,
+    length: Int,
+    maxChars: Int = 170,
+): String {
+    val radius = ((maxChars - length) / 2).coerceAtLeast(24)
     var start = (index - radius).coerceAtLeast(0)
-    var end = (index + trimmed.length + radius).coerceAtMost(normalized.length)
+    var end = (index + length + radius).coerceAtMost(normalized.length)
     while (start > 0 && !normalized[start - 1].isWhitespace()) start--
     while (end < normalized.length && !normalized[end].isWhitespace()) end++
     val prefix = if (start > 0) "..." else ""
     val suffix = if (end < normalized.length) "..." else ""
     return prefix + normalized.substring(start, end).trim() + suffix
 }
+
+fun searchSnippet(text: String?, query: String, maxChars: Int = 170): String? {
+    val normalized = normalizeSearchText(text)
+    if (normalized.isBlank()) return null
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) return null
+    val index = normalized.indexOf(trimmed, ignoreCase = true)
+    if (index < 0) return null
+    return snippetAround(normalized, index, trimmed.length, maxChars)
+}
+
+private const val MAX_FUZZY_TOKENS_PER_FIELD = 2_500
+private const val MAX_FUZZY_TOKEN_CHARS = 36
 
 @Composable
 fun SegmentDetailScreen(
