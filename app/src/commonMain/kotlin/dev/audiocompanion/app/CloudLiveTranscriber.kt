@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
@@ -66,6 +67,16 @@ class CloudLiveTranscriber(
      * Soniox audio_format fix).
      */
     private val onOutcome: (CloudConnectivityResult) -> Unit = {},
+    /**
+     * How many times a live socket is reconnected after a mid-segment failure before giving up for
+     * that segment. Soniox realtime sees transient timeouts/drops; reconnecting recovers them
+     * without surfacing anything to the user (the [CloudHealthMonitor] debounces the failures).
+     */
+    private val maxReconnects: Int = DEFAULT_MAX_RECONNECTS,
+    /** Backoff before reconnect attempt N (1-based). Exponential, capped, by default. */
+    private val reconnectBackoffMs: (Int) -> Long = { attempt ->
+        (BASE_RECONNECT_DELAY_MS shl (attempt - 1)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+    },
     private val decodePcm: (
         LiveAudioEvent.SegmentOpened,
         Flow<ByteArray>,
@@ -139,17 +150,29 @@ class CloudLiveTranscriber(
         lastSampleIndexExclusive = 0u
         frameChannel = channel
         sessionJob = scope.launch {
-            try {
-                streamSession(event, channel)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                onOutcome(
-                    CloudConnectivityResult.Failed(
-                        t.message ?: "Live cloud transcription failed.",
-                    ),
-                )
-                logBackgroundFailure("cloud live transcription", t)
+            var attempt = 0
+            while (true) {
+                try {
+                    streamSession(event, channel)
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    onOutcome(
+                        CloudConnectivityResult.Failed(
+                            t.message ?: "Live cloud transcription failed.",
+                        ),
+                    )
+                    logBackgroundFailure("cloud live transcription", t)
+                    attempt++
+                    // Reconnect only while this segment is still the active one and the user still
+                    // wants live cloud transcription; otherwise give up (the banner, if the failure
+                    // streak crossed the threshold, has already surfaced it).
+                    if (attempt > maxReconnects || !enabled() || activeSegmentId != event.segmentId) {
+                        return@launch
+                    }
+                    delay(reconnectBackoffMs(attempt))
+                }
             }
         }
     }
@@ -191,5 +214,11 @@ class CloudLiveTranscriber(
     /** Drops a segment's live preview once its durable transcript supersedes it. */
     fun prune(hasDurableTranscript: (String) -> Boolean) {
         _previews.value = _previews.value.filterKeys { it == activeSegmentId || !hasDurableTranscript(it) }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_RECONNECTS = 4
+        const val BASE_RECONNECT_DELAY_MS = 1_000L
+        const val MAX_RECONNECT_DELAY_MS = 15_000L
     }
 }
