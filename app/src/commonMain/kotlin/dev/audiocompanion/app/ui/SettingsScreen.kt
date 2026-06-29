@@ -212,6 +212,33 @@ fun SettingsScreen(
                     else -> "Not installed"
                 },
             )
+            RowDivider()
+            SettingsRow(
+                title = "Cloud provider",
+                subtitle = if (settings.cloudTranscriptionEnabled) {
+                    "Used when the mode falls back to cloud transcription."
+                } else {
+                    "Cloud is off while the mode is local only."
+                },
+                value = cloudProviderLabel(settings.cloudTranscriptionProvider),
+                valueColor = if (settings.cloudTranscriptionEnabled) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                onClick = { showCloudProviderPicker = true },
+            )
+            if (settings.cloudTranscriptionProvider == CloudProvider.Soniox) {
+                RowDivider()
+                OutlinedTextField(
+                    value = settings.sonioxApiKey,
+                    onValueChange = actions.setSonioxApiKey,
+                    label = { Text("Soniox API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                )
+            }
         }
         localModel.selectedOption?.model?.let { model ->
             Text(
@@ -263,26 +290,6 @@ fun SettingsScreen(
                     Text("Download")
                 }
             }
-        }
-
-        GroupHeader("Cloud transcription")
-        SettingsGroup {
-            SettingsRow(
-                title = "Provider",
-                value = cloudProviderLabel(settings.cloudTranscriptionProvider),
-                valueColor = MaterialTheme.colorScheme.primary,
-                onClick = { showCloudProviderPicker = true },
-            )
-        }
-        if (settings.cloudTranscriptionProvider == CloudProvider.Soniox) {
-            OutlinedTextField(
-                value = settings.sonioxApiKey,
-                onValueChange = actions.setSonioxApiKey,
-                label = { Text("Soniox API key") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-            )
         }
         HelperText(
             if (settings.cloudTranscriptionEnabled) {
@@ -391,26 +398,6 @@ fun SettingsScreen(
         }
         if (personalContext.people.isNotEmpty() || personalContext.orgs.isNotEmpty()) {
             HelperText("${personalContext.people.size} people and ${personalContext.orgs.size} organizations imported.")
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = { actions.setPersonalContextProfileText(profileDraft) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Save")
-            }
-            OutlinedButton(
-                onClick = {
-                    profileDraft = ""
-                    actions.clearPersonalContext()
-                },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Clear")
-            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
