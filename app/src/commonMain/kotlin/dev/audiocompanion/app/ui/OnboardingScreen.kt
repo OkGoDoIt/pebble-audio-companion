@@ -317,14 +317,9 @@ private fun PrivacyDefaultsStep(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    SettingsToggleRow(
-        title = "Remote AI",
-        subtitle = "Send transcripts to an AI provider for summaries and titles. Off by default.",
-        checked = settings.remoteAiConsent,
-        onCheckedChange = actions.setRemoteAiConsent,
-    )
     InfoRow("Keep audio", "${settings.retentionDays} days")
     InfoRow("Transcription", transcriptionModeLabel(settings.transcriptionMode))
+    InfoRow("AI", aiModeLabel(settings.aiMode))
     InfoRow(
         "Local model",
         when {

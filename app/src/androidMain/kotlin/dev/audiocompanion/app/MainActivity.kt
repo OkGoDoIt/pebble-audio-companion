@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity() {
                             runtime.runAi(
                                 prompt = template,
                                 segmentIds = segmentIds,
-                                userConsentedToRemote = settingsRepository.settings.value.remoteAiConsent,
+                                userConsentedToRemote = settingsRepository.settings.value.remoteAiEnabled,
                             )
                         }
                     },
@@ -175,7 +175,7 @@ class MainActivity : ComponentActivity() {
                             runtime.runAsk(
                                 question = question,
                                 segmentIds = segmentIds,
-                                userConsentedToRemote = settingsRepository.settings.value.remoteAiConsent,
+                                userConsentedToRemote = settingsRepository.settings.value.remoteAiEnabled,
                             )
                         }
                     },

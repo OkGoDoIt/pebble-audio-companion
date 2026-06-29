@@ -119,7 +119,7 @@ class AndroidAudioCompanionRuntimeFactory(
             remote = OpenAiChatAiProvider(
                 client = HttpClient(OkHttp),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
-                remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
+                remoteConsent = { settingsRepository.settings.value.remoteAiEnabled },
                 model = { settingsRepository.settings.value.aiModel },
                 grounding = aiGrounding,
             ),

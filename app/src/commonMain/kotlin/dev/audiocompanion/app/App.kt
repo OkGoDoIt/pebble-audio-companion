@@ -416,7 +416,7 @@ fun App(
                     AppTab.Ai -> AiScreen(
                         segments = segments,
                         aiOutputs = aiOutputs,
-                        aiConfigured = currentSettings.remoteAiConsent &&
+                        aiConfigured = currentSettings.remoteAiEnabled &&
                             currentSettings.openAiApiKey.isNotBlank(),
                         nowMs = nowMs,
                         dailyDigests = dailyDigests,

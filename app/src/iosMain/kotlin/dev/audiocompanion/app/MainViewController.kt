@@ -317,7 +317,7 @@ fun MainViewController(): UIViewController {
                         runtime.runAi(
                             prompt = template,
                             segmentIds = segmentIds,
-                            userConsentedToRemote = settings.settings.value.remoteAiConsent,
+                            userConsentedToRemote = settings.settings.value.remoteAiEnabled,
                         )
                     }
                 },
@@ -326,7 +326,7 @@ fun MainViewController(): UIViewController {
                         runtime.runAsk(
                             question = question,
                             segmentIds = segmentIds,
-                            userConsentedToRemote = settings.settings.value.remoteAiConsent,
+                            userConsentedToRemote = settings.settings.value.remoteAiEnabled,
                         )
                     }
                 },

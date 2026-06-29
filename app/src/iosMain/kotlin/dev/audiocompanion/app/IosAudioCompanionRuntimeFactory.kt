@@ -200,7 +200,7 @@ class IosAudioCompanionRuntimeFactory(
             remote = OpenAiChatAiProvider(
                 client = HttpClient(Darwin),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
-                remoteConsent = { settingsRepository.settings.value.remoteAiConsent },
+                remoteConsent = { settingsRepository.settings.value.remoteAiEnabled },
                 model = { settingsRepository.settings.value.aiModel },
                 grounding = aiGrounding,
             ),

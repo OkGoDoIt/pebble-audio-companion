@@ -36,6 +36,9 @@ val AudioCompanionSettings.speakerLabelsEnabled: Boolean
 val AudioCompanionSettings.liveCloudTranscriptionEnabled: Boolean
     get() = cloudTranscriptionEnabled
 
+val AudioCompanionSettings.remoteAiEnabled: Boolean
+    get() = aiMode != AiProcessingMode.LocalOnly
+
 fun AudioCompanionSettings.cloudTranscriptionKeyConfigured(): Boolean =
     when (cloudTranscriptionProvider) {
         CloudProvider.OpenAi -> openAiApiKey.isNotBlank()
