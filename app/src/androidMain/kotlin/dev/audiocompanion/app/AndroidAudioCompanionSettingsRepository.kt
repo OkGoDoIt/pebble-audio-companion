@@ -46,7 +46,7 @@ class AndroidAudioCompanionSettingsRepository(
     }
 
     override fun setAiMode(mode: AiProcessingMode) {
-        update { it.copy(aiMode = mode) }
+        update { it.copy(aiMode = mode, remoteAiConsent = mode != AiProcessingMode.LocalOnly) }
     }
 
     override fun setAiModel(modelId: String) {

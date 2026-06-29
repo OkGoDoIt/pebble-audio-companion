@@ -90,6 +90,11 @@ fun SettingsScreen(
         profileDraft = personalContext.profileText.orEmpty()
     }
     val scope = rememberCoroutineScope()
+    val transcriptionUsesLocal = settings.transcriptionMode != TranscriptionMode.RemoteOnly
+    val transcriptionUsesCloud = settings.transcriptionMode != TranscriptionMode.LocalOnly
+    val aiUsesRemote = settings.aiMode != AiProcessingMode.LocalOnly
+    val openAiKeyShownForTranscription =
+        transcriptionUsesCloud && settings.cloudTranscriptionProvider == CloudProvider.OpenAi
 
     Column(
         modifier = Modifier
@@ -192,120 +197,129 @@ fun SettingsScreen(
                 valueColor = MaterialTheme.colorScheme.primary,
                 onClick = { showTranscriptionModePicker = true },
             )
-            RowDivider()
-            SettingsRow(
-                title = "Local model",
-                value = localModel.selectedOption?.let {
-                    "${it.model.shortLabel} · ${Formatting.storageSize(it.model.downloadBytes)}"
-                } ?: "Choose model",
-                valueColor = MaterialTheme.colorScheme.primary,
-                onClick = { if (!localModel.downloading) showLocalModelPicker = true },
-            )
-            RowDivider()
-            SettingsRow(
-                title = "On-device model",
-                value = when {
-                    localModel.installing -> "Installing…"
-                    localModel.downloading -> "Downloading…"
-                    localModel.downloaded -> "Installed"
-                    localModel.errorMessage != null -> "Error"
-                    else -> "Not installed"
-                },
-            )
-            RowDivider()
-            SettingsRow(
-                title = "Cloud provider",
-                subtitle = if (settings.cloudTranscriptionEnabled) {
-                    "Used when the mode falls back to cloud transcription."
-                } else {
-                    "Cloud is off while the mode is local only."
-                },
-                value = cloudProviderLabel(settings.cloudTranscriptionProvider),
-                valueColor = if (settings.cloudTranscriptionEnabled) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                onClick = { showCloudProviderPicker = true },
-            )
-            if (settings.cloudTranscriptionProvider == CloudProvider.Soniox) {
+            if (transcriptionUsesLocal) {
                 RowDivider()
-                OutlinedTextField(
-                    value = settings.sonioxApiKey,
-                    onValueChange = actions.setSonioxApiKey,
-                    label = { Text("Soniox API key") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                SettingsRow(
+                    title = "Local model",
+                    value = localModel.selectedOption?.let {
+                        "${it.model.shortLabel} · ${Formatting.storageSize(it.model.downloadBytes)}"
+                    } ?: "Choose model",
+                    valueColor = MaterialTheme.colorScheme.primary,
+                    onClick = { if (!localModel.downloading) showLocalModelPicker = true },
                 )
-            }
-        }
-        localModel.selectedOption?.model?.let { model ->
-            Text(
-                text = model.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (localModel.downloading) {
-            if (localModel.totalBytes > 0) {
-                LinearProgressIndicator(
-                    progress = {
-                        (localModel.downloadedBytes.toFloat() / localModel.totalBytes).coerceIn(0f, 1f)
+                RowDivider()
+                SettingsRow(
+                    title = "On-device model",
+                    value = when {
+                        localModel.installing -> "Installing…"
+                        localModel.downloading -> "Downloading…"
+                        localModel.downloaded -> "Installed"
+                        localModel.errorMessage != null -> "Error"
+                        else -> "Not installed"
                     },
-                    modifier = Modifier.fillMaxWidth(),
                 )
-                HelperText(
-                    "${Formatting.storageSize(localModel.downloadedBytes)} of " +
-                        Formatting.storageSize(localModel.totalBytes),
+            }
+            if (transcriptionUsesCloud) {
+                RowDivider()
+                SettingsRow(
+                    title = "Cloud provider",
+                    subtitle = cloudProviderSubtitle(settings.transcriptionMode),
+                    value = cloudProviderLabel(settings.cloudTranscriptionProvider),
+                    valueColor = MaterialTheme.colorScheme.primary,
+                    onClick = { showCloudProviderPicker = true },
                 )
-            } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                RowDivider()
+                when (settings.cloudTranscriptionProvider) {
+                    CloudProvider.OpenAi -> OutlinedTextField(
+                        value = settings.openAiApiKey,
+                        onValueChange = actions.setOpenAiApiKey,
+                        label = { Text("OpenAI API key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    )
+                    CloudProvider.Soniox -> OutlinedTextField(
+                        value = settings.sonioxApiKey,
+                        onValueChange = actions.setSonioxApiKey,
+                        label = { Text("Soniox API key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    )
+                }
             }
         }
-        localModel.errorMessage?.let { HelperText(it, MaterialTheme.colorScheme.error) }
-        if (!localModel.downloaded && !localModel.downloading) {
-            HelperText(
-                "Transcribes on this phone with no audio leaving the device. Choose the model " +
-                    "size that fits this phone, then download on Wi-Fi.",
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        if (transcriptionUsesLocal) {
+            localModel.selectedOption?.model?.let { model ->
+                Text(
+                    text = model.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (localModel.downloading) {
-                OutlinedButton(onClick = actions.cancelModelDownload, modifier = Modifier.weight(1f)) {
-                    Text("Cancel")
+                if (localModel.totalBytes > 0) {
+                    LinearProgressIndicator(
+                        progress = {
+                            (localModel.downloadedBytes.toFloat() / localModel.totalBytes).coerceIn(0f, 1f)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    HelperText(
+                        "${Formatting.storageSize(localModel.downloadedBytes)} of " +
+                            Formatting.storageSize(localModel.totalBytes),
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-            } else {
-                OutlinedButton(onClick = actions.refreshLocalModel, modifier = Modifier.weight(1f)) {
-                    Text("Check")
-                }
-                Button(
-                    enabled = !localModel.downloaded,
-                    onClick = actions.downloadLocalModel,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Download")
+            }
+            localModel.errorMessage?.let { HelperText(it, MaterialTheme.colorScheme.error) }
+            if (!localModel.downloaded && !localModel.downloading) {
+                HelperText(
+                    "Transcribes on this phone with no audio leaving the device. Choose the model " +
+                        "size that fits this phone, then download on Wi-Fi.",
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (localModel.downloading) {
+                    OutlinedButton(onClick = actions.cancelModelDownload, modifier = Modifier.weight(1f)) {
+                        Text("Cancel")
+                    }
+                } else {
+                    OutlinedButton(onClick = actions.refreshLocalModel, modifier = Modifier.weight(1f)) {
+                        Text("Check")
+                    }
+                    Button(
+                        enabled = !localModel.downloaded,
+                        onClick = actions.downloadLocalModel,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Download")
+                    }
                 }
             }
         }
         HelperText(
-            if (settings.cloudTranscriptionEnabled) {
-                "Cloud transcription, speaker labels, and live transcription are used automatically when the selected provider supports them."
-            } else {
-                "Local only keeps transcription on this phone. Cloud transcription is off in this mode."
+            when {
+                !transcriptionUsesCloud -> "Local only keeps transcription on this phone."
+                !transcriptionUsesLocal ->
+                    "Cloud transcription, speaker labels, and live transcription use the selected provider."
+                else -> {
+                    "Uses cloud when this mode needs it; local transcription stays on this phone."
+                }
             },
         )
-        if (settings.cloudTranscriptionEnabled) {
+        if (transcriptionUsesCloud) {
             // Auto-test shortly after the key/provider settles (debounced so it never fires mid-typing
             // or per keystroke), plus a manual button. Result is shown inline below.
             LaunchedEffect(
                 settings.cloudTranscriptionProvider,
                 settings.openAiApiKey,
                 settings.sonioxApiKey,
-                settings.cloudTranscriptionEnabled,
+                transcriptionUsesCloud,
             ) {
                 if (settings.cloudTranscriptionKeyConfigured()) {
                     delay(700)
@@ -338,30 +352,29 @@ fun SettingsScreen(
                 valueColor = MaterialTheme.colorScheme.primary,
                 onClick = { showAiModePicker = true },
             )
-            RowDivider()
-            SettingsRow(
-                title = "Model",
-                value = aiModelLabel(settings.aiModel),
-                valueColor = MaterialTheme.colorScheme.primary,
-                onClick = { showAiModelPicker = true },
-            )
-            RowDivider()
-            GroupedToggleRow(
-                title = "Remote AI",
-                subtitle = "Send transcripts to the configured AI provider when you run AI. Off by default.",
-                checked = settings.remoteAiConsent,
-                onCheckedChange = actions.setRemoteAiConsent,
-            )
+            if (aiUsesRemote) {
+                RowDivider()
+                SettingsRow(
+                    title = "Model",
+                    value = aiModelLabel(settings.aiModel),
+                    valueColor = MaterialTheme.colorScheme.primary,
+                    onClick = { showAiModelPicker = true },
+                )
+            }
         }
-        OutlinedTextField(
-            value = settings.openAiApiKey,
-            onValueChange = actions.setOpenAiApiKey,
-            label = { Text("OpenAI API key") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        HelperText("One key is used for both cloud transcription and remote AI.")
+        if (aiUsesRemote && !openAiKeyShownForTranscription) {
+            OutlinedTextField(
+                value = settings.openAiApiKey,
+                onValueChange = actions.setOpenAiApiKey,
+                label = { Text("OpenAI API key") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            HelperText("Used for remote AI.")
+        } else if (aiUsesRemote) {
+            HelperText("Remote AI uses the OpenAI key configured above.")
+        }
 
         GroupHeader("About you")
         HelperText(
@@ -584,6 +597,13 @@ fun cloudProviderLabel(provider: CloudProvider): String = when (provider) {
 fun cloudProviderDescription(provider: CloudProvider): String = when (provider) {
     CloudProvider.OpenAi -> "OpenAI Audio transcriptions (gpt-4o-transcribe). Uses the OpenAI API key."
     CloudProvider.Soniox -> "Soniox async transcription (stt-async-v5). Uses the Soniox API key."
+}
+
+fun cloudProviderSubtitle(mode: TranscriptionMode): String = when (mode) {
+    TranscriptionMode.RemoteOnly -> "Used for cloud transcription."
+    TranscriptionMode.LocalFirst -> "Used if local transcription is unavailable."
+    TranscriptionMode.RemoteFirst -> "Used first; local transcription is fallback."
+    TranscriptionMode.LocalOnly -> "Cloud transcription is off."
 }
 
 @Composable
