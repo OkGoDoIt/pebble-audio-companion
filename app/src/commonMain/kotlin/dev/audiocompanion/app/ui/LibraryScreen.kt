@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -1230,6 +1231,28 @@ fun SegmentDetailScreen(
     LaunchedEffect(meta.segmentId, meta.frameCount) {
         waveform = loadWaveform(meta.segmentId)
     }
+    val shareSegmentAudio = {
+        if (!exporting) {
+            exporting = true
+            scope.launch {
+                val result = onExportSegment(meta.segmentId)
+                exportMessage = result.fold(
+                    onSuccess = {
+                        if (it.fileCount == 0) {
+                            "No audio frames were available to export."
+                        } else {
+                            // Hand straight to the platform share sheet: on iOS the
+                            // raw file path is not reachable for users.
+                            onShareFile(it.files.first().path)
+                            "Exported — use the share sheet to save or send the WAV."
+                        }
+                    },
+                    onFailure = { "Export failed: ${it.message ?: it::class.simpleName}" },
+                )
+                exporting = false
+            }
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1243,9 +1266,23 @@ fun SegmentDetailScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onBack) { Text("< Library") }
-            if (!meta.isOpen) {
-                TextButton(onClick = { confirmDelete = true }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (meta.frameCount > 0) {
+                    IconButton(
+                        enabled = !exporting,
+                        onClick = shareSegmentAudio,
+                    ) {
+                        if (exporting) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Filled.Share, contentDescription = "Share WAV")
+                        }
+                    }
+                }
+                if (!meta.isOpen) {
+                    TextButton(onClick = { confirmDelete = true }) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
@@ -1312,33 +1349,6 @@ fun SegmentDetailScreen(
                 onSeekPlayback = onSeekPlayback,
                 onCyclePlaybackSpeed = onCyclePlaybackSpeed,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    enabled = !exporting,
-                    onClick = {
-                        exporting = true
-                        scope.launch {
-                            val result = onExportSegment(meta.segmentId)
-                            exportMessage = result.fold(
-                                onSuccess = {
-                                    if (it.fileCount == 0) {
-                                        "No audio frames were available to export."
-                                    } else {
-                                        // Hand straight to the platform share sheet: on iOS the
-                                        // raw file path is not reachable for users.
-                                        onShareFile(it.files.first().path)
-                                        "Exported — use the share sheet to save or send the WAV."
-                                    }
-                                },
-                                onFailure = { "Export failed: ${it.message ?: it::class.simpleName}" },
-                            )
-                            exporting = false
-                        }
-                    },
-                ) {
-                    Text(if (exporting) "Exporting…" else "Share WAV")
-                }
-            }
             exportMessage?.let {
                 Text(
                     text = it,
