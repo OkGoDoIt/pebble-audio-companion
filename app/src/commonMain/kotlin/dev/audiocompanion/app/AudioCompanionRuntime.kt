@@ -259,11 +259,11 @@ class AudioCompanionRuntime(
         val monitor = cloudHealthMonitor ?: return
         monitor.reportChecking()
         try {
-            monitor.report(check.checkConnectivity())
+            monitor.reportImmediate(check.checkConnectivity())
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            monitor.report(
+            monitor.reportImmediate(
                 dev.audiocompanion.transcription.CloudConnectivityResult.Failed(
                     t.message ?: "Cloud connectivity test failed.",
                 ),
