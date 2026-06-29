@@ -15,6 +15,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,7 +28,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import dev.audiocompanion.ai.ActionItem
@@ -47,6 +51,7 @@ import dev.audiocompanion.app.ui.SettingsScreen
 import dev.audiocompanion.app.ui.TimelineItem
 import dev.audiocompanion.app.ui.TodayScreen
 import dev.audiocompanion.app.ui.buildTimeline
+import dev.audiocompanion.app.ui.isIOS
 import dev.audiocompanion.app.ui.segmentTitle
 import dev.audiocompanion.app.ui.statusUiModel
 import dev.audiocompanion.storage.SegmentMeta
@@ -98,6 +103,7 @@ private const val TODAY_CONTENT_WINDOW_MS = 24L * 60 * 60 * 1000
  * is re-read whenever diagnostics change (every receive/transcription/AI event refreshes
  * diagnostics, so file-backed reads stay current without platform callbacks).
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun App(
     sessionState: StateFlow<ReceiverSessionState> =
@@ -167,6 +173,13 @@ fun App(
         // Which saved AI output the AI tab is showing in detail; set by a Library "Related AI
         // output" tap so the cross-tab jump lands on the full answer.
         var aiOutputId by rememberSaveable { mutableStateOf<String?>(null) }
+
+        // System back / iOS edge swipe-back at a tab root returns to Today (the home tab), matching
+        // the start-destination convention. When a detail screen is open its own BackHandler is
+        // registered deeper in the tree and wins, so the gesture pops the detail first; only once
+        // back at a list root does this fall through to the tab switch. On Today nothing is enabled,
+        // so the gesture falls through to the OS (Android exits the app).
+        BackHandler(enabled = tab != AppTab.Today) { tab = AppTab.Today }
 
         LaunchedEffect(pendingNavigation) {
             pendingNavigation?.let { req ->
@@ -307,6 +320,21 @@ fun App(
 
         Scaffold(
             bottomBar = {
+                // iOS tab bars tint the whole selected item (icon + label) in the accent color and
+                // have no shape behind the icon. Drop the Material "pill" indicator on iOS — it is
+                // the single biggest visual tell that this is a Material app — and tint instead. On
+                // Android, keep the standard Material treatment.
+                val itemColors = if (isIOS) {
+                    NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        indicatorColor = Color.Transparent,
+                    )
+                } else {
+                    NavigationBarItemDefaults.colors()
+                }
                 NavigationBar {
                     AppTab.entries.forEach { candidate ->
                         NavigationBarItem(
@@ -314,6 +342,7 @@ fun App(
                             onClick = { tab = candidate },
                             icon = { Icon(candidate.icon, contentDescription = candidate.label) },
                             label = { Text(candidate.label) },
+                            colors = itemColors,
                         )
                     }
                 }
