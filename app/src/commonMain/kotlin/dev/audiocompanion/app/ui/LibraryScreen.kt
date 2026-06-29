@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
@@ -63,7 +64,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -103,6 +106,7 @@ enum class LibraryFilter(val label: String) {
     Untranscribed("Untranscribed"),
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun LibraryScreen(
     segments: List<SegmentMeta>,
@@ -145,6 +149,14 @@ fun LibraryScreen(
     var selectedTag by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = selectedSegmentId?.let { id -> segments.firstOrNull { it.segmentId == id } }
     if (selected != null) {
+        val closeDetail = {
+            selectedSearchQuery = null
+            selectedSearchOffsetMs = null
+            onSelectSegment(null)
+        }
+        // System back / iOS edge swipe-back pops the detail screen back to the list. Registered
+        // here (deeper than the app shell's tab-level handler) so it wins while the detail is open.
+        BackHandler(onBack = closeDetail)
         SegmentDetailScreen(
             meta = selected,
             transcript = transcriptOf(selected.segmentId),
@@ -160,11 +172,7 @@ fun LibraryScreen(
             localModel = localModel,
             nowMs = nowMs,
             playback = playback,
-            onBack = {
-                selectedSearchQuery = null
-                selectedSearchOffsetMs = null
-                onSelectSegment(null)
-            },
+            onBack = closeDetail,
             onDelete = {
                 onDeleteSegment(selected.segmentId)
                 selectedSearchQuery = null
@@ -1265,7 +1273,7 @@ fun SegmentDetailScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("< Library") }
+            NavBackButton(label = "Library", onClick = onBack)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (meta.frameCount > 0) {
                     IconButton(
@@ -1275,7 +1283,12 @@ fun SegmentDetailScreen(
                         if (exporting) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Filled.Share, contentDescription = "Share WAV")
+                            // iOS uses the share-sheet glyph (box with an up arrow); Material uses
+                            // its own share mark. Match the platform the user expects.
+                            Icon(
+                                imageVector = if (isIOS) Icons.Filled.IosShare else Icons.Filled.Share,
+                                contentDescription = "Share WAV",
+                            )
                         }
                     }
                 }

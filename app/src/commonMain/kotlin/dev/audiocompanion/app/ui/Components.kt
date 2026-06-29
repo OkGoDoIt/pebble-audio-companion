@@ -14,7 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -153,6 +158,33 @@ fun SectionTitle(text: String) {
         style = MaterialTheme.typography.titleMedium,
         modifier = Modifier.padding(top = Spacing.section, bottom = Spacing.tight),
     )
+}
+
+/**
+ * The back affordance for a detail screen's nav row. Reads as a native back button per platform: an
+ * iOS-style thin chevron + previous-screen label tinted in the accent color (like a UINavigationBar
+ * back button), or a Material back arrow on Android. The same on-screen control the system edge
+ * swipe-back drives, so tapping it and swiping back feel like the same action.
+ */
+@Composable
+fun NavBackButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        modifier = modifier,
+    ) {
+        Icon(
+            imageVector = if (isIOS) {
+                Icons.AutoMirrored.Filled.ArrowBackIos
+            } else {
+                Icons.AutoMirrored.Filled.ArrowBack
+            },
+            contentDescription = null,
+            modifier = Modifier.size(if (isIOS) 17.dp else 20.dp),
+        )
+        Spacer(Modifier.width(if (isIOS) 2.dp else 6.dp))
+        Text(label)
+    }
 }
 
 /** Large screen title with consistent top spacing (Today / Library / AI / Settings). */

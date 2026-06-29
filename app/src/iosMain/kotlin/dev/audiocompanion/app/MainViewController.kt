@@ -228,6 +228,10 @@ object IosAudioCompanionBootstrap {
 
 fun MainViewController(): UIViewController {
     val bootstrap = IosAudioCompanionBootstrap
+    // The iOS leading-edge swipe-back gesture is wired automatically by Compose's UIKit layer
+    // (UIScreenEdgePanGestureRecognizer -> NavigationEventDispatcher); it drives whichever common
+    // BackHandler is registered, which is how it pops our in-app navigation (detail screens, then
+    // tab -> Today). No extra configuration is needed beyond registering the BackHandlers.
     return ComposeUIViewController {
         LaunchedEffect(Unit) {
             bootstrap.prepareForUi()

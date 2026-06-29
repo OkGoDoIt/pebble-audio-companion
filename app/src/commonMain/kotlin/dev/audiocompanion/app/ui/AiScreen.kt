@@ -36,7 +36,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -66,6 +68,7 @@ enum class AiScope(val label: String) {
     Selected("Selected"),
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun AiScreen(
     segments: List<SegmentMeta>,
@@ -96,6 +99,8 @@ fun AiScreen(
 ) {
     val selectedOutput = selectedOutputId?.let { id -> aiOutputs.firstOrNull { it.outputId == id } }
     if (selectedOutput != null) {
+        // System back / iOS edge swipe-back pops this AI answer back to the list (see App.kt).
+        BackHandler { onSelectOutput(null) }
         AiOutputDetail(
             output = selectedOutput,
             nowMs = nowMs,
@@ -443,7 +448,7 @@ private fun AiOutputDetail(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("< AI") }
+            NavBackButton(label = "AI", onClick = onBack)
             TextButton(onClick = { confirmDelete = true }) {
                 Text("Delete", color = MaterialTheme.colorScheme.error)
             }

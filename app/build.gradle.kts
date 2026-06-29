@@ -43,6 +43,10 @@ kotlin {
             implementation(compose.material3)
             implementation(compose.materialIconsExtended)
             implementation(compose.ui)
+            // Multiplatform BackHandler/PredictiveBackHandler. On iOS this is what makes the system
+            // edge swipe-back gesture pop our in-app navigation stack (enableBackGesture defaults to
+            // true on ComposeUIViewController); on Android it bridges to the OnBackPressedDispatcher.
+            implementation("org.jetbrains.compose.ui:ui-backhandler:${libs.versions.compose.multiplatform.get()}")
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
