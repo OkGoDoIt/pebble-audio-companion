@@ -3,6 +3,7 @@ package dev.audiocompanion.app
 import android.content.Context
 import android.os.Build
 import android.util.Base64
+import androidx.core.content.edit
 import dev.audiocompanion.ai.AiModeRouter
 import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
@@ -129,7 +130,7 @@ class AndroidAudioCompanionRuntimeFactory(
             store = personalContextStore,
             extractor = PersonalContextTermExtractor(aiRouter),
         )
-        personalContextCoordinator!!.reloadFromDisk()
+        personalContextCoordinator.reloadFromDisk()
         val liveAudioTap = LiveAudioTap()
         val streamingClient = HttpClient(OkHttp) { install(WebSockets) }
         val cloudLiveTranscriber = CloudLiveTranscriber(
@@ -279,9 +280,9 @@ class AndroidAudioCompanionRuntimeFactory(
         }
         val id = ByteArray(ProtocolConstants.RECEIVER_ID_BYTES)
         secureRandom.nextBytes(id)
-        prefs.edit()
-            .putString(KEY_RECEIVER_ID, Base64.encodeToString(id, Base64.NO_WRAP))
-            .apply()
+        prefs.edit {
+            putString(KEY_RECEIVER_ID, Base64.encodeToString(id, Base64.NO_WRAP))
+        }
         return id
     }
 

@@ -112,7 +112,7 @@ class IosBackgroundUploader(
             val jobId = task.taskDescription ?: return
             val key = task.taskIdentifier.toLong()
             val body = responseData.remove(key)?.let { data ->
-                NSString.create(data, NSUTF8StringEncoding) as String?
+                NSString.create(data, NSUTF8StringEncoding)?.toString()
             }.orEmpty()
             val outcome = if (didCompleteWithError != null) {
                 CloudUploadOutcome(jobId, httpStatus = 0, error = didCompleteWithError.localizedDescription)

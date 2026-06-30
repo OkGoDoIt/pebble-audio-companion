@@ -157,6 +157,7 @@ class CloudLiveTranscriberTest {
             enabled = { true },
             nowMs = { 123_000 },
             onOutcome = { outcomes += it },
+            logFailure = { _, _ -> },
             decodePcm = { _, encoded -> encoded },
         )
         val tapJob = transcriber.start(this)
@@ -198,6 +199,7 @@ class CloudLiveTranscriberTest {
             nowMs = { 123_000 },
             onOutcome = { outcomes += it },
             maxReconnects = 4,
+            logFailure = { _, _ -> },
             decodePcm = { _, encoded -> encoded },
         )
         val tapJob = transcriber.start(this)

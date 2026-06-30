@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.ExperimentalUnsignedTypes::class)
+
 package dev.audiocompanion.app.ui
 
 import dev.audiocompanion.app.AudioCompanionDiagnostics

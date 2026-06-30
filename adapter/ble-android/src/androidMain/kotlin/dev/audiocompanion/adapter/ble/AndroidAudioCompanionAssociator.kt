@@ -45,9 +45,11 @@ class AndroidAudioCompanionAssociator(
                     )
                     .build(),
             )
-            .setDisplayName("Pebble Audio Companion")
             .setSingleDevice(true)
             .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    setDisplayName("Pebble Audio Companion")
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     setDeviceProfile(AssociationRequest.DEVICE_PROFILE_WATCH)
                 }

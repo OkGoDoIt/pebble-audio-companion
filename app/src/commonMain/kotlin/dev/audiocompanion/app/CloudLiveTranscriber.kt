@@ -77,6 +77,7 @@ class CloudLiveTranscriber(
     private val reconnectBackoffMs: (Int) -> Long = { attempt ->
         (BASE_RECONNECT_DELAY_MS shl (attempt - 1)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
     },
+    private val logFailure: (String, Throwable) -> Unit = ::logBackgroundFailure,
     private val decodePcm: (
         LiveAudioEvent.SegmentOpened,
         Flow<ByteArray>,
@@ -163,7 +164,7 @@ class CloudLiveTranscriber(
                             t.message ?: "Live cloud transcription failed.",
                         ),
                     )
-                    logBackgroundFailure("cloud live transcription", t)
+                    logFailure("cloud live transcription", t)
                     attempt++
                     // Reconnect only while this segment is still the active one and the user still
                     // wants live cloud transcription; otherwise give up (the banner, if the failure

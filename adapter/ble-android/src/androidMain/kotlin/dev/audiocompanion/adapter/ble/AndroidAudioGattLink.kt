@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import dev.audiocompanion.protocol.ProtocolConstants
@@ -91,12 +92,7 @@ class AndroidAudioGattLink(
         connectedDeviceAddress = device.address
         _lastError.value = null
         _connectionState.value = LinkState.Connecting
-        gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            @Suppress("DEPRECATION")
-            device.connectGatt(context, true, callback)
-        }
+        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
     override fun disconnect() {
@@ -175,7 +171,7 @@ class AndroidAudioGattLink(
                     characteristic,
                     message,
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                ) == BluetoothGatt.GATT_SUCCESS
+                ) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.value = message
@@ -320,7 +316,7 @@ class AndroidAudioGattLink(
             gatt.writeDescriptor(
                 descriptor,
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
-            ) == BluetoothGatt.GATT_SUCCESS
+            ) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE

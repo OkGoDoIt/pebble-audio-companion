@@ -8,7 +8,6 @@ import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import dev.audiocompanion.app.ui.statusUiModel
 import kotlinx.coroutines.CoroutineScope
@@ -106,7 +105,6 @@ class AudioCompanionReceiverService : Service() {
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -119,12 +117,7 @@ class AudioCompanionReceiverService : Service() {
     }
 
     private fun buildNotification(contentText: String): Notification {
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
+        val builder = Notification.Builder(this, CHANNEL_ID)
         val openIntent = PendingIntent.getActivity(
             this,
             0,

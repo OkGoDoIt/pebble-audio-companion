@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
@@ -18,7 +19,10 @@
     <application
         android:name=".AudioCompanionApplication"
         android:label="Audio Companion"
+        android:icon="@drawable/ic_launcher_audio_companion"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:supportsRtl="true">
         <activity
             android:name=".MainActivity"
@@ -38,7 +42,8 @@
         <service
             android:name=".AudioCompanionDeviceService"
             android:exported="true"
-            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE"
+            tools:targetApi="s">
             <intent-filter>
                 <action android:name="android.companion.CompanionDeviceService" />
             </intent-filter>

@@ -299,7 +299,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onAssociated(association: AssociationInfo) {
-                    val device = association.deviceMacAddress?.toString()
+                    val device = association.deviceAddressOrNull()
                         ?.let { bluetoothAdapter()?.getRemoteDevice(it) }
                     if (device != null) {
                         startReceiver(device)
@@ -322,27 +322,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startReceiverService(intent: Intent) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        startForegroundService(intent)
     }
 
     @Suppress("DEPRECATION")
     private fun Intent.extractBluetoothDevice(): BluetoothDevice? {
         getParcelableExtra<BluetoothDevice>(CompanionDeviceManager.EXTRA_DEVICE)?.let { return it }
-        val association = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
-        } else {
-            getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return null
         }
-        return association?.deviceMacAddress?.toString()
+        return getParcelableExtra(
+            CompanionDeviceManager.EXTRA_ASSOCIATION,
+            AssociationInfo::class.java,
+        )?.deviceAddressOrNull()
             ?.let { bluetoothAdapter()?.getRemoteDevice(it) }
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? =
         getSystemService(BluetoothManager::class.java)?.adapter
+
+    private fun AssociationInfo.deviceAddressOrNull(): String? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            deviceMacAddress?.toString()
+        } else {
+            null
+        }
+    }
 
     private fun shareFile(path: String) {
         val file = File(path)

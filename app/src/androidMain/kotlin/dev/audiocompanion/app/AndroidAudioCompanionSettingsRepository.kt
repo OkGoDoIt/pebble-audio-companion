@@ -1,6 +1,7 @@
 package dev.audiocompanion.app
 
 import android.content.Context
+import androidx.core.content.edit
 import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.transcription.CloudProvider
@@ -100,21 +101,21 @@ class AndroidAudioCompanionSettingsRepository(
     )
 
     private fun persist(settings: AudioCompanionSettings) {
-        prefs.edit()
-            .putBoolean(KEY_BACKGROUND_ENABLED, settings.backgroundReceiverEnabled)
-            .putInt(KEY_RETENTION_DAYS, settings.retentionDays)
-            .putString(KEY_TRANSCRIPTION_MODE, settings.transcriptionMode.name)
-            .putString(KEY_LOCAL_TRANSCRIPTION_MODEL, settings.localTranscriptionModelId)
-            .putString(KEY_CLOUD_PROVIDER, settings.cloudTranscriptionProvider.name)
-            .putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
-            .putString(KEY_SONIOX_API_KEY, settings.sonioxApiKey)
-            .putString(KEY_AI_MODE, settings.aiMode.name)
-            .putString(KEY_AI_MODEL, settings.aiModel)
-            .putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
-            .putBoolean(KEY_AUTOMATIC_WAV_EXPORT, settings.automaticWavExportEnabled)
-            .putBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, settings.diagnosticsIncludeContent)
-            .putBoolean(KEY_ONBOARDING_COMPLETE, settings.onboardingComplete)
-            .apply()
+        prefs.edit {
+            putBoolean(KEY_BACKGROUND_ENABLED, settings.backgroundReceiverEnabled)
+            putInt(KEY_RETENTION_DAYS, settings.retentionDays)
+            putString(KEY_TRANSCRIPTION_MODE, settings.transcriptionMode.name)
+            putString(KEY_LOCAL_TRANSCRIPTION_MODEL, settings.localTranscriptionModelId)
+            putString(KEY_CLOUD_PROVIDER, settings.cloudTranscriptionProvider.name)
+            putString(KEY_OPENAI_API_KEY, settings.openAiApiKey)
+            putString(KEY_SONIOX_API_KEY, settings.sonioxApiKey)
+            putString(KEY_AI_MODE, settings.aiMode.name)
+            putString(KEY_AI_MODEL, settings.aiModel)
+            putBoolean(KEY_REMOTE_AI_CONSENT, settings.remoteAiConsent)
+            putBoolean(KEY_AUTOMATIC_WAV_EXPORT, settings.automaticWavExportEnabled)
+            putBoolean(KEY_DIAGNOSTICS_INCLUDE_CONTENT, settings.diagnosticsIncludeContent)
+            putBoolean(KEY_ONBOARDING_COMPLETE, settings.onboardingComplete)
+        }
     }
 
     private inline fun <reified T : Enum<T>> enumValueOrDefault(raw: String?, default: T): T =
