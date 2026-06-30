@@ -159,7 +159,15 @@ class AudioCompanionRuntime(
 
     private val session = AudioReceiverSession(
         link = link,
-        sink = liveMonitor?.let { TeeSegmentSink(store, it, nowMs, liveAudioTap) } ?: store,
+        sink = liveMonitor?.let {
+            TeeSegmentSink(
+                store = store,
+                monitor = it,
+                nowMs = nowMs,
+                tap = liveAudioTap,
+                onSegmentClosed = { transcriptionWakeups.trySend(Unit) },
+            )
+        } ?: store,
         policy = retention,
         resumeStore = resumeStore,
         config = receiverConfig,
