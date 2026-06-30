@@ -1,32 +1,47 @@
 package dev.audiocompanion.app.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,14 +54,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.audiocompanion.app.PlaybackUiState
+import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.ai.AiException
 import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
@@ -75,6 +96,8 @@ fun AiScreen(
     aiOutputs: List<AiOutput>,
     aiConfigured: Boolean,
     nowMs: Long,
+    transcriptOf: (String) -> SegmentTranscript? = { null },
+    playback: PlaybackUiState = PlaybackUiState(),
     dailyDigests: List<DailyDigest> = emptyList(),
     actionItems: List<ActionItem> = emptyList(),
     customTemplates: List<SavedAiTemplate> = emptyList(),
@@ -95,6 +118,8 @@ fun AiScreen(
     },
     onSetActionItemDone: (String, Boolean) -> Unit = { _, _ -> },
     onOpenSegment: (String) -> Unit = {},
+    onPlaySegment: (String) -> Unit = {},
+    onPausePlayback: () -> Unit = {},
     onRefresh: () -> Unit,
 ) {
     val selectedOutput = selectedOutputId?.let { id -> aiOutputs.firstOrNull { it.outputId == id } }
@@ -104,6 +129,9 @@ fun AiScreen(
         AiOutputDetail(
             output = selectedOutput,
             nowMs = nowMs,
+            segments = segments,
+            transcriptOf = transcriptOf,
+            playback = playback,
             onBack = { onSelectOutput(null) },
             onDelete = {
                 onDeleteOutput(selectedOutput.outputId)
@@ -116,6 +144,8 @@ fun AiScreen(
             onShareText = onShareText,
             onExportText = onExportText,
             onOpenSegment = onOpenSegment,
+            onPlaySegment = onPlaySegment,
+            onPausePlayback = onPausePlayback,
         )
         return
     }
@@ -418,10 +448,14 @@ private fun aiErrorMessage(e: Throwable): String =
         else -> e.message ?: "AI processing failed."
     }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AiOutputDetail(
     output: AiOutput,
     nowMs: Long,
+    segments: List<SegmentMeta>,
+    transcriptOf: (String) -> SegmentTranscript?,
+    playback: PlaybackUiState,
     onBack: () -> Unit,
     onDelete: () -> Unit,
     onRegenerate: suspend (AiPromptTemplate, List<String>) -> Result<AiOutput>,
@@ -429,12 +463,25 @@ private fun AiOutputDetail(
     onShareText: (String, String) -> Unit,
     onExportText: suspend (String, String) -> Result<String>,
     onOpenSegment: (String) -> Unit,
+    onPlaySegment: (String) -> Unit,
+    onPausePlayback: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     var editText by remember(output.text) { mutableStateOf(output.text) }
+    // The moment a tapped citation points at; non-null drives the verify-in-place evidence sheet.
+    var evidenceSegmentId by remember { mutableStateOf<String?>(null) }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val metaById = remember(segments) { segments.associateBy { it.segmentId } }
+
+    val answer = remember(output.text, output.segmentIds) {
+        parseGroundedAnswer(output.text, output.segmentIds)
+    }
+    // Cited moments lead. When an answer made no inline citations (e.g. a Daily summary), fall back
+    // to the full source set so provenance stays visible and honest.
+    val sourceList = answer.citedSegmentIds.ifEmpty { output.segmentIds }
+    val numbered = answer.citedSegmentIds.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -467,23 +514,19 @@ private fun AiOutputDetail(
                 Text("Save edit")
             }
         } else {
-            AiMarkdownText(output.text)
-            val referencedSegments = remember(output.text, output.segmentIds) {
-                referencedSegmentIds(output.text, output.segmentIds)
-            }
-            if (referencedSegments.isNotEmpty()) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    referencedSegments.forEach { segmentId ->
-                        AssistChip(
-                            onClick = { onOpenSegment(segmentId) },
-                            label = { Text(shortSegmentLabel(segmentId)) },
-                        )
-                    }
-                }
+            GroundedAnswerView(
+                answer = answer,
+                onTapCitation = { evidenceSegmentId = it.segmentId },
+            )
+            if (sourceList.isNotEmpty()) {
+                SourcesSection(
+                    sources = sourceList,
+                    numbered = numbered,
+                    metaOf = { metaById[it] },
+                    transcriptOf = transcriptOf,
+                    nowMs = nowMs,
+                    onTapSource = { evidenceSegmentId = it },
+                )
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -523,62 +566,363 @@ private fun AiOutputDetail(
             )
         }
     }
+
+    val evidenceId = evidenceSegmentId
+    if (evidenceId != null) {
+        ModalBottomSheet(
+            onDismissRequest = { evidenceSegmentId = null },
+            sheetState = rememberModalBottomSheetState(),
+        ) {
+            EvidenceSheet(
+                segmentId = evidenceId,
+                number = sourceList.indexOf(evidenceId).takeIf { it >= 0 && numbered }?.plus(1),
+                meta = metaById[evidenceId],
+                transcript = transcriptOf(evidenceId),
+                playback = playback,
+                nowMs = nowMs,
+                onPlay = onPlaySegment,
+                onPause = onPausePlayback,
+                onOpenInLibrary = {
+                    evidenceSegmentId = null
+                    onOpenSegment(evidenceId)
+                },
+            )
+        }
+    }
 }
 
+/**
+ * Renders the answer as clean prose with inline, tappable citation chips placed exactly where each
+ * claim is made — the chip number ties back to the "Based on" list and the evidence sheet.
+ */
 @Composable
-private fun AiMarkdownText(text: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        markdownBlocks(text).forEach { block ->
+private fun GroundedAnswerView(
+    answer: GroundedAnswer,
+    onTapCitation: (AnswerToken.Citation) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        answer.lines.forEach { line ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (block.marker != null) {
+                if (line.marker != null) {
                     Text(
-                        text = block.marker,
+                        text = line.marker,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    text = basicMarkdown(block.text),
+                AnswerLineText(
+                    line = line,
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
+                    onTapCitation = onTapCitation,
                 )
             }
         }
     }
 }
 
-private data class MarkdownBlock(val marker: String?, val text: String)
-
-private fun markdownBlocks(text: String): List<MarkdownBlock> =
-    text.lines()
-        .map { it.trimEnd() }
-        .fold(mutableListOf<MarkdownBlock>()) { blocks, rawLine ->
-            val line = rawLine.trim()
-            when {
-                line.isBlank() -> blocks
-                line.startsWith("- [ ] ") ->
-                    blocks += MarkdownBlock("☐", line.removePrefix("- [ ] ").trim())
-                line.startsWith("- [x] ", ignoreCase = true) ->
-                    blocks += MarkdownBlock("☑", line.substringAfter("] ").trim())
-                line.startsWith("- ") ->
-                    blocks += MarkdownBlock("•", line.removePrefix("- ").trim())
-                line.matches(Regex("^\\d+[.)]\\s+.*")) -> {
-                    val marker = line.substringBefore(' ').let {
-                        if (it.endsWith(".") || it.endsWith(")")) it else "$it."
+@Composable
+private fun AnswerLineText(
+    line: AnswerLine,
+    modifier: Modifier = Modifier,
+    onTapCitation: (AnswerToken.Citation) -> Unit,
+) {
+    val inlineContent = LinkedHashMap<String, InlineTextContent>()
+    val annotated = buildAnnotatedString {
+        line.tokens.forEachIndexed { index, token ->
+            when (token) {
+                is AnswerToken.Span -> append(basicMarkdown(token.text))
+                is AnswerToken.Citation -> {
+                    val id = "cite$index"
+                    val digits = token.number.toString().length
+                    inlineContent[id] = InlineTextContent(
+                        Placeholder(
+                            width = (15 + digits * 7).sp,
+                            height = 16.sp,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+                        ),
+                    ) {
+                        CitationChip(number = token.number, onClick = { onTapCitation(token) })
                     }
-                    blocks += MarkdownBlock(marker, line.replaceFirst(Regex("^\\d+[.)]\\s+"), ""))
+                    append(" ") // thin space so the chip doesn't crowd the preceding word
+                    appendInlineContent(id, "[${token.number}]")
                 }
-                blocks.lastOrNull()?.marker != null && rawLine.startsWith("  ") -> {
-                    val previous = blocks.removeAt(blocks.lastIndex)
-                    blocks += previous.copy(text = previous.text + " " + line)
-                }
-                else -> blocks += MarkdownBlock(null, line)
             }
-            blocks
         }
+    }
+    Text(
+        text = annotated,
+        inlineContent = inlineContent,
+        modifier = modifier,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+@Composable
+private fun CitationChip(number: Int, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(5.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = number.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * Honest, human provenance: "Based on N moments · 1:50–2:38 PM", expandable into a chronological
+ * list of the actual source moments (numbered to match the inline chips), each opening the same
+ * evidence sheet. Replaces the old grid of opaque segment-id buttons.
+ */
+@Composable
+private fun SourcesSection(
+    sources: List<String>,
+    numbered: Boolean,
+    metaOf: (String) -> SegmentMeta?,
+    transcriptOf: (String) -> SegmentTranscript?,
+    nowMs: Long,
+    onTapSource: (String) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val metas = remember(sources) { sources.mapNotNull(metaOf) }
+    val span = remember(metas, nowMs) { momentsSpanLabel(metas, nowMs) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Based on ${sources.size} moment${if (sources.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    span?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Hide sources" else "Show sources",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (expanded) {
+                sources.forEachIndexed { index, segmentId ->
+                    SourceRow(
+                        number = if (numbered) index + 1 else null,
+                        meta = metaOf(segmentId),
+                        transcript = transcriptOf(segmentId),
+                        nowMs = nowMs,
+                        onClick = { onTapSource(segmentId) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceRow(
+    number: Int?,
+    meta: SegmentMeta?,
+    transcript: SegmentTranscript?,
+    nowMs: Long,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (number != null) {
+            NumberBadge(number)
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (meta != null) momentLabel(meta, nowMs) else "Moment",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = transcriptSnippet(transcript?.text) ?: "No transcript yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        )
+    }
+}
+
+@Composable
+private fun NumberBadge(number: Int, large: Boolean = false) {
+    Box(
+        modifier = Modifier
+            .size(if (large) 30.dp else 22.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = number.toString(),
+            style = if (large) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * The verify-in-place sheet: when you tap a citation you see *when* it was, the actual words, and a
+ * one-tap way to hear that exact moment — without leaving the answer or losing your place.
+ */
+@Composable
+private fun EvidenceSheet(
+    segmentId: String,
+    number: Int?,
+    meta: SegmentMeta?,
+    transcript: SegmentTranscript?,
+    playback: PlaybackUiState,
+    nowMs: Long,
+    onPlay: (String) -> Unit,
+    onPause: () -> Unit,
+    onOpenInLibrary: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (number != null) NumberBadge(number, large = true)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (meta != null) momentLabel(meta, nowMs) else "This moment",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = "Captured moment" +
+                        (meta?.let { " · ${Formatting.relativeTime(it.receivedAtMs, nowMs)}" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        val missingMs = meta?.gaps
+            ?.sumOf { it.missingFrameCount.toLong() * meta.frameDurationMs } ?: 0L
+        if (missingMs > 0L) {
+            Text(
+                text = "Some audio was missing here — this moment may be incomplete.",
+                style = MaterialTheme.typography.bodySmall,
+                color = StatusColors.warning,
+            )
+        }
+
+        val quote = transcript?.text?.trim()
+        if (!quote.isNullOrBlank()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            ) {
+                Text(
+                    text = quote,
+                    modifier = Modifier
+                        .heightIn(max = 220.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        } else {
+            Text(
+                text = "This moment hasn't been transcribed yet. You can still play it or open it " +
+                    "in Library.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        val isPlayingThis = playback.segmentId == segmentId && playback.playing
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilledTonalButton(onClick = { if (isPlayingThis) onPause() else onPlay(segmentId) }) {
+                Icon(
+                    imageVector = if (isPlayingThis) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = if (isPlayingThis) "Pause" else "Play this moment",
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            TextButton(onClick = onOpenInLibrary) { Text("Open in Library") }
+        }
+    }
+}
+
+/** "Today, 2:14 PM" or "Jun 28, 2:14 PM" — the human identity of a captured moment. */
+private fun momentLabel(meta: SegmentMeta, nowMs: Long): String {
+    val time = Formatting.timeOfDay(meta.receivedAtMs)
+    return if (Formatting.isSameLocalDay(meta.receivedAtMs, nowMs)) {
+        "Today, $time"
+    } else {
+        "${Formatting.shortDate(meta.receivedAtMs, nowMs)}, $time"
+    }
+}
+
+/** "Today · 1:50 – 2:38 PM" for the "Based on" header; null when there are no dated moments. */
+private fun momentsSpanLabel(metas: List<SegmentMeta>, nowMs: Long): String? {
+    if (metas.isEmpty()) return null
+    val times = metas.map { it.receivedAtMs }.sorted()
+    val first = times.first()
+    val last = times.last()
+    return if (Formatting.isSameLocalDay(first, last)) {
+        val day = if (Formatting.isSameLocalDay(first, nowMs)) "Today" else Formatting.shortDate(first, nowMs)
+        if (first == last) "$day · ${Formatting.timeOfDay(first)}"
+        else "$day · ${Formatting.timeOfDay(first)} – ${Formatting.timeOfDay(last)}"
+    } else {
+        "${Formatting.shortDate(first, nowMs)} – ${Formatting.shortDate(last, nowMs)}"
+    }
+}
 
 private fun basicMarkdown(text: String): AnnotatedString = buildAnnotatedString {
     var index = 0
@@ -614,14 +958,3 @@ private fun basicMarkdown(text: String): AnnotatedString = buildAnnotatedString 
         }
     }
 }
-
-private fun referencedSegmentIds(text: String, sourceSegmentIds: List<String>): List<String> {
-    val direct = Regex("\\bseg-[A-Za-z0-9_-]+\\b")
-        .findAll(text)
-        .map { it.value.trimEnd('.', ',', ')') }
-        .toList()
-    return (direct + sourceSegmentIds).distinct()
-}
-
-private fun shortSegmentLabel(segmentId: String): String =
-    if (segmentId.length <= 14) segmentId else segmentId.take(8) + "…" + segmentId.takeLast(4)
