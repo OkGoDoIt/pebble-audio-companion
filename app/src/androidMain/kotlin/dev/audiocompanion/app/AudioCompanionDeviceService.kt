@@ -1,10 +1,10 @@
 package dev.audiocompanion.app
 
-import android.annotation.TargetApi
 import android.bluetooth.BluetoothManager
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceService
 import android.os.Build
+import androidx.annotation.RequiresApi
 
 /**
  * Companion Device Manager presence hook for the app-owned receiver runtime.
@@ -13,12 +13,12 @@ import android.os.Build
  * after association. Starting [AudioCompanionReceiverService] from this callback is the
  * supported background entry point for keeping the dedicated Audio Companion GATT link alive.
  */
-@TargetApi(Build.VERSION_CODES.S)
+@RequiresApi(Build.VERSION_CODES.S)
 @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
 class AudioCompanionDeviceService : CompanionDeviceService() {
 
     override fun onDeviceAppeared(associationInfo: AssociationInfo) {
-        val address = associationInfo.deviceMacAddress?.toString()
+        val address = associationInfo.deviceAddressOrNull()
         if (address != null) {
             PairedWatchStore.save(this, address)
         }
@@ -49,12 +49,14 @@ class AudioCompanionDeviceService : CompanionDeviceService() {
         val device = getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(address)
             ?: return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(
-                AudioCompanionReceiverService.connectIntent(this, device.address),
-            )
+        startForegroundService(AudioCompanionReceiverService.connectIntent(this, device.address))
+    }
+
+    private fun AssociationInfo.deviceAddressOrNull(): String? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            deviceMacAddress?.toString()
         } else {
-            startService(AudioCompanionReceiverService.connectIntent(this, device.address))
+            null
         }
     }
 }

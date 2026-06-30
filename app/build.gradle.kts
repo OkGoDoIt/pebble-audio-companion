@@ -61,7 +61,7 @@ kotlin {
             implementation(libs.ktor.client.okhttp)
             // On-device AI (Gemini Nano via AICore). Absent at runtime on unsupported devices, which
             // the provider handles by reporting unavailable.
-            implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
+            implementation(libs.mlkit.genai.prompt)
         }
         iosMain.dependencies {
             implementation(project(":adapter:ble-ios"))

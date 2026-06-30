@@ -210,7 +210,7 @@ class IosAudioCompanionRuntimeFactory(
             store = personalContextStore,
             extractor = PersonalContextTermExtractor(aiRouter),
         )
-        personalContextCoordinator!!.reloadFromDisk()
+        personalContextCoordinator.reloadFromDisk()
         val digestStore = FileDailyDigestStore(SystemFileSystem, root, nowMs)
         val actionItemStore = FileActionItemStore(SystemFileSystem, root, nowMs)
         val customTemplateStore = FileCustomTemplateStore(SystemFileSystem, root, nowMs)

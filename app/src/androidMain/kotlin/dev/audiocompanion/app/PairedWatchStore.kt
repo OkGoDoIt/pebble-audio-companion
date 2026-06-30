@@ -1,6 +1,7 @@
 package dev.audiocompanion.app
 
 import android.content.Context
+import androidx.core.content.edit
 
 /**
  * Persists the CDM-associated watch Bluetooth address so [AudioCompanionDeviceService] and
@@ -13,9 +14,9 @@ object PairedWatchStore {
     fun save(context: Context, deviceAddress: String) {
         context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_PAIRED_DEVICE_ADDRESS, deviceAddress)
-            .apply()
+            .edit {
+                putString(KEY_PAIRED_DEVICE_ADDRESS, deviceAddress)
+            }
     }
 
     fun load(context: Context): String? =
@@ -27,8 +28,8 @@ object PairedWatchStore {
     fun clear(context: Context) {
         context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .remove(KEY_PAIRED_DEVICE_ADDRESS)
-            .apply()
+            .edit {
+                remove(KEY_PAIRED_DEVICE_ADDRESS)
+            }
     }
 }
