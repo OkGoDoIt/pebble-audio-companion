@@ -448,6 +448,8 @@ fun App(
                         aiConfigured = currentSettings.remoteAiEnabled &&
                             currentSettings.openAiApiKey.isNotBlank(),
                         nowMs = nowMs,
+                        transcriptOf = { transcripts[it] },
+                        playback = currentPlayback,
                         dailyDigests = dailyDigests,
                         actionItems = actionItems,
                         customTemplates = customTemplates,
@@ -462,6 +464,8 @@ fun App(
                         onExportText = actions.exportText,
                         onSetActionItemDone = actions.setActionItemDone,
                         onOpenSegment = actions.openLibrarySegment,
+                        onPlaySegment = actions.playSegment,
+                        onPausePlayback = actions.pausePlayback,
                         onRefresh = actions.refreshDiagnostics,
                     )
 

@@ -705,7 +705,12 @@ class AudioCompanionRuntime(
                     gapSummary = gapSummaries[excerpt.segmentId],
                 )
             }
-        val context = (askRetriever ?: AskRetriever()).formatForPrompt(chunks)
+        // Number sources by the order the output will store them in (distinct excerpt order), so a
+        // model `[n]` citation maps directly back to output.segmentIds[n-1] in the answer view.
+        val sourceOrder = excerpts.map { it.segmentId }.distinct()
+        val context = (askRetriever ?: AskRetriever()).formatForPrompt(chunks) { id ->
+            sourceOrder.indexOf(id).takeIf { it >= 0 }?.plus(1)
+        }
         val request = AiRunRequest(
             requestId = "ask-${nowMs()}-${aiRunCounter++}",
             prompt = AiPromptTemplate(

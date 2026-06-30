@@ -53,7 +53,16 @@ class AskRetriever(
         return (fromIndex + remainder).take(maxChunks)
     }
 
-    fun formatForPrompt(chunks: List<RetrievedChunk>): String =
+    /**
+     * Render chunks for the prompt. When [citationNumberOf] is supplied, each chunk is prefixed
+     * with a stable `[n]` citation number (keyed off the source-segment order, not the relevance
+     * order) so the model can cite `[n]` and the app can map those numbers straight back to a real
+     * segment id. Without it, the legacy unnumbered format is preserved.
+     */
+    fun formatForPrompt(
+        chunks: List<RetrievedChunk>,
+        citationNumberOf: ((String) -> Int?)? = null,
+    ): String =
         chunks.joinToString("\n\n") { chunk ->
             val time = when {
                 chunk.startTimeMs != null && chunk.endTimeMs != null ->
@@ -61,7 +70,9 @@ class AskRetriever(
                 chunk.startTimeMs != null -> " @${chunk.startTimeMs}ms"
                 else -> ""
             }
+            val number = citationNumberOf?.invoke(chunk.segmentId)
+            val cite = number?.let { "[$it] " }.orEmpty()
             val gaps = chunk.gapSummary?.let { "\nGAPS: $it" }.orEmpty()
-            "[segment ${chunk.segmentId}$time]$gaps\n${chunk.text}"
+            "$cite[segment ${chunk.segmentId}$time]$gaps\n${chunk.text}"
         }
 }
