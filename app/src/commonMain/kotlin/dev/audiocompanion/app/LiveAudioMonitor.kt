@@ -339,31 +339,37 @@ class TeeSegmentSink(
     private val nowMs: () -> Long,
     /** Optional live-audio fan-out for real-time cloud transcription; null disables it. */
     private val tap: LiveAudioTap? = null,
+    /** Called when a segment becomes newly eligible for closed-segment processing. */
+    private val onSegmentClosed: () -> Unit = {},
 ) : SegmentSink {
     override suspend fun openSegment(
         start: StreamStart,
         receivedAtMs: Long,
         provenance: SegmentProvenance?,
     ) {
+        val previousId = store.openSegmentId
         store.openSegment(start, receivedAtMs, provenance)
-        val segmentId = store.openSegmentId ?: return
-        val meta = store.readMeta(segmentId) ?: return
-        tap?.emit(
-            LiveAudioEvent.SegmentOpened(
-                segmentId = segmentId,
-                sampleRateHz = meta.sampleRateHz.toInt(),
-                bitRateBps = meta.bitRateBps.toInt(),
-                frameSamples = meta.frameSamples,
-            ),
-        )
+        val segmentId = store.openSegmentId
+        if (previousId != null && previousId != segmentId) {
+            tap?.emit(LiveAudioEvent.SegmentClosed(previousId))
+            onSegmentClosed()
+        }
+        segmentId?.let(::emitSegmentOpened)
     }
 
     override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
+        val receivingSegmentId = store.openSegmentId
         store.appendFrames(streamId, frames)
-        val segmentId = store.openSegmentId
-        monitor.onFrames(segmentId, frames, nowMs())
-        if (tap != null && segmentId != null) {
-            tap.emit(LiveAudioEvent.FramesAppended(segmentId, frames))
+        monitor.onFrames(receivingSegmentId, frames, nowMs())
+        if (tap != null && receivingSegmentId != null) {
+            tap.emit(LiveAudioEvent.FramesAppended(receivingSegmentId, frames))
+        }
+
+        val nextSegmentId = store.openSegmentId
+        if (receivingSegmentId != null && receivingSegmentId != nextSegmentId) {
+            tap?.emit(LiveAudioEvent.SegmentClosed(receivingSegmentId))
+            onSegmentClosed()
+            nextSegmentId?.let(::emitSegmentOpened)
         }
     }
 
@@ -377,6 +383,21 @@ class TeeSegmentSink(
     override suspend fun closeSegment(reason: SegmentCloseReason) {
         val closingId = store.openSegmentId
         store.closeSegment(reason)
-        closingId?.let { tap?.emit(LiveAudioEvent.SegmentClosed(it)) }
+        closingId?.let {
+            tap?.emit(LiveAudioEvent.SegmentClosed(it))
+            onSegmentClosed()
+        }
+    }
+
+    private fun emitSegmentOpened(segmentId: String) {
+        val meta = store.readMeta(segmentId) ?: return
+        tap?.emit(
+            LiveAudioEvent.SegmentOpened(
+                segmentId = segmentId,
+                sampleRateHz = meta.sampleRateHz.toInt(),
+                bitRateBps = meta.bitRateBps.toInt(),
+                frameSamples = meta.frameSamples,
+            ),
+        )
     }
 }
