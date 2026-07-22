@@ -2,6 +2,8 @@ package dev.audiocompanion.adapter.ble
 
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.transport.AudioGattLink
+import dev.audiocompanion.transport.ConnectFailure
+import dev.audiocompanion.transport.ConnectFailureKind
 import dev.audiocompanion.transport.LinkState
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -19,11 +21,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.CoreBluetooth.CBATTErrorDomain
 import platform.CoreBluetooth.CBCentralManager
 import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
 import platform.CoreBluetooth.CBCentralManagerOptionRestoreIdentifierKey
 import platform.CoreBluetooth.CBCharacteristic
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
+import platform.CoreBluetooth.CBErrorDomain
 import platform.CoreBluetooth.CBManagerStatePoweredOff
 import platform.CoreBluetooth.CBManagerStatePoweredOn
 import platform.CoreBluetooth.CBManagerStateResetting
@@ -76,8 +80,8 @@ class IosAudioGattLink(
 ) : AudioGattLink {
     private val _connectionState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = _connectionState.asStateFlow()
-    private val _lastError = MutableStateFlow<String?>(null)
-    override val lastError: StateFlow<String?> = _lastError.asStateFlow()
+    private val _lastFailure = MutableStateFlow<ConnectFailure?>(null)
+    override val lastFailure: StateFlow<ConnectFailure?> = _lastFailure.asStateFlow()
 
     // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
     // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
@@ -145,6 +149,13 @@ class IosAudioGattLink(
             log("connect() ignored; already ${connectionState.value}")
             return@onMainQueue
         }
+        // A LinkRejected failure won't clear by re-running the identical (stale-cache) handshake, so
+        // stay put until a Bluetooth power-cycle or explicit user Reconnect clears the latch. This is
+        // what stops the app re-failing on every foreground.
+        if (awaitingUserRecovery) {
+            log("connect() suppressed; awaiting user recovery (Bluetooth off/on or re-pair)")
+            return@onMainQueue
+        }
         connectAttempts = 0
         enterConnecting("connect()")
         if (manager.state == CBManagerStatePoweredOn) {
@@ -171,9 +182,18 @@ class IosAudioGattLink(
      */
     private var wantConnected = false
 
+    /**
+     * Set after a [ConnectFailureKind.LinkRejected] failure (stale GATT cache / needs re-pair).
+     * Retrying the same cached handles can only re-fail, so we stop re-driving connects until a real
+     * recovery signal arrives: a Bluetooth power-cycle (CoreBluetooth re-discovers) or an explicit
+     * user Reconnect. Without this the link re-fails the identical handshake on every app foreground.
+     */
+    private var awaitingUserRecovery = false
+
     override fun disconnect() = onMainQueue {
         log("disconnect() requested")
         wantConnected = false
+        awaitingUserRecovery = false
         connectGeneration += 1 // invalidate any pending watchdog
         val manager = centralManager ?: return@onMainQueue
         manager.stopScan()
@@ -195,6 +215,8 @@ class IosAudioGattLink(
      */
     override fun resync() = onMainQueue {
         log("resync() requested")
+        // Explicit user "Reconnect": honor the request even if we had latched off automatic retries.
+        awaitingUserRecovery = false
         val manager = centralManager
         if (manager == null) {
             connect()
@@ -255,6 +277,9 @@ class IosAudioGattLink(
         when (central.state) {
             CBManagerStatePoweredOn ->
                 if (wantConnected && connectionState.value != LinkState.Ready) {
+                    // A Bluetooth power-cycle is exactly the recovery signal a LinkRejected failure
+                    // needs: CoreBluetooth re-discovers, so a stale-cache handshake now succeeds.
+                    awaitingUserRecovery = false
                     connectAttempts = 0
                     enterConnecting("Bluetooth powered on")
                     connectWhenPoweredOn(central)
@@ -262,16 +287,28 @@ class IosAudioGattLink(
             // Surface an actionable reason instead of hanging in "Connecting". wantConnected is
             // kept set, so the link reconnects automatically once Bluetooth comes back.
             CBManagerStatePoweredOff ->
-                if (wantConnected) failAndReset("Bluetooth is turned off")
+                if (wantConnected) failAndReset(ConnectFailureKind.BluetoothOff, "Bluetooth is turned off")
             CBManagerStateUnauthorized ->
-                if (wantConnected) failAndReset("Bluetooth access is off for this app. Turn it on in Settings.")
+                if (wantConnected) {
+                    failAndReset(
+                        ConnectFailureKind.BluetoothUnauthorized,
+                        "Bluetooth access is off for this app. Turn it on in Settings.",
+                    )
+                }
             CBManagerStateUnsupported ->
-                if (wantConnected) failAndReset("Bluetooth is unavailable to this app right now.")
+                if (wantConnected) {
+                    failAndReset(
+                        ConnectFailureKind.BluetoothUnavailable,
+                        "Bluetooth is unavailable to this app right now.",
+                    )
+                }
             CBManagerStateUnknown,
             CBManagerStateResetting ->
                 if (wantConnected) {
                     // Core Bluetooth is still starting or briefly restarted its system service.
-                    // Clear stale failures so the main status does not keep showing an old error.
+                    // Clear stale failures (and the retry latch) so the main status does not keep
+                    // showing an old error.
+                    awaitingUserRecovery = false
                     enterConnecting("Bluetooth resetting/unknown")
                 }
             else -> {}
@@ -331,7 +368,7 @@ class IosAudioGattLink(
         error: NSError?,
     ) {
         log("didFailToConnectPeripheral error=${error?.localizedDescription}")
-        failAndReset(error?.localizedDescription ?: "Failed to connect")
+        failAndReset(classifyFailure(error, ConnectFailureKind.WatchUnreachable))
     }
 
     internal fun onPeripheralDisconnected(
@@ -343,7 +380,7 @@ class IosAudioGattLink(
         resetCharacteristics()
         if (intentionalDisconnect || !wantConnected) {
             intentionalDisconnect = false
-            _lastError.value = null
+            _lastFailure.value = null
             // A watchdog-driven cancel sets intentionalDisconnect to suppress this path; it re-drives
             // the connect itself, so leaving the state at Connecting (not Disconnected) here is
             // correct. Only a genuine user disconnect (wantConnected == false) settles to idle.
@@ -352,6 +389,13 @@ class IosAudioGattLink(
                 _connectionState.value = LinkState.Disconnected
                 log("-> Disconnected (intentional)")
             }
+            return
+        }
+        // A LinkRejected failure latched off automatic retries: reconnecting to the same stale cache
+        // just re-fails, so stay Disconnected until a Bluetooth power-cycle or user Reconnect.
+        if (awaitingUserRecovery) {
+            log("unexpected drop; not reconnecting (awaiting user recovery)")
+            _connectionState.value = LinkState.Disconnected
             return
         }
         // Unexpected drop while we still want the link (watch out of range or reset). Re-issue a
@@ -368,7 +412,7 @@ class IosAudioGattLink(
     ) {
         if (didDiscoverServices != null) {
             log("didDiscoverServices error=${didDiscoverServices.localizedDescription}")
-            failAndReset(didDiscoverServices.localizedDescription)
+            failAndReset(classifyFailure(didDiscoverServices, ConnectFailureKind.Unknown))
             return
         }
         val service = peripheral.services?.filterIsInstance<CBService>()
@@ -376,7 +420,7 @@ class IosAudioGattLink(
         if (service == null) {
             val found = peripheral.services?.filterIsInstance<CBService>()?.map { it.UUID.UUIDString }
             log("didDiscoverServices: companion service missing; found=$found")
-            failAndReset("Audio Companion service not found")
+            failAndReset(ConnectFailureKind.Unknown, "Audio Companion service not found")
             return
         }
         log("didDiscoverServices ok; discovering characteristics")
@@ -397,7 +441,7 @@ class IosAudioGattLink(
     ) {
         if (error != null) {
             log("didDiscoverCharacteristics error=${error.localizedDescription}")
-            failAndReset(error.localizedDescription)
+            failAndReset(classifyFailure(error, ConnectFailureKind.Unknown))
             return
         }
         val characteristics = didDiscoverCharacteristicsForService.characteristics
@@ -412,7 +456,7 @@ class IosAudioGattLink(
         val data = dataCharacteristic
         if (infoCharacteristic == null || control == null || data == null) {
             log("didDiscoverCharacteristics: missing one of info/control/data")
-            failAndReset("Audio Companion characteristics not found")
+            failAndReset(ConnectFailureKind.Unknown, "Audio Companion characteristics not found")
             return
         }
         log("didDiscoverCharacteristics ok; subscribing notifications")
@@ -428,8 +472,13 @@ class IosAudioGattLink(
         error: NSError?,
     ) {
         if (error != null) {
+            // Subscribing writes the characteristic's CCCD. A rejection here is an ATT-level refusal
+            // (CBATTErrorDomain) — in practice a stale iOS GATT cache after a firmware update, where
+            // the cached handle no longer points at a writable descriptor ("Writing is not
+            // permitted."). Classify it as LinkRejected so the UI tells the user to power-cycle
+            // Bluetooth instead of showing the raw Core Bluetooth string.
             log("didUpdateNotificationState error=${error.localizedDescription}")
-            failAndReset(error.localizedDescription)
+            failAndReset(classifyFailure(error, ConnectFailureKind.LinkRejected))
             return
         }
         if (pendingNotifyCharacteristics.isEmpty()) {
@@ -561,7 +610,7 @@ class IosAudioGattLink(
      * the watchdog window restarts on real progress and only fires when a step truly stalls.
      */
     private fun enterConnecting(reason: String) {
-        _lastError.value = null
+        _lastFailure.value = null
         connectGeneration += 1
         _connectionState.value = LinkState.Connecting
         log("-> Connecting ($reason)")
@@ -572,7 +621,8 @@ class IosAudioGattLink(
     private fun reachReady() {
         connectGeneration += 1 // invalidate any pending watchdog
         connectAttempts = 0
-        _lastError.value = null
+        awaitingUserRecovery = false
+        _lastFailure.value = null
         _connectionState.value = LinkState.Ready
         log("-> Ready")
     }
@@ -623,7 +673,10 @@ class IosAudioGattLink(
         resetCharacteristics()
         if (connectAttempts >= CONNECT_MAX_ATTEMPTS) {
             log("giving up after $connectAttempts attempts")
-            failAndReset("Couldn't reach your Pebble. Make sure it's nearby, then try again.")
+            failAndReset(
+                ConnectFailureKind.WatchUnreachable,
+                "Couldn't reach your Pebble. Make sure it's nearby, then try again.",
+            )
             return
         }
         if (manager.state == CBManagerStatePoweredOn) {
@@ -632,17 +685,39 @@ class IosAudioGattLink(
         }
     }
 
-    private fun failAndReset(message: String) {
+    private fun failAndReset(kind: ConnectFailureKind, detail: String?) =
+        failAndReset(ConnectFailure(kind, detail))
+
+    private fun failAndReset(failure: ConnectFailure) {
         connectGeneration += 1 // invalidate any pending watchdog
+        val message = failure.detail ?: "connection failed"
         pendingInfoRead?.resumeWithException(IllegalStateException(message))
         pendingInfoRead = null
         pendingControlWrite?.resumeWithException(IllegalStateException(message))
         pendingControlWrite = null
         centralManager?.stopScan()
         resetCharacteristics()
-        _lastError.value = message
+        // A stale-cache / re-pair failure won't clear by retrying the same handles, so latch off the
+        // automatic reconnects (connect() on foreground, unexpected-drop reconnect) until Bluetooth
+        // is power-cycled or the user taps Reconnect. Any other failure keeps the normal auto-retry.
+        awaitingUserRecovery = failure.kind == ConnectFailureKind.LinkRejected
+        _lastFailure.value = failure
         _connectionState.value = LinkState.Disconnected
-        log("-> Disconnected (error: $message)")
+        log("-> Disconnected (${failure.kind}: $message)")
+    }
+
+    /**
+     * Classifies a Core Bluetooth [NSError] by its error domain — never its localized message.
+     * `CBATTErrorDomain` means the watch's ATT server refused the operation (write/read not
+     * permitted, insufficient encryption/authentication); `CBErrorDomain` covers link-level trouble.
+     */
+    private fun classifyFailure(error: NSError?, fallback: ConnectFailureKind): ConnectFailure {
+        val kind = when (error?.domain) {
+            CBATTErrorDomain -> ConnectFailureKind.LinkRejected
+            CBErrorDomain -> ConnectFailureKind.WatchUnreachable
+            else -> fallback
+        }
+        return ConnectFailure(kind, error?.localizedDescription)
     }
 
     private fun resetCharacteristics() {

@@ -14,6 +14,7 @@ import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.transcription.SegmentTranscript
 import dev.audiocompanion.transcription.TranscriptionMode
+import dev.audiocompanion.transport.ConnectFailureKind
 import dev.audiocompanion.transport.ReceiverSessionState
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -410,7 +411,7 @@ class StatusUiTest {
     fun noProtocolVocabularyInHeadlines() {
         val states = listOf(
             ReceiverSessionState.Disconnected,
-            ReceiverSessionState.ConnectionFailed("Peripheral disconnected"),
+            ReceiverSessionState.ConnectionFailed(ConnectFailureKind.LinkRejected, "Writing is not permitted."),
             ReceiverSessionState.Connecting,
             ReceiverSessionState.Authorizing,
             ReceiverSessionState.PendingConsent,
@@ -434,6 +435,44 @@ class StatusUiTest {
                     "state $state copy must not mention '$word': $text",
                 )
             }
+        }
+    }
+
+    @Test
+    fun connectionFailedNeverLeaksRawPlatformErrorAndGuidesRecovery() {
+        // The raw Core Bluetooth / GATT detail is diagnostics-only; it must never reach the user.
+        val linkRejected = statusUiModel(
+            ReceiverSessionState.ConnectionFailed(
+                ConnectFailureKind.LinkRejected,
+                "Writing is not permitted.",
+            ),
+            AudioCompanionSettings(backgroundReceiverEnabled = true),
+            AudioCompanionDiagnostics(),
+        )
+        val text = linkRejected.headline + " " + linkRejected.supporting.orEmpty()
+        assertTrue(
+            !text.contains("not permitted", ignoreCase = true),
+            "must not surface the raw platform error: $text",
+        )
+        // The stale-cache case is only fixed by re-discovery, so the copy must point at Bluetooth.
+        assertTrue(
+            linkRejected.supporting.orEmpty().contains("Bluetooth", ignoreCase = true),
+            "LinkRejected copy should tell the user to power-cycle Bluetooth: $text",
+        )
+        assertEquals(PrimaryAction.Reconnect, linkRejected.primaryAction)
+
+        // Every failure kind must produce non-empty, plain-language copy.
+        for (kind in ConnectFailureKind.values()) {
+            val status = statusUiModel(
+                ReceiverSessionState.ConnectionFailed(kind, "raw detail $kind"),
+                AudioCompanionSettings(backgroundReceiverEnabled = true),
+                AudioCompanionDiagnostics(),
+            )
+            assertTrue(status.headline.isNotBlank(), "kind $kind must have a headline")
+            assertTrue(
+                !(status.headline + status.supporting.orEmpty()).contains("raw detail"),
+                "kind $kind must not echo the raw detail",
+            )
         }
     }
 }

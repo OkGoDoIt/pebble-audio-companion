@@ -232,7 +232,8 @@ private fun FindWatchStep(
         Text(
             text = when (sessionState) {
                 ReceiverSessionState.Disconnected -> "Not connected"
-                is ReceiverSessionState.ConnectionFailed -> "Connection failed: ${sessionState.message}"
+                is ReceiverSessionState.ConnectionFailed ->
+                    connectionFailedStatus(sessionState.kind).headline
                 ReceiverSessionState.Connecting -> "Looking for your Pebble…"
                 else -> "Watch found"
             },
@@ -282,7 +283,7 @@ private fun WatchConsentStep(
         }
         is ReceiverSessionState.Revoked -> StatusSeverity.Warning to "Access was revoked"
         is ReceiverSessionState.ConnectionFailed ->
-            StatusSeverity.Warning to "Connection failed: ${sessionState.message}"
+            StatusSeverity.Warning to connectionFailedStatus(sessionState.kind).headline
         ReceiverSessionState.Disconnected -> StatusSeverity.Neutral to "Watch not connected"
         else -> StatusSeverity.Info to "Connecting…"
     }

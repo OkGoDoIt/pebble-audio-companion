@@ -12,6 +12,8 @@ import android.content.Context
 import android.os.Build
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.transport.AudioGattLink
+import dev.audiocompanion.transport.ConnectFailure
+import dev.audiocompanion.transport.ConnectFailureKind
 import dev.audiocompanion.transport.LinkState
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -53,8 +55,8 @@ class AndroidAudioGattLink(
 
     private val _connectionState = MutableStateFlow(LinkState.Disconnected)
     override val connectionState: StateFlow<LinkState> = _connectionState.asStateFlow()
-    private val _lastError = MutableStateFlow<String?>(null)
-    override val lastError: StateFlow<String?> = _lastError.asStateFlow()
+    private val _lastFailure = MutableStateFlow<ConnectFailure?>(null)
+    override val lastFailure: StateFlow<ConnectFailure?> = _lastFailure.asStateFlow()
 
     // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
     // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
@@ -90,13 +92,13 @@ class AndroidAudioGattLink(
         disconnect()
         lastDevice = device
         connectedDeviceAddress = device.address
-        _lastError.value = null
+        _lastFailure.value = null
         _connectionState.value = LinkState.Connecting
         gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
     override fun disconnect() {
-        disconnectWithError(null)
+        disconnectWithFailure(null)
     }
 
     /**
@@ -110,7 +112,10 @@ class AndroidAudioGattLink(
         connect(device)
     }
 
-    private fun disconnectWithError(message: String?) {
+    private fun disconnectWithError(kind: ConnectFailureKind, detail: String?) =
+        disconnectWithFailure(ConnectFailure(kind, detail))
+
+    private fun disconnectWithFailure(failure: ConnectFailure?) {
         val oldGatt = gatt
         gatt = null
         connectedDeviceAddress = null
@@ -126,8 +131,26 @@ class AndroidAudioGattLink(
         }
         oldGatt?.disconnect()
         oldGatt?.close()
-        _lastError.value = message
+        _lastFailure.value = failure
         _connectionState.value = LinkState.Disconnected
+    }
+
+    /**
+     * Classifies a GATT operation status. `WRITE_NOT_PERMITTED`/`READ_NOT_PERMITTED` and the
+     * insufficient-encryption/authentication statuses mean the watch's ATT server refused the
+     * request — the Android analogue of the iOS stale-cache case — so surface it as
+     * [ConnectFailureKind.LinkRejected]. Everything else is treated as a generic interruption.
+     */
+    private fun gattStatusFailure(status: Int, context: String): ConnectFailure {
+        val kind = when (status) {
+            BluetoothGatt.GATT_WRITE_NOT_PERMITTED,
+            BluetoothGatt.GATT_READ_NOT_PERMITTED,
+            BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION,
+            BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION,
+            -> ConnectFailureKind.LinkRejected
+            else -> ConnectFailureKind.Unknown
+        }
+        return ConnectFailure(kind, "$context ($status)")
     }
 
     override suspend fun readInfo(): ByteArray {
@@ -190,7 +213,10 @@ class AndroidAudioGattLink(
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnectWithError("Bluetooth connection failed with status $status")
+                disconnectWithError(
+                    ConnectFailureKind.WatchUnreachable,
+                    "Bluetooth connection failed with status $status",
+                )
                 return
             }
             when (newState) {
@@ -201,7 +227,10 @@ class AndroidAudioGattLink(
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED ->
-                    disconnectWithError("Bluetooth peripheral disconnected")
+                    disconnectWithError(
+                        ConnectFailureKind.WatchUnreachable,
+                        "Bluetooth peripheral disconnected",
+                    )
             }
         }
 
@@ -211,7 +240,10 @@ class AndroidAudioGattLink(
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnectWithError("Bluetooth service discovery failed: $status")
+                disconnectWithError(
+                    ConnectFailureKind.Unknown,
+                    "Bluetooth service discovery failed: $status",
+                )
                 return
             }
             val service = gatt.getService(SERVICE_UUID)
@@ -219,7 +251,10 @@ class AndroidAudioGattLink(
             val control = service?.getCharacteristic(CONTROL_CHARACTERISTIC_UUID)
             val data = service?.getCharacteristic(DATA_CHARACTERISTIC_UUID)
             if (service == null || info == null || control == null || data == null) {
-                disconnectWithError("Audio Companion service or characteristics not found")
+                disconnectWithError(
+                    ConnectFailureKind.Unknown,
+                    "Audio Companion service or characteristics not found",
+                )
                 return
             }
 
@@ -238,7 +273,10 @@ class AndroidAudioGattLink(
             status: Int,
         ) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                disconnectWithError("Notification subscription failed: $status")
+                // Writing the CCCD is where a stale/rejected GATT layout surfaces on Android (the
+                // WRITE_NOT_PERMITTED analogue of the iOS bug); classify by status so the UI can guide
+                // the user to re-pair rather than showing a bare status code.
+                disconnectWithFailure(gattStatusFailure(status, "Notification subscription failed"))
                 return
             }
             writeNextCccd(gatt)
@@ -304,12 +342,12 @@ class AndroidAudioGattLink(
             return
         }
         if (!gatt.setCharacteristicNotification(characteristic, true)) {
-            disconnectWithError("Failed to enable local notifications")
+            disconnectWithError(ConnectFailureKind.Unknown, "Failed to enable local notifications")
             return
         }
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
         if (descriptor == null) {
-            disconnectWithError("Bluetooth notification descriptor not found")
+            disconnectWithError(ConnectFailureKind.Unknown, "Bluetooth notification descriptor not found")
             return
         }
         val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -324,7 +362,7 @@ class AndroidAudioGattLink(
             gatt.writeDescriptor(descriptor)
         }
         if (!started) {
-            disconnectWithError("Failed to write CCCD")
+            disconnectWithError(ConnectFailureKind.Unknown, "Failed to write CCCD")
         }
     }
 

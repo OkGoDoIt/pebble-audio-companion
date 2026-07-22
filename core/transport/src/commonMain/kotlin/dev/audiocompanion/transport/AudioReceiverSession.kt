@@ -44,7 +44,15 @@ sealed interface ReceiverSessionState {
     data object Disconnected : ReceiverSessionState
     data object Connecting : ReceiverSessionState
 
-    data class ConnectionFailed(val message: String) : ReceiverSessionState
+    /**
+     * A connection attempt failed. [kind] is classified from platform error codes so the UI can
+     * speak plainly; [detail] is the raw platform message for logs/support only, never the primary
+     * status text.
+     */
+    data class ConnectionFailed(
+        val kind: ConnectFailureKind,
+        val detail: String? = null,
+    ) : ReceiverSessionState
 
     /** Link ready; reading Info and sending AUTH_REQUEST. */
     data object Authorizing : ReceiverSessionState
@@ -328,8 +336,8 @@ class AudioReceiverSession(
                 when (linkState) {
                     LinkState.Disconnected -> {
                         onLinkDown()
-                        _state.value = link.lastError.value
-                            ?.let { ReceiverSessionState.ConnectionFailed(it) }
+                        _state.value = link.lastFailure.value
+                            ?.let { ReceiverSessionState.ConnectionFailed(it.kind, it.detail) }
                             ?: ReceiverSessionState.Disconnected
                         _watchServiceState.value = null
                     }

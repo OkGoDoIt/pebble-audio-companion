@@ -7,6 +7,7 @@ import dev.audiocompanion.app.AudioCompanionSettings
 import dev.audiocompanion.protocol.AuthStatus
 import dev.audiocompanion.protocol.GapReason
 import dev.audiocompanion.protocol.ServiceState
+import dev.audiocompanion.transport.ConnectFailureKind
 import dev.audiocompanion.storage.GapMeta
 import dev.audiocompanion.storage.SegmentMeta
 import dev.audiocompanion.storage.TranscriptionState
@@ -121,12 +122,7 @@ private fun statusForSessionState(
             )
         }
 
-    is ReceiverSessionState.ConnectionFailed -> StatusUiModel(
-        headline = "Connection failed",
-        supporting = state.message,
-        severity = StatusSeverity.Warning,
-        primaryAction = PrimaryAction.Troubleshoot,
-    )
+    is ReceiverSessionState.ConnectionFailed -> connectionFailedStatus(state.kind)
 
     ReceiverSessionState.Connecting -> StatusUiModel(
         headline = "Connecting to your Pebble",
@@ -206,6 +202,52 @@ private fun statusForSessionState(
         supporting = "The watch no longer allows this app to receive audio.",
         severity = StatusSeverity.Error,
         primaryAction = PrimaryAction.SetUpAgain,
+    )
+}
+
+/**
+ * Plain-language, actionable copy for a connection failure. The watch/BLE stack speaks in ATT error
+ * codes; the user should never see one. [ConnectFailureKind.LinkRejected] in particular is the
+ * "stale iOS GATT cache after a firmware update" case — retrying the same cached handles can't fix
+ * it, so the copy points at the one thing that does: toggling Bluetooth (or re-pairing).
+ */
+internal fun connectionFailedStatus(kind: ConnectFailureKind): StatusUiModel = when (kind) {
+    ConnectFailureKind.BluetoothOff -> StatusUiModel(
+        headline = "Bluetooth is off",
+        supporting = "Turn Bluetooth on to connect to your Pebble.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Reconnect,
+    )
+    ConnectFailureKind.BluetoothUnauthorized -> StatusUiModel(
+        headline = "Bluetooth access is off for this app",
+        supporting = "Allow Bluetooth for this app in Settings, then reconnect.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Troubleshoot,
+    )
+    ConnectFailureKind.BluetoothUnavailable -> StatusUiModel(
+        headline = "Bluetooth isn't available right now",
+        supporting = "This device can't use Bluetooth at the moment. Try again shortly.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Reconnect,
+    )
+    ConnectFailureKind.WatchUnreachable -> StatusUiModel(
+        headline = "Couldn't reach your Pebble",
+        supporting = "Make sure the watch is nearby and awake, then try again.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Reconnect,
+    )
+    ConnectFailureKind.LinkRejected -> StatusUiModel(
+        headline = "Your Pebble needs to reconnect",
+        supporting = "Turn Bluetooth off and back on — or re-pair your Pebble in Settings — and it " +
+            "will reconnect. This can happen right after updating the watch firmware.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Reconnect,
+    )
+    ConnectFailureKind.Unknown -> StatusUiModel(
+        headline = "Connection interrupted",
+        supporting = "Trying to reconnect. If this keeps up, turn Bluetooth off and back on.",
+        severity = StatusSeverity.Warning,
+        primaryAction = PrimaryAction.Reconnect,
     )
 }
 

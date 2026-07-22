@@ -13,6 +13,40 @@ enum class LinkState {
 }
 
 /**
+ * Why a connection attempt failed, classified from the platform's own error codes (CoreBluetooth
+ * `CBError`/`CBATTError` domains, Android GATT status) — never from a localized message string. The
+ * UI copy layer maps each kind to plain, actionable language; the raw [ConnectFailure.detail] is
+ * kept only for logs and support reports, never shown as primary status text.
+ */
+enum class ConnectFailureKind {
+    /** Bluetooth is switched off on the phone. */
+    BluetoothOff,
+
+    /** The app lacks Bluetooth permission. */
+    BluetoothUnauthorized,
+
+    /** Bluetooth LE is unavailable on this device / in this state. */
+    BluetoothUnavailable,
+
+    /** Couldn't reach the watch (connect failed or the handshake stalled). */
+    WatchUnreachable,
+
+    /**
+     * The watch's GATT server rejected an ATT operation (write/read not permitted, insufficient
+     * encryption/authentication). In practice this is almost always a **stale iOS GATT cache** after
+     * a firmware update — the phone wrote to a handle that moved — and clears when the OS re-discovers
+     * (Bluetooth off/on or re-pair). It does not self-heal by retrying the same cached handles.
+     */
+    LinkRejected,
+
+    /** Anything not otherwise classified. */
+    Unknown,
+}
+
+/** A classified connection failure plus the raw platform detail (diagnostics only). */
+data class ConnectFailure(val kind: ConnectFailureKind, val detail: String? = null)
+
+/**
  * The platform seam (implementation plan Section 6.1). Implemented per platform in
  * :adapter:ble-android / :adapter:ble-ios; :core:* never touches BLE APIs directly,
  * which keeps the whole receiver testable on the JVM with scripted byte streams.
@@ -21,7 +55,7 @@ interface AudioGattLink {
     val connectionState: StateFlow<LinkState>
 
     /** Last platform BLE failure, if the current disconnected state followed an error. */
-    val lastError: StateFlow<String?>
+    val lastFailure: StateFlow<ConnectFailure?>
 
     /** Reads the Info characteristic (raw 20-byte snapshot). */
     suspend fun readInfo(): ByteArray

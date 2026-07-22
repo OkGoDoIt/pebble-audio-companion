@@ -13,6 +13,7 @@ import dev.audiocompanion.transcription.TranscriptionMode
 import dev.audiocompanion.transcription.TranscriptionModeRouter
 import dev.audiocompanion.transcription.TranscriptionProcessor
 import dev.audiocompanion.transport.AudioGattLink
+import dev.audiocompanion.transport.ConnectFailure
 import dev.audiocompanion.transport.LinkState
 import dev.audiocompanion.transport.ReceiverConfig
 import kotlinx.coroutines.flow.Flow
@@ -55,7 +56,7 @@ class AudioCompanionRuntimeBackgroundTest {
     /** A link that never connects: the receiver session idles and never reads/streams. */
     private class IdleGattLink : AudioGattLink {
         override val connectionState: StateFlow<LinkState> = MutableStateFlow(LinkState.Disconnected)
-        override val lastError: StateFlow<String?> = MutableStateFlow(null)
+        override val lastFailure: StateFlow<ConnectFailure?> = MutableStateFlow(null)
         override suspend fun readInfo(): ByteArray = ByteArray(0)
         override suspend fun writeControl(message: ByteArray) {}
         override val controlNotifications: Flow<ByteArray> = emptyFlow()

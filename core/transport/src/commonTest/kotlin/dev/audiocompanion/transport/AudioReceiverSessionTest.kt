@@ -402,12 +402,18 @@ class AudioReceiverSessionTest {
         fx.link.linkState.value = LinkState.Connecting
         runCurrent()
 
-        fx.link.errorState.value = "Bluetooth is unavailable to this app right now."
+        fx.link.failureState.value = ConnectFailure(
+            ConnectFailureKind.BluetoothUnavailable,
+            "Bluetooth is unavailable to this app right now.",
+        )
         fx.link.linkState.value = LinkState.Disconnected
         runCurrent()
 
         assertEquals(
-            ReceiverSessionState.ConnectionFailed("Bluetooth is unavailable to this app right now."),
+            ReceiverSessionState.ConnectionFailed(
+                ConnectFailureKind.BluetoothUnavailable,
+                "Bluetooth is unavailable to this app right now.",
+            ),
             fx.session.state.value,
         )
 
