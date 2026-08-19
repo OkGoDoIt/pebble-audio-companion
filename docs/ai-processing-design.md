@@ -102,7 +102,7 @@ temp-file+rename pattern used by `FileSegmentAnnotationStore`:
   audio_format/sample_rate/num_channels/enable_speaker_diarization/language_hints`) and the equivalent
   config in `SonioxTranscriptionProvider`. Biggest single accuracy win for proper nouns/names on a
   bad mic.
-- **OpenAI transcription** — `gpt-4o-transcribe`/realtime accept a `prompt` for keyword/vocab
+- **OpenAI transcription** — `gpt-transcribe`/`gpt-live-transcribe` accept a `prompt` for keyword/vocab
   steering. Caveats from research: realtime caps prompts at **1024 tokens**, prefer **short keyword
   lists over prose**, and on near-silent/short chunks the model can *hallucinate glossary words from
   the prompt* — so feed a *bounded, relevant* term list (not the whole profile) and keep it small.
@@ -167,7 +167,7 @@ carry segmentId + timestamp on every chunk so answers cite back to the timeline.
 ### 2C. Evaluation harness
 
 Before tuning prompts/models across providers, add a small offline eval (in `core/ai` tests) over a
-fixture set of (transcript → expected title/summary/answer) so we can compare gpt-5.5 vs mini vs
+fixture set of (transcript → expected title/summary/answer) so we can compare GPT-5.6 Sol vs Luna vs
 on-device and catch regressions as surfaces expand. Cheap insurance.
 
 ---
@@ -368,8 +368,11 @@ Dependency summary: 2A is independent (do first). 2B/Section 6 are intertwined (
 - **Soniox context** — `context` object: general info (key/values incl. participant names/org),
   terms/custom vocabulary (~8,000 tokens), text context (free-form glossary/profile), translation
   terms. Diarization via `enable_speaker_diarization` (already used).
-- **OpenAI STT** — `gpt-4o-transcribe` / realtime `prompt` for vocab steering (realtime ≤1024
-  tokens; short keyword lists; beware glossary hallucination on near-silent chunks); `language` hint.
+- **OpenAI STT** — `gpt-transcribe` (files) / `gpt-live-transcribe` (realtime); both take a `prompt`
+  for vocab steering (realtime ≤1024 tokens; short keyword lists; beware glossary hallucination on
+  near-silent chunks) and a documented `keywords` array we do not send yet. `gpt-live-transcribe`
+  uses plural `languages` hints, and neither supports `timestamp_granularities` (whisper-1 only).
+  Diarization is still `gpt-4o-transcribe-diarize` + `diarized_json`.
 - **Apple** — Core Spotlight (`CSSearchableItem`, batched indexing + client state + `isUpdate`),
   App Intents `IndexedEntity` / `associateAppEntity`, iOS 26 `SpotlightSearchTool` (Foundation Models
   tool), Shortcuts "Use Model", `NLContextualEmbedding` (on-device, 512-dim), EventKit add-only/full

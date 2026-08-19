@@ -117,7 +117,7 @@ class OpenAiChatAiProviderTest {
                 addHandler {
                     captured = it
                     respond(
-                        content = ByteReadChannel("""{"output_text": "Plain summary", "model": "gpt-5.4-mini"}"""),
+                        content = ByteReadChannel("""{"output_text": "Plain summary", "model": "gpt-5.6-luna"}"""),
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
                     )
@@ -147,7 +147,7 @@ class OpenAiChatAiProviderTest {
                         content = ByteReadChannel(
                             """
                             {
-                              "model": "gpt-5.4-mini",
+                              "model": "gpt-5.6-luna",
                               "output_text": "{\"title\":\"Budget review\",\"summary\":\"They discussed Q3 spend.\",\"tags\":[\"budget\",\"finance\"]}"
                             }
                             """.trimIndent(),
@@ -179,14 +179,14 @@ class OpenAiChatAiProviderTest {
     @Test
     fun sendsConfiguredModelInRequestBody() = runTest {
         lateinit var captured: HttpRequestData
-        var selectedModel = "gpt-5.4-mini"
+        var selectedModel = "gpt-5.6-luna"
         val client = HttpClient(MockEngine) {
             engine {
                 addHandler {
                     captured = it
                     respond(
                         content = ByteReadChannel(
-                            """{"output_text": "ok", "model": "gpt-5.4-mini"}""",
+                            """{"output_text": "ok", "model": "gpt-5.6-luna"}""",
                         ),
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
@@ -203,15 +203,15 @@ class OpenAiChatAiProviderTest {
 
         provider.run(request())
         assertTrue(
-            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.4-mini\""),
+            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.6-luna\""),
             "request should carry the configured model",
         )
 
         // The lambda is read per request, so a settings change takes effect on the next call.
-        selectedModel = "gpt-5.5"
+        selectedModel = "gpt-5.6-sol"
         provider.run(request())
         assertTrue(
-            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.5\""),
+            captured.body.toByteArray().decodeToString().contains("\"model\":\"gpt-5.6-sol\""),
             "model change should apply to the next request",
         )
     }
@@ -247,7 +247,7 @@ class OpenAiChatAiProviderTest {
                     captured = it
                     respond(
                         content = ByteReadChannel(
-                            """{"output_text": "ok", "model": "gpt-5.4-mini"}""",
+                            """{"output_text": "ok", "model": "gpt-5.6-luna"}""",
                         ),
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),

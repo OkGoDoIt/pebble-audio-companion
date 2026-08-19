@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Base64
 import androidx.core.content.edit
 import dev.audiocompanion.ai.AiModeRouter
+import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.ai.FileCustomTemplateStore
@@ -121,7 +122,7 @@ class AndroidAudioCompanionRuntimeFactory(
                 client = HttpClient(OkHttp),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 remoteConsent = { settingsRepository.settings.value.remoteAiEnabled },
-                model = { settingsRepository.settings.value.aiModel },
+                model = { AiModels.byId(settingsRepository.settings.value.aiModel).id },
                 grounding = aiGrounding,
             ),
             mode = { settingsRepository.settings.value.aiMode },

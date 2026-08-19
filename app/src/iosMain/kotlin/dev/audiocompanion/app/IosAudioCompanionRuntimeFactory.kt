@@ -4,6 +4,7 @@ package dev.audiocompanion.app
 
 import dev.audiocompanion.adapter.ble.IosAudioGattLink
 import dev.audiocompanion.ai.AiModeRouter
+import dev.audiocompanion.ai.AiModels
 import dev.audiocompanion.ai.FileActionItemStore
 import dev.audiocompanion.ai.FileAiOutputStore
 import dev.audiocompanion.ai.FileCustomTemplateStore
@@ -201,7 +202,7 @@ class IosAudioCompanionRuntimeFactory(
                 client = HttpClient(Darwin),
                 apiKey = { settingsRepository.settings.value.openAiApiKey },
                 remoteConsent = { settingsRepository.settings.value.remoteAiEnabled },
-                model = { settingsRepository.settings.value.aiModel },
+                model = { AiModels.byId(settingsRepository.settings.value.aiModel).id },
                 grounding = aiGrounding,
             ),
             mode = { settingsRepository.settings.value.aiMode },
