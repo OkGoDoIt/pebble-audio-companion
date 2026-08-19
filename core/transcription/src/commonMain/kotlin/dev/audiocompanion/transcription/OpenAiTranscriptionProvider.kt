@@ -373,7 +373,7 @@ class OpenAiTranscriptionProvider(
     companion object {
         const val DEFAULT_ENDPOINT_URL = "https://api.openai.com/v1/audio/transcriptions"
         const val DEFAULT_MODELS_URL = "https://api.openai.com/v1/models"
-        const val DEFAULT_MODEL = "gpt-4o-mini-transcribe"
+        const val DEFAULT_MODEL = "gpt-transcribe"
 
         /** OpenAI's speaker-diarization model; returns `diarized_json` with per-segment speakers. */
         const val DIARIZE_MODEL = "gpt-4o-transcribe-diarize"

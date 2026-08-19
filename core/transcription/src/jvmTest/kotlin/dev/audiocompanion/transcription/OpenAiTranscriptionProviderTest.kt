@@ -55,7 +55,7 @@ class OpenAiTranscriptionProviderTest {
             client = client,
             apiKey = { "test-key" },
             cloudConsent = { true },
-            model = { "gpt-4o-mini-transcribe" },
+            model = { "gpt-transcribe" },
         )
 
         val result = provider.transcribe(flowOf(ByteArray(640) { 1 }), 16_000)
@@ -164,7 +164,7 @@ class OpenAiTranscriptionProviderTest {
             client = client,
             apiKey = { "test-key" },
             cloudConsent = { true },
-            model = { "gpt-4o-mini-transcribe" }, // overridden by diarization
+            model = { "gpt-transcribe" }, // overridden by diarization
             diarizationEnabled = { true },
         )
 

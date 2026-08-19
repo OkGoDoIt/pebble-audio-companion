@@ -110,7 +110,7 @@ class OpenAiRealtimeProvider(
 
     companion object {
         const val DEFAULT_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
-        const val DEFAULT_MODEL = "gpt-realtime-whisper"
+        const val DEFAULT_MODEL = "gpt-live-transcribe"
         const val TARGET_SAMPLE_RATE = 24_000
         private const val DELTA_EVENT = "conversation.item.input_audio_transcription.delta"
         private const val COMPLETED_EVENT = "conversation.item.input_audio_transcription.completed"
