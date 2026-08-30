@@ -62,6 +62,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.TimeZone
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 
@@ -370,8 +371,11 @@ fun App(
                         settings = currentSettings,
                         localModel = currentLocalModel,
                         timeline = displayedTodayTimeline,
+                        // Match on the digest's logical day (5 AM rollover), not when it was
+                        // generated: between midnight and 5 AM this keeps yesterday's recap -
+                        // with any post-midnight conversation folded in - on the Today card.
                         dailyDigest = dailyDigests.firstOrNull {
-                            Formatting.isSameLocalDay(it.createdAtMs, nowMs)
+                            it.dateKey == LogicalDay.keyFor(nowMs, TimeZone.currentSystemDefault())
                         },
                         actionItems = actionItems,
                         nowMs = nowMs,
