@@ -87,6 +87,25 @@ Before mocking up Today, dig into the receiver/RESUME path to establish whether 
 segment runs on Roger's phone are real loss, cosmetic fragmentation, or firmware-side stream
 restarts. The answer determines how the new timeline groups and displays segments.
 
+## Round-2 decisions (mockup feedback, same day)
+
+From Roger's mockup feedback: the live minute waveform must keep the full state story
+(transcribed / captured-awaiting-transcription / quiet i.e. known silence / missing i.e. no data
+received, plus calm hiccup display); a Search screen exists showing the unified search-and-ask
+pattern; Today carries an Ask button; **tags stay** — AI-generated, used for filtering and
+search (Library chips + row pills + detail pills + a Tags section in search results).
+
+- **Q9 — Notifications: loss alerts only.** One rate-limited notification when audio is actually
+  being lost (buffer overflow, dead receiver). Nothing else — no reminders, no recap pushes.
+  This resolves the old docs' §16 contradiction.
+- **Q10 — Tags are editable.** AI proposes as today; the user can add, remove, or rename tags on
+  a conversation, and renames apply everywhere.
+- **Q11 — Waveform/coverage taps explain, not navigate.** A tap shows a small popover naming the
+  state at that point ("quiet 2:10–2:14 PM", "missing 40 sec — Bluetooth"); navigation stays in
+  the lists.
+- **Q12 — Dark mode is designed during the Swift build**, derived from iOS semantic colors and
+  tuned on device; mockups stay light-only.
+
 ---
 
 **Sequence from here:** churn investigation (Q8) → web-tech mockups honoring Q1–Q7 →
