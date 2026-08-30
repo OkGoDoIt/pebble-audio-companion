@@ -7,7 +7,14 @@
     { "file": "Conversation.dc.html", "x": 0, "y": 1000, "w": 390, "h": 844, "title": "Conversation" },
     { "file": "Search.dc.html", "x": 470, "y": 1000, "w": 390, "h": 844, "title": "Search" },
     { "file": "AskSheet.dc.html", "x": 940, "y": 1000, "w": 390, "h": 844, "title": "Ask" },
-    { "file": "Settings.dc.html", "x": 1410, "y": 1000, "w": 390, "h": 844, "title": "Settings" }
+    { "file": "Settings.dc.html", "x": 1410, "y": 1000, "w": 390, "h": 844, "title": "Settings" },
+    { "file": "SettingsWatch.dc.html", "x": 0, "y": 2000, "w": 390, "h": 844, "title": "Settings · Watch" },
+    { "file": "SettingsTranscription.dc.html", "x": 470, "y": 2000, "w": 390, "h": 844, "title": "Settings · Transcription & AI" },
+    { "file": "SettingsStorage.dc.html", "x": 940, "y": 2000, "w": 390, "h": 844, "title": "Settings · Storage & Privacy" },
+    { "file": "SettingsAboutYou.dc.html", "x": 1410, "y": 2000, "w": 390, "h": 844, "title": "Settings · About You" },
+    { "file": "SettingsDiagnostics.dc.html", "x": 1880, "y": 2000, "w": 390, "h": 844, "title": "Settings · Diagnostics" },
+    { "file": "TagEditor.dc.html", "x": 0, "y": 3000, "w": 390, "h": 844, "title": "Tag Editor" },
+    { "file": "NotesView.dc.html", "x": 470, "y": 3000, "w": 390, "h": 844, "title": "Saved Notes" }
   ],
   "annotations": [
     { "id": "note-onboarding", "x": 0, "y": -170, "w": 330, "text": "Onboarding is now two steps: connect, then confirm on the watch. Permissions are requested in place when Connect is tapped; privacy is one calm sentence on the first screen." },
@@ -15,7 +22,9 @@
     { "id": "note-conversation", "x": 0, "y": 872, "w": 340, "text": "Conversations group the tiny transport segments into one card. Interruptions appear inline where they happened - quiet in gray, missing in amber - never as top-of-card warnings. AI tags sit under the summary and feed filtering and search." },
     { "id": "note-search", "x": 470, "y": 872, "w": 320, "text": "One field does both: results appear as you type (tags, conversations with highlighted snippets, follow-ups), and the top row hands the same text to Ask as a question. Tapping the tag filters the Library." },
     { "id": "note-ask", "x": 940, "y": 872, "w": 300, "text": "Ask is a sheet from Today's title button, search, or a conversation - scoped to what you were looking at. Citations tap through to the exact moment." },
-    { "id": "note-settings", "x": 1410, "y": 872, "w": 300, "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real." }
+    { "id": "note-settings", "x": 1410, "y": 872, "w": 300, "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real." },
+    { "id": "note-settings-pages", "x": 0, "y": 1872, "w": 360, "text": "The five pushed Settings screens. Keys show as 'saved in Keychain' with a change flow, never an inline text field. Diagnostics reads as plain language - 'continued - reattached after a blip' - not key=value dumps; the raw logs stay behind Detailed Logs." },
+    { "id": "note-extras", "x": 0, "y": 2872, "w": 340, "text": "Tag editor (Q10): AI-suggested chips to add, x to remove, rename applies everywhere. Saved notes keep the citation pattern from Ask - numbered chips tap through to the exact moment." }
   ],
   "launch": { "view": "canvas" }
 }
