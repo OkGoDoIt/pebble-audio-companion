@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #5B5BD6; } a:hover { color: #4A4AC4; }
+  </style>
+</helmet>
+<div style="width: 390px; height: 844px; background: #F2F2F7; color: #1C1C1E; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 54px 16px 8px;">
+    <svg width="12" height="20" viewBox="0 0 12 20" fill="none"><path d="M10 2 L3 10 L10 18" stroke="#5B5BD6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span style="font-size: 17px; color: #5B5BD6;">Today</span>
+  </div>
+
+  <div style="flex: 1 1 auto; display: flex; flex-direction: column; padding: 4px 16px 0; gap: 12px; overflow: hidden;">
+
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 24px; font-weight: 700; letter-spacing: -0.3px;">Recording now</div>
+        <div style="font-size: 13px; color: #8A8A8E;">Started 12:04 PM · 48 min so far</div>
+      </div>
+      <span style="font-size: 11px; font-weight: 600; color: #34C759; background: rgba(52,199,89,0.12); border-radius: 9px; padding: 2px 8px;">Live</span>
+    </div>
+
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; flex-direction: column; gap: 3px;">
+        <span style="font-size: 12px; font-weight: 600; color: #5B5BD6;">Roger</span>
+        <span style="font-size: 16px; line-height: 1.42;">The settings pages each push from one clean root instead of the giant scroll.</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="flex: 1 1 auto; height: 0.5px; background: rgba(60,60,67,0.18);"></span>
+        <span style="font-size: 12px; color: #B0B0B6;">quiet for 2 min</span>
+        <span style="flex: 1 1 auto; height: 0.5px; background: rgba(60,60,67,0.18);"></span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 3px;">
+        <span style="font-size: 12px; font-weight: 600; color: #5B5BD6;">Roger</span>
+        <span style="font-size: 16px; line-height: 1.42;">Okay, and the tag editor gets the rename cursor —</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 3px;">
+        <span style="font-size: 12px; font-weight: 600; color: #B9B9EE;">·</span>
+        <span style="font-size: 16px; line-height: 1.42; color: #8A8A8E;">so the suggestions row can stay under the field…</span>
+      </div>
+      <div style="font-size: 11px; color: #B0B0B6; text-align: center; padding: 4px 0 0;">Live transcript · on-device · final transcript may differ</div>
+    </div>
+
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 16px 30px; background: #F9F9F9; border-top: 0.5px solid rgba(60,60,67,0.29);">
+    <span style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 8px; background: #FFFFFF; border: 1px solid rgba(60,60,67,0.22); border-radius: 18px; height: 40px; font-size: 15px; font-weight: 600;">
+      <svg width="12" height="14" viewBox="0 0 12 14" fill="none"><rect x="1" y="1" width="3.4" height="12" rx="1.2" fill="#1C1C1E"/><rect x="7.6" y="1" width="3.4" height="12" rx="1.2" fill="#1C1C1E"/></svg>
+      Pause
+    </span>
+    <span style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 8px; background: #FFFFFF; border: 1px solid rgba(60,60,67,0.22); border-radius: 18px; height: 40px; font-size: 15px; font-weight: 600; color: #FF3B30;">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="1" width="10" height="10" rx="2" fill="#FF3B30"/></svg>
+      Stop
+    </span>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

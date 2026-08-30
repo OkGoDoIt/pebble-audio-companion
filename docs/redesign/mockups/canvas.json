@@ -14,7 +14,11 @@
     { "file": "SettingsAboutYou.dc.html", "x": 1410, "y": 2000, "w": 390, "h": 844, "title": "Settings · About You" },
     { "file": "SettingsDiagnostics.dc.html", "x": 1880, "y": 2000, "w": 390, "h": 844, "title": "Settings · Diagnostics" },
     { "file": "TagEditor.dc.html", "x": 0, "y": 3000, "w": 390, "h": 844, "title": "Tag Editor" },
-    { "file": "NotesView.dc.html", "x": 470, "y": 3000, "w": 390, "h": 844, "title": "Saved Notes" }
+    { "file": "NotesView.dc.html", "x": 470, "y": 3000, "w": 390, "h": 844, "title": "Saved Notes" },
+    { "file": "LiveDetail.dc.html", "x": 940, "y": 3000, "w": 390, "h": 844, "title": "Live Conversation" },
+    { "file": "StatusStates.dc.html", "x": 0, "y": 4000, "w": 390, "h": 844, "title": "States · Status Card" },
+    { "file": "OnboardingStates.dc.html", "x": 470, "y": 4000, "w": 390, "h": 844, "title": "States · Onboarding" },
+    { "file": "ConversationStates.dc.html", "x": 940, "y": 4000, "w": 390, "h": 844, "title": "States · Conversation" }
   ],
   "annotations": [
     { "id": "note-onboarding", "x": 0, "y": -170, "w": 330, "text": "Onboarding is now two steps: connect, then confirm on the watch. Permissions are requested in place when Connect is tapped; privacy is one calm sentence on the first screen." },
@@ -24,7 +28,9 @@
     { "id": "note-ask", "x": 940, "y": 872, "w": 300, "text": "Ask is a sheet from Today's title button, search, or a conversation - scoped to what you were looking at. Citations tap through to the exact moment." },
     { "id": "note-settings", "x": 1410, "y": 872, "w": 300, "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real." },
     { "id": "note-settings-pages", "x": 0, "y": 1872, "w": 360, "text": "The five pushed Settings screens. Keys show as 'saved in Keychain' with a change flow, never an inline text field. Diagnostics reads as plain language - 'continued - reattached after a blip' - not key=value dumps; the raw logs stay behind Detailed Logs." },
-    { "id": "note-extras", "x": 0, "y": 2872, "w": 340, "text": "Tag editor (Q10): AI-suggested chips to add, x to remove, rename applies everywhere. Saved notes keep the citation pattern from Ask - numbered chips tap through to the exact moment." }
+    { "id": "note-extras", "x": 0, "y": 2872, "w": 340, "text": "Tag editor (Q10): AI-suggested chips to add, x to remove, rename applies everywhere. Saved notes keep the citation pattern from Ask - numbered chips tap through to the exact moment." },
+    { "id": "note-live", "x": 940, "y": 2872, "w": 320, "text": "Tapping the Live row opens the live conversation: growing on-device transcript with inline quiet markers, the in-progress line in light violet, Pause and Stop here rather than on the status card." },
+    { "id": "note-states", "x": 0, "y": 3872, "w": 380, "text": "The unhappy paths, drawn before code this time (the old app's worst bugs were undesigned states). Status-card families with exactly one calm line and one action each; onboarding failure branches including stock-firmware and bound-to-another-phone; the transcription lifecycle, the overflow menu, and delete-undo. Coverage strip taxonomy: violet recorded, gray quiet, amber missing, track = off; paused renders as its own state, never as missing." }
   ],
   "launch": { "view": "canvas" }
 }
