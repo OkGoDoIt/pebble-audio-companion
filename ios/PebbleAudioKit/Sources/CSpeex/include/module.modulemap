@@ -1,0 +1,5 @@
+module CSpeex {
+    umbrella header "cspeex.h"
+    export *
+    module * { export * }
+}
