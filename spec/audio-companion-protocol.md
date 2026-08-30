@@ -170,9 +170,15 @@ One-byte `msg_id` (`0x80–0x9F`) plus packed struct per notification.
 | 10 | 4 | `sample_rate_hz` (16000) |
 | 14 | 4 | `bit_rate_bps` (9800) |
 | 18 | 2 | `frame_duration_ms` (20) |
-| 20 | 8 | `start_time_ms` — watch wall clock, UTC ms |
-| 28 | 8 | `start_monotonic_ms` — watch monotonic ms |
-| 36 | 4 | `flags` (0) |
+| 20 | 8 | `start_time_ms` — watch wall clock at stream birth, UTC ms |
+| 28 | 8 | `start_monotonic_ms` — watch monotonic ms at stream birth |
+| 36 | 4 | `flags` — bit0 = RESUME |
+
+`flags` bit0 (`RESUME`): re-announces an ongoing stream to a freshly (re)attached receiver.
+Same `stream_id`, codec parameters, and stream-birth timestamps (resent verbatim); sequence
+numbering continues, and the receiver adopts the first frame's sequence as its contiguity base.
+Receivers reattach on the stable identity (`stream_id` + codec parameters) — never on the
+timestamps — and continue the interrupted or still-open segment instead of opening a new one.
 
 `STREAM_DATA` (`0x81`) header (20 bytes), followed by `frame_count` frame entries:
 
