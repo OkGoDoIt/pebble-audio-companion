@@ -823,6 +823,54 @@ class AudioReceiverSessionTest {
     }
 
     @Test
+    fun resumeReannounceForLiveStreamDoesNotSupersedeOpenSegment() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        fx.link.pushData(streamStart())
+        runCurrent()
+        fx.link.pushData(data(0u, 4))
+        runCurrent()
+
+        // Mid-connection re-announce of the same stream (e.g. a liveness-watchdog revival on the
+        // watch): RESUME flag, same id, and the phone never saw the link drop. The open segment
+        // must be continued, not closed as superseded — a superseded segment can never reattach.
+        fx.link.pushData(resumeStart())
+        runCurrent()
+        fx.link.pushData(data(4u, 2))
+        runCurrent()
+
+        assertTrue(
+            fx.sink.eventsOf<SinkEvent.Close>().isEmpty(),
+            "an in-connection RESUME of the live stream must not close the open segment: " +
+                fx.sink.eventsOf<SinkEvent.Close>(),
+        )
+        assertEquals(ReceiverSessionState.Streaming(streamId), fx.session.state.value)
+        assertEquals(2, fx.sink.eventsOf<SinkEvent.Open>().size, "the sink still sees the re-announce")
+    }
+
+    @Test
+    fun freshStreamStartStillSupersedesOpenSegment() = runTest {
+        val fx = startSession()
+        authorize(fx)
+
+        fx.link.pushData(streamStart())
+        runCurrent()
+        fx.link.pushData(data(0u, 4))
+        runCurrent()
+
+        // A genuinely new stream (different id, no RESUME) replaces the open one, as before.
+        fx.link.pushData(streamStart().copy(streamId = streamId + 1u))
+        runCurrent()
+
+        assertEquals(
+            listOf<SegmentCloseReason>(SegmentCloseReason.Superseded),
+            fx.sink.eventsOf<SinkEvent.Close>().map { it.reason },
+        )
+        assertEquals(ReceiverSessionState.Streaming(streamId + 1u), fx.session.state.value)
+    }
+
+    @Test
     fun resumeStreamWithLeadingOverflowGap_recordsLossOnceAndAdoptsBase() = runTest {
         val fx = startSession()
         authorize(fx)

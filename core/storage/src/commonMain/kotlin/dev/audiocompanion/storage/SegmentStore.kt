@@ -51,6 +51,7 @@ class SegmentStore(
     private val root: Path,
     private val nowMs: () -> Long,
     private val config: SegmentStoreConfig = SegmentStoreConfig(),
+    private val log: (String) -> Unit = {},
 ) : SegmentSink {
 
     private val json = Json {
@@ -101,6 +102,21 @@ class SegmentStore(
     // --- SegmentSink ---------------------------------------------------------------------------
 
     override suspend fun openSegment(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?) {
+        val resume = (start.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) != 0u
+        val open = current
+        if (resume && open != null && open.meta.streamId == start.streamId) {
+            if (canContinue(open.meta, start, provenance)) {
+                // The live stream was re-announced without the phone ever seeing the segment
+                // close (a receiver-side reattach after a transport blip). Keep appending to the
+                // open segment; superseding it here would make reattachment impossible, because
+                // only Interrupted segments are continuation candidates.
+                return
+            }
+            log(
+                "audio-companion: RESUME for open stream ${start.streamId} cannot continue in " +
+                    "place (${describeContinueMismatch(open.meta, start, provenance)}); superseding",
+            )
+        }
         closeSegment(SegmentCloseReason.Superseded)
         if (tryContinueInterruptedSegment(start, receivedAtMs, provenance)) return
         openSegmentInternal(start, receivedAtMs, provenance)
@@ -112,16 +128,28 @@ class SegmentStore(
         provenance: SegmentProvenance?,
     ): Boolean {
         val resume = (start.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) != 0u
-        if (!resume || !fileSystem.exists(segmentsDir)) return false
-        val candidate = listSegments()
+        if (!resume) return false
+        if (!fileSystem.exists(segmentsDir)) {
+            log("audio-companion: RESUME for stream ${start.streamId} found no stored segments; opening a new segment")
+            return false
+        }
+        val recentlyInterrupted = listSegments()
             .asReversed()
-            .firstOrNull { meta ->
-                val closedAt = meta.closedAtMs ?: return@firstOrNull false
+            .filter { meta ->
+                val closedAt = meta.closedAtMs ?: return@filter false
                 meta.closeReason?.kind == CloseReasonMeta.KIND_INTERRUPTED &&
                     receivedAtMs >= closedAt &&
-                    receivedAtMs - closedAt <= config.continueInterruptedWithinMs &&
-                    canContinue(meta, start, provenance)
-            } ?: return false
+                    receivedAtMs - closedAt <= config.continueInterruptedWithinMs
+            }
+        val candidate = recentlyInterrupted.firstOrNull { canContinue(it, start, provenance) }
+        if (candidate == null) {
+            // Every failed reattach becomes a new Library row, so always say why it failed.
+            val reason = recentlyInterrupted.firstOrNull()
+                ?.let { describeContinueMismatch(it, start, provenance) }
+                ?: "no segment interrupted within ${config.continueInterruptedWithinMs} ms"
+            log("audio-companion: RESUME for stream ${start.streamId} could not reattach ($reason); opening a new segment")
+            return false
+        }
 
         val continued = candidate.copy(closeReason = null, closedAtMs = null)
         writeMetaAtomically(continued)
@@ -136,6 +164,14 @@ class SegmentStore(
         return true
     }
 
+    /**
+     * Stream identity for reattachment is the stream id plus the codec/protocol contract and
+     * provenance. `startTimeMs`/`startMonotonicMs` are deliberately NOT compared: the watch
+     * recomputed them at send time on every RESUME re-announcement (fixed in firmware to resend
+     * the stream-birth values, but firmware already in the field still sends fresh ones), so
+     * comparing them made reattachment structurally impossible — every transport blip minted a
+     * new segment. The stored meta keeps the original stream-birth timestamps either way.
+     */
     private fun canContinue(
         meta: SegmentMeta,
         start: StreamStart,
@@ -149,11 +185,39 @@ class SegmentStore(
             meta.sampleRateHz == start.sampleRateHz &&
             meta.bitRateBps == start.bitRateBps &&
             meta.frameDurationMs == start.frameDurationMs &&
-            meta.startTimeMs == start.startTimeMs &&
-            meta.startMonotonicMs == start.startMonotonicMs &&
             meta.provenance == provenance?.let {
                 ProvenanceMeta(it.fwVersionPacked, it.protocolVersion)
             }
+
+    /** Names the first field that blocks continuation, for the reattach-failure log line. */
+    private fun describeContinueMismatch(
+        meta: SegmentMeta,
+        start: StreamStart,
+        provenance: SegmentProvenance?,
+    ): String {
+        val expectedProvenance = provenance?.let { ProvenanceMeta(it.fwVersionPacked, it.protocolVersion) }
+        return when {
+            meta.streamId != start.streamId ->
+                "streamId ${meta.streamId} != ${start.streamId}"
+            meta.protocolVersion != start.protocolVersion ->
+                "protocolVersion ${meta.protocolVersion} != ${start.protocolVersion}"
+            meta.codecIdRaw != start.codecIdRaw ->
+                "codecId ${meta.codecIdRaw} != ${start.codecIdRaw}"
+            meta.channels != start.channels ->
+                "channels ${meta.channels} != ${start.channels}"
+            meta.frameSamples != start.frameSamples ->
+                "frameSamples ${meta.frameSamples} != ${start.frameSamples}"
+            meta.sampleRateHz != start.sampleRateHz ->
+                "sampleRateHz ${meta.sampleRateHz} != ${start.sampleRateHz}"
+            meta.bitRateBps != start.bitRateBps ->
+                "bitRateBps ${meta.bitRateBps} != ${start.bitRateBps}"
+            meta.frameDurationMs != start.frameDurationMs ->
+                "frameDurationMs ${meta.frameDurationMs} != ${start.frameDurationMs}"
+            meta.provenance != expectedProvenance ->
+                "provenance ${meta.provenance} != $expectedProvenance"
+            else -> "no field mismatch"
+        }
+    }
 
     private fun openSegmentInternal(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?) {
         fileSystem.createDirectories(segmentsDir)
@@ -189,6 +253,17 @@ class SegmentStore(
     override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
         val segment = current ?: return
         if (segment.meta.streamId != streamId) return
+
+        // A reattached stream rewinds its spool to the last checkpoint, so the first batches
+        // after a RESUME can re-send frames already persisted here (the flushed-but-not-yet-
+        // checkpointed tail). Drop everything at or below the persisted high-water mark instead
+        // of appending duplicate audio. A rewound frame that would fill an old sequence-skip gap
+        // below the mark is dropped with the rest — that audio stays honestly represented as a
+        // gap — while frames past the mark append normally.
+        val lastPersisted = segment.meta.lastSequence
+        @Suppress("NAME_SHADOWING")
+        val frames = if (lastPersisted == null) frames else frames.filter { it.sequence > lastPersisted }
+        if (frames.isEmpty()) return
 
         val writer = WireWriter(frames.sumOf { it.payload.size + RECORD_HEADER_BYTES })
         for (frame in frames) {
