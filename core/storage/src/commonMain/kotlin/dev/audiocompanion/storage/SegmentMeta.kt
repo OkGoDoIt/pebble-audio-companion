@@ -44,6 +44,13 @@ data class SegmentMeta(
     val closedAtMs: Long? = null,
     val transcriptionState: TranscriptionState = TranscriptionState.Pending,
     val provenance: ProvenanceMeta? = null,
+    /**
+     * Highest sequence persisted in this stream BEFORE this segment existed (set on rotation
+     * successors). A post-RESUME spool rewind can re-send frames older than this segment; while
+     * the segment is still empty its own [lastSequence] is null, so this floor keeps those
+     * already-persisted frames from being appended again as duplicates.
+     */
+    val dedupeFloorSequence: UInt? = null,
 ) {
     val isOpen: Boolean get() = closeReason == null
 

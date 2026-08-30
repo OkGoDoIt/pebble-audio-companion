@@ -17,9 +17,30 @@ class TranscriptionProcessor(
     private val onStateChanged: (segmentId: String, state: TaskState) -> Unit = { _, _ -> },
     /** Persists transcript text durably before the task is marked Complete. */
     private val transcriptStore: FileTranscriptStore? = null,
+    /**
+     * True while the segment is open (recording). A RESUME reattach can reopen a segment that was
+     * briefly closed and even already transcribed; an open segment must never be transcribed (the
+     * result would cover a stale prefix and terminally mask the audio appended after reattach).
+     */
+    private val isSegmentOpen: (segmentId: String) -> Boolean = { false },
 ) {
+    /**
+     * [segmentIds] are the closed, not-fully-transcribed segments. One with a terminal-success
+     * task is a reattached segment that grew after transcription — requeue it; the rest enqueue
+     * idempotently.
+     */
     fun enqueueClosedSegments(segmentIds: Iterable<String>) {
-        segmentIds.forEach { queue.enqueue(it) }
+        segmentIds.forEach { segmentId ->
+            val existing = queue.load(segmentId)
+            if (existing != null &&
+                (existing.state == TaskState.Complete || existing.state == TaskState.NoSpeech)
+            ) {
+                queue.requeue(segmentId)
+                onStateChanged(segmentId, TaskState.Pending)
+            } else {
+                queue.enqueue(segmentId)
+            }
+        }
     }
 
     suspend fun isTranscriptionAvailable(): Boolean = router.isAvailable()
@@ -41,6 +62,9 @@ class TranscriptionProcessor(
 
     suspend fun processNext(): TranscriptionTask? {
         val task = queue.nextRunnable() ?: return null
+        // A segment that reattached (RESUME) while its task waited is recording again: leave the
+        // task Pending; it runs after the segment's final close.
+        if (isSegmentOpen(task.segmentId)) return null
         if (!router.isAvailable()) {
             val disabled = queue.markDisabled(task.segmentId)
             onStateChanged(task.segmentId, TaskState.Disabled)
@@ -51,6 +75,13 @@ class TranscriptionProcessor(
         onStateChanged(task.segmentId, TaskState.Running)
         return try {
             val result = router.transcribe(pcmSource(task.segmentId), sampleRateHz)
+            if (isSegmentOpen(task.segmentId)) {
+                // The segment reattached mid-transcription; this result covers a stale prefix.
+                // Discard it and re-run after the final close.
+                return queue.requeue(task.segmentId).also {
+                    onStateChanged(task.segmentId, TaskState.Pending)
+                }
+            }
             // Durability order matters: the transcript text is on disk before the task goes
             // terminal, so a crash in between re-runs transcription instead of losing text.
             transcriptStore?.save(task.segmentId, result)

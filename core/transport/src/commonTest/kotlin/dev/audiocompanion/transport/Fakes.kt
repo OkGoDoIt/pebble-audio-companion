@@ -91,8 +91,9 @@ class FakeSegmentSink : SegmentSink {
         open = true
     }
 
-    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
+    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>): List<SegmentFrame> {
         events += SinkEvent.Append(streamId, frames)
+        return frames
     }
 
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {
