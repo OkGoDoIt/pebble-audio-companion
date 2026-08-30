@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason silence_suppressed",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1602560,
+    "first_missing_sequence": 5008,
+    "missing_frame_count": 250,
+    "reason": 8,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_silence_suppressed",
+  "size": 26
+}

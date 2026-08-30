@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "Unknown phone->watch message id must be ignored",
+  "expect": "ignore",
+  "fields": {},
+  "name": "control_unknown_id",
+  "size": 2
+}

@@ -1,0 +1,12 @@
+{
+  "channel": "control_in",
+  "description": "Authorization request with maximum-length receiver name",
+  "expect": "parse",
+  "fields": {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxx",
+    "name_len": 24,
+    "request_token": 34
+  },
+  "name": "auth_request_max_name",
+  "size": 60
+}

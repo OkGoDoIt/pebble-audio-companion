@@ -1,0 +1,11 @@
+{
+  "channel": "data",
+  "description": "Elapsed-time-only gap: missing_frame_count 0 means unknown",
+  "expect": "parse",
+  "fields": {
+    "missing_frame_count": 0,
+    "reason": 2
+  },
+  "name": "stream_gap_unknown_count",
+  "size": 26
+}

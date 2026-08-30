@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason power_save",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1602240,
+    "first_missing_sequence": 5007,
+    "missing_frame_count": 250,
+    "reason": 7,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_power_save",
+  "size": 26
+}

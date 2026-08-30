@@ -1,0 +1,13 @@
+{
+  "channel": "data",
+  "description": "Single frame at MAX_ENCODED_FRAME_BYTES (200)",
+  "expect": "parse",
+  "fields": {
+    "frame_count": 1,
+    "frame_lengths": [
+      200
+    ]
+  },
+  "name": "stream_data_max_frame_bytes",
+  "size": 222
+}

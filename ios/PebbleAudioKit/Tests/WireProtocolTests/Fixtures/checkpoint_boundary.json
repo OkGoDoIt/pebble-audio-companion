@@ -1,0 +1,15 @@
+{
+  "channel": "control_in",
+  "description": "All-ones boundary values; locks u64 little-endian handling; both receiver flags set",
+  "expect": "parse",
+  "fields": {
+    "free_storage_hint_kb": 0,
+    "highest_contiguous_sequence_persisted": 4294967295,
+    "persisted_sample_index": 18446744073709551615,
+    "receiver_flags": 3,
+    "request_token": 255,
+    "stream_id": 4294967295
+  },
+  "name": "checkpoint_boundary",
+  "size": 26
+}

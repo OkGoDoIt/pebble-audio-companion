@@ -1,0 +1,52 @@
+name: PebbleAudio
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: R73F7TNT65
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  PebbleAudioKit:
+    path: PebbleAudioKit
+targets:
+  App:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "Info.plist"
+          - "App.entitlements"
+    dependencies:
+      - package: PebbleAudioKit
+        product: PebbleAudioKit
+    settings:
+      base:
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+        PRODUCT_NAME: Pebble Audio
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: Pebble Audio
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        # Dev builds live side-by-side with the old app (plan 6.4). The release build ships
+        # as dev.audiocompanion.app and installs OVER the old app — the only path where M8
+        # migration and receiver_id_v1 reuse work.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app
+schemes:
+  App:
+    build:
+      targets:
+        App: all
+    run:
+      config: Debug
+    archive:
+      config: Release

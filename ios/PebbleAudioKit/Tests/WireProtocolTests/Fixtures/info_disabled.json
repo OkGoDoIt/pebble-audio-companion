@@ -1,0 +1,11 @@
+{
+  "channel": "info",
+  "description": "Info read while the feature pref is off and no receiver is bound",
+  "expect": "parse",
+  "fields": {
+    "flags": 0,
+    "service_state": 0
+  },
+  "name": "info_disabled",
+  "size": 20
+}

@@ -1,0 +1,11 @@
+{
+  "channel": "control_out",
+  "description": "A different receiver is already bound; fail closed",
+  "expect": "parse",
+  "fields": {
+    "request_token": 33,
+    "status": 2
+  },
+  "name": "auth_result_denied_mismatch",
+  "size": 4
+}

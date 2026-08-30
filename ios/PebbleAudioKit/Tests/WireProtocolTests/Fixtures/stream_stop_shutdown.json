@@ -1,0 +1,10 @@
+{
+  "channel": "data",
+  "description": "Stream stopped because the watch is shutting down",
+  "expect": "parse",
+  "fields": {
+    "reason": 4
+  },
+  "name": "stream_stop_shutdown",
+  "size": 22
+}
