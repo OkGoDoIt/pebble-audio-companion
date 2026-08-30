@@ -74,7 +74,7 @@ class IosAudioCompanionRuntimeFactory(
     ): AudioCompanionRuntime {
         val root = Path(filesRoot, "audio-companion")
         val nowMs = { (kotlin.time.Clock.System.now().toEpochMilliseconds()) }
-        val store = SegmentStore(SystemFileSystem, root, nowMs)
+        val store = SegmentStore(SystemFileSystem, root, nowMs, log = ::println)
         val retention = RetentionManager(
             store = store,
             freeSpace = IosFreeSpaceProvider(filesRoot),

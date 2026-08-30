@@ -504,6 +504,124 @@ class SegmentStoreTest {
     }
 
     @Test
+    fun resumeStartWithChangedTimestampsStillReattaches() = runTest {
+        // Firmware re-announcements historically recomputed start_time_ms/start_monotonic_ms at
+        // send time, so reattachment must not depend on them matching the original STREAM_START.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 3))
+        clock += 2_000
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock += 30_000
+        store.openSegment(
+            start.copy(
+                flags = ProtocolConstants.STREAM_START_FLAG_RESUME,
+                startTimeMs = start.startTimeMs + 32_000u,
+                startMonotonicMs = start.startMonotonicMs + 32_000u,
+            ),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        assertEquals(segmentId, store.openSegmentId, "fresh re-announce timestamps must not block reattach")
+        val meta = assertNotNull(store.readMeta(segmentId))
+        assertEquals(start.startTimeMs, meta.startTimeMs, "the meta keeps the stream-birth wall clock")
+        assertEquals(start.startMonotonicMs, meta.startMonotonicMs)
+    }
+
+    @Test
+    fun resumeStartForOpenStreamContinuesInPlace() = runTest {
+        // A RESUME re-announcement can arrive while the segment is still open (the phone never
+        // saw the link drop). That must continue the open segment, not supersede it.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 3))
+
+        clock += 5_000
+        store.openSegment(
+            start.copy(
+                flags = ProtocolConstants.STREAM_START_FLAG_RESUME,
+                startTimeMs = start.startTimeMs + 5_000u,
+                startMonotonicMs = start.startMonotonicMs + 5_000u,
+            ),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        assertEquals(segmentId, store.openSegmentId, "in-place RESUME must not supersede the open segment")
+        store.appendFrames(streamId, frames(3u, 2))
+        store.closeSegment(SegmentCloseReason.Stopped(reasonRaw = 1, finalSequence = 4u, finalSampleIndex = 1600u))
+
+        val meta = assertNotNull(store.readMeta(segmentId))
+        assertEquals(5L, meta.frameCount)
+        assertEquals(4u, meta.lastSequence)
+        assertEquals(CloseReasonMeta.KIND_STOPPED, meta.closeReason?.kind)
+        assertEquals(1, store.listSegments().size, "no superseded twin segment may appear")
+    }
+
+    @Test
+    fun resumeRewindDoesNotDuplicatePersistedFrames() = runTest {
+        // After a reattach the watch rewinds its spool to the last checkpoint, re-sending frames
+        // the phone may already have persisted. Those exact re-sends must be dropped, while new
+        // frames past the persisted high-water mark append normally.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 5))
+
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        // Rewound batch: sequences 3..6 — 3 and 4 are duplicates, 5 and 6 are new.
+        store.appendFrames(streamId, frames(3u, 4))
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        val read = store.readFrames(segmentId)
+        assertEquals((0u until 7u).map { it }, read.map { it.sequence }, "no duplicate sequences in the log")
+        val meta = assertNotNull(store.readMeta(segmentId))
+        assertEquals(7L, meta.frameCount)
+        assertEquals(6u, meta.lastSequence)
+    }
+
+    @Test
+    fun resumeStartForOpenStreamWithChangedCodecSupersedes() = runTest {
+        // Same stream id but a different codec contract cannot continue in place: the open
+        // segment closes as superseded and a fresh segment takes over.
+        val root = tempRoot()
+        val logged = mutableListOf<String>()
+        val storeWithLog = SegmentStore(SystemFileSystem, root, { clock }, SegmentStoreConfig(), logged::add)
+        val start = streamStart()
+        storeWithLog.openSegment(start, receivedAtMs = clock, provenance = null)
+        val firstId = assertNotNull(storeWithLog.openSegmentId)
+        storeWithLog.appendFrames(streamId, frames(0u, 2))
+
+        storeWithLog.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME, frameSamples = 160),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        val secondId = assertNotNull(storeWithLog.openSegmentId)
+        assertTrue(secondId != firstId)
+        assertEquals(CloseReasonMeta.KIND_SUPERSEDED, storeWithLog.readMeta(firstId)?.closeReason?.kind)
+        assertTrue(
+            logged.any { it.contains("frameSamples") },
+            "the failing field must be logged, got: $logged",
+        )
+    }
+
+    @Test
     fun freshStreamStartDoesNotReopenInterruptedSegment() = runTest {
         val root = tempRoot()
         val store = store(root)

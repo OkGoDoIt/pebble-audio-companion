@@ -65,7 +65,7 @@ class AndroidAudioCompanionRuntimeFactory(
     ): AudioCompanionRuntime {
         val root = Path(appContext.filesDir.absolutePath, "audio-companion")
         val nowMs = { System.currentTimeMillis() }
-        val store = SegmentStore(SystemFileSystem, root, nowMs)
+        val store = SegmentStore(SystemFileSystem, root, nowMs, log = ::println)
         val retention = RetentionManager(
             store = store,
             freeSpace = AndroidFreeSpaceProvider(appContext),

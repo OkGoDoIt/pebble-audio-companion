@@ -526,7 +526,16 @@ class AudioReceiverSession(
         if (!authorized) return
         when (message) {
             is StreamStart -> {
-                closeOpenSegment(SegmentCloseReason.Superseded)
+                // A RESUME re-announcement of the stream we are already receiving (the watch
+                // re-attaching after a transport blip the link layer never surfaced) must not
+                // supersede the open segment: the sink continues it in place. Anything else —
+                // a fresh stream, or a resume for a different id — supersedes as before.
+                val resume = (message.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) != 0u
+                if (resume && stream?.streamId == message.streamId) {
+                    stream = null // replaced below; the segment stays open for continuation
+                } else {
+                    closeOpenSegment(SegmentCloseReason.Superseded)
+                }
                 sink.openSegment(
                     start = message,
                     receivedAtMs = nowMs(),
