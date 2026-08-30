@@ -1,0 +1,133 @@
+import Foundation
+import Testing
+import WireProtocol
+
+@testable import SegmentStore
+
+// Port of `core/storage/src/jvmTest/.../RetentionManagerTest.kt` — all 4 cases, same names.
+@Suite struct RetentionManagerTests {
+
+    private let clock = ClockBox(1_000_000)
+    private let freeSpace = FakeFreeSpace()
+
+    final class FakeFreeSpace: FreeSpaceProvider, @unchecked Sendable {
+        var bytes: Int64 = 10 * 1024 * 1024 * 1024
+        func freeBytes() -> Int64 { bytes }
+    }
+
+    private func tempRoot() throws -> URL { try makeTempRoot("retention") }
+
+    private func makeStore(_ root: URL) -> SegmentStore {
+        SegmentStore(root: root, nowMs: { [clock] in clock.now })
+    }
+
+    private func streamStart(id: UInt32) -> StreamStart {
+        StreamStart(
+            protocolVersion: 1, streamId: id, codecIdRaw: 1, channels: 1, frameSamples: 320,
+            sampleRateHz: 16000, bitRateBps: 9800, frameDurationMs: 20,
+            startTimeMs: 0, startMonotonicMs: 0, flags: 0)
+    }
+
+    /// Creates a closed segment with ~`recordCount` 39-byte records and returns its id.
+    private func makeSegment(
+        _ store: SegmentStore,
+        id: UInt32,
+        recordCount: Int = 10,
+        transcribed: Bool = false,
+        close: Bool = true
+    ) async throws -> String {
+        try await store.openSegment(start: streamStart(id: id), receivedAtMs: clock.now, provenance: nil)
+        let segmentId = try #require(await store.openSegmentId)
+        _ = try await store.appendFrames(
+            streamId: id,
+            frames: (0..<recordCount).map { i in
+                SegmentFrame(
+                    sequence: UInt32(i),
+                    sampleIndex: UInt64(i) * 320,
+                    payload: [UInt8](repeating: 0, count: 25))
+            })
+        if close { try await store.closeSegment(reason: .interrupted) }
+        if transcribed { try await store.updateTranscriptionState(segmentId, .complete) }
+        clock.now += 1_000
+        return segmentId
+    }
+
+    @Test func sizeCap_deletesOldestFullyTranscribedFirst() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let oldTranscribed = try await makeSegment(store, id: 1, transcribed: true)
+        let newTranscribed = try await makeSegment(store, id: 2, transcribed: true)
+        let oldRaw = try await makeSegment(store, id: 3)
+        let newRaw = try await makeSegment(store, id: 4)
+
+        // Cap fits roughly two segments (each is 390 bytes).
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: 800))
+        let deleted = try await manager.enforce()
+
+        #expect(deleted == [oldTranscribed, newTranscribed])
+        #expect(
+            await store.listSegments().map(\.segmentId) == [oldRaw, newRaw],
+            "untranscribed audio must outlive transcribed audio")
+    }
+
+    @Test func sizeCap_fallsBackToOldestUntranscribed_butNeverOpenSegment() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let oldRaw = try await makeSegment(store, id: 1)
+        let openSegment = try await makeSegment(store, id: 2, close: false)
+
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: 1))
+        let deleted = try await manager.enforce()
+
+        #expect(deleted == [oldRaw])
+        #expect(await store.openSegmentId == openSegment)
+        #expect(
+            await store.listSegments().map(\.segmentId) == [openSegment],
+            "the open segment is never deleted, even over cap")
+    }
+
+    @Test func ageCap_deletesExpiredSegments() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let ancient = try await makeSegment(store, id: 1)
+        clock.now += 31 * 24 * 60 * 60 * 1000
+        let recent = try await makeSegment(store, id: 2)
+
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig())
+        let deleted = try await manager.enforce()
+        #expect(deleted == [ancient])
+        #expect(await store.listSegments().map(\.segmentId) == [recent])
+    }
+
+    @Test func storageFloors_driveReceiverFlagsAndHint() throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig())
+
+        freeSpace.bytes = 10 * 1024 * 1024 * 1024
+        #expect(manager.receiverFlags() == 0)
+
+        freeSpace.bytes = 400 * 1024 * 1024  // < 500 MB: low storage, no pause yet
+        #expect(manager.receiverFlags() == ProtocolConstants.receiverFlagLowStorage)
+        #expect(manager.lowStorage)
+        #expect(!manager.pauseRequested)
+
+        freeSpace.bytes = 100 * 1024 * 1024  // < 200 MB: low storage + pause requested
+        #expect(
+            manager.receiverFlags()
+                == ProtocolConstants.receiverFlagLowStorage | ProtocolConstants.receiverFlagPauseRequested)
+        #expect(manager.freeStorageHintKb() == 100 * 1024)
+
+        // Hint saturates instead of wrapping for very large free space.
+        freeSpace.bytes = 8 * 1024 * 1024 * 1024 * 1024
+        #expect(manager.freeStorageHintKb() == UInt32.max)
+    }
+}
