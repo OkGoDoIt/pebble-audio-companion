@@ -1,0 +1,19 @@
+{
+  "artboards": [
+    { "file": "Onboarding.dc.html", "x": 0, "y": 0, "w": 390, "h": 844, "title": "Onboarding · Connect" },
+    { "file": "OnboardingWatch.dc.html", "x": 470, "y": 0, "w": 390, "h": 844, "title": "Onboarding · Confirm" },
+    { "file": "Main.dc.html", "x": 940, "y": 0, "w": 390, "h": 844, "title": "Today" },
+    { "file": "Library.dc.html", "x": 1410, "y": 0, "w": 390, "h": 844, "title": "Library" },
+    { "file": "Conversation.dc.html", "x": 0, "y": 1000, "w": 390, "h": 844, "title": "Conversation" },
+    { "file": "AskSheet.dc.html", "x": 470, "y": 1000, "w": 390, "h": 844, "title": "Ask" },
+    { "file": "Settings.dc.html", "x": 940, "y": 1000, "w": 390, "h": 844, "title": "Settings" }
+  ],
+  "annotations": [
+    { "id": "note-onboarding", "x": 0, "y": -170, "w": 330, "text": "Onboarding is now two steps: connect, then confirm on the watch. Permissions are requested in place when Connect is tapped; privacy is one calm sentence on the first screen." },
+    { "id": "note-today", "x": 940, "y": -170, "w": 340, "text": "The 5-second glance: status + live minute, day coverage, recap, follow-ups, conversations. No legends, no counters, no warnings unless something is actually wrong." },
+    { "id": "note-conversation", "x": 0, "y": 872, "w": 340, "text": "Conversations group the tiny transport segments into one card. Interruptions appear inline where they happened - quiet in gray, missing in amber - never as top-of-card warnings." },
+    { "id": "note-ask", "x": 470, "y": 872, "w": 300, "text": "Ask is a sheet from Today, Library, or a conversation - scoped to what you were looking at. Citations tap through to the exact moment." },
+    { "id": "note-settings", "x": 940, "y": 872, "w": 300, "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real." }
+  ],
+  "launch": { "view": "canvas" }
+}
