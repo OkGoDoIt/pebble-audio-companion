@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #5B5BD6; } a:hover { color: #4A4AC4; }
+  </style>
+</helmet>
+<div style="width: 390px; height: 844px; background: #F2F2F7; color: #1C1C1E; display: flex; flex-direction: column; overflow: hidden;">
+  <div style="flex: 1 1 auto; display: flex; flex-direction: column; padding: 54px 16px 24px; gap: 12px; overflow: hidden;">
+    <div style="font-size: 28px; font-weight: 700; letter-spacing: -0.3px;">Status card states</div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Recording — the default</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #34C759;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Recording</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Pebble Time 2 · connected · live minute shown above</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Paused by you</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #FF9F0A;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Paused</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">The watch is not capturing. Coverage shows this as paused, not missing.</div>
+      <div style="height: 40px; border-radius: 11px; background: #5B5BD6; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Resume</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Reconnecting — watch buffers briefly</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #FF9F0A;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Reconnecting…</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Your Pebble is out of range. It keeps recording and buffers a few minutes.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Find Watch</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Bluetooth off</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #FF3B30;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Bluetooth is off</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Turn on Bluetooth to receive audio from your watch.</div>
+      <div style="height: 40px; border-radius: 11px; background: #5B5BD6; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Open Settings</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Background audio off</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #8A8A8E;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Not recording</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Background audio is off.</div>
+      <div style="height: 40px; border-radius: 11px; background: #5B5BD6; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Start Recording</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Waiting for on-watch consent</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #5B5BD6;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Confirm on your watch</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Your Pebble is asking to allow this phone to receive audio.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

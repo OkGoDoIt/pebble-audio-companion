@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #5B5BD6; } a:hover { color: #4A4AC4; }
+  </style>
+</helmet>
+<div style="width: 390px; height: 844px; background: #F2F2F7; color: #1C1C1E; display: flex; flex-direction: column; overflow: hidden;">
+  <div style="flex: 1 1 auto; display: flex; flex-direction: column; padding: 54px 16px 24px; gap: 12px; overflow: hidden;">
+    <div style="font-size: 28px; font-weight: 700; letter-spacing: -0.3px;">Onboarding states</div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Watch not found</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #8A8A8E;"></span>
+        <span style="font-size: 17px; font-weight: 600;">No Pebble found</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Make sure the watch is nearby and Bluetooth is on.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Try Again</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Stock firmware — the most likely miss</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #FF9F0A;"></span>
+        <span style="font-size: 17px; font-weight: 600;">This Pebble can’t send audio</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">It needs the custom audio firmware first.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Firmware Guide</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Declined on the watch</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #8A8A8E;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Declined on your watch</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Nothing was set up. You can try again any time.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Try Again</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Bound to another phone — fails closed</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #FF9F0A;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Authorized to another phone</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">On the watch: Settings → Audio Companion → Forget Receiver, then try again.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Try Again</div>
+    </div>
+    <div style="font-size: 13px; font-weight: 600; color: #8A8A8E; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 0 0;">Consent timed out</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #8A8A8E;"></span>
+        <span style="font-size: 17px; font-weight: 600;">No answer on the watch</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">The request expired after a minute.</div>
+      <div style="height: 40px; border-radius: 11px; border: 1px solid rgba(91,91,214,0.4); color: #5B5BD6; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600;">Ask Again</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
