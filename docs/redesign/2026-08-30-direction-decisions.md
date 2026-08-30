@@ -106,6 +106,47 @@ search (Library chips + row pills + detail pills + a Tags section in search resu
 - **Q12 — Dark mode is designed during the Swift build**, derived from iOS semantic colors and
   tuned on device; mockups stay light-only.
 
+## Round-3 decisions (after the six-lens critique)
+
+A multi-agent design critique (76 findings) drove mockup round 4: the unhappy-path artboards
+(status-card families, onboarding failure branches, transcription lifecycle, ⋯ menu, delete-undo),
+the live conversation screen, the Q6 rolling snippet, and a coverage-strip taxonomy aligned with
+the waveform (violet recorded · gray quiet · amber missing · bare track off; paused is its own
+state, never rendered as loss). Conventions settled by design (not questions): per-conversation
+delete lives in the ⋯ menu and swipe actions with a 5-second undo snackbar (resolves U12);
+the ⋯ menu is Rename / Edit Tags / Re-transcribe / Export Audio / Delete; the Q9 loss
+notification fires only on ≥30 s of continuous loss or spool overflow, at most hourly, deep-links
+to Today, and its permission is requested the first time loss occurs (not in onboarding); search
+results cap at 3 per section with counts and a date scope; recap card taps through to a cited
+recap detail (NotesView pattern); mockups are a semantic spec — stock SwiftUI/iOS-26 chrome wins
+over pixel fidelity; Dynamic Type mappings get defined in code with the 10px legend gaining a
+larger accessibility representation.
+
+**Native-surface plan** (from the critique, for the build plan): a complete deep-link route space
+first (every screen addressable); Pause/Resume as App Intents + a Control Center control at v1;
+today-coverage home/lock widget at v1; Spotlight donation ported (not regressed) at v1; Live
+Activity exception-only (reconnecting/loss, not a persistent recording activity — the 8-hour cap
+forbids it) at v1.x; Siri/Ask shortcut at v1.x; evaluate Apple's SpeechAnalyzer + Foundation
+Models against porting the Cactus/Parakeet stack before writing the local-transcription module.
+Skip: watchOS app, share extension, Focus filters.
+
+Roger's answers (Q13–Q19):
+
+- **Q13 — Pause stops capture on the watch.** Paused time is its own calm coverage state, never
+  "missing"; Pause is the quick temporary form of the Background-audio master switch.
+- **Q14 — Transcription choice joins onboarding** as a third step: On this phone / In the cloud /
+  Later ("Later" keeps capturing safely with a set-up affordance on Today).
+- **Q15 — Cloud live streaming stays.** The realtime WebSocket path (Soniox/OpenAI) is ported so
+  cloud users get live text too; on-device model remains the offline path.
+- **Q16 — Times anchor where recorded.** Each segment stores its recording timezone; days,
+  coverage, and rows keep the local wall-clock of the place they happened.
+- **Q17 — Speaker renames create persistent voice identities** (the dormant speaker-identity
+  store becomes real), with per-conversation override.
+- **Q18 — Ask answers persist to a history** in the Ask sheet (recent questions reopen with
+  citations), replacing the old "Recent outputs".
+- **Q19 — Migration imports audio + transcripts only**; tags, notes, and digests regenerate in
+  the new app.
+
 ---
 
 **Sequence from here:** churn investigation (Q8) → web-tech mockups honoring Q1–Q7 →

@@ -1,36 +1,239 @@
 {
   "artboards": [
-    { "file": "Onboarding.dc.html", "x": 0, "y": 0, "w": 390, "h": 844, "title": "Onboarding · Connect" },
-    { "file": "OnboardingWatch.dc.html", "x": 470, "y": 0, "w": 390, "h": 844, "title": "Onboarding · Confirm" },
-    { "file": "Main.dc.html", "x": 940, "y": 0, "w": 390, "h": 844, "title": "Today" },
-    { "file": "Library.dc.html", "x": 1410, "y": 0, "w": 390, "h": 844, "title": "Library" },
-    { "file": "Conversation.dc.html", "x": 0, "y": 1000, "w": 390, "h": 844, "title": "Conversation" },
-    { "file": "Search.dc.html", "x": 470, "y": 1000, "w": 390, "h": 844, "title": "Search" },
-    { "file": "AskSheet.dc.html", "x": 940, "y": 1000, "w": 390, "h": 844, "title": "Ask" },
-    { "file": "Settings.dc.html", "x": 1410, "y": 1000, "w": 390, "h": 844, "title": "Settings" },
-    { "file": "SettingsWatch.dc.html", "x": 0, "y": 2000, "w": 390, "h": 844, "title": "Settings · Watch" },
-    { "file": "SettingsTranscription.dc.html", "x": 470, "y": 2000, "w": 390, "h": 844, "title": "Settings · Transcription & AI" },
-    { "file": "SettingsStorage.dc.html", "x": 940, "y": 2000, "w": 390, "h": 844, "title": "Settings · Storage & Privacy" },
-    { "file": "SettingsAboutYou.dc.html", "x": 1410, "y": 2000, "w": 390, "h": 844, "title": "Settings · About You" },
-    { "file": "SettingsDiagnostics.dc.html", "x": 1880, "y": 2000, "w": 390, "h": 844, "title": "Settings · Diagnostics" },
-    { "file": "TagEditor.dc.html", "x": 0, "y": 3000, "w": 390, "h": 844, "title": "Tag Editor" },
-    { "file": "NotesView.dc.html", "x": 470, "y": 3000, "w": 390, "h": 844, "title": "Saved Notes" },
-    { "file": "LiveDetail.dc.html", "x": 940, "y": 3000, "w": 390, "h": 844, "title": "Live Conversation" },
-    { "file": "StatusStates.dc.html", "x": 0, "y": 4000, "w": 390, "h": 844, "title": "States · Status Card" },
-    { "file": "OnboardingStates.dc.html", "x": 470, "y": 4000, "w": 390, "h": 844, "title": "States · Onboarding" },
-    { "file": "ConversationStates.dc.html", "x": 940, "y": 4000, "w": 390, "h": 844, "title": "States · Conversation" }
+    {
+      "file": "Onboarding.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Onboarding \u00b7 Connect"
+    },
+    {
+      "file": "OnboardingWatch.dc.html",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Onboarding \u00b7 Confirm"
+    },
+    {
+      "file": "OnboardingTranscribe.dc.html",
+      "x": 940,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Onboarding \u00b7 Transcripts"
+    },
+    {
+      "file": "Main.dc.html",
+      "x": 1410,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Today"
+    },
+    {
+      "file": "Library.dc.html",
+      "x": 1880,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Library"
+    },
+    {
+      "file": "Conversation.dc.html",
+      "x": 0,
+      "y": 1000,
+      "w": 390,
+      "h": 844,
+      "title": "Conversation"
+    },
+    {
+      "file": "Search.dc.html",
+      "x": 470,
+      "y": 1000,
+      "w": 390,
+      "h": 844,
+      "title": "Search"
+    },
+    {
+      "file": "AskSheet.dc.html",
+      "x": 940,
+      "y": 1000,
+      "w": 390,
+      "h": 844,
+      "title": "Ask"
+    },
+    {
+      "file": "Settings.dc.html",
+      "x": 1410,
+      "y": 1000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings"
+    },
+    {
+      "file": "SettingsWatch.dc.html",
+      "x": 0,
+      "y": 2000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings \u00b7 Watch"
+    },
+    {
+      "file": "SettingsTranscription.dc.html",
+      "x": 470,
+      "y": 2000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings \u00b7 Transcription & AI"
+    },
+    {
+      "file": "SettingsStorage.dc.html",
+      "x": 940,
+      "y": 2000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings \u00b7 Storage & Privacy"
+    },
+    {
+      "file": "SettingsAboutYou.dc.html",
+      "x": 1410,
+      "y": 2000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings \u00b7 About You"
+    },
+    {
+      "file": "SettingsDiagnostics.dc.html",
+      "x": 1880,
+      "y": 2000,
+      "w": 390,
+      "h": 844,
+      "title": "Settings \u00b7 Diagnostics"
+    },
+    {
+      "file": "TagEditor.dc.html",
+      "x": 0,
+      "y": 3000,
+      "w": 390,
+      "h": 844,
+      "title": "Tag Editor"
+    },
+    {
+      "file": "NotesView.dc.html",
+      "x": 470,
+      "y": 3000,
+      "w": 390,
+      "h": 844,
+      "title": "Saved Notes"
+    },
+    {
+      "file": "LiveDetail.dc.html",
+      "x": 940,
+      "y": 3000,
+      "w": 390,
+      "h": 844,
+      "title": "Live Conversation"
+    },
+    {
+      "file": "StatusStates.dc.html",
+      "x": 0,
+      "y": 4000,
+      "w": 390,
+      "h": 844,
+      "title": "States \u00b7 Status Card"
+    },
+    {
+      "file": "OnboardingStates.dc.html",
+      "x": 470,
+      "y": 4000,
+      "w": 390,
+      "h": 844,
+      "title": "States \u00b7 Onboarding"
+    },
+    {
+      "file": "ConversationStates.dc.html",
+      "x": 940,
+      "y": 4000,
+      "w": 390,
+      "h": 844,
+      "title": "States \u00b7 Conversation"
+    }
   ],
   "annotations": [
-    { "id": "note-onboarding", "x": 0, "y": -170, "w": 330, "text": "Onboarding is now two steps: connect, then confirm on the watch. Permissions are requested in place when Connect is tapped; privacy is one calm sentence on the first screen." },
-    { "id": "note-today", "x": 940, "y": -170, "w": 340, "text": "The 5-second glance: status + live minute, day coverage, recap, follow-ups, conversations. The live minute keeps the full state story - transcribed, captured-awaiting, quiet (known silence), missing (no data) - with a small legend. Ask is one tap from the title bar." },
-    { "id": "note-conversation", "x": 0, "y": 872, "w": 340, "text": "Conversations group the tiny transport segments into one card. Interruptions appear inline where they happened - quiet in gray, missing in amber - never as top-of-card warnings. AI tags sit under the summary and feed filtering and search." },
-    { "id": "note-search", "x": 470, "y": 872, "w": 320, "text": "One field does both: results appear as you type (tags, conversations with highlighted snippets, follow-ups), and the top row hands the same text to Ask as a question. Tapping the tag filters the Library." },
-    { "id": "note-ask", "x": 940, "y": 872, "w": 300, "text": "Ask is a sheet from Today's title button, search, or a conversation - scoped to what you were looking at. Citations tap through to the exact moment." },
-    { "id": "note-settings", "x": 1410, "y": 872, "w": 300, "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real." },
-    { "id": "note-settings-pages", "x": 0, "y": 1872, "w": 360, "text": "The five pushed Settings screens. Keys show as 'saved in Keychain' with a change flow, never an inline text field. Diagnostics reads as plain language - 'continued - reattached after a blip' - not key=value dumps; the raw logs stay behind Detailed Logs." },
-    { "id": "note-extras", "x": 0, "y": 2872, "w": 340, "text": "Tag editor (Q10): AI-suggested chips to add, x to remove, rename applies everywhere. Saved notes keep the citation pattern from Ask - numbered chips tap through to the exact moment." },
-    { "id": "note-live", "x": 940, "y": 2872, "w": 320, "text": "Tapping the Live row opens the live conversation: growing on-device transcript with inline quiet markers, the in-progress line in light violet, Pause and Stop here rather than on the status card." },
-    { "id": "note-states", "x": 0, "y": 3872, "w": 380, "text": "The unhappy paths, drawn before code this time (the old app's worst bugs were undesigned states). Status-card families with exactly one calm line and one action each; onboarding failure branches including stock-firmware and bound-to-another-phone; the transcription lifecycle, the overflow menu, and delete-undo. Coverage strip taxonomy: violet recorded, gray quiet, amber missing, track = off; paused renders as its own state, never as missing." }
+    {
+      "id": "note-onboarding",
+      "x": 0,
+      "y": -170,
+      "w": 330,
+      "text": "Onboarding is now three steps: connect, confirm on the watch, choose where transcripts happen (Q14). Permissions are requested in place; privacy is one calm sentence."
+    },
+    {
+      "id": "note-today",
+      "x": 1410,
+      "y": -170,
+      "w": 340,
+      "text": "The 5-second glance: status + live minute, day coverage, recap, follow-ups, conversations. The live minute keeps the full state story - transcribed, captured-awaiting, quiet (known silence), missing (no data) - with a small legend. Ask is one tap from the title bar."
+    },
+    {
+      "id": "note-conversation",
+      "x": 0,
+      "y": 872,
+      "w": 340,
+      "text": "Conversations group the tiny transport segments into one card. Interruptions appear inline where they happened - quiet in gray, missing in amber - never as top-of-card warnings. AI tags sit under the summary and feed filtering and search."
+    },
+    {
+      "id": "note-search",
+      "x": 470,
+      "y": 872,
+      "w": 320,
+      "text": "One field does both: results appear as you type (tags, conversations with highlighted snippets, follow-ups), and the top row hands the same text to Ask as a question. Tapping the tag filters the Library."
+    },
+    {
+      "id": "note-ask",
+      "x": 940,
+      "y": 872,
+      "w": 300,
+      "text": "Ask is a sheet from Today's title button, search, or a conversation - scoped to what you were looking at. Citations tap through to the exact moment."
+    },
+    {
+      "id": "note-settings",
+      "x": 1410,
+      "y": 872,
+      "w": 300,
+      "text": "Settings root fits one screen. Everything else is a pushed screen; API keys move to Keychain; the retention control becomes real."
+    },
+    {
+      "id": "note-settings-pages",
+      "x": 0,
+      "y": 1872,
+      "w": 360,
+      "text": "The five pushed Settings screens. Keys show as 'saved in Keychain' with a change flow, never an inline text field. Diagnostics reads as plain language - 'continued - reattached after a blip' - not key=value dumps; the raw logs stay behind Detailed Logs."
+    },
+    {
+      "id": "note-extras",
+      "x": 0,
+      "y": 2872,
+      "w": 340,
+      "text": "Tag editor (Q10): AI-suggested chips to add, x to remove, rename applies everywhere. Saved notes keep the citation pattern from Ask - numbered chips tap through to the exact moment."
+    },
+    {
+      "id": "note-live",
+      "x": 940,
+      "y": 2872,
+      "w": 320,
+      "text": "Tapping the Live row opens the live conversation: growing on-device transcript with inline quiet markers, the in-progress line in light violet, Pause and Stop here rather than on the status card."
+    },
+    {
+      "id": "note-states",
+      "x": 0,
+      "y": 3872,
+      "w": 380,
+      "text": "The unhappy paths, drawn before code this time (the old app's worst bugs were undesigned states). Status-card families with exactly one calm line and one action each; onboarding failure branches including stock-firmware and bound-to-another-phone; the transcription lifecycle, the overflow menu, and delete-undo. Coverage strip taxonomy: violet recorded, gray quiet, amber missing, track = off; paused renders as its own state, never as missing."
+    }
   ],
-  "launch": { "view": "canvas" }
+  "launch": {
+    "view": "canvas"
+  }
 }
