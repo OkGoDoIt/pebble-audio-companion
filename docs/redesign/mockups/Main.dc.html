@@ -1,0 +1,164 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #5B5BD6; } a:hover { color: #4A4AC4; }
+  </style>
+</helmet>
+<div style="width: 390px; height: 844px; background: #F2F2F7; color: #1C1C1E; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="flex: 1 1 auto; display: flex; flex-direction: column; padding: 54px 16px 0; gap: 12px; overflow: hidden;">
+
+    <div style="font-size: 34px; font-weight: 700; letter-spacing: -0.4px; padding: 4px 0 2px;">Today</div>
+
+    <!-- Status card: state + live waveform, one calm line -->
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #34C759;"></span>
+        <span style="font-size: 17px; font-weight: 600;">Recording</span>
+        <span style="flex: 1 1 auto;"></span>
+        <span style="font-size: 15px; color: #5B5BD6; font-weight: 500;">Pause</span>
+      </div>
+      <div style="font-size: 13px; color: #8A8A8E;">Pebble Time 2 · connected</div>
+      <div style="display: flex; align-items: flex-end; gap: 2px; height: 36px;">
+        <span style="width: 3px; height: 8px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 14px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 22px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 12px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 26px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 18px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 6px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 4px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 4px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 10px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 24px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 30px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 20px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 28px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 16px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 8px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 4px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 12px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 22px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 32px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 24px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 14px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 26px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 18px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 10px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 6px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 16px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 28px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 34px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 22px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 30px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 18px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 24px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 12px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 20px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 8px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 4px;  background: #C9C9F0; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 14px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 26px; background: #5B5BD6; border-radius: 1.5px;"></span>
+        <span style="width: 3px; height: 16px; background: #5B5BD6; border-radius: 1.5px;"></span>
+      </div>
+      <div style="font-size: 11px; color: #B0B0B6; text-align: right;">last 60 seconds</div>
+    </div>
+
+    <!-- Day coverage strip -->
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: baseline; gap: 8px;">
+        <span style="font-size: 15px; font-weight: 600;">4 hr 12 min recorded</span>
+        <span style="flex: 1 1 auto;"></span>
+        <span style="font-size: 12px; color: #FF9500;">1 min missing</span>
+      </div>
+      <div style="display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: #ECECF1;">
+        <span style="width: 8%;  background: #ECECF1;"></span>
+        <span style="width: 10%; background: #5B5BD6;"></span>
+        <span style="width: 6%;  background: #C9C9F0;"></span>
+        <span style="width: 12%; background: #5B5BD6;"></span>
+        <span style="width: 1%;  background: #FF9500;"></span>
+        <span style="width: 9%;  background: #5B5BD6;"></span>
+        <span style="width: 14%; background: #ECECF1;"></span>
+        <span style="width: 7%;  background: #C9C9F0;"></span>
+        <span style="width: 16%; background: #5B5BD6;"></span>
+        <span style="width: 17%; background: #ECECF1;"></span>
+      </div>
+      <div style="display: flex; font-size: 11px; color: #B0B0B6;">
+        <span>6 AM</span>
+        <span style="flex: 1 1 auto; text-align: center;">noon</span>
+        <span>6 PM</span>
+      </div>
+    </div>
+
+    <!-- Daily recap -->
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1.5 L9.4 6.1 L14 7.5 L9.4 8.9 L8 13.5 L6.6 8.9 L2 7.5 L6.6 6.1 Z" fill="#5B5BD6"/></svg>
+        <span style="font-size: 15px; font-weight: 600;">Today so far</span>
+        <span style="flex: 1 1 auto;"></span>
+        <span style="font-size: 12px; color: #B0B0B6;">updated 12:40 PM</span>
+      </div>
+      <div style="font-size: 15px; line-height: 1.42; color: #3C3C43;">Quiet morning. Around noon you worked through the app redesign — collapsing onboarding to two steps and grouping recordings into conversations. One decision made: rebuild the iPhone app in Swift.</div>
+    </div>
+
+    <!-- Follow-ups -->
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 4px 16px; display: flex; flex-direction: column;">
+      <div style="display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 0.5px solid rgba(60,60,67,0.18);">
+        <span style="width: 20px; height: 20px; border-radius: 10px; border: 1.5px solid #C7C7CC; flex: 0 0 auto;"></span>
+        <span style="font-size: 15px;">Send Dana the new firmware build</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 11px 0;">
+        <span style="width: 20px; height: 20px; border-radius: 10px; border: 1.5px solid #C7C7CC; flex: 0 0 auto;"></span>
+        <span style="font-size: 15px;">Book the theater walkthrough for Tuesday</span>
+      </div>
+    </div>
+
+    <!-- Conversations -->
+    <div style="font-size: 20px; font-weight: 700; letter-spacing: -0.2px; padding: 6px 0 0;">Conversations</div>
+    <div style="background: #FFFFFF; border-radius: 12px; padding: 0 16px; display: flex; flex-direction: column;">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 0.5px solid rgba(60,60,67,0.18);">
+        <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 16px; font-weight: 600;">App redesign session</span>
+          <span style="font-size: 13px; color: #8A8A8E;">12:04 PM · 48 min so far</span>
+        </div>
+        <span style="font-size: 11px; font-weight: 600; color: #34C759; background: rgba(52,199,89,0.12); border-radius: 9px; padding: 2px 8px;">Live</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 0;">
+        <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 16px; font-weight: 600;">Coffee with Dana</span>
+          <span style="font-size: 13px; color: #8A8A8E;">9:12 AM · 24 min</span>
+        </div>
+        <svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1 1 L7 7 L1 13" stroke="#C7C7CC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Tab bar -->
+  <div style="flex: 0 0 auto; height: 82px; background: #F9F9F9; border-top: 0.5px solid rgba(60,60,67,0.29); display: flex; padding: 6px 0 24px;">
+    <div style="flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 3px;">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 10 V14 M8 6 V18 M12 9 V15 M16 4 V20 M20 8 V16" stroke="#5B5BD6" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <span style="font-size: 10px; font-weight: 600; color: #5B5BD6;">Today</span>
+    </div>
+    <div style="flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 3px;">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="3.2" y="5" width="17.6" height="15" rx="2.5" stroke="#8A8A8E" stroke-width="1.8"/><path d="M3.2 9.5 H20.8" stroke="#8A8A8E" stroke-width="1.8"/><path d="M8 5 V3" stroke="#8A8A8E" stroke-width="1.8" stroke-linecap="round"/><path d="M16 5 V3" stroke="#8A8A8E" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span style="font-size: 10px; color: #8A8A8E;">Library</span>
+    </div>
+    <div style="flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 3px;">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.2" stroke="#8A8A8E" stroke-width="1.8"/><path d="M12 2.8 V5.4 M12 18.6 V21.2 M21.2 12 H18.6 M5.4 12 H2.8 M18.5 5.5 L16.7 7.3 M7.3 16.7 L5.5 18.5 M18.5 18.5 L16.7 16.7 M7.3 7.3 L5.5 5.5" stroke="#8A8A8E" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span style="font-size: 10px; color: #8A8A8E;">Settings</span>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
