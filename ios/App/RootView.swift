@@ -33,6 +33,7 @@ private struct PlaceholderScreen: View {
     var body: some View {
         List {
             NavigationLink("Design token gallery") { TokenGallery() }
+            NavigationLink("Component gallery") { ComponentGallery() }
         }
         .navigationTitle(title)
         .background(Tokens.ground)
