@@ -23,7 +23,22 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
     ],
     targets: [
-        .target(name: "CSpeex"),
+        // Vendored Speex 1.2.1 (decoder + encoder core) from PebbleOS/third_party/speex.
+        // Defines mirror the firmware build (FIXED_POINT arithmetic parity) minus its
+        // embedded-only allocator/stack overrides; VAR_ARRAYS uses C99 VLAs for scratch.
+        .target(
+            name: "CSpeex",
+            exclude: ["COPYING"],
+            cSettings: [
+                .define("EXPORT", to: ""),
+                .define("FIXED_POINT"),
+                .define("DISABLE_FLOAT_API"),
+                .define("DISABLE_VBR"),
+                .define("VAR_ARRAYS"),
+                .define("DISABLE_WARNINGS"),
+                .define("DISABLE_NOTIFICATIONS"),
+            ]
+        ),
         .target(name: "AudioCodec", dependencies: ["CSpeex"], swiftSettings: swiftSettings),
         .target(name: "WireProtocol", swiftSettings: swiftSettings),
         .target(name: "SegmentStore", dependencies: ["WireProtocol"], swiftSettings: swiftSettings),
