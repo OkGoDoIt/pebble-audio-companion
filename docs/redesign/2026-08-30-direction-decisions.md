@@ -1,8 +1,27 @@
 # Redesign Direction Decisions — 2026-08-30
 
 Roger's answers to the open questions (Q1–Q8) from
-`2026-08-30-existing-app-analysis.md`. This is the design contract for the mockups and the
-rebuild; revisit only with an explicit new decision.
+`2026-08-30-existing-app-analysis.md`, plus the overarching principle P0. This is the design
+contract for the mockups and the rebuild; revisit only with an explicit new decision.
+
+## P0 — Overarching principle: **simplify dramatically** (applies to everything below)
+
+Roger, verbatim intent: remove extraneous steps and any extra text that overly explains things;
+keep it simple, direct, and easy to use; don't remove functionality — simplify what exists and
+the messaging around it; **don't scare-monger around privacy/security**, just make it easy and
+direct.
+
+Concretely, for the rebuild:
+
+- Onboarding collapses to the minimum real steps (connect + consent + go); no ceremony screens,
+  no checklist-that-checks-nothing, no read-only "choices".
+- Helper paragraphs largely disappear. A control's label should carry the meaning; explanation
+  lives behind it (footnote, info popover) only when genuinely needed.
+- Privacy is stated once, calmly, in plain words ("Stays on your phone unless you choose a
+  cloud provider") — not repeated legal-adjacent warnings on every surface. The legal-consent
+  line appears once, in Settings, not in onboarding AND settings AND the AI tab.
+- Status copy stays honest but short; one line where the current app uses three.
+- Every screen should survive the question "what can be removed without losing function?"
 
 ## Q1 — Visual identity: **native iOS structure, violet as tint**
 
