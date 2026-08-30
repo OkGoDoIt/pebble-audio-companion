@@ -13,7 +13,11 @@ internal object AiTranscriptFormatting {
             for (transcript in request.transcripts) {
                 append("--- Transcript segment ")
                 append(transcript.segmentId)
-                transcript.startTimeMs?.let { append(" (starts at epoch ms $it)") }
+                when {
+                    transcript.timeLabel != null -> append(" (starts ${transcript.timeLabel})")
+                    transcript.startTimeMs != null ->
+                        append(" (starts at epoch ms ${transcript.startTimeMs})")
+                }
                 append(" ---\n")
                 append(transcript.text.trim())
                 append("\n\n")

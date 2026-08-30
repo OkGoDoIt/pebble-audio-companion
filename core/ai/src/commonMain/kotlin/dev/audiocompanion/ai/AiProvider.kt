@@ -16,6 +16,8 @@ data class TranscriptExcerpt(
     val text: String,
     val startTimeMs: Long? = null,
     val endTimeMs: Long? = null,
+    /** Human-readable local start time (e.g. "2026-08-29 21:35"); preferred over raw epoch ms. */
+    val timeLabel: String? = null,
 )
 
 @Serializable

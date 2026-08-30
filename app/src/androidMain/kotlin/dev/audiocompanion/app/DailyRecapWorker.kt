@@ -19,7 +19,7 @@ class DailyRecapPeriodicWorker(
     override suspend fun doWork(): Result =
         try {
             val runtime = AndroidAudioCompanionRuntimeHolder.get(applicationContext).runtime
-            runtime.generateDailyDigests()
+            runtime.refreshDailyDigests()
             Result.success()
         } catch (e: CancellationException) {
             throw e

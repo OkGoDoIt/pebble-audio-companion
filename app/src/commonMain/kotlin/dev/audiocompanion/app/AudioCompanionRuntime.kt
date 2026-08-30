@@ -70,6 +70,12 @@ data class AudioCompanionDiagnostics(
      * instead of implying work is happening.
      */
     val transcriptionPausedInBackground: Boolean = false,
+    /**
+     * Monotonic count of daily digest saves this process. Digest refreshes happen off the
+     * segment/transcription event stream, so this is what makes a recap update reach the UI's
+     * diagnostics-keyed durable reload.
+     */
+    val dailyDigestUpdates: Int = 0,
 )
 
 data class AudioCompanionSupportReport(
@@ -154,6 +160,7 @@ class AudioCompanionRuntime(
         nowMs = nowMs,
     )
     private var dailyRecapEngine: DailyRecapEngine? = null
+    private var digestUpdateCount = 0
     private val defaultPersonalContextFlow = MutableStateFlow(PersonalContext()).asStateFlow()
     private val watchEnableRequestArmed = MutableStateFlow(false)
 
@@ -372,13 +379,16 @@ class AudioCompanionRuntime(
             processingScope = scope
             if (dailyRecapEngine == null && digestStore != null) {
                 dailyRecapEngine = DailyRecapEngine(
-                    scope = scope,
-                    segmentStore = store,
-                    transcriptStore = transcriptStore,
+                    listSegments = store::listSegments,
+                    transcriptTextOf = { transcriptStore.load(it)?.text },
                     digestStore = digestStore,
                     aiRouter = aiRouter,
+                    onDigestSaved = {
+                        digestUpdateCount += 1
+                        refreshDiagnostics()
+                    },
                     nowMs = nowMs,
-                ).also { it.start() }
+                ).also { it.start(scope) }
             }
             if (transcriptionJob == null) {
                 transcriptionJob = scope.launch { runTranscriptionLoop() }
@@ -524,6 +534,7 @@ class AudioCompanionRuntime(
             freeStorageHintKb = retention.freeStorageHintKb(),
             aiOutputCount = aiOutputStore.list().size,
             transcriptionPausedInBackground = !foreground.value,
+            dailyDigestUpdates = digestUpdateCount,
         )
     }
 
@@ -874,8 +885,8 @@ class AudioCompanionRuntime(
         }
     }
 
-    suspend fun generateDailyDigests() {
-        dailyRecapEngine?.generateMissingDigests()
+    suspend fun refreshDailyDigests() {
+        dailyRecapEngine?.refreshDigests()
     }
 
     private var aiRunCounter = 0
@@ -943,9 +954,7 @@ class AudioCompanionRuntime(
             refreshDiagnostics()
             donateEnrichedSegments()
         }
-        digestStore?.let { store ->
-            runCatching { dailyRecapEngine?.generateMissingDigests() }
-        }
+        runCatching { dailyRecapEngine?.refreshDigests() }
         ruleEvaluator?.let { evaluator ->
             runCatching { evaluator.evaluateDueRules() }
         }
