@@ -5,6 +5,7 @@ import dev.audiocompanion.ai.AiProcessingMode
 import dev.audiocompanion.ai.AiProvider
 import dev.audiocompanion.ai.AiProviderResult
 import dev.audiocompanion.ai.AiRunRequest
+import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.FileDailyDigestStore
 import dev.audiocompanion.storage.CloseReasonMeta
 import dev.audiocompanion.storage.SegmentMeta
@@ -79,7 +80,7 @@ class DailyRecapEngineTest {
     private fun engine(
         store: FileDailyDigestStore,
         provider: RecordingAiProvider,
-        onDigestSaved: () -> Unit = {},
+        onDigestSaved: suspend (DailyDigest) -> Unit = {},
     ) = DailyRecapEngine(
         listSegments = { segments.toList() },
         transcriptTextOf = { transcripts[it] },
@@ -121,13 +122,13 @@ class DailyRecapEngineTest {
     fun refreshesWhenNewTranscriptArrivesAfterDebounce() = runTest {
         val store = tempStore()
         val provider = RecordingAiProvider()
-        var saves = 0
-        val engine = engine(store, provider) { saves += 1 }
+        val saves = mutableListOf<DailyDigest>()
+        val engine = engine(store, provider) { saves += it }
         addSegment("seg-1", atUtc(2026, 8, 29, 9, 0), "Morning standup.")
         clock = atUtc(2026, 8, 29, 9, 30)
         engine.refreshDigests()
         assertEquals(1, provider.requests.size)
-        assertEquals(1, saves)
+        assertEquals(1, saves.size)
         val firstCreatedAt = clock
 
         // A new transcript inside the half-hour debounce window does not rerun the AI yet.
@@ -140,9 +141,13 @@ class DailyRecapEngineTest {
         clock = firstCreatedAt + 31 * 60 * 1000L
         engine.refreshDigests()
         assertEquals(2, provider.requests.size)
-        assertEquals(2, saves)
+        assertEquals(2, saves.size)
         assertEquals(listOf("seg-1", "seg-2"), store.load("2026-08-29")?.segmentIds)
         assertEquals("Recap 2", store.load("2026-08-29")?.text)
+        // The callback receives the stored digest itself, and a same-day regeneration keeps
+        // the same dateKey — downstream index donation must upsert "day-<dateKey>".
+        assertEquals(listOf("2026-08-29", "2026-08-29"), saves.map { it.dateKey })
+        assertEquals("Recap 2", saves.last().text)
     }
 
     @Test

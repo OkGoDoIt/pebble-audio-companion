@@ -60,6 +60,30 @@ class TranscriptIndexDonatorTest {
     }
 
     @Test
+    fun redonatingSameDayReplacesTheDigestInsteadOfAccumulating() = runTest {
+        val index = InMemoryTranscriptIndex()
+        val platformDonations = mutableListOf<String>()
+        val donator = TranscriptIndexDonator(
+            index = index,
+            spotlightDonate = { platformDonations += it.id },
+        )
+
+        // Digests regenerate during the day under the same dateKey; both writes must land on
+        // the same document id so the index holds one entry per day, not a copy per refresh.
+        donator.donateDigest(
+            DailyDigest(dateKey = "2026-06-26", text = "Morning recap", createdAtMs = 20L),
+        )
+        donator.donateDigest(
+            DailyDigest(dateKey = "2026-06-26", text = "Evening recap", createdAtMs = 90L),
+        )
+
+        val hit = index.search("recap").single()
+        assertEquals("day-2026-06-26", hit.id)
+        assertEquals("Evening recap", hit.summary)
+        assertEquals(listOf("day-2026-06-26", "day-2026-06-26"), platformDonations)
+    }
+
+    @Test
     fun removeAllClearsIndexAndPlatformHook() = runTest {
         val index = InMemoryTranscriptIndex()
         var platformCleared = false
