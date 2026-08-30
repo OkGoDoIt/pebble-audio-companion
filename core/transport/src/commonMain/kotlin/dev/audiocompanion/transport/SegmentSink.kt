@@ -60,8 +60,12 @@ interface SegmentSink {
     /** Opens a segment for a newly started stream. Any previously open segment was closed. */
     suspend fun openSegment(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?)
 
-    /** Appends frames to the open segment; durable on return. */
-    suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>)
+    /**
+     * Appends frames to the open segment; durable on return. Returns the frames actually
+     * persisted — a post-RESUME spool rewind re-sends frames the sink may already hold, and
+     * downstream consumers (live waveform, live transcription) must only see what was new.
+     */
+    suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>): List<SegmentFrame>
 
     /** Records a gap (watch-reported or synthesized) in the open segment. */
     suspend fun recordGap(streamId: UInt, gap: GapRecord)

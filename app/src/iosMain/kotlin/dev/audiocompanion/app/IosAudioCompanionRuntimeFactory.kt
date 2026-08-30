@@ -253,6 +253,7 @@ class IosAudioCompanionRuntimeFactory(
             transcriptionProcessor = TranscriptionProcessor(
                 queue = transcriptionQueue,
                 router = router,
+                isSegmentOpen = { store.openSegmentId == it },
                 pcmSource = { segmentId ->
                     val meta = store.readMeta(segmentId)
                         ?: throw TranscriptionException.TranscriptionFailed(

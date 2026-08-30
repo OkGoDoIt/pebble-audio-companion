@@ -622,6 +622,194 @@ class SegmentStoreTest {
     }
 
     @Test
+    fun reattachResetsTranscriptionStateToPending() = runTest {
+        // A segment transcribed while briefly interrupted must become transcribable again when it
+        // reattaches and grows — a preserved terminal state would mask everything after resume.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 3))
+        store.closeSegment(SegmentCloseReason.Interrupted)
+        store.updateTranscriptionState(segmentId, TranscriptionState.Complete)
+
+        clock += 5_000
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+
+        assertEquals(segmentId, store.openSegmentId)
+        assertEquals(TranscriptionState.Pending, assertNotNull(store.readMeta(segmentId)).transcriptionState)
+    }
+
+    @Test
+    fun crashRecoveredInterruptedSegmentReattaches() = runTest {
+        // Process death leaves the segment open on disk; recover() marks it Interrupted and must
+        // stamp a close time, or it can never be a reattach candidate (the window keys off it).
+        val root = tempRoot()
+        val start = streamStart()
+        store(root).let { store ->
+            store.openSegment(start, receivedAtMs = clock, provenance = null)
+            store.appendFrames(streamId, frames(0u, 3))
+            // No close: the process dies here.
+        }
+
+        clock += 30_000
+        val relaunched = store(root)
+        relaunched.recover()
+        val recovered = relaunched.listSegments().single()
+        assertEquals(CloseReasonMeta.KIND_INTERRUPTED, recovered.closeReason?.kind)
+        assertNotNull(recovered.closedAtMs, "recovery must stamp the close time")
+
+        clock += 60_000
+        relaunched.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        assertEquals(recovered.segmentId, relaunched.openSegmentId, "crash-interrupted segments must reattach")
+    }
+
+    @Test
+    fun reattachKeepsOriginalRotationBudget() = runTest {
+        // Reattachment must not grant a fresh 15-minute rotation window, or a blip-prone stream's
+        // segment never wall-rotates and grows to the byte cap.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        val openedAt = clock
+        store.openSegment(start, receivedAtMs = openedAt, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 3))
+        clock = openedAt + 2 * 60_000
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock = openedAt + 11 * 60_000
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        assertEquals(segmentId, store.openSegmentId)
+
+        clock = openedAt + 16 * 60_000 // 16 min after FIRST open: past the 15-min budget
+        store.appendFrames(streamId, frames(3u, 2))
+        assertTrue(store.openSegmentId != segmentId, "rotation must fire on the original clock")
+        assertEquals(CloseReasonMeta.KIND_ROTATED, store.readMeta(segmentId)?.closeReason?.kind)
+    }
+
+    @Test
+    fun rotationSuccessorDropsPreRotationRewindsAndAnchorsAtRotationTime() = runTest {
+        // 39 bytes per 25-byte frame record: 6 frames (234 B) exceed a 200-byte rotation cap.
+        val root = tempRoot()
+        val store = store(root, SegmentStoreConfig(rotateAfterBytes = 200))
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val firstId = assertNotNull(store.openSegmentId)
+        val rotationClock = clock
+        store.appendFrames(streamId, frames(0u, 6)) // rotates after this append
+        val successorId = assertNotNull(store.openSegmentId)
+        assertTrue(successorId != firstId)
+        val successor = assertNotNull(store.readMeta(successorId))
+        assertEquals(5u, successor.dedupeFloorSequence, "successor must inherit the stream high-water mark")
+        assertEquals(rotationClock.toULong(), successor.startTimeMs, "mid-stream segment anchors at receive time")
+
+        // A rewind re-sends the predecessor's tail: it must not duplicate into the empty
+        // successor, while genuinely new frames append normally.
+        store.appendFrames(streamId, frames(4u, 2))
+        store.appendFrames(streamId, frames(6u, 2))
+        store.closeSegment(SegmentCloseReason.Interrupted) // flushes the sidecar for readMeta
+        val closed = assertNotNull(store.readMeta(successorId))
+        assertEquals(2L, closed.frameCount, "only the two new frames may land in the successor")
+        assertEquals(6u, closed.firstSequence)
+        assertEquals((6u until 8u).toList(), store.readFrames(successorId).map { it.sequence })
+    }
+
+    @Test
+    fun resumeOutsideWindowAnchorsNewSegmentAtReceiveTime() = runTest {
+        // A stream can stay alive on the watch for hours while the phone is away; a new segment
+        // minted from its RESUME must not be filed at the stream's birth time.
+        val root = tempRoot()
+        val store = store(root, SegmentStoreConfig(continueInterruptedWithinMs = 60_000))
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val firstId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 1))
+        store.closeSegment(SegmentCloseReason.Interrupted)
+
+        clock += 4 * 60 * 60_000L // 4 hours later, far outside the window
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        val newId = assertNotNull(store.openSegmentId)
+        assertTrue(newId != firstId)
+        assertEquals(clock.toULong(), assertNotNull(store.readMeta(newId)).startTimeMs)
+    }
+
+    @Test
+    fun rewindRefillFillsRecordedGapAndShrinksIt() = runTest {
+        // Frames lost in transit (sequence-skip gap) that the watch re-delivers on rewind are the
+        // one below-high-water case that must append: the audio is recovered and the gap shrinks.
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 5))
+        store.recordGap(streamId, gap(5u, 5u))
+        store.appendFrames(streamId, frames(10u, 5)) // persisted past the hole
+
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        assertEquals(segmentId, store.openSegmentId)
+        store.appendFrames(streamId, frames(5u, 5)) // the rewind re-delivers the hole
+
+        val meta = assertNotNull(store.readMeta(segmentId))
+        assertTrue(meta.gaps.isEmpty(), "a fully refilled gap must disappear, got ${meta.gaps}")
+        assertEquals(15L, meta.frameCount)
+        assertEquals(
+            (0u until 15u).toList(),
+            store.readFrames(segmentId).map { it.sequence },
+            "readFrames must return stream order despite the out-of-order refill append",
+        )
+    }
+
+    @Test
+    fun rewindRefillPartiallyCoveringGapSplitsIt() = runTest {
+        val root = tempRoot()
+        val store = store(root)
+        val start = streamStart()
+        store.openSegment(start, receivedAtMs = clock, provenance = null)
+        val segmentId = assertNotNull(store.openSegmentId)
+        store.appendFrames(streamId, frames(0u, 5))
+        store.recordGap(streamId, gap(5u, 5u))
+        store.appendFrames(streamId, frames(10u, 5))
+
+        store.openSegment(
+            start.copy(flags = ProtocolConstants.STREAM_START_FLAG_RESUME),
+            receivedAtMs = clock,
+            provenance = null,
+        )
+        store.appendFrames(streamId, frames(6u, 2)) // refills 6 and 7 only
+
+        val gaps = assertNotNull(store.readMeta(segmentId)).gaps
+        assertEquals(2, gaps.size, "a middle refill must split the gap, got $gaps")
+        assertEquals(5u, gaps[0].firstMissingSequence)
+        assertEquals(1u, gaps[0].missingFrameCount)
+        assertEquals(8u, gaps[1].firstMissingSequence)
+        assertEquals(2u, gaps[1].missingFrameCount)
+        assertEquals(8uL * 320u, gaps[1].firstMissingSampleIndex)
+    }
+
+    @Test
     fun freshStreamStartDoesNotReopenInterruptedSegment() = runTest {
         val root = tempRoot()
         val store = store(root)

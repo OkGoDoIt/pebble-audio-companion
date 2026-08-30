@@ -357,12 +357,16 @@ class TeeSegmentSink(
         segmentId?.let(::emitSegmentOpened)
     }
 
-    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
+    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>): List<SegmentFrame> {
         val receivingSegmentId = store.openSegmentId
-        store.appendFrames(streamId, frames)
-        monitor.onFrames(receivingSegmentId, frames, nowMs())
-        if (tap != null && receivingSegmentId != null) {
-            tap.emit(LiveAudioEvent.FramesAppended(receivingSegmentId, frames))
+        // Only forward what the store actually persisted: a post-RESUME rewind re-sends frames
+        // the store dedupes, and the live waveform / live transcription must not replay them.
+        val accepted = store.appendFrames(streamId, frames)
+        if (accepted.isNotEmpty()) {
+            monitor.onFrames(receivingSegmentId, accepted, nowMs())
+            if (tap != null && receivingSegmentId != null) {
+                tap.emit(LiveAudioEvent.FramesAppended(receivingSegmentId, accepted))
+            }
         }
 
         val nextSegmentId = store.openSegmentId
@@ -371,6 +375,7 @@ class TeeSegmentSink(
             onSegmentClosed()
             nextSegmentId?.let(::emitSegmentOpened)
         }
+        return accepted
     }
 
     override suspend fun recordGap(streamId: UInt, gap: GapRecord) {

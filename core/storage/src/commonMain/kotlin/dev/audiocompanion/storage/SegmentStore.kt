@@ -151,13 +151,23 @@ class SegmentStore(
             return false
         }
 
-        val continued = candidate.copy(closeReason = null, closedAtMs = null)
+        val continued = candidate.copy(
+            closeReason = null,
+            closedAtMs = null,
+            // The segment is recording again, so any transcript made from its interrupted prefix
+            // is stale. Reset to Pending; enqueueClosedSegments requeues the terminal queue task
+            // after the final close (a terminal task would otherwise block re-transcription).
+            transcriptionState = TranscriptionState.Pending,
+        )
         writeMetaAtomically(continued)
         current = OpenSegment(
             meta = continued,
             sink = fileSystem.sink(logPath(continued.segmentId), append = true).buffered(),
             logBytes = logSizeBytes(continued.segmentId),
-            openedAtMs = nowMs(),
+            // Keep the original rotation budget: a blip-prone stream that reattaches every few
+            // minutes must still wall-rotate at 15 min from first open, matching the in-place
+            // continuation path (which keeps its original OpenSegment).
+            openedAtMs = candidate.receivedAtMs,
             start = start,
             provenance = provenance,
         )
@@ -219,10 +229,21 @@ class SegmentStore(
         }
     }
 
-    private fun openSegmentInternal(start: StreamStart, receivedAtMs: Long, provenance: SegmentProvenance?) {
+    private fun openSegmentInternal(
+        start: StreamStart,
+        receivedAtMs: Long,
+        provenance: SegmentProvenance?,
+        dedupeFloorSequence: UInt? = null,
+    ) {
         fileSystem.createDirectories(segmentsDir)
         segmentCounter += 1
         val segmentId = "seg-$receivedAtMs-${start.streamId.toString(16).padStart(8, '0')}-$segmentCounter"
+        // The StreamStart carries the stream-BIRTH wall clock, which can be 15 minutes (rotation
+        // successor) to hours (RESUME outside the reattach window) old by the time a mid-stream
+        // segment is minted. Anchor those at receive time so the timeline/recap files them when
+        // they actually happened; only a segment that begins at the stream's birth keeps it.
+        val resume = (start.flags and ProtocolConstants.STREAM_START_FLAG_RESUME) != 0u ||
+            dedupeFloorSequence != null
         val meta = SegmentMeta(
             segmentId = segmentId,
             streamId = start.streamId,
@@ -233,10 +254,11 @@ class SegmentStore(
             sampleRateHz = start.sampleRateHz,
             bitRateBps = start.bitRateBps,
             frameDurationMs = start.frameDurationMs,
-            startTimeMs = start.startTimeMs,
+            startTimeMs = if (resume) receivedAtMs.toULong() else start.startTimeMs,
             startMonotonicMs = start.startMonotonicMs,
             receivedAtMs = receivedAtMs,
             provenance = provenance?.let { ProvenanceMeta(it.fwVersionPacked, it.protocolVersion) },
+            dedupeFloorSequence = dedupeFloorSequence,
         )
         writeMetaAtomically(meta)
         val sink = fileSystem.sink(logPath(segmentId), append = true).buffered()
@@ -250,23 +272,28 @@ class SegmentStore(
         )
     }
 
-    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>) {
-        val segment = current ?: return
-        if (segment.meta.streamId != streamId) return
+    override suspend fun appendFrames(streamId: UInt, frames: List<SegmentFrame>): List<SegmentFrame> {
+        val segment = current ?: return emptyList()
+        if (segment.meta.streamId != streamId) return emptyList()
 
         // A reattached stream rewinds its spool to the last checkpoint, so the first batches
         // after a RESUME can re-send frames already persisted here (the flushed-but-not-yet-
-        // checkpointed tail). Drop everything at or below the persisted high-water mark instead
-        // of appending duplicate audio. A rewound frame that would fill an old sequence-skip gap
-        // below the mark is dropped with the rest — that audio stays honestly represented as a
-        // gap — while frames past the mark append normally.
-        val lastPersisted = segment.meta.lastSequence
-        @Suppress("NAME_SHADOWING")
-        val frames = if (lastPersisted == null) frames else frames.filter { it.sequence > lastPersisted }
-        if (frames.isEmpty()) return
+        // checkpointed tail). Drop those exact re-sends instead of appending duplicate audio —
+        // EXCEPT frames that fall inside a recorded loss gap: the watch deliberately retained
+        // those for exactly this recovery, so they are appended (out of file order; readFrames
+        // sorts) and the gap record shrinks accordingly.
+        val floor = segment.meta.lastSequence ?: segment.meta.dedupeFloorSequence
+        val accepted = if (floor == null) {
+            frames
+        } else {
+            frames.filter { f ->
+                f.sequence > floor || segment.meta.gaps.any { it.containsSequence(f.sequence) }
+            }
+        }
+        if (accepted.isEmpty()) return emptyList()
 
-        val writer = WireWriter(frames.sumOf { it.payload.size + RECORD_HEADER_BYTES })
-        for (frame in frames) {
+        val writer = WireWriter(accepted.sumOf { it.payload.size + RECORD_HEADER_BYTES })
+        for (frame in accepted) {
             writer.u32(frame.sequence)
             writer.u64(frame.sampleIndex)
             writer.u16(frame.payload.size)
@@ -277,30 +304,102 @@ class SegmentStore(
         segment.sink.flush() // durability point: the session checkpoints only what is flushed
         segment.logBytes += bytes.size
 
-        val first = frames.first()
-        val last = frames.last()
+        val refilled = if (floor == null) emptyList() else accepted.filter { it.sequence <= floor }
+        val newGaps = if (refilled.isEmpty()) {
+            segment.meta.gaps
+        } else {
+            segment.meta.gaps.withRefilledSequences(
+                refilled.map { it.sequence },
+                segment.meta.frameSamples.toULong(),
+            )
+        }
+
+        // Refills can land below the persisted range (a leading gap), so first* take minimums.
+        val minSequence = accepted.minOf { it.sequence }
+        val maxSequence = accepted.maxOf { it.sequence }
+        val minSampleIndex = accepted.minOf { it.sampleIndex }
+        val maxSampleEndExclusive = accepted.maxOf { it.sampleIndex } + segment.meta.frameSamples.toULong()
         segment.meta = segment.meta.copy(
-            firstSequence = segment.meta.firstSequence ?: first.sequence,
-            lastSequence = maxOf(segment.meta.lastSequence ?: 0u, last.sequence),
-            firstSampleIndex = segment.meta.firstSampleIndex ?: first.sampleIndex,
+            firstSequence = segment.meta.firstSequence?.let { minOf(it, minSequence) } ?: minSequence,
+            lastSequence = segment.meta.lastSequence?.let { maxOf(it, maxSequence) } ?: maxSequence,
+            firstSampleIndex = segment.meta.firstSampleIndex?.let { minOf(it, minSampleIndex) }
+                ?: minSampleIndex,
             lastSampleIndexExclusive = maxOf(
                 segment.meta.lastSampleIndexExclusive ?: 0u,
-                last.sampleIndex + segment.meta.frameSamples.toULong(),
+                maxSampleEndExclusive,
             ),
-            frameCount = segment.meta.frameCount + frames.size,
+            frameCount = segment.meta.frameCount + accepted.size,
             logBytes = segment.logBytes,
+            gaps = newGaps,
         )
 
         // Keep the on-disk meta fresh while recording: readers (UI durations/sizes, the live
         // transcript preview) only see the sidecar file, and without periodic writes an open
         // segment's frame counters would stay at their last gap/rotate values for minutes.
-        segment.framesSinceMetaWrite += frames.size
-        if (segment.framesSinceMetaWrite >= OPEN_META_FLUSH_FRAMES) {
+        // A gap refill flushes immediately, like recordGap does for the gap it shrinks.
+        segment.framesSinceMetaWrite += accepted.size
+        if (refilled.isNotEmpty() || segment.framesSinceMetaWrite >= OPEN_META_FLUSH_FRAMES) {
             segment.framesSinceMetaWrite = 0
             writeMetaAtomically(segment.meta)
         }
 
         maybeRotate(segment)
+        return accepted
+    }
+
+    private fun GapMeta.containsSequence(sequence: UInt): Boolean =
+        missingFrameCount > 0u &&
+            sequence >= firstMissingSequence &&
+            sequence.toULong() < endExclusive()
+
+    /**
+     * Subtracts refilled (re-delivered and now persisted) sequences from the recorded loss gaps,
+     * splitting a gap when the refill covers its middle. [refilled] is ascending (frames within a
+     * wire batch are consecutive); gaps keep their reason/origin metadata on both split halves.
+     */
+    private fun List<GapMeta>.withRefilledSequences(
+        refilled: List<UInt>,
+        frameSamples: ULong,
+    ): List<GapMeta> {
+        if (refilled.isEmpty()) return this
+        // Collapse the refill list into maximal contiguous [start, endExclusive) runs.
+        val runs = mutableListOf<Pair<ULong, ULong>>()
+        var runStart = refilled.first().toULong()
+        var previous = runStart
+        for (sequence in refilled.drop(1).map { it.toULong() }) {
+            if (sequence == previous + 1u) {
+                previous = sequence
+                continue
+            }
+            runs += runStart to previous + 1u
+            runStart = sequence
+            previous = sequence
+        }
+        runs += runStart to previous + 1u
+
+        return flatMap { gap ->
+            if (gap.missingFrameCount == 0u) return@flatMap listOf(gap)
+            var pieces = listOf(gap.firstMissingSequence.toULong() to gap.endExclusive())
+            for ((refillStart, refillEnd) in runs) {
+                pieces = pieces.flatMap { (gapStart, gapEnd) ->
+                    when {
+                        refillEnd <= gapStart || refillStart >= gapEnd -> listOf(gapStart to gapEnd)
+                        else -> buildList {
+                            if (refillStart > gapStart) add(gapStart to refillStart)
+                            if (refillEnd < gapEnd) add(refillEnd to gapEnd)
+                        }
+                    }
+                }
+            }
+            pieces.map { (pieceStart, pieceEnd) ->
+                gap.copy(
+                    firstMissingSequence = pieceStart.toUInt(),
+                    missingFrameCount = (pieceEnd - pieceStart).toUInt(),
+                    firstMissingSampleIndex = gap.firstMissingSampleIndex +
+                        (pieceStart - gap.firstMissingSequence.toULong()) * frameSamples,
+                )
+            }
+        }
     }
 
     /**
@@ -366,8 +465,11 @@ class SegmentStore(
         if (!tooOld && !tooBig) return
         val start = segment.start
         val provenance = segment.provenance
+        // The successor's dedupe floor: a post-RESUME rewind can re-send the predecessor's tail
+        // (its own lastSequence is still null while empty), which must not be re-appended.
+        val floor = segment.meta.lastSequence ?: segment.meta.dedupeFloorSequence
         closeSegmentInternal(CloseReasonMeta.Rotated)
-        openSegmentInternal(start, nowMs(), provenance)
+        openSegmentInternal(start, nowMs(), provenance, dedupeFloorSequence = floor)
     }
 
     // --- meta persistence ------------------------------------------------------------------------
@@ -460,7 +562,9 @@ class SegmentStore(
         val path = logPath(segmentId)
         if (!fileSystem.exists(path)) return emptyList()
         val bytes = fileSystem.source(path).buffered().use { it.readByteArray() }
-        return parseRecords(bytes).records
+        // Gap refills append after later frames, so the log is not strictly ordered on disk;
+        // every consumer (playback, waveform, transcription decode, export) wants stream order.
+        return parseRecords(bytes).records.sortedBy { it.sequence }
     }
 
     fun deleteSegment(segmentId: String) {
@@ -539,14 +643,19 @@ class SegmentStore(
 
     private fun reconcileMeta(meta: SegmentMeta, records: List<FrameRecord>, logBytes: Long) {
         val reconciled = meta.copy(
-            firstSequence = records.firstOrNull()?.sequence,
+            // min/max, not first/last: gap refills make the on-disk record order non-monotonic.
+            firstSequence = records.minOfOrNull { it.sequence },
             lastSequence = records.maxOfOrNull { it.sequence },
-            firstSampleIndex = records.firstOrNull()?.sampleIndex,
+            firstSampleIndex = records.minOfOrNull { it.sampleIndex },
             lastSampleIndexExclusive = records.maxOfOrNull { it.sampleIndex + meta.frameSamples.toULong() },
             frameCount = records.size.toLong(),
             logBytes = logBytes,
             // A meta still marked open means we died with the segment open: it was interrupted.
             closeReason = meta.closeReason ?: CloseReasonMeta.Interrupted,
+            // Stamp the close time (recovery time is the best bound) — the RESUME reattach
+            // window keys off closedAtMs, and a crash-interrupted segment must be able to
+            // reattach when the watch re-announces after the app relaunches.
+            closedAtMs = meta.closedAtMs ?: nowMs(),
         )
         if (reconciled != meta) writeMetaAtomically(reconciled)
     }

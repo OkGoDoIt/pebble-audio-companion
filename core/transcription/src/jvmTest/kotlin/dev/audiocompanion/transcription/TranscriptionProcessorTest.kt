@@ -88,6 +88,76 @@ class TranscriptionProcessorTest {
     }
 
     @Test
+    fun processNextSkipsOpenSegmentAndLeavesTaskPending() = runTest {
+        // A RESUME reattach can reopen a segment while its task waits; an open segment must not
+        // be transcribed — the result would cover a stale prefix.
+        val root = tempRoot()
+        val queue = queue(root)
+        queue.enqueue("seg-1")
+        val processor = TranscriptionProcessor(
+            queue = queue,
+            router = TranscriptionModeRouter(ProcessorFakeProvider("local"), null) { TranscriptionMode.LocalOnly },
+            pcmSource = { flowOf(byteArrayOf(1, 2, 3, 4)) },
+            isSegmentOpen = { true },
+        )
+
+        assertEquals(null, processor.processNext())
+
+        val task = queue.load("seg-1")
+        assertEquals(TaskState.Pending, task?.state)
+        assertEquals(0, task?.attempts)
+    }
+
+    @Test
+    fun processNextDiscardsResultWhenSegmentReopensMidTranscription() = runTest {
+        // The reattach can also land while transcription is running: the finished result must be
+        // discarded (not saved, not marked Complete) and the task re-run after the final close.
+        val root = tempRoot()
+        val queue = queue(root)
+        queue.enqueue("seg-1")
+        val transcripts = FileTranscriptStore(SystemFileSystem, root) { clock++ }
+        val openAnswers = ArrayDeque(listOf(false, true)) // closed at pick, reopened at commit
+        val processor = TranscriptionProcessor(
+            queue = queue,
+            router = TranscriptionModeRouter(ProcessorFakeProvider("local"), null) { TranscriptionMode.LocalOnly },
+            pcmSource = { flowOf(byteArrayOf(1, 2, 3, 4)) },
+            transcriptStore = transcripts,
+            isSegmentOpen = { openAnswers.removeFirstOrNull() ?: false },
+        )
+
+        processor.processNext()
+
+        assertEquals(TaskState.Pending, queue.load("seg-1")?.state)
+        assertEquals(null, transcripts.load("seg-1"), "a stale transcript must not be persisted")
+    }
+
+    @Test
+    fun enqueueRequeuesTerminalSuccessTaskForReattachedSegment() = runTest {
+        // enqueueClosedSegments only receives closed, not-fully-transcribed segments. One that
+        // already carries a Complete/NoSpeech task is a reattached segment that grew after
+        // transcription: it must re-run, while a Failed task keeps its normal backoff path.
+        val root = tempRoot()
+        val queue = queue(root)
+        queue.enqueue("seg-1")
+        val processor = TranscriptionProcessor(
+            queue = queue,
+            router = TranscriptionModeRouter(ProcessorFakeProvider("local"), null) { TranscriptionMode.LocalOnly },
+            pcmSource = { flowOf(byteArrayOf(1, 2, 3, 4)) },
+        )
+        processor.processNext()
+        assertEquals(TaskState.Complete, queue.load("seg-1")?.state)
+
+        queue.enqueue("seg-2")
+        queue.markFailed("seg-2", "boom", retryable = true)
+
+        processor.enqueueClosedSegments(listOf("seg-1", "seg-2", "seg-3"))
+
+        assertEquals(TaskState.Pending, queue.load("seg-1")?.state, "reattached segment must requeue")
+        assertEquals(TaskState.Failed, queue.load("seg-2")?.state, "failed task keeps its backoff")
+        assertEquals(TaskState.Pending, queue.load("seg-3")?.state, "new segment enqueues normally")
+    }
+
+    @Test
     fun noSpeechIsTerminal() = runTest {
         val root = tempRoot()
         val queue = queue(root)
