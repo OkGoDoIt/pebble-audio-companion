@@ -383,9 +383,12 @@ class AudioCompanionRuntime(
                     transcriptTextOf = { transcriptStore.load(it)?.text },
                     digestStore = digestStore,
                     aiRouter = aiRouter,
-                    onDigestSaved = {
+                    onDigestSaved = { digest ->
                         digestUpdateCount += 1
                         refreshDiagnostics()
+                        // Same-day regenerations reuse the id "day-<dateKey>", so this
+                        // replaces the day's index entry instead of accumulating copies.
+                        transcriptIndexDonator?.donateDigest(digest)
                     },
                     nowMs = nowMs,
                 ).also { it.start(scope) }

@@ -48,7 +48,8 @@ class DailyRecapEngine(
     private val transcriptTextOf: (String) -> String?,
     private val digestStore: FileDailyDigestStore,
     private val aiRouter: AiModeRouter?,
-    private val onDigestSaved: () -> Unit = {},
+    /** Receives every digest write so callers can fan it out (diagnostics, search index). */
+    private val onDigestSaved: suspend (DailyDigest) -> Unit = {},
     private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
     private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val intervalMs: Long = 15 * 60 * 1000L,
@@ -124,7 +125,7 @@ class DailyRecapEngine(
                     transcripts = excerpts,
                 ),
             )
-            digestStore.save(
+            val saved = digestStore.save(
                 DailyDigest(
                     dateKey = day,
                     text = result.text.trim(),
@@ -138,7 +139,7 @@ class DailyRecapEngine(
                 ),
             )
             settledDays[day] = fingerprint
-            onDigestSaved()
+            onDigestSaved(saved)
         }
     }
 

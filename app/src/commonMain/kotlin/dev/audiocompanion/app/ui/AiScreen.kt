@@ -73,7 +73,6 @@ import dev.audiocompanion.ai.AiOutput
 import dev.audiocompanion.ai.AiPromptTemplate
 import dev.audiocompanion.ai.AiPromptTemplates
 import dev.audiocompanion.ai.ActionItem
-import dev.audiocompanion.ai.DailyDigest
 import dev.audiocompanion.ai.FileCustomTemplateStore
 import dev.audiocompanion.ai.SavedAiTemplate
 import dev.audiocompanion.storage.SegmentMeta
@@ -98,7 +97,6 @@ fun AiScreen(
     nowMs: Long,
     transcriptOf: (String) -> SegmentTranscript? = { null },
     playback: PlaybackUiState = PlaybackUiState(),
-    dailyDigests: List<DailyDigest> = emptyList(),
     actionItems: List<ActionItem> = emptyList(),
     customTemplates: List<SavedAiTemplate> = emptyList(),
     selectedSegmentIds: List<String> = emptyList(),

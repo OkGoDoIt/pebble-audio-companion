@@ -454,7 +454,6 @@ fun App(
                         nowMs = nowMs,
                         transcriptOf = { transcripts[it] },
                         playback = currentPlayback,
-                        dailyDigests = dailyDigests,
                         actionItems = actionItems,
                         customTemplates = customTemplates,
                         selectedSegmentIds = listOfNotNull(librarySegmentId),
