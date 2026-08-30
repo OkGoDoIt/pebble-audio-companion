@@ -46,7 +46,7 @@ scare-mongering; keep functionality, cut ceremony.
 | Q2 | 3 tabs (Today/Library/Settings); AI woven in | No AI tab. Recap + follow-ups on Today; per-conversation AI in detail; Ask as sheet from 3 entry points |
 | Q3 | Today = status + live minute + day coverage + recap + follow-ups (+ conversations) | The five-block Today layout in Part 2 |
 | Q4 | Full Swift rewrite, no shared KMP core | KMP tests + golden fixtures = the spec (Part 5); migration needed (Q19) |
-| Q5 | Finish the half-built features | Speaker naming (Q17), custom templates (post-v1 backlog: template save/reuse), a real date-range picker for Ask scope. Rules engine: NOT ported (stretch, design-for later) |
+| Q5 | Finish the half-built features | Speaker naming (Q17), custom templates (v1: templates run from the Notes flow, custom prompts savable — Part 6.9), a real date-range picker for Ask scope (Part 6.6). Rules engine: NOT ported (stretch, design-for later) |
 | Q6 | Calm live preview | 1-line italic rolling snippet on the Live row; full text on the Live Conversation screen |
 | Q7 | Settings split into pushed screens | The 5 sub-screens in Part 2; API keys in Keychain with a change flow (never inline fields); retentionDays REAL (old app's was placebo); no placebo controls anywhere |
 | Q8 | Churn investigated first | Resolved: reattach fixed in the current pair (app 1dcc6d0/1e5db02, fw 23750e1f9/f91b6e0f3); conversations group segments in the UI (Part 3) |
@@ -75,7 +75,8 @@ scare-mongering; keep functionality, cut ceremony.
 - One calm line + at most one action per state card; interruptions inline, never banners.
 - Vocabulary: "Follow-ups" everywhere (never "Actions"/"Action items"); the §3.7 string set in
   Part 2 is the approved copy inventory; the teardown's banned words (GATT, spool, checkpoint,
-  sequence, stream id…) stay diagnostics-only.
+  sequence, stream id…) stay diagnostics-only. The approved string set = the vocabulary list
+  closing §3 of the mockup extraction + Part 6.7's additions.
 
 ## Native-surface plan
 v1: complete deep-link route space (every screen addressable); Pause/Resume App Intents +
@@ -91,7 +92,10 @@ B1 states without actions · B2 self-contradicting status · B3 side-effect reco
 (strict JSON only) · B5 hidden scope switching (Ask scope always visible in the sheet) · B8/B9
 placebo settings · B13 plaintext keys · B14 unconfirmed destructive clears · B17 recompose/
 disk-read storms (event-driven, DB-observed UI) · B20 raw exception copy (taxonomized errors
-only) · B21 threshold misfires (loss notices honor Q9 thresholds + paused/quiet exclusions) ·
+only) · B10 fire-and-forget actions (Regenerate/Export always show progress and a result) ·
+B12 missing Bluetooth-unavailable states (incl. a permission-denied onboarding branch with
+Open Settings) · B15 lost navigation origin (back labels reflect the actual parent:
+Today/Library/Search) · B19 modal edits without Cancel · B21 threshold misfires (loss notices honor Q9 thresholds + paused/quiet exclusions) ·
 U9 vocabulary drift (single string catalog) · U10 floor: Dynamic Type, VoiceOver on
 waveform/strip (audio-graph or summary semantics), ≥44 pt targets, localization-ready strings
 from day one.
@@ -312,8 +316,8 @@ its exact copy, and its affordances — live in the extraction below. Key struct
   provenance is the quieter 11/faint centered in-card class.
 - **State cards**: one calm line, at most one action; interruptions render inline where they
   happened, never as top-of-card banners.
-- **Status vocabulary**: the extraction's §3.7 list is the complete approved string set —
-  copy changes are design changes.
+- **Status vocabulary**: the vocabulary list closing §3 of the extraction, plus the additions
+  in Part 6.7, is the complete approved string set — copy changes are design changes.
 
 ---
 
@@ -354,13 +358,17 @@ their test suites are the behavioral spec; the protocol golden fixtures are the 
 **Data layer decision:** keep the proven file formats for durable audio + transcripts
 (`.spxlog`, sidecar JSON) — the receiver's durability story depends on them and migration (Q19)
 becomes a directory read — and add a **GRDB/SQLite index** for everything the UI queries
-(conversations, tags, follow-ups, ask history, speaker identities, recaps). The index is
-rebuildable from the files; files remain the source of truth for audio/transcripts, the DB for
-AI/organizational state.
+(conversations, tags, follow-ups, ask history, speaker identities, recaps). Files remain the source of truth for audio/transcripts. The DB splits into DERIVED tables
+(conversation grouping, annotations, recaps, search index — rebuildable from files + re-AI) and
+AUTHORITATIVE tables (tag edits, follow-up done-state, ask history, notes edits, people/speaker
+assignments, pause intervals — user-authored, never dropped, included in device backups). A
+rebuild-on-corruption path may only rebuild the derived set. Schema in Part 6.5.
 
 **Concurrency:** `ReceiverSession` and `SegmentStore` as actors; pipeline stages communicate via
-AsyncStream events (replaces the KMP god-object's polling loop with event-driven passes +
-a 30 s fallback timer). Diagnostics is a published struct, not a reload key — the UI observes
+AsyncStream events. Resolution of pacing: passes are EVENT-DRIVEN (store/queue events, config
+changes, foreground entry); the ported adaptive schedule governs only the FALLBACK timer and
+retry clamps (1 s after work, 5 s while a live transcriber follows an open segment, otherwise
+next-retry clamped to 1–30 s). Diagnostics is a published struct, not a reload key — the UI observes
 the DB, never re-reads the filesystem (fixes B17).
 
 ## The conversation model (new — defines what the critique flagged as undefined)
@@ -370,10 +378,19 @@ A **conversation** is the UX unit; **segments** stay the storage/transport unit.
 - Segments chain into the same conversation when: same `streamId` (rotation/reattach chains), OR
   the next segment's start is < 5 minutes after the previous segment's end (any stream id — watch
   reboots/new streams inside a running conversation still group).
-- VAD quiet never splits. An explicit Stop/Pause (Q13) ends the conversation. > 5 minutes of
-  no-audio ends it.
+- VAD quiet never splits. **Precedence: an explicit Stop or user Pause (Q13) ALWAYS ends the
+  conversation**, even when the next segment starts within 5 minutes (detectable via
+  `closeReason.stopReasonRaw == UserDisabled` or a pause-journal entry between segments).
+  Otherwise > 5 minutes of no-audio ends it. A single segment reattached across up to 10 min of
+  dead air (the storage continuation window) stays one segment and therefore one conversation —
+  the 5-minute rule applies between segments, never within one.
 - Conversations are index rows referencing ordered segment ids; titles/summaries/tags attach to
-  the conversation. Per-segment provenance stays visible in the conversation's Details.
+  the conversation. The enrichment pipeline (Part 4.5) is retargeted to CONVERSATION granularity:
+  same prompts and gates, input = the combined member transcripts, re-annotation triggers when a
+  new segment joins or a member's transcript completes, final pass when all members are terminal.
+  Lifecycle aggregation for the card: any member Running/Uploading ⇒ "Transcribing…"; else any
+  Pending ⇒ "Captured · waiting"; else any Failed ⇒ the calm failed card; queue position = the
+  newest pending member's position. Per-segment provenance stays visible in the conversation's Details.
 - AI topic-splitting within one long chain is a post-v1 refinement (contract allows it later).
 
 ## Timezone rule (Q16)
@@ -544,14 +561,18 @@ keepalivePingsIdleWatchAndAckKeepsLinkAlive · unansweredKeepalivePingsForceResy
 ## 4.3 Storage
 
 Sources: `core/storage/.../SegmentStore.kt` (696), `SegmentMeta.kt`, `RetentionManager.kt`,
-`FileReceiverResumeStore.kt`. Tests: `SegmentStoreTest.kt` (35 cases) +
-`RetentionManagerTest.kt` (4).
+`FileReceiverResumeStore.kt`. Tests: `SegmentStoreTest.kt` (31 cases) +
+`RetentionManagerTest.kt` (4). Gate phrasing everywhere: port the FULL CONTENTS of the named
+test files — the name lists below highlight, they do not bound.
 
 **Layout** (root `<container>/Library/Application Support/audio-companion/`):
 `segments/<id>.spxlog` + `<id>.meta.json` (+ `.tmp` transients) · `quarantine/` ·
 `receiver_state.json` · `upload-bodies/<id>.body` · `transcription/queue|transcripts|uploads/`
 · `ai/personal_context.json`, `ai/annotations|outputs|digests|action_items|templates|speakers/`
-(· `ai/rules|rule_runs/` = dead).
+(· `ai/rules|rule_runs/` = dead). **The `ai/` tree is LEGACY**: the Swift app reads none of it
+(Q19 regenerates) and writes none of it — that state lives in the DB (Part 6.5). The Swift app
+writes `segments/`, `transcription/transcripts/`, and the DB; the queue's behavioral contract
+is kept but its persistence is a DB table.
 
 **`.spxlog` record:** `u32 sequence · u64 sample_index · u16 len · u8 payload[len]`, LE, 14-byte
 header, len ≤ 200. Same shape as the firmware spool and STREAM_DATA frame entries.
@@ -610,7 +631,7 @@ untranscribed, never the open segment); callers cascade task/transcript/annotati
 **The Swift build wires retentionDays/size FOR REAL** (the old app's control was placebo —
 factories passed the default config).
 
-**Storage tests (35 + 4, port by name)** — the full list in `SegmentStoreTest.kt`, notably the
+**Storage tests (31 + 4, port by name)** — the full list in `SegmentStoreTest.kt`, notably the
 hardening set: resumeStartWithChangedTimestampsStillReattaches ·
 resumeStartForOpenStreamContinuesInPlace · resumeRewindDoesNotDuplicatePersistedFrames ·
 resumeStartForOpenStreamWithChangedCodecSupersedes · reattachResetsTranscriptionStateToPending
@@ -736,7 +757,7 @@ topics 40 / vocab 40; gates biasTranscription / groundAi. Tests: PersonalContext
 OpenAI chat = Responses API `/v1/responses`, reasoning.effort "low", 240 000-char input
 truncation (not rejection), usage tokens captured. On-device provider wraps Foundation
 Models bridge (availability 0/2/3), degrades gracefully. Tests: AiModelsTest (5),
-AiModeRouterTest (3), OpenAiChatAiProviderTest (8), OnDeviceAiProviderTest (6),
+AiModeRouterTest (3), OpenAiChatAiProviderTest (8), OnDeviceAiProviderTest (7),
 AiEvalHarnessTest (6), SegmentAnnotationStoreTest parse set (7).
 
 ## 4.6 Runtime glue, lifecycle, settings
@@ -781,7 +802,7 @@ gate is aiMode ≠ LocalOnly), diagnosticsIncludeContent (hardcoded false). Deri
 to keep: cloudTranscriptionEnabled/speakerLabels/liveCloud = mode ≠ LocalOnly; remoteAiEnabled
 = aiMode ≠ LocalOnly.
 
-**Also port:** `StatusUi.kt` — the pure state→copy layer + visibleLossGaps classifier, 33
+**Also port:** `StatusUi.kt` — the pure state→copy layer + visibleLossGaps classifier, 36
 tests incl. noProtocolVocabularyInHeadlines and
 connectionFailedNeverLeaksRawPlatformErrorAndGuidesRecovery — as the engine behind Part 2's
 status-card families. Live constants: monitor window 60 s, SILENCE_RMS 90, DISPLAY_LOUD_RMS
@@ -822,15 +843,25 @@ defaults, `ai_mode`, `ai_model`, `retention_days`, `automatic_wav_export`,
 
 ## Milestones (each gated by tests; commit per milestone)
 
-- **M0 Foundation**: packages, design tokens, deep-link router, DB schema. Gate: builds, tokens
-  render a screen gallery.
+- **M0 Foundation**: packages, design tokens, deep-link router (route inventory: Part 6.8), DB
+  schema (Part 6.5) living in the App Group container `group.dev.audiocompanion` (widgets/
+  intents need it — Part 6.8). **App identity plan:** development builds M2–M7 ship as
+  `dev.audiocompanion.app.dev` side-by-side with the old app (own receiver id; the watch binds
+  to whichever app last completed consent — switching back needs watch-side Forget Receiver,
+  accepted dev friction). The RELEASE build ships as `dev.audiocompanion.app` and installs OVER
+  the old app, inheriting its container and defaults — that is the only path where M8's
+  migration and `receiver_id_v1` reuse work. Gate: builds, tokens render a screen gallery.
 - **M1 Wire + storage**: WireProtocol + SegmentStore ports. Gate: 48/48 golden fixtures byte-
   exact; SegmentStore suite ported (incl. the 11 reattach/refill tests) all green.
 - **M2 Receiver**: CoreBluetooth link + ReceiverSession. Gate: ported AudioReceiverSessionTest
   suite green against a fake link; on-device: connect→consent→stream→blip→reattach as one
-  segment (validates against real watch running f91b6e0f3 firmware).
-- **M3 Pipeline**: Speex decode, queue, batch providers, background upload. Gate: ported queue/
-  processor/router tests; a real recording transcribes via Soniox on-device.
+  segment (validates against real watch running f91b6e0f3 firmware). M2 predates the app UI —
+  it validates through a dev-only debug harness screen (session state + segment list dump).
+- **M3 Pipeline**: Speex decode, queue, batch providers, background upload, AND the local batch
+  engine — the SpeechAnalyzer-vs-Parakeet evaluation runs at M3 start and its winner is
+  implemented in M3 (the decision is recorded in the progress log + this doc). Gate: ported
+  queue/processor/router tests; a real recording transcribes via Soniox on-device; a second one
+  transcribes locally.
 - **M4 App shell**: tabs, Today (all status-card states), Library, conversation grouping,
   Search. Gate: state-family snapshot tests; grouping unit tests.
 - **M5 Intelligence**: enrichment, recaps, follow-ups, Ask + history, tags editable, speaker
@@ -865,7 +896,7 @@ during development the new app takes over the binding via watch-side Forget Rece
   session/store/queue behavior tests re-expressed in Swift Testing with the same case names).
   The session tests REQUIRE virtual time — inject a Clock into ReceiverSession and use a test
   scheduler; never port them to real-time sleeps.
-- Port `StatusUi` (the pure state→copy layer + `visibleLossGaps` classifier) with its 33 test
+- Port `StatusUi` (the pure state→copy layer + `visibleLossGaps` classifier) with its 36 test
   cases — including `noProtocolVocabularyInHeadlines` and
   `connectionFailedNeverLeaksRawPlatformErrorAndGuidesRecovery` — as the copy engine behind the
   status-card state families.
@@ -882,3 +913,173 @@ during development the new app takes over the binding via watch-side Forget Rece
 - iOS 26 chrome: mockups are semantic; stock SwiftUI wins. Revisit tokens on the target OS.
 - Realtime cloud streaming (Q15) is the most fragile port — schedule after batch path proves out.
 - Hardware BLE matrix (restoration, jetsam relaunch) unvalidated until M2/M9 gates.
+
+---
+
+# Part 6 — Resolutions from the completeness review
+
+A three-lens adversarial review of this plan surfaced gaps and contradictions; the in-place
+fixes above resolve the direct conflicts, and this part records the remaining design
+resolutions. Each is normative.
+
+## 6.1 Pause: the intent model and wire mapping (resolves the Q13 conflict)
+
+User capture intent is a tri-state: **active | paused | off**. "Background audio" (Settings)
+toggles active↔off; Pause/Resume (status card, live screen, App Intent) toggles
+active↔paused. Wire mapping: Pause sends `PAUSE_REQUEST(reason = User)` — the watch ends the
+stream (its own Settings show Paused) and mints a fresh stream id on resume, which matches the
+conversation rule (a user pause ends the conversation). The ported session logic changes in
+exactly two places: `reconcileWatchState`'s `wantPaused = (intent != .active) || policyFlags ≠ 0`,
+and the STATE_CHANGED auto-resume safety net fires only when `intent == .active`. Everything
+else in Part 4.2 ports unchanged. The phone records pause intervals in the `pause_intervals`
+table (start on Pause ack, end on Resume) — the watch cannot report them and coverage needs
+them. Paused time never triggers Q9 and never renders as missing.
+
+## 6.2 Paused rendering + the day-coverage computation (resolves the unbuildable state)
+
+- **Paused visual**: paused spans render as the coverage track color with a 45° diagonal
+  hairline stripe in `tint` at 20% opacity — a pattern, not a fifth color, so it stays legible
+  for color-blind users and keeps the four-color audio taxonomy intact. The legend gains a
+  fifth item ("Paused", striped swatch) only on days containing a pause. The live waveform
+  never shows paused (recording stops; the minute freezes with the status card explaining).
+- **Strip time domain**: the logical day — 5 AM to 5 AM in the recorded timezone — rendered
+  from 5 AM to *now* for the current day (future time renders as nothing beyond the "now"
+  edge). Axis labels stay 6 AM / noon / 6 PM.
+- **Coverage computation** (per logical day, derivable + cached in the DB):
+  - *recorded* = wall-time spans covered by persisted frames (sample-index extents anchored at
+    the segment's `startTimeMs`);
+  - *missing* = loss-gap spans (visible-loss filter — never silence);
+  - *quiet* = in-segment sample-index ranges covered by neither frames nor loss gaps (the
+    watch advances sample indexes across suppressed silence, so these holes ARE the VAD-quiet
+    spans — no extra persistence needed);
+  - *paused* = `pause_intervals`;
+  - *off* = the remainder.
+
+## 6.3 Speaker identities: the v1 matching mechanism (resolves Q17's missing mechanics)
+
+Diarization labels ("Speaker 1") are per-transcript; no cross-conversation voice matching
+exists in the ported providers. V1 mechanism: a **people registry** plus per-conversation
+assignments. Renaming a speaker (tap the name in a transcript → sheet) offers the known-people
+list first, then free text; the choice writes `speaker_assignments(conversationId, label,
+personId)`. "Applies everywhere" means renaming a PERSON (people registry) updates every
+conversation assigned to them; it does not claim voice matching. Future conversations get
+one-tap suggestions ordered by recency/frequency. True voice matching is revisited with the
+SpeechAnalyzer evaluation (its speaker APIs may enable real identity); the schema is ready.
+
+## 6.4 App identity & migration (resolves the bundle-id contradiction)
+
+Recorded in M0: dev builds = `dev.audiocompanion.app.dev`, side-by-side; release =
+`dev.audiocompanion.app`, install-over, inherits container + defaults — the only path where
+Part 4.8's importer and `receiver_id_v1` reuse operate. M8's gate therefore has two parts:
+the copied-container import test (as written) AND one install-over upgrade test on the release
+bundle id (old app → new app; watch connects without re-consent). Imported segments have no
+`recordedTimeZone` (the field is new): backfill with the device's current IANA zone,
+acknowledged as an approximation. The ported recap engine's excerpt `timeLabel`s render in the
+segment's recorded zone (supersedes the KMP `currentSystemDefault()` behavior).
+
+## 6.5 The DB schema (M0 input)
+
+In the App Group container. Authoritative tables: `tags(id, name)` ·
+`conversation_tags(conversationId, tagId, source: ai|user)` · `follow_ups(id, text, done,
+sourceConversationId, sourceSegmentId, createdAt)` · `ask_history(id, question, answerText,
+citations JSON [segmentId+number], scopeDescription, createdAt)` · `notes(id, conversationId,
+templateId, title, body, citations JSON, provider, model, createdAt, editedAt)` ·
+`people(id, name)` · `speaker_assignments(conversationId, label, personId)` ·
+`pause_intervals(startMs, endMs, source)` · `custom_templates(id, title, prompt, createdAt)`.
+Derived tables (rebuildable): `conversations(id, startMs, endMs, timezone, state)` ·
+`conversation_segments(conversationId, segmentId, ordinal)` · `annotations(conversationId,
+title, summary, isFinal, sourceCharCount, attempts…)` · `recaps(dateKey, text, segmentIds,
+provenance…)` · `coverage_days(dateKey, spans JSON)` · `transcription_tasks` (the ported queue
+contract as a table) · `search_fts` (FTS5 over transcript text + titles + summaries + tags +
+notes — transcript text IS indexed, fixing D7). Files: `segments/` + `transcription/
+transcripts/` only.
+
+## 6.6 Ask sheet states, scope picker, and history (Q18/Q5)
+
+Sheet initial state (no question yet): scope pill + composer + **Recent** list — up to 5 past
+questions (question, one-line answer preview, relative time); tapping one reopens the full
+answer with citations intact; a "Clear history" row lives at the list's end via a small menu.
+Loading state: the question pins to the top with a progress spinner in the answer card
+position; failures render the calm error card pattern (one line + Retry). Ask-with-no-data:
+"Nothing to ask about yet — recordings appear here after your first conversation." Scope
+picker (pill tap): Today · Yesterday · Last 7 days · Everything · Pick dates… (system date-
+range picker). The Search screen's date scoping reuses the same menu on its filter row.
+
+## 6.7 Approved-copy additions
+
+- Q9 loss notification — title: "Some audio was missed"; body: "Your Pebble couldn't reach
+  this phone for about {duration} — audio in that window is missing." Deep-links to Today.
+- First-run/"Later" status-family card (neutral dot): headline "Transcripts are off"; line
+  "Recording is safe on this phone. Choose where transcripts happen."; filled action
+  "Set Up Transcripts" (→ Settings · Transcription & AI). Shown until a mode is configured.
+- Cloud key hand-off: choosing "In the cloud" in onboarding pushes one key screen (provider
+  segmented row + secure field + [Save to Keychain] + "Skip for now") before Today.
+- Empty states (one calm line + one action, per the state-card rule): first-run Today —
+  "Ready when you are." + the status card carries the action; empty Library — "Recordings
+  appear here after your first conversation."; no search matches — "Nothing matches '{q}'.";
+  follow-ups all done — "All caught up."
+- Bluetooth-permission-denied onboarding branch (red dot): "Bluetooth access is off for this
+  app" / "Allow Bluetooth in Settings to receive audio." / [Open Settings].
+- Transcribing progress on reopened notes/exports: [Regenerate] and [Export All Audio] show
+  an inline spinner and end in a result line ("Notes updated" / "Exported 383 files" /
+  calm failure + Retry) — never fire-and-forget (B10).
+- Model download row states (Settings · Transcription & AI → Local model): "not installed" ·
+  "downloading · 42% " (progress bar + Cancel) · "installed · 706 MB" (swipe or ⋯ → Delete
+  Model…) · "download failed" + [Retry]. Downloads run on Wi-Fi only (URLSession
+  `allowsExpensiveNetworkAccess = false`), stated in the row footnote.
+- Find Watch (Settings/status card): attempts connection and shows connect progress inline —
+  NO side effects on capture intent (anti-B3). There is no wire message to buzz the watch.
+- "Keep audio" options: 7 · 14 · 30 · 90 · 180 · 365 days (pushed single-choice list).
+- Library "All ⌄" menu: All · Untranscribed · With follow-ups · With missing audio; the tag
+  chips row covers tags; "more…" opens the full tag list (searchable).
+- Q11 popover: system popover anchored at the tap point, one line ("quiet 2:10–2:14 PM" /
+  "missing 40 sec — Bluetooth" / "paused 1:00–1:20 PM"), auto-dismisses.
+- API-key change flow: pushed screen per provider — masked current value, secure field,
+  [Save] (Keychain), footnote "Replaces the saved key." Keys never render in plaintext.
+- Back labels always name the actual parent screen (Today / Library / Search) — B15.
+- Notes editing gains [Cancel] alongside [Save] — B19.
+
+## 6.8 Native-surface mechanics
+
+- **App Group** `group.dev.audiocompanion` holds the DB and a `coverage_snapshot.json`
+  (today's spans + status headline) refreshed on segment close, pause events, and app
+  background; the widget renders from the snapshot alone.
+- **Deep-link routes** (scheme `companion://`): `today` · `today?date=YYYY-MM-DD` ·
+  `conversation/<id>` · `conversation/<id>?t=<ms>` · `live` · `library` · `library?tag=<name>`
+  · `search?q=<text>` · `ask?scope=<key>&q=<text>` · `note/<id>` ·
+  `settings/{watch|transcription|storage|aboutyou|diagnostics}`. Sheets and Search are
+  addressable; Spotlight donations, the Q9 notification, widgets, and Siri all target these.
+- **Pause/Resume App Intents**: the intent writes the desired tri-state intent to the App
+  Group and notifies the main app (Darwin notification); the app (alive in the background via
+  bluetooth-central) applies it through the normal ReceiverService path. If the app process is
+  dead, the intent launches it in the background. Control Center exposes the same intents.
+
+## 6.9 Templates and the Notes flow (restores Q5)
+
+Conversation → [Notes]: with no notes yet, a template sheet lists Meeting notes · Decisions ·
+Follow-up email · Study notes · Interview highlights · Custom prompt… (free text +
+"Save as template" writes `custom_templates`; saved ones join this list with swipe-to-delete).
+The generated output opens as Saved Notes (citations intact). With existing notes, [Notes]
+opens them; a "+" in the Saved Notes nav bar re-enters the template sheet. Daily summary runs
+automatically as the recap; Follow-ups extraction runs automatically per Part 4.5.
+
+## 6.10 Q9 trigger mechanics
+
+Evaluated retroactively at gap-persist time in ReceiverService (the phone only learns of loss
+when data resumes; during an outage the watch is buffering and the status card says so):
+a single visible-loss record ≥ 30 s, or a spool-overflow gap of any length, fires the
+notification — subject to the 1/hour rate limit, the paused/quiet exclusions, and B21's
+open-segment suppression. A live "buffer probably overflowing" heuristic is explicitly
+deferred.
+
+## 6.11 Port-inventory completeness
+
+Beyond the suites named in Part 4, port the full contents of: `AudioCompanionRuntimeBackgroundTest`
+(5) · `SegmentWaveformBuilderTest` (8) · `LiveAudioMonitorTest` (8) · `LiveTranscriberTest`
+(8) · `CloudLiveTranscriberTest` (4) · `TeeSegmentSinkTest` (1) · `AudioExportManagerTest`
+(2) · `SegmentPlaybackControllerTest` (2) · `TranscriptIndexTest` (2) ·
+`TranscriptIndexDonatorTest` (3) · `AskRetrieverTest` (1) · `FileAiOutputStoreTest` ·
+`TranscriptFormattingTest` (timeline gap collapsing / quiet labeling / snippet behaviors —
+the spec for the rebuilt transcript renderer and search) · `WireTest` · `StatusUiTest` (36) ·
+plus every other test file under `core/*/src/*Test` and `app/src/commonTest` — the rule is
+ALL of them, with the named lists serving as milestone anchors.
