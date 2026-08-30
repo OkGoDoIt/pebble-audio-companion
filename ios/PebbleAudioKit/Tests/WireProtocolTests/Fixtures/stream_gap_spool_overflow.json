@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason spool_overflow",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1600320,
+    "first_missing_sequence": 5001,
+    "missing_frame_count": 250,
+    "reason": 1,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_spool_overflow",
+  "size": 26
+}

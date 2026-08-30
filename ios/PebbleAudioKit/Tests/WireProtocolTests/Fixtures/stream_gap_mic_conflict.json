@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason mic_conflict",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1600640,
+    "first_missing_sequence": 5002,
+    "missing_frame_count": 250,
+    "reason": 2,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_mic_conflict",
+  "size": 26
+}

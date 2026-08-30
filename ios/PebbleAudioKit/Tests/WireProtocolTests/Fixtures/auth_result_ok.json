@@ -1,0 +1,12 @@
+{
+  "channel": "control_out",
+  "description": "Authorization granted at protocol version 1",
+  "expect": "parse",
+  "fields": {
+    "granted_proto_version": 1,
+    "request_token": 33,
+    "status": 0
+  },
+  "name": "auth_result_ok",
+  "size": 4
+}

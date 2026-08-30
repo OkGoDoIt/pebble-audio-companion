@@ -1,0 +1,8 @@
+{
+  "channel": "info",
+  "description": "Info snapshot cut short mid-struct",
+  "expect": "reject",
+  "fields": {},
+  "name": "info_truncated",
+  "size": 12
+}

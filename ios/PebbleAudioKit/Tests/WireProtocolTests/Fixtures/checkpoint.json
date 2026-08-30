@@ -1,0 +1,15 @@
+{
+  "channel": "control_in",
+  "description": "Nominal checkpoint: 100 s of audio persisted, plenty of storage",
+  "expect": "parse",
+  "fields": {
+    "free_storage_hint_kb": 870400,
+    "highest_contiguous_sequence_persisted": 4999,
+    "persisted_sample_index": 1600000,
+    "receiver_flags": 0,
+    "request_token": 39,
+    "stream_id": 2712847316
+  },
+  "name": "checkpoint",
+  "size": 26
+}

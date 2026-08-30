@@ -1,0 +1,8 @@
+{
+  "channel": "data",
+  "description": "Data message cut inside the first frame payload",
+  "expect": "reject",
+  "fields": {},
+  "name": "stream_data_truncated_frame",
+  "size": 30
+}

@@ -1,0 +1,11 @@
+{
+  "channel": "control_out",
+  "description": "Checkpoint acknowledged",
+  "expect": "parse",
+  "fields": {
+    "request_token": 39,
+    "status": 0
+  },
+  "name": "ack_ok",
+  "size": 3
+}

@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "Checkpoint cut inside persisted_sample_index",
+  "expect": "reject",
+  "fields": {},
+  "name": "checkpoint_truncated",
+  "size": 17
+}

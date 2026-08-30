@@ -1,0 +1,8 @@
+{
+  "channel": "data",
+  "description": "Frame length 201 exceeds MAX_ENCODED_FRAME_BYTES",
+  "expect": "reject",
+  "fields": {},
+  "name": "stream_data_frame_too_long",
+  "size": 223
+}

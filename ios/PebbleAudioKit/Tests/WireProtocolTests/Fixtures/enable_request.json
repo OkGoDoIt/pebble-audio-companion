@@ -1,0 +1,10 @@
+{
+  "channel": "control_in",
+  "description": "Receiver asks the watch to prompt the user to enable Background Audio",
+  "expect": "parse",
+  "fields": {
+    "request_token": 45
+  },
+  "name": "enable_request",
+  "size": 2
+}

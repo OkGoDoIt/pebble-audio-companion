@@ -1,0 +1,10 @@
+{
+  "channel": "control_out",
+  "description": "Service entered streaming state",
+  "expect": "parse",
+  "fields": {
+    "service_state": 3
+  },
+  "name": "state_changed_streaming",
+  "size": 2
+}

@@ -1,0 +1,10 @@
+{
+  "channel": "control_in",
+  "description": "Receiver requests resume",
+  "expect": "parse",
+  "fields": {
+    "request_token": 43
+  },
+  "name": "resume_request",
+  "size": 2
+}

@@ -1,0 +1,10 @@
+{
+  "channel": "control_out",
+  "description": "User chose Forget Receiver on the watch",
+  "expect": "parse",
+  "fields": {
+    "reason": 1
+  },
+  "name": "revoked_user",
+  "size": 2
+}

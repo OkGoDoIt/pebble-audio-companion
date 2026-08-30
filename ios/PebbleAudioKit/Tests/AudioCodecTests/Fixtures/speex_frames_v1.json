@@ -1,0 +1,20 @@
+{
+  "name": "speex_frames_v1",
+  "kind": "codec",
+  "description": "Real firmware-encoded Speex frames for decode-compatibility locking (implementation plan Section 7, Decision F). speex_frames_v1.bin contains 50 records of {u16 little-endian length, encoded Speex frame}; every frame is 25 bytes (fixed-point wideband, 16 kHz, quality 6, complexity 1, 9800 bps CBR, 320-sample frames, one frame per speex_bits_reset, exactly the voice_speex.c configuration). speex_frames_v1_input.pcm is the s16le mono 16 kHz PCM the encoder consumed (gain x3 already applied, 16000 samples = 1 s). The signal is a deterministic integer triangle-harmonic voice-like waveform; see PebbleOS tests/fw/services/test_audio_companion_speex.c, which also locks the bitstream with a golden FNV-1a hash (0x490aea30). Regenerate only with a deliberate protocol/codec decision: AUDIO_COMPANION_SPEEX_FIXTURE_DIR=<this dir> ./waf test -M test_audio_companion_speex (in PebbleOS). Receivers should decode the .bin with libspeex and compare against the input PCM by correlation, not byte equality (decoder builds may differ in float/fixed paths).",
+  "files": {
+    "frames": "speex_frames_v1.bin",
+    "input_pcm": "speex_frames_v1_input.pcm"
+  },
+  "codec": {
+    "id": "speex_wideband",
+    "sample_rate_hz": 16000,
+    "bit_rate_bps": 9800,
+    "quality": 6,
+    "complexity": 1,
+    "frame_samples": 320,
+    "frame_bytes": 25,
+    "frame_count": 50,
+    "fixed_point": true
+  }
+}

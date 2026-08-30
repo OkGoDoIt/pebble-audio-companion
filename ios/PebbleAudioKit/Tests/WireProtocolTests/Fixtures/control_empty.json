@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "Empty control write",
+  "expect": "reject",
+  "fields": {},
+  "name": "control_empty",
+  "size": 0
+}

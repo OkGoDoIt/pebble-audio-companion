@@ -1,0 +1,20 @@
+{
+  "channel": "data",
+  "description": "Nominal Speex wideband stream start",
+  "expect": "parse",
+  "fields": {
+    "bit_rate_bps": 9800,
+    "channels": 1,
+    "codec_id": 1,
+    "flags": 0,
+    "frame_duration_ms": 20,
+    "frame_samples": 320,
+    "protocol_version": 1,
+    "sample_rate_hz": 16000,
+    "start_monotonic_ms": 86400123,
+    "start_time_ms": 1781000000000,
+    "stream_id": 1592590337
+  },
+  "name": "stream_start",
+  "size": 40
+}

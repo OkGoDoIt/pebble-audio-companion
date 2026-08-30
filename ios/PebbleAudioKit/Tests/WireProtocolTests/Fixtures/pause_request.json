@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "Receiver requests pause for low storage",
+  "expect": "parse",
+  "fields": {
+    "reason": 1,
+    "request_token": 42
+  },
+  "name": "pause_request",
+  "size": 3
+}

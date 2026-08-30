@@ -1,0 +1,15 @@
+{
+  "channel": "data",
+  "description": "Gap with reason codec_error",
+  "expect": "parse",
+  "fields": {
+    "first_missing_sample_index": 1601600,
+    "first_missing_sequence": 5005,
+    "missing_frame_count": 250,
+    "reason": 5,
+    "stream_id": 1592590337,
+    "watch_drop_counter": 250
+  },
+  "name": "stream_gap_codec_error",
+  "size": 26
+}

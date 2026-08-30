@@ -1,0 +1,23 @@
+{
+  "channel": "data",
+  "description": "Typical MTU-sized batch of 8 variable-length frames",
+  "expect": "parse",
+  "fields": {
+    "first_sample_index": 256000,
+    "first_sequence": 800,
+    "frame_count": 8,
+    "frame_lengths": [
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
+    ],
+    "stream_id": 1592590337
+  },
+  "name": "stream_data_8frames",
+  "size": 240
+}

@@ -1,0 +1,14 @@
+{
+  "channel": "data",
+  "description": "Stream stopped because the user disabled the feature",
+  "expect": "parse",
+  "fields": {
+    "counters_crc_or_zero": 0,
+    "final_sample_index": 3200000,
+    "final_sequence": 9999,
+    "reason": 1,
+    "stream_id": 1592590337
+  },
+  "name": "stream_stop_user_disabled",
+  "size": 22
+}

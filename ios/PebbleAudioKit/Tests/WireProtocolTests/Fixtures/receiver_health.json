@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Health report from a backgrounded receiver",
+  "expect": "parse",
+  "fields": {
+    "app_state": 2,
+    "battery_pct": 76,
+    "queue_depth_frames": 130,
+    "request_token": 44
+  },
+  "name": "receiver_health",
+  "size": 8
+}
