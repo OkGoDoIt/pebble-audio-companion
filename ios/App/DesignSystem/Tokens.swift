@@ -98,6 +98,21 @@ enum AppFont {
     /// 11 — timecodes, provenance, citations, Live badge.
     static let micro = Font.system(.caption2)
     static let microBold = Font.system(.caption2, weight: .semibold)
+
+    // ── Additions for the component layer (missing from the first cut) ──────
+    /// 13/500 — tint filter chips, scope pills, Edit links.
+    static let chip = Font.system(.footnote, weight: .medium)
+    /// 11/500 — gray read-only tag chips.
+    static let tagChip = Font.system(.caption2, weight: .medium)
+    /// 14/500 — editable tag chips + suggestion chips.
+    static let editableChip = Font.system(size: 14, weight: .medium)
+    /// 14/600 — small bordered buttons.
+    static let smallButton = Font.system(size: 14, weight: .semibold)
+    /// 15/500 — neutral action pills, Pause/Resume text links.
+    static let pill = Font.system(.subheadline, weight: .medium)
+    /// 10/400 anchor — waveform legend; rendered as caption2 so Dynamic Type
+    /// gets the larger accessibility representation the plan calls for.
+    static let legend = Font.system(.caption2)
 }
 
 extension Color {
