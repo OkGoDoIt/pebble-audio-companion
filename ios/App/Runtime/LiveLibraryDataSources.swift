@@ -467,7 +467,23 @@ extension LiveWorld: ConversationDataSource {
                 line: "Transcribing \(min(done + 1, total)) of \(total)"
             )
         case .failed:
-            return .failed
+            // WHY it failed is already on the member's task row; it was simply never read.
+            // The newest failure wins — a conversation that failed twice is telling you about
+            // the attempt that just happened, not the one from yesterday. `.unknown` members
+            // are skipped so one uninformative row cannot hide an informative one.
+            let failures = detail.members.filter { $0.state == .failed }
+            let named = failures.last {
+                TranscriptionFailureKind.classify($0.lastError) != .unknown
+            }
+            guard let named, let message = named.lastError else { return .failed(reason: nil) }
+            // The card has one line, so the retry status rides along with the reason; the
+            // Diagnostics rows carry it in their own column instead.
+            return .failed(
+                reason: Copy.TranscriptionFailure.line(
+                    TranscriptionFailureKind.classify(message).reason,
+                    retrying: named.attempts < TranscriptionQueue.maxAttempts
+                )
+            )
         }
     }
 
