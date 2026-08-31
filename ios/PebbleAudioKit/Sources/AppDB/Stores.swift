@@ -624,6 +624,33 @@ public struct NotesStore: Sendable {
         return note
     }
 
+    /// Regeneration: replaces everything the model produced while KEEPING the note's id.
+    ///
+    /// The id is the note's identity everywhere else — the pushed route, the Spotlight entry,
+    /// the citation targets. Regenerating used to create a second note and delete the first, so
+    /// the open screen went on addressing a row that no longer existed: a later Edit → Save
+    /// updated 0 rows and blanked the screen, and Delete Note deleted nothing while the
+    /// regenerated note stayed in the library.
+    ///
+    /// `createdAtMs` moves to now (the provenance line reads "Generated {time}", and that time
+    /// is now this text's), and `editedAtMs` clears — freshly generated text is not user-edited.
+    public func replaceContent(
+        id: String, title: String, body: String, citationsJson: String,
+        provider: String?, model: String?,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE notes SET title = ?, body = ?, citations = ?, provider = ?,
+                        model = ?, createdAtMs = ?, editedAtMs = NULL
+                    WHERE id = ?
+                    """,
+                arguments: [title, body, citationsJson, provider, model, nowMs, id]
+            )
+        }
+    }
+
     /// Edits stamp `editedAtMs` (the UI shows edited state; B19's Cancel simply skips this).
     public func update(
         id: String, title: String, body: String,
@@ -690,10 +717,32 @@ public struct PeopleStore: Sendable {
 
     /// Renaming a PERSON updates every conversation assigned to them — assignments reference
     /// the person by id, so this is one row update ("applies everywhere", plan 6.3).
+    ///
+    /// Renaming ONTO an existing name merges, the same way `renameTag` does (Q10). Speakers are
+    /// named by free text, so a typo ("Alx") creates a second person; without the merge, fixing
+    /// the typo would collide with the real "Alex" and leave two identical names in the
+    /// suggestion list forever. The surviving person is the one already carrying the name, so
+    /// every conversation assigned to either ends up on one record.
     public func renamePerson(id: String, to newName: String) async throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         try await db.writer.write { db in
-            try db.execute(
-                sql: "UPDATE people SET name = ? WHERE id = ?", arguments: [newName, id])
+            if let survivor = try String.fetchOne(
+                db,
+                sql: "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND id <> ?",
+                arguments: [trimmed, id]
+            ) {
+                // Repoint this person's assignments onto the survivor. The unique key is
+                // (conversationId, label) and personId is not part of it, so this can never
+                // collide — unlike the tag merge, which repoints a pair that IS the key.
+                try db.execute(
+                    sql: "UPDATE speaker_assignments SET personId = ? WHERE personId = ?",
+                    arguments: [survivor, id])
+                try db.execute(sql: "DELETE FROM people WHERE id = ?", arguments: [id])
+            } else {
+                try db.execute(
+                    sql: "UPDATE people SET name = ? WHERE id = ?", arguments: [trimmed, id])
+            }
         }
     }
 

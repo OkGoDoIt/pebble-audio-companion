@@ -102,6 +102,80 @@ import Testing
         #expect(updated.map(\.personName) == ["Sam"])
     }
 
+    /// The typo path the speaker sheet now offers a way out of: "Alx" and "Alex" both exist,
+    /// and fixing the typo has to fold the two together rather than leave two identical names
+    /// in the suggestion list forever.
+    @Test func renamingAPersonOntoAnExistingNameMerges() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = PeopleStore(db: db)
+        let alex = try await store.createPerson(name: "Alex")
+        let typo = try await store.createPerson(name: "Alx")
+        try await store.assign(conversationId: "c1", label: "Speaker 1", personId: alex.id)
+        try await store.assign(conversationId: "c2", label: "Speaker 2", personId: typo.id)
+
+        try await store.renamePerson(id: typo.id, to: "Alex")
+
+        let people = try await store.listPeople()
+        #expect(people.map(\.person.name) == ["Alex"])
+        #expect(people.first?.assignmentCount == 2)
+        #expect(try await store.assignments(forConversation: "c2").map(\.personId) == [alex.id])
+    }
+
+    @Test func renamingAPersonIgnoresBlankNames() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = PeopleStore(db: db)
+        let sam = try await store.createPerson(name: "Sam")
+        try await store.renamePerson(id: sam.id, to: "   ")
+        #expect(try await store.listPeople().map(\.person.name) == ["Sam"])
+    }
+
+    @Test func unassignClearsOneLabelAndDeletePersonClearsThemAll() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = PeopleStore(db: db)
+        let sam = try await store.createPerson(name: "Sam")
+        try await store.assign(conversationId: "c1", label: "Speaker 1", personId: sam.id)
+        try await store.assign(conversationId: "c2", label: "Speaker 1", personId: sam.id)
+
+        // Unassign is per conversation: the person survives, and other conversations keep them.
+        try await store.unassign(conversationId: "c1", label: "Speaker 1")
+        #expect(try await store.assignments(forConversation: "c1").isEmpty)
+        #expect(try await store.assignments(forConversation: "c2").count == 1)
+        #expect(try await store.listPeople().count == 1)
+
+        // Deleting the person cascades the remaining assignment away.
+        try await store.deletePerson(id: sam.id)
+        #expect(try await store.assignments(forConversation: "c2").isEmpty)
+        #expect(try await store.listPeople().isEmpty)
+    }
+
+    /// Regenerating a note must rewrite the SAME row: the open screen, the Spotlight entry and
+    /// every citation address it by id, so a new id silently orphans all three.
+    @Test func replaceContentRewritesTheNoteInPlace() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = NotesStore(db: db)
+        let note = try await store.create(
+            conversationId: "c1", templateId: "meeting-notes", title: "Meeting notes",
+            body: "First pass.", citationsJson: "[{\"segmentId\":\"s1\",\"number\":1}]",
+            provider: "openai", model: "gpt-a", nowMs: 1_000)
+        try await store.update(id: note.id, title: "Mine", body: "Edited.", nowMs: 1_500)
+
+        try await store.replaceContent(
+            id: note.id, title: "Mine", body: "Second pass.",
+            citationsJson: "[{\"segmentId\":\"s2\",\"number\":1}]",
+            provider: "openai", model: "gpt-b", nowMs: 2_000)
+
+        let stored = try await store.get(id: note.id)
+        #expect(stored?.id == note.id)
+        #expect(stored?.body == "Second pass.")
+        #expect(stored?.citationsJson == "[{\"segmentId\":\"s2\",\"number\":1}]")
+        #expect(stored?.model == "gpt-b")
+        // Regenerated text is freshly generated, not user-edited: the provenance moves to now
+        // and the "edited" stamp clears.
+        #expect(stored?.createdAtMs == 2_000)
+        #expect(stored?.editedAtMs == nil)
+        #expect(try await store.list(conversationId: "c1").count == 1)
+    }
+
     @Test func pauseJournalOpenAndClose() async throws {
         let db = try AppDatabase.inMemory()
         let journal = PauseJournal(db: db)
