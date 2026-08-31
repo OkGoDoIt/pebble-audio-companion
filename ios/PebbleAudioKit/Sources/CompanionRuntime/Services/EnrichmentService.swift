@@ -23,6 +23,12 @@ public actor EnrichmentService {
     private let pauseJournal: PauseJournal?
     private let database: AppDatabase
     private let transcriptOf: @Sendable (String) -> SegmentTranscript?
+    /// The open member's rolling live text. NOT defaulted: with the `{ _ in nil }` default nobody
+    /// supplied, a LIVE conversation's open member always yielded nil, its combined length was 0,
+    /// and it got no provisional title or summary until the segment closed — many minutes of an
+    /// untitled "Recording now" row for exactly the conversation the person is having. The seam is
+    /// synchronous while the previews live behind actors; `LivePreviewCache` is the mirror that
+    /// bridges the two without blocking on an actor from a sync context.
     private let liveTextOf: @Sendable (String) -> String?
     private let donator: SpotlightDonator?
     private let clock: RuntimeClock
@@ -36,7 +42,7 @@ public actor EnrichmentService {
         database: AppDatabase,
         pauseJournal: PauseJournal? = nil,
         transcriptOf: @escaping @Sendable (String) -> SegmentTranscript?,
-        liveTextOf: @escaping @Sendable (String) -> String? = { _ in nil },
+        liveTextOf: @escaping @Sendable (String) -> String?,
         donator: SpotlightDonator? = nil,
         clock: RuntimeClock,
         log: RuntimeLog = .silent

@@ -300,6 +300,9 @@ final class AppComposition {
 
         let liveTap = LiveAudioTap()
         self.liveTap = liveTap
+        // The bridge between the live transcribers (actors) and the enrichment pass's synchronous
+        // `liveTextOf` seam. The live pass fills it; `EnrichmentService` reads it.
+        let livePreviews = LivePreviewCache()
         let monitor = LiveAudioMonitor(decoder: SpeexLiveFrameDecoder(), nowMs: nowMs)
         self.monitor = monitor
         let openSegment = OpenSegmentTracker()
@@ -379,6 +382,8 @@ final class AppComposition {
             ),
             hasDurableTranscript: { transcripts.load($0) != nil },
             automaticWavExportEnabled: { settingsBox.automaticWavExportEnabled },
+            // Fills the mirror the enrichment pass reads; see `LivePreviewCache`.
+            previewCache: livePreviews,
             log: AppRuntimeLog.runtimeLog
         )
 
@@ -417,6 +422,12 @@ final class AppComposition {
             database: database,
             pauseJournal: pauseJournal,
             transcriptOf: { transcripts.load($0) },
+            // The open member's rolling text. Without it a live conversation had a combined length
+            // of zero, so it stayed untitled — no provisional title, no summary — for the whole
+            // recording, which for a long conversation is many minutes of a blank "Recording now"
+            // row. The previews live behind actors and this seam is synchronous, so the live pass
+            // mirrors them into `LivePreviewCache` and this reads the mirror.
+            liveTextOf: { livePreviews.text(for: $0) },
             donator: donator,
             clock: clock,
             log: AppRuntimeLog.runtimeLog

@@ -341,6 +341,8 @@ final class RuntimeFixture: @unchecked Sendable {
 
     let receiver: ReceiverService
     let transcription: TranscriptionService
+    /// The live-preview mirror, shared by `live` and `enrichment` exactly as in the app.
+    let livePreviews: LivePreviewCache
     let enrichment: EnrichmentService
     let recap: RecapService
     let live: LiveAudioService
@@ -453,6 +455,8 @@ final class RuntimeFixture: @unchecked Sendable {
             modelLifecycle: lifecycle
         )
         let transcriptStore = self.transcriptStore
+        let livePreviews = LivePreviewCache()
+        self.livePreviews = livePreviews
         let donator = SpotlightDonator(index: index, spotlight: spotlight)
         enrichment = EnrichmentService(
             worker: EnrichmentWorker(
@@ -469,6 +473,8 @@ final class RuntimeFixture: @unchecked Sendable {
             database: database,
             pauseJournal: pauseJournal,
             transcriptOf: { transcriptStore.load($0) },
+            // Same wiring as the app: the live pass fills the mirror, enrichment reads it.
+            liveTextOf: { livePreviews.text(for: $0) },
             donator: donator,
             clock: clock
         )
@@ -476,7 +482,8 @@ final class RuntimeFixture: @unchecked Sendable {
         live = LiveAudioService(
             store: store,
             hasDurableTranscript: { transcriptStore.load($0) != nil },
-            automaticWavExportEnabled: { settingsBox.automaticWavExportEnabled }
+            automaticWavExportEnabled: { settingsBox.automaticWavExportEnabled },
+            previewCache: livePreviews
         )
         let foreground = RuntimeForegroundState()
         self.foreground = foreground
