@@ -165,8 +165,10 @@ enum LifecycleDisplay: Equatable {
     case capturedWaiting(queueLine: String)
     /// Progress + "Soniox · about a minute left".
     case transcribing(progress: Double, line: String)
-    /// "Transcription didn’t finish" + [Retry Now].
-    case failed
+    /// "Transcription didn’t finish" + [Retry Now]. `reason` is the classified failure from the
+    /// queue (`TranscriptionFailureKind`), never the stored `lastError` string — nil when the
+    /// task recorded nothing, in which case the card keeps its generic reassurance.
+    case failed(reason: String?)
     /// Transcribed; AI title/summary/tags are still being generated in the background.
     /// No action and no progress bar — this is not something the user is waiting on.
     case summaryComing

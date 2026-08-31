@@ -352,11 +352,13 @@ struct ConversationScreen: View {
                         .foregroundStyle(Tokens.meta)
                 }
             }
-        case .failed:
+        // One calm line, one action — but the line now says WHAT went wrong when the queue
+        // recorded it, instead of the same reassurance for a missing key and a lost connection.
+        case .failed(let reason):
             stateCard(
                 dot: Tokens.attention,
                 headline: Copy.Conversation.didntFinish,
-                line: Copy.Conversation.didntFinishLine,
+                line: reason ?? Copy.Conversation.didntFinishLine,
                 actionTitle: Copy.Conversation.retryNow
             ) {
                 Task {
