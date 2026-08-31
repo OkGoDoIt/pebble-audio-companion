@@ -107,6 +107,7 @@ public actor DeleteCascade {
             do { try await annotations.delete(conversationId) } catch {
                 log.failure("annotation cascade", error)
             }
+            await enrichment.forgetFollowUpExtraction(conversationId: conversationId)
             await removeFromIndex(id: conversationId, kind: .conversation)
         }
         // A surviving conversation's index entry is now stale; the next enrichment pass
