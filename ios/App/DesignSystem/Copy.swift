@@ -84,7 +84,9 @@ enum Copy {
 
         static let transcriptsTitle = "Where should transcripts happen?"
         static let onPhoneTitle = "On this phone"
-        static let onPhoneBody = "Private. Downloads a 700 MB model on Wi-Fi."
+        // Approved deviation from the artboard's "700 MB model": the local engine is now
+        // system-managed, so the size is not ours to promise (noted in the build report).
+        static let onPhoneBody = "Private. Downloads a speech model on Wi-Fi."
         static let inCloudTitle = "In the cloud"
         static let inCloudBody = "Fast and accurate. You add a provider key."
         static let laterTitle = "Later"
@@ -93,6 +95,8 @@ enum Copy {
         static let transcriptsFootnote = "You can change this any time in Settings."
 
         // Cloud key hand-off (6.7): one key screen before Today.
+        /// Title reuses the option-card vocabulary ("You add a provider key.").
+        static let addProviderKey = "Add a provider key"
         static let saveToKeychain = "Save to Keychain"
         static let skipForNow = "Skip for now"
 
@@ -347,7 +351,14 @@ enum Copy {
             static let cloudFirst = "Cloud first"
             static let remoteFirst = "Remote first"
             static let localOnly = "Local only"
+            // Natural extensions of the approved mode vocabulary (the enums have four cases;
+            // the artboards show three labels).
+            static let localFirst = "Local first"
+            static let cloudOnly = "Cloud only"
+            static let remoteOnly = "Remote only"
             static let savedInKeychain = "saved in Keychain"
+            /// Key-row value before any key exists (matches the "not installed" register).
+            static let notSet = "not set"
 
             // Local-model row states (6.7).
             static let notInstalled = "not installed"
@@ -393,6 +404,8 @@ enum Copy {
             static func peopleImported(_ count: Int) -> String { "\(count) people imported" }
             /// e.g. "next 3 weeks".
             static func nextWeeks(_ weeks: Int) -> String { "next \(weeks) weeks" }
+            /// Import-row value before anything is imported (matches "not installed").
+            static let notImported = "not imported"
             static let clearImported = "Clear Imported Context…"
         }
 

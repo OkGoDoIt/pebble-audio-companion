@@ -1,0 +1,415 @@
+import Foundation
+import AppDB
+import StatusUI
+
+// The dependency seams for the Library / Search / Conversation / Notes / Tags / Ask screens.
+// View models talk ONLY to these protocols; `AskLibraryDataSources.current` defaults to the
+// mock world (exact artboard sample data) and is swapped for the DB/runtime-backed
+// implementations when the pipeline wiring lands.
+
+// MARK: - Ask scope (plan 6.6 — always visible, anti-B5)
+
+enum AskScope: Equatable {
+    case today
+    case yesterday
+    case last7Days
+    case everything
+    /// The artboard default pill ("Last 2 days").
+    case lastDays(Int)
+    case dateRange(start: Date, end: Date)
+    /// Conversation-scoped entry point (Conversation bottom bar).
+    case conversation(id: String, title: String)
+
+    var label: String {
+        switch self {
+        case .today: return Copy.Ask.scopeToday
+        case .yesterday: return Copy.Ask.scopeYesterday
+        case .last7Days: return Copy.Ask.scopeLast7Days
+        case .everything: return Copy.Ask.scopeEverything
+        case .lastDays(let days): return Copy.Ask.scopeLastDays(days)
+        case .dateRange(let start, let end):
+            return TimeFmt.shortDateRange(start, end)
+        case .conversation: return "This conversation"
+        }
+    }
+
+    /// Deep-link key for `Route.ask(scope:query:)`.
+    var routeKey: String {
+        switch self {
+        case .today: return "today"
+        case .yesterday: return "yesterday"
+        case .last7Days: return "last7"
+        case .everything: return "everything"
+        case .lastDays(let days): return "last\(days)days"
+        case .dateRange: return "everything"
+        case .conversation(let id, _): return "conversation:\(id)"
+        }
+    }
+
+    static func parse(_ key: String?, conversationTitle: (String) -> String?) -> AskScope {
+        guard let key else { return .lastDays(2) }
+        switch key {
+        case "today": return .today
+        case "yesterday": return .yesterday
+        case "last7": return .last7Days
+        case "everything": return .everything
+        default:
+            if key.hasPrefix("conversation:") {
+                let id = String(key.dropFirst("conversation:".count))
+                return .conversation(id: id, title: conversationTitle(id) ?? "")
+            }
+            if key.hasPrefix("last"), key.hasSuffix("days"),
+               let days = Int(key.dropFirst(4).dropLast(4)) {
+                return .lastDays(days)
+            }
+            return .lastDays(2)
+        }
+    }
+}
+
+// MARK: - Library display models
+// App-layer mirrors of AppDB's ConversationListRow/LibraryDaySection (whose initializers
+// are internal to the Kit); the runtime adapter maps between them.
+
+struct LibraryRow: Equatable, Identifiable {
+    var id: String
+    var title: String?
+    var summary: String?
+    var startMs: Int64
+    var endMs: Int64
+    var isLive = false
+    var tags: [String] = []
+    var lifecycle: ConversationLifecycle = .complete
+    var mostlyQuiet = false
+    var hasMissingAudio = false
+    var followUpCount = 0
+    var dateKey: String
+
+    var durationMs: Int64 { max(0, endMs - startMs) }
+}
+
+struct LibraryDayGroup: Equatable {
+    var dateKey: String
+    var rows: [LibraryRow]
+}
+
+// MARK: - Conversation display models
+
+enum SpeakerRole: Equatable {
+    case you        // tint
+    case other      // teal
+    case unresolved // captured marker + dimmed text
+}
+
+struct TranscriptTurn: Equatable, Identifiable {
+    var id: String
+    /// Diarization label within the conversation (stable across renames).
+    var speakerLabel: String
+    var name: String
+    var role: SpeakerRole
+    var text: String
+}
+
+enum TranscriptItem: Equatable, Identifiable {
+    case turn(TranscriptTurn)
+    case quiet(id: String, duration: String)    // "quiet for 40 sec"
+    case missing(id: String, marker: String)    // "2 sec missing · Bluetooth hiccup"
+
+    var id: String {
+        switch self {
+        case .turn(let turn): return turn.id
+        case .quiet(let id, _): return id
+        case .missing(let id, _): return id
+        }
+    }
+}
+
+enum LifecycleDisplay: Equatable {
+    case complete
+    /// "Captured · waiting to transcribe" + queue line + [Transcribe Now].
+    case capturedWaiting(queueLine: String)
+    /// Progress + "Soniox · about a minute left".
+    case transcribing(progress: Double, line: String)
+    /// "Transcription didn’t finish" + [Retry Now].
+    case failed
+}
+
+struct PlayerDisplay: Equatable {
+    var durationMs: Int64
+    var initialPositionMs: Int64 = 0
+    /// Amber missing tick position (0…1), nil when no visible loss.
+    var missingTickFraction: Double?
+}
+
+struct ConversationDisplay: Equatable {
+    var id: String
+    var title: String
+    /// "Yesterday · 9:35 – 9:53 PM · 18 min"
+    var metaLine: String
+    var summary: String?
+    var tags: [ConversationTag]
+    var lifecycle: LifecycleDisplay
+    var player: PlayerDisplay?
+    var transcript: [TranscriptItem]
+    /// "Transcribed with Soniox · yesterday 9:54 PM"
+    var provenance: String?
+    var followUps: [FollowUp]
+
+    var shareText: String {
+        var lines = [title, metaLine]
+        if let summary { lines.append(summary) }
+        for item in transcript {
+            if case .turn(let turn) = item { lines.append("\(turn.name): \(turn.text)") }
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - Search display models
+
+struct SearchConversationHit: Equatable, Identifiable {
+    var id: String
+    var title: String
+    /// "Today · 9:12 AM"
+    var whenLabel: String
+    /// Quoted snippet containing the match, e.g. "“…before any long travel we…”".
+    var snippet: String
+}
+
+struct SearchResults: Equatable {
+    var tags: [TagWithCount] = []
+    var conversations: [SearchConversationHit] = []
+    var followUps: [FollowUp] = []
+
+    var isEmpty: Bool { tags.isEmpty && conversations.isEmpty && followUps.isEmpty }
+}
+
+// MARK: - Notes display models
+
+struct NoteDisplay: Equatable, Identifiable {
+    var id: String
+    var conversationId: String
+    var conversationTitle: String
+    var title: String
+    /// "Generated 9:54 PM · GPT-5.6 Luna · from this conversation"
+    var provenance: String
+    /// One bullet per line; inline "[n]" markers render as citation chips.
+    var body: String
+    /// "2 moments · 9:36 PM, 9:51 PM"
+    var momentsLabel: String
+    var citations: [AskCitation]
+
+    var shareText: String { "\(title)\n\(body.replacingOccurrences(of: " [", with: " ["))" }
+}
+
+struct NoteTemplate: Equatable, Identifiable {
+    var id: String
+    var title: String
+    var isCustom: Bool = false
+    var prompt: String? = nil
+
+    static let builtIns: [NoteTemplate] = [
+        NoteTemplate(id: "meeting-notes", title: Copy.Notes.templateMeetingNotes),
+        NoteTemplate(id: "decisions", title: Copy.Notes.templateDecisions),
+        NoteTemplate(id: "follow-up-email", title: Copy.Notes.templateFollowUpEmail),
+        NoteTemplate(id: "study-notes", title: Copy.Notes.templateStudyNotes),
+        NoteTemplate(id: "interview-highlights", title: Copy.Notes.templateInterviewHighlights),
+    ]
+}
+
+// MARK: - Data-source protocols
+
+@MainActor
+protocol LibraryDataSource: AnyObject {
+    func library(filter: LibraryFilter, tag: String?) async throws -> [LibraryDayGroup]
+    func tags() async throws -> [TagWithCount]
+    /// Emits after any mutation so list screens can reload (DB impl: ValueObservation).
+    func updates() -> AsyncStream<Void>
+}
+
+@MainActor
+protocol SearchDataSource: AnyObject {
+    func search(query: String, scope: AskScope) async throws -> SearchResults
+}
+
+@MainActor
+protocol ConversationDataSource: AnyObject {
+    func display(id: String) async throws -> ConversationDisplay?
+    func rename(id: String, to title: String) async throws
+    func retranscribe(id: String) async throws
+    func transcribeNow(id: String) async throws
+    func retryNow(id: String) async throws
+    func exportAudio(id: String) async throws
+    func delete(id: String) async throws
+    func undoDelete(id: String) async throws
+    func toggleFollowUp(id: String) async throws
+}
+
+@MainActor
+protocol AskDataSource: AnyObject {
+    /// False until the first recording exists ("Nothing to ask about yet…").
+    var hasContent: Bool { get }
+    func recent() async throws -> [AskEntry]
+    func ask(question: String, scope: AskScope) async throws -> AskEntry
+    func clearHistory() async throws
+    /// Conversation title for a citation's source id (footer + tap-through).
+    func conversationTitle(citedId: String) -> String?
+}
+
+@MainActor
+protocol NotesDataSource: AnyObject {
+    func notes(conversationId: String) async throws -> [NoteDisplay]
+    func note(id: String) async throws -> NoteDisplay?
+    func templates() async throws -> [NoteTemplate]
+    func generate(
+        conversationId: String, template: NoteTemplate, customPrompt: String?
+    ) async throws -> NoteDisplay
+    func regenerate(noteId: String) async throws -> NoteDisplay
+    func saveEdit(noteId: String, title: String, body: String) async throws
+    func saveTemplate(title: String, prompt: String) async throws
+    func deleteTemplate(id: String) async throws
+    func deleteNote(id: String) async throws
+}
+
+@MainActor
+protocol TagEditorDataSource: AnyObject {
+    func tags(forConversation id: String) async throws -> [ConversationTag]
+    func suggestions(forConversation id: String) async throws -> [String]
+    func addTag(conversationId: String, name: String) async throws
+    func removeTag(conversationId: String, tagId: String) async throws
+    /// Global rename (Q10) — applies everywhere.
+    func renameTag(tagId: String, to newName: String) async throws
+}
+
+@MainActor
+protocol PeopleDataSource: AnyObject {
+    func people() async throws -> [Person]
+    /// Assign a diarization label to a person by name (find-or-create), per plan 6.3.
+    func assign(conversationId: String, label: String, personName: String) async throws
+}
+
+// MARK: - The holder
+
+@MainActor
+struct AskLibraryDataSources {
+    var library: any LibraryDataSource
+    var search: any SearchDataSource
+    var conversations: any ConversationDataSource
+    var ask: any AskDataSource
+    var notes: any NotesDataSource
+    var tagEditor: any TagEditorDataSource
+    var people: any PeopleDataSource
+
+    /// Defaults to the mock world; the runtime swaps DB-backed sources in at launch.
+    static var current: AskLibraryDataSources = .mocks()
+}
+
+// MARK: - Undo center (delete w/ 5 s undo snackbar, shown on Library)
+
+@MainActor
+@Observable
+final class UndoCenter {
+    static let shared = UndoCenter()
+    var snackbar: SnackbarItem?
+}
+
+// MARK: - Time formatting (display-layer; Q16 zones handled by the data layer)
+
+enum TimeFmt {
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    private static let intervalFormatter: DateIntervalFormatter = {
+        let formatter = DateIntervalFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    private static let monthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMMd")
+        return formatter
+    }()
+
+    private static let shortMonthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    /// "9:12 AM"
+    static func time(_ date: Date) -> String { timeFormatter.string(from: date) }
+
+    /// "9:35 – 9:53 PM"
+    static func timeRange(_ start: Date, _ end: Date) -> String {
+        intervalFormatter.string(from: start, to: end)
+    }
+
+    /// "Aug 25 – Aug 28"
+    static func shortDateRange(_ start: Date, _ end: Date) -> String {
+        "\(shortMonthDayFormatter.string(from: start)) – \(shortMonthDayFormatter.string(from: end))"
+    }
+
+    /// "2h ago"
+    static func relative(_ date: Date) -> String {
+        relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// "4:01" / "18:12" / "1:03:09" — player timecodes.
+    static func timecode(_ ms: Int64) -> String {
+        let totalSeconds = max(ms, 0) / 1000
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, seconds) }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    /// Logical-day label for a section key: "Today" / "Yesterday" / "August 27".
+    static func dayLabel(dateKey: String) -> String {
+        let zone = TimeZone.current.identifier
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        if dateKey == LogicalDay.dateKey(forMs: nowMs, timeZoneID: zone) { return "Today" }
+        if dateKey == LogicalDay.dateKey(forMs: nowMs - 86_400_000, timeZoneID: zone) {
+            return "Yesterday"
+        }
+        guard let bounds = LogicalDay.bounds(ofDateKey: dateKey, timeZoneID: zone) else {
+            return dateKey
+        }
+        return monthDayFormatter.string(
+            from: Date(timeIntervalSince1970: Double(bounds.startMs) / 1000))
+    }
+
+    static func dayLabel(for date: Date) -> String {
+        let zone = TimeZone.current.identifier
+        let key = LogicalDay.dateKey(
+            forMs: Int64(date.timeIntervalSince1970 * 1000), timeZoneID: zone)
+        return dayLabel(dateKey: key)
+    }
+
+    /// Library row meta: "7:02 PM · 1 hr 40 min · mostly quiet" / "12:04 PM · 48 min so far".
+    static func rowMeta(_ row: LibraryRow) -> String {
+        let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
+        var meta = "\(time(start)) · \(Formatting.duration(row.durationMs))"
+        if row.isLive { meta += " so far" }
+        if row.mostlyQuiet { meta += " · \(Copy.Library.mostlyQuiet)" }
+        return meta
+    }
+
+    /// Conversation header meta: "Yesterday · 9:35 – 9:53 PM · 18 min".
+    static func conversationMeta(start: Date, end: Date) -> String {
+        let durationMs = Int64(end.timeIntervalSince(start) * 1000)
+        return "\(dayLabel(for: start)) · \(timeRange(start, end)) · \(Formatting.duration(durationMs))"
+    }
+}

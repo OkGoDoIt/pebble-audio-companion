@@ -3,15 +3,43 @@ import SwiftUI
 @main
 struct PebbleAudioApp: App {
     @State private var router = AppRouter()
+    @State private var settings = AppSettings()
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                // Onboarding gate: the flow covers the app until the user finishes
+                // connect → confirm-on-watch → transcripts (Q14). Dismissal happens only
+                // by `onboardingComplete` flipping true inside the flow.
+                .fullScreenCover(
+                    isPresented: Binding(
+                        get: { !settings.onboardingComplete },
+                        set: { _ in }
+                    )
+                ) {
+                    OnboardingFlow()
+                        .environment(settings)
+                        .tint(Tokens.tint)
+                }
                 .environment(router)
+                .environment(settings)
                 .tint(Tokens.tint)
                 .onOpenURL { url in
                     if let route = Route.parse(url) { router.navigate(to: route) }
                 }
+                #if DEBUG
+                // Simulator-automation staging: "-route settings/watch" behaves exactly
+                // like an incoming companion:// URL (same parse + navigate path). Router
+                // logic itself is untouched. DEBUG builds only.
+                .onAppear {
+                    let args = ProcessInfo.processInfo.arguments
+                    if let index = args.firstIndex(of: "-route"), index + 1 < args.count,
+                        let url = URL(string: "companion://\(args[index + 1])"),
+                        let route = Route.parse(url) {
+                        router.navigate(to: route)
+                    }
+                }
+                #endif
         }
     }
 }
@@ -28,6 +56,8 @@ final class AppRouter {
     var settingsPath: [Route] = []
     var askSheet: Route?
     var pendingSearchQuery: String?
+    /// Tag filter carried by `companion://library?tag=` — consumed by LibraryScreen on appear.
+    var pendingLibraryTag: String?
 
     func navigate(to route: Route) {
         switch route {
@@ -37,9 +67,10 @@ final class AppRouter {
         case .conversation, .note:
             selectedTab = .library
             libraryPath = [route]
-        case .library:
+        case .library(let tag):
             selectedTab = .library
             libraryPath = []
+            pendingLibraryTag = tag
         case .search(let q):
             selectedTab = .library
             libraryPath = []
