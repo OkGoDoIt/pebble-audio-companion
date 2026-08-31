@@ -14,7 +14,14 @@ import Transcription
 
 // Override with PEBBLE_LEGACY_CONTAINER to run the gate against a container pulled off the
 // phone (`xcrun devicectl device copy from --domain-type appDataContainer …`), which is the
-// only copy that carries `transcription/transcripts/` and `ai/`.
+// only copy that carries `transcription/transcripts/`, `ai/` — and `quarantine/`.
+//
+// The default `tmp-appdata` copy predates quarantine, so the quarantine half of this gate is
+// conditional below: with no orphans on disk there is nothing to recover, and "0 recovered"
+// is the right answer rather than a regression. To exercise that half, point the variable at
+// a full pull, e.g.
+//   PEBBLE_LEGACY_CONTAINER=~/Desktop/PebbleAudioBackup/audio-companion-20260831-110954
+// (438 segments / 179 conversations, versus 135 / 39 from `tmp-appdata`).
 private let realContainerPath =
     ProcessInfo.processInfo.environment["PEBBLE_LEGACY_CONTAINER"]
     ?? "/Users/roger/Repos/pebble/tmp-appdata"
@@ -95,7 +102,13 @@ private var realContainerAvailable: Bool {
             FileManager.default.contentsOfDirectory(at: segmentsDir, includingPropertiesForKeys: nil)
                 .filter { $0.lastPathComponent.hasSuffix(SegmentStore.metaSuffix) }
                 .map { String($0.lastPathComponent.dropLast(SegmentStore.metaSuffix.count)) })
-        #expect(stats.quarantineRecovered > 0, "quarantined audio should have been recovered")
+        // Only assert recovery HAPPENED where the fixture actually carries orphans: a container
+        // pulled with `devicectl` has `quarantine/`, the checked-out `tmp-appdata` copy does
+        // not, and "0 recovered from 0 orphans" is correct rather than a regression. The
+        // invariant below holds either way and is the one that matters.
+        if !quarantineIdsOnDisk.isEmpty {
+            #expect(stats.quarantineRecovered > 0, "quarantined audio should have been recovered")
+        }
         #expect(
             quarantineIdsOnDisk.subtracting(metasAfter).isEmpty,
             "every quarantined orphan should now be a segment")
@@ -169,7 +182,11 @@ private var realContainerAvailable: Bool {
         // pairs orphan sidecars, which is not this gate's business; the invariant that protects
         // the user's wallet is asserted just below — nothing already transcribed is queued.
         #expect(pending.count >= expectedQueued)
-        #expect(expectedRecoveredQueued > 0, "recovered audio should have produced a backlog")
+        // Same fixture-shape guard: recovered audio only produces a backlog where there was
+        // audio to recover.
+        if !quarantineIdsOnDisk.isEmpty {
+            #expect(expectedRecoveredQueued > 0, "recovered audio should have produced a backlog")
+        }
 
         // …and everything already finished carries a TERMINAL row rather than no row. Without
         // those, a missing row reads as Pending downstream and a fully-transcribed conversation

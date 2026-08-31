@@ -50,6 +50,10 @@ public struct PipelineSteps: Sendable {
     public var nextRetryAtMs: @Sendable () async throws -> Int64?
     /// Fires whenever the pass changed something the diagnostics struct reports.
     public var onDiagnosticsDirty: @Sendable () async -> Void
+    /// Rewrites the App Group snapshot the widget renders from — rate-limited by the runtime, so
+    /// calling it every pass is cheap. Not a `PipelineStage`: it is a side effect at the end of
+    /// the pass, not a step whose ORDER anything depends on.
+    public var refreshCoverageSnapshot: @Sendable () async -> Void
 
     public init(
         isForeground: @escaping @Sendable () -> Bool = { true },
@@ -67,7 +71,8 @@ public struct PipelineSteps: Sendable {
         releaseModelIfIdle: @escaping @Sendable () async -> Void = {},
         isFollowingOpenSegment: @escaping @Sendable () async -> Bool = { false },
         nextRetryAtMs: @escaping @Sendable () async throws -> Int64? = { nil },
-        onDiagnosticsDirty: @escaping @Sendable () async -> Void = {}
+        onDiagnosticsDirty: @escaping @Sendable () async -> Void = {},
+        refreshCoverageSnapshot: @escaping @Sendable () async -> Void = {}
     ) {
         self.isForeground = isForeground
         self.isCatchUpActive = isCatchUpActive
@@ -85,6 +90,7 @@ public struct PipelineSteps: Sendable {
         self.isFollowingOpenSegment = isFollowingOpenSegment
         self.nextRetryAtMs = nextRetryAtMs
         self.onDiagnosticsDirty = onDiagnosticsDirty
+        self.refreshCoverageSnapshot = refreshCoverageSnapshot
     }
 }
 
@@ -135,6 +141,10 @@ public struct PipelinePass: Sendable {
             if !steps.isCatchUpActive() {
                 await steps.releaseModel("background")
             }
+            // Still worth a (heavily rate-limited) snapshot: backgrounded IS when this product
+            // records, and a widget that freezes the moment the app leaves the foreground is
+            // exactly the widget Roger called useless.
+            await steps.refreshCoverageSnapshot()
             return PipelinePacing.backgroundMs
         }
 
@@ -190,6 +200,11 @@ public struct PipelinePass: Sendable {
         if !processed {
             await steps.releaseModelIfIdle()
         }
+
+        // 12. Hand the widget what this pass just produced — a new transcript line, a title
+        //     enrichment finally wrote, a follow-up that appeared. The widget has no other way
+        //     to learn any of it.
+        await steps.refreshCoverageSnapshot()
 
         return try await sleepMs(processed: processed)
     }

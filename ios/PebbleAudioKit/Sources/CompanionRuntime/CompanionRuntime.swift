@@ -130,6 +130,13 @@ public actor CompanionRuntime {
     /// Startup: run the recovery order (which runs the legacy import first), start the receiver
     /// when the user's intent says to, then start the processing loop.
     public func start() async {
+        // FIRST, before anything slow. Recovery on a real migrated container takes tens of
+        // seconds, and until this file exists every widget on the Home Screen shows its "no data
+        // yet" state — a fresh install therefore looked broken for the whole of that window, and
+        // an install whose recovery never finished looked broken forever. It is rewritten at the
+        // end of `start()` with the real receiver state; this first one only has to be honest.
+        await refreshSnapshot(.manual)
+
         await environment.startup.recoverIfNeeded()
 
         // Restoration relaunch: receive-only is applied BEFORE the receiver starts, so a
@@ -183,6 +190,10 @@ public actor CompanionRuntime {
             await refreshSnapshot(.appBackgrounded)
         } else {
             await reconcilePendingTranscriptions()
+            // Foreground entry: the app is awake and cheap work is allowed again, so bring the
+            // widget's file up to date immediately rather than leaving it on whatever the last
+            // background write said.
+            await refreshSnapshot(.manual)
         }
         wake.signal()
         await environment.diagnostics.refresh()
@@ -400,7 +411,15 @@ public actor CompanionRuntime {
                     return nil
                 }
             },
-            onDiagnosticsDirty: { await env.diagnostics.refresh() }
+            onDiagnosticsDirty: { await env.diagnostics.refresh() },
+            refreshCoverageSnapshot: {
+                await env.snapshots.refreshIfDue(
+                    .pipelinePass,
+                    minIntervalMs: foreground.value
+                        ? CoverageSnapshotService.foregroundHeartbeatMs
+                        : CoverageSnapshotService.backgroundHeartbeatMs
+                )
+            }
         )
     }
 }

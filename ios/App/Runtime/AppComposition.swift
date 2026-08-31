@@ -438,6 +438,11 @@ final class AppComposition {
             }
         )
 
+        // The receiver fires coverage triggers (segment opened, segment closed, pause applied)
+        // from the moment it is built, but `CoverageSnapshotService` cannot exist yet — it reads
+        // the receiver's own state for the status it writes. The relay closes that loop below.
+        let coverageTriggers = CoverageTriggerRelay()
+
         let receiver = ReceiverService(
             link: CoreBluetoothAudioGattLink(),
             store: store,
@@ -454,6 +459,7 @@ final class AppComposition {
             pauseJournal: pauseJournal,
             lossEvaluator: lossEvaluator,
             onStoreEvent: { wake.signal() },
+            onCoverageTrigger: { await coverageTriggers.fire($0) },
             log: AppRuntimeLog.runtimeLog
         )
 
@@ -533,6 +539,11 @@ final class AppComposition {
                 return context
             }
         )
+        // …and the loop closes here. Without this line the receive path — the ONLY thing running
+        // while the app is backgrounded and actually recording — never rewrites the widget's
+        // file, so a live conversation ages past the 30-minute staleness cut and every widget
+        // quietly falls back to "as of <hours ago>".
+        coverageTriggers.connect { [snapshots] trigger in await snapshots.refresh(trigger) }
 
         let importer = LegacyImporter(
             containerRoot: containerRoot,

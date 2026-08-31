@@ -68,58 +68,45 @@ struct WidgetStatus {
     let hasData: Bool
 
     init(entry: CompanionEntry) {
-        let snapshot = entry.snapshot
-        let stale = snapshot?.isStale(at: entry.date) ?? false
-        isStale = stale
-        hasData = snapshot != nil
+        // Every decision below is made by `WidgetStatusRules` (Shared/, and unit-tested); this
+        // initializer only dresses it in words and colors.
+        let rules = WidgetStatusRules(
+            snapshot: entry.snapshot,
+            pending: entry.pending,
+            applied: entry.applied,
+            nowMs: Int64(entry.date.timeIntervalSince1970 * 1000)
+        )
+        isStale = rules.isStale
+        hasData = rules.hasData
+        isRecording = rules.isRecording
+        offersPause = rules.offersPause
+        isOff = rules.isOff
+        startedAt = rules.startedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
 
-        // What the user asked for wins the WORD while it is unconfirmed — the switch moved, so
-        // the widget must not keep showing the old state as if the tap never happened — but it
-        // is spelled with an ellipsis, because the watch has not answered yet.
-        let observed = snapshot?.headline.isEmpty == false ? snapshot!.headline : nil
-        switch entry.pending {
-        case .active where snapshot?.state != .recording:
-            word = Copy.Widgets.resuming
-        case .paused where snapshot?.state == .recording:
-            word = Copy.Widgets.pausing
-        default:
-            word = observed ?? Copy.Status.notRecording
+        switch rules.word {
+        case .resuming: word = Copy.Widgets.resuming
+        case .pausing: word = Copy.Widgets.pausing
+        case .observed(let headline): word = headline
+        case .lastSeen(let headline): word = Copy.Widgets.lastSeen(headline)
+        case .paused: word = Copy.Status.paused
+        case .notRecording: word = Copy.Status.notRecording
         }
 
-        let claimsRecording = snapshot?.state == .recording && !stale
-        isRecording = claimsRecording
-
-        // Which control to offer, in order of what is most certainly true:
-        //   1. an unconfirmed request — the user just pressed this button, honour their aim;
-        //   2. a fresh snapshot that says capture IS running — then the action is Pause, no
-        //      matter what the preference says. The two can legitimately disagree (a watch-side
-        //      stop, a preference written but not yet applied), and a widget that says
-        //      "Recording" above a "Resume" button is incoherent whichever half is right;
-        //   3. otherwise the applied preference, which is always current even when the snapshot
-        //      is stale.
-        if let pending = entry.pending {
-            offersPause = pending == .active
-        } else if claimsRecording {
-            offersPause = true
-        } else {
-            offersPause = entry.applied == .active
-        }
-        isOff = !offersPause && (entry.pending ?? entry.applied) == .off
-        startedAt = claimsRecording ? snapshot?.currentStartedAt : nil
-
-        if snapshot == nil {
-            dot = Tokens.neutralDot
-            secondary = Copy.Widgets.noData
-        } else if stale {
+        if let asOfMs = rules.asOfMs {
+            // A stale file gets a neutral dot: the color is a claim about right now, and this
+            // one is a claim about whenever the app last ran.
             dot = Tokens.neutralDot
             secondary = Copy.Widgets.asOf(
                 WidgetStatus.clock.string(
-                    from: Date(timeIntervalSince1970: Double(snapshot!.generatedAtMs) / 1000)
+                    from: Date(timeIntervalSince1970: Double(asOfMs) / 1000)
                 )
             )
+        } else if let snapshot = entry.snapshot {
+            dot = WidgetStatus.color(forDot: snapshot.dot)
+            secondary = snapshot.detail
         } else {
-            dot = WidgetStatus.color(forDot: snapshot!.dot)
-            secondary = snapshot!.detail
+            dot = Tokens.neutralDot
+            secondary = Copy.Widgets.noData
         }
     }
 

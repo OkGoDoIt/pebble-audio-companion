@@ -642,6 +642,9 @@ enum Copy {
         /// The snapshot is too old to be presented as the live state — say when it is from
         /// rather than assert a state the app has not confirmed since.
         static func asOf(_ time: String) -> String { "as of \(time)" }
+        /// …and put the state itself in the past tense while you are at it. "Recording" beside
+        /// "as of 9:12 AM" still reads, at a glance, as a microphone that is on right now.
+        static func lastSeen(_ state: String) -> String { "Last seen: \(state)" }
         /// Nothing has ever been written (fresh install, widget added before first launch).
         static let noData = "Open Pebble Audio to get started."
 
