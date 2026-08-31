@@ -19,7 +19,12 @@ struct SettingsScreen: View {
             titleRow
             watchCard
             groupCard
-            SettingsFooter(text: Copy.Settings.Root.footer)
+            SettingsFooter(
+                text: Copy.Settings.Root.footer(
+                    transcription: settings.cloudTranscriptionDestination,
+                    ai: settings.remoteAiDestination
+                )
+            )
         }
         // The tab roots own their titles. A system large title would reserve a full 54 pt
         // navigation-bar row above it, and this root — unlike Today, which puts Ask there —

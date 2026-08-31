@@ -4,6 +4,8 @@ import SwiftUI
 /// leads), bio card with a modal editor (Cancel + Save — B19), import rows with inline
 /// progress, confirmed destructive clear.
 struct SettingsAboutYouScreen: View {
+    @Environment(AppSettings.self) private var settings
+
     private var aboutYou: AboutYouSource { SettingsDataSources.current.aboutYou }
 
     @State private var editingBio = false
@@ -11,7 +13,11 @@ struct SettingsAboutYouScreen: View {
 
     var body: some View {
         SettingsScroll {
-            SettingsFooter(text: Copy.Settings.AboutYou.explainer)
+            SettingsFooter(
+                text: Copy.Settings.AboutYou.explainer(
+                    destinations: settings.cloudDestinations
+                )
+            )
 
             Card {
                 VStack(alignment: .leading, spacing: 6) {

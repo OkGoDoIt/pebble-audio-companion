@@ -18,6 +18,51 @@ import Foundation
 enum Copy {
 
     // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Privacy (P0: state it once, calmly — and only if it is true)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Where audio and text actually go under the CURRENT modes.
+    ///
+    /// One place answers it, so the Settings footer and the About You explainer cannot drift
+    /// apart or drift away from the code (U9). Callers pass the destinations they are actually
+    /// configured for — `AppSettings.cloudTranscriptionDestination` /
+    /// `remoteAiDestination`, which read the same predicates the providers are gated on — so
+    /// "local only" is not a promise the app then quietly breaks, and a cloud mode names its
+    /// provider instead of implying nothing leaves. No worst cases, no scare-mongering: the
+    /// sentence is stated once, calmly, and it is true in either configuration.
+    enum Privacy {
+        /// The remote AI provider (`OpenAiChatAiProvider`) — the only one the AI modes use.
+        static let remoteAi = "OpenAI"
+
+        /// e.g. "Soniox and OpenAI". Duplicates collapse: one provider is one name.
+        static func destinations(_ names: [String?]) -> String? {
+            let unique = names.compactMap { $0 }.reduce(into: [String]()) { list, name in
+                if !list.contains(name) { list.append(name) }
+            }
+            guard !unique.isEmpty else { return nil }
+            return unique.count == 1 ? unique[0] : unique.joined(separator: " and ")
+        }
+
+        /// The Settings-root footer sentence. `transcription` is the cloud provider audio is
+        /// sent to (nil in transcription "Local only"); `ai` is the provider transcripts are
+        /// sent to (nil in AI "Local only").
+        static func dataFlow(transcription: String?, ai: String?) -> String {
+            switch (transcription, ai) {
+            case (nil, nil):
+                return "Recordings and transcripts stay on this phone."
+            case (let stt?, nil):
+                return "Recordings are sent to \(stt) for transcription."
+            case (nil, let ai?):
+                return "Recordings stay on this phone; transcripts are sent to \(ai)."
+            case (let stt?, let ai?) where stt == ai:
+                return "Recordings and transcripts are sent to \(stt)."
+            case (let stt?, let ai?):
+                return "Recordings are sent to \(stt), transcripts to \(ai)."
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // MARK: Status-card families (States · Status Card artboard + Part 6.7)
     // ─────────────────────────────────────────────────────────────────────────
     enum Status {
@@ -190,6 +235,59 @@ enum Copy {
             static let providerUnavailable = "provider down"
             static let unreachable = "no connection"
             static let unexpected = "not checked"
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Transcription failures (kit taxonomy → what to DO about it)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Why one recording is sitting in the failed queue. Same contract as `KeyCheck`, for the
+    /// same reason: the kit stores `lastError` for a log — developer prose with up to 240 bytes
+    /// of the provider's response body in it, which for a 401 holds the request URL and can hold
+    /// the key — so nothing here is ever the stored string. `TranscriptionFailureKind` classifies
+    /// it and these are the only words shown (B20, U9).
+    ///
+    /// Each line ends where the reader's next move is: the ones they can fix name the thing to
+    /// fix, and the ones they cannot say the app keeps trying, so nobody goes hunting for a
+    /// setting that would not have helped. Where a cause is shared with a key check, the wording
+    /// deliberately matches `KeyCheck` — one vocabulary, so "not accepted" means the same thing
+    /// on both screens.
+    enum TranscriptionFailure {
+        static let keyRejected = "The provider didn’t accept your key. Check it in Transcription & AI."
+        static let keyNotPermitted = "Your key isn’t allowed to use this API. Check its permissions."
+        static let rateLimited = "The provider was busy or the account is out of credit. It keeps trying."
+        static let providerTrouble = "The provider had trouble. It keeps trying."
+        static let providerRefusedAudio = "The provider didn’t accept the recording. It keeps trying."
+        static let timedOut = "The provider took too long to answer. It keeps trying."
+        static let recordingTooLong = "This recording is too long for the provider to accept in one piece."
+        static let noConnection = "It couldn’t reach the provider. It retries when you’re back online."
+        static let modelMissing = "The on-device model couldn’t load. Check Local model in Transcription & AI."
+        static let localEngineFailed = "On-device transcription failed on this recording. It keeps trying."
+        static let audioUnreadable = "The stored audio for this recording couldn’t be read."
+        static let notConfigured = "No transcription provider was available. Check Transcription & AI."
+        static let unknown = "It didn’t finish, and didn’t say why. It keeps trying."
+
+        /// The same reasons in two or three words, for a Diagnostics row's trailing value.
+        enum Row {
+            static let keyRejected = "key not accepted"
+            static let keyNotPermitted = "key not permitted"
+            static let rateLimited = "provider busy"
+            static let providerTrouble = "provider trouble"
+            static let providerRefusedAudio = "upload refused"
+            static let timedOut = "timed out"
+            static let recordingTooLong = "too long to send"
+            static let noConnection = "no connection"
+            static let modelMissing = "model not loaded"
+            static let localEngineFailed = "on-device failure"
+            static let audioUnreadable = "audio unreadable"
+            static let notConfigured = "no provider set up"
+            static let unknown = "no reason recorded"
+        }
+
+        /// Attempt bookkeeping on a failed row, e.g. "3 tries · retrying".
+        static func tries(_ count: Int, retrying: Bool) -> String {
+            let tries = count == 1 ? "1 try" : "\(count) tries"
+            return retrying ? "\(tries) · retrying" : "\(tries) · stopped retrying"
         }
     }
 
@@ -434,7 +532,13 @@ enum Copy {
             static let lossAlertsSub = "Only long gaps, at most one an hour."
             /// Shown instead of the sub-line when iOS notifications are off for the app.
             static let lossAlertsDenied = "Notifications are off in iOS Settings."
-            static let footer = "Recordings stay on this phone unless you choose a cloud provider."
+            /// Was "Recordings stay on this phone unless you choose a cloud provider." — which
+            /// read as a standing promise on an install whose default modes are BOTH cloud, and
+            /// which said nothing about transcripts going to the AI provider. It now says what
+            /// the current modes actually do; `Copy.Privacy.dataFlow` is the one wording.
+            static func footer(transcription: String?, ai: String?) -> String {
+                Copy.Privacy.dataFlow(transcription: transcription, ai: ai)
+            }
         }
 
         enum Watch {
@@ -479,8 +583,23 @@ enum Copy {
             static func percent(_ percent: Int) -> String { "\(percent)%" }
             static let downloadFailed = "download failed"
             static let waitingForWiFi = "waiting for Wi-Fi"
+            /// The archive is here and unpacking. Real work, no byte progress to show.
+            static let installing = "finishing up"
             /// The engine cannot run on this phone at all (unsupported language).
             static let unavailable = "not available here"
+
+            // The selected model is one that has to be downloaded, and it is not here. The kit
+            // transcribes with Apple Speech meanwhile rather than leaving the audio untouched,
+            // and every surface that names the selection has to say so — a picker that shows a
+            // model as chosen while a different engine is running is the exact silent
+            // substitution this app keeps removing.
+            /// Row value, e.g. "not installed · Apple Speech".
+            static let notInstalledUsingAppleSpeech = "not installed · Apple Speech"
+            /// The notice on the model screen, e.g. "Parakeet TDT 0.6B isn’t downloaded…".
+            static func fallbackNotice(_ name: String) -> String {
+                "\(name) isn’t downloaded, so Apple Speech is transcribing. "
+                    + "Tap it to download and switch."
+            }
 
             // Local-model screen: the pushed model catalog.
             static let installedValue = "installed"
@@ -497,7 +616,10 @@ enum Copy {
             static let testConnection = "Test Connection"
             /// e.g. "Connected · 2 min ago".
             static func connectedAgo(_ ago: String) -> String { "Connected · \(ago)" }
-            static let footer = "Set Mode to “Local only” to keep everything on this phone."
+            /// Both Modes: this screen has two of them, and transcription "Local only" alone
+            /// still sends every transcript to the AI provider. Naming one of them kept
+            /// "everything on this phone" from being true.
+            static let footer = "Set both Modes to “Local only” to keep everything on this phone."
 
             // API-key change flow (6.7). Three labelled sections — what is saved and whether
             // it works, how to replace it, how to remove it — rather than one undifferentiated
@@ -548,8 +670,18 @@ enum Copy {
         enum AboutYou {
             static let title = "About You"
             /// Explainer sits ON TOP of the cards on this screen.
-            static let explainer =
-                "Helps transcription and AI get names and jargon right. Stays on this phone."
+            ///
+            /// It used to end "Stays on this phone." flatly, and that was false out of the box:
+            /// this text is the Soniox recognition context, the OpenAI STT prompt and the
+            /// grounding block on every remote AI call, and both modes default to cloud. It is
+            /// still true in local-only modes, so the sentence follows the modes rather than
+            /// asserting one of them.
+            static func explainer(destinations: String?) -> String {
+                let lead = "Helps transcription and AI get names and jargon right."
+                guard let destinations else { return "\(lead) Stays on this phone." }
+                return "\(lead) It goes to \(destinations) with the audio and transcripts "
+                    + "they handle."
+            }
             static let contacts = "Contacts"
             static let calendar = "Calendar"
             /// e.g. "142 people imported".

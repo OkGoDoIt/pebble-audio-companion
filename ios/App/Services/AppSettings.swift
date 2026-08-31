@@ -321,6 +321,38 @@ final class AppSettings {
     }
 }
 
+// ─── Where data actually goes (privacy copy — P0) ───────────────────────────
+
+extension AppSettings {
+    /// The current modes as a plain truth-table value, so the derived predicates the pipeline is
+    /// gated on (`cloudTranscriptionEnabled`, `remoteAiEnabled`) answer the privacy copy too — a
+    /// sentence about where data goes must not re-derive its own version of that rule.
+    ///
+    /// Built from the OBSERVED stored properties rather than from `runtimeSettings`: the mirror
+    /// is `@ObservationIgnored`, so a view reading it registers no dependency and goes on showing
+    /// the previous answer after a mode change — a stale privacy claim is the bug being fixed.
+    private var modes: RuntimeSettingsSnapshot {
+        RuntimeSettingsSnapshot(transcriptionMode: transcriptionMode, aiMode: aiMode)
+    }
+
+    /// The cloud transcription provider audio is actually sent to, or nil when nothing is.
+    var cloudTranscriptionDestination: String? {
+        modes.cloudTranscriptionEnabled ? cloudTranscriptionProvider.displayName : nil
+    }
+
+    /// The provider transcripts (and the About You context) reach on remote AI runs, or nil in
+    /// AI "Local only" — same gate as `OpenAiChatAiProvider`'s consent closure.
+    var remoteAiDestination: String? {
+        modes.remoteAiEnabled ? Copy.Privacy.remoteAi : nil
+    }
+
+    /// e.g. "Soniox and OpenAI" — every destination this configuration sends to, or nil when
+    /// everything stays on the phone.
+    var cloudDestinations: String? {
+        Copy.Privacy.destinations([cloudTranscriptionDestination, remoteAiDestination])
+    }
+}
+
 // ─── Display names (approved mode vocabulary) ───────────────────────────────
 
 extension TranscriptionMode {
