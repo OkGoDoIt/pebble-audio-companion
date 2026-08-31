@@ -214,6 +214,12 @@ final class AppSettings {
         return keychain.set(value, for: provider.keychainKey)
     }
 
+    @discardableResult
+    func removeApiKey(for provider: CloudProvider) -> Bool {
+        defer { apiKeyRevision += 1 }
+        return keychain.remove(provider.keychainKey)
+    }
+
     // ─── Init ───────────────────────────────────────────────────────────────
 
     init(

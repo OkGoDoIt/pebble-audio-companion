@@ -223,6 +223,7 @@ struct ApiKeyChangeScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var newKey = ""
     @State private var didSave = false
+    @State private var confirmDelete = false
 
     private var keyChecker: ApiKeyChecking { SettingsDataSources.current.apiKeys }
 
@@ -252,10 +253,30 @@ struct ApiKeyChangeScreen: View {
 
             checkResult
 
+            if settings.maskedApiKey(for: provider) != nil {
+                ListCard {
+                    DestructiveRow(title: Copy.Settings.TranscriptionAI.deleteKey) {
+                        confirmDelete = true
+                    }
+                }
+            }
+
             SettingsFooter(text: Copy.Settings.TranscriptionAI.keyChangeFootnote)
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.keyRow(provider: provider.displayName))
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            Copy.Settings.TranscriptionAI.deleteKey,
+            isPresented: $confirmDelete,
+            titleVisibility: .hidden
+        ) {
+            Button(Copy.Settings.TranscriptionAI.deleteKeyButton, role: .destructive) {
+                Haptics.destructiveConfirmed()
+                settings.removeApiKey(for: provider)
+                newKey = ""
+                didSave = false
+            }
+        }
     }
 
     /// Checking · verified · what went wrong + [Check Again]. Only after a save on this
