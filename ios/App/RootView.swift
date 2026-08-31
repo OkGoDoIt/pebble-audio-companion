@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The three-tab shell (Q2). Screens are filled in at M4/M6/M7; until then each tab hosts a
-/// placeholder plus the M0 token gallery for verification.
+/// The three-tab shell (Q2). Tab bar shows on the three roots, Search, and Settings pushes;
+/// hidden on onboarding, content details, and sheets (plan 2-C). Each tab root registers its
+/// own `.navigationDestination(for: Route.self)`.
 struct RootView: View {
     @Environment(AppRouter.self) private var router
 
@@ -10,32 +11,22 @@ struct RootView: View {
         TabView(selection: $router.selectedTab) {
             Tab("Today", systemImage: "waveform", value: AppRouter.Tab.today) {
                 NavigationStack(path: $router.todayPath) {
-                    PlaceholderScreen(title: "Today")
+                    TodayScreen()
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppRouter.Tab.library) {
                 NavigationStack(path: $router.libraryPath) {
-                    PlaceholderScreen(title: "Library")
+                    LibraryScreen()
                 }
             }
             Tab("Settings", systemImage: "gearshape", value: AppRouter.Tab.settings) {
                 NavigationStack(path: $router.settingsPath) {
-                    PlaceholderScreen(title: "Settings")
+                    SettingsScreen()
                 }
             }
         }
-    }
-}
-
-private struct PlaceholderScreen: View {
-    let title: String
-
-    var body: some View {
-        List {
-            NavigationLink("Design token gallery") { TokenGallery() }
-            NavigationLink("Component gallery") { ComponentGallery() }
+        .sheet(item: $router.askSheet) { route in
+            AskSheetView(route: route)
         }
-        .navigationTitle(title)
-        .background(Tokens.ground)
     }
 }

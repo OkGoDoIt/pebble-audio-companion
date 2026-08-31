@@ -3,7 +3,9 @@ import Foundation
 /// The complete deep-link route space (plan Part 6.8, scheme `companion://`). Every screen is
 /// addressable — Spotlight donations, the loss notification, widgets, and Siri all target
 /// these routes.
-enum Route: Equatable, Hashable {
+enum Route: Equatable, Hashable, Identifiable {
+    var id: String { url.absoluteString }
+
     case today(date: String?)          // companion://today[?date=YYYY-MM-DD]
     case conversation(id: String, atMs: Int64?)
     case live
