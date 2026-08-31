@@ -115,4 +115,34 @@ import Testing
         #expect(firstLineCites.count == 1)
         #expect(firstLineCites[0].number == 1)
     }
+
+    // MARK: - renderedAnswerCitations (chips over text shown VERBATIM)
+
+    /// The bug this exists for: `parseGroundedAnswer` renumbers by first appearance, so an
+    /// answer whose first citation is `[2]` stored "1 -> the [2] segment" while the visible
+    /// text still said `[2]` - and the chip navigated to the wrong moment.
+    @Test func keepsTheModelsOwnNumbersWhenTheAnswerIsShownVerbatim() {
+        let text = "Sam handles packing [2]. The ferry is booked [1]."
+        let citations = renderedAnswerCitations(text, sourceIds: sources)
+        #expect(citations.map(\.number) == [1, 2])
+        #expect(citations.first { $0.number == 2 }?.segmentId == sources[1])
+        #expect(citations.first { $0.number == 1 }?.segmentId == sources[0])
+
+        // Contrast: the renumbering path would have mapped 1 to the SECOND source here.
+        let renumbered = askCitations(
+            citedSegmentIds: parseGroundedAnswer(text, sourceIds: sources).citedSegmentIds)
+        #expect(renumbered.first { $0.number == 1 }?.segmentId == sources[1])
+    }
+
+    @Test func dedupesRepeatsAndDropsNumbersWithNoSource() {
+        let citations = renderedAnswerCitations(
+            "One [3] two [3] three [9] four [1]", sourceIds: sources)
+        // [9] has no fourth source: a chip that navigates nowhere is worse than no chip.
+        #expect(citations.map(\.number) == [1, 3])
+        #expect(citations.first { $0.number == 3 }?.segmentId == sources[2])
+    }
+
+    @Test func noCitationsWhenTheModelWroteNone() {
+        #expect(renderedAnswerCitations("No decisions were made.", sourceIds: sources).isEmpty)
+    }
 }

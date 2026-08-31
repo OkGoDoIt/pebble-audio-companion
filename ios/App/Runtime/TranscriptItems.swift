@@ -32,7 +32,10 @@ enum TranscriptItems {
         meta: SegmentMeta,
         segments: [SearchKit.TranscriptSegment],
         words: [SearchKit.TranscriptWord] = [],
-        assignments: [SpeakerAssignment]
+        assignments: [SpeakerAssignment],
+        /// Media time consumed by the members already walked, so each turn can carry its
+        /// position on the CONVERSATION's scrubber rather than one local to this segment.
+        mediaBeforeMemberMs: Int64 = 0
     ) -> MemberTranscript {
         var result = MemberTranscript()
         // Two clocks: wall time (the stamps beside each speaker) and media time (what the
@@ -42,6 +45,14 @@ enum TranscriptItems {
         result.mediaMs = mediaDurationMs(meta)
         func wallDate(_ offsetMs: Int64) -> Date {
             Date(timeIntervalSince1970: Double(wallStartMs + offsetMs) / 1000)
+        }
+        /// Where a wall offset into this member lands on the scrubber. The same proportional
+        /// mapping the missing ticks use: media time is the wall span minus its gaps, so a
+        /// point that is 40% through the member is 40% through its stored audio.
+        func mediaOffset(_ wallOffsetMs: Int64) -> Int64? {
+            guard result.mediaMs > 0 else { return nil }
+            let into = min(max(wallOffsetMs, 0), wallSpanMs)
+            return mediaBeforeMemberMs + result.mediaMs * into / wallSpanMs
         }
 
         let timeline = transcriptTimelineItems(meta: meta, segments: segments, words: words)
@@ -58,13 +69,16 @@ enum TranscriptItems {
                             name: speakerName(speech.speaker, assignments: assignments),
                             role: speakerRole(speech.speaker, assignments: assignments),
                             text: speech.text,
-                            startedAt: wallDate(speech.startMs)
+                            startedAt: wallDate(speech.startMs),
+                            segmentId: segmentId,
+                            mediaOffsetMs: mediaOffset(speech.startMs)
                         )))
             case .silenceBreak:
                 break  // an unlabeled visual break; the card's row spacing carries it
             case .pause(let pause):
                 let marker = TranscriptMarker(
-                    id: itemId, text: pause.label, startedAt: wallDate(pause.startMs))
+                    id: itemId, text: pause.label, startedAt: wallDate(pause.startMs),
+                    segmentId: segmentId)
                 if pause.missing {
                     result.items.append(.missing(marker))
                     // Where the gap falls on the SCRUBBER: the member's media time scaled by
@@ -88,7 +102,8 @@ enum TranscriptItems {
             .turn(
                 TranscriptTurn(
                     id: "\(segmentId)-tail", speakerLabel: "", name: "Speaker",
-                    role: .unresolved, text: trimmed, isInProgress: true))
+                    role: .unresolved, text: trimmed, isInProgress: true,
+                    segmentId: segmentId))
         ]
     }
 

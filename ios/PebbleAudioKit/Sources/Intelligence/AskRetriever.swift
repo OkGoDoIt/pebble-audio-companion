@@ -438,10 +438,33 @@ public func saveAskAnswer(
     threadId: String? = nil,
     nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
 ) async throws -> AskEntry {
-    try await history.save(
+    try await saveAskAnswer(
         question: question,
         answerText: answerText,
         citations: askCitations(citedSegmentIds: citedSegmentIds),
+        scope: scope,
+        history: history,
+        threadId: threadId,
+        nowMs: nowMs)
+}
+
+/// The same, for callers that resolved the answer's OWN `[n]` numbers
+/// (`renderedAnswerCitations`) instead of renumbering by first appearance. The answer card
+/// renders the model's text verbatim, so those are the numbers the chips carry.
+@discardableResult
+public func saveAskAnswer(
+    question: String,
+    answerText: String,
+    citations: [AskCitation],
+    scope: AskScope,
+    history: AskHistoryStore,
+    threadId: String? = nil,
+    nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+) async throws -> AskEntry {
+    try await history.save(
+        question: question,
+        answerText: answerText,
+        citations: citations,
         scopeDescription: scope.displayName,
         threadId: threadId,
         nowMs: nowMs)

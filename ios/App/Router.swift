@@ -7,7 +7,9 @@ enum Route: Equatable, Hashable, Identifiable {
     var id: String { url.absoluteString }
 
     case today(date: String?)          // companion://today[?date=YYYY-MM-DD]
-    case conversation(id: String, atMs: Int64?)
+    /// `focusSegmentId` is the cited member a citation chip sent us to: the transcript scrolls
+    /// to it, marks it, and offers to play from there. Nil for every ordinary open.
+    case conversation(id: String, atMs: Int64?, focusSegmentId: String? = nil)
     case live
     case library(tag: String?)
     case search(query: String?)
@@ -33,7 +35,7 @@ enum Route: Equatable, Hashable, Identifiable {
         case "conversation":
             guard let id = pathParts.first else { return nil }
             let t = query["t"].flatMap { Int64($0) }
-            return .conversation(id: id, atMs: t)
+            return .conversation(id: id, atMs: t, focusSegmentId: query["s"])
         case "live":
             return .live
         case "library":
@@ -63,10 +65,13 @@ enum Route: Equatable, Hashable, Identifiable {
         case .today(let date):
             components.host = "today"
             if let date { components.queryItems = [.init(name: "date", value: date)] }
-        case .conversation(let id, let atMs):
+        case .conversation(let id, let atMs, let focusSegmentId):
             components.host = "conversation"
             components.path = "/\(id)"
-            if let atMs { components.queryItems = [.init(name: "t", value: String(atMs))] }
+            var items: [URLQueryItem] = []
+            if let atMs { items.append(.init(name: "t", value: String(atMs))) }
+            if let focusSegmentId { items.append(.init(name: "s", value: focusSegmentId)) }
+            if !items.isEmpty { components.queryItems = items }
         case .live:
             components.host = "live"
         case .library(let tag):

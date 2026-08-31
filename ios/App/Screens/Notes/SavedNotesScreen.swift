@@ -106,33 +106,42 @@ struct SavedNotesScreen: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 MarkdownText(note.body, lineSpacing: 7) { number in
-                    openCitation(note: note, number: number)
+                    openCitation(number: number)
                 }
 
-                Rectangle().fill(Tokens.hairline).frame(height: 0.5)
-                Button {
-                    openCitation(note: note, number: note.citations.first?.number ?? 1)
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(note.momentsLabel)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Tokens.chevron)
+                // Only when there is somewhere to go: a note the model wrote without citing
+                // anything used to show an empty footer with a chevron that led nowhere.
+                if let moments = model.momentsLabel {
+                    Rectangle().fill(Tokens.hairline).frame(height: 0.5)
+                    Button {
+                        openCitation(number: note.citations.first?.number ?? 0)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(moments)
+                                .font(AppFont.footnote)
+                                .foregroundStyle(Tokens.meta)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Tokens.chevron)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 
-    private func openCitation(note: NoteDisplay, number: Int) {
-        guard let citation = note.citations.first(where: { $0.number == number })
-            ?? note.citations.first else { return }
-        router.navigate(to: .conversation(id: citation.segmentId, atMs: nil))
+    /// A chip names a SEGMENT; the screen it opens is a CONVERSATION, cued to where that
+    /// segment sits on the scrubber and marked so the cited stretch is what you land on.
+    private func openCitation(number: Int) {
+        guard let target = model.target(forCitation: number) else { return }
+        router.navigate(
+            to: .conversation(
+                id: target.conversationId,
+                atMs: target.mediaOffsetMs,
+                focusSegmentId: target.segmentId))
     }
 
     // MARK: - Pills [Copy][Edit][Regenerate]
@@ -193,9 +202,55 @@ final class SavedNotesViewModel {
     var copied = false
     var showTemplates = false
     var confirmDelete = false
+    /// Resolved citation destinations, keyed by cited segment id. Resolution is a lookup
+    /// (which conversation holds the segment, where it starts on the scrubber), so it happens
+    /// once per load rather than on every tap.
+    private(set) var targets: [String: CitationTarget] = [:]
 
     func load(id: String) async {
         note = try? await AskLibraryDataSources.current.notes.note(id: id)
+        await resolveTargets()
+    }
+
+    private func resolveTargets() async {
+        guard let note else {
+            targets = [:]
+            return
+        }
+        var resolved: [String: CitationTarget] = [:]
+        for citation in note.citations where resolved[citation.segmentId] == nil {
+            resolved[citation.segmentId] = await AskLibraryDataSources.current.ask
+                .citationTarget(citedId: citation.segmentId)
+        }
+        targets = resolved.compactMapValues { $0 }
+    }
+
+    /// No fallback to "the first citation": a chip whose number the note never recorded (a
+    /// model citing [9] with three sources, or an answer imported from the old app) must do
+    /// nothing rather than open a moment it does not name.
+    func target(forCitation number: Int) -> CitationTarget? {
+        guard let note, let citation = note.citations.first(where: { $0.number == number })
+        else { return nil }
+        return targets[citation.segmentId]
+    }
+
+    /// "2 moments · 9:36 PM, 9:51 PM" — the times of the moments this note actually cites.
+    /// Nil when it cites none, which is when the footer must not appear at all.
+    var momentsLabel: String? {
+        guard let note else { return nil }
+        var seen = Set<String>()
+        var labels: [String] = []
+        for citation in note.citations {
+            guard let target = targets[citation.segmentId],
+                seen.insert(target.segmentId).inserted
+            else { continue }
+            labels.append(
+                target.startedAt.map { TimeFmt.time($0) } ?? target.conversationTitle)
+        }
+        if labels.isEmpty {
+            return note.momentsLabel.isEmpty ? nil : note.momentsLabel
+        }
+        return Copy.Ask.moments(labels.count, labels.joined(separator: ", "))
     }
 
     func copyNote() {

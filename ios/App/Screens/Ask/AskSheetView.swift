@@ -256,7 +256,7 @@ struct AskSheetView: View {
                 if showSources {
                     ForEach(sources(entry), id: \.number) { source in
                         Button {
-                            openConversation(id: source.id)
+                            openConversation(citedId: source.id)
                         } label: {
                             HStack(spacing: 8) {
                                 CitationChip(number: source.number)
@@ -297,15 +297,30 @@ struct AskSheetView: View {
         return Copy.Ask.moments(unique.count, unique.joined(separator: ", "))
     }
 
+    /// Only the number the answer actually recorded: a chip the entry has no citation for
+    /// opens nothing, rather than the first moment in the list, which it does not name.
     private func openCitation(entry: AskEntry, number: Int) {
         guard let citation = entry.citations.first(where: { $0.number == number })
-            ?? entry.citations.first else { return }
-        openConversation(id: citation.segmentId)
+        else { return }
+        openConversation(citedId: citation.segmentId)
     }
 
-    private func openConversation(id: String) {
-        dismiss()
-        router.navigate(to: .conversation(id: id, atMs: nil))
+    /// A citation names a SEGMENT, and `conversation/<segmentId>` is not a conversation id —
+    /// which is why every chip used to land on "Conversation not found". Resolve it to the
+    /// conversation holding it, cue the scrubber to where that segment starts, and mark it.
+    private func openConversation(citedId: String) {
+        Task { @MainActor in
+            guard
+                let target = await AskLibraryDataSources.current.ask.citationTarget(
+                    citedId: citedId)
+            else { return }
+            dismiss()
+            router.navigate(
+                to: .conversation(
+                    id: target.conversationId,
+                    atMs: target.mediaOffsetMs,
+                    focusSegmentId: target.segmentId))
+        }
     }
 
     // MARK: - Composer

@@ -10,21 +10,25 @@ struct TranscriptView: View {
     let provenance: String?
     /// Q16 — stamps read in the zone the audio was recorded in, not the one you're in now.
     var timeZone: TimeZone = .current
+    /// The member a citation chip sent us to. Its rows are banded and carry the play control;
+    /// nil on every ordinary open, which is most of them.
+    var focusSegmentId: String?
     /// Nil where names aren't editable yet (the live screen, whose diarization is still
     /// provisional): the name renders as plain text rather than a button that does nothing.
     var onSpeakerTap: ((TranscriptTurn) -> Void)?
+    /// Play the conversation from a position on its scrubber. Nil when there is no audio.
+    var onPlayFrom: ((Int64) -> Void)?
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(blocks) { block in
-                    switch block {
-                    case .speech(_, let turns):
-                        speechBlock(turns)
-                    case .quiet(let marker):
-                        markerRow(marker, color: Tokens.faint, rule: Tokens.hairline)
-                    case .missing(let marker):
-                        markerRow(marker, color: Tokens.missing, rule: Tokens.missingHair)
+                ForEach(runs) { run in
+                    if run.isCited {
+                        citedBand(run)
+                    } else {
+                        ForEach(run.blocks) { block in
+                            blockRow(block)
+                        }
                     }
                 }
                 if let provenance {
@@ -37,6 +41,85 @@ struct TranscriptView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func blockRow(_ block: TranscriptBlock) -> some View {
+        switch block {
+        case .speech(_, let turns):
+            speechBlock(turns)
+        case .quiet(let marker):
+            markerRow(marker, color: Tokens.faint, rule: Tokens.hairline)
+        case .missing(let marker):
+            markerRow(marker, color: Tokens.missing, rule: Tokens.missingHair)
+        }
+    }
+
+    /// The stretch a citation points at: tinted, ruled on the leading edge, and headed by the
+    /// one thing you came here to do. Arriving from a chip should answer "which part?" before
+    /// you have read a word.
+    private func citedBand(_ run: BlockRun) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(Copy.Conversation.citedMoment)
+                    .font(AppFont.micro)
+                    .foregroundStyle(Tokens.tint)
+                Spacer(minLength: 0)
+                if let onPlayFrom, let offset = run.mediaOffsetMs {
+                    Button {
+                        onPlayFrom(offset)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(Copy.Conversation.playFromHere)
+                                .font(AppFont.tagChip)
+                        }
+                        .foregroundStyle(Tokens.tint)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 30)
+                        .background(Capsule().fill(Tokens.tintFill12))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            ForEach(run.blocks) { block in
+                blockRow(block)
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Tokens.tintFill10)
+        )
+        .overlay(alignment: .leading) {
+            Capsule().fill(Tokens.tint).frame(width: 2).padding(.vertical, 6)
+        }
+        .id(Self.citedAnchor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Copy.Conversation.citedMoment)
+    }
+
+    /// Scroll target for the cited band. A member's blocks are contiguous, so there is at most
+    /// one of these in a transcript.
+    static let citedAnchor = "transcript-cited-moment"
+
+    /// Blocks in reading order, split into runs by whether they belong to the cited member, so
+    /// one citation draws ONE band even though its speech is many speaker blocks.
+    private var runs: [BlockRun] {
+        var runs: [BlockRun] = []
+        for block in blocks {
+            let cited = focusSegmentId != nil && block.segmentId == focusSegmentId
+            if var last = runs.last, last.isCited == cited {
+                last.blocks.append(block)
+                runs[runs.count - 1] = last
+            } else {
+                runs.append(BlockRun(blocks: [block], isCited: cited))
+            }
+        }
+        return runs
     }
 
     /// Consecutive turns by the same speaker read as one person still talking, so they get
@@ -189,6 +272,29 @@ private enum TranscriptBlock: Identifiable {
         case .quiet(let marker), .missing(let marker): return marker.id
         }
     }
+
+    var segmentId: String {
+        switch self {
+        case .speech(_, let turns): return turns.first?.segmentId ?? ""
+        case .quiet(let marker), .missing(let marker): return marker.segmentId
+        }
+    }
+
+    /// Where this block starts on the conversation's scrubber; markers inherit nothing, so a
+    /// run takes the first position any of its blocks knows.
+    var mediaOffsetMs: Int64? {
+        if case .speech(_, let turns) = self { return turns.first?.mediaOffsetMs }
+        return nil
+    }
+}
+
+/// Consecutive blocks that are all cited, or all not.
+private struct BlockRun: Identifiable {
+    var blocks: [TranscriptBlock]
+    var isCited: Bool
+
+    var id: String { "\(isCited)-\(blocks.first?.id ?? "")" }
+    var mediaOffsetMs: Int64? { blocks.compactMap(\.mediaOffsetMs).first }
 }
 
 /// The clock stamp beside a speaker name: 11pt `faint`, monospaced digits so a column of

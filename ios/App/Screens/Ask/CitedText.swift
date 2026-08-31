@@ -41,7 +41,11 @@ struct CitationChip: View {
 struct CitedText: View {
     enum Fragment: Hashable {
         case word(AttributedString)
-        case citation(number: Int, trailing: String)
+        /// A word with its citation chips glued on. Two things follow from keeping them in one
+        /// fragment: the chip can never wrap onto the next line away from the phrase it cites,
+        /// and the sentence's punctuation stays on the WORD - "tomorrow.①", the way a footnote
+        /// marker is set - instead of floating a lone period past the chip's rounded box.
+        case cited(word: AttributedString, numbers: [Int])
     }
 
     let fragments: [Fragment]
@@ -70,13 +74,13 @@ struct CitedText: View {
                 switch fragment {
                 case .word(let word):
                     Text(word).font(font).foregroundStyle(textColor)
-                case .citation(let number, let trailing):
-                    HStack(spacing: 0) {
-                        CitationChip(number: number) {
-                            onCitationTap?(number)
+                case .cited(let word, let numbers):
+                    HStack(spacing: 2) {
+                        if !word.characters.isEmpty {
+                            Text(word).font(font).foregroundStyle(textColor)
                         }
-                        if !trailing.isEmpty {
-                            Text(trailing).font(font).foregroundStyle(textColor)
+                        ForEach(numbers, id: \.self) { number in
+                            CitationChip(number: number) { onCitationTap?(number) }
                         }
                     }
                 }
@@ -86,7 +90,8 @@ struct CitedText: View {
     }
 
     /// Markdown-styles the line, then splits it into flow fragments: whitespace-separated
-    /// words (each carrying its own emphasis) and "[n]" citation markers.
+    /// words (each carrying its own emphasis) and the "[n]" markers, which attach to the word
+    /// they follow along with any punctuation that came after them.
     static func parse(_ text: String, font: Font = AppFont.subBody) -> [Fragment] {
         let styled = InlineMarkdown.attributed(text, font: font)
         let characters = styled.characters
@@ -99,6 +104,35 @@ struct CitedText: View {
             word = AttributedString()
         }
 
+        /// Move the word being built (or the last one finished) under a citation chip.
+        func attach(_ number: Int) {
+            if !word.characters.isEmpty {
+                fragments.append(.cited(word: word, numbers: [number]))
+                word = AttributedString()
+                return
+            }
+            if case .cited(let previous, let numbers) = fragments.last {
+                fragments[fragments.count - 1] = .cited(word: previous, numbers: numbers + [number])
+                return
+            }
+            if case .word(let previous) = fragments.last {
+                fragments[fragments.count - 1] = .cited(word: previous, numbers: [number])
+                return
+            }
+            fragments.append(.cited(word: AttributedString(), numbers: [number]))
+        }
+
+        /// "[1]." reads as "tomorrow.①": the period belongs to the sentence, not after the chip.
+        func appendTrailing(_ punctuation: AttributedString) {
+            guard !punctuation.characters.isEmpty else { return }
+            if case .cited(var previous, let numbers) = fragments.last {
+                previous.append(punctuation)
+                fragments[fragments.count - 1] = .cited(word: previous, numbers: numbers)
+            } else {
+                word.append(punctuation)
+            }
+        }
+
         var index = characters.startIndex
         while index < characters.endIndex {
             let character = characters[index]
@@ -108,14 +142,12 @@ struct CitedText: View {
                 continue
             }
             if character == "[", let citation = citation(in: characters, at: index) {
-                flushWord()
-                var trailing = ""
+                attach(citation.number)
                 var after = citation.end
                 while after < characters.endIndex, trailingPunctuation.contains(characters[after]) {
-                    trailing.append(characters[after])
                     after = characters.index(after: after)
                 }
-                fragments.append(.citation(number: citation.number, trailing: trailing))
+                appendTrailing(AttributedString(styled[citation.end..<after]))
                 index = after
                 continue
             }

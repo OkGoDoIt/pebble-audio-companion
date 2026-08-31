@@ -118,6 +118,13 @@ struct TranscriptTurn: Equatable, Identifiable {
     /// no clock stamp — its words are still being revised, so a final-looking time would be
     /// a lie.
     var isInProgress: Bool = false
+    /// The member segment this turn came from. AI citations name segments, so this is what
+    /// marks the cited run of the transcript.
+    var segmentId: String = ""
+    /// Where this turn sits on the player's scrubber: MEDIA time across the whole
+    /// conversation (stored audio only, gaps excluded), not wall time. Nil when the segment
+    /// has no stored audio to play.
+    var mediaOffsetMs: Int64?
 }
 
 /// A non-speech row: calm known-quiet, or genuine loss. Never conflated.
@@ -126,6 +133,9 @@ struct TranscriptMarker: Equatable, Identifiable {
     /// e.g. "quiet for 40 sec" / "audio interrupted for 12 sec (…)".
     var text: String
     var startedAt: Date?
+    /// The member segment the break happened in, so a marker inside a cited stretch stays
+    /// inside its highlight instead of cutting the band in two.
+    var segmentId: String = ""
 }
 
 enum TranscriptItem: Equatable, Identifiable {
@@ -275,6 +285,22 @@ struct NoteTemplate: Equatable, Identifiable {
     ]
 }
 
+/// Where a citation points. Citations name SEGMENTS, screens navigate by CONVERSATION, and the
+/// player counts MEDIA time — resolving one citation is the hop between all three. Without it a
+/// chip navigated to `conversation/<segmentId>`, which is not a conversation id, so every tap
+/// landed on "Conversation not found".
+struct CitationTarget: Equatable {
+    var conversationId: String
+    var conversationTitle: String
+    /// The cited member: the transcript marks its turns and scrolls to the first of them.
+    var segmentId: String
+    /// Where that member starts on the conversation's scrubber. Nil when it has no stored
+    /// audio, which is also when there is nothing to play.
+    var mediaOffsetMs: Int64?
+    /// Wall-clock start of the cited moment ("9:36 PM").
+    var startedAt: Date?
+}
+
 // MARK: - Data-source protocols
 
 @MainActor
@@ -317,6 +343,9 @@ protocol AskDataSource: AnyObject {
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?
+    /// The conversation, moment and scrubber position a citation names. Nil once the cited
+    /// segment is gone (retention), which is when a chip must not navigate at all.
+    func citationTarget(citedId: String) async -> CitationTarget?
 }
 
 @MainActor
