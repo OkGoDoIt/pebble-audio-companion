@@ -165,6 +165,17 @@ final class AppSettings {
         }
     }
 
+    /// The Q9 loss alert, OFF by default and opt-in. An unasked-for notification the moment a
+    /// Bluetooth blip drops a few seconds is noise on a device you wear all day; the coverage
+    /// strip already tells the story calmly, in place, whenever you look. Turning this on is
+    /// what asks for notification permission — the app never prompts on its own.
+    var lossAlertsEnabled: Bool {
+        didSet {
+            defaults.set(lossAlertsEnabled, forKey: Keys.lossAlerts)
+            mirrorToRuntime()
+        }
+    }
+
     /// Whether a Q14 transcription choice has been made. "Later" leaves this false, which
     /// drives the "Transcripts are off" status family until a mode is configured (6.7).
     var transcriptsConfigured: Bool {
@@ -227,6 +238,8 @@ final class AppSettings {
         retentionDays = AppSettings.retentionOptions.contains(storedRetention)
             ? storedRetention : 30
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
+        // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
+        lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
 
         #if DEBUG
         // Simulator-automation staging: relaunching with these args re-enters/skips the
@@ -273,6 +286,8 @@ final class AppSettings {
         let storedRetention = defaults.integer(forKey: Keys.retentionDays)
         if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
+        // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
+        lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
         // Onboarding LAST: it is the one key that changes what the user sees immediately, and a
         // migrated "yes" must never be undone by a half-applied reload.
         if defaults.bool(forKey: Keys.onboardingComplete) { onboardingComplete = true }
@@ -289,6 +304,7 @@ final class AppSettings {
         static let onboardingComplete = "onboarding_complete"
         static let retentionDays = "retention_days"
         static let transcriptsConfigured = "transcripts_configured"
+        static let lossAlerts = "loss_alerts_enabled"
     }
 }
 
