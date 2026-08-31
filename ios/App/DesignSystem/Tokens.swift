@@ -11,17 +11,23 @@ enum Tokens {
     /// Captured / awaiting transcription (light violet).
     static let captured = Color(light: 0xB9B9EE, dark: 0x55558A)
     static let tintOnDark = Color(hex: 0x9F9FF0)
-    static let tintFill10 = Tokens.tint.opacity(0.10)
-    static let tintFill12 = Tokens.tint.opacity(0.12)
-    static let tintFill18 = Tokens.tint.opacity(0.18)
-    static let tintBorder = Tokens.tint.opacity(0.4)
+    /// Foreground on a filled-tint surface (filled buttons, selected chips, play button).
+    static let onTint = Color(hex: 0xFFFFFF)
+    // Tinted fills are alpha over the *card*, so dark mode needs more alpha to survive a
+    // near-black ground — at the light alphas the chips and pills vanished (M10).
+    static let tintFill10 = Tokens.tint.adaptiveOpacity(light: 0.10, dark: 0.24)
+    static let tintFill12 = Tokens.tint.adaptiveOpacity(light: 0.12, dark: 0.26)
+    static let tintFill18 = Tokens.tint.adaptiveOpacity(light: 0.18, dark: 0.34)
+    static let tintBorder = Tokens.tint.adaptiveOpacity(light: 0.4, dark: 0.55)
+    /// 45° stripe ink for the paused coverage pattern (Part 6.2).
+    static let pausedStripe = Tokens.tint.adaptiveOpacity(light: 0.20, dark: 0.55)
 
     // ── Status ──────────────────────────────────────────────────────────────
     static let good = Color(light: 0x34C759, dark: 0x30D158)
-    static let goodFill = Tokens.good.opacity(0.12)
+    static let goodFill = Tokens.good.adaptiveOpacity(light: 0.12, dark: 0.22)
     /// Missing-data encoding — reserved for data surfaces (waveform, coverage, scrubber).
     static let missing = Color(light: 0xFF9500, dark: 0xFF9F0A)
-    static let missingHair = Tokens.missing.opacity(0.35)
+    static let missingHair = Tokens.missing.adaptiveOpacity(light: 0.35, dark: 0.5)
     /// Attention states (paused, reconnecting, stock firmware, transcription failed).
     static let attention = Color(light: 0xFF9F0A, dark: 0xFFB340)
     static let destructive = Color(light: 0xFF3B30, dark: 0xFF453A)
@@ -49,6 +55,15 @@ enum Tokens {
     static let toggleOff = Color(light: 0xE9E9EA, dark: 0x39393D)
     static let speakerOther = Color(light: 0x2E9E9E, dark: 0x40C8C8)
     static let scrim = Color(light: 0x8E8E96, dark: 0x1C1C1E).opacity(0.5)
+    // ── Illustration-only tones ─────────────────────────────────────────────
+    // The onboarding consent mock depicts the watch itself, so its strap/bezel/screen stay
+    // fixed in both appearances — the point is "this is what your watch will show".
+    static let watchStrap = Color(hex: 0xD9D9DE)
+    static let watchBezel = Color(hex: 0x1C1C1E)
+    static let watchScreen = Color(hex: 0xFFFFFF)
+    static let watchScreenMuted = Color(hex: 0x8A8A8E)
+    /// Soft-tint decoration (the watch↔phone connector dashes) — this *is* UI, so it adapts.
+    static let tintSoft = Color(light: 0xC9C9F0, dark: 0x4A4A85)
     static let ground = Color(light: 0xF2F2F7, dark: 0x000000)
     static let surface = Color(light: 0xFFFFFF, dark: 0x1C1C1E)
     static let barBg = Color(light: 0xF9F9F9, dark: 0x161616)
@@ -136,6 +151,16 @@ extension Color {
                 blue: CGFloat(hex & 0xFF) / 255,
                 alpha: 1
             )
+        })
+    }
+
+    /// The same base hue at a different alpha per appearance. Alpha fills are composited over
+    /// the card, so a light-mode alpha that reads clearly on white disappears on near-black.
+    func adaptiveOpacity(light: Double, dark: Double) -> Color {
+        let base = UIColor(self)
+        return Color(uiColor: UIColor { traits in
+            base.resolvedColor(with: traits)
+                .withAlphaComponent(traits.userInterfaceStyle == .dark ? dark : light)
         })
     }
 
