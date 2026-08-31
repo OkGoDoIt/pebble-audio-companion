@@ -469,7 +469,9 @@ final class AppComposition {
                 store: recapStore,
                 run: { request in try await aiRouter.run(request) },
                 prompt: AiPromptTemplates.dailySummary,
-                onRecapSaved: makeRecapDonationHook(donator: donator, clock: clock)
+                onRecapSaved: makeRecapDonationHook(
+                    donator: donator, clock: clock, log: AppRuntimeLog.runtimeLog
+                )
             ),
             store: recapStore
         )

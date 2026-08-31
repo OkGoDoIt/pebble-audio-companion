@@ -378,6 +378,17 @@ protocol PeopleDataSource: AnyObject {
     func people() async throws -> [Person]
     /// Assign a diarization label to a person by name (find-or-create), per plan 6.3.
     func assign(conversationId: String, label: String, personName: String) async throws
+    /// Who this label is currently assigned to in this conversation, if anyone. Distinguishes
+    /// "named" from "the diarizer's own Speaker 2", which the displayed name cannot.
+    func assignedPerson(conversationId: String, label: String) async throws -> Person?
+    /// Global rename (Q17) — every conversation assigned to this person follows, and renaming
+    /// onto an existing name merges the two, so a typo can be corrected rather than duplicated.
+    func renamePerson(id: String, to newName: String) async throws
+    /// Clears this label's assignment. The person stays in the registry; the turns go back to
+    /// the unresolved "Speaker N" they came from.
+    func unassign(conversationId: String, label: String) async throws
+    /// Removes the person everywhere, along with every speaker assignment that named them.
+    func deletePerson(id: String) async throws
 }
 
 // MARK: - The holder

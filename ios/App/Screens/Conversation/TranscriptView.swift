@@ -322,6 +322,17 @@ struct TranscriptStamp: View {
 /// Offers the known-people list first, then free text. The choice applies to every turn
 /// carrying the same diarization label in this conversation; renames of a person apply
 /// everywhere via the people registry.
+///
+/// Naming somebody used to be a one-way door. The sheet could only assign, so a typo ("Alx")
+/// created a second person that could never be renamed, merged or removed, and picking the
+/// wrong speaker could only be papered over by picking another one. The registry has always
+/// supported rename / delete / unassign; this is where they became reachable:
+///
+/// - swipe a person (or long-press) to **Rename** — one edit, and every conversation assigned
+///   to them follows (Q17). Renaming onto a name that already exists merges the two.
+/// - swipe to **Delete Person** — removes them from the registry and from every conversation.
+/// - **Remove name**, shown only while this speaker is actually assigned, clears just this
+///   conversation's label and leaves the person alone.
 struct SpeakerRenameSheet: View {
     let conversationId: String
     let turn: TranscriptTurn
@@ -329,7 +340,14 @@ struct SpeakerRenameSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var people: [Person] = []
+    /// Who this label is assigned to right now — the source of the checkmark and of whether
+    /// "Remove name" is offered at all. Matching on the displayed name cannot tell an assigned
+    /// "Sam" from a diarizer label that happens to read the same.
+    @State private var assigned: Person?
     @State private var freeText = ""
+    @State private var renaming: Person?
+    @State private var renameDraft = ""
+    @State private var deleting: Person?
 
     var body: some View {
         NavigationStack {
@@ -337,28 +355,17 @@ struct SpeakerRenameSheet: View {
                 if !people.isEmpty {
                     Section {
                         ForEach(people, id: \.id) { person in
-                            Button {
-                                assign(person.name)
-                            } label: {
-                                HStack {
-                                    Text(person.name)
-                                        .font(AppFont.callout)
-                                        .foregroundStyle(Tokens.label)
-                                    Spacer()
-                                    if person.name == turn.name {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundStyle(Tokens.tint)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
+                            personRow(person)
                         }
+                    } header: {
+                        Text(Copy.Speaker.peopleHeader)
+                    } footer: {
+                        Text(Copy.Speaker.peopleFooter)
                     }
                 }
                 Section {
                     HStack {
-                        TextField("Name", text: $freeText)
+                        TextField(Copy.Speaker.namePlaceholder, text: $freeText)
                             .font(AppFont.callout)
                             .submitLabel(.done)
                             .onSubmit { assignFreeText() }
@@ -367,6 +374,14 @@ struct SpeakerRenameSheet: View {
                             .foregroundStyle(Tokens.tint)
                             .buttonStyle(.plain)
                             .disabled(freeText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                if let assigned {
+                    Section {
+                        Button(Copy.Speaker.removeName, role: .destructive) { unassign() }
+                            .font(AppFont.callout)
+                    } footer: {
+                        Text(Copy.Speaker.removeNameFooter(assigned.name))
                     }
                 }
             }
@@ -378,10 +393,79 @@ struct SpeakerRenameSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium])
-        .task {
-            people = (try? await AskLibraryDataSources.current.people.people()) ?? []
+        .presentationDetents([.medium, .large])
+        .task { await reload() }
+        .alert(Copy.Speaker.renamePerson, isPresented: renamingBinding) {
+            TextField(Copy.Speaker.namePlaceholder, text: $renameDraft)
+            Button(Copy.Common.cancel, role: .cancel) { renaming = nil }
+            Button(Copy.Common.save) { commitRename() }
+        } message: {
+            Text(Copy.Speaker.renamePersonMessage)
         }
+        .confirmationDialog(
+            Copy.Speaker.deletePersonTitle(deleting?.name ?? ""),
+            isPresented: deletingBinding, titleVisibility: .visible
+        ) {
+            Button(Copy.Speaker.deletePerson, role: .destructive) { commitDelete() }
+        } message: {
+            Text(Copy.Speaker.deletePersonMessage)
+        }
+    }
+
+    private func personRow(_ person: Person) -> some View {
+        Button {
+            assign(person.name)
+        } label: {
+            HStack {
+                Text(person.name)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                Spacer()
+                if person.id == assigned?.id {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Tokens.tint)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                deleting = person
+            } label: {
+                Label(Copy.Speaker.deletePerson, systemImage: "trash")
+            }
+            Button {
+                beginRename(person)
+            } label: {
+                Label(Copy.Speaker.rename, systemImage: "pencil")
+            }
+            .tint(Tokens.tint)
+        }
+        // The same two actions without the swipe: a destructive-and-global edit should not be
+        // discoverable only by guessing that the row swipes.
+        .contextMenu {
+            Button(Copy.Speaker.rename) { beginRename(person) }
+            Button(Copy.Speaker.deletePerson, role: .destructive) { deleting = person }
+        }
+    }
+
+    // MARK: - Actions
+
+    private var renamingBinding: Binding<Bool> {
+        Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+    }
+
+    private var deletingBinding: Binding<Bool> {
+        Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+    }
+
+    private func reload() async {
+        let people = AskLibraryDataSources.current.people
+        self.people = (try? await people.people()) ?? []
+        assigned = try? await people.assignedPerson(
+            conversationId: conversationId, label: turn.speakerLabel)
     }
 
     private func assignFreeText() {
@@ -394,6 +478,45 @@ struct SpeakerRenameSheet: View {
         Task {
             try? await AskLibraryDataSources.current.people.assign(
                 conversationId: conversationId, label: turn.speakerLabel, personName: name)
+            onDone()
+            dismiss()
+        }
+    }
+
+    private func beginRename(_ person: Person) {
+        renameDraft = person.name
+        renaming = person
+    }
+
+    /// Stays open afterwards: a rename is a registry edit, not an answer to "who is this
+    /// speaker?", so the sheet reloads and the user can still pick somebody.
+    private func commitRename() {
+        guard let person = renaming else { return }
+        let name = renameDraft.trimmingCharacters(in: .whitespaces)
+        renaming = nil
+        guard !name.isEmpty, name != person.name else { return }
+        Task {
+            try? await AskLibraryDataSources.current.people.renamePerson(id: person.id, to: name)
+            await reload()
+            onDone()
+        }
+    }
+
+    private func commitDelete() {
+        guard let person = deleting else { return }
+        deleting = nil
+        Haptics.destructiveConfirmed()
+        Task {
+            try? await AskLibraryDataSources.current.people.deletePerson(id: person.id)
+            await reload()
+            onDone()
+        }
+    }
+
+    private func unassign() {
+        Task {
+            try? await AskLibraryDataSources.current.people.unassign(
+                conversationId: conversationId, label: turn.speakerLabel)
             onDone()
             dismiss()
         }

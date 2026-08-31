@@ -62,10 +62,14 @@ public actor RecapService {
 }
 
 /// Builds the recap engine's donation hook so a saved recap reaches Spotlight/FTS immediately.
+///
+/// `log` is NOT defaulted. A donation that fails is otherwise invisible from every angle: the
+/// recap exists in the app, never appears in search or Spotlight, and Detailed Logs has no line
+/// about it — the same silent-default shape that hid four other failures in this layer.
 public func makeRecapDonationHook(
     donator: SpotlightDonator?,
     clock: RuntimeClock,
-    log: RuntimeLog = .silent
+    log: RuntimeLog
 ) -> @Sendable (DailyRecap) async -> Void {
     { recap in
         guard let donator else { return }

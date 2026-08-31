@@ -44,7 +44,6 @@ public actor CoverageSnapshotService {
     /// recorded — the follow-up half is still wanted, the live half would only be discarded.
     private let liveContextOf: (@Sendable (Bool) async -> CoverageLiveContext)?
     private let timeZoneID: @Sendable () -> String
-    private let log: RuntimeLog
 
     /// The recent-activity window the widget draws: the last ten minutes, in 20-second buckets.
     /// Long enough to show whether a conversation is actually alive, short enough that every
@@ -59,8 +58,7 @@ public actor CoverageSnapshotService {
         statusOf: @escaping @Sendable () -> StatusModel,
         pauseJournal: PauseJournal? = nil,
         liveContextOf: (@Sendable (Bool) async -> CoverageLiveContext)? = nil,
-        timeZoneID: @escaping @Sendable () -> String = { TimeZone.current.identifier },
-        log: RuntimeLog = .silent
+        timeZoneID: @escaping @Sendable () -> String = { TimeZone.current.identifier }
     ) {
         self.store = store
         self.writer = writer
@@ -69,7 +67,6 @@ public actor CoverageSnapshotService {
         self.pauseJournal = pauseJournal
         self.liveContextOf = liveContextOf
         self.timeZoneID = timeZoneID
-        self.log = log
     }
 
     /// The heartbeat refresh, rate-limited. Recomputing coverage re-reads the OPEN segment's
