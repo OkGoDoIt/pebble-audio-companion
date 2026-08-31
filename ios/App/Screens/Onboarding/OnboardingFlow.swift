@@ -408,7 +408,8 @@ private struct OnboardingCloudKeyView: View {
         }
     }
 
-    /// "Soniox — transcription", the saved key masked on the right, and a field that replaces it.
+    /// Provider name, what it is for, any saved key (masked, on the right), and a field that
+    /// replaces it.
     private func keyRow(
         _ provider: CloudProvider, role: String, key: Binding<String>
     ) -> some View {

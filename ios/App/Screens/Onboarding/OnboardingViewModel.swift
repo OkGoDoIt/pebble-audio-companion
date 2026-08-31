@@ -55,7 +55,8 @@ struct OnboardingDataSources {
 }
 
 /// Preview/staging double: a beat of searching, a beat of confirm-on-watch, then `nextOutcome`.
-/// The DEBUG staging control scripts each failure branch and can freeze either waiting state.
+/// `freeze` holds either waiting state open for screenshots. Never used in a real launch — the
+/// composition root installs `LiveWatchPairingSource` over it.
 final class MockWatchPairingSource: WatchPairingSource, @unchecked Sendable {
     enum Freeze { case none, searching, confirmOnWatch }
 
@@ -92,8 +93,9 @@ enum TranscriptChoice: CaseIterable {
 
 // MARK: - View model
 
-/// Onboarding state machine (plan 2.1–2.3 + 2.19): connect → confirm-on-watch (with the six
-/// failure branches) → transcripts choice → optional cloud-key hand-off → done.
+/// Onboarding state machine (plan 2.1–2.3 + 2.19): connect → searching → confirm-on-watch (with
+/// the failure branches) → transcripts choice → optional provider-key hand-off → done. Every
+/// step-2 state is the real receiver session's, mapped by `LiveWatchPairingSource`.
 @MainActor
 @Observable
 final class OnboardingViewModel {
