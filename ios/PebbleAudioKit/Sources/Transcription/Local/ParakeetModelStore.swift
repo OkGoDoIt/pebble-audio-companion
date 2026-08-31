@@ -137,6 +137,11 @@ public protocol ParakeetArchiveDownloading: Sendable {
 }
 
 public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
+    /// The one store over the one on-disk model cache. Settings must use this rather than
+    /// constructing its own: a download started on the picker keeps reporting progress after
+    /// the user navigates away and comes back.
+    public static let shared = ParakeetModelStore()
+
     private let location: ParakeetModelLocation
     private let downloader: any ParakeetArchiveDownloading
     private let extractor: any ParakeetArchiveExtracting

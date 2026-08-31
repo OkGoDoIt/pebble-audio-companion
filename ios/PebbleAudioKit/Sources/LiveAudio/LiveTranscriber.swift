@@ -18,15 +18,20 @@ import Transcription
 /// transcript; that is an accepted preview tradeoff. Runs on the runtime's single transcription
 /// loop, so it never races the closed-segment work for a (possibly single-instance) native model.
 ///
-/// Cost note: callers should pass the LOCAL provider (the KMP original took a router restricted
-/// to LocalOnly). Routing the preview through a cloud provider would mean one network call per
-/// chunk (~110 per 15-minute segment) instead of one per closed segment — surprise cost and
-/// audio leaving the device far more often than the user consented to.
+/// Routing: the chunk path goes through the same `TranscriptionModeRouter` as everything else,
+/// so the mode the user picked in Settings actually governs the live preview (the port briefly
+/// took a fixed local provider, which pinned the preview on-device in every mode).
+///
+/// Cost note: this is the FALLBACK live path. When the realtime socket
+/// (`CloudLiveTranscriber`) is delivering text for the open segment the runtime stands this
+/// transcriber down and calls `markCoveredByOtherSource`, so the same audio is never sent to —
+/// and never billed by — two cloud paths at once, and a later takeover resumes at the handoff
+/// instead of re-transcribing from the start of the segment.
 public actor LiveTranscriber {
     private let openSegmentId: @Sendable () -> String?
     private let readMeta: @Sendable (String) -> SegmentMeta?
     private let readFrames: @Sendable (String) -> [FrameRecord]
-    private let provider: TranscriptionProvider
+    private let router: TranscriptionModeRouter
     private let nowMs: @Sendable () -> Int64
     private let decodePcm: @Sendable (SegmentMeta, [FrameRecord]) -> AsyncThrowingStream<Data, Error>
     /// ~8 s of audio at 20 ms frames: short enough to feel live, long enough for context.
@@ -40,12 +45,16 @@ public actor LiveTranscriber {
     public private(set) var previews: [String: LiveTranscriptPreview] = [:]
 
     private var lastFailureAtMs: Int64 = 0
+    /// Frames another live source (the realtime socket) has already covered, per segment. Kept
+    /// out of `previews` on purpose: standing down must not publish an empty preview that could
+    /// out-rank the cloud one on screen.
+    private var coveredFrameCount: [String: Int] = [:]
 
     public init(
         openSegmentId: @escaping @Sendable () -> String?,
         readMeta: @escaping @Sendable (String) -> SegmentMeta?,
         readFrames: @escaping @Sendable (String) -> [FrameRecord],
-        provider: TranscriptionProvider,
+        router: TranscriptionModeRouter,
         nowMs: @escaping @Sendable () -> Int64,
         decodePcm: @escaping @Sendable (SegmentMeta, [FrameRecord]) -> AsyncThrowingStream<Data, Error> =
             LiveTranscriber.defaultDecodePcm,
@@ -57,7 +66,7 @@ public actor LiveTranscriber {
         self.openSegmentId = openSegmentId
         self.readMeta = readMeta
         self.readFrames = readFrames
-        self.provider = provider
+        self.router = router
         self.nowMs = nowMs
         self.decodePcm = decodePcm
         self.minChunkFrames = minChunkFrames
@@ -96,8 +105,27 @@ public actor LiveTranscriber {
     /// True when the open segment has enough new audio for another pass (drives loop cadence).
     public func hasPendingWork() -> Bool {
         guard let segmentId = openSegmentId(), let meta = readMeta(segmentId) else { return false }
-        let done = previews[segmentId]?.transcribedFrameCount ?? 0
+        let done = consumedFrameCount(segmentId)
         return meta.frameCount - Int64(done) >= Int64(minChunkFrames)
+    }
+
+    /// Records that another live source — the realtime cloud socket — is already covering the
+    /// open segment's stored audio, without transcribing any of it here.
+    ///
+    /// This is the no-double-transcription seam: while the socket delivers, the runtime calls
+    /// this instead of `processOnce`, so the same audio is never transcribed (or billed) twice.
+    /// If the socket later dies, the chunk path resumes from the handoff point rather than
+    /// re-running the whole segment.
+    public func markCoveredByOtherSource() {
+        guard let segmentId = openSegmentId(), let meta = readMeta(segmentId) else { return }
+        let covered = max(consumedFrameCount(segmentId), Int(meta.frameCount))
+        coveredFrameCount[segmentId] = covered
+    }
+
+    /// Frames this transcriber will not look at again: what it transcribed itself, or what
+    /// another live source covered while it stood down.
+    private func consumedFrameCount(_ segmentId: String) -> Int {
+        max(previews[segmentId]?.transcribedFrameCount ?? 0, coveredFrameCount[segmentId] ?? 0)
     }
 
     /// Transcribes at most one new chunk of the open segment. Returns true when the preview
@@ -107,18 +135,21 @@ public actor LiveTranscriber {
         if nowMs() - lastFailureAtMs < failureBackoffMs && lastFailureAtMs != 0 { return false }
 
         let existing = previews[segmentId]
-        let done = existing?.transcribedFrameCount ?? 0
+        let done = consumedFrameCount(segmentId)
         if meta.frameCount - Int64(done) < Int64(minChunkFrames) { return false }
-        guard await provider.isAvailable() else { return false }
+        guard await router.isAvailable() else { return false }
 
         let frames = readFrames(segmentId)
         if frames.count - done < minChunkFrames { return false }
         let chunk = Array(frames[done..<min(frames.count, done + maxChunkFrames)])
 
-        let result: TranscriptionResult?
+        let result: RoutedTranscription?
         do {
-            result = try await provider.transcribe(
-                pcmChunks: decodePcm(meta, chunk), sampleRateHz: Int(meta.sampleRateHz))
+            // The router runs the factory once per provider attempt: a fallback must never
+            // receive the half-consumed stream the primary path drained.
+            let decode = decodePcm
+            result = try await router.transcribe(
+                pcmChunks: { decode(meta, chunk) }, sampleRateHz: Int(meta.sampleRateHz))
         } catch is CancellationError {
             throw CancellationError()
         } catch TranscriptionError.noSpeechDetected {
@@ -174,6 +205,10 @@ public actor LiveTranscriber {
             readMeta(segmentId) != nil && !hasFinalTranscript(segmentId)
         }
         if kept.count != previews.count { previews = kept }
+        let openId = openSegmentId()
+        coveredFrameCount = coveredFrameCount.filter { segmentId, _ in
+            segmentId == openId || (readMeta(segmentId) != nil && !hasFinalTranscript(segmentId))
+        }
     }
 
     private func update(_ preview: LiveTranscriptPreview) {

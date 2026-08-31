@@ -273,19 +273,45 @@ final class AppComposition {
         )
         // The kit's live/export/playback seams take SYNCHRONOUS readers (they decode on their
         // own executors), so they read the spool through `files` rather than awaiting the actor.
+        //
+        // The chunk-based preview goes through a router on the SAME mode as everything else, so
+        // "Remote first" is remote here too. It is the fallback path: `LiveAudioService` stands
+        // it down while the realtime socket below is delivering, so a remote mode does not pay
+        // for the same audio twice. Its own router instance (not the durable one) keeps live
+        // failures out of the durable path's cloud-health signal — a chunk boundary is a much
+        // weaker signal than a whole segment.
+        let liveRouter = TranscriptionModeRouter(
+            local: localBatch,
+            remote: batchCloud,
+            mode: { settingsBox.transcriptionMode }
+        )
         let localLive = LiveTranscriber(
             openSegmentId: { openSegment.value },
             readMeta: { files.readMeta($0) },
             readFrames: { files.readFrames($0) },
-            provider: localBatch,
+            router: liveRouter,
             nowMs: nowMs
         )
         self.localLive = localLive
+        // The realtime socket is the PREFERRED live path in any remote mode. Its outcomes reach
+        // cloud health like every other cloud attempt — without this a live socket that never
+        // connects is invisible: the screen quietly shows the on-device fallback and nothing
+        // anywhere says the cloud was even tried.
+        let liveCloudOutcome = cloudOutcomeSink(cloudHealth)
         let cloudLive = CloudLiveTranscriber(
             tap: liveTap,
             provider: streamingCloud,
             enabled: { settingsBox.liveCloudEnabled },
-            nowMs: nowMs
+            nowMs: nowMs,
+            onOutcome: { outcome in
+                switch outcome {
+                case .ok(let detail): liveCloudOutcome(.ok(detail: detail))
+                case .failed(let message): liveCloudOutcome(.failed(message: message))
+                }
+            },
+            logFailure: { label, error in
+                AppRuntimeLog.shared.record("\(label): \(error)")
+            }
         )
         self.cloudLive = cloudLive
         let live = LiveAudioService(
