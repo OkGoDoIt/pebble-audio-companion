@@ -1,9 +1,19 @@
+import CoreSpotlight
 import SwiftUI
 
 @main
 struct PebbleAudioApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var router = AppRouter()
     @State private var settings = AppSettings()
+    /// Widget/Control Center/Siri/Spotlight/notification plumbing (plan 6.8).
+    @State private var nativeSurfaces: NativeSurfaceCoordinator
+
+    init() {
+        let settings = AppSettings()
+        _settings = State(initialValue: settings)
+        _nativeSurfaces = State(initialValue: NativeSurfaceCoordinator(settings: settings))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -26,6 +36,22 @@ struct PebbleAudioApp: App {
                 .tint(Tokens.tint)
                 .onOpenURL { url in
                     if let route = Route.parse(url) { router.navigate(to: route) }
+                }
+                // Widget taps, the Q9 loss notification, Siri, and Spotlight results all end
+                // up here — one navigation path, no per-surface special cases.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    nativeSurfaces.handle(userActivity: activity)
+                }
+                .task {
+                    nativeSurfaces.start { route in router.navigate(to: route) }
+                    await nativeSurfaces.handleForeground()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .active: Task { await nativeSurfaces.handleForeground() }
+                    case .background: nativeSurfaces.handleBackground()
+                    default: break
+                    }
                 }
                 #if DEBUG
                 // Simulator-automation staging: "-route settings/watch" behaves exactly
