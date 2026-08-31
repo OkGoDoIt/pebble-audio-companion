@@ -102,7 +102,7 @@ extension LiveSnapshot {
         return LiveSnapshot(
             startedLine: Copy.Live.startedLine(time: "12:04 PM", elapsed: "48 min"),
             isLive: isLive,
-            items: Array<LiveTranscriptItem>().isEmpty ? [] : [
+            items: [
                 .turn(
                     LiveTurn(
                         id: "t1", speaker: .you("Roger"),
