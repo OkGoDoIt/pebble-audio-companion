@@ -663,13 +663,13 @@ extension LiveWorld: NotesDataSource {
     func notes(conversationId: String) async throws -> [NoteDisplay] {
         let stored = try await composition.notes.list(conversationId: conversationId)
         let title = await self.title(of: conversationId) ?? "Conversation"
-        return stored.map { Self.display($0, conversationTitle: title) }
+        return stored.map { display($0, conversationTitle: title) }
     }
 
     func note(id: String) async throws -> NoteDisplay? {
         guard let stored = try await composition.notes.get(id: id) else { return nil }
         let title = await self.title(of: stored.conversationId) ?? "Conversation"
-        return Self.display(stored, conversationTitle: title)
+        return display(stored, conversationTitle: title)
     }
 
     func templates() async throws -> [NoteTemplate] {
@@ -700,7 +700,7 @@ extension LiveWorld: NotesDataSource {
             createdAtMs: stored.createdAtMs
         )
         let title = await self.title(of: conversationId) ?? "Conversation"
-        return Self.display(stored, conversationTitle: title)
+        return display(stored, conversationTitle: title)
     }
 
     /// One model run over a conversation's transcripts. Split out from `generate` so
@@ -793,7 +793,7 @@ extension LiveWorld: NotesDataSource {
             createdAtMs: stored.createdAtMs
         )
         let title = await self.title(of: existing.conversationId) ?? "Conversation"
-        return Self.display(stored, conversationTitle: title)
+        return display(stored, conversationTitle: title)
     }
 
     func saveEdit(noteId: String, title: String, body: String) async throws {
@@ -831,7 +831,7 @@ extension LiveWorld: NotesDataSource {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func display(_ note: Note, conversationTitle: String) -> NoteDisplay {
+    private func display(_ note: Note, conversationTitle: String) -> NoteDisplay {
         let created = Date(timeIntervalSince1970: Double(note.createdAtMs) / 1000)
         let citations =
             (try? JSONDecoder().decode([AskCitation].self, from: Data(note.citationsJson.utf8)))
@@ -844,9 +844,31 @@ extension LiveWorld: NotesDataSource {
             provenance: "Generated \(TimeFmt.time(created)) · "
                 + "\(AiModels.byId(note.model).displayName) · from this conversation",
             body: note.body,
-            momentsLabel: "",
+            momentsLabel: Self.momentsLabel(
+                citations,
+                startedAt: { [files = composition.files] segmentId in
+                    files.readMeta(segmentId).map {
+                        Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000)
+                    }
+                }),
             citations: citations
         )
+    }
+
+    /// "2 moments · 9:36 PM, 9:51 PM" — the cited segments, in time order.
+    ///
+    /// This was `momentsLabel: ""` at the one live construction while `MockWorld` built the real
+    /// line, so the footer under every saved note was blank on a real phone and populated in
+    /// every artboard. Empty when nothing is cited, or when retention has taken the segments the
+    /// citations name — a moment we can no longer place is not one to invent a time for.
+    static func momentsLabel(
+        _ citations: [AskCitation], startedAt: (String) -> Date?
+    ) -> String {
+        let times = Set(citations.map(\.segmentId))
+            .compactMap(startedAt)
+            .sorted()
+        guard !times.isEmpty else { return "" }
+        return Copy.Ask.moments(times.count, times.map(TimeFmt.time).joined(separator: ", "))
     }
 }
 

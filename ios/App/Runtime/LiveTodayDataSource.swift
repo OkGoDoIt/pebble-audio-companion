@@ -125,6 +125,12 @@ final class LiveTodayDataSource {
         let followUps = (try? await composition.followUps.list()) ?? []
         let recap = try? await composition.recapStore.load(dateKey: dateKey)
 
+        // Live first: the rolling line the live row shows comes out of the live transcript this
+        // builds, so the Today snapshot below has something to put in `snippet` instead of the
+        // hard-coded nil it used to carry.
+        await refreshLive(openSegmentId: openSegmentId, rows: todaySection?.rows ?? [])
+        let liveLine = Self.liveSnippet(liveSnapshotValue)
+
         todaySnapshotValue = TodaySnapshot(
             status: Self.status(composition),
             liveMinute: liveMinute,
@@ -135,9 +141,11 @@ final class LiveTodayDataSource {
                 recap, aiModelName: composition.settings.aiModel, rows: todaySection?.rows ?? []
             ),
             followUps: Self.followUpDisplays(followUps),
-            conversations: (todaySection?.rows ?? []).map(Self.conversationRow)
+            conversations: (todaySection?.rows ?? []).map {
+                Self.conversationRow($0, liveSnippet: liveLine)
+            },
+            recovering: composition.startup.isRecovering
         )
-        await refreshLive(openSegmentId: openSegmentId, rows: todaySection?.rows ?? [])
         publish()
     }
 
@@ -356,7 +364,7 @@ final class LiveTodayDataSource {
     }
 
     /// Open first, then the most recently completed — the card is a to-do list, not a log.
-    private static func followUpDisplays(_ items: [FollowUp]) -> [FollowUpDisplay] {
+    static func followUpDisplays(_ items: [FollowUp]) -> [FollowUpDisplay] {
         items
             .sorted { a, b in
                 if a.done != b.done { return !a.done }
@@ -366,7 +374,15 @@ final class LiveTodayDataSource {
             .map { FollowUpDisplay(id: $0.id, text: $0.text, done: $0.done) }
     }
 
-    private static func conversationRow(_ row: ConversationListRow) -> ConversationRowDisplay {
+    /// One Today row. `liveSnippet` is the rolling line for the conversation being recorded
+    /// (Q6) — it belongs to the LIVE row and to no other, so a finished row never carries one.
+    ///
+    /// This used to pass `snippet: nil` unconditionally while `PreviewTodayData` supplied the
+    /// line, so the calm rolling preview existed in every artboard and in no build: the live
+    /// row on a real phone showed a title and a duration and nothing of what was being said.
+    static func conversationRow(
+        _ row: ConversationListRow, liveSnippet: String? = nil
+    ) -> ConversationRowDisplay {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
         var meta = "\(TimeFmt.time(start)) · \(Formatting.duration(row.durationMs))"
         if row.isLive { meta += " so far" }
@@ -374,9 +390,23 @@ final class LiveTodayDataSource {
             id: row.id,
             title: row.title ?? (row.isLive ? "Recording now" : "Conversation"),
             meta: meta,
-            snippet: nil,
+            snippet: row.isLive ? liveSnippet : nil,
             isLive: row.isLive
         )
+    }
+
+    /// The newest thing actually said, quoted for the Today row: the last transcript turn of
+    /// the live conversation, trimmed to its final sentence. Nil while nothing has been
+    /// recognised yet — an empty quote would be a decoration, not information.
+    static func liveSnippet(_ live: LiveSnapshot) -> String? {
+        guard live.isLive else { return nil }
+        let texts = live.items.compactMap { item -> String? in
+            guard case .turn(let turn) = item else { return nil }
+            let text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+        guard let line = AppComposition.lastLine(of: texts, limit: 120) else { return nil }
+        return "“…\(line)”"
     }
 
     /// The rolling live transcript, derived by the same `transcriptTimelineItems` the finished
