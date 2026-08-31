@@ -109,6 +109,7 @@ struct TintActionRow<Accessory: View>: View {
                 Text(title)
                     .font(AppFont.callout)
                     .foregroundStyle(Tokens.tint)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 10)
                 accessory
             }
@@ -148,6 +149,7 @@ struct ChoiceScreen<Value: Hashable>: View {
                             Text(option.label)
                                 .font(AppFont.callout)
                                 .foregroundStyle(Tokens.label)
+                                .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 10)
                             if option.value == selection {
                                 Image(systemName: "checkmark")

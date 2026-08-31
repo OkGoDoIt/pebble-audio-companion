@@ -116,15 +116,21 @@ struct SettingsWatchScreen: View {
     private func findWatch() {
         guard findState != .connecting else { return }
         findState = .connecting
+        watch.findWatch()
         Task {
-            try? await Task.sleep(for: .seconds(2))
-            findState = .connected
+            // Give the link a moment, then report what actually happened rather than a
+            // decorative "connected".
+            try? await Task.sleep(for: .seconds(6))
+            findState = watch.isConnected ? .connected : .idle
         }
     }
 
     /// Forgetting the watch drops the binding: capture goes off and the app returns to
     /// pairing (the onboarding gate reopens).
     private func forgetWatch() {
+        // Drop the binding first: capture off alone would leave the watch still authorized
+        // to this phone.
+        watch.forget()
         settings.captureIntent = .off
         router.settingsPath = []
         settings.onboardingComplete = false

@@ -12,6 +12,8 @@ struct SettingsRow: View {
     var showsChevron: Bool = true
     var action: (() -> Void)? = nil
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         if let action {
             Button(action: action) { rowContent.contentShape(Rectangle()) }
@@ -21,30 +23,64 @@ struct SettingsRow: View {
         }
     }
 
+    @ViewBuilder
     private var rowContent: some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(AppFont.callout)
-                .foregroundStyle(Tokens.label)
-            Spacer(minLength: 10)
-            if let value {
-                // One-line values per the artboards ("30 days · 383 recordings" never
-                // wraps); scale slightly before truncating.
-                Text(value)
-                    .font(AppFont.subBody)
-                    .foregroundStyle(valueColor)
-                    .multilineTextAlignment(.trailing)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Tokens.chevron)
-                    .accessibilityHidden(true)
+        Group {
+            if typeSize.isAccessibilitySize {
+                // At accessibility sizes a side-by-side row squeezes the title into
+                // hyphenated fragments and truncates the value. Stack instead, and let
+                // both halves wrap in full (M10).
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        titleText
+                        Spacer(minLength: 10)
+                        chevron
+                    }
+                    valueText(alignment: .leading, wraps: true)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    titleText
+                    Spacer(minLength: 10)
+                    valueText(alignment: .trailing, wraps: false)
+                    chevron
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(AppFont.callout)
+            .foregroundStyle(Tokens.label)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func valueText(alignment: TextAlignment, wraps: Bool) -> some View {
+        if let value {
+            // One-line values at the default sizes per the artboards ("30 days · 383
+            // recordings" never wraps); scale slightly before truncating.
+            Text(value)
+                .font(AppFont.subBody)
+                .foregroundStyle(valueColor)
+                .multilineTextAlignment(alignment)
+                .lineLimit(wraps ? nil : 1)
+                .minimumScaleFactor(wraps ? 1 : 0.8)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var chevron: some View {
+        if showsChevron {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Tokens.chevron)
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -61,6 +97,7 @@ struct DestructiveRow: View {
             Text(title)
                 .font(AppFont.callout)
                 .foregroundStyle(Tokens.destructive)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
