@@ -413,7 +413,14 @@ final class AppComposition {
         )
         let startup = StartupSequencer(
             steps: StartupSteps(
-                runLegacyImportIfNeeded: { try await importRunner.runIfNeeded() },
+                runLegacyImportIfNeeded: {
+                    let imported = try await importRunner.runIfNeeded()
+                    // The importer writes the migrated preferences into the App Group AFTER
+                    // `AppSettings` was constructed. Without this re-read, a migrated user who
+                    // finished onboarding long ago would be shown the gate for one launch.
+                    await MainActor.run { settings.reloadFromDefaults() }
+                    return imported
+                },
                 recoverStore: { try await store.recover() },
                 recoverQueue: { try await transcription.recoverOnStart() },
                 enforceRetention: { try await retention.enforce() },

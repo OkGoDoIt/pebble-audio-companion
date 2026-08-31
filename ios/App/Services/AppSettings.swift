@@ -245,6 +245,39 @@ final class AppSettings {
         mirrorToRuntime()
     }
 
+    /// Re-reads every key from defaults.
+    ///
+    /// Called once, after `LegacyImporter` runs: the importer writes the migrated preferences
+    /// into the App Group AFTER this object was constructed, and without this a migrated user
+    /// would see the onboarding gate for one launch despite having finished it long ago.
+    func reloadFromDefaults() {
+        if let stored = defaults.string(forKey: Keys.captureIntent).flatMap(
+            CaptureIntent.init(settingValue:)
+        ) {
+            captureIntent = stored
+        }
+        if let stored = defaults.string(forKey: Keys.transcriptionMode).flatMap(
+            TranscriptionMode.init
+        ) {
+            transcriptionMode = stored
+        }
+        if let stored = defaults.string(forKey: Keys.localModel) { localTranscriptionModelId = stored }
+        if let stored = defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) {
+            cloudTranscriptionProvider = stored
+        }
+        if let stored = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) {
+            aiMode = stored
+        }
+        if let stored = defaults.string(forKey: Keys.aiModel) { aiModel = stored }
+        automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
+        let storedRetention = defaults.integer(forKey: Keys.retentionDays)
+        if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
+        transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
+        // Onboarding LAST: it is the one key that changes what the user sees immediately, and a
+        // migrated "yes" must never be undone by a half-applied reload.
+        if defaults.bool(forKey: Keys.onboardingComplete) { onboardingComplete = true }
+    }
+
     private enum Keys {
         static let captureIntent = "capture_intent"
         static let transcriptionMode = "transcription_mode"
