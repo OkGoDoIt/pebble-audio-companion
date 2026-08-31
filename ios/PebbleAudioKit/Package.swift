@@ -40,6 +40,30 @@ let package = Package(
             ]
         ),
         .target(name: "AudioCodec", dependencies: ["CSpeex"], swiftSettings: swiftSettings),
+        // Vendored Cactus (Parakeet on-device speech-to-text), split in two so `swift test`
+        // still builds for macOS, where no Cactus slice exists:
+        //   • `CactusBinary` — libcactus.a + libcurl.a merged per slice into one xcframework
+        //     (SPM cannot link loose `.a` files). Rebuild with
+        //     `ios/Tools/make_cactus_xcframework.sh`. iOS-only, hence the platform condition.
+        //   • `CCactus` — `cactus_ffi.h` + its module map, so `import CCactus` resolves
+        //     everywhere; Swift call sites are `#if os(iOS)`.
+        .binaryTarget(name: "CactusBinary", path: "Frameworks/CactusBinary.xcframework"),
+        .target(
+            name: "CCactus",
+            dependencies: [.target(name: "CactusBinary", condition: .when(platforms: [.iOS]))],
+            linkerSettings: [
+                // Mirrors `cactus/src/nativeInterop/cinterop/cactus.def`'s linkerOpts, plus the
+                // C++ runtime and zlib the static libraries themselves need.
+                .linkedFramework("Foundation", .when(platforms: [.iOS])),
+                .linkedFramework("Accelerate", .when(platforms: [.iOS])),
+                .linkedFramework("CoreML", .when(platforms: [.iOS])),
+                .linkedFramework("Security", .when(platforms: [.iOS])),
+                .linkedFramework("SystemConfiguration", .when(platforms: [.iOS])),
+                .linkedFramework("CFNetwork", .when(platforms: [.iOS])),
+                .linkedLibrary("c++", .when(platforms: [.iOS])),
+                .linkedLibrary("z", .when(platforms: [.iOS])),
+            ]
+        ),
         .target(name: "WireProtocol", swiftSettings: swiftSettings),
         .target(name: "SegmentStore", dependencies: ["WireProtocol"], swiftSettings: swiftSettings),
         .target(name: "Receiver", dependencies: ["WireProtocol", "SegmentStore"], swiftSettings: swiftSettings),
@@ -51,7 +75,7 @@ let package = Package(
         ),
         .target(
             name: "Transcription",
-            dependencies: ["WireProtocol", "SegmentStore", "AudioCodec", "AppDB"],
+            dependencies: ["WireProtocol", "SegmentStore", "AudioCodec", "AppDB", "CCactus"],
             swiftSettings: swiftSettings
         ),
         .target(
