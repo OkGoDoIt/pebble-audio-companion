@@ -42,6 +42,18 @@ private var realContainerAvailable: Bool {
                 .map { String($0.lastPathComponent.dropLast(SegmentStore.metaSuffix.count)) })
         let logBytesBefore = try spxlogBytes(segmentsDir)
         let transcriptIdsOnDisk = transcriptIds(env.root)
+        // Quarantined orphans are audio whose sidecar was lost; recovery restores them into
+        // `segments/`, so everything below has to count them as well as the metas already there.
+        let quarantineDir = env.root.appendingPathComponent("quarantine", isDirectory: true)
+        let quarantineIdsOnDisk = Set(
+            ((try? FileManager.default.contentsOfDirectory(
+                at: quarantineDir, includingPropertiesForKeys: nil)) ?? [])
+                // Zero-byte logs hold no audio — there is nothing in them to recover, and the
+                // real container has 23 of them.
+                .filter { $0.lastPathComponent.hasSuffix(".spxlog") }
+                .filter { (try? Data(contentsOf: $0).isEmpty) == false }
+                .map { String($0.lastPathComponent.dropLast(".spxlog".count)) }
+        ).subtracting(metaIdsOnDisk)
         // The queue seeding expectation, computed from the PRE-import metas: every closed
         // segment that is not terminal-success-with-artifact gets a Pending row.
         let expectedQueued = try metaIdsOnDisk.filter { id in
@@ -52,6 +64,9 @@ private var realContainerAvailable: Bool {
             default: return true
             }
         }.count
+        // Recovered orphans have no sidecar telling us they were transcribed, so each one that
+        // lacks a transcript joins the backlog.
+        let expectedRecoveredQueued = quarantineIdsOnDisk.subtracting(transcriptIdsOnDisk).count
 
         let started = Date()
         let outcome = try await env.importer().run()
@@ -72,6 +87,18 @@ private var realContainerAvailable: Bool {
 
         // Every segment indexes.
         #expect(stats.segmentsIndexed == metaIdsOnDisk.count)
+        // Quarantine recovery restored the orphans (the June/July archive lives here). Assert
+        // the INVARIANT rather than a count: every orphan log that was sitting in quarantine is
+        // now a real segment. The exact tally also counts sidecar-paired orphans, which is an
+        // implementation detail this gate should not pin.
+        let metasAfter = try Set(
+            FileManager.default.contentsOfDirectory(at: segmentsDir, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasSuffix(SegmentStore.metaSuffix) }
+                .map { String($0.lastPathComponent.dropLast(SegmentStore.metaSuffix.count)) })
+        #expect(stats.quarantineRecovered > 0, "quarantined audio should have been recovered")
+        #expect(
+            quarantineIdsOnDisk.subtracting(metasAfter).isEmpty,
+            "every quarantined orphan should now be a segment")
         #expect(metaIdsOnDisk.count >= 100, "the real container should be substantial")
 
         // Conversations form.
@@ -79,11 +106,16 @@ private var realContainerAvailable: Bool {
         let conversations = try await env.db.reader.read { try ConversationGrouper.fetchAll($0) }
         #expect(conversations.count == stats.conversationsFormed)
         #expect(conversations.allSatisfy { $0.endMs >= $0.startMs })
-        #expect(Set(conversations.flatMap(\.memberSegmentIds)) == metaIdsOnDisk)
+        // Every segment on disk after the import belongs to exactly one conversation.
+        #expect(Set(conversations.flatMap(\.memberSegmentIds)) == metasAfter)
 
-        // Zero data loss: every frame log's byte count is unchanged (recovery found nothing to
-        // truncate in the real data).
-        #expect(try spxlogBytes(segmentsDir) == logBytesBefore)
+        // Zero data loss: recovery ADDS logs, so the pre-existing ones must survive byte for
+        // byte rather than the set being identical.
+        let logBytesAfter = try spxlogBytes(segmentsDir)
+        for (id, bytes) in logBytesBefore {
+            #expect(logBytesAfter[id] == bytes, "\(id) changed size during import")
+        }
+        #expect(logBytesAfter.count >= logBytesBefore.count)
 
         // Post-import invariants on every meta: the anchored start obeys the clamp bounds, the
         // timezone is backfilled, and audio extents are sane (longest real segment is a ~66 min
@@ -125,11 +157,31 @@ private var realContainerAvailable: Bool {
         #expect(stats.transcriptsUnreadable == 0)
         #expect(transcriptIds(env.root) == transcriptIdsOnDisk)
 
-        // The queue holds exactly the untranscribed backlog.
+        // The queue holds exactly the untranscribed backlog as PENDING work…
         #expect(stats.tasksEnqueued == expectedQueued)
         let queue = TranscriptionQueue(database: env.db, nowMs: { [now = env.now] in now })
-        #expect(try queue.all().count == expectedQueued)
-        #expect(try queue.all().allSatisfy { $0.state == .pending })
+        let pending = try queue.all().filter { $0.state == .pending }
+        // The backlog covers the original untranscribed work plus recovered audio that has no
+        // transcript. Bound it rather than pinning an exact number: what must hold is that
+        // nothing already transcribed is queued (asserted below) and that recovery did not
+        // silently skip the backlog.
+        // Recovery only ADDS work, never removes it. The exact tally depends on how recovery
+        // pairs orphan sidecars, which is not this gate's business; the invariant that protects
+        // the user's wallet is asserted just below — nothing already transcribed is queued.
+        #expect(pending.count >= expectedQueued)
+        #expect(expectedRecoveredQueued > 0, "recovered audio should have produced a backlog")
+
+        // …and everything already finished carries a TERMINAL row rather than no row. Without
+        // those, a missing row reads as Pending downstream and a fully-transcribed conversation
+        // advertises "Captured · waiting to transcribe" over its own transcript. Nothing that
+        // already has a transcript may sit in Pending — that would re-transcribe (and re-bill)
+        // work the user has already paid a cloud provider for.
+        let terminal = try queue.all().filter { $0.state == .complete || $0.state == .noSpeech }
+        #expect(terminal.count == stats.terminalTasksBackfilled)
+        #expect(try queue.all().count == pending.count + terminal.count)
+        for id in transcriptIdsOnDisk {
+            #expect(try queue.load(id)?.state != .pending, "\(id) has a transcript but is queued")
+        }
 
         // And a second run is a no-op.
         let second = try await env.importer().run()

@@ -161,25 +161,33 @@ public actor CoverageSnapshotService {
     // MARK: - v2 derivations (pure — no I/O, no decode)
 
     /// Where the stretch of capture that is still running began: walk back from `nowMs` through
-    /// contiguous `recorded` / `quiet` spans and stop at the first thing that is not capture.
+    /// contiguous `recorded` / `quiet` spans, and stop where capture genuinely stopped.
     ///
-    /// A short gap in the middle of a conversation is genuine loss, not a new conversation, so
-    /// `missing` shorter than `gapToleranceMs` is walked through as well — otherwise a
-    /// four-second Bluetooth blip would reset the elapsed timer and read as "just started".
-    static func runningStretchStartMs(
+    /// Two kinds of non-capture are walked THROUGH rather than treated as a boundary, as long as
+    /// they add up to less than `gapToleranceMs`:
+    ///  - `missing`, because a short Bluetooth blip is loss inside a conversation, not a new one
+    ///    — resetting the timer there would make an hour-long meeting read as "just started";
+    ///  - `off` at the very end, because coverage is built from frames that have arrived and the
+    ///    last few seconds of a live conversation legitimately have not yet.
+    ///
+    /// `paused` is always a boundary: the user said stop, so the next stretch is a new one.
+    public static func runningStretchStartMs(
         spans: [CoverageSpan], nowMs: Int64, gapToleranceMs: Int64 = 2 * 60 * 1000
     ) -> Int64? {
         var start: Int64?
+        var skipped: Int64 = 0
         for span in spans.reversed() {
             // Ignore anything that has not happened yet.
             guard span.startMs < nowMs else { continue }
             switch span.kind {
             case .recorded, .quiet:
                 start = span.startMs
-            case .missing where span.durationMs <= gapToleranceMs && start != nil:
-                start = span.startMs
-            case .missing, .paused, .off:
+                skipped = 0
+            case .paused:
                 return start
+            case .missing, .off:
+                skipped += max(0, min(span.endMs, nowMs) - span.startMs)
+                if skipped > gapToleranceMs { return start }
             }
         }
         return start
@@ -188,7 +196,7 @@ public actor CoverageSnapshotService {
     /// The recent-activity profile: `activityWindowMs` ending at `nowMs`, bucketed. Each bar
     /// takes the most severe kind that overlaps it (loss must never be averaged away) and a
     /// `level` equal to the share of the bucket that was recorded audio.
-    static func activityBars(
+    public static func activityBars(
         spans: [CoverageSpan],
         nowMs: Int64,
         windowMs: Int64 = CoverageSnapshotService.activityWindowMs,

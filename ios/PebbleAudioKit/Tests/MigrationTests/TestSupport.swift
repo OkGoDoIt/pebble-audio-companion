@@ -128,6 +128,77 @@ func writeLegacyTranscript(root: URL, segmentId: String, text: String = "hello w
         to: dir.appendingPathComponent("\(segmentId)\(FileTranscriptStore.suffix)"))
 }
 
+/// Writes an ORPHAN frame log into `quarantine/` — audio whose sidecar was lost, exactly what
+/// `SegmentStore.recover()` sweeps aside. `holeAfter` drops `holeFrames` frames partway through
+/// so the recovery's hole detection has something to find.
+@discardableResult
+func writeQuarantinedLog(
+    root: URL,
+    id: String,
+    firstSampleIndex: UInt64 = 0,
+    frameCount: Int = 8,
+    holeAfter: Int? = nil,
+    holeFrames: Int = 0,
+    payloadLen: Int = 25
+) throws -> (data: Data, frames: Int) {
+    let dir = root.appendingPathComponent("quarantine", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let frameSamples: UInt64 = 320
+    let firstSequence = UInt32(firstSampleIndex / frameSamples)
+    var data = Data()
+    var written = 0
+    var index = 0
+    while written < frameCount {
+        if let holeAfter, index == holeAfter { index += holeFrames }
+        let sequence = firstSequence + UInt32(index)
+        let sample = firstSampleIndex + UInt64(index) * frameSamples
+        withUnsafeBytes(of: sequence.littleEndian) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: sample.littleEndian) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: UInt16(payloadLen).littleEndian) { data.append(contentsOf: $0) }
+        data.append(contentsOf: (0..<payloadLen).map { UInt8((Int(sequence) + $0) & 0xFF) })
+        index += 1
+        written += 1
+    }
+    try data.write(to: dir.appendingPathComponent("\(id)\(SegmentStore.logSuffix)"))
+    return (data, written)
+}
+
+func quarantineContents(root: URL) -> Set<String> {
+    let dir = root.appendingPathComponent("quarantine", isDirectory: true)
+    let entries =
+        (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))
+        ?? []
+    return Set(entries.map(\.lastPathComponent))
+}
+
+/// Writes one legacy `ai/outputs/<id>.ai.json` with only the fields the caller cares about, so
+/// the "tolerate absent fields" contract is exercised by omission rather than by nulls.
+func writeLegacyAiOutput(
+    root: URL,
+    outputId: String,
+    promptTemplateId: String?,
+    promptTitle: String? = nil,
+    segmentIds: [String] = [],
+    text: String,
+    providerId: String? = "openai-chat",
+    modelUsed: String? = "gpt-5.6-luna",
+    createdAtMs: Int64? = migrationTestEpochMs
+) throws {
+    let dir =
+        root
+        .appendingPathComponent("ai", isDirectory: true)
+        .appendingPathComponent("outputs", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    var json: [String: Any] = ["outputId": outputId, "text": text, "segmentIds": segmentIds]
+    if let promptTemplateId { json["promptTemplateId"] = promptTemplateId }
+    if let promptTitle { json["promptTitle"] = promptTitle }
+    if let providerId { json["providerId"] = providerId }
+    if let modelUsed { json["modelUsed"] = modelUsed }
+    if let createdAtMs { json["createdAtMs"] = createdAtMs }
+    let data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+    try data.write(to: dir.appendingPathComponent("\(outputId).ai.json"))
+}
+
 func readMetaFile(root: URL, id: String) throws -> SegmentMeta {
     let url =
         root
@@ -159,10 +230,14 @@ struct MigrationTestEnv {
         keychain = MigrationKeychain(service: "dev.audiocompanion.migtest.\(token)")
     }
 
+    /// Where the importer's recovered-audio WAV exports land. Inside the throwaway root, so a
+    /// test run never touches the developer's real Documents folder.
+    var documentsRoot: URL { root.appendingPathComponent("Documents", isDirectory: true) }
+
     func importer(timeZoneID: String = "America/New_York") -> LegacyImporter {
         LegacyImporter(
-            containerRoot: root, database: db, oldDefaults: old, newDefaults: new,
-            keychain: keychain, timeZoneID: timeZoneID, nowMs: { [now] in now })
+            containerRoot: root, database: db, documentsRoot: documentsRoot, oldDefaults: old,
+            newDefaults: new, keychain: keychain, timeZoneID: timeZoneID, nowMs: { [now] in now })
     }
 
     func cleanup() {

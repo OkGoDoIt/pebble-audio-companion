@@ -91,7 +91,10 @@ let package = Package(
         .target(name: "SearchKit", dependencies: ["AppDB"], swiftSettings: swiftSettings),
         .target(
             name: "Migration",
-            dependencies: ["SegmentStore", "AppDB", "Transcription"],
+            // Intelligence: the legacy `ai/outputs` import reuses `parseGroundedAnswer` to
+            // resolve the citations inside historical Ask answers (the same resolution the live
+            // Ask path uses) and `askCitations` to number them.
+            dependencies: ["SegmentStore", "AppDB", "Transcription", "Intelligence"],
             swiftSettings: swiftSettings
         ),
         .target(

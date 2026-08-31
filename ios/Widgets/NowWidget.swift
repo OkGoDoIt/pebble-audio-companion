@@ -87,7 +87,7 @@ struct NowWidgetView: View {
             } else {
                 ActivityBars(bars: bars, height: 26)
             }
-            CaptureControlButton(offersPause: status.offersPause)
+            CaptureControlButton(offersPause: status.offersPause, isOff: status.isOff)
                 .frame(width: 104)
         }
     }

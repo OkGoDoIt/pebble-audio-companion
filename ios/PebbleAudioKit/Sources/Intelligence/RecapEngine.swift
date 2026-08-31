@@ -156,6 +156,7 @@ public actor DailyRecapEngine {
     private let nowMs: @Sendable () -> Int64
     private let intervalMs: Int64
     private let minRefreshIntervalMs: Int64
+    private let maxGenerationsPerRefresh: Int
     private let sleepMs: @Sendable (Int64) async throws -> Void
 
     /// Days whose segment set was fully handled by a previous pass (digest current, or nothing
@@ -184,6 +185,7 @@ public actor DailyRecapEngine {
         },
         intervalMs: Int64 = 15 * 60 * 1000,
         minRefreshIntervalMs: Int64 = 30 * 60 * 1000,
+        maxGenerationsPerRefresh: Int = DailyRecapEngine.defaultMaxGenerationsPerRefresh,
         sleepMs: @escaping @Sendable (Int64) async throws -> Void = { ms in
             try await Task.sleep(nanoseconds: UInt64(max(0, ms)) * 1_000_000)
         }
@@ -198,8 +200,16 @@ public actor DailyRecapEngine {
         self.nowMs = nowMs
         self.intervalMs = intervalMs
         self.minRefreshIntervalMs = minRefreshIntervalMs
+        self.maxGenerationsPerRefresh = maxGenerationsPerRefresh
         self.sleepMs = sleepMs
     }
+
+    /// How many day digests one refresh may GENERATE before yielding. Steady state never hits
+    /// this (only the current day is ever due), but a freshly migrated library is due for every
+    /// day it holds — dozens — and this pass runs inline in the processing pass. Bounding it
+    /// keeps one pass from monopolising the pipeline while the backlog drains newest-day-first
+    /// over the following passes; unfinished days stay unsettled, so nothing is skipped.
+    public static let defaultMaxGenerationsPerRefresh = 4
 
     /// Starts the slow 15-minute loop. Idempotent while running.
     public func start() {
@@ -236,8 +246,12 @@ public actor DailyRecapEngine {
         for meta in segments {
             byDay[dayKey(of: meta), default: []].append(meta)
         }
-        // Newest day first: the current logical day is the user-visible Today recap.
+        // Newest day first: the current logical day is the user-visible Today recap, and a
+        // migration backlog therefore fills in from today backwards.
+        var generated = 0
         for (day, daySegments) in byDay.sorted(by: { $0.key > $1.key }) {
+            if generated >= maxGenerationsPerRefresh { break }
+            try Task.checkCancellation()
             let fingerprint = Set(daySegments.map {
                 SegmentFingerprint(segmentId: $0.segmentId, state: $0.transcriptionState)
             })
@@ -290,6 +304,7 @@ public actor DailyRecapEngine {
                     provider: result.providerId,
                     model: result.modelUsed))
             settledDays[day] = fingerprint
+            generated += 1
             await onRecapSaved(saved)
         }
     }

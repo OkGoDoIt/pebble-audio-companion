@@ -85,15 +85,21 @@ public final class TranscriptionQueue: Sendable {
         .order(Column("createdAtMs").asc, Column.rowID.asc)
 
     /// Adds a Pending task for `segmentId`; no-op when a task already exists.
+    ///
+    /// `createdAtMs` normally stamps itself with the queue clock. It is overridable for backfill
+    /// of audio that is not new: `nextRunnable` runs the NEWEST pending task first, so a
+    /// backfilled task stamped with the age of its own audio drains behind everything the user
+    /// is currently waiting on instead of jumping the queue.
     @discardableResult
-    public func enqueue(_ segmentId: String) throws -> TranscriptionTask {
+    public func enqueue(_ segmentId: String, createdAtMs: Int64? = nil) throws -> TranscriptionTask
+    {
         try database.writer.write { db in
             if let existing = try TranscriptionTask.fetchOne(db, key: segmentId) {
                 return existing
             }
             let task = TranscriptionTask(
                 segmentId: segmentId,
-                createdAtMs: nowMs(),
+                createdAtMs: createdAtMs ?? nowMs(),
                 updatedAtMs: nowMs()
             )
             try task.insert(db)

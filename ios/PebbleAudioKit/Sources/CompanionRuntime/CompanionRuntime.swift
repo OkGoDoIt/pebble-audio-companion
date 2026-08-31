@@ -209,6 +209,24 @@ public actor CompanionRuntime {
         await refreshSnapshot(.pauseChanged)
     }
 
+    /// A capture change asked for from OUTSIDE the app's own screens: Control Center, a widget
+    /// button, Siri, Shortcuts. One entry point, so an external surface can never invent its
+    /// own half of the sequence.
+    ///
+    /// `.active` deliberately routes through `startCapture()` rather than `setCaptureIntent`.
+    /// Setting the intent only tells the SESSION what to want; the session observes the link
+    /// instead of dialling it, so an intent that merely set the preference left the watch
+    /// uncontacted and the toggle looking broken. This is the same fix Today's Start button
+    /// needed, shared rather than re-derived.
+    public func applyExternalCaptureIntent(_ intent: CaptureIntent) async {
+        switch intent {
+        case .active:
+            await startCapture()
+        case .paused, .off:
+            await setCaptureIntent(intent, source: .intent)
+        }
+    }
+
     /// Pause / Resume / Off — the plan-6.1 tri-state, including the pause journal.
     public func setCaptureIntent(_ intent: CaptureIntent, source: PauseSource = .statusCard) async {
         await environment.receiver.applyCaptureIntent(intent, source: source)

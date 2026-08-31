@@ -53,6 +53,17 @@ public struct SegmentMeta: Equatable, Sendable {
     /// callers fall back to the device's current zone per plan 6.4), and nil is omitted on
     /// encode so migration-read files round-trip byte-identically.
     public var recordedTimeZone: String?
+    /// Phone wall clock when this segment's audio was RECOVERED from `quarantine/` by the
+    /// migration importer (nil for ordinary segments). Two consequences, both deliberate:
+    ///  - the retention AGE sweep skips it. Recovered audio is by definition already older
+    ///    than the window that let it be orphaned, so the very next sweep would delete it
+    ///    again and make the recovery pointless. The size cap still applies, and the user can
+    ///    still delete it by hand — only the automatic age rule is waived, and only for the
+    ///    files this recovery restored.
+    ///  - it marks the metadata as RECONSTRUCTED where no sidecar survived: extents come from
+    ///    the frame log, and holes in the sequence space are recorded as explicit
+    ///    `sequence_skip` loss because a lost sidecar cannot prove they were quiet.
+    public var recoveredAtMs: Int64?
 
     public init(
         segmentId: String,
@@ -79,7 +90,8 @@ public struct SegmentMeta: Equatable, Sendable {
         transcriptionState: TranscriptionState = .pending,
         provenance: ProvenanceMeta? = nil,
         dedupeFloorSequence: UInt32? = nil,
-        recordedTimeZone: String? = nil
+        recordedTimeZone: String? = nil,
+        recoveredAtMs: Int64? = nil
     ) {
         self.segmentId = segmentId
         self.streamId = streamId
@@ -106,9 +118,13 @@ public struct SegmentMeta: Equatable, Sendable {
         self.provenance = provenance
         self.dedupeFloorSequence = dedupeFloorSequence
         self.recordedTimeZone = recordedTimeZone
+        self.recoveredAtMs = recoveredAtMs
     }
 
     public var isOpen: Bool { closeReason == nil }
+
+    /// True for audio restored from `quarantine/` by the migration importer.
+    public var isRecovered: Bool { recoveredAtMs != nil }
 
     /// Terminal-success transcription states only. Disabled is deliberately NOT terminal: a
     /// segment that could not be transcribed because no provider was usable becomes eligible
@@ -125,6 +141,7 @@ extension SegmentMeta: Codable {
         case receivedAtMs, firstSequence, lastSequence, firstSampleIndex
         case lastSampleIndexExclusive, frameCount, logBytes, gaps, closeReason, closedAtMs
         case transcriptionState, provenance, dedupeFloorSequence, recordedTimeZone
+        case recoveredAtMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +172,7 @@ extension SegmentMeta: Codable {
         provenance = try c.decodeIfPresent(ProvenanceMeta.self, forKey: .provenance)
         dedupeFloorSequence = try c.decodeIfPresent(UInt32.self, forKey: .dedupeFloorSequence)
         recordedTimeZone = try c.decodeIfPresent(String.self, forKey: .recordedTimeZone)
+        recoveredAtMs = try c.decodeIfPresent(Int64.self, forKey: .recoveredAtMs)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -186,6 +204,7 @@ extension SegmentMeta: Codable {
         try c.encodeIfPresent(provenance, forKey: .provenance)
         try c.encodeIfPresent(dedupeFloorSequence, forKey: .dedupeFloorSequence)
         try c.encodeIfPresent(recordedTimeZone, forKey: .recordedTimeZone)
+        try c.encodeIfPresent(recoveredAtMs, forKey: .recoveredAtMs)
     }
 }
 

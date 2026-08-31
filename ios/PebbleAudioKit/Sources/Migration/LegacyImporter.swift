@@ -1,5 +1,7 @@
 import AppDB
 import Foundation
+import GRDB
+import Intelligence
 import SegmentStore
 import Transcription
 
@@ -18,10 +20,24 @@ import Transcription
 //  - identity + settings: `receiver_id_v1` and both API keys move standard-defaults → Keychain
 //    (deleting the defaults entries), surviving settings copy into the app-group suite.
 //
-// Everything else in the legacy container — `queue/`, `uploads/`, `bodies/`, `quarantine/`,
-// `receiver_state`, and the whole `ai/` tree — is deliberately ignored (Q19: AI artifacts
-// regenerate; the old queue's state is re-derived from the segment metas). A NEW background-
-// URLSession identifier is a runtime concern; nothing session-related is migrated.
+// Marker version 2 adds three more phases, each independently idempotent and each able to run
+// on a container that ALREADY finished the version-1 migration (a v1 marker is upgraded in
+// place — the finished phases stay finished and only the new ones run; see `MigrationState`):
+//
+//  - **quarantine recovery** (phase 4): orphan `.spxlog` files whose sidecar was lost are
+//    restored to `segments/` with reconstructed metadata (`QuarantineRecovery.swift`).
+//  - **terminal queue rows** (phase 5): a segment that arrived already transcribed got no
+//    `transcription_tasks` row at all, and `ConversationQueries.aggregateLifecycle` reads a
+//    missing row as Pending — so every fully-transcribed migrated conversation rendered
+//    "Captured · waiting to transcribe", with a Transcribe now button, above its own finished
+//    transcript. Terminal rows (Complete/NoSpeech, carrying the transcript's own provider and
+//    model) restore the state the runtime would have left behind.
+//  - **`ai/outputs`** (phase 6): past Ask answers and template notes (`LegacyAiOutputs.swift`).
+//
+// Everything else in the legacy container — `queue/`, `uploads/`, `bodies/`, `receiver_state`,
+// and the rest of the `ai/` tree — is deliberately ignored (Q19: AI artifacts regenerate; the
+// old queue's state is re-derived from the segment metas). A NEW background-URLSession
+// identifier is a runtime concern; nothing session-related is migrated.
 // `Documents/PebbleAudioExports` is left untouched.
 
 /// Counters for one import run — persisted into the completion marker so a later launch can
@@ -40,6 +56,37 @@ public struct LegacyImportStats: Codable, Equatable, Sendable {
     public var receiverIdMigrated: Bool = false
     /// Old-defaults keys that were acted on (settings copied, secrets moved to Keychain).
     public var settingsKeysMigrated: [String] = []
+
+    // ── v2 phases ────────────────────────────────────────────────────────────
+    /// Terminal (Complete/NoSpeech) `transcription_tasks` rows written for segments that
+    /// arrived already transcribed, so the Library stops calling them "waiting to transcribe".
+    public var terminalTasksBackfilled: Int = 0
+    /// Orphan `.spxlog` files restored from `quarantine/` to `segments/`.
+    public var quarantineRecovered: Int = 0
+    /// Of those, the ones whose sidecar was quarantined alongside them (real gap records kept).
+    public var quarantineSidecarsRestored: Int = 0
+    /// Recovered segments that already had a durable transcript — never re-transcribed.
+    public var quarantineAlreadyTranscribed: Int = 0
+    /// Recovered segments queued for transcription (behind everything already queued).
+    public var quarantineQueuedForTranscription: Int = 0
+    /// Frames restored, and the audio they represent.
+    public var quarantineFramesRecovered: Int64 = 0
+    public var quarantineAudioMs: Int64 = 0
+    /// Files in `quarantine/` skipped because the name is not a segment id (truncated names
+    /// from interrupted copies, stray files).
+    public var quarantineSkippedMalformed: Int = 0
+    /// Orphan logs that could not be scanned into a single valid record.
+    public var quarantineSkippedUnreadable: Int = 0
+    /// Ask answers and notes imported from `ai/outputs`.
+    public var askEntriesImported: Int = 0
+    public var notesImported: Int = 0
+    public var aiOutputsUnplaceable: Int = 0
+    public var aiOutputCitationsDropped: Int = 0
+    /// Staged multipart upload bodies holding audio for a segment that exists nowhere else,
+    /// written out as WAV under `Documents/PebbleAudioExports/recovered/`.
+    public var uploadBodiesExported: Int = 0
+    public var uploadBodyAudioMs: Int64 = 0
+
     public var elapsedMs: Int64 = 0
 
     public init() {}
@@ -62,16 +109,61 @@ public enum LegacyImportOutcome: Equatable, Sendable {
 /// failure resumes safely. Every phase is independently idempotent, so a stale marker only
 /// means idempotent work is redone — never data loss.
 struct MigrationState: Codable, Equatable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int = MigrationState.currentVersion
     var segmentsDone = false
     var databaseDone = false
     var settingsDone = false
+    /// v2 phases (see the file header). Absent from a v1 marker, hence the lenient decode.
+    var terminalTasksDone = false
+    var quarantineDone = false
+    var aiOutputsDone = false
     var completedAtMs: Int64?
     var stats: LegacyImportStats?
 
-    var isComplete: Bool { segmentsDone && databaseDone && settingsDone }
+    var isComplete: Bool {
+        segmentsDone && databaseDone && settingsDone
+            && terminalTasksDone && quarantineDone && aiOutputsDone
+    }
+
+    /// Brings an older marker up to `currentVersion` WITHOUT discarding the work it records.
+    ///
+    /// This matters concretely: Roger's phone already finished the v1 migration (438 segments,
+    /// 20 conversations, 331 transcripts, both API keys in the Keychain). Resetting to a blank
+    /// state would re-run the segment normalization and the whole database bootstrap on an
+    /// already-migrated container — idempotent, but minutes of pointless work and a stats
+    /// record that lies about what this run did. Carrying the finished flags forward means a
+    /// new phase is exactly that: new work, on a live container, with nothing to wipe.
+    mutating func upgradedToCurrentVersion() {
+        guard version < MigrationState.currentVersion else { return }
+        version = MigrationState.currentVersion
+        // v1 knew nothing about the v2 phases, so they are simply outstanding.
+    }
+
+    // Lenient decode: a v1 marker has no `terminalTasksDone`/`quarantineDone`/`aiOutputsDone`
+    // keys, and synthesized Codable would reject it — which would silently degrade into "no
+    // marker at all" and re-run every phase.
+    private enum CodingKeys: String, CodingKey {
+        case version, segmentsDone, databaseDone, settingsDone
+        case terminalTasksDone, quarantineDone, aiOutputsDone
+        case completedAtMs, stats
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        segmentsDone = try c.decodeIfPresent(Bool.self, forKey: .segmentsDone) ?? false
+        databaseDone = try c.decodeIfPresent(Bool.self, forKey: .databaseDone) ?? false
+        settingsDone = try c.decodeIfPresent(Bool.self, forKey: .settingsDone) ?? false
+        terminalTasksDone = try c.decodeIfPresent(Bool.self, forKey: .terminalTasksDone) ?? false
+        quarantineDone = try c.decodeIfPresent(Bool.self, forKey: .quarantineDone) ?? false
+        aiOutputsDone = try c.decodeIfPresent(Bool.self, forKey: .aiOutputsDone) ?? false
+        completedAtMs = try c.decodeIfPresent(Int64.self, forKey: .completedAtMs)
+        stats = try c.decodeIfPresent(LegacyImportStats.self, forKey: .stats)
+    }
 }
 
 /// The first-launch importer. Safe to call on every launch: the `migration_state.json` marker
@@ -91,6 +183,9 @@ public struct LegacyImporter: @unchecked Sendable {
     public static let pastToleranceMs: Int64 = 60 * 60_000
 
     private let containerRoot: URL
+    /// Where `Documents/PebbleAudioExports` lives. Injected so tests never write into the
+    /// developer's real Documents folder; nil resolves the app's own Documents directory.
+    private let documentsRoot: URL?
     private let database: AppDatabase
     private let oldDefaults: UserDefaults
     private let newDefaults: UserDefaults
@@ -111,6 +206,7 @@ public struct LegacyImporter: @unchecked Sendable {
     public init(
         containerRoot: URL,
         database: AppDatabase,
+        documentsRoot: URL? = nil,
         oldDefaults: UserDefaults = .standard,
         newDefaults: UserDefaults =
             UserDefaults(suiteName: MigratedSettingsKeys.appGroupSuite) ?? .standard,
@@ -120,6 +216,7 @@ public struct LegacyImporter: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.containerRoot = containerRoot
+        self.documentsRoot = documentsRoot
         self.database = database
         self.oldDefaults = oldDefaults
         self.newDefaults = newDefaults
@@ -138,9 +235,7 @@ public struct LegacyImporter: @unchecked Sendable {
             // A newer app already migrated past us; never rewind its work.
             return .alreadyComplete(state.stats ?? LegacyImportStats())
         }
-        if state.version < MigrationState.currentVersion {
-            state = MigrationState()  // future versions re-run the (idempotent) phases
-        }
+        state.upgradedToCurrentVersion()
         if state.isComplete {
             return .alreadyComplete(state.stats ?? LegacyImportStats())
         }
@@ -198,12 +293,77 @@ public struct LegacyImporter: @unchecked Sendable {
             try writeState(state)
         }
 
+        // ── Phase 4 (v2): recover orphan audio from quarantine/ ─────────────
+        if !state.quarantineDone {
+            let recovered = try await recoverQuarantinedAudio(store: store)
+            stats.quarantineRecovered = recovered.recovered
+            stats.quarantineSidecarsRestored = recovered.sidecarsRestored
+            stats.quarantineAlreadyTranscribed = recovered.alreadyTranscribed
+            stats.quarantineQueuedForTranscription = recovered.queued
+            stats.quarantineFramesRecovered = recovered.frames
+            stats.quarantineAudioMs = recovered.audioMs
+            stats.quarantineSkippedMalformed = recovered.skippedMalformed
+            stats.quarantineSkippedUnreadable = recovered.skippedUnreadable
+            let bodies = exportOrphanUploadBodies(store: store)
+            stats.uploadBodiesExported = bodies.exported
+            stats.uploadBodyAudioMs = bodies.audioMs
+            if recovered.recovered > 0 {
+                // The recovered segments have to become conversations before the outputs phase
+                // maps old segment ids onto them.
+                let metas = await store.listSegments()
+                stats.conversationsFormed = try await ConversationGrouper.rebuild(
+                    segments: metas, pauses: [], openSegmentId: nil,
+                    fallbackTimeZoneID: timeZoneID, db: database
+                ).count
+            }
+            state.quarantineDone = true
+            state.stats = stats
+            try writeState(state)
+        }
+
+        // ── Phase 5 (v2): terminal queue rows for already-transcribed audio ──
+        // AFTER quarantine recovery, so a recovered segment that already had a transcript gets
+        // its terminal row in the same run instead of reading as "waiting to transcribe".
+        if !state.terminalTasksDone {
+            stats.terminalTasksBackfilled = try await backfillTerminalTasks(store: store)
+            state.terminalTasksDone = true
+            state.stats = stats
+            try writeState(state)
+        }
+
+        // ── Phase 6 (v2): ai/outputs — the only AI artifacts that never regenerate ──
+        if !state.aiOutputsDone {
+            let outputs = try await importAiOutputs()
+            stats.askEntriesImported = outputs.askImported
+            stats.notesImported = outputs.notesImported
+            stats.aiOutputsUnplaceable = outputs.notesUnplaceable
+            stats.aiOutputCitationsDropped = outputs.citationsDropped
+            state.aiOutputsDone = true
+            state.stats = stats
+            try writeState(state)
+        }
+
         stats.elapsedMs = nowMs() - startedAt
         state.stats = stats
         state.completedAtMs = nowMs()
         try writeState(state)
         log("audio-companion: migration complete — \(stats.segmentsIndexed) segments, "
             + "\(stats.conversationsFormed) conversations, \(stats.tasksEnqueued) tasks queued")
+        if stats.quarantineRecovered > 0 {
+            // Loud on purpose: this is audio the user thought was gone, it is exempt from the
+            // retention age sweep, and most of it still has to be transcribed — which costs
+            // money on a cloud provider. None of that should be a surprise found later.
+            log("audio-companion: migration recovered \(stats.quarantineRecovered) orphan "
+                + "segments from quarantine (\(stats.quarantineAudioMs / 60_000) min of audio); "
+                + "\(stats.quarantineAlreadyTranscribed) already had transcripts, "
+                + "\(stats.quarantineQueuedForTranscription) queued for transcription behind "
+                + "the existing backlog; recovered audio is exempt from the retention age sweep")
+        }
+        if stats.askEntriesImported > 0 || stats.notesImported > 0 {
+            log("audio-companion: migration imported \(stats.askEntriesImported) past Ask "
+                + "answers and \(stats.notesImported) notes from ai/outputs "
+                + "(\(stats.aiOutputCitationsDropped) unresolvable citations dropped)")
+        }
         return .completed(stats)
     }
 
@@ -356,6 +516,440 @@ public struct LegacyImporter: @unchecked Sendable {
             }
         }
         return (requeued, enqueued)
+    }
+
+    // MARK: - Phase 5: terminal queue rows
+
+    /// Writes the `transcription_tasks` row a terminal-success segment would have had if it had
+    /// been transcribed by THIS app instead of arriving already done.
+    ///
+    /// Phase 2 deliberately creates no row for those segments (nothing needs doing), and that
+    /// looked harmless — but the Library reads member state through
+    /// `LEFT JOIN transcription_tasks`, and `aggregateLifecycle` counts a missing row as
+    /// Pending. The result on a migrated library is every finished conversation showing
+    /// "Captured · waiting to transcribe" with a Transcribe now button, forever, above its own
+    /// complete transcript; the "Untranscribed" filter matches everything; and the conversation
+    /// Details pane shows no provider or model. A Complete/NoSpeech row — carrying the
+    /// transcript's own mode/provider/model, so provenance is real and not asserted — is exactly
+    /// the state `TranscriptionProcessor` leaves behind, and costs one insert per segment.
+    ///
+    /// Idempotent: only segments with NO row are touched, so the untranscribed backlog phase 2
+    /// queued is never disturbed.
+    private func backfillTerminalTasks(store: SegmentStore) async throws -> Int {
+        let queue = TranscriptionQueue(database: database, nowMs: nowMs)
+        let transcripts = FileTranscriptStore(root: containerRoot, nowMs: nowMs)
+        var backfilled = 0
+        for meta in await store.listSegments() {
+            guard meta.isFullyTranscribed, try queue.load(meta.segmentId) == nil else { continue }
+            if meta.transcriptionState == .complete {
+                guard let transcript = transcripts.load(meta.segmentId) else {
+                    // Complete but no readable transcript: phase 2 already requeued it.
+                    continue
+                }
+                _ = try queue.enqueue(meta.segmentId)
+                _ = try queue.markComplete(
+                    meta.segmentId,
+                    result: RoutedTranscription(
+                        text: transcript.text,
+                        modeUsed: transcript.modeUsed,
+                        providerId: transcript.providerId,
+                        modelUsed: transcript.modelUsed
+                    ))
+            } else {
+                _ = try queue.enqueue(meta.segmentId)
+                _ = try queue.markNoSpeech(meta.segmentId)
+            }
+            backfilled += 1
+        }
+        return backfilled
+    }
+
+    // MARK: - Phase 4: quarantine recovery
+
+    struct QuarantineRecoveryResult {
+        var recovered = 0
+        var sidecarsRestored = 0
+        var alreadyTranscribed = 0
+        var queued = 0
+        var frames: Int64 = 0
+        var audioMs: Int64 = 0
+        var skippedMalformed = 0
+        var skippedUnreadable = 0
+    }
+
+    /// Restores orphan `.spxlog` files from `quarantine/` into `segments/`.
+    ///
+    /// Order per file is deliberate: the LOG moves first, then its sidecar is written. A crash
+    /// in between leaves an orphan log in `segments/`, which the next `recover()` sweeps back to
+    /// `quarantine/` — the state we started from — so the phase is safe to interrupt and safe to
+    /// re-run. The reverse order would leave a sidecar with no audio, which the store's index
+    /// would happily serve as a segment.
+    ///
+    /// Ids are preserved exactly. They are the key transcripts are filed under, so a segment
+    /// restored under its own id immediately reunites with a transcript that already exists —
+    /// minting fresh ids would orphan that work and re-bill the cloud provider for it.
+    private func recoverQuarantinedAudio(
+        store: SegmentStore
+    ) async throws -> QuarantineRecoveryResult {
+        var result = QuarantineRecoveryResult()
+        let quarantineDir = containerRoot.appendingPathComponent("quarantine", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: quarantineDir.path) else { return result }
+        let segmentsDir = containerRoot.appendingPathComponent("segments", isDirectory: true)
+        try FileManager.default.createDirectory(at: segmentsDir, withIntermediateDirectories: true)
+
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: quarantineDir, includingPropertiesForKeys: nil
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        let codec = codecTemplate(store: store)
+        let readableTranscripts = verifyTranscripts().readable
+        let queue = TranscriptionQueue(database: database, nowMs: nowMs)
+        var recoveredIds: [String] = []
+
+        for url in entries {
+            let name = url.lastPathComponent
+            guard name.hasSuffix(SegmentStore.logSuffix) else {
+                // Sidecars are consumed alongside their log below; anything else in here is a
+                // truncated name from an interrupted copy (`.spxlo`, `.meta.j`) or a stray file.
+                // Guessing what a truncated name meant is not recovery, it is invention.
+                if !name.hasSuffix(SegmentStore.metaSuffix) { result.skippedMalformed += 1 }
+                continue
+            }
+            let segmentId = String(name.dropLast(SegmentStore.logSuffix.count))
+            guard let parsedId = ParsedSegmentId.parse(segmentId) else {
+                result.skippedMalformed += 1
+                continue
+            }
+            let destination = segmentsDir.appendingPathComponent(name)
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                continue  // already recovered by an earlier run
+            }
+            guard let data = try? Data(contentsOf: url),
+                let scan = QuarantineFrameLog.scan(data, frameSamplesHint: codec.frameSamples)
+            else {
+                result.skippedUnreadable += 1
+                continue
+            }
+
+            try atomicMove(from: url, to: destination)
+
+            let quarantinedSidecar = quarantineDir.appendingPathComponent(
+                "\(segmentId)\(SegmentStore.metaSuffix)")
+            let transcribed = readableTranscripts.contains(segmentId)
+            var meta: SegmentMeta
+            if let sidecarData = try? Data(contentsOf: quarantinedSidecar),
+                let stored = try? JSONDecoder().decode(SegmentMeta.self, from: sidecarData)
+            {
+                meta = QuarantineRecovery.adoptMeta(
+                    stored, scan: scan, transcribed: transcribed,
+                    timeZoneID: timeZoneID, nowMs: nowMs())
+                result.sidecarsRestored += 1
+            } else {
+                meta = QuarantineRecovery.reconstructMeta(
+                    segmentId: segmentId, parsedId: parsedId, scan: scan, codec: codec,
+                    transcribed: transcribed, timeZoneID: timeZoneID, nowMs: nowMs())
+            }
+            // A restored sidecar can carry the pre-1e5db02 anchor bug that phase 1 clamps on
+            // every other segment; three of the real container's do. Phase 1 has already run by
+            // the time this audio exists, so the clamp is applied here instead of leaving those
+            // segments filed hours into the future. Reconstructed metas satisfy it by
+            // construction, so this is a no-op for them.
+            if let corrected = Self.clampedStartTimeMs(meta) {
+                log("audio-companion: migration re-anchoring recovered \(segmentId) startTimeMs "
+                    + "\(meta.startTimeMs) -> \(corrected)")
+                meta.startTimeMs = corrected
+            }
+            try writeMetaAtomically(meta, in: segmentsDir)
+            try? FileManager.default.removeItem(at: quarantinedSidecar)
+
+            result.recovered += 1
+            result.frames += Int64(scan.frameCount)
+            let rate = Int64(meta.sampleRateHz > 0 ? meta.sampleRateHz : 16_000)
+            result.audioMs += Int64(scan.frameCount) * Int64(meta.frameSamples) * 1000 / rate
+            if transcribed {
+                result.alreadyTranscribed += 1
+            } else {
+                recoveredIds.append(segmentId)
+            }
+            log("audio-companion: migration recovered \(segmentId) from quarantine "
+                + "(\(scan.frameCount) frames, \(scan.holes.count) unrecorded holes"
+                + (transcribed ? ", transcript already on disk)" : ")"))
+        }
+
+        guard result.recovered > 0 else { return result }
+
+        // Re-index so later phases (and the app) see the restored segments. Reconstructed metas
+        // already agree with their logs, so this is an index rebuild, not a re-parse.
+        try await store.recover()
+
+        // Queued LAST and with a fresh timestamp, so the newest audio the user is actually
+        // waiting on keeps its place at the head of the queue (`nextRunnable` orders by
+        // createdAtMs) and the recovered backlog drains behind it. It shows up as an ordinary,
+        // visible backlog — the queue counters in Diagnostics and the honest
+        // "Captured · waiting to transcribe" rows — rather than as silent spend.
+        let recoveredMetas = await store.listSegments()
+            .reduce(into: [String: Int64]()) { $0[$1.segmentId] = $1.receivedAtMs }
+        for segmentId in recoveredIds {
+            // Stamped with the age of the audio, not of this run: `nextRunnable` takes the
+            // NEWEST pending task, so months-old recovered audio drains behind everything the
+            // user is actually waiting on rather than displacing it.
+            _ = try queue.enqueue(segmentId, createdAtMs: recoveredMetas[segmentId])
+            result.queued += 1
+        }
+        return result
+    }
+
+    /// Codec fields copied from a healthy sidecar (they are identical for every segment this
+    /// product records); falls back to the Speex wideband configuration the firmware streams.
+    private func codecTemplate(store: SegmentStore) -> CodecTemplate {
+        let reader = SegmentFileReader(root: containerRoot)
+        guard let sample = reader.listSegments().first(where: { $0.frameSamples > 0 }) else {
+            return CodecTemplate()
+        }
+        return CodecTemplate(sample)
+    }
+
+    // MARK: - Phase 4b: staged upload bodies
+
+    /// `upload-bodies/*.body` are multipart form bodies staged for a cloud transcription upload.
+    /// Their audio is decoded PCM, not Speex frames, so it cannot become a segment: the store's
+    /// durable unit is the frame log, and re-encoding phone-side would fabricate wire records
+    /// that never existed. Where the body is the ONLY surviving copy of a segment's audio, the
+    /// WAV is written out under `Documents/PebbleAudioExports/recovered/` so it is at least
+    /// playable and shareable through Files, and reported rather than quietly discarded.
+    private func exportOrphanUploadBodies(store: SegmentStore) -> (exported: Int, audioMs: Int64) {
+        let bodiesDir = containerRoot.appendingPathComponent("upload-bodies", isDirectory: true)
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: bodiesDir, includingPropertiesForKeys: nil)
+        else { return (0, 0) }
+        let segmentsDir = containerRoot.appendingPathComponent("segments", isDirectory: true)
+        var exported = 0
+        var audioMs: Int64 = 0
+        for url in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        where url.pathExtension == "body" {
+            let segmentId = url.deletingPathExtension().lastPathComponent
+            let logPath = segmentsDir.appendingPathComponent(
+                "\(segmentId)\(SegmentStore.logSuffix)"
+            ).path
+            guard !FileManager.default.fileExists(atPath: logPath) else { continue }
+            guard let data = try? Data(contentsOf: url),
+                let wav = Self.wavPayload(ofMultipartBody: data)
+            else { continue }
+            guard let destination = recoveredExportURL(segmentId: segmentId) else { continue }
+            if FileManager.default.fileExists(atPath: destination.path) { continue }
+            do {
+                try wav.data.write(to: destination)
+                exported += 1
+                audioMs += wav.durationMs
+                log("audio-companion: migration exported \(segmentId) from a staged upload body "
+                    + "(\(wav.durationMs / 1000) s of audio) to \(destination.lastPathComponent)"
+                    + " — no frame log survives for it, so it cannot rejoin the library")
+            } catch {
+                log("audio-companion: migration could not write recovered WAV for \(segmentId)")
+            }
+        }
+        return (exported, audioMs)
+    }
+
+    private func recoveredExportURL(segmentId: String) -> URL? {
+        let resolved =
+            documentsRoot
+            ?? (try? FileManager.default.url(
+                for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+        guard let documents = resolved else { return nil }
+        let dir =
+            documents
+            .appendingPathComponent("PebbleAudioExports", isDirectory: true)
+            .appendingPathComponent("recovered", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true))
+            != nil
+        else { return nil }
+        return dir.appendingPathComponent("\(segmentId).wav")
+    }
+
+    /// Slices the `audio/wav` part out of a multipart body: the RIFF header through the end of
+    /// its declared `data` chunk. Returns nil when the body holds no readable WAV.
+    static func wavPayload(ofMultipartBody data: Data) -> (data: Data, durationMs: Int64)? {
+        let bytes = [UInt8](data)
+        let riff: [UInt8] = Array("RIFF".utf8)
+        guard let start = firstIndex(of: riff, in: bytes), start + 44 <= bytes.count else {
+            return nil
+        }
+        func u16(_ offset: Int) -> Int {
+            Int(UInt16(bytes[start + offset]) | UInt16(bytes[start + offset + 1]) << 8)
+        }
+        func u32(_ offset: Int) -> Int {
+            (0..<4).reduce(0) { $0 | Int(bytes[start + offset + $1]) << (8 * $1) }
+        }
+        let channels = max(u16(22), 1)
+        let sampleRate = max(u32(24), 1)
+        let bitsPerSample = max(u16(34), 8)
+        let dataBytes = u32(40)
+        let end = min(start + 44 + dataBytes, bytes.count)
+        guard end > start + 44 else { return nil }
+        let byteRate = sampleRate * channels * bitsPerSample / 8
+        let durationMs = Int64((end - start - 44) * 1000 / max(byteRate, 1))
+        return (Data(bytes[start..<end]), durationMs)
+    }
+
+    private static func firstIndex(of needle: [UInt8], in haystack: [UInt8]) -> Int? {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return nil }
+        // The WAV part sits within the first few hundred bytes of headers; bound the search.
+        let limit = min(haystack.count - needle.count, 64 * 1024)
+        for index in 0...max(limit, 0)
+        where Array(haystack[index..<index + needle.count]) == needle {
+            return index
+        }
+        return nil
+    }
+
+    // MARK: - Phase 6: ai/outputs
+
+    /// Imports `ai/outputs/*.ai.json` — the only AI artifacts that never regenerate, because a
+    /// person asked for each one. See `LegacyAiOutputs.swift` for the shape and the reasoning.
+    private func importAiOutputs() async throws -> LegacyAiOutputStats {
+        var stats = LegacyAiOutputStats()
+        let dir =
+            containerRoot
+            .appendingPathComponent("ai", isDirectory: true)
+            .appendingPathComponent("outputs", isDirectory: true)
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)
+        else { return stats }
+
+        // Old segment id → the conversation it now belongs to. Citations and note placement both
+        // resolve through this; a segment that did not survive simply is not in it.
+        let conversationBySegment: [String: String] = try await database.reader.read { db in
+            var map: [String: String] = [:]
+            for row in try Row.fetchAll(
+                db, sql: "SELECT segmentId, conversationId FROM conversation_segments")
+            {
+                map[row["segmentId"]] = row["conversationId"]
+            }
+            return map
+        }
+        let resolvable = Set(conversationBySegment.keys)
+
+        for url in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        where url.lastPathComponent.hasSuffix(".ai.json") {
+            stats.filesSeen += 1
+            guard let data = try? Data(contentsOf: url),
+                let output = try? JSONDecoder().decode(LegacyAiOutput.self, from: data)
+            else {
+                stats.filesUnreadable += 1
+                log("audio-companion: migration skipping unreadable AI output "
+                    + url.lastPathComponent)
+                continue
+            }
+            let text = output.trimmedText
+            guard !text.isEmpty else { continue }
+
+            let allCited = parseGroundedAnswer(text, sourceIds: output.scope).citedSegmentIds
+            let citations = LegacyAiOutputImport.citations(
+                answerText: text, scopeSegmentIds: output.scope, resolvable: resolvable)
+            stats.citationsDropped += allCited.count - citations.count
+            let createdAtMs = output.createdAtMs ?? nowMs()
+            let rowId = LegacyAiOutputImport.rowId(output.outputId)
+
+            if output.isAsk {
+                if try await insertAskEntry(
+                    id: rowId, answerText: text, citations: citations, createdAtMs: createdAtMs)
+                {
+                    stats.askImported += 1
+                } else {
+                    stats.alreadyPresent += 1
+                }
+                continue
+            }
+
+            guard
+                let placement = LegacyAiOutputImport.dominantConversation(
+                    scopeSegmentIds: output.scope,
+                    conversationBySegment: conversationBySegment)
+            else {
+                // Every segment this ran over is gone, so there is no conversation it could
+                // honestly hang from. Dropping beats inventing a home for it.
+                stats.notesUnplaceable += 1
+                log("audio-companion: migration cannot place AI output \(output.outputId) — "
+                    + "none of its \(output.scope.count) source segments survive")
+                continue
+            }
+            if try await insertNote(
+                id: rowId, conversationId: placement.conversationId,
+                templateId: output.promptTemplateId ?? "imported",
+                title: LegacyAiOutputImport.noteTitle(
+                    output, conversationCount: placement.conversationCount),
+                body: text, citations: citations, provider: output.providerId,
+                model: output.modelUsed, createdAtMs: createdAtMs, editedAtMs: output.editedAtMs)
+            {
+                stats.notesImported += 1
+            } else {
+                stats.alreadyPresent += 1
+            }
+        }
+
+        if stats.askImported > 0 { try await trimAskHistory() }
+        return stats
+    }
+
+    /// Returns true when a row was inserted (false = already there, so a re-run adds nothing).
+    private func insertAskEntry(
+        id: String, answerText: String, citations: [AskCitation], createdAtMs: Int64
+    ) async throws -> Bool {
+        try await database.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO ask_history
+                        (id, question, answerText, citations, scopeDescription, createdAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    id, LegacyAiOutputImport.missingQuestionText, answerText,
+                    LegacyAiOutputImport.citationsJson(citations),
+                    LegacyAiOutputImport.importedScopeDescription, createdAtMs,
+                ]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    private func insertNote(
+        id: String, conversationId: String, templateId: String, title: String, body: String,
+        citations: [AskCitation], provider: String?, model: String?, createdAtMs: Int64,
+        editedAtMs: Int64?
+    ) async throws -> Bool {
+        try await database.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO notes
+                        (id, conversationId, templateId, title, body, citations, provider,
+                         model, createdAtMs, editedAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    id, conversationId, templateId, title, body,
+                    LegacyAiOutputImport.citationsJson(citations), provider, model,
+                    createdAtMs, editedAtMs,
+                ]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// `AskHistoryStore` keeps exactly the newest `maxEntries` (Q18); the import honors the same
+    /// invariant instead of leaving the table over its cap for the next save to discover.
+    private func trimAskHistory() async throws {
+        try await database.writer.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM ask_history WHERE id NOT IN
+                        (SELECT id FROM ask_history ORDER BY createdAtMs DESC, rowid DESC LIMIT ?)
+                    """,
+                arguments: [AskHistoryStore.maxEntries]
+            )
+        }
     }
 
     // MARK: - Phase 3: identity + settings

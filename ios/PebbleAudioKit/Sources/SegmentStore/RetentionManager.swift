@@ -72,11 +72,18 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         var deleted: [String] = []
         let openId = await store.openSegmentId
 
-        // Age cap first.
+        // Age cap first. Audio the migration importer recovered from `quarantine/` is exempt:
+        // it is older than the window by definition (that is why it was orphaned long enough to
+        // outlive its sidecar), so applying the age rule would delete it again on the first
+        // sweep after recovery. Nothing is done behind the user's back — the retention SETTING
+        // is untouched and still governs every other segment, the size cap below still applies
+        // to recovered audio, and a manual delete still removes it.
         let now = nowMs()
         var segments = await store.listSegments()
         for meta in segments
-        where meta.segmentId != openId && now - meta.receivedAtMs > config.maxAgeMs {
+        where meta.segmentId != openId && !meta.isRecovered
+            && now - meta.receivedAtMs > config.maxAgeMs
+        {
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
         }
