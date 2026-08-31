@@ -30,7 +30,7 @@ import Testing
                 + "fixture and the weekend grocery run")
         let title = try! #require(parsed.title)
         #expect(title.hasSuffix("…"))
-        #expect(title.count <= SegmentAnnotationPrompt.maxTitleChars + 1)
+        #expect(title.count <= SegmentAnnotationPrompt.maxTitleChars)
         // Never a dangling connective before the ellipsis.
         #expect(!title.hasSuffix("and…"))
         #expect(!title.hasSuffix("the…"))
