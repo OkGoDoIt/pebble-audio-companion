@@ -13,6 +13,12 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
     public var openSegmentId: String?
     public var queuedTranscriptionTasks: Int
     public var failedTranscriptionTasks: Int
+    /// Conversations that are fully transcribed but still have no AI title/summary/tags. The
+    /// counterpart of `queuedTranscriptionTasks` for the enrichment pass: without it, a
+    /// freshly migrated library annotates itself invisibly and the rows just look untitled.
+    public var conversationsAwaitingEnrichment: Int
+    /// True while an enrichment pass is actually running right now.
+    public var enrichmentRunning: Bool
     public var lowStorage: Bool
     public var pauseRequested: Bool
     public var freeStorageHintKb: UInt32
@@ -27,6 +33,8 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         openSegmentId: String? = nil,
         queuedTranscriptionTasks: Int = 0,
         failedTranscriptionTasks: Int = 0,
+        conversationsAwaitingEnrichment: Int = 0,
+        enrichmentRunning: Bool = false,
         lowStorage: Bool = false,
         pauseRequested: Bool = false,
         freeStorageHintKb: UInt32 = 0,
@@ -37,6 +45,8 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         self.openSegmentId = openSegmentId
         self.queuedTranscriptionTasks = queuedTranscriptionTasks
         self.failedTranscriptionTasks = failedTranscriptionTasks
+        self.conversationsAwaitingEnrichment = conversationsAwaitingEnrichment
+        self.enrichmentRunning = enrichmentRunning
         self.lowStorage = lowStorage
         self.pauseRequested = pauseRequested
         self.freeStorageHintKb = freeStorageHintKb
@@ -71,6 +81,9 @@ public final class DiagnosticsService: Sendable {
     private let tasks: @Sendable () async -> [TranscriptionTask]
     private let isForeground: @Sendable () -> Bool
     private let clock: RuntimeClock
+    /// Conversations still owed an AI pass, and whether one is running. Injected so this
+    /// service keeps its "no database" shape (the App wires it to `ConversationQueries`).
+    private let enrichment: @Sendable () async -> (waiting: Int, running: Bool)
 
     /// Observable published value (`.value` for a sync read, `.stream()` to follow changes).
     public let snapshot = StateSubject<RuntimeDiagnostics>(RuntimeDiagnostics())
@@ -80,13 +93,17 @@ public final class DiagnosticsService: Sendable {
         retention: RetentionManager,
         tasks: @escaping @Sendable () async -> [TranscriptionTask],
         isForeground: @escaping @Sendable () -> Bool,
-        clock: RuntimeClock
+        clock: RuntimeClock,
+        enrichment: @escaping @Sendable () async -> (waiting: Int, running: Bool) = {
+            (0, false)
+        }
     ) {
         self.store = store
         self.retention = retention
         self.tasks = tasks
         self.isForeground = isForeground
         self.clock = clock
+        self.enrichment = enrichment
     }
 
     @discardableResult
@@ -94,6 +111,7 @@ public final class DiagnosticsService: Sendable {
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
         let allTasks = await tasks()
+        let ai = await enrichment()
         let value = RuntimeDiagnostics(
             segmentCount: segments.count,
             openSegmentId: openId,
@@ -101,6 +119,8 @@ public final class DiagnosticsService: Sendable {
                 $0.state == .pending || $0.state == .running || $0.state == .uploading
             }.count,
             failedTranscriptionTasks: allTasks.filter { $0.state == .failed }.count,
+            conversationsAwaitingEnrichment: ai.waiting,
+            enrichmentRunning: ai.running,
             lowStorage: retention.lowStorage,
             pauseRequested: retention.pauseRequested,
             freeStorageHintKb: retention.freeStorageHintKb(),

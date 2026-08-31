@@ -97,9 +97,13 @@ struct TranscriptView: View {
                 ForEach(turns) { turn in
                     Text(turn.text)
                         .font(AppFont.callout)
-                        .foregroundStyle(
-                            turn.role == .unresolved || turn.isInProgress
-                                ? Tokens.meta : Tokens.label)
+                        // Dimming means PROVISIONAL — words still being revised. It used to
+                        // also mean "we don't know who said this", which dimmed every turn of
+                        // every final transcript that had no speaker assignments (all of a
+                        // migrated library), making finished work read as a draft. An
+                        // unresolved speaker is marked at the NAME, by the captured dot and
+                        // the muted name colour; the words themselves are final.
+                        .foregroundStyle(turn.isInProgress ? Tokens.meta : Tokens.label)
                         .lineSpacing(4)
                         .fixedSize(horizontal: false, vertical: true)
                         // One VoiceOver element per turn, carrying the time the eye reads

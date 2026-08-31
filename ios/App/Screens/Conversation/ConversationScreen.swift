@@ -317,11 +317,32 @@ struct ConversationScreen: View {
                     await load()
                 }
             }
+        // Background AI. One calm line, no action, no bar — the transcript below is already
+        // final, and this only explains the missing title/summary/tags.
+        case .summaryComing:
+            stateCard(
+                dot: Tokens.captured,
+                headline: Copy.Conversation.summaryComing,
+                line: Copy.Conversation.summaryComingLine,
+                actionTitle: nil,
+                action: {}
+            )
+        case .noSummary(let gaveUp):
+            stateCard(
+                dot: Tokens.faint,
+                headline: gaveUp ? Copy.Conversation.summaryGaveUp : Copy.Conversation.noSummary,
+                line: gaveUp
+                    ? Copy.Conversation.summaryGaveUpLine : Copy.Conversation.noSummaryLine,
+                actionTitle: nil,
+                action: {}
+            )
         }
     }
 
+    /// One calm line and at most one action. `actionTitle: nil` renders the state without a
+    /// button — for background work there is nothing useful to press.
     private func stateCard(
-        dot: Color, headline: String, line: String, actionTitle: String,
+        dot: Color, headline: String, line: String, actionTitle: String?,
         action: @escaping () -> Void
     ) -> some View {
         Card {
@@ -335,20 +356,22 @@ struct ConversationScreen: View {
                 Text(line)
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.meta)
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(AppFont.smallButton)
-                        .foregroundStyle(Tokens.tint)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.vertical, 9)
-                        .frame(maxWidth: .infinity, minHeight: 36)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(Tokens.tintBorder))
-                        .frame(minHeight: 44)
-                        .contentShape(RoundedRectangle(cornerRadius: 10))
+                if let actionTitle {
+                    Button(action: action) {
+                        Text(actionTitle)
+                            .font(AppFont.smallButton)
+                            .foregroundStyle(Tokens.tint)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder(Tokens.tintBorder))
+                            .frame(minHeight: 44)
+                            .contentShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
     }

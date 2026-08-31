@@ -400,6 +400,10 @@ protocol DiagnosticsSource: AnyObject {
     var watchReports: String { get }
     var queueWaiting: Int { get }
     var queueFailed: Int { get }
+    /// Conversations transcribed but still owed an AI title/summary/tags, and whether a pass
+    /// is running right now. The enrichment counterpart of the transcription queue.
+    var enrichmentWaiting: Int { get }
+    var enrichmentRunning: Bool { get }
     var recentSegments: [DiagnosticSegment] { get }
     /// Raw technical lines — counters and gap metadata only, never audio or transcript text.
     var detailedLogLines: [String] { get }
@@ -413,6 +417,8 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var watchReports = Copy.Status.recording
     var queueWaiting = 0
     var queueFailed = 0
+    var enrichmentWaiting = 0
+    var enrichmentRunning = false
 
     var recentSegments: [DiagnosticSegment] = [
         .init(title: "1:42 PM · recording now", detail: "12 min · quiet 2 min"),

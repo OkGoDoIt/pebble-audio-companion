@@ -84,6 +84,9 @@ struct LibraryRow: Equatable, Identifiable {
     var hasMissingAudio = false
     var followUpCount = 0
     var dateKey: String
+    /// Transcribed, but AI has not written a title/summary yet. The row says so instead of
+    /// rendering as a bare "Conversation" that reads like something failed.
+    var awaitingAnnotation = false
 
     var durationMs: Int64 { max(0, endMs - startMs) }
 }
@@ -154,6 +157,11 @@ enum LifecycleDisplay: Equatable {
     case transcribing(progress: Double, line: String)
     /// "Transcription didn’t finish" + [Retry Now].
     case failed
+    /// Transcribed; AI title/summary/tags are still being generated in the background.
+    /// No action and no progress bar — this is not something the user is waiting on.
+    case summaryComing
+    /// Transcribed; AI is off, or it tried and stopped. Says which, and offers nothing.
+    case noSummary(gaveUp: Bool)
 }
 
 struct PlayerDisplay: Equatable {
@@ -456,6 +464,10 @@ enum TimeFmt {
         var meta = "\(time(start)) · \(Formatting.duration(row.durationMs))"
         if row.isLive { meta += " so far" }
         if row.mostlyQuiet { meta += " · \(Copy.Library.mostlyQuiet)" }
+        // An untitled row is either still being written or genuinely bare; say which.
+        if !row.isLive, row.title == nil, row.awaitingAnnotation {
+            meta += " · \(Copy.Conversation.rowSummaryComing)"
+        }
         return meta
     }
 

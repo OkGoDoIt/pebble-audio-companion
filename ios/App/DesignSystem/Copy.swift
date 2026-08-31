@@ -327,6 +327,18 @@ enum Copy {
         static let didntFinishLine = "It retries on its own. The audio is safe."
         static let retryNow = "Retry Now"
 
+        // Enrichment (AI title/summary/tags). Transcribing is done; AI has not caught up.
+        // "Working on it" and "there is genuinely nothing here" must never look alike.
+        static let summaryComing = "Transcribed · summary still to come"
+        static let summaryComingLine =
+            "AI is working through the backlog in the background. The transcript is already saved."
+        static let noSummary = "No summary for this one"
+        static let noSummaryLine = "AI is turned off, so titles, tags and summaries stay blank."
+        static let summaryGaveUp = "Summary didn’t generate"
+        static let summaryGaveUpLine = "AI tried a few times and stopped. The transcript is safe."
+        /// Library row meta, appended after the duration: a row without a title says why.
+        static let rowSummaryComing = "summary on the way"
+
         // Delete-undo snackbar (5 s).
         static let deleted = "Conversation deleted"
 
@@ -547,6 +559,13 @@ enum Copy {
             static func queueValue(waiting: Int, failed: Int) -> String {
                 "\(waiting) waiting · \(failed) failed"
             }
+            static let aiEnrichment = "AI titles & summaries"
+            /// e.g. "writing 12 more" / "12 waiting" / "all caught up". Background work, so
+            /// it reports a backlog, never a progress bar.
+            static func enrichmentValue(waiting: Int, running: Bool) -> String {
+                guard waiting > 0 else { return "all caught up" }
+                return running ? "writing · \(waiting) to go" : "\(waiting) waiting"
+            }
             static let recentSegments = "Recent segments"
             // Plain-language segment states — never key=value dumps.
             static let segmentRecordingNow = "recording now"
@@ -638,6 +657,7 @@ enum Copy {
         /// Accessibility labels for the interactive control (the button itself is an icon).
         static let pauseHint = "Pause capture"
         static let resumeHint = "Resume capture"
+        static let startHint = "Start recording"
         /// Recent-activity bars are decorative next to the words that already say the state.
         static let activityLabel = "Recent activity"
     }
