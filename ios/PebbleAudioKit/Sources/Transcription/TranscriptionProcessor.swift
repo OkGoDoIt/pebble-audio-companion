@@ -128,9 +128,9 @@ public final class TranscriptionProcessor: Sendable {
             onStateChanged(segmentId, .disabled)
             return disabled
         } catch {
-            let message =
-                transcriptionErrorMessage(error) ?? String(describing: type(of: error))
-            let failed = try queue.markFailed(segmentId, error: message, retryable: true)
+            let failed = try queue.markFailed(
+                segmentId, error: storedFailureMessage(error), retryable: true
+            )
             onStateChanged(segmentId, .failed)
             return failed
         }

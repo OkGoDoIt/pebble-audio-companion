@@ -284,6 +284,9 @@ public actor BackgroundCloudUploadCoordinator {
     }
 
     private func errorMessage(_ error: Error) -> String? {
+        // Same stored shape the foreground processor writes, so one taxonomy classifies both:
+        // a `URLError` keeps its numeric code, not only its translated sentence.
+        if error is URLError { return storedFailureMessage(error) }
         if case TranscriptionError.transcriptionFailed(let message, _) = error { return message }
         if case TranscriptionError.providerUnavailable(let providerId) = error {
             return "provider unavailable: \(providerId)"

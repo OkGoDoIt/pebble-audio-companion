@@ -42,6 +42,37 @@ public enum LocalTranscriptionEngineChoice: Equatable, Sendable {
     }
 }
 
+/// What the selection resolves to **right now**, once the disk has been consulted.
+///
+/// `choice` says what the user picked; this says what will actually run. They differ in exactly
+/// one situation, and it is the one a migrated user lands in: `local_transcription_model` names
+/// a Parakeet model that was never downloaded on this phone. Left alone that selection produces
+/// `providerUnavailable` on every segment — which the queue parks as Disabled, so recordings
+/// simply stop being transcribed with nothing anywhere saying why.
+public enum LocalEngineResolution: Equatable, Sendable {
+    case appleSpeech(locale: Locale)
+    case parakeet(ParakeetModelSpec)
+    /// The chosen Parakeet model cannot run here, so Apple Speech is transcribing instead.
+    /// Surfaces MUST say this out loud rather than quietly substituting an engine.
+    case parakeetUnavailable(spec: ParakeetModelSpec, reason: LocalEngineUnavailableReason)
+
+    /// The Parakeet model the user picked, whether or not it can run.
+    public var selectedParakeet: ParakeetModelSpec? {
+        switch self {
+        case .parakeet(let spec): return spec
+        case .parakeetUnavailable(let spec, _): return spec
+        case .appleSpeech: return nil
+        }
+    }
+}
+
+public enum LocalEngineUnavailableReason: Equatable, Sendable {
+    /// The weights are not on this phone — a download in Settings fixes it.
+    case notInstalled
+    /// No Cactus slice in this build, so no Parakeet model can ever run here.
+    case notSupportedOnThisDevice
+}
+
 /// The local `TranscriptionProvider` the pipeline holds: it delegates to Apple's
 /// `SpeechAnalyzerProvider` or to a `ParakeetTranscriptionProvider`, resolved per call from the
 /// persisted selection — so changing the Settings picker takes effect immediately, exactly like
@@ -79,6 +110,26 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         LocalTranscriptionEngineChoice.resolve(modelId: selected())
     }
 
+    /// `choice`, checked against the disk: what will really run for the next segment.
+    ///
+    /// Falling back to Apple Speech rather than failing is deliberate. An uninstalled model is a
+    /// gap in Settings, not a reason to leave a recording untranscribed — and Apple Speech needs
+    /// no download, so there is always something honest to run.
+    public var resolution: LocalEngineResolution {
+        switch choice {
+        case .appleSpeech(let locale):
+            return .appleSpeech(locale: locale)
+        case .parakeet(let spec):
+            guard engine.isSupported else {
+                return .parakeetUnavailable(spec: spec, reason: .notSupportedOnThisDevice)
+            }
+            guard location.installedModelPath(for: spec) != nil else {
+                return .parakeetUnavailable(spec: spec, reason: .notInstalled)
+            }
+            return .parakeet(spec)
+        }
+    }
+
     public var id: String { active().id }
 
     public func isAvailable() async -> Bool {
@@ -94,15 +145,13 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
     /// The provider the current selection resolves to (cached, so the Parakeet engine handle
     /// and the analyzer configuration survive between segments).
     public func active() -> any TranscriptionProvider {
-        switch choice {
+        switch resolution {
         case .appleSpeech(let locale):
-            let key = locale.identifier
-            lock.lock()
-            defer { lock.unlock() }
-            if let existing = appleByLocale[key] { return existing }
-            let created = makeAppleSpeech(locale)
-            appleByLocale[key] = created
-            return created
+            return appleSpeech(locale)
+        // A Parakeet model that cannot run here transcribes as Apple Speech in the device
+        // language, and `resolution` is what tells the UI to say so out loud.
+        case .parakeetUnavailable:
+            return appleSpeech(.current)
         case .parakeet(let spec):
             lock.lock()
             defer { lock.unlock() }
@@ -113,6 +162,16 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
             parakeetById[spec.id] = created
             return created
         }
+    }
+
+    private func appleSpeech(_ locale: Locale) -> any TranscriptionProvider {
+        let key = locale.identifier
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = appleByLocale[key] { return existing }
+        let created = makeAppleSpeech(locale)
+        appleByLocale[key] = created
+        return created
     }
 
     // MARK: - LocalTranscriptionLifecycle

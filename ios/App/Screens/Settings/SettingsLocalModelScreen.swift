@@ -11,10 +11,31 @@ struct SettingsLocalModelScreen: View {
 
     private var model: LocalModelManaging { SettingsDataSources.current.localModel }
 
-    @State private var confirmRemove = false
+    @State private var removeTarget: LocalModelOption?
 
     var body: some View {
         SettingsScroll {
+            // The chosen model is one that downloads, and it is not here. The kit transcribes
+            // with Apple Speech meanwhile (`SelectableLocalTranscriptionProvider.resolution`),
+            // so this screen says which engine is actually running rather than showing a check
+            // mark beside a model that is doing nothing.
+            if model.fallsBackToAppleSpeech(settings.localTranscriptionModelId),
+                let missing = model.model(settings.localTranscriptionModelId)
+            {
+                Card {
+                    HStack(alignment: .top, spacing: 8) {
+                        StatusDot(color: Tokens.attention, size: .lifecycle)
+                            .padding(.top, 5)
+                        Text(fallbackNotice(missing))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+
             ListCard {
                 ForEach(model.models) { option in
                     LocalModelRow(
@@ -27,12 +48,17 @@ struct SettingsLocalModelScreen: View {
                 }
             }
 
-            if let selected, model.state(for: selected.id) == .installed {
+            // Everything actually taking up room here, not only the engine in use: with three
+            // downloadable models in the catalog, a 1.2 GB one you tried once would otherwise
+            // be unremovable without selecting it first.
+            if !installed.isEmpty {
                 ListCard {
-                    DestructiveRow(
-                        title: Copy.Settings.TranscriptionAI.removeModel(selected.compactName)
-                    ) {
-                        confirmRemove = true
+                    ForEach(installed) { option in
+                        DestructiveRow(
+                            title: Copy.Settings.TranscriptionAI.removeModel(option.compactName)
+                        ) {
+                            removeTarget = option
+                        }
                     }
                 }
             }
@@ -52,38 +78,49 @@ struct SettingsLocalModelScreen: View {
         // Re-reading install state is the only thing opening this screen does.
         .task { model.refresh() }
         .confirmationDialog(
-            selected?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
-            isPresented: $confirmRemove,
-            titleVisibility: .visible
-        ) {
+            removeTarget?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
+            isPresented: Binding(
+                get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: removeTarget
+        ) { target in
             Button(Copy.Settings.TranscriptionAI.removeModelButton, role: .destructive) {
                 Haptics.destructiveConfirmed()
-                if let selected { model.delete(selected.id) }
+                model.delete(target.id)
             }
-        } message: {
-            Text(removeNote)
+        } message: { target in
+            Text(removeNote(target))
         }
     }
 
-    private var selected: LocalModelOption? {
-        model.selectedModel(settings.localTranscriptionModelId)
+    /// The fallback fact, worded for whether anything is being done about it right now.
+    private func fallbackNotice(_ option: LocalModelOption) -> String {
+        model.state(for: option.id).isBusy
+            ? Copy.Settings.TranscriptionAI.fallbackNoticeInProgress(option.compactName)
+            : Copy.Settings.TranscriptionAI.fallbackNotice(option.compactName)
+    }
+
+    private var installed: [LocalModelOption] {
+        model.models.filter { model.state(for: $0.id) == .installed }
     }
 
     /// Honest about what removal actually does: app-owned weights go now, system speech files
     /// go when iOS decides it needs the room.
-    private var removeNote: String {
-        guard let size = selected?.sizeText else {
+    private func removeNote(_ option: LocalModelOption) -> String {
+        guard let size = option.sizeText else {
             return Copy.Settings.TranscriptionAI.removeSystemModelNote
         }
         return Copy.Settings.TranscriptionAI.removeModelNote(size)
     }
 
     /// The one action here: make a model the on-device engine, and fetch it if it isn't here.
+    /// Tapping a row whose download is already running must not start a second one.
     private func select(_ option: LocalModelOption) {
         settings.localTranscriptionModelId = option.id
-        if model.state(for: option.id) != .installed {
-            model.download(option.id)
-        }
+        let state = model.state(for: option.id)
+        guard state != .installed, !state.isBusy else { return }
+        model.download(option.id)
     }
 }
 
@@ -145,6 +182,17 @@ private struct LocalModelRow: View {
                         .foregroundStyle(Tokens.tint)
                         .buttonStyle(.plain)
                 }
+            // Unpacking: the bytes are all here, so the bar is full and honest — but there is
+            // no second number to report, and it is still cancellable.
+            case .installing:
+                HStack(spacing: 12) {
+                    ProgressView(value: 1)
+                        .tint(Tokens.tint)
+                    Button(Copy.Common.cancel, action: cancel)
+                        .font(AppFont.smallButton)
+                        .foregroundStyle(Tokens.tint)
+                        .buttonStyle(.plain)
+                }
             case .failed:
                 // Same slot the progress bar uses: what went wrong, and the way out of it.
                 HStack(spacing: 12) {
@@ -180,6 +228,8 @@ private struct LocalModelRow: View {
             // Just the number: the bar below says "downloading", and the longer phrase pushed
             // the model's name into a second line mid-download.
             stateText(Copy.Settings.TranscriptionAI.percent(Int(progress * 100)), color: Tokens.meta)
+        case .installing:
+            stateText(Copy.Settings.TranscriptionAI.installing, color: Tokens.meta)
         case .installed:
             if !isSelected {
                 stateText(Copy.Settings.TranscriptionAI.installedValue, color: Tokens.meta)
@@ -208,6 +258,7 @@ private struct LocalModelRow: View {
         case .waitingForWiFi: parts.append(Copy.Settings.TranscriptionAI.waitingForWiFi)
         case .downloading(let progress):
             parts.append(Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)))
+        case .installing: parts.append(Copy.Settings.TranscriptionAI.installing)
         case .installed: parts.append(Copy.Settings.TranscriptionAI.installedValue)
         case .failed: parts.append(Copy.Settings.TranscriptionAI.downloadFailed)
         case .unavailable: parts.append(Copy.Settings.TranscriptionAI.unavailable)

@@ -418,6 +418,61 @@ private func makeProvider(
         #expect(provider.id.hasPrefix("apple-"))
     }
 
+    /// The migrated-user case: the setting names a Parakeet model that was never downloaded on
+    /// this phone. It must transcribe with Apple Speech (a missing download is not a reason to
+    /// leave audio untranscribed) AND report that it is doing so.
+    @Test func aSelectedButUninstalledParakeetModelFallsBackToAppleSpeech() async throws {
+        let provider = SelectableLocalTranscriptionProvider(
+            selected: { "parakeet-tdt-0.6b-v3-int8" },
+            location: FakeLocation(path: nil),
+            engine: FakeEngine(),
+            makeAppleSpeech: { StubProvider(id: "apple-\($0.identifier)") }
+        )
+
+        let spec = ParakeetModelCatalog.byId("parakeet-tdt-0.6b-v3-int8")
+        // The user's CHOICE is untouched — only what runs today changes.
+        #expect(provider.choice == .parakeet(spec))
+        #expect(provider.resolution == .parakeetUnavailable(spec: spec, reason: .notInstalled))
+        #expect(provider.resolution.selectedParakeet == spec)
+        #expect(provider.id.hasPrefix("apple-"))
+        #expect(await provider.isAvailable())
+    }
+
+    /// No Cactus slice in the build ⇒ no Parakeet model can ever run, and the reason is
+    /// distinct from "not downloaded" because no download would fix it.
+    @Test func anUnsupportedEngineAlsoFallsBackAndSaysWhy() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let provider = SelectableLocalTranscriptionProvider(
+            selected: { "parakeet-ctc-1.1b-int8" },
+            location: FakeLocation(path: temp),
+            engine: FakeEngine(supported: false),
+            makeAppleSpeech: { StubProvider(id: "apple-\($0.identifier)") }
+        )
+
+        #expect(
+            provider.resolution
+                == .parakeetUnavailable(
+                    spec: ParakeetModelCatalog.byId("parakeet-ctc-1.1b-int8"),
+                    reason: .notSupportedOnThisDevice
+                )
+        )
+        #expect(provider.id.hasPrefix("apple-"))
+    }
+
+    /// The `apple-speech` sentinel must never be parsed as a language tag (a bug fixed once
+    /// already: `Locale("apple-speech")` made SpeechTranscriber report an unsupported language).
+    @Test func theAppleSpeechSentinelIsNotALocale() {
+        #expect(
+            LocalTranscriptionEngineChoice.resolve(
+                modelId: LocalTranscriptionEngineChoice.appleSpeechId
+            ) == .appleSpeech(locale: .current)
+        )
+        #expect(!LocalTranscriptionEngineChoice.isLanguageTag("apple-speech"))
+        #expect(!LocalTranscriptionEngineChoice.isLanguageTag("parakeet-tdt-0.6b-v3-int8"))
+        #expect(LocalTranscriptionEngineChoice.isLanguageTag("en-US"))
+    }
+
     @Test func releasingForwardsToTheSharedCactusEngine() async {
         let engine = FakeEngine()
         let provider = SelectableLocalTranscriptionProvider(
