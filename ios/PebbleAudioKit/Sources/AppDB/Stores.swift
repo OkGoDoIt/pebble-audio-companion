@@ -65,8 +65,12 @@ public struct AskCitation: Codable, Equatable, Sendable {
     }
 }
 
+/// One turn — a question and its answer — of an Ask conversation.
 public struct AskEntry: Equatable, Sendable {
     public var id: String
+    /// Every turn of one Ask conversation shares this. A turn with no explicit thread is its
+    /// own thread of one (legacy single-shot rows, and the opening question of a new thread).
+    public var threadId: String
     public var question: String
     public var answerText: String
     public var citations: [AskCitation]
@@ -74,15 +78,46 @@ public struct AskEntry: Equatable, Sendable {
     public var createdAtMs: Int64
 
     public init(
-        id: String, question: String, answerText: String, citations: [AskCitation],
-        scopeDescription: String, createdAtMs: Int64
+        id: String, threadId: String? = nil, question: String, answerText: String,
+        citations: [AskCitation], scopeDescription: String, createdAtMs: Int64
     ) {
         self.id = id
+        self.threadId = threadId ?? id
         self.question = question
         self.answerText = answerText
         self.citations = citations
         self.scopeDescription = scopeDescription
         self.createdAtMs = createdAtMs
+    }
+}
+
+/// A whole Ask conversation: its turns in the order they were had.
+public struct AskThread: Equatable, Sendable, Identifiable {
+    public var id: String
+    /// Oldest first.
+    public var turns: [AskEntry]
+
+    public init(id: String, turns: [AskEntry]) {
+        self.id = id
+        self.turns = turns
+    }
+
+    /// The question the thread opened with — what it is titled by in Recent.
+    public var openingQuestion: String { turns.first?.question ?? "" }
+    public var lastTurn: AskEntry? { turns.last }
+    public var updatedAtMs: Int64 { turns.last?.createdAtMs ?? 0 }
+
+    /// Groups rows (any order) into threads, newest-updated first, turns oldest-first.
+    public static func group(_ entries: [AskEntry]) -> [AskThread] {
+        var order: [String] = []
+        var byThread: [String: [AskEntry]] = [:]
+        for entry in entries.sorted(by: { $0.createdAtMs < $1.createdAtMs }) {
+            if byThread[entry.threadId] == nil { order.append(entry.threadId) }
+            byThread[entry.threadId, default: []].append(entry)
+        }
+        return order
+            .map { AskThread(id: $0, turns: byThread[$0] ?? []) }
+            .sorted { $0.updatedAtMs > $1.updatedAtMs }
     }
 }
 
@@ -435,53 +470,91 @@ public struct AskHistoryStore: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
-    /// The sheet shows up to 5 past questions (plan 6.6); the table keeps exactly that many.
+    /// The sheet shows up to 5 past Ask conversations (plan 6.6); the table keeps exactly that
+    /// many THREADS — trimming by row would decapitate a long conversation and leave its
+    /// follow-ups behind as orphaned fragments.
     public static let maxEntries = 5
+
+    /// Newest-thread window used by both the trim and the Recent list.
+    private static let newestThreadIds = """
+        SELECT threadId FROM ask_history
+        GROUP BY threadId
+        ORDER BY MAX(createdAtMs) DESC, MAX(rowid) DESC
+        LIMIT ?
+        """
 
     static func entry(from row: Row) throws -> AskEntry {
         let json: String = row["citations"]
         let citations =
             (try? JSONDecoder().decode([AskCitation].self, from: Data(json.utf8))) ?? []
         return AskEntry(
-            id: row["id"], question: row["question"], answerText: row["answerText"],
-            citations: citations, scopeDescription: row["scopeDescription"],
-            createdAtMs: row["createdAtMs"])
+            id: row["id"], threadId: row["threadId"], question: row["question"],
+            answerText: row["answerText"], citations: citations,
+            scopeDescription: row["scopeDescription"], createdAtMs: row["createdAtMs"])
     }
 
     @discardableResult
     public func save(
         question: String, answerText: String, citations: [AskCitation],
-        scopeDescription: String,
+        scopeDescription: String, threadId: String? = nil,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> AskEntry {
         let entry = AskEntry(
-            id: UUID().uuidString.lowercased(), question: question, answerText: answerText,
-            citations: citations, scopeDescription: scopeDescription, createdAtMs: nowMs)
+            id: UUID().uuidString.lowercased(), threadId: threadId, question: question,
+            answerText: answerText, citations: citations,
+            scopeDescription: scopeDescription, createdAtMs: nowMs)
         let citationsJson = String(
             decoding: try JSONEncoder().encode(citations), as: UTF8.self)
         try await db.writer.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO ask_history
-                        (id, question, answerText, citations, scopeDescription, createdAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (id, threadId, question, answerText, citations, scopeDescription,
+                         createdAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
-                    entry.id, question, answerText, citationsJson, scopeDescription, nowMs,
+                    entry.id, entry.threadId, question, answerText, citationsJson,
+                    scopeDescription, nowMs,
                 ]
             )
-            // Trim to the newest maxEntries.
+            // Trim to the newest maxEntries THREADS, keeping every turn of each.
             try db.execute(
-                sql: """
-                    DELETE FROM ask_history WHERE id NOT IN
-                        (SELECT id FROM ask_history ORDER BY createdAtMs DESC, rowid DESC LIMIT ?)
-                    """,
+                sql: "DELETE FROM ask_history WHERE threadId NOT IN (\(Self.newestThreadIds))",
                 arguments: [Self.maxEntries]
             )
         }
         return entry
     }
 
+    /// The newest `limit` Ask conversations, newest-updated first, each with all its turns.
+    public func recentThreads(
+        limit: Int = AskHistoryStore.maxEntries
+    ) async throws -> [AskThread] {
+        try await db.reader.read { db in
+            AskThread.group(
+                try Row.fetchAll(
+                    db,
+                    sql: "SELECT * FROM ask_history WHERE threadId IN (\(Self.newestThreadIds))",
+                    arguments: [limit]
+                ).map { try Self.entry(from: $0) })
+        }
+    }
+
+    public func observeRecentThreads(
+        limit: Int = AskHistoryStore.maxEntries
+    ) -> AsyncValueObservation<[AskThread]> {
+        ValueObservation.tracking { db in
+            AskThread.group(
+                try Row.fetchAll(
+                    db,
+                    sql: "SELECT * FROM ask_history WHERE threadId IN (\(Self.newestThreadIds))",
+                    arguments: [limit]
+                ).map { try Self.entry(from: $0) })
+        }.values(in: db.reader)
+    }
+
+    /// Flat newest-turn-first view, independent of threading.
     public func recent(limit: Int = AskHistoryStore.maxEntries) async throws -> [AskEntry] {
         try await db.reader.read { db in
             try Row.fetchAll(

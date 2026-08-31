@@ -184,6 +184,16 @@ public struct AppDatabase: Sendable {
                 t.add(column: "transcriptionState", .text)
             }
         }
+        // Ask is a conversation, not a series of unrelated one-shot questions: the turns of
+        // one Ask thread share a threadId so a follow-up can be answered with — and reopened
+        // alongside — everything asked before it. Rows written before this each stood alone,
+        // so each becomes a thread of one.
+        migrator.registerMigration("v3-ask-history-threads") { db in
+            try db.alter(table: "ask_history") { t in
+                t.add(column: "threadId", .text)
+            }
+            try db.execute(sql: "UPDATE ask_history SET threadId = id WHERE threadId IS NULL")
+        }
         try migrator.migrate(writer)
     }
 }

@@ -421,13 +421,15 @@ extension LiveWorld: ConversationDataSource {
 extension LiveWorld: AskDataSource {
     var hasContent: Bool { !composition.files.listSegments().isEmpty }
 
-    func recent() async throws -> [AskEntry] {
-        try await composition.runtime.library.recentAsks()
+    func recentThreads() async throws -> [AskThread] {
+        try await composition.runtime.library.recentAskThreads()
     }
 
-    func ask(question: String, scope: AskScope) async throws -> AskEntry {
+    func ask(question: String, thread: AskThread?, scope: AskScope) async throws -> AskEntry {
         let kitScope = scope.kitScope
         let nowMs = composition.clock.nowMs
+        let priorTurns = thread?.turns ?? []
+        let threadId = thread?.id
         let metas = segmentsInAskScope(
             composition.files.listSegments(), scope: kitScope, nowMs: nowMs
         )
@@ -446,14 +448,20 @@ extension LiveWorld: AskDataSource {
             guard let transcript = composition.transcripts.load(meta.segmentId),
                 !transcript.text.isEmpty
             else { continue }
+            let startMs = Int64(meta.startTimeMs)
+            let endMs = startMs + segmentDurationMs(meta)
             excerpts.append(
                 TranscriptExcerpt(
                     segmentId: meta.segmentId,
                     text: transcript.text,
-                    startTimeMs: Int64(meta.startTimeMs),
-                    endTimeMs: Int64(meta.startTimeMs) + segmentDurationMs(meta),
-                    timeLabel: TimeFmt.time(
-                        Date(timeIntervalSince1970: Double(meta.startTimeMs) / 1000))
+                    startTimeMs: startMs,
+                    endTimeMs: endMs,
+                    // The full recorded date, not just a clock time: these transcripts span
+                    // many days, and a bare "9:35 PM" reads as tonight.
+                    timeLabel: askWhenLabel(
+                        startMs: startMs, endMs: endMs,
+                        timeZoneID: meta.recordedTimeZone ?? TimeZone.current.identifier,
+                        nowMs: nowMs)
                 ))
             gapSummaries[meta.segmentId] = askGapSummary(meta)
         }
@@ -463,24 +471,27 @@ extension LiveWorld: AskDataSource {
                 answer: "There is nothing recorded in that window to answer from.",
                 citedIds: [],
                 scope: kitScope,
+                threadId: threadId,
                 nowMs: nowMs
             )
         }
 
         let sourceOrder = askSourceOrder(excerpts)
         let chunks = await composition.askRetriever.retrieve(
-            query: question, excerpts: excerpts, gapSummaries: gapSummaries
+            query: askRetrievalQuery(question: question, priorTurns: priorTurns),
+            excerpts: excerpts, gapSummaries: gapSummaries
         )
         let formatted = composition.askRetriever.formatForPrompt(chunks) {
             askCitationNumber(of: $0, sourceOrder: sourceOrder)
         }
+        var content = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
+        if let thread = askThreadContext(priorTurns) { content += "\n\n\(thread)" }
+        content += "\n\nQUESTION: \(question)\n\nTRANSCRIPTS:\n\(formatted)"
         let result = try await composition.aiRouter.run(
             AiRunRequest(
                 requestId: UUID().uuidString.lowercased(),
                 prompt: AiPromptTemplates.ask,
-                transcripts: [
-                    TranscriptExcerpt(segmentId: "ask", text: "\(question)\n\n\(formatted)")
-                ]
+                transcripts: [TranscriptExcerpt(segmentId: "ask", text: content)]
             )
         )
         let grounded = parseGroundedAnswer(result.text, sourceIds: sourceOrder)
@@ -489,13 +500,14 @@ extension LiveWorld: AskDataSource {
             answer: result.text,
             citedIds: grounded.citedSegmentIds,
             scope: kitScope,
+            threadId: threadId,
             nowMs: nowMs
         )
     }
 
     private func save(
         question: String, answer: String, citedIds: [String],
-        scope: Intelligence.AskScope, nowMs: Int64
+        scope: Intelligence.AskScope, threadId: String?, nowMs: Int64
     ) async throws -> AskEntry {
         try await saveAskAnswer(
             question: question,
@@ -503,6 +515,7 @@ extension LiveWorld: AskDataSource {
             citedSegmentIds: citedIds,
             scope: scope,
             history: composition.askHistory,
+            threadId: threadId,
             nowMs: nowMs
         )
     }

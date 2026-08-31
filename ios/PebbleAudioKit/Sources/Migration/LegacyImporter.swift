@@ -902,11 +902,13 @@ public struct LegacyImporter: @unchecked Sendable {
             try db.execute(
                 sql: """
                     INSERT OR IGNORE INTO ask_history
-                        (id, question, answerText, citations, scopeDescription, createdAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (id, threadId, question, answerText, citations, scopeDescription,
+                         createdAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
+                // The legacy app had no threading, so each imported answer is a thread of one.
                 arguments: [
-                    id, LegacyAiOutputImport.missingQuestionText, answerText,
+                    id, id, LegacyAiOutputImport.missingQuestionText, answerText,
                     LegacyAiOutputImport.citationsJson(citations),
                     LegacyAiOutputImport.importedScopeDescription, createdAtMs,
                 ]
@@ -943,9 +945,12 @@ public struct LegacyImporter: @unchecked Sendable {
     private func trimAskHistory() async throws {
         try await database.writer.write { db in
             try db.execute(
+                // Trims whole threads, matching AskHistoryStore.save.
                 sql: """
-                    DELETE FROM ask_history WHERE id NOT IN
-                        (SELECT id FROM ask_history ORDER BY createdAtMs DESC, rowid DESC LIMIT ?)
+                    DELETE FROM ask_history WHERE threadId NOT IN
+                        (SELECT threadId FROM ask_history
+                         GROUP BY threadId
+                         ORDER BY MAX(createdAtMs) DESC, MAX(rowid) DESC LIMIT ?)
                     """,
                 arguments: [AskHistoryStore.maxEntries]
             )

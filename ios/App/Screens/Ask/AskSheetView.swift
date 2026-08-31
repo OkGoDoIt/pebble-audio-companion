@@ -5,6 +5,10 @@ import AppDB
 /// hand-off row, and the Conversation bottom bar — always context-scoped, scope always
 /// visible (anti-B5). Initial state: composer + Recent (Q18). Citations tap through to the
 /// cited conversation.
+///
+/// Ask is a CONVERSATION: every turn stays on screen and every follow-up is answered with the
+/// earlier turns as context, so "so what's the plan?" means what it means in a chat. Recent
+/// lists whole conversations, and reopening one restores all of it.
 struct AskSheetView: View {
     let route: Route
 
@@ -12,12 +16,25 @@ struct AskSheetView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model = AskViewModel()
 
+    /// Scroll target that keeps the newest turn in view as the conversation grows.
+    private let bottomAnchor = "ask-thread-bottom"
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SheetGrabber()
 
             SheetTitleRow(title: Copy.Ask.title) {
-                ScopeMenu(scope: $model.scope)
+                HStack(spacing: 8) {
+                    if model.isInThread {
+                        Button(Copy.Ask.newConversation) { model.startNewConversation() }
+                            .font(AppFont.chip)
+                            .foregroundStyle(Tokens.tint)
+                            .buttonStyle(.plain)
+                            .frame(minHeight: 44)
+                            .accessibilityHint(Copy.A11y.newConversationHint)
+                    }
+                    ScopeMenu(scope: $model.scope)
+                }
             }
 
             content
@@ -46,36 +63,66 @@ struct AskSheetView: View {
                 .foregroundStyle(Tokens.tertiary)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 60)
+        } else if model.isInThread {
+            threadView
         } else {
-            switch model.state {
-            case .initial:
-                recentList
-            case .loading(let question):
-                questionText(question)
-                Card {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
+            recentList
+        }
+    }
+
+    // MARK: - The conversation
+
+    private var threadView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(model.turns, id: \.id) { turn in
+                        answeredTurn(turn)
                     }
-                    .padding(.vertical, 24)
-                }
-            case .answer(let entry):
-                answerState(entry)
-            case .failed(let question):
-                questionText(question)
-                Card {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("That didn’t go through.")
-                            .font(AppFont.subBody)
-                            .foregroundStyle(Tokens.tertiary)
-                        Button(Copy.Common.retry) {
-                            model.send(question)
+
+                    if let question = model.pendingQuestion {
+                        VStack(alignment: .leading, spacing: 10) {
+                            questionText(question)
+                            Card {
+                                HStack {
+                                    Spacer()
+                                    ProgressView()
+                                    Spacer()
+                                }
+                                .padding(.vertical, 24)
+                            }
                         }
-                        .buttonStyle(.smallBordered)
+                        .accessibilityLabel(Copy.A11y.askThinking(question))
+                    } else if let question = model.failedQuestion {
+                        VStack(alignment: .leading, spacing: 10) {
+                            questionText(question)
+                            Card {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text(Copy.Ask.didNotGoThrough)
+                                        .font(AppFont.subBody)
+                                        .foregroundStyle(Tokens.tertiary)
+                                    Button(Copy.Common.retry) { model.retry() }
+                                        .buttonStyle(.smallBordered)
+                                }
+                            }
+                        }
                     }
+
+                    Color.clear.frame(height: 1).id(bottomAnchor)
                 }
             }
+            .onChange(of: model.threadProgress) { _, _ in
+                withAnimation(Motion.animation(.snappy(duration: 0.25))) {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private func answeredTurn(_ entry: AskEntry) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            questionText(entry.question)
+            Card { answerBody(entry) }
         }
     }
 
@@ -84,6 +131,7 @@ struct AskSheetView: View {
             .font(AppFont.headline)
             .foregroundStyle(Tokens.label)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Recent (Q18)
@@ -99,8 +147,8 @@ struct AskSheetView: View {
             ScrollView {
                 VStack(spacing: Tokens.blockGap) {
                     ListCard {
-                        ForEach(model.recent, id: \.id) { entry in
-                            recentRow(entry)
+                        ForEach(model.recent) { thread in
+                            recentRow(thread)
                         }
                     }
                     Button(Copy.Ask.clearHistory) {
@@ -123,26 +171,34 @@ struct AskSheetView: View {
         }
     }
 
-    private func recentRow(_ entry: AskEntry) -> some View {
+    /// A row is a whole past conversation: the question it opened with, and how far it got.
+    private func recentRow(_ thread: AskThread) -> some View {
         Button {
-            model.reopen(entry)
+            model.reopen(thread)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(entry.question)
+                    Text(thread.openingQuestion)
                         .font(AppFont.rowTitle)
                         .foregroundStyle(Tokens.label)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     Text(TimeFmt.relative(
-                        Date(timeIntervalSince1970: Double(entry.createdAtMs) / 1000)))
+                        Date(timeIntervalSince1970: Double(thread.updatedAtMs) / 1000)))
                         .font(AppFont.footnote)
                         .foregroundStyle(Tokens.faint)
                 }
-                Text(answerPreview(entry.answerText))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.tertiary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if thread.turns.count > 1 {
+                        Text(Copy.Ask.followUpCount(thread.turns.count - 1))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.meta)
+                    }
+                    Text(answerPreview(thread.lastTurn?.answerText ?? ""))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.tertiary)
+                        .lineLimit(1)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -167,57 +223,51 @@ struct AskSheetView: View {
 
     // MARK: - Answer
 
+    /// Sources expand per turn, so opening one answer's moments does not fold another's.
     @ViewBuilder
-    private func answerState(_ entry: AskEntry) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                questionText(entry.question)
+    private func answerBody(_ entry: AskEntry) -> some View {
+        let showSources = model.expandedSources.contains(entry.id)
+        VStack(alignment: .leading, spacing: 10) {
+            MarkdownText(entry.answerText, lineSpacing: 7) { number in
+                openCitation(entry: entry, number: number)
+            }
 
-                Card {
-                    VStack(alignment: .leading, spacing: 10) {
-                        MarkdownText(entry.answerText, lineSpacing: 7) { number in
-                            openCitation(entry: entry, number: number)
-                        }
+            if !entry.citations.isEmpty {
+                Rectangle().fill(Tokens.hairline).frame(height: 0.5)
+                Button {
+                    withAnimation(Motion.animation(.snappy(duration: 0.2))) {
+                        model.toggleSources(entry)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(momentsLabel(entry))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.meta)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Tokens.chevron)
+                            .rotationEffect(.degrees(showSources ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
-                        if !entry.citations.isEmpty {
-                            Rectangle().fill(Tokens.hairline).frame(height: 0.5)
-                            Button {
-                                withAnimation(Motion.animation(.snappy(duration: 0.2))) {
-                                    model.showSources.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(momentsLabel(entry))
-                                        .font(AppFont.footnote)
-                                        .foregroundStyle(Tokens.meta)
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(Tokens.chevron)
-                                        .rotationEffect(.degrees(model.showSources ? 90 : 0))
-                                }
-                                .contentShape(Rectangle())
+                if showSources {
+                    ForEach(sources(entry), id: \.number) { source in
+                        Button {
+                            openConversation(id: source.id)
+                        } label: {
+                            HStack(spacing: 8) {
+                                CitationChip(number: source.number)
+                                Text(source.title)
+                                    .font(AppFont.footnote)
+                                    .foregroundStyle(Tokens.tint)
+                                Spacer(minLength: 0)
                             }
-                            .buttonStyle(.plain)
-
-                            if model.showSources {
-                                ForEach(sources(entry), id: \.number) { source in
-                                    Button {
-                                        openConversation(id: source.id)
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            CitationChip(number: source.number)
-                                            Text(source.title)
-                                                .font(AppFont.footnote)
-                                                .foregroundStyle(Tokens.tint)
-                                            Spacer(minLength: 0)
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -260,6 +310,10 @@ struct AskSheetView: View {
 
     // MARK: - Composer
 
+    private var canSend: Bool {
+        !model.draft.trimmingCharacters(in: .whitespaces).isEmpty && !model.isSending
+    }
+
     private var composer: some View {
         HStack(spacing: 10) {
             TextField(
@@ -284,9 +338,8 @@ struct AskSheetView: View {
                 Haptics.sent()
                 model.sendDraft()
             }
-                .disabled(model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                .opacity(
-                    model.draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
+                .disabled(!canSend)
+                .opacity(canSend ? 1 : 0.4)
         }
     }
 }
@@ -360,24 +413,31 @@ struct ScopeMenu: View {
 @MainActor
 @Observable
 final class AskViewModel {
-    enum SheetState: Equatable {
-        case initial
-        case loading(question: String)
-        case answer(AskEntry)
-        case failed(question: String)
-    }
+    /// The open conversation, oldest turn first. Empty means the sheet is showing Recent.
+    private(set) var turns: [AskEntry] = []
+    /// The question waiting on an answer, and the one whose answer failed. Only one at a time.
+    private(set) var pendingQuestion: String?
+    private(set) var failedQuestion: String?
+    /// Thread the next answer joins. Nil until the first answer of a new conversation lands,
+    /// which is what mints it.
+    private var threadId: String?
 
-    var state: SheetState = .initial
     var scope: AskScope = .lastDays(2)
-    var recent: [AskEntry] = []
+    var recent: [AskThread] = []
     var draft = ""
-    var showSources = false
+    var expandedSources: Set<String> = []
     var confirmClear = false
 
     var hasContent: Bool { AskLibraryDataSources.current.ask.hasContent }
-    var isFollowUp: Bool {
-        if case .answer = state { return true }
-        return false
+    /// True once a conversation is open — including while its first answer is still coming.
+    var isInThread: Bool {
+        !turns.isEmpty || pendingQuestion != nil || failedQuestion != nil
+    }
+    /// Anything after the first question is a follow-up, so the composer says so.
+    var isFollowUp: Bool { isInThread }
+    /// Changes on every turn added, sent, or failed — the cue to scroll to the newest one.
+    var threadProgress: String {
+        "\(turns.count)|\(pendingQuestion ?? "")|\(failedQuestion ?? "")"
     }
 
     private var prepared = false
@@ -399,34 +459,77 @@ final class AskViewModel {
     }
 
     func reloadRecent() async {
-        recent = (try? await AskLibraryDataSources.current.ask.recent()) ?? []
+        recent = (try? await AskLibraryDataSources.current.ask.recentThreads()) ?? []
     }
+
+    /// True while an answer is on its way — a second question sent now would race the first
+    /// into the same thread and land out of order.
+    var isSending: Bool { pendingQuestion != nil }
 
     func sendDraft() {
         let question = draft.trimmingCharacters(in: .whitespaces)
-        guard !question.isEmpty else { return }
+        guard !question.isEmpty, !isSending else { return }
         draft = ""
         send(question)
     }
 
+    /// Asks the next turn of the open conversation. The turns already on screen go with it,
+    /// so a follow-up is answered in context instead of as a fresh question.
     func send(_ question: String) {
-        state = .loading(question: question)
-        showSources = false
+        pendingQuestion = question
+        failedQuestion = nil
+        let thread = openThread
         Task {
             do {
                 let entry = try await AskLibraryDataSources.current.ask.ask(
-                    question: question, scope: scope)
-                state = .answer(entry)
+                    question: question, thread: thread, scope: scope)
+                // The first answer of a new conversation is what mints its thread id.
+                threadId = entry.threadId
+                turns.append(entry)
+                pendingQuestion = nil
                 await reloadRecent()
             } catch {
-                state = .failed(question: question)
+                pendingQuestion = nil
+                failedQuestion = question
             }
         }
     }
 
-    func reopen(_ entry: AskEntry) {
-        showSources = false
-        state = .answer(entry)
+    func retry() {
+        guard let question = failedQuestion else { return }
+        send(question)
+    }
+
+    /// The conversation as the data source needs it: nil until it has a turn to build on.
+    private var openThread: AskThread? {
+        guard let threadId, !turns.isEmpty else { return nil }
+        return AskThread(id: threadId, turns: turns)
+    }
+
+    func reopen(_ thread: AskThread) {
+        expandedSources = []
+        failedQuestion = nil
+        pendingQuestion = nil
+        threadId = thread.id
+        turns = thread.turns
+    }
+
+    /// Back to Recent, ready for an unrelated question. The conversation is already saved.
+    func startNewConversation() {
+        expandedSources = []
+        failedQuestion = nil
+        pendingQuestion = nil
+        threadId = nil
+        turns = []
+        draft = ""
+    }
+
+    func toggleSources(_ entry: AskEntry) {
+        if expandedSources.contains(entry.id) {
+            expandedSources.remove(entry.id)
+        } else {
+            expandedSources.insert(entry.id)
+        }
     }
 
     func clearHistory() {

@@ -50,6 +50,11 @@ public struct LibraryStore: Sendable {
 
     public func recentAsks() async throws -> [AskEntry] { try await askHistory.recent() }
 
+    /// Recent Ask conversations, each with all of its turns.
+    public func recentAskThreads() async throws -> [AskThread] {
+        try await askHistory.recentThreads()
+    }
+
     // --- observations --------------------------------------------------------------------------
 
     /// Streams library sections. Terminates when the consuming task is cancelled.
