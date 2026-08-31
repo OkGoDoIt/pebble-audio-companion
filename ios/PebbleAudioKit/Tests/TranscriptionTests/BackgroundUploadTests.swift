@@ -281,3 +281,64 @@ private final class FakeUploadQueue: @unchecked Sendable {
         #expect(f.jobStore.load(jobId: "seg3") == nil)
     }
 }
+
+/// The `handleEventsForBackgroundURLSession` contract. iOS terminates an app that is handed a
+/// completion handler and never calls it, so these assert the bookkeeping directly — the session
+/// itself is lazy and is never created here.
+@Suite struct BackgroundUploaderSessionTests {
+
+    @Test func sessionIdentifierIsNotTheOldKmpApps() {
+        // Plan 4.8: the release build installs over the old app and inherits its container, so
+        // reusing the identifier would adopt that app's still-queued upload tasks.
+        #expect(
+            URLSessionBackgroundUploader.sessionIdentifier
+                != "dev.audiocompanion.app.transcription-upload"
+        )
+    }
+
+    @Test func aRegisteredCompletionHandlerRunsWhenTheSessionsEventsDrain() {
+        let uploader = URLSessionBackgroundUploader(sessionIdentifier: "test.\(UUID().uuidString)")
+        let calls = Counter()
+        uploader.addBackgroundEventsCompletion { calls.increment() }
+
+        #expect(uploader.pendingBackgroundEventsCompletions == 1)
+        #expect(calls.value == 0, "it must NOT be called before the session says it is done")
+
+        uploader.didFinishBackgroundEvents()
+
+        #expect(calls.value == 1)
+        #expect(uploader.pendingBackgroundEventsCompletions == 0)
+    }
+
+    @Test func handlersAccumulateSoASecondBatchNeverDropsTheFirst() {
+        let uploader = URLSessionBackgroundUploader(sessionIdentifier: "test.\(UUID().uuidString)")
+        let first = Counter()
+        let second = Counter()
+        uploader.addBackgroundEventsCompletion { first.increment() }
+        uploader.addBackgroundEventsCompletion { second.increment() }
+
+        uploader.didFinishBackgroundEvents()
+
+        #expect(first.value == 1)
+        #expect(second.value == 1)
+    }
+
+    @Test func drainingTwiceNeverCallsAHandlerAgain() {
+        let uploader = URLSessionBackgroundUploader(sessionIdentifier: "test.\(UUID().uuidString)")
+        let calls = Counter()
+        uploader.addBackgroundEventsCompletion { calls.increment() }
+
+        uploader.didFinishBackgroundEvents()
+        uploader.didFinishBackgroundEvents()
+
+        #expect(calls.value == 1)
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
+}

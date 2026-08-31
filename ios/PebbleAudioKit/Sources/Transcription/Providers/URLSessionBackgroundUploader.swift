@@ -11,7 +11,12 @@ import Foundation
 /// relaunches.
 public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @unchecked Sendable {
     /// One background session per app (the system allows a single live session per identifier).
-    public static let sessionIdentifier = "dev.audiocompanion.app.transcription-upload"
+    ///
+    /// DELIBERATELY not the KMP app's `dev.audiocompanion.app.transcription-upload` (plan Part
+    /// 4.8: "Use a NEW background-session identifier"). The release build installs over the old
+    /// app and inherits its container; reusing the identifier would have this app adopt the dead
+    /// app's still-queued upload tasks and replay their outcomes against job ids it never wrote.
+    public static let sessionIdentifier = "dev.audiocompanion.app.swift-transcription-upload"
 
     public static let shared = URLSessionBackgroundUploader()
 
@@ -20,9 +25,9 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
 
     private let lock = NSLock()
     private var responseData: [Int: Data] = [:]
-    /// Set by the AppDelegate from `handleEventsForBackgroundURLSession`; called when events
-    /// drain so the system can snapshot and re-suspend the app.
-    private var _backgroundEventsCompletion: (() -> Void)?
+    /// Registered by the app from `handleEventsForBackgroundURLSession`; called when events drain
+    /// so the system can snapshot and re-suspend the app.
+    private var backgroundEventsCompletions: [@Sendable () -> Void] = []
 
     private let sessionIdentifierValue: String
     private lazy var session: URLSession = {
@@ -39,9 +44,19 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
         super.init()
     }
 
-    public var backgroundEventsCompletion: (() -> Void)? {
-        get { lock.withLock { _backgroundEventsCompletion } }
-        set { lock.withLock { _backgroundEventsCompletion = newValue } }
+    /// Registers a `handleEventsForBackgroundURLSession` completion handler.
+    ///
+    /// Handlers ACCUMULATE rather than replace: iOS can hand over a second batch of events before
+    /// the first has drained, and a handler dropped on the floor is precisely what gets the app
+    /// killed ("failed to call the completion handler"). Every registered handler is called
+    /// exactly once, when the session says its events are done.
+    public func addBackgroundEventsCompletion(_ completion: @escaping @Sendable () -> Void) {
+        lock.withLock { backgroundEventsCompletions.append(completion) }
+    }
+
+    /// Handlers still waiting on `urlSessionDidFinishEvents` (tests assert the contract).
+    public var pendingBackgroundEventsCompletions: Int {
+        lock.withLock { backgroundEventsCompletions.count }
     }
 
     public func enqueue(_ request: CloudUploadRequest) async {
@@ -100,13 +115,15 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
         outcomeContinuation.yield(outcome)
     }
 
-    fileprivate func didFinishBackgroundEvents() {
-        let completion = lock.withLock { () -> (() -> Void)? in
-            let value = _backgroundEventsCompletion
-            _backgroundEventsCompletion = nil
+    /// Internal (not fileprivate) so the completion-handler contract is testable without a real
+    /// background session — creating one is the only other way to reach this.
+    func didFinishBackgroundEvents() {
+        let completions = lock.withLock { () -> [@Sendable () -> Void] in
+            let value = backgroundEventsCompletions
+            backgroundEventsCompletions.removeAll()
             return value
         }
-        completion?()
+        for completion in completions { completion() }
     }
 
     /// Separate delegate object so the uploader itself stays a plain `NSObject` without
