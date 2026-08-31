@@ -265,10 +265,13 @@ struct ConversationScreen: View {
                     Text(actionTitle)
                         .font(AppFont.smallButton)
                         .foregroundStyle(Tokens.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 9)
                         .frame(maxWidth: .infinity, minHeight: 36)
                         .background(
                             RoundedRectangle(cornerRadius: 10)
                                 .strokeBorder(Tokens.tintBorder))
+                        .frame(minHeight: 44)
                         .contentShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)

@@ -26,7 +26,8 @@ struct SettingsAboutYouScreen: View {
                         Text(Copy.Common.edit)
                             .font(AppFont.chip)
                             .foregroundStyle(Tokens.tint)
-                            .frame(minHeight: 30)
+                            .padding(.leading, 12)
+                            .frame(minHeight: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
