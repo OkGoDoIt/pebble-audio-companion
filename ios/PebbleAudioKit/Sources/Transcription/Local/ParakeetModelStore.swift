@@ -246,7 +246,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
                 // A server that omits Content-Length reports total 0/-1; fall back to the
                 // catalog size so the bar still moves against a sane denominator.
                 let denominator = total > 1024 ? total : expected
-                Task { await self.set(spec.id, .downloading(receivedBytes: received, totalBytes: denominator)) }
+                Task { await self.advanceProgress(spec.id, received: received, total: denominator) }
             }
             try Task.checkCancellation()
             set(spec.id, .installing)
@@ -289,6 +289,16 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         if location.isInstalled(spec) { return .installed }
         if let known = stateById[spec.id], case .failed = known { return known }
         return .notInstalled
+    }
+
+    /// Progress arrives on the URLSession delegate queue and reaches the actor through a hop,
+    /// so a late callback could otherwise resurrect `.downloading` after the install finished,
+    /// or move the bar backwards. Both are dropped here.
+    private func advanceProgress(_ modelId: String, received: Int64, total: Int64) {
+        guard case .downloading(let current, _) = stateById[modelId], received >= current else {
+            return
+        }
+        set(modelId, .downloading(receivedBytes: received, totalBytes: total))
     }
 
     private func set(_ modelId: String, _ state: ParakeetInstallState) {
