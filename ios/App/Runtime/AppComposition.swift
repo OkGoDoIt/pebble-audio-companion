@@ -214,7 +214,12 @@ final class AppComposition {
                 contextTerms: contextTerms
             )
         )
-        let localBatch = SpeechAnalyzerProvider()
+        // The local engine resolves per call from the persisted local-model selection: Apple
+        // SpeechAnalyzer (the default, with the id read as its language) or a downloaded
+        // Parakeet model.
+        let localBatch = SelectableLocalTranscriptionProvider(
+            selected: { settingsBox.localTranscriptionModelId }
+        )
         let router = TranscriptionModeRouter(
             local: localBatch,
             remote: batchCloud,
@@ -240,7 +245,9 @@ final class AppComposition {
             // forever; the selectable provider forwards the probe to whichever cloud backend
             // the user picked.
             connectivityCheck: batchCloud,
-            modelLifecycle: LocalModelLifecycle(),
+            // Real now that Parakeet can be the local engine: a resident multi-hundred-MB
+            // model must be dropped on backgrounding, memory pressure and idle.
+            modelLifecycle: localBatch,
             log: AppRuntimeLog.runtimeLog
         )
 
