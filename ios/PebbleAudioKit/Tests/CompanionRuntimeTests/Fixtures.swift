@@ -66,6 +66,76 @@ struct UnlimitedFreeSpace: FreeSpaceProvider {
     func freeBytes() -> Int64 { .max }
 }
 
+/// Records everything handed to the suspension-proof upload transport, so a test can prove what
+/// did — and, more importantly, what did NOT — leave the device.
+final class RecordingBackgroundUploader: BackgroundUploader, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [CloudUploadRequest] = []
+    private var inFlight: Set<String> = []
+    private var _reconcileCount = 0
+
+    let outcomes: AsyncStream<CloudUploadOutcome>
+    private let continuation: AsyncStream<CloudUploadOutcome>.Continuation
+
+    init(inFlight: Set<String> = []) {
+        self.inFlight = inFlight
+        (outcomes, continuation) = AsyncStream<CloudUploadOutcome>.makeStream(
+            bufferingPolicy: .unbounded
+        )
+    }
+
+    var enqueued: [CloudUploadRequest] { lock.withLock { recorded } }
+    var uploadedSegmentIds: [String] { enqueued.map(\.jobId) }
+    var reconcileCount: Int { lock.withLock { _reconcileCount } }
+
+    func enqueue(_ request: CloudUploadRequest) async {
+        lock.withLock {
+            recorded.append(request)
+            inFlight.insert(request.jobId)
+        }
+    }
+
+    func reconcile() async { lock.withLock { _reconcileCount += 1 } }
+
+    func inFlightJobIds() async -> Set<String> { lock.withLock { inFlight } }
+
+    func deliver(_ outcome: CloudUploadOutcome) {
+        lock.withLock { _ = inFlight.remove(outcome.jobId) }
+        continuation.yield(outcome)
+    }
+}
+
+/// A cloud backend that can background-upload but never touches the network: the upload response
+/// IS the transcript (the OpenAI single-shot shape).
+final class FakeCloudUploadBackend: TranscriptionProvider, CloudUploadCapable, @unchecked Sendable {
+    let id = "fake-cloud"
+
+    func isAvailable() async -> Bool { true }
+
+    func transcribe(
+        pcmChunks: AsyncThrowingStream<Data, Error>, sampleRateHz: Int
+    ) async throws -> TranscriptionResult {
+        TranscriptionResult(text: "unused", providerId: id, modelUsed: "m")
+    }
+
+    func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+        CloudUploadPlan(
+            url: "https://fake.invalid/transcriptions",
+            file: MultipartBody.FilePart(
+                name: "file", filename: "s.wav", contentType: "audio/wav", bytes: wav
+            )
+        )
+    }
+
+    func onUploadResponse(httpStatus: Int, body: String) async throws -> CloudUploadStep {
+        .done(TranscriptionResult(text: body, providerId: id, modelUsed: "m"))
+    }
+
+    func completeControlPlane(controlState: String) async throws -> TranscriptionResult {
+        TranscriptionResult(text: controlState, providerId: id, modelUsed: "m")
+    }
+}
+
 /// In-memory transcript index so donation is observable without SQLite/Spotlight.
 final class RecordingIndex: TranscriptIndexing, @unchecked Sendable {
     private let lock = NSLock()
@@ -279,9 +349,19 @@ final class RuntimeFixture: @unchecked Sendable {
     let runtime: CompanionRuntime
     let stages = StageRecorder()
 
+    /// The background upload transport (only driven when `withBackgroundUploads` is set).
+    let uploads = RecordingBackgroundUploader()
+
     init(
         settings: RuntimeSettingsSnapshot = RuntimeSettingsSnapshot(captureIntent: .active),
-        withLossNotifier: Bool = true
+        withLossNotifier: Bool = true,
+        /// Wires the real `BackgroundUploadWiring` coordinator onto `uploads`. Off by default so
+        /// the rest of the suite keeps its no-cloud runtime.
+        withBackgroundUploads: Bool = false,
+        /// Audio the coordinator "reads" for a segment; nil means the segment has no audio.
+        segmentAudio: @escaping @Sendable (String) async -> SegmentAudio? = { _ in
+            SegmentAudio(wav: Data(repeating: 7, count: 64), sampleRateHz: 16_000)
+        }
     ) throws {
         root = Fixture.temporaryDirectory("root")
         snapshotRoot = Fixture.temporaryDirectory("group")
@@ -337,6 +417,25 @@ final class RuntimeFixture: @unchecked Sendable {
             pauseJournal: pauseJournal,
             lossEvaluator: withLossNotifier ? evaluator : nil
         )
+        let uploadCoordinator: BackgroundCloudUploadCoordinator? =
+            withBackgroundUploads
+            ? BackgroundUploadWiring.makeCoordinator(
+                uploader: uploads,
+                cloudProvider: SelectableCloudTranscriptionProvider(
+                    selected: { settingsBox.cloudTranscriptionProvider },
+                    openAi: FakeCloudUploadBackend(),
+                    soniox: FakeCloudUploadBackend()
+                ),
+                queue: queue,
+                transcripts: transcriptStore,
+                store: store,
+                files: SegmentFileReader(root: root),
+                root: root,
+                settings: settingsBox,
+                nowMs: { clock.nowMs },
+                audioSource: segmentAudio
+            )
+            : nil
         transcription = TranscriptionService(
             queue: queue,
             processor: processor,
@@ -344,6 +443,7 @@ final class RuntimeFixture: @unchecked Sendable {
             store: store,
             settings: settingsBox,
             clock: clock,
+            uploader: uploadCoordinator,
             modelLifecycle: lifecycle
         )
         let transcriptStore = self.transcriptStore
