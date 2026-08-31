@@ -50,7 +50,7 @@ scare-mongering; keep functionality, cut ceremony.
 | Q6 | Calm live preview | 1-line italic rolling snippet on the Live row; full text on the Live Conversation screen |
 | Q7 | Settings split into pushed screens | The 5 sub-screens in Part 2; API keys in Keychain with a change flow (never inline fields); retentionDays REAL (old app's was placebo); no placebo controls anywhere |
 | Q8 | Churn investigated first | Resolved: reattach fixed in the current pair (app 1dcc6d0/1e5db02, fw 23750e1f9/f91b6e0f3); conversations group segments in the UI (Part 3) |
-| Q9 | Loss alerts only | One notification type: ≥30 s continuous loss or spool overflow; ≤1/hour; deep-links to Today; permission requested at first loss event, not onboarding. No other notifications |
+| Q9 | Loss alerts only, **opt-in** | One notification type: ≥30 s continuous loss or spool overflow; ≤1/hour; deep-links to Today. **Default OFF** behind a Settings toggle (`loss_alerts_enabled`) — revised 2026-08-31 on device feedback: an unrequested alert for every Bluetooth blip is noise, and the coverage strip already carries that story calmly. Permission is requested when the user turns the toggle ON, never off the back of a gap. No other notifications |
 | Q10 | Tags editable | AI proposes; add/remove/rename in the Tag Editor sheet; rename is global |
 | Q11 | Strip taps explain | Waveform/coverage taps show a popover naming the state ("quiet 2:10–2:14 PM", "missing 40 sec — Bluetooth"); navigation stays in lists |
 | Q12 | Dark mode during the build | Light-only mockups; derive dark from iOS semantic colors anchored on Part 2 tokens; tune on device |
