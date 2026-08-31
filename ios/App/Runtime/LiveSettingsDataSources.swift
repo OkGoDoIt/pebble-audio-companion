@@ -23,6 +23,7 @@ enum LiveSettingsDataSources {
             localModel: LiveLocalModelManager(composition: composition),
             aboutYou: LiveAboutYouSource(composition: composition),
             diagnostics: LiveDiagnosticsSource(composition: composition),
+            cloudHealth: LiveCloudHealthSource(composition: composition),
             aiModels: AiModels.all.map {
                 AiModelOption(id: $0.id, displayName: $0.displayName)
             }
@@ -74,6 +75,20 @@ final class LiveWatchStatusSource: WatchStatusSource {
         }
     }
 
+    /// Attempts a connection. No capture-intent side effects — connecting must never silently
+    /// enable recording (anti-B3).
+    func findWatch() {
+        Task { [composition] in await composition.runtime.reconnect() }
+    }
+
+    /// Forgets the binding locally, so the next connection re-consents on the watch.
+    func forget() {
+        Task { [composition] in
+            let receiver = await composition.runtime.environment.receiver
+            await receiver.revokeReceiverLocally()
+        }
+    }
+
     /// The watch packs its firmware version as major/minor/patch bytes; battery is not part of
     /// the audio-companion service, so it stays unknown until the watch reports one.
     private static func firmwareLabel(_ packed: UInt32) -> String? {
@@ -116,6 +131,13 @@ final class LiveStorageStatsSource: StorageStatsSource {
             recordingCount = metas.count
             recordingsSize = Formatting.storageSize(bytes)
         }
+    }
+
+    /// Real WAV copies into `Documents/PebbleAudioExports`, visible in Files.
+    func exportAllAudio() async -> Int {
+        let live = await composition.runtime.environment.live
+        let result = try? await live.exportAll()
+        return result?.fileCount ?? 0
     }
 
     /// Deletes every recording and everything derived from it — the full cascade, not just the
@@ -317,6 +339,50 @@ final class LiveAboutYouSource: AboutYouSource {
         let end = start.addingTimeInterval(Double(weeks) * 7 * 24 * 60 * 60)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate).compactMap { $0.title }.filter { !$0.isEmpty }
+    }
+}
+
+// MARK: - Cloud connectivity
+
+/// Test Connection over the REAL `CloudHealthMonitor`, which is also written by every actual
+/// transcription attempt — so a silent local fallback can no longer hide a failing provider
+/// behind a green row that only an explicit test ever updated.
+@MainActor
+@Observable
+final class LiveCloudHealthSource: CloudHealthSource {
+    @ObservationIgnored private let composition: AppComposition
+    private(set) var testState: CloudTestState = .untested
+
+    init(composition: AppComposition) {
+        self.composition = composition
+        let monitor = composition.cloudHealth
+        testState = Self.map(monitor.state, nowMs: composition.clock.nowMs)
+        Task { [weak self] in
+            for await health in monitor.updates() {
+                guard let self else { return }
+                testState = Self.map(health, nowMs: composition.clock.nowMs)
+            }
+        }
+    }
+
+    func test() {
+        guard testState != .testing else { return }
+        testState = .testing
+        Task { [composition] in await composition.runtime.testCloudConnection() }
+    }
+
+    private static func map(_ health: CloudHealth, nowMs: Int64) -> CloudTestState {
+        switch health.status {
+        case .unknown: return .untested
+        case .checking: return .testing
+        case .ok:
+            let ago = health.checkedAtMs.map {
+                TimeFmt.relative(Date(timeIntervalSince1970: Double($0) / 1000))
+            }
+            return .connected(ago: ago ?? "just now")
+        case .failed: return .problem(health.message ?? "Could not reach the provider")
+        case .notConfigured: return .problem(Copy.Settings.TranscriptionAI.notSet)
+        }
     }
 }
 

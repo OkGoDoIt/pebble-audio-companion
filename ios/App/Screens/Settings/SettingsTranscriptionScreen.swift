@@ -11,8 +11,7 @@ struct SettingsTranscriptionScreen: View {
     private var sources: SettingsDataSources { SettingsDataSources.current }
     private var model: LocalModelManaging { sources.localModel }
 
-    private enum TestState: Equatable { case result(String), testing }
-    @State private var testState: TestState = .result("2 min ago")
+    private var cloudHealth: CloudHealthSource { sources.cloudHealth }
 
     var body: some View {
         @Bindable var settings = settings
@@ -108,24 +107,26 @@ struct SettingsTranscriptionScreen: View {
 
     @ViewBuilder
     private var testAccessory: some View {
-        switch testState {
+        switch cloudHealth.testState {
+        case .untested:
+            // Nothing has been asked yet, so there is nothing honest to report.
+            EmptyView()
         case .testing:
             ProgressView().controlSize(.small)
-        case .result(let ago):
+        case .connected(let ago):
             Text(Copy.Settings.TranscriptionAI.connectedAgo(ago))
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.good)
+        case .problem(let message):
+            Text(message)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.attention)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
         }
     }
 
-    private func testConnection() {
-        guard testState != .testing else { return }
-        testState = .testing
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            testState = .result("just now")
-        }
-    }
+    private func testConnection() { cloudHealth.test() }
 }
 
 // MARK: - Local model row (the four 6.7 states)

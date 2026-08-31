@@ -11,15 +11,15 @@ struct ComponentGallery: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                waveform
+                coverage
+                chips
                 statusCards
                 onboardingFailures
                 lifecycleCards
                 cards
-                chips
                 dotsAndBadges
                 buttons
-                waveform
-                coverage
                 rows
                 sheetChrome
                 snackbarSection

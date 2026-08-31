@@ -99,14 +99,14 @@ struct SettingsStorageScreen: View {
         }
     }
 
-    /// B10: shows progress and ends in a result line, never fire-and-forget.
+    /// B10: shows progress and ends in a result line, never fire-and-forget. The count is
+    /// what was actually written, not what we hoped to write.
     private func exportAll() {
         guard exportState != .exporting else { return }
-        let count = storage.recordingCount
         exportState = .exporting
         Task {
-            try? await Task.sleep(for: .seconds(2.2))
-            exportState = .done(count)
+            let written = await storage.exportAllAudio()
+            exportState = .done(written)
         }
     }
 }

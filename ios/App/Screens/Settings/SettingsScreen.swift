@@ -41,17 +41,19 @@ struct SettingsScreen: View {
     private var watchCard: some View {
         ListCard {
             NavigationLink(value: Route.settings(.watch)) {
-                HStack(spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
                     WatchIconTile(side: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sources.watch.deviceName)
                             .font(AppFont.rowTitle)
                             .foregroundStyle(Tokens.label)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(watchStatusLine)
                             .font(AppFont.footnote)
                             .foregroundStyle(watchStatusColor)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Tokens.chevron)
@@ -61,15 +63,16 @@ struct SettingsScreen: View {
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 12) {
+            // The toggle keeps its intrinsic width, so at accessibility sizes the label
+            // has to move above it rather than be hyphenated into the leftover column.
+            Toggle(isOn: backgroundAudioBinding) {
                 Text(Copy.Settings.Root.backgroundAudio)
                     .font(AppFont.callout)
                     .foregroundStyle(Tokens.label)
-                Spacer(minLength: 10)
-                Toggle(Copy.Settings.Root.backgroundAudio, isOn: backgroundAudioBinding)
-                    .labelsHidden()
-                    .tint(Tokens.good)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .toggleStyle(.switch)
+            .tint(Tokens.good)
         }
     }
 

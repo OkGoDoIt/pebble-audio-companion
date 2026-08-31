@@ -17,6 +17,10 @@ protocol WatchStatusSource: AnyObject {
     /// The watch's own reported state — approved vocabulary ("Recording", "Paused", …).
     var watchReports: String { get }
     var isConnected: Bool { get }
+    /// Attempts a connection. NO capture side effects (anti-B3).
+    func findWatch()
+    /// Drops the receiver binding so the next connection re-consents on the watch.
+    func forget()
 }
 
 @MainActor
@@ -27,6 +31,9 @@ final class MockWatchStatusSource: WatchStatusSource {
     var firmwareVersion: String? = "v4.36"
     var watchReports = Copy.Status.recording
     var isConnected = true
+
+    func findWatch() {}
+    func forget() { isConnected = false }
 }
 
 // MARK: - Storage
@@ -37,6 +44,8 @@ protocol StorageStatsSource: AnyObject {
     var recordingsSize: String { get }
     var freeSpace: String { get }
     func deleteAllRecordings()
+    /// Writes WAV copies of every closed recording. Returns how many files were written.
+    func exportAllAudio() async -> Int
 }
 
 @MainActor
@@ -59,6 +68,11 @@ final class MockStorageStatsSource: StorageStatsSource {
     func deleteAllRecordings() {
         recordingCount = 0
         recordingsSize = "0 KB"
+    }
+
+    func exportAllAudio() async -> Int {
+        try? await Task.sleep(for: .seconds(2.2))
+        return recordingCount
     }
 }
 
@@ -189,6 +203,39 @@ final class MockAboutYouSource: AboutYouSource {
     }
 }
 
+// MARK: - Cloud connectivity (Test Connection)
+
+/// What the Test Connection row has to say. `untested` is honest silence — the row shows no
+/// verdict until someone has actually asked.
+enum CloudTestState: Equatable {
+    case untested
+    case testing
+    /// e.g. "just now" / "2 min ago".
+    case connected(ago: String)
+    case problem(String)
+}
+
+@MainActor
+protocol CloudHealthSource: AnyObject {
+    var testState: CloudTestState { get }
+    func test()
+}
+
+@MainActor
+@Observable
+final class MockCloudHealthSource: CloudHealthSource {
+    private(set) var testState: CloudTestState = .connected(ago: "2 min ago")
+
+    func test() {
+        guard testState != .testing else { return }
+        testState = .testing
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            self?.testState = .connected(ago: "just now")
+        }
+    }
+}
+
 // MARK: - Diagnostics
 
 struct DiagnosticSegment: Identifiable {
@@ -262,6 +309,7 @@ final class SettingsDataSources {
     let localModel: LocalModelManaging
     let aboutYou: AboutYouSource
     let diagnostics: DiagnosticsSource
+    let cloudHealth: CloudHealthSource
     let aiModels: [AiModelOption]
 
     init(
@@ -270,6 +318,7 @@ final class SettingsDataSources {
         localModel: LocalModelManaging? = nil,
         aboutYou: AboutYouSource? = nil,
         diagnostics: DiagnosticsSource? = nil,
+        cloudHealth: CloudHealthSource? = nil,
         aiModels: [AiModelOption]? = nil
     ) {
         self.watch = watch ?? MockWatchStatusSource()
@@ -277,6 +326,7 @@ final class SettingsDataSources {
         self.localModel = localModel ?? MockLocalModelManager()
         self.aboutYou = aboutYou ?? MockAboutYouSource()
         self.diagnostics = diagnostics ?? MockDiagnosticsSource()
+        self.cloudHealth = cloudHealth ?? MockCloudHealthSource()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
             .init(id: "gpt-5.6-mini", displayName: "GPT-5.6 Mini"),
