@@ -219,4 +219,34 @@ import Transcription
 
         #expect(try await fixture.runtime.library.library().isEmpty)
     }
+
+    /// "Delete All Recordings" has to include the one still being recorded. The cascade refuses
+    /// an open segment by design, so a caller that merely looped over `listSegments()` left the
+    /// in-progress recording behind and it reappeared in the Library the moment it closed —
+    /// after a confirmed, destructive, irreversible action said everything was gone.
+    @Test func deleteAllRecordingsIncludesTheOpenSegment() async throws {
+        let fixture = try RuntimeFixture()
+        let closed = try await Fixture.writeSegment(into: fixture.store)
+        _ = try await Fixture.writeSegment(
+            into: fixture.store, streamId: 0x5EED_0002,
+            startTimeMs: 1_756_512_600_000, receivedAtMs: 1_756_512_600_000, close: false)
+        let openId = try #require(await fixture.store.openSegmentId)
+        _ = try fixture.transcriptStore.save(
+            closed,
+            result: RoutedTranscription(
+                text: "hello there", modeUsed: .localOnly, providerId: "fake", modelUsed: nil
+            )
+        )
+
+        let deleted = await fixture.runtime.deleteAllRecordings()
+
+        #expect(deleted == 2)
+        #expect(await fixture.store.readMeta(closed) == nil)
+        #expect(await fixture.store.readMeta(openId) == nil)
+        #expect(await fixture.store.listSegments().isEmpty)
+        // And nothing derived survives it either — including the queue rows and transcript
+        // files the bulk sweep exists to catch.
+        #expect(fixture.transcriptStore.load(closed) == nil)
+        #expect(try fixture.queue.all().isEmpty)
+    }
 }

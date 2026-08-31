@@ -346,6 +346,35 @@ public actor CompanionRuntime {
         return deleted
     }
 
+    /// "Delete All Recordings" — everything, including the one still being recorded.
+    ///
+    /// Three steps, in this order, because each one is a hole the naive loop left behind:
+    /// 1. Close the open segment. `DeleteCascade` refuses an open segment (its store
+    ///    `precondition` would trap), so a loop over `listSegments()` silently skipped the
+    ///    recording in progress and it reappeared in the Library the moment it closed.
+    /// 2. Cascade every segment: audio, transcript, follow-ups, single-source AI outputs,
+    ///    quoting recaps, annotations and the search-index rows.
+    /// 3. Sweep transcription state that has no segment left to hang off — queue tasks and
+    ///    transcript files orphaned by an earlier interrupted delete or a crash mid-cascade.
+    ///    Without it "delete all" can leave a queue that keeps retrying vanished audio.
+    ///
+    /// Returns how many segments were destroyed.
+    @discardableResult
+    public func deleteAllRecordings() async -> Int {
+        await environment.receiver.closeOpenSegment()
+        var deleted = 0
+        for meta in await environment.store.listSegments()
+        where await environment.cascade.deleteSegment(meta.segmentId) {
+            deleted += 1
+        }
+        do { try await environment.transcription.deleteAllTranscriptionData() } catch {
+            log.failure("delete all transcription data", error)
+        }
+        await environment.diagnostics.refresh()
+        await refreshSnapshot(.manual)
+        return deleted
+    }
+
     /// Conversation delete with the 5 s undo window. The token goes to the app's snackbar; call
     /// `commitDelete` when the window closes or `restoreDelete` on Undo.
     public func deleteConversation(id: String) async -> PendingConversationDelete {

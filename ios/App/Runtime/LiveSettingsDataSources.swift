@@ -9,6 +9,7 @@ import Receiver
 import SegmentStore
 import StatusUI
 import Transcription
+import UIKit
 
 // The real Settings sources. Every value here is measured, not decorated: storage is the actual
 // spool on disk, diagnostics are the runtime's own counters, and the local-model row reflects
@@ -118,22 +119,50 @@ final class LiveWatchStatusSource: WatchStatusSource {
 
 // MARK: - Storage
 
+/// Storage numbers that keep themselves honest.
+///
+/// These used to be read once during bootstrap and never again: `refresh()` is not on
+/// `StorageStatsSource`, so no screen could ask for one. On a fresh launch the store has not
+/// finished recovering yet, so Settings claimed "0 recordings · 0 KB" — while the watch was
+/// recording and the Library was full — and stayed there for the whole session. Nothing about
+/// the numbers is expensive to recompute, so the source now watches for the moments they can
+/// change instead of waiting to be asked.
 @MainActor
 @Observable
 final class LiveStorageStatsSource: StorageStatsSource {
     @ObservationIgnored private let composition: AppComposition
     private(set) var recordingCount = 0
     private(set) var recordingsSize = "0 KB"
-
-    var freeSpace: String {
-        ByteCountFormatter.string(
-            fromByteCount: VolumeFreeSpace().freeBytes(), countStyle: .file
-        )
-    }
+    /// Stored, not computed: a computed property has no observable state behind it, so SwiftUI
+    /// never re-read it and the free-space line was frozen at whatever it said on first draw.
+    private(set) var freeSpace = "—"
 
     init(composition: AppComposition) {
         self.composition = composition
         refresh()
+        observe()
+    }
+
+    /// The three moments the numbers move: a library write (a segment closed, a conversation
+    /// was deleted, recovery finished populating the store), returning to the app after
+    /// recording in the background, and a delete/export this screen just performed.
+    private func observe() {
+        let library = composition.runtime.library
+        Task { [weak self] in
+            for await _ in library.observeLibrary() {
+                guard let self else { return }
+                refresh()
+            }
+        }
+        Task { [weak self] in
+            let active = NotificationCenter.default.notifications(
+                named: UIApplication.didBecomeActiveNotification
+            )
+            for await _ in active {
+                guard let self else { return }
+                refresh()
+            }
+        }
     }
 
     func refresh() {
@@ -144,26 +173,41 @@ final class LiveStorageStatsSource: StorageStatsSource {
             var bytes: Int64 = 0
             for meta in metas { bytes += await store.logSizeBytes(meta.segmentId) }
             guard let self else { return }
-            recordingCount = metas.count
-            recordingsSize = Formatting.storageSize(bytes)
+            set(count: metas.count, bytes: bytes)
         }
+    }
+
+    /// Assigns only on a real change: `@Observable` invalidates on every set, and `refresh()`
+    /// now runs on every library tick — re-rendering the whole Settings tree for numbers that
+    /// did not move would be a lot of work to display the same string.
+    private func set(count: Int, bytes: Int64) {
+        let size = Formatting.storageSize(bytes)
+        let free = ByteCountFormatter.string(
+            fromByteCount: VolumeFreeSpace().freeBytes(), countStyle: .file
+        )
+        if recordingCount != count { recordingCount = count }
+        if recordingsSize != size { recordingsSize = size }
+        if freeSpace != free { freeSpace = free }
     }
 
     /// Real WAV copies into `Documents/PebbleAudioExports`, visible in Files.
     func exportAllAudio() async -> Int {
         let live = await composition.runtime.environment.live
         let result = try? await live.exportAll()
+        // Free space just dropped by the size of everything that was written.
+        refresh()
         return result?.fileCount ?? 0
     }
 
     /// Deletes every recording and everything derived from it — the full cascade, not just the
-    /// audio files, so no orphan transcript or note survives the "delete all".
+    /// audio files, so no orphan transcript or note survives the "delete all". Delegated to the
+    /// runtime, which also closes the recording still in progress (a loop over `listSegments()`
+    /// here could not delete it, so it silently came back) and sweeps orphaned transcription
+    /// state.
     func deleteAllRecordings() {
         let composition = self.composition
         Task { [weak self] in
-            for meta in await composition.store.listSegments() {
-                await composition.runtime.deleteSegment(meta.segmentId)
-            }
+            await composition.runtime.deleteAllRecordings()
             self?.refresh()
         }
     }

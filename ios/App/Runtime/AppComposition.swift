@@ -52,6 +52,10 @@ final class AppComposition {
     let aiOutputs: AiOutputStore
     let recapStore: DailyRecapStore
     let personalContext: FilePersonalContextStore
+    /// Produces `PersonalContext.derivedTerms` — the keyword list the OpenAI STT prompt is
+    /// built from. Held so a surface that edits "About you" can ask for an immediate refresh
+    /// instead of waiting for the next transcription to notice.
+    let personalContextTerms: PersonalContextTermRefresher
 
     // --- pipeline ---------------------------------------------------------------------------
 
@@ -192,14 +196,23 @@ final class AppComposition {
         let diarize: @Sendable () -> Bool = { settingsBox.speakerLabelsEnabled }
         // "About You" feeds transcription bias and AI grounding — budgeted by the kit, never
         // dumped whole into a prompt.
+        //
+        // The OpenAI keyword bias needs `derivedTerms`, which an AI extraction produces from the
+        // pasted bio. That extractor needs `aiRouter`, built further down, so the read sites
+        // reach the refresher through a handle: every transcription asks "are the terms still
+        // in step with the bio?", and the refresher answers from a hash without a model call
+        // unless the text actually changed.
+        let termRefresh = PersonalContextTermRefreshHandle()
         let sonioxContext: @Sendable () -> String? = {
             PersonalContextFormatting.transcriptionText(personalContext.load())
         }
         let sttPrompt: @Sendable () -> String? = {
-            PersonalContextFormatting.openAiSttPrompt(personalContext.load())
+            termRefresh.nudge()
+            return PersonalContextFormatting.openAiSttPrompt(personalContext.load())
         }
         let contextTerms: @Sendable () -> [String] = {
-            PersonalContextFormatting.transcriptionTerms(personalContext.load())
+            termRefresh.nudge()
+            return PersonalContextFormatting.transcriptionTerms(personalContext.load())
         }
         let aiGrounding: @Sendable () -> String? = {
             PersonalContextFormatting.aiGroundingBlock(personalContext.load())
@@ -403,6 +416,22 @@ final class AppComposition {
             mode: { settingsBox.aiMode }
         )
         self.aiRouter = aiRouter
+
+        // The producer for `derivedTerms`. Without it `openAiSttPrompt` is nil for anyone who
+        // pastes a bio and never imports contacts — the About You screen's whole promise of
+        // getting names and jargon right, silently unbuilt.
+        let personalContextTerms = PersonalContextTermRefresher(
+            load: { personalContext.load() },
+            save: { _ = try personalContext.save($0) },
+            extractor: PersonalContextTermExtractor(router: aiRouter),
+            nowMs: nowMs,
+            log: { AppRuntimeLog.shared.record($0) }
+        )
+        self.personalContextTerms = personalContextTerms
+        termRefresh.install(personalContextTerms)
+        // Catch up at launch so a bio pasted during onboarding is already biasing the first
+        // recording, rather than only from the second one onwards.
+        Task { await personalContextTerms.refreshIfNeeded() }
 
         let enrichment = EnrichmentService(
             worker: EnrichmentWorker(
