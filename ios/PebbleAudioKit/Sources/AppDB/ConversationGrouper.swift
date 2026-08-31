@@ -44,21 +44,33 @@ public enum ConversationGrouper {
 
     // --- segment wall-clock endpoints ---------------------------------------------------------
 
-    /// `startTimeMs` is the STREAM birth wall clock (sample index 0); a segment's own start is
-    /// its first persisted sample anchored there. Falls back to `receivedAtMs` (phone clock)
-    /// for extent-less segments.
+    /// `startTimeMs` anchors sample index 0 — but only when the watch's sample counter really
+    /// started at 0 for this stream. It does not always: the counter free-runs on the watch
+    /// across reattach, so a reattached stream's first segment can carry a first index worth
+    /// hours. Anchoring that at `startTimeMs` places the segment HOURS INTO THE FUTURE (in
+    /// Roger's library, 197 of 435 segments, by up to 14.8 h), which inflates durations, files
+    /// conversations under the wrong day, and makes segments falsely abut the next one.
+    ///
+    /// The phone's own `receivedAtMs` is the ceiling: audio cannot have been recorded after the
+    /// phone received it. A spooled backfill legitimately anchors EARLIER, and that still works.
     public static func segmentStartMs(_ meta: SegmentMeta) -> Int64 {
         guard let first = meta.firstSampleIndex else { return meta.receivedAtMs }
-        return wallMs(ofSample: first, in: meta)
+        return min(wallMs(ofSample: first, in: meta), meta.receivedAtMs)
     }
 
-    /// End = start anchor + duration derived from the sample extents at the segment's rate
-    /// (16 kHz in practice); falls back to `closedAtMs` where extents are missing.
+    /// End = start + the wall time the sample extents span (quiet included — the watch keeps
+    /// counting through VAD-suppressed silence, so a mostly-quiet 15 min segment really is
+    /// 15 min long). Bounded by `closedAtMs`: the segment cannot still be recording after the
+    /// phone closed it, which is what kept a watch-side index jump from claiming 15 h.
     public static func segmentEndMs(_ meta: SegmentMeta) -> Int64 {
-        guard meta.firstSampleIndex != nil, let last = meta.lastSampleIndexExclusive else {
-            return meta.closedAtMs ?? segmentStartMs(meta)
+        let start = segmentStartMs(meta)
+        guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
+            last > first
+        else {
+            return max(meta.closedAtMs ?? start, start)
         }
-        return wallMs(ofSample: last, in: meta)
+        let spanMs = Int64((last - first) * 1000 / UInt64(meta.sampleRateHz > 0 ? meta.sampleRateHz : 16_000))
+        return max(min(start + spanMs, meta.closedAtMs ?? Int64.max), start)
     }
 
     static func wallMs(ofSample sampleIndex: UInt64, in meta: SegmentMeta) -> Int64 {
@@ -93,8 +105,12 @@ public enum ConversationGrouper {
     // --- grouping -----------------------------------------------------------------------------
 
     /// Pure grouping. Rules (plan Part 3):
-    /// - same `streamId` chains (rotation/reattach), OR next start < 5 min after previous end
-    ///   (any stream id);
+    /// - next start < 5 min after previous end chains (any stream id); same `streamId` also
+    ///   chains a rotation whose extents ABUT or overlap, which is what the stream-id clause
+    ///   was for. The clause used to be unbounded, and a Pebble stream id survives a long
+    ///   silent disconnect: in Roger's library 34 of the 52 genuine breaks ≥ 5 min — gaps of
+    ///   up to 10.5 HOURS — were glued back together by it, collapsing 438 segments into 17
+    ///   conversations spanning up to 53 h. A reattach after a real break is a new conversation;
     /// - VAD quiet never splits (quiet lives inside segments — nothing to do here);
     /// - PRECEDENCE: an explicit user Stop on the previous segment, or a pause-journal entry
     ///   between the segments, ALWAYS splits — even same-stream within 5 min;
@@ -137,10 +153,13 @@ public enum ConversationGrouper {
             if let prev = members.last {
                 let prevEnd = segmentEndMs(prev)
                 let nextStart = segmentStartMs(meta)
+                let chains =
+                    nextStart - prevEnd < chainWindowMs
+                    || (prev.streamId == meta.streamId && nextStart <= prevEnd)
                 let splits =
                     endsWithUserStop(prev)
                     || pauseFalls(between: prevEnd, and: nextStart, pauses: pauses)
-                    || !(prev.streamId == meta.streamId || nextStart - prevEnd < chainWindowMs)
+                    || !chains
                 if splits { flush() }
             }
             members.append(meta)
@@ -180,7 +199,15 @@ public enum ConversationGrouper {
     /// Idempotently replaces the derived `conversations`/`conversation_segments` tables in one
     /// transaction. Annotations/tags/follow-ups reference conversation ids by value and the
     /// ids are deterministic, so a rebuild leaves them attached.
-    public static func apply(_ conversations: [GroupedConversation], in db: Database) throws {
+    ///
+    /// `segmentStates` mirrors each member's own `SegmentMeta.transcriptionState` into the
+    /// derived table so the lifecycle aggregation can trust a durable transcript over a
+    /// missing queue row (see the `v2` migration).
+    public static func apply(
+        _ conversations: [GroupedConversation],
+        segmentStates: [String: TranscriptionState] = [:],
+        in db: Database
+    ) throws {
         try db.execute(sql: "DELETE FROM conversation_segments")
         try db.execute(sql: "DELETE FROM conversations")
         for convo in conversations {
@@ -197,10 +224,13 @@ public enum ConversationGrouper {
             for (ordinal, segmentId) in convo.memberSegmentIds.enumerated() {
                 try db.execute(
                     sql: """
-                        INSERT INTO conversation_segments (conversationId, segmentId, ordinal)
-                        VALUES (?, ?, ?)
+                        INSERT INTO conversation_segments
+                            (conversationId, segmentId, ordinal, transcriptionState)
+                        VALUES (?, ?, ?, ?)
                         """,
-                    arguments: [convo.id, segmentId, ordinal]
+                    arguments: [
+                        convo.id, segmentId, ordinal, segmentStates[segmentId]?.rawValue,
+                    ]
                 )
             }
         }
@@ -222,7 +252,14 @@ public enum ConversationGrouper {
                 segments: segments, pauses: pauses, openSegmentId: openSegmentId,
                 fallbackTimeZoneID: fallbackTimeZoneID, previous: previous
             )
-            try apply(grouped, in: d)
+            try apply(
+                grouped,
+                segmentStates: Dictionary(
+                    segments.map { ($0.segmentId, $0.transcriptionState) },
+                    uniquingKeysWith: { _, latest in latest }
+                ),
+                in: d
+            )
             return grouped
         }
     }

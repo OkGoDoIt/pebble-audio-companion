@@ -299,6 +299,52 @@ import Testing
         #expect(try await ConversationQueries(db: db).detail(id: "nope") == nil)
     }
 
+    /// B2, as Roger hit it: a migrated library where 331 segments hold a transcript on disk
+    /// but only 5 were ever enqueued. Every conversation announced "Captured · waiting to
+    /// transcribe / Next in the queue / [Transcribe Now]" directly above its own transcript.
+    @Test func segmentWithDurableTranscriptAndNoTaskRowReadsAsTranscribed() async throws {
+        let db = try AppDatabase.inMemory()
+        var meta = makeSegment(
+            id: "imported", stream: 1, startTimeMs: testEpochMs,
+            durationSamples: minutesSamples(10), tz: "UTC")
+        meta.transcriptionState = .complete
+        try await ConversationGrouper.rebuild(
+            segments: [meta], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC", db: db)
+
+        // No row in transcription_tasks at all — the queue never saw this segment.
+        let row = try #require(try await ConversationQueries(db: db).library()
+            .flatMap(\.rows).first)
+        #expect(row.lifecycle == .complete)
+
+        let member = try #require(
+            try await ConversationQueries(db: db).detail(id: row.id)?.members.first)
+        #expect(member.state == nil)  // queue knows nothing
+        #expect(member.segmentState == .complete)  // disk does
+    }
+
+    @Test func lifecycleAggregationTrustsTheTranscriptOverTheQueue() {
+        typealias Q = ConversationQueries
+        func member(task: TranscriptionState?, segment: TranscriptionState?)
+            -> ConversationMemberState
+        { ConversationMemberState(task: task, segment: segment) }
+
+        // The migration case: transcript on disk, no queue row.
+        #expect(Q.aggregateLifecycle([member(task: nil, segment: .complete)]) == .complete)
+        #expect(Q.aggregateLifecycle([member(task: nil, segment: .noSpeech)]) == .complete)
+        // A stale Pending/Failed/Disabled row cannot un-transcribe a stored transcript.
+        #expect(Q.aggregateLifecycle([member(task: .pending, segment: .complete)]) == .complete)
+        #expect(Q.aggregateLifecycle([member(task: .failed, segment: .complete)]) == .complete)
+        #expect(Q.aggregateLifecycle([member(task: .disabled, segment: .noSpeech)]) == .complete)
+        // A genuinely un-transcribed member still reads as waiting…
+        #expect(
+            Q.aggregateLifecycle([
+                member(task: nil, segment: .complete), member(task: nil, segment: .pending),
+            ]) == .capturedWaiting)
+        // …and a re-transcribe in flight still shows, transcript or not.
+        #expect(Q.aggregateLifecycle([member(task: .running, segment: .complete)]) == .transcribing)
+        #expect(Q.aggregateLifecycle([member(task: .failed, segment: .pending)]) == .failed)
+    }
+
     @Test func lifecycleAggregationPrecedence() {
         typealias Q = ConversationQueries
         #expect(Q.aggregateLifecycle([.running, .complete]) == .transcribing)
