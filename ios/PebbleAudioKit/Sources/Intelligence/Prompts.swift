@@ -171,11 +171,13 @@ public enum SegmentAnnotationPrompt {
             let head = trimTitleEdge(String(window[window.startIndex..<clause]))
             if !head.isEmpty { return head }
         }
+        // The ellipsis counts against the cap, so a shortened title is never LONGER than one
+        // that fitted.
         if let space = window.lastIndex(of: " ") {
             let head = trimTitleEdge(String(window[window.startIndex..<space]))
             if !head.isEmpty { return head + "…" }
         }
-        let head = trimTitleEdge(window)
+        let head = trimTitleEdge(String(cleaned.prefix(maxTitleChars - 1)))
         return head.isEmpty ? nil : head + "…"
     }
 

@@ -10,7 +10,9 @@ struct TranscriptView: View {
     let provenance: String?
     /// Q16 — stamps read in the zone the audio was recorded in, not the one you're in now.
     var timeZone: TimeZone = .current
-    let onSpeakerTap: (TranscriptTurn) -> Void
+    /// Nil where names aren't editable yet (the live screen, whose diarization is still
+    /// provisional): the name renders as plain text rather than a button that does nothing.
+    var onSpeakerTap: ((TranscriptTurn) -> Void)?
 
     var body: some View {
         Card {
@@ -48,7 +50,8 @@ struct TranscriptView: View {
             case .turn(let turn):
                 if case .speech(let id, var turns) = blocks.last,
                     let previous = turns.last, previous.speakerLabel == turn.speakerLabel,
-                    previous.name == turn.name, previous.role == turn.role
+                    previous.name == turn.name, previous.role == turn.role,
+                    previous.isInProgress == turn.isInProgress
                 {
                     turns.append(turn)
                     blocks[blocks.count - 1] = .speech(id: id, turns: turns)
@@ -68,23 +71,21 @@ struct TranscriptView: View {
         let lead = turns[0]
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Button {
-                    onSpeakerTap(lead)
-                } label: {
-                    HStack(spacing: 5) {
-                        if lead.role == .unresolved {
-                            StatusDot(color: Tokens.captured, size: .legend)
-                        }
-                        Text(lead.name)
-                            .font(AppFont.speaker)
-                            .foregroundStyle(speakerColor(lead.role))
+                if let onSpeakerTap {
+                    Button {
+                        onSpeakerTap(lead)
+                    } label: {
+                        speakerName(lead).contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Rename \(lead.name)")
+                } else {
+                    speakerName(lead)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Rename \(lead.name)")
 
-                if let startedAt = lead.startedAt {
+                // The growing tail carries no stamp: its words are still being revised, so a
+                // final-looking time would be a lie.
+                if let startedAt = lead.startedAt, !lead.isInProgress {
                     TranscriptStamp(date: startedAt, timeZone: timeZone)
                 }
                 Spacer(minLength: 0)
@@ -93,7 +94,9 @@ struct TranscriptView: View {
             ForEach(turns) { turn in
                 Text(turn.text)
                     .font(AppFont.callout)
-                    .foregroundStyle(turn.role == .unresolved ? Tokens.meta : Tokens.label)
+                    .foregroundStyle(
+                        turn.role == .unresolved || turn.isInProgress
+                            ? Tokens.meta : Tokens.label)
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
                     // One VoiceOver element per turn, carrying the time the eye reads off
@@ -104,6 +107,17 @@ struct TranscriptView: View {
                             speaker: turn.name,
                             text: turn.text))
             }
+        }
+    }
+
+    private func speakerName(_ turn: TranscriptTurn) -> some View {
+        HStack(spacing: 5) {
+            if turn.role == .unresolved {
+                StatusDot(color: Tokens.captured, size: .legend)
+            }
+            Text(turn.name)
+                .font(AppFont.speaker)
+                .foregroundStyle(speakerColor(turn.role))
         }
     }
 

@@ -138,14 +138,6 @@ extension LiveWorld: SearchDataSource {
     }
 }
 
-/// Stored audio in a segment, in milliseconds — frames on disk, not the wall span the
-/// segment covers. `segmentDurationMs` is the latter, and the two differ by exactly the audio
-/// that was lost.
-private func mediaDurationMs(_ meta: SegmentMeta) -> Int64 {
-    let frames = meta.frameCount * Int64(meta.frameDurationMs)
-    return frames > 0 ? frames : segmentDurationMs(meta)
-}
-
 /// Bridges the kit's `SegmentPlaybackController` (which plays one keyed stream) to the
 /// screen's `ConversationPlayback`, keyed on the CONVERSATION: its frame source concatenates
 /// every member segment, so a conversation that survived three reconnects still plays as one.
@@ -236,20 +228,11 @@ extension LiveWorld: ConversationDataSource {
                 provider = stored.providerId
                 transcribedAtMs = max(transcribedAtMs ?? 0, stored.createdAtMs)
             }
-            if zone == nil {
-                zone = meta.recordedTimeZone.flatMap { TimeZone(identifier: $0) }
-            }
-            // Two clocks per member: wall time (what the stamps beside each speaker show) and
-            // media time (what the scrubber counts — stored audio only, gaps excluded).
-            let memberWallStartMs = Int64(meta.startTimeMs)
-            let memberWallSpanMs = max(segmentDurationMs(meta), 1)
-            let memberMediaMs = mediaDurationMs(meta)
-            func wallDate(_ offsetMs: Int64) -> Date {
-                Date(timeIntervalSince1970: Double(memberWallStartMs + offsetMs) / 1000)
-            }
+            if zone == nil { zone = TranscriptItems.timeZone(meta) }
             // `TranscriptSegment`/`TranscriptWord` exist in both Transcription (what the
             // provider produced) and SearchKit (what the timeline formatter reads); bridge them.
-            let items = transcriptTimelineItems(
+            let built = TranscriptItems.member(
+                segmentId: member.segmentId,
                 meta: meta,
                 segments: (stored?.segments ?? []).map {
                     SearchKit.TranscriptSegment(
@@ -258,42 +241,13 @@ extension LiveWorld: ConversationDataSource {
                 words: (stored?.words ?? []).map {
                     SearchKit.TranscriptWord(
                         text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
-                }
+                },
+                assignments: assignments
             )
-            for (offset, item) in items.enumerated() {
-                let itemId = "\(member.segmentId)-\(offset)"
-                switch item {
-                case .speech(let speech):
-                    transcript.append(
-                        .turn(
-                            TranscriptTurn(
-                                id: itemId,
-                                speakerLabel: speech.speaker ?? "",
-                                name: Self.speakerName(speech.speaker, assignments: assignments),
-                                role: Self.speakerRole(speech.speaker, assignments: assignments),
-                                text: speech.text,
-                                startedAt: wallDate(speech.startMs)
-                            )))
-                case .silenceBreak:
-                    break  // an unlabeled visual break; the transcript view spaces paragraphs
-                case .pause(let pause):
-                    let marker = TranscriptMarker(
-                        id: itemId, text: pause.label, startedAt: wallDate(pause.startMs))
-                    if pause.missing {
-                        transcript.append(.missing(marker))
-                        // Where the gap falls on the SCRUBBER: the member's media time scaled
-                        // by how far into the member's wall span the gap happened.
-                        let intoMember = min(max(pause.startMs, 0), memberWallSpanMs)
-                        missingTicks.append(
-                            Double(
-                                mediaBeforeMemberMs
-                                    + memberMediaMs * intoMember / memberWallSpanMs))
-                    } else {
-                        transcript.append(.quiet(marker))
-                    }
-                }
-            }
-            mediaBeforeMemberMs += memberMediaMs
+            transcript.append(contentsOf: built.items)
+            missingTicks.append(
+                contentsOf: built.missingMediaOffsets.map { Double(mediaBeforeMemberMs + $0) })
+            mediaBeforeMemberMs += built.mediaMs
         }
 
         // The scrubber measures STORED AUDIO. Using the wall span instead (a 1 hr 4 min
@@ -407,27 +361,6 @@ extension LiveWorld: ConversationDataSource {
     }
 
     // --- mapping helpers -----------------------------------------------------------------
-
-    private static func speakerName(
-        _ speaker: String?, assignments: [SpeakerAssignment]
-    ) -> String {
-        guard let speaker else { return "Speaker" }
-        if let match = assignments.first(where: { $0.label == speaker }) {
-            return match.personName
-        }
-        return speakerLabel(speaker)
-    }
-
-    private static func speakerRole(
-        _ speaker: String?, assignments: [SpeakerAssignment]
-    ) -> SpeakerRole {
-        guard let speaker else { return .unresolved }
-        guard let match = assignments.first(where: { $0.label == speaker }) else {
-            return .unresolved
-        }
-        // The wearer is whoever the user named "You"; everyone else is a counterpart.
-        return match.personName.caseInsensitiveCompare("You") == .orderedSame ? .you : .other
-    }
 
     private static func lifecycle(_ detail: ConversationDetail) -> LifecycleDisplay {
         switch detail.row.lifecycle {

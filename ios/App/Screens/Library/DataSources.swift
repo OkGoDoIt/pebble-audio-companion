@@ -111,6 +111,10 @@ struct TranscriptTurn: Equatable, Identifiable {
     /// Wall-clock start of the turn, shown beside the speaker name. Formatted in the
     /// conversation's recorded zone (Q16), never here. Nil when the timing is unknown.
     var startedAt: Date?
+    /// The tail still being transcribed on a live conversation: dimmed text and deliberately
+    /// no clock stamp — its words are still being revised, so a final-looking time would be
+    /// a lie.
+    var isInProgress: Bool = false
 }
 
 /// A non-speech row: calm known-quiet, or genuine loss. Never conflated.
