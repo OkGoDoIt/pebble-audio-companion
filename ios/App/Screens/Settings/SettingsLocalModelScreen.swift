@@ -146,8 +146,15 @@ private struct LocalModelRow: View {
                         .buttonStyle(.plain)
                 }
             case .failed:
-                Button(Copy.Common.tryAgain, action: select)
-                    .buttonStyle(.smallBordered)
+                // Same slot the progress bar uses: what went wrong, and the way out of it.
+                HStack(spacing: 12) {
+                    Text(Copy.Settings.TranscriptionAI.downloadFailed)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.attention)
+                    Spacer(minLength: 10)
+                    Button(Copy.Common.tryAgain, action: select)
+                        .buttonStyle(.smallBordered)
+                }
             default:
                 EmptyView()
             }
@@ -170,15 +177,16 @@ private struct LocalModelRow: View {
         case .waitingForWiFi:
             stateText(Copy.Settings.TranscriptionAI.waitingForWiFi, color: Tokens.meta)
         case .downloading(let progress):
-            stateText(
-                Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)), color: Tokens.meta
-            )
+            // Just the number: the bar below says "downloading", and the longer phrase pushed
+            // the model's name into a second line mid-download.
+            stateText(Copy.Settings.TranscriptionAI.percent(Int(progress * 100)), color: Tokens.meta)
         case .installed:
             if !isSelected {
                 stateText(Copy.Settings.TranscriptionAI.installedValue, color: Tokens.meta)
             }
         case .failed:
-            stateText(Copy.Settings.TranscriptionAI.downloadFailed, color: Tokens.attention)
+            // The failure and its Try Again live on the line below, together.
+            EmptyView()
         case .unavailable:
             stateText(Copy.Settings.TranscriptionAI.unavailable, color: Tokens.meta)
         }
