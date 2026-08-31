@@ -10,14 +10,30 @@ struct SettingsScreen: View {
 
     var body: some View {
         SettingsScroll {
+            titleRow
             watchCard
             groupCard
             SettingsFooter(text: Copy.Settings.Root.footer)
         }
+        // The tab roots own their titles. A system large title would reserve a full 54 pt
+        // navigation-bar row above it, and this root — unlike Today, which puts Ask there —
+        // has nothing to put in that row, so it rendered as dead space above "Settings".
+        // Library already draws its title inline for the same reason; this matches it and the
+        // artboards' 54 pt top inset. `navigationTitle` stays: it is what the pushed settings
+        // screens use as their back label (B15).
+        .toolbar(.hidden, for: .navigationBar)
         .navigationTitle(Copy.Settings.Root.title)
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
         }
+    }
+
+    private var titleRow: some View {
+        Text(Copy.Settings.Root.title)
+            .font(AppFont.tabTitle)
+            .foregroundStyle(Tokens.label)
+            .padding(.top, 2)
+            .accessibilityAddTraits(.isHeader)
     }
 
     // MARK: Watch card
