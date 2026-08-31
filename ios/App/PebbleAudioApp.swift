@@ -1,8 +1,21 @@
 import CoreSpotlight
 import SwiftUI
 
+/// Exists for one reason: the notification delegate has to be in place before launch finishes,
+/// or a loss notification tapped while the app was dead is delivered to nobody.
+final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        MainActor.assumeIsolated { LossNotificationRouter.shared.prepare() }
+        return true
+    }
+}
+
 @main
 struct PebbleAudioApp: App {
+    @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var router = AppRouter()
     @State private var settings = AppSettings()

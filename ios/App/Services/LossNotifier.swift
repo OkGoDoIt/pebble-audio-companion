@@ -139,9 +139,16 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
 
     private override init() { super.init() }
 
+    /// Claims the delegate slot. Must run during `didFinishLaunching` — a notification tapped
+    /// while the app was dead is delivered as soon as launch completes, and a delegate
+    /// installed later simply never hears about it.
+    func prepare() {
+        UNUserNotificationCenter.current().delegate = self
+    }
+
     func install(handler: @escaping (Route) -> Void) {
         self.handler = handler
-        UNUserNotificationCenter.current().delegate = self
+        prepare()
         if let pendingRoute {
             self.pendingRoute = nil
             handler(pendingRoute)
