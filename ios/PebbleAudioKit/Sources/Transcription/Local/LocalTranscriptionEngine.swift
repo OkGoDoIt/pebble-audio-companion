@@ -4,19 +4,36 @@ import Foundation
 // `local_transcription_model` id once and the rest of the pipeline stays engine-agnostic.
 //
 // The id space is deliberately open: a Parakeet catalog id selects Parakeet, and ANYTHING else
-// is Apple Speech, with the id read as the BCP-47 language for it ("" ⇒ the device locale).
-// That keeps Apple Speech the default on a fresh install while a migrated user whose old
-// setting names a Parakeet model keeps that model.
+// is Apple Speech. An id that is a BCP-47 language tag ("en-US") picks the language to run it
+// in; the `apple-speech` sentinel, an empty setting, or anything unrecognized means the device
+// locale. That keeps Apple Speech the safe default on a fresh install — and for any id we do
+// not understand — while a migrated user whose old setting names a Parakeet model keeps it.
 
 public enum LocalTranscriptionEngineChoice: Equatable, Sendable {
     case appleSpeech(locale: Locale)
     case parakeet(ParakeetModelSpec)
 
+    /// Selects Apple Speech in the device language without naming a locale.
+    public static let appleSpeechId = "apple-speech"
+
     public static func resolve(modelId: String) -> LocalTranscriptionEngineChoice {
         if let spec = ParakeetModelCatalog.spec(id: modelId) { return .parakeet(spec) }
         let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .appleSpeech(locale: .current) }
+        guard trimmed != appleSpeechId, isLanguageTag(trimmed) else {
+            return .appleSpeech(locale: .current)
+        }
         return .appleSpeech(locale: Locale(identifier: trimmed))
+    }
+
+    /// True for something shaped like a BCP-47 tag ("en", "en-US", "zh-Hant-TW"). Anything else
+    /// — a sentinel, a model id we do not know, junk — must not become a bogus `Locale`, which
+    /// `SpeechTranscriber` would then report as an unsupported language.
+    static func isLanguageTag(_ id: String) -> Bool {
+        guard let language = id.split(separator: "-", omittingEmptySubsequences: false).first,
+            (2...3).contains(language.count),
+            language.allSatisfy({ $0.isASCII && $0.isLetter })
+        else { return false }
+        return true
     }
 
     /// True when this id selects a downloadable Parakeet model rather than Apple Speech.

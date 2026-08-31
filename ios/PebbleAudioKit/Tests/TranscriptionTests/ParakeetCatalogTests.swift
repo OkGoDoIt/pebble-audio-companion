@@ -129,11 +129,20 @@ import Testing
             LocalTranscriptionEngineChoice.resolve(modelId: "en-GB")
                 == .appleSpeech(locale: Locale(identifier: "en-GB"))
         )
-        // Fresh install: nothing persisted yet ⇒ Apple Speech in the device language.
         #expect(
-            LocalTranscriptionEngineChoice.resolve(modelId: "")
-                == .appleSpeech(locale: .current)
+            LocalTranscriptionEngineChoice.resolve(modelId: "zh-Hant-TW")
+                == .appleSpeech(locale: Locale(identifier: "zh-Hant-TW"))
         )
+        // Fresh install, the explicit sentinel, and anything unrecognized all mean "Apple
+        // Speech in the device language" — never a bogus Locale that reads as unsupported.
+        for id in ["", "  ", LocalTranscriptionEngineChoice.appleSpeechId, "whisper-tiny", "🙂"] {
+            #expect(
+                LocalTranscriptionEngineChoice.resolve(modelId: id) == .appleSpeech(locale: .current),
+                "\(id) should fall back to the device locale"
+            )
+        }
         #expect(LocalTranscriptionEngineChoice.isParakeet("en-US") == false)
+        #expect(LocalTranscriptionEngineChoice.isLanguageTag("en"))
+        #expect(LocalTranscriptionEngineChoice.isLanguageTag("apple-speech") == false)
     }
 }
