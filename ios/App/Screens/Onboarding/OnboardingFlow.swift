@@ -153,13 +153,7 @@ private struct OnboardingConfirmView: View {
                 .font(AppFont.screenTitle)
                 .foregroundStyle(Tokens.label)
                 .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                StatusDot(color: Tokens.tint, size: .lifecycle)
-                Text(Copy.Onboarding.waitingLine)
-                    .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.tertiary)
-                    .multilineTextAlignment(.leading)
-            }
+            waitingLine(Copy.Onboarding.waitingLine)
         }
         .padding(.horizontal, 32)
     }
@@ -172,15 +166,24 @@ private struct OnboardingConfirmView: View {
                 .font(AppFont.screenTitle)
                 .foregroundStyle(Tokens.label)
                 .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                StatusDot(color: Tokens.tint, size: .lifecycle)
-                Text(Copy.Status.confirmOnWatchLine)
-                    .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.tertiary)
-                    .multilineTextAlignment(.leading)
-            }
+            waitingLine(Copy.Status.confirmOnWatchLine)
         }
         .padding(.horizontal, 32)
+    }
+
+    /// The waiting sub-line: violet dot (the consent/waiting semantic) sitting on the first
+    /// line like a bullet, with the sentence wrapped in a centered block under a centered title.
+    private func waitingLine(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            StatusDot(color: Tokens.tint, size: .lifecycle)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+            Text(text)
+                .font(AppFont.subBody)
+                .foregroundStyle(Tokens.tertiary)
+                .multilineTextAlignment(.leading)
+                .lineSpacing(3)
+        }
+        .frame(maxWidth: 300)
     }
 
     private func failureCard(_ failure: OnboardingFailure) -> some View {
@@ -358,6 +361,20 @@ private struct OnboardingCloudKeyView: View {
 
     @State private var sonioxKey = ""
     @State private var openAiKey = ""
+    @State private var sonioxCheck = KeyCheckState()
+    @State private var openAiCheck = KeyCheckState()
+    @FocusState private var focused: CloudProvider?
+
+    /// One cheap authenticated GET per check; the kit owns the taxonomy, this file owns the words.
+    private let validator = CloudKeyValidator(transport: URLSessionHttpTransport())
+
+    /// What a row knows about the key typed into it.
+    private struct KeyCheckState: Equatable {
+        var isChecking = false
+        var outcome: ApiKeyCheckOutcome?
+        /// The exact text the outcome refers to, so an edit clears a stale verdict.
+        var checkedKey = ""
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -365,30 +382,42 @@ private struct OnboardingCloudKeyView: View {
                 model.backToTranscripts()
             }
 
-            ScrollView {
-                VStack(spacing: 18) {
-                    Text(Copy.Onboarding.addProviderKey)
-                        .font(AppFont.screenTitle)
-                        .foregroundStyle(Tokens.label)
-                        .multilineTextAlignment(.center)
+            // Centred while it fits; scrolls once the keyboard, a check result, or large type
+            // takes the room.
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 18) {
+                        Text(Copy.Onboarding.addProviderKey)
+                            .font(AppFont.screenTitle)
+                            .foregroundStyle(Tokens.label)
+                            .multilineTextAlignment(.center)
 
-                    Text(Copy.Onboarding.providerKeysLine)
-                        .font(AppFont.subBody)
-                        .foregroundStyle(Tokens.tertiary)
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                        .frame(maxWidth: 320)
+                        Text(Copy.Onboarding.providerKeysLine)
+                            .font(AppFont.subBody)
+                            .foregroundStyle(Tokens.tertiary)
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(3)
+                            .frame(maxWidth: 320)
 
-                    ListCard(rowVerticalPadding: 14) {
-                        keyRow(.soniox, role: Copy.Onboarding.sonioxRole, key: $sonioxKey)
-                        keyRow(.openAi, role: Copy.Onboarding.openAiRole, key: $openAiKey)
+                        Card {
+                            keyRow(
+                                .soniox, role: Copy.Onboarding.sonioxRole,
+                                key: $sonioxKey, check: $sonioxCheck
+                            )
+                        }
+                        Card {
+                            keyRow(
+                                .openAi, role: Copy.Onboarding.openAiRole,
+                                key: $openAiKey, check: $openAiCheck
+                            )
+                        }
                     }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .scrollBounceBehavior(.basedOnSize)
 
             VStack(spacing: 12) {
                 Button(Copy.Onboarding.saveToKeychain, action: save)
@@ -406,12 +435,24 @@ private struct OnboardingCloudKeyView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
+        // Leaving a field is the natural moment to check it — one network call per key, never
+        // one per keystroke.
+        .onChange(of: focused) { previous, _ in
+            switch previous {
+            case .soniox: runCheck(.soniox, key: sonioxKey, into: $sonioxCheck)
+            case .openAi: runCheck(.openAi, key: openAiKey, into: $openAiCheck)
+            case nil: break
+            }
+        }
     }
 
-    /// Provider name, what it is for, any saved key (masked, on the right), and a field that
-    /// replaces it.
+    /// Provider name, what it is for, any saved key (masked, on the right), the field that
+    /// replaces it, and what the last check of that field found.
     private func keyRow(
-        _ provider: CloudProvider, role: String, key: Binding<String>
+        _ provider: CloudProvider,
+        role: String,
+        key: Binding<String>,
+        check: Binding<KeyCheckState>
     ) -> some View {
         let masked = settings.maskedApiKey(for: provider)
         return VStack(alignment: .leading, spacing: 6) {
@@ -434,6 +475,7 @@ private struct OnboardingCloudKeyView: View {
                 .font(AppFont.caption)
                 .foregroundStyle(Tokens.tertiary)
                 .padding(.bottom, 2)
+
             SecureField(
                 masked == nil
                     ? Copy.Onboarding.keyPlaceholder : Copy.Onboarding.keyReplacePlaceholder,
@@ -442,13 +484,119 @@ private struct OnboardingCloudKeyView: View {
             .font(AppFont.callout)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .accessibilityLabel(
-                "\(provider.displayName) \(Copy.Onboarding.keyPlaceholder)"
+            .focused($focused, equals: provider)
+            .submitLabel(.done)
+            .onSubmit { runCheck(provider, key: key.wrappedValue, into: check) }
+            .onChange(of: key.wrappedValue) { _, _ in
+                // Editing invalidates the last verdict rather than leaving a stale one on screen.
+                if check.wrappedValue.checkedKey
+                    != key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    check.wrappedValue.outcome = nil
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            // The app's field idiom (search bars): a filled inset inside the white card, so the
+            // row reads as something to type in rather than a third label.
+            .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+            .accessibilityLabel("\(provider.displayName) \(Copy.Onboarding.keyPlaceholder)")
+
+            checkStatus(check.wrappedValue) {
+                runCheck(provider, key: key.wrappedValue, into: check, force: true)
+            }
+        }
+    }
+
+    /// Checking / verified / what went wrong. Never blocks Save or Skip — a key the provider
+    /// refuses is still the user's to keep.
+    @ViewBuilder
+    private func checkStatus(
+        _ check: KeyCheckState, retry: @escaping () -> Void
+    ) -> some View {
+        if check.isChecking {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(Copy.KeyCheck.checking)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.tertiary)
+            }
+            .padding(.top, 2)
+        } else if let outcome = check.outcome, outcome != .missing {
+            if outcome.isValid {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Tokens.good)
+                        .accessibilityHidden(true)
+                    Text(Copy.KeyCheck.valid)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.tertiary)
+                }
+                .padding(.top, 2)
+            } else {
+                // The reason gets the full width — squeezed beside a button it wrapped to three
+                // ragged lines — and the retry sits under it, aligned with the text.
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        StatusDot(color: Tokens.attention, size: .lifecycle)
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+                        Text(Self.reason(for: outcome))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.secondaryBody)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    Button(Copy.KeyCheck.checkAgain, action: retry)
+                        .buttonStyle(.smallBordered)
+                        .padding(.leading, 16)
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    /// The kit returns a taxonomy and no prose on purpose: the providers' own 401 bodies quote
+    /// the key back. These lines say what to DO, and never repeat provider text or key material.
+    private static func reason(for outcome: ApiKeyCheckOutcome) -> String {
+        switch outcome {
+        case .valid, .missing: return ""
+        case .rejected: return Copy.KeyCheck.rejected
+        case .notPermitted: return Copy.KeyCheck.notPermitted
+        case .outOfCredit: return Copy.KeyCheck.outOfCredit
+        case .rateLimited: return Copy.KeyCheck.rateLimited
+        case .providerUnavailable: return Copy.KeyCheck.providerUnavailable
+        case .unreachable: return Copy.KeyCheck.unreachable
+        case .unexpected: return Copy.KeyCheck.unexpected
+        }
+    }
+
+    private func runCheck(
+        _ provider: CloudProvider,
+        key: String,
+        into check: Binding<KeyCheckState>,
+        force: Bool = false
+    ) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            check.wrappedValue = KeyCheckState()
+            return
+        }
+        // Re-checking the same text on every focus change would spend a network call to learn
+        // what is already on screen; an explicit Check Again always runs.
+        if !force, trimmed == check.wrappedValue.checkedKey, check.wrappedValue.outcome != nil {
+            return
+        }
+        check.wrappedValue.isChecking = true
+        Task {
+            let outcome = await validator.validate(trimmed, for: provider.keyValidatorProvider)
+            check.wrappedValue = KeyCheckState(
+                isChecking: false, outcome: outcome, checkedKey: trimmed
             )
         }
     }
 
     /// Writes only what was typed — an untouched row keeps whatever the Keychain already holds.
+    /// A failed check is guidance, not a gate: if the user wants the key saved, it is saved.
     private func save() {
         let soniox = sonioxKey.trimmingCharacters(in: .whitespaces)
         let openAi = openAiKey.trimmingCharacters(in: .whitespaces)
@@ -468,6 +616,17 @@ private struct OnboardingCloudKeyView: View {
     private var hasAnyKey: Bool {
         !sonioxKey.trimmingCharacters(in: .whitespaces).isEmpty
             || !openAiKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+extension CloudProvider {
+    /// The key-validator's own provider enum (the kit keeps the two apart so the validator can
+    /// be used without the transcription settings).
+    var keyValidatorProvider: CloudKeyValidator.Provider {
+        switch self {
+        case .soniox: return .soniox
+        case .openAi: return .openAi
+        }
     }
 }
 
