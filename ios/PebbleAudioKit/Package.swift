@@ -88,7 +88,11 @@ let package = Package(
             dependencies: ["SegmentStore", "AudioCodec", "Transcription"],
             swiftSettings: swiftSettings
         ),
-        .target(name: "SearchKit", dependencies: ["AppDB"], swiftSettings: swiftSettings),
+        // StatusUI: the transcript renderer's inline quiet/missing markers are the SAME status
+        // vocabulary as everywhere else. SearchKit used to keep a private copy of the gap
+        // classifier and its copy strings; the two drifted (the copy kept the O(n²) classifier
+        // long after StatusUI's was fixed), so there is now one implementation and this edge.
+        .target(name: "SearchKit", dependencies: ["AppDB", "StatusUI"], swiftSettings: swiftSettings),
         .target(
             name: "Migration",
             // Intelligence: the legacy `ai/outputs` import reuses `parseGroundedAnswer` to
@@ -120,7 +124,10 @@ let package = Package(
         ),
         .testTarget(name: "IntelligenceTests", dependencies: ["Intelligence"], swiftSettings: swiftSettings),
         .testTarget(name: "LiveAudioTests", dependencies: ["LiveAudio"], swiftSettings: swiftSettings),
-        .testTarget(name: "SearchKitTests", dependencies: ["SearchKit"], swiftSettings: swiftSettings),
+        .testTarget(
+            name: "SearchKitTests", dependencies: ["SearchKit", "StatusUI"],
+            swiftSettings: swiftSettings
+        ),
         .testTarget(name: "MigrationTests", dependencies: ["Migration"], swiftSettings: swiftSettings),
         .testTarget(
             name: "CompanionRuntimeTests",

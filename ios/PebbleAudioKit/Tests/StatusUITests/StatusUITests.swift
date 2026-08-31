@@ -5,7 +5,10 @@ import SegmentStore
 import Receiver
 @testable import StatusUI
 
-// Port of `app/src/commonTest/.../ui/StatusUiTest.kt` — all 36 cases, same names.
+// Port of `app/src/commonTest/.../ui/StatusUiTest.kt`, same names where the behaviour
+// survived. Cases that pinned the KMP Today-timeline builder and the KMP in-memory library
+// matcher went with them: the shipped app builds Today from conversations and searches through
+// SearchKit's FTS5 index, so those helpers were a second engine nothing could reach.
 //
 // Assertions on strings the redesign replaced (plan Part 2-B #18: the status-card families'
 // approved copy wins over the old KMP strings) are adapted to the new copy; every invariant
@@ -15,7 +18,7 @@ import Receiver
 // Structural adaptations mirroring the ported module (see Sources/StatusUI):
 // - `AudioCompanionSettings(backgroundReceiverEnabled:)` -> `CaptureIntent` (.active / .off).
 // - `AudioCompanionDiagnostics(pauseRequested:)` -> `storagePauseRequested:`.
-// - Transcripts are plain text; annotation/action/output/digest use StatusUI's display slices.
+// - Transcripts are plain text; annotations use StatusUI's display slice.
 
 private func meta(
     _ segmentId: String,
@@ -201,7 +204,7 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(text == "quiet audio was skipped")
     }
 
-    @Test func gapSummaryIgnoresSuppressedSilence() {
+    @Test func suppressedSilenceIsNeverCountedAsLoss() {
         // A segment whose only "gaps" are voice-activity silence has nothing wrong: no
         // "interrupted" summary, and no time counted as missing.
         var silenceGaps = [GapMeta]()
@@ -219,10 +222,10 @@ private struct SplitMix64: RandomNumberGenerator {
         }
         let quiet = meta("seg-quiet", 0, gaps: silenceGaps)
         #expect(totalGapMs(quiet) == 0)
-        #expect(gapSummary(quiet) == nil)
+        #expect(visibleLossGaps(quiet).isEmpty)
     }
 
-    @Test func gapSummaryReportsOnlyGenuineLossAlongsideSilence() {
+    @Test func onlyGenuineLossIsNamedAlongsideSilence() {
         // Mixed: one real loss (mic conflict) plus skipped silence. The summary speaks only to
         // the loss; the silence adds neither time nor a second reason.
         let mixed = meta(
@@ -246,56 +249,8 @@ private struct SplitMix64: RandomNumberGenerator {
             ]
         )
         #expect(totalGapMs(mixed) == 2_000)
-        let summary = gapSummary(mixed)
-        #expect(summary?.contains("dictation") == true, "summary: \(String(describing: summary))")
-        #expect(summary?.contains("2 sec") == true, "summary: \(String(describing: summary))")
-    }
-
-    @Test func gapReasonBreakdownGroupsVisibleLossAndIgnoresQuiet() {
-        let segment = meta(
-            "seg-breakdown",
-            0,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 1,
-                    missingFrameCount: 100,
-                    firstMissingSampleIndex: 320,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.micConflict.rawValue)
-                ),
-                GapMeta(
-                    firstMissingSequence: 200,
-                    missingFrameCount: 50,
-                    firstMissingSampleIndex: 200 * 320,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.transportReset.rawValue)
-                ),
-                GapMeta(
-                    firstMissingSequence: 300,
-                    missingFrameCount: 100,
-                    firstMissingSampleIndex: 300 * 320,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.micConflict.rawValue)
-                ),
-                GapMeta(
-                    firstMissingSequence: 500,
-                    missingFrameCount: 5_000,
-                    firstMissingSampleIndex: 500 * 320,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.silenceSuppressed.rawValue)
-                ),
-            ]
-        )
-
-        let breakdown = gapReasonBreakdown(segment)
-
-        #expect(breakdown.count == 2)
-        #expect(breakdown[0].reason == "watch dictation used the mic")
-        #expect(breakdown[0].count == 2)
-        #expect(breakdown[0].durationMs == 4_000)
-        #expect(breakdown[1].reason == "connection was interrupted")
-        #expect(breakdown[1].count == 1)
-        #expect(breakdown[1].durationMs == 1_000)
+        let reasons = visibleLossGaps(mixed).map(gapDescription)
+        #expect(reasons == ["watch dictation used the mic"])
     }
 
     @Test func duplicateSequenceSkipCoveredBySuppressedSilenceIsQuiet() {
@@ -315,8 +270,6 @@ private struct SplitMix64: RandomNumberGenerator {
         let segment = meta("seg-duplicate-quiet", 0, gaps: [quiet, duplicateSkip])
 
         #expect(totalGapMs(segment) == 0)
-        #expect(gapSummary(segment) == nil)
-        #expect(quietGaps(segment).count == 2)
         #expect(visibleLossGaps(segment).isEmpty)
     }
 
@@ -375,7 +328,7 @@ private struct SplitMix64: RandomNumberGenerator {
 
         #expect(totalGapMs(segment) == 1_000)
         #expect(visibleLossGaps(segment) == [realSkip])
-        #expect(gapSummary(segment)?.contains("phone briefly missed audio") == true)
+        #expect(gapDescription(realSkip) == "phone briefly missed audio")
     }
 
     @Test func deniedMismatchExplainsForeignReceiver() {
@@ -467,145 +420,6 @@ private struct SplitMix64: RandomNumberGenerator {
     private let dayMs: Int64 = 24 * 3_600_000
     private let nowMs: Int64 = 1_750_000_000_000 // fixed reference time
 
-    @Test func timelineShowsLast24HoursNewestFirstWithQuietGapSummariesAndOpenSegment() {
-        let recent1 = meta("seg-1", nowMs - 3_600_000)
-        let recent2 = meta(
-            "seg-2",
-            nowMs - 600_000,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 10,
-                    missingFrameCount: 100,
-                    firstMissingSampleIndex: 3_200,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: 2 // mic conflict
-                ),
-            ]
-        )
-        let almost24HoursOld = meta("seg-near-cutoff", nowMs - dayMs + 1_000)
-        let staleOpen = meta("seg-open", nowMs - 2 * dayMs, open: true)
-        let lastWeek = meta("seg-old", nowMs - 7 * dayMs)
-
-        let timeline = buildTimeline(
-            segments: [recent1, lastWeek, recent2, almost24HoursOld, staleOpen],
-            transcriptOf: { _ in nil },
-            nowMs: nowMs
-        )
-
-        let keys = timeline.map(\.key)
-        #expect(keys == ["seg-seg-2", "seg-seg-1", "seg-seg-near-cutoff", "seg-seg-open"])
-        // Gaps render inside the row as one calm summary line, not as separate warning rows.
-        let summary = timeline[0].gapSummary
-        #expect(summary?.contains("dictation") == true, "summary: \(String(describing: summary))")
-        #expect(
-            summary?.contains("2 sec") == true,
-            "summary should carry ~duration: \(String(describing: summary))"
-        )
-        #expect(timeline[1].gapSummary == nil)
-        #expect(timeline[3].stateLabel == "Recording")
-    }
-
-    @Test func todayGapSummaryHidesMinorLossWhenTranscriptExists() {
-        let segment = meta(
-            "seg-minor-loss",
-            nowMs,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 10,
-                    missingFrameCount: 100, // 2 s
-                    firstMissingSampleIndex: 3_200,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.micConflict.rawValue)
-                ),
-            ]
-        )
-
-        #expect(gapSummary(segment)?.contains("2 sec") == true)
-        #expect(todayGapSummary(segment, transcriptText: "Useful transcript text") == nil)
-    }
-
-    @Test func todayGapSummaryKeepsMinorLossWhenNoTranscriptExists() {
-        let segment = meta(
-            "seg-no-transcript",
-            nowMs,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 10,
-                    missingFrameCount: 50, // 1 s
-                    firstMissingSampleIndex: 3_200,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.transportReset.rawValue)
-                ),
-            ]
-        )
-
-        let summary = todayGapSummary(segment, transcriptText: nil)
-        #expect(summary?.contains("1 sec") == true, "summary: \(String(describing: summary))")
-    }
-
-    @Test func todayGapSummaryKeepsMajorLossEvenWithTranscript() {
-        let segment = meta(
-            "seg-major-loss",
-            nowMs,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 10,
-                    missingFrameCount: 250, // 5 s, half of this test segment.
-                    firstMissingSampleIndex: 3_200,
-                    origin: GapMeta.originSequenceSkip
-                ),
-            ]
-        )
-
-        let summary = todayGapSummary(segment, transcriptText: "Useful transcript text")
-        #expect(summary?.contains("5 sec") == true, "summary: \(String(describing: summary))")
-    }
-
-    @Test func timelineUsesTodayGapRules() {
-        let segment = meta(
-            "seg-with-transcript",
-            nowMs,
-            gaps: [
-                GapMeta(
-                    firstMissingSequence: 10,
-                    missingFrameCount: 100, // 2 s
-                    firstMissingSampleIndex: 3_200,
-                    origin: GapMeta.originWatch,
-                    reasonRaw: Int(GapReason.micConflict.rawValue)
-                ),
-            ]
-        )
-
-        let timeline = buildTimeline(
-            segments: [segment],
-            transcriptOf: { _ in "Useful transcript text" },
-            nowMs: nowMs
-        )
-
-        #expect(timeline.count == 1)
-        #expect(timeline[0].gapSummary == nil)
-    }
-
-    @Test func timelineDoesNotExposeMediumAnnotationSummary() {
-        let timeline = buildTimeline(
-            segments: [meta("seg-summary", nowMs)],
-            transcriptOf: { _ in "Useful transcript text" },
-            nowMs: nowMs,
-            annotationOf: {
-                SegmentAnnotation(
-                    segmentId: $0,
-                    title: "Useful title",
-                    summary: "A medium-length summary belongs in Library detail, not Today.",
-                    createdAtMs: self.nowMs
-                )
-            }
-        )
-
-        #expect(timeline.count == 1)
-        #expect(timeline[0].title == "Useful title")
-        #expect(timeline[0].summary == nil)
-    }
-
     @Test func segmentTitleCleansStoredMarkdownAnnotationTitle() {
         let title = segmentTitle(
             meta("seg-markdown-title", nowMs),
@@ -620,26 +434,7 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(title == "Troubleshooting account setup")
     }
 
-    @Test func dailyDigestPreviewCleansMarkdownAndBoilerplate() {
-        let preview = dailyDigestPreviewText(
-            DailyDigest(
-                dateKey: "2026-06-27",
-                text: "Here's a chronological summary of what happened in the transcripts:\n\n"
-                    + "### Early / test audio\n"
-                    + "- There were several brief test recordings.\n\n"
-                    + "### Arrival at Anthropic\n"
-                    + "- They discussed the meeting agenda.",
-                createdAtMs: nowMs
-            )
-        )
-
-        #expect(
-            preview == "Early / test audio There were several brief test recordings. "
-                + "Arrival at Anthropic They discussed the meeting agenda."
-        )
-    }
-
-    @Test func gapSummaryCapsImpossibleTotalsToSegmentDuration() {
+    @Test func displayGapMsCapsImpossibleTotalsToSegmentDuration() {
         let withHugeGap = meta(
             "seg-gap",
             nowMs,
@@ -654,10 +449,6 @@ private struct SplitMix64: RandomNumberGenerator {
         )
 
         #expect(displayGapMs(withHugeGap) == 10_000)
-        #expect(
-            gapSummary(withHugeGap)
-                == "Audio was interrupted for about 10 sec (phone briefly missed audio)"
-        )
     }
 
     @Test func segmentTitlePrefersTranscriptSnippet() {
@@ -686,88 +477,6 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(segmentDurationMs(meta("seg-1", nowMs)) == 10_000)
     }
 
-    @Test func libraryTagsAreFrequencySortedAndDeduped() {
-        let tags = libraryTags([
-            SegmentAnnotation(segmentId: "seg-1", tags: ["work", "budget"], createdAtMs: nowMs),
-            SegmentAnnotation(segmentId: "seg-2", tags: ["Work", "planning"], createdAtMs: nowMs),
-            SegmentAnnotation(segmentId: "seg-3", tags: ["budget"], createdAtMs: nowMs),
-        ])
-
-        #expect(tags == ["budget", "work", "planning"])
-    }
-
-    @Test func librarySearchMatchesTagsActionsAndAiOutputs() {
-        let annotation = SegmentAnnotation(
-            segmentId: "seg-1",
-            title: "Theater compensation",
-            summary: "Discussed salary review.",
-            tags: ["salary", "theater"],
-            createdAtMs: nowMs
-        )
-        let action = ActionItem(
-            id: "action-1",
-            text: "Follow up with Paul about raise timing.",
-            sourceSegmentId: "seg-1",
-            createdAtMs: nowMs
-        )
-        let output = AiOutput(
-            outputId: "ai-1",
-            promptTitle: "Ask",
-            segmentIds: ["seg-1"],
-            text: "The unresolved point was whether bar work counts as compensation.",
-            createdAtMs: nowMs
-        )
-
-        #expect(segmentMatchesLibraryQuery(
-            "salary", transcriptText: nil, annotation: annotation, actionItems: [], aiOutputs: []
-        ))
-        #expect(segmentMatchesLibraryQuery(
-            "Paul", transcriptText: nil, annotation: annotation, actionItems: [action], aiOutputs: []
-        ))
-        #expect(segmentMatchesLibraryQuery(
-            "compensation", transcriptText: nil, annotation: annotation, actionItems: [],
-            aiOutputs: [output]
-        ))
-        #expect(segmentMatchesLibraryQuery(
-            "Paul compensation", transcriptText: nil, annotation: annotation,
-            actionItems: [action], aiOutputs: []
-        ))
-        #expect(segmentMatchesLibraryQuery(
-            "Paul compensaton", transcriptText: nil, annotation: annotation,
-            actionItems: [action], aiOutputs: []
-        ))
-        #expect(annotationHasTag(annotation, tag: "THEATER"))
-    }
-
-    @Test func todayOpenActionItemsOnlyIncludesVisibleUndoneItems() {
-        let visible = meta("seg-visible", nowMs)
-        let hidden = meta("seg-hidden", nowMs)
-        let timeline = buildTimeline(
-            segments: [visible],
-            transcriptOf: { _ in nil },
-            nowMs: nowMs
-        )
-        let items = todayOpenActionItems(
-            [
-                ActionItem(
-                    id: "a", text: "Visible", done: false,
-                    sourceSegmentId: "seg-visible", createdAtMs: nowMs
-                ),
-                ActionItem(
-                    id: "b", text: "Done", done: true,
-                    sourceSegmentId: "seg-visible", createdAtMs: nowMs + 1
-                ),
-                ActionItem(
-                    id: "c", text: "Hidden", done: false,
-                    sourceSegmentId: "seg-hidden", createdAtMs: nowMs + 2
-                ),
-            ],
-            timeline: timeline
-        )
-
-        #expect(items.map(\.id) == ["a"])
-        #expect(!timeline.map(\.meta.segmentId).contains(hidden.segmentId))
-    }
 }
 
 @Suite struct FormattingTest {

@@ -4,6 +4,11 @@ import SegmentStore
 
 // Port of the gap-visibility classifier and gap copy from `app/.../ui/StatusUi.kt`.
 // Loss is always explicit; VAD-skipped silence is calm "quiet", never conflated with loss.
+//
+// This is the ONE gap vocabulary. SearchKit's transcript renderer (the surface that actually
+// shows a person their gaps) used to carry a private copy of both the classifier and these
+// strings; the two had already drifted, so the copy was deleted and SearchKit now depends on
+// this module. Change the wording here and every surface changes with it.
 
 /// Plain-language reason for one gap. Calm by design (ux plan: "visible but not alarmist");
 /// gaps are expected in normal use, so no "Gap:"/error framing.
@@ -42,11 +47,6 @@ public func isSilenceGap(_ gap: GapMeta) -> Bool {
 public func visibleLossGaps(_ meta: SegmentMeta) -> [GapMeta] {
     let visibility = GapVisibility(meta.gaps)
     return meta.gaps.filter { visibility.isVisibleLoss($0) }
-}
-
-public func quietGaps(_ meta: SegmentMeta) -> [GapMeta] {
-    let visibility = GapVisibility(meta.gaps)
-    return meta.gaps.filter { !visibility.isVisibleLoss($0) }
 }
 
 /// Precomputes silence-coverage for one segment's gaps so visibility is a binary search instead
@@ -132,84 +132,6 @@ public func displayGapMs(_ meta: SegmentMeta) -> Int64 {
     if totalMs <= 0 { return 0 }
     if durationMs > 0 { return min(totalMs, durationMs) }
     return totalMs
-}
-
-public struct GapReasonBreakdown: Equatable, Sendable {
-    public let reason: String
-    public let count: Int
-    public let durationMs: Int64
-
-    public init(reason: String, count: Int, durationMs: Int64) {
-        self.reason = reason
-        self.count = count
-        self.durationMs = durationMs
-    }
-}
-
-/// Compact interruption diagnostics for detail screens. Durations are scaled down if stale
-/// metadata claims more loss than the segment can contain, matching `displayGapMs`.
-public func gapReasonBreakdown(_ meta: SegmentMeta) -> [GapReasonBreakdown] {
-    let lost = visibleLossGaps(meta)
-    if lost.isEmpty { return [] }
-    let rawTotalMs = lost.reduce(Int64(0)) {
-        $0 + gapDurationMs($1, frameDurationMs: meta.frameDurationMs)
-    }
-    let displayTotalMs = displayGapMs(meta)
-    func displayDuration(_ rawMs: Int64) -> Int64 {
-        if rawMs <= 0 || rawTotalMs <= 0 || displayTotalMs <= 0 || rawTotalMs <= displayTotalMs {
-            return rawMs
-        }
-        return max(rawMs * displayTotalMs / rawTotalMs, 1)
-    }
-    return Dictionary(grouping: lost, by: { gapDescription($0) })
-        .map { reason, gaps in
-            let rawMs = gaps.reduce(Int64(0)) {
-                $0 + gapDurationMs($1, frameDurationMs: meta.frameDurationMs)
-            }
-            return GapReasonBreakdown(
-                reason: reason,
-                count: gaps.count,
-                durationMs: displayDuration(rawMs)
-            )
-        }
-        .sorted { lhs, rhs in
-            if lhs.durationMs != rhs.durationMs { return lhs.durationMs > rhs.durationMs }
-            return lhs.reason < rhs.reason
-        }
-}
-
-/// One calm summary line for a segment's gaps, or nil when there are none:
-/// "Audio was interrupted for about 1 min 20 sec (watch dictation used the mic)".
-public func gapSummary(_ meta: SegmentMeta) -> String? {
-    let lost = visibleLossGaps(meta)
-    if lost.isEmpty { return nil }
-    let totalMs = displayGapMs(meta)
-    var reasons = [String]()
-    for gap in lost {
-        let description = gapDescription(gap)
-        if !reasons.contains(description) { reasons.append(description) }
-    }
-    let reasonText = reasons.count == 1 ? reasons[0] : "several reasons"
-    switch totalMs {
-    // Sub-second losses would render as the absurd "0 sec".
-    case 1...999: return "Audio was briefly interrupted (\(reasonText))"
-    case let ms where ms > 0:
-        return "Audio was interrupted for about \(Formatting.duration(ms)) (\(reasonText))"
-    default: return "Audio was interrupted (\(reasonText))"
-    }
-}
-
-/// Plain-language transcription state for list rows (ux plan Section 18).
-public func transcriptionStateLabel(_ state: TranscriptionState) -> String {
-    switch state {
-    case .pending: return "Waiting to transcribe"
-    case .running: return "Transcribing"
-    case .uploading: return "Uploading to cloud"
-    case .complete: return "Transcript ready"
-    case .noSpeech: return "No speech"
-    case .failed: return "Transcription failed"
-    case .disabled: return "Transcription unavailable"
-    }
 }
 
 /// Duration of a segment in ms, preferring the sample counters (gaps included).
