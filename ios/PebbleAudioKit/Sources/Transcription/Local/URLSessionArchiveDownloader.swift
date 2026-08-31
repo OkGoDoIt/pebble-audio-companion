@@ -9,7 +9,19 @@ import Foundation
 public final class URLSessionArchiveDownloader: ParakeetArchiveDownloading {
     private let configuration: URLSessionConfiguration
 
-    public init(configuration: URLSessionConfiguration = .default) {
+    /// Wi-Fi only, and not merely as a courtesy: these archives run from 430 MB to 1.2 GB, and
+    /// Settings prints "Downloads run on Wi-Fi only." next to them. A plain `.default`
+    /// configuration would pull that over cellular and hand the user a bill for a promise the
+    /// UI made on their behalf. `allowsExpensiveNetworkAccess = false` covers cellular and
+    /// personal hotspots; `allowsConstrainedNetworkAccess = false` respects Low Data Mode.
+    public static func wifiOnlyConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.allowsExpensiveNetworkAccess = false
+        configuration.allowsConstrainedNetworkAccess = false
+        return configuration
+    }
+
+    public init(configuration: URLSessionConfiguration = URLSessionArchiveDownloader.wifiOnlyConfiguration()) {
         self.configuration = configuration
     }
 

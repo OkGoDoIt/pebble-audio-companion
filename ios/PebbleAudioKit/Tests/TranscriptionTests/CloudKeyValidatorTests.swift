@@ -112,3 +112,16 @@ private final class RecordingTransport: HttpTransport, @unchecked Sendable {
         return try result.get()
     }
 }
+
+// MARK: - Model-download network policy
+
+@Suite struct ParakeetDownloadPolicyTests {
+    /// Settings promises "Downloads run on Wi-Fi only." next to archives of 430 MB–1.2 GB.
+    /// A `.default` configuration silently breaks that promise on cellular, so the default
+    /// downloader configuration is pinned here.
+    @Test func defaultDownloaderRefusesExpensiveAndConstrainedNetworks() {
+        let configuration = URLSessionArchiveDownloader.wifiOnlyConfiguration()
+        #expect(configuration.allowsExpensiveNetworkAccess == false)
+        #expect(configuration.allowsConstrainedNetworkAccess == false)
+    }
+}
