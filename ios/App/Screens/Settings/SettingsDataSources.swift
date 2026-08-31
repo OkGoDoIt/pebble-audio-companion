@@ -478,10 +478,41 @@ struct DiagnosticFailure: Identifiable, Equatable {
     let attemptsLine: String
 }
 
+/// The watch's own refusal, in the app's words — nil when the watch has not refused anything.
+///
+/// The wire protocol names its refusals precisely (`AuthStatus`, `RevokeReason`,
+/// `ProtocolErrorCode`, the version range in the Info snapshot) and the phone used to decode all
+/// of it and show none of it. `StatusUI.WatchLinkFault` classifies; these are the words.
+struct DiagnosticLinkFault: Equatable {
+    /// Two or three words for the row's trailing value, e.g. "another phone".
+    let short: String
+    /// The sentence underneath: what happened and what to do about it.
+    let reason: String
+    /// The raw code, for the support report's technical tail and Detailed Logs ONLY. Protocol
+    /// vocabulary is allowed there and nowhere else (B20).
+    let trace: String?
+}
+
+/// Where a search-index rebuild has got to. `.done` carries what it actually did, so the row
+/// reports a result rather than just stopping.
+enum IndexRebuildState: Equatable {
+    case idle
+    case running
+    case done(String)
+    case failed
+}
+
 @MainActor
 protocol DiagnosticsSource: AnyObject {
     var receiverStatus: String { get }
     var watchReports: String { get }
+    /// Why the watch is turning this phone away, when it is. Nil is the calm case: the row
+    /// simply is not there.
+    var watchLink: DiagnosticLinkFault? { get }
+    /// Rebuild-index progress, and a way to start one. The index is derived data, so this
+    /// throws nothing away that cannot be written again from the database.
+    var indexRebuild: IndexRebuildState { get }
+    func rebuildSearchIndex() async
     var queueWaiting: Int { get }
     var queueFailed: Int { get }
     /// The failed tasks with their reasons — the answer to "6 failed, but why?", which until
@@ -502,11 +533,18 @@ protocol DiagnosticsSource: AnyObject {
 final class MockDiagnosticsSource: DiagnosticsSource {
     var receiverStatus = Copy.Settings.Diagnostics.receiverRecording
     var watchReports = Copy.Status.recording
+    var watchLink: DiagnosticLinkFault?
+    var indexRebuild: IndexRebuildState = .idle
     var queueWaiting = 0
     var queueFailed = 0
     var enrichmentWaiting = 0
     var enrichmentRunning = false
     var failedItems: [DiagnosticFailure] = []
+
+    func rebuildSearchIndex() async {
+        indexRebuild = .running
+        indexRebuild = .done(Copy.Settings.Diagnostics.rebuildIndexDone(recentSegments.count))
+    }
 
     var recentSegments: [DiagnosticSegment] = [
         .init(title: "1:42 PM · recording now", detail: "12 min · quiet 2 min"),
