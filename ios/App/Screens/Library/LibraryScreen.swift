@@ -188,7 +188,7 @@ struct LibraryScreen: View {
                 Text("\(tag.count)").opacity(0.55)
             }
             .font(AppFont.chip)
-            .foregroundStyle(selected ? .white : Tokens.tint)
+            .foregroundStyle(selected ? Tokens.onTint : Tokens.tint)
             .padding(.vertical, 4)
             .padding(.horizontal, 11)
             .background(Capsule().fill(selected ? Tokens.tint : Tokens.tintFill10))

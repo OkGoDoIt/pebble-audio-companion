@@ -16,19 +16,19 @@ struct OnboardingFlow: View {
             switch model.phase {
             case .connect:
                 OnboardingConnectView(model: model)
-                    .transition(stepTransition)
+                    .transition(Motion.transition(stepTransition))
             case .confirm:
                 OnboardingConfirmView(model: model)
-                    .transition(stepTransition)
+                    .transition(Motion.transition(stepTransition))
             case .transcripts:
                 OnboardingTranscriptsView(model: model)
-                    .transition(stepTransition)
+                    .transition(Motion.transition(stepTransition))
             case .cloudKey:
                 OnboardingCloudKeyView(model: model)
-                    .transition(stepTransition)
+                    .transition(Motion.transition(stepTransition))
             }
         }
-        .animation(.snappy(duration: 0.3), value: model.phase)
+        .motionAware(.snappy(duration: 0.3), value: model.phase)
         .environment(settings)
     }
 
@@ -93,7 +93,7 @@ private struct ConnectHeroGlyph: View {
             HStack(spacing: 6) {
                 ForEach(0..<3, id: \.self) { _ in
                     Capsule()
-                        .fill(Color(hex: 0xC9C9F0))
+                        .fill(Tokens.tintSoft)
                         .frame(width: 8, height: 2.5)
                 }
             }
@@ -138,7 +138,7 @@ private struct OnboardingConfirmView: View {
             .padding(12)
             .padding(.bottom, 20)
         }
-        .animation(.snappy(duration: 0.25), value: model.pairing)
+        .motionAware(.snappy(duration: 0.25), value: model.pairing)
     }
 
     private var waitingContent: some View {
@@ -216,8 +216,8 @@ private struct OnboardingConfirmView: View {
 
 /// The watch-face consent mock (fixed colors — it depicts hardware, identical in dark mode).
 private struct WatchFaceMock: View {
-    private let strapColor = Color(hex: 0xD9D9DE)
-    private let bezelColor = Color(hex: 0x1C1C1E)
+    private let strapColor = Tokens.watchStrap
+    private let bezelColor = Tokens.watchBezel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -255,12 +255,12 @@ private struct WatchFaceMock: View {
                     .foregroundStyle(bezelColor)
                 Text("\(Copy.Onboarding.watchFaceDecline) ›")
                     .font(.system(size: 12))
-                    .foregroundStyle(Color(hex: 0x8A8A8E))
+                    .foregroundStyle(Tokens.watchScreenMuted)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.init(top: 12, leading: 12, bottom: 10, trailing: 12))
-        .background(RoundedRectangle(cornerRadius: 6).fill(.white))
+        .background(RoundedRectangle(cornerRadius: 6).fill(Tokens.watchScreen))
     }
 }
 

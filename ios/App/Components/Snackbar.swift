@@ -33,14 +33,14 @@ private struct SnackbarModifier: ViewModifier {
                     SnackbarView(item: current) { item = nil }
                         .padding(.horizontal, Tokens.screenMargin)
                         .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .transition(Motion.transition(.move(edge: .bottom).combined(with: .opacity)))
                         .task(id: current) {
                             try? await Task.sleep(for: .seconds(5))
                             if !Task.isCancelled, item == current { item = nil }
                         }
                 }
             }
-            .animation(.snappy(duration: 0.25), value: item)
+            .motionAware(.snappy(duration: 0.25), value: item)
     }
 }
 
@@ -52,7 +52,7 @@ private struct SnackbarView: View {
         HStack(spacing: 12) {
             Text(item.message)
                 .font(AppFont.subBody)
-                .foregroundStyle(.white)
+                .foregroundStyle(Tokens.onTint)
             Spacer(minLength: 0)
             if let title = item.actionTitle {
                 Button {
