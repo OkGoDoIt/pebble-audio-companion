@@ -475,10 +475,31 @@ enum Copy {
             static func connectedAgo(_ ago: String) -> String { "Connected · \(ago)" }
             static let footer = "Set Mode to “Local only” to keep everything on this phone."
 
-            // API-key change flow (6.7).
-            static let keyChangeFootnote = "Replaces the saved key."
+            // API-key change flow (6.7). Three labelled sections — what is saved and whether
+            // it works, how to replace it, how to remove it — rather than one undifferentiated
+            // stack of cards. The masked key is the SUBJECT of its row, never the value of a
+            // row titled "saved in Keychain".
+            static let currentKeySection = "Current key"
+            static let replaceKeySection = "Replace key"
+            static let addKeySection = "Add key"
+            static let saveKey = "Save Key"
+            /// Under the current-key card: where the key lives, in the user's terms.
+            static let keychainFootnote = "Stored in this phone’s Keychain."
+            /// Under the field while a key is already stored — states what Save will do.
+            static let keyChangeFootnote = "Saving replaces the key above."
+            /// Under the field right after a save. The save is never gated on the check, so
+            /// "saved" is stated plainly here and the provider's verdict is shown above.
+            static let keySavedFootnote = "Saved to this phone’s Keychain."
             static let deleteKey = "Delete Saved Key…"
             static let deleteKeyButton = "Delete Saved Key"
+            /// The honest consequence — named under the row, and again in the dialog.
+            static func deleteKeyFootnote(provider: String) -> String {
+                "Anything that uses your \(provider) key stops working until you add another."
+            }
+            static func deleteKeyMessage(provider: String) -> String {
+                "This removes the \(provider) key from this phone’s Keychain. "
+                    + "You’ll need to paste it again to use \(provider)."
+            }
 
             // Key-check wording lives in `Copy.KeyCheck` — one catalog for both the onboarding
             // key screen and this one, so the two can never drift apart (U9).

@@ -1,5 +1,6 @@
 import AppDB
 import CompanionRuntime
+import LiveAudio
 import Foundation
 import Intelligence
 import SearchKit
@@ -137,6 +138,74 @@ extension LiveWorld: SearchDataSource {
     }
 }
 
+/// Stored audio in a segment, in milliseconds — frames on disk, not the wall span the
+/// segment covers. `segmentDurationMs` is the latter, and the two differ by exactly the audio
+/// that was lost.
+private func mediaDurationMs(_ meta: SegmentMeta) -> Int64 {
+    let frames = meta.frameCount * Int64(meta.frameDurationMs)
+    return frames > 0 ? frames : segmentDurationMs(meta)
+}
+
+/// Bridges the kit's `SegmentPlaybackController` (which plays one keyed stream) to the
+/// screen's `ConversationPlayback`, keyed on the CONVERSATION: its frame source concatenates
+/// every member segment, so a conversation that survived three reconnects still plays as one.
+@MainActor
+private final class ConversationPlaybackEngine: ConversationPlayback {
+    let durationMs: Int64
+    private let key: String
+    private let controller: SegmentPlaybackController
+
+    init(key: String, durationMs: Int64, controller: SegmentPlaybackController) {
+        self.key = key
+        self.durationMs = durationMs
+        self.controller = controller
+    }
+
+    deinit { controller.stop() }
+
+    func progress() -> AsyncStream<PlaybackProgress> {
+        let updates = controller.stateUpdates()
+        return AsyncStream { continuation in
+            let task = Task {
+                for await state in updates {
+                    continuation.yield(
+                        PlaybackProgress(
+                            playing: state.playing,
+                            positionMs: state.positionMs,
+                            durationMs: state.durationMs))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func play(fromMs: Int64) {
+        let key = key
+        let controller = controller
+        // `play` reads the frame logs synchronously before it starts decoding; off the main
+        // actor, so a long conversation cannot stall the first frame of the UI.
+        Task.detached(priority: .userInitiated) {
+            controller.seekTo(key, positionMs: fromMs)
+            controller.play(key)
+        }
+    }
+
+    func pause() { controller.pause() }
+
+    func seek(toMs: Int64) { controller.seekTo(key, positionMs: toMs) }
+
+    func setSpeed(_ speed: Double) {
+        while controller.state.speed != Float(speed) {
+            let before = controller.state.speed
+            controller.cycleSpeed()
+            if controller.state.speed == before { return }
+        }
+    }
+
+    func stop() { controller.stop() }
+}
+
 // MARK: - ConversationDataSource
 
 extension LiveWorld: ConversationDataSource {
@@ -153,10 +222,12 @@ extension LiveWorld: ConversationDataSource {
         let followUps = (try? await composition.followUps.list(conversationId: id)) ?? []
 
         var transcript: [TranscriptItem] = []
-        var totalMs: Int64 = 0
-        var missingAt: Double?
+        /// Media time consumed by the members already walked — the player's clock.
+        var mediaBeforeMemberMs: Int64 = 0
+        var missingTicks: [Double] = []
         var provider: String?
         var transcribedAtMs: Int64?
+        var zone: TimeZone?
 
         for member in detail.members {
             guard let meta = composition.files.readMeta(member.segmentId) else { continue }
@@ -164,6 +235,17 @@ extension LiveWorld: ConversationDataSource {
             if let stored {
                 provider = stored.providerId
                 transcribedAtMs = max(transcribedAtMs ?? 0, stored.createdAtMs)
+            }
+            if zone == nil {
+                zone = meta.recordedTimeZone.flatMap { TimeZone(identifier: $0) }
+            }
+            // Two clocks per member: wall time (what the stamps beside each speaker show) and
+            // media time (what the scrubber counts — stored audio only, gaps excluded).
+            let memberWallStartMs = Int64(meta.startTimeMs)
+            let memberWallSpanMs = max(segmentDurationMs(meta), 1)
+            let memberMediaMs = mediaDurationMs(meta)
+            func wallDate(_ offsetMs: Int64) -> Date {
+                Date(timeIntervalSince1970: Double(memberWallStartMs + offsetMs) / 1000)
             }
             // `TranscriptSegment`/`TranscriptWord` exist in both Transcription (what the
             // provider produced) and SearchKit (what the timeline formatter reads); bridge them.
@@ -189,26 +271,35 @@ extension LiveWorld: ConversationDataSource {
                                 speakerLabel: speech.speaker ?? "",
                                 name: Self.speakerName(speech.speaker, assignments: assignments),
                                 role: Self.speakerRole(speech.speaker, assignments: assignments),
-                                text: speech.text
+                                text: speech.text,
+                                startedAt: wallDate(speech.startMs)
                             )))
                 case .silenceBreak:
                     break  // an unlabeled visual break; the transcript view spaces paragraphs
                 case .pause(let pause):
+                    let marker = TranscriptMarker(
+                        id: itemId, text: pause.label, startedAt: wallDate(pause.startMs))
                     if pause.missing {
-                        transcript.append(.missing(id: itemId, marker: pause.label))
-                        if totalMs > 0, missingAt == nil {
-                            missingAt = Double(pause.startMs - source.startMs)
-                        }
+                        transcript.append(.missing(marker))
+                        // Where the gap falls on the SCRUBBER: the member's media time scaled
+                        // by how far into the member's wall span the gap happened.
+                        let intoMember = min(max(pause.startMs, 0), memberWallSpanMs)
+                        missingTicks.append(
+                            Double(
+                                mediaBeforeMemberMs
+                                    + memberMediaMs * intoMember / memberWallSpanMs))
                     } else {
-                        transcript.append(
-                            .quiet(id: itemId, duration: pause.label))
+                        transcript.append(.quiet(marker))
                     }
                 }
             }
-            totalMs += segmentDurationMs(meta)
+            mediaBeforeMemberMs += memberMediaMs
         }
 
-        let duration = max(totalMs, source.durationMs)
+        // The scrubber measures STORED AUDIO. Using the wall span instead (a 1 hr 4 min
+        // conversation holding 33 min of audio) made the player claim time that does not
+        // exist, and every position on it was wrong by however much was missing.
+        let duration = mediaBeforeMemberMs
         return ConversationDisplay(
             id: id,
             title: source.title ?? (source.isLive ? "Recording now" : "Conversation"),
@@ -219,12 +310,35 @@ extension LiveWorld: ConversationDataSource {
             player: duration > 0
                 ? PlayerDisplay(
                     durationMs: duration,
-                    missingTickFraction: missingAt.map { min(max($0 / Double(duration), 0), 1) }
+                    missingTickFractions: missingTicks.map {
+                        min(max($0 / Double(duration), 0), 1)
+                    }
                 ) : nil,
             transcript: transcript,
             provenance: Self.provenance(provider: provider, atMs: transcribedAtMs),
-            followUps: followUps
+            followUps: followUps,
+            timeZone: zone ?? .current
         )
+    }
+
+    /// Playback over every member segment of the conversation, as one continuous stream.
+    func playback(id: String) async throws -> (any ConversationPlayback)? {
+        let segments = await members(of: id)
+        guard !segments.isEmpty else { return nil }
+        let files = composition.files
+        let durationMs = segments.compactMap { files.readMeta($0) }
+            .reduce(Int64(0)) { $0 + mediaDurationMs($1) }
+        guard durationMs > 0 else { return nil }
+        return ConversationPlaybackEngine(
+            key: id,
+            durationMs: durationMs,
+            controller: SegmentPlaybackController(
+                playerFactory: { AVFoundationPcmPlayer() },
+                decoder: SpeexLiveFrameDecoder(),
+                // Called on the playback executor, never the main actor: the frame logs of a
+                // long conversation are tens of megabytes to walk.
+                frameSource: { _ in segments.flatMap { files.readFrames($0).map(\.payload) } }
+            ))
     }
 
     func rename(id: String, to title: String) async throws {

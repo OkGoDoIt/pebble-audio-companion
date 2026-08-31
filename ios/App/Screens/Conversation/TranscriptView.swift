@@ -8,6 +8,8 @@ import AppDB
 struct TranscriptView: View {
     let transcript: [TranscriptItem]
     let provenance: String?
+    /// Q16 — stamps read in the zone the audio was recorded in, not the one you're in now.
+    var timeZone: TimeZone = .current
     let onSpeakerTap: (TranscriptTurn) -> Void
 
     var body: some View {
@@ -17,10 +19,10 @@ struct TranscriptView: View {
                     switch block {
                     case .speech(_, let turns):
                         speechBlock(turns)
-                    case .quiet(_, let duration):
-                        markerRow(text: duration, color: Tokens.faint, rule: Tokens.hairline)
-                    case .missing(_, let marker):
-                        markerRow(text: marker, color: Tokens.missing, rule: Tokens.missingHair)
+                    case .quiet(let marker):
+                        markerRow(marker, color: Tokens.faint, rule: Tokens.hairline)
+                    case .missing(let marker):
+                        markerRow(marker, color: Tokens.missing, rule: Tokens.missingHair)
                     }
                 }
                 if let provenance {
@@ -53,10 +55,10 @@ struct TranscriptView: View {
                 } else {
                     blocks.append(.speech(id: turn.id, turns: [turn]))
                 }
-            case .quiet(let id, let duration):
-                blocks.append(.quiet(id: id, duration: duration))
-            case .missing(let id, let marker):
-                blocks.append(.missing(id: id, marker: marker))
+            case .quiet(let marker):
+                blocks.append(.quiet(marker))
+            case .missing(let marker):
+                blocks.append(.missing(marker))
             }
         }
         return blocks
@@ -65,21 +67,28 @@ struct TranscriptView: View {
     private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
         let lead = turns[0]
         return VStack(alignment: .leading, spacing: 3) {
-            Button {
-                onSpeakerTap(lead)
-            } label: {
-                HStack(spacing: 5) {
-                    if lead.role == .unresolved {
-                        StatusDot(color: Tokens.captured, size: .legend)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Button {
+                    onSpeakerTap(lead)
+                } label: {
+                    HStack(spacing: 5) {
+                        if lead.role == .unresolved {
+                            StatusDot(color: Tokens.captured, size: .legend)
+                        }
+                        Text(lead.name)
+                            .font(AppFont.speaker)
+                            .foregroundStyle(speakerColor(lead.role))
                     }
-                    Text(lead.name)
-                        .font(AppFont.speaker)
-                        .foregroundStyle(speakerColor(lead.role))
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("Rename \(lead.name)")
+
+                if let startedAt = lead.startedAt {
+                    TranscriptStamp(date: startedAt, timeZone: timeZone)
+                }
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Rename \(lead.name)")
 
             ForEach(turns) { turn in
                 Text(turn.text)
@@ -87,6 +96,13 @@ struct TranscriptView: View {
                     .foregroundStyle(turn.role == .unresolved ? Tokens.meta : Tokens.label)
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
+                    // One VoiceOver element per turn, carrying the time the eye reads off
+                    // the stamp beside the name.
+                    .accessibilityLabel(
+                        Copy.A11y.transcriptTurn(
+                            time: turn.startedAt.map { TranscriptStamp.text($0, in: timeZone) },
+                            speaker: turn.name,
+                            text: turn.text))
             }
         }
     }
@@ -107,22 +123,25 @@ struct TranscriptView: View {
     /// which is wider than the phone, and SwiftUI centers an oversized child, so the ENTIRE
     /// screen (nav bar, header, player, bottom bar) shifted left and clipped on both edges.
     /// Loss markers are exactly the content that must never be cut off.
-    private func markerRow(text: String, color: Color, rule: Color) -> some View {
+    private func markerRow(_ marker: TranscriptMarker, color: Color, rule: Color) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
                 Rectangle().fill(rule).frame(height: 0.5)
-                markerText(text, color: color)
+                markerText(marker.text, color: color)
                     .fixedSize()
                 Rectangle().fill(rule).frame(height: 0.5)
             }
             VStack(spacing: 5) {
                 Rectangle().fill(rule).frame(height: 0.5)
-                markerText(text, color: color)
+                markerText(marker.text, color: color)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement()
-        .accessibilityLabel(text)
+        .accessibilityLabel(
+            marker.startedAt.map { Copy.A11y.transcriptMarker(
+                time: TranscriptStamp.text($0, in: timeZone), text: marker.text) }
+                ?? marker.text)
     }
 
     private func markerText(_ text: String, color: Color) -> some View {
@@ -137,15 +156,34 @@ struct TranscriptView: View {
 /// One rendered row of the transcript: a run of consecutive same-speaker turns, or a marker.
 private enum TranscriptBlock: Identifiable {
     case speech(id: String, turns: [TranscriptTurn])
-    case quiet(id: String, duration: String)
-    case missing(id: String, marker: String)
+    case quiet(TranscriptMarker)
+    case missing(TranscriptMarker)
 
     var id: String {
         switch self {
         case .speech(let id, _): return id
-        case .quiet(let id, _): return id
-        case .missing(let id, _): return id
+        case .quiet(let marker), .missing(let marker): return marker.id
         }
+    }
+}
+
+/// The clock stamp beside a speaker name: 11pt `faint`, monospaced digits so a column of
+/// them doesn't shiver, formatted in the recording's own zone (Q16) and by the user's
+/// 12/24-hour setting — never a hand-built string.
+struct TranscriptStamp: View {
+    let date: Date
+    var timeZone: TimeZone = .current
+
+    static func text(_ date: Date, in timeZone: TimeZone) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone))
+    }
+
+    var body: some View {
+        Text(Self.text(date, in: timeZone))
+            .font(AppFont.micro.monospacedDigit())
+            .foregroundStyle(Tokens.faint)
+            .lineLimit(1)
+            .accessibilityHidden(true)
     }
 }
 

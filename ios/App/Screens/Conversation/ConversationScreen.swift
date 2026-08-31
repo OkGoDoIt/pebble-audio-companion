@@ -35,6 +35,7 @@ struct ConversationScreen: View {
             if model.display != nil { bottomBar }
         }
         .task(id: conversationId) { await load() }
+        .onDisappear { player.stop() }
         .sheet(item: $model.renameTurn) { turn in
             SpeakerRenameSheet(conversationId: conversationId, turn: turn) {
                 Task { await load() }
@@ -93,7 +94,8 @@ struct ConversationScreen: View {
                 if !display.transcript.isEmpty {
                     TranscriptView(
                         transcript: display.transcript,
-                        provenance: display.provenance
+                        provenance: display.provenance,
+                        timeZone: display.timeZone
                     ) { turn in
                         model.renameTurn = turn
                     }
@@ -163,9 +165,12 @@ struct ConversationScreen: View {
 
     private func load() async {
         await model.load(id: conversationId)
-        if let display = model.display, let playerDisplay = display.player {
-            player.configure(playerDisplay, atMs: atMs)
-        }
+        guard let display = model.display, let playerDisplay = display.player else { return }
+        // `configure` is a no-op once this conversation's engine is attached, so the reloads
+        // after a rename or a tag edit never interrupt playback.
+        let engine = try? await AskLibraryDataSources.current.conversations.playback(
+            id: conversationId)
+        player.configure(playerDisplay, atMs: atMs, id: conversationId, engine: engine)
     }
 
     // MARK: - Header
