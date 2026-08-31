@@ -1,64 +1,39 @@
 import SwiftUI
 import AppDB
 
-/// Conversation detail (mockup 2.6 + States · Conversation): custom nav (back names the
-/// actual parent — B15; Share + ⋯), header (title / meta / summary / editable-on-tap tags),
-/// player card, lifecycle state cards, speaker-colored transcript with inline markers, and
-/// the [Ask][Notes][Follow-ups] bottom bar. No tab bar.
+/// Conversation detail (mockup 2.6 + States · Conversation): the system navigation bar
+/// (its back button names whichever parent pushed us — Today or Library — and the title
+/// fades in once the header scrolls away), header (title / meta / summary /
+/// editable-on-tap tags), player card, lifecycle state cards, speaker-colored transcript
+/// with inline markers, and the [Ask][Notes][Follow-ups] bottom bar. No tab bar.
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
-    var originLabel: String = Copy.Library.title
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
     @State private var model = ConversationViewModel()
     @State private var player = PlayerModel()
+    /// True once the in-content title has scrolled under the navigation bar, which is when
+    /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
+    @State private var titleInBar = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            DetailNavBar(
-                backLabel: originLabel,
-                onBack: { dismiss() },
-                shareText: model.display?.shareText,
-                menu: { ellipsisMenu }
-            )
-
+        Group {
             if let display = model.display {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Tokens.blockGap) {
-                        header(display)
-                        if display.player != nil {
-                            PlayerCard(model: player)
-                        }
-                        lifecycleCard(display.lifecycle)
-                        if !display.transcript.isEmpty {
-                            TranscriptView(
-                                transcript: display.transcript,
-                                provenance: display.provenance
-                            ) { turn in
-                                model.renameTurn = turn
-                            }
-                        }
-                        if let result = model.actionResult {
-                            Text(result)
-                                .font(AppFont.footnote)
-                                .foregroundStyle(Tokens.meta)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding(.horizontal, Tokens.screenMargin)
-                    .padding(.top, 4)
-                    .padding(.bottom, Tokens.blockGap)
-                }
+                content(display)
             } else {
-                Spacer()
+                placeholder
             }
         }
         .background(Tokens.ground)
-        .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .safeAreaInset(edge: .bottom) { bottomBar }
+        .navigationTitle(titleInBar ? (model.display?.title ?? "") : "")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { toolbarItems }
+        .safeAreaInset(edge: .bottom) {
+            if model.display != nil { bottomBar }
+        }
         .task(id: conversationId) { await load() }
         .sheet(item: $model.renameTurn) { turn in
             SpeakerRenameSheet(conversationId: conversationId, turn: turn) {
@@ -71,7 +46,7 @@ struct ConversationScreen: View {
         .sheet(isPresented: $model.showTemplates) {
             TemplateSheet(conversationId: conversationId) { note in
                 model.showTemplates = false
-                router.libraryPath.append(Route.note(id: note.id))
+                router.push(.note(id: note.id))
             }
         }
         .sheet(isPresented: $model.showFollowUps, onDismiss: { Task { await load() } }) {
@@ -105,6 +80,87 @@ struct ConversationScreen: View {
         }
     }
 
+    // MARK: - Content
+
+    private func content(_ display: ConversationDisplay) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Tokens.blockGap) {
+                header(display)
+                if display.player != nil {
+                    PlayerCard(model: player)
+                }
+                lifecycleCard(display.lifecycle)
+                if !display.transcript.isEmpty {
+                    TranscriptView(
+                        transcript: display.transcript,
+                        provenance: display.provenance
+                    ) { turn in
+                        model.renameTurn = turn
+                    }
+                }
+                if let result = model.actionResult {
+                    Text(result)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal, Tokens.screenMargin)
+            .padding(.top, 4)
+            .padding(.bottom, Tokens.blockGap)
+        }
+    }
+
+    /// Loading and not-found. Neither used to exist: a slow (or missing) conversation left
+    /// the screen completely blank under the nav bar with no way to tell which it was.
+    @ViewBuilder
+    private var placeholder: some View {
+        VStack(spacing: 10) {
+            if model.loaded {
+                Text(Copy.Conversation.unavailable)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.tertiary)
+                    .multilineTextAlignment(.center)
+            } else {
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(Tokens.meta)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, Tokens.screenMargin)
+    }
+
+    // MARK: - Navigation bar
+    //
+    // The system bar draws itself (iOS 26 Liquid Glass, the scroll-edge effect, and the
+    // ≥44 pt hit regions); these items only say what goes in it. The back button is the
+    // system's, so it names the ACTUAL parent — the hand-rolled bar it replaced took an
+    // `originLabel` parameter that Today never passed, and Today never reached this screen
+    // at all.
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        if let shareText = model.display?.shareText {
+            ToolbarItem(placement: .topBarTrailing) {
+                ShareLink(item: shareText) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel(Copy.A11y.share)
+            }
+        }
+        if model.display != nil {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    ellipsisMenuItems
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel(Copy.A11y.more)
+            }
+        }
+    }
+
     private func load() async {
         await model.load(id: conversationId)
         if let display = model.display, let playerDisplay = display.player {
@@ -120,6 +176,15 @@ struct ConversationScreen: View {
                 .font(AppFont.detailTitle)
                 .foregroundStyle(Tokens.label)
                 .fixedSize(horizontal: false, vertical: true)
+                // Hand-off point for the bar title: once this line's bottom edge passes
+                // under the bar, the bar carries the title instead.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .scrollView).maxY
+                } action: { maxY in
+                    let shouldShow = maxY < 4
+                    guard shouldShow != titleInBar else { return }
+                    withAnimation(Motion.animation(.snappy)) { titleInBar = shouldShow }
+                }
             Text(display.metaLine)
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.meta)
@@ -150,8 +215,9 @@ struct ConversationScreen: View {
 
     // MARK: - ⋯ menu (Rename / Edit Tags / Re-transcribe / Export Audio… / Delete…)
 
-    private var ellipsisMenu: some View {
-        EllipsisMenu {
+    @ViewBuilder
+    private var ellipsisMenuItems: some View {
+        Group {
             Button(Copy.Conversation.rename) {
                 model.renameDraft = model.display?.title ?? ""
                 model.showRename = true
@@ -311,7 +377,7 @@ struct ConversationScreen: View {
             let notes = (try? await AskLibraryDataSources.current.notes.notes(
                 conversationId: conversationId)) ?? []
             if let first = notes.first {
-                router.libraryPath.append(Route.note(id: first.id))
+                router.push(.note(id: first.id))
             } else {
                 model.showTemplates = true
             }
@@ -325,6 +391,9 @@ struct ConversationScreen: View {
 @Observable
 final class ConversationViewModel {
     var display: ConversationDisplay?
+    /// False until the first load finishes, so the screen can tell "still loading" from
+    /// "there is no such conversation".
+    var loaded = false
     var renameTurn: TranscriptTurn?
     var showTagEditor = false
     var showTemplates = false
@@ -338,6 +407,7 @@ final class ConversationViewModel {
 
     func load(id: String) async {
         display = try? await AskLibraryDataSources.current.conversations.display(id: id)
+        loaded = true
     }
 
     func exportAudio(id: String) {

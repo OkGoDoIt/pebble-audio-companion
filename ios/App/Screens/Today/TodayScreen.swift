@@ -52,16 +52,18 @@ struct TodayScreen: View {
         switch route {
         case .live:
             LiveConversationScreen()
-        case .note:
-            // The recap detail rides the `.note` route (digest id `day-<dateKey>`) —
-            // the Saved-Notes pattern per the conventions.
-            RecapDetailView(detail: viewModel.snapshot.recap?.detail)
-        case .conversation(let id, _):
-            // Placeholder until the Conversation screen lands (Library/Conversation
-            // agent); swap this case to the real ConversationScreen when it exists.
-            ConversationFallbackView(
-                row: viewModel.snapshot.conversations.first(where: { $0.id == id })
-            )
+        case .note(let id):
+            // The recap detail rides the `.note` route (digest id `day-<dateKey>`); every
+            // other id is a saved note reached from a conversation opened in THIS stack.
+            if id.hasPrefix(RecapDisplay.digestIdPrefix) {
+                RecapDetailView(detail: viewModel.snapshot.recap?.detail)
+            } else {
+                SavedNotesScreen(noteId: id)
+            }
+        case .conversation(let id, let atMs):
+            // The same detail screen the Library pushes — the native back button names
+            // whichever parent actually pushed it, so no origin needs threading through.
+            ConversationScreen(conversationId: id, atMs: atMs)
         default:
             Color.clear.background(Tokens.ground)
         }
@@ -399,33 +401,6 @@ struct TodayScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Conversation placeholder (until the Conversation screen lands)
-
-/// Temporary destination for `.conversation` pushes from Today. The Conversation screen is
-/// owned by the Library/Conversation agent; the orchestrator swaps this for the real screen.
-private struct ConversationFallbackView: View {
-    let row: ConversationRowDisplay?
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(row?.title ?? "Conversation")
-                    .font(AppFont.detailTitle)
-                    .foregroundStyle(Tokens.label)
-                if let meta = row?.meta {
-                    Text(meta)
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.meta)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Tokens.screenMargin)
-        }
-        .background(Tokens.ground)
-        .toolbar(.hidden, for: .tabBar)
     }
 }
 

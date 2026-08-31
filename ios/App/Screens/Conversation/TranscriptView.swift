@@ -13,10 +13,10 @@ struct TranscriptView: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(transcript) { item in
-                    switch item {
-                    case .turn(let turn):
-                        turnView(turn)
+                ForEach(blocks) { block in
+                    switch block {
+                    case .speech(_, let turns):
+                        speechBlock(turns)
                     case .quiet(_, let duration):
                         markerRow(text: duration, color: Tokens.faint, rule: Tokens.hairline)
                     case .missing(_, let marker):
@@ -28,35 +28,66 @@ struct TranscriptView: View {
                         .font(AppFont.micro)
                         .foregroundStyle(Tokens.faint)
                         .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                         .padding(.top, 4)
                 }
             }
         }
     }
 
-    private func turnView(_ turn: TranscriptTurn) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+    /// Consecutive turns by the same speaker read as one person still talking, so they get
+    /// ONE name header and a paragraph each. Real transcripts arrive split at provider
+    /// segment boundaries — mid-sentence, often — and repeating "Speaker 1" over every
+    /// fragment turned the card into a wall of labels.
+    private var blocks: [TranscriptBlock] {
+        var blocks: [TranscriptBlock] = []
+        for item in transcript {
+            switch item {
+            case .turn(let turn):
+                if case .speech(let id, var turns) = blocks.last,
+                    let previous = turns.last, previous.speakerLabel == turn.speakerLabel,
+                    previous.name == turn.name, previous.role == turn.role
+                {
+                    turns.append(turn)
+                    blocks[blocks.count - 1] = .speech(id: id, turns: turns)
+                } else {
+                    blocks.append(.speech(id: turn.id, turns: [turn]))
+                }
+            case .quiet(let id, let duration):
+                blocks.append(.quiet(id: id, duration: duration))
+            case .missing(let id, let marker):
+                blocks.append(.missing(id: id, marker: marker))
+            }
+        }
+        return blocks
+    }
+
+    private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
+        let lead = turns[0]
+        return VStack(alignment: .leading, spacing: 3) {
             Button {
-                onSpeakerTap(turn)
+                onSpeakerTap(lead)
             } label: {
                 HStack(spacing: 5) {
-                    if turn.role == .unresolved {
+                    if lead.role == .unresolved {
                         StatusDot(color: Tokens.captured, size: .legend)
                     }
-                    Text(turn.name)
+                    Text(lead.name)
                         .font(AppFont.speaker)
-                        .foregroundStyle(speakerColor(turn.role))
+                        .foregroundStyle(speakerColor(lead.role))
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Rename \(turn.name)")
+            .accessibilityLabel("Rename \(lead.name)")
 
-            Text(turn.text)
-                .font(AppFont.callout)
-                .foregroundStyle(turn.role == .unresolved ? Tokens.meta : Tokens.label)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
+            ForEach(turns) { turn in
+                Text(turn.text)
+                    .font(AppFont.callout)
+                    .foregroundStyle(turn.role == .unresolved ? Tokens.meta : Tokens.label)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -68,14 +99,52 @@ struct TranscriptView: View {
         }
     }
 
+    /// A break in the transcript. Short markers ("quiet for 40 sec") sit between hairlines,
+    /// the artboard's look; long ones ("audio interrupted for 12 sec (watch buffer filled
+    /// while disconnected)") wrap under a single rule instead.
+    ///
+    /// The `.fixedSize()` this replaces made the long form as wide as its one unbroken line —
+    /// which is wider than the phone, and SwiftUI centers an oversized child, so the ENTIRE
+    /// screen (nav bar, header, player, bottom bar) shifted left and clipped on both edges.
+    /// Loss markers are exactly the content that must never be cut off.
     private func markerRow(text: String, color: Color, rule: Color) -> some View {
-        HStack(spacing: 8) {
-            Rectangle().fill(rule).frame(height: 0.5)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(color)
-                .fixedSize()
-            Rectangle().fill(rule).frame(height: 0.5)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                Rectangle().fill(rule).frame(height: 0.5)
+                markerText(text, color: color)
+                    .fixedSize()
+                Rectangle().fill(rule).frame(height: 0.5)
+            }
+            VStack(spacing: 5) {
+                Rectangle().fill(rule).frame(height: 0.5)
+                markerText(text, color: color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(text)
+    }
+
+    private func markerText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(color)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+/// One rendered row of the transcript: a run of consecutive same-speaker turns, or a marker.
+private enum TranscriptBlock: Identifiable {
+    case speech(id: String, turns: [TranscriptTurn])
+    case quiet(id: String, duration: String)
+    case missing(id: String, marker: String)
+
+    var id: String {
+        switch self {
+        case .speech(let id, _): return id
+        case .quiet(let id, _): return id
+        case .missing(let id, _): return id
         }
     }
 }

@@ -134,6 +134,17 @@ final class AppRouter {
     /// Tag filter carried by `companion://library?tag=` — consumed by LibraryScreen on appear.
     var pendingLibraryTag: String?
 
+    /// Pushes onto the stack of the tab the user is actually in, so a screen reached from
+    /// Today keeps pushing inside Today (hard-coding `libraryPath` pushed a note nobody could
+    /// see, and quietly rewrote the Library stack behind the user's back).
+    func push(_ route: Route) {
+        switch selectedTab {
+        case .today: todayPath.append(route)
+        case .library: libraryPath.append(route)
+        case .settings: settingsPath.append(route)
+        }
+    }
+
     func navigate(to route: Route) {
         switch route {
         case .today, .live:

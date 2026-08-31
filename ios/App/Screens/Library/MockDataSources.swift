@@ -148,6 +148,43 @@ final class MockWorld {
                 lifecycle: .capturedWaiting(queueLine: Copy.Conversation.queueLine("3rd")),
                 player: PlayerDisplay(durationMs: 100 * 60_000)
             ),
+            // The worst-case row the artboards never showed: an over-long generated title,
+            // a long loss marker, and a summary that fills three lines. Every layout here
+            // has to survive this one — the polite artboard data hid a marker that pushed
+            // the whole screen wider than the display.
+            MockConversation(
+                id: "long-day",
+                title: "Issues with Apple's AI-powered transcription service, Soniox, and a "
+                    + "request for a missing API key",
+                summary: "Transcription keeps failing; the API key never arrived.",
+                detailSummary: "You worked through repeated failures in the transcription "
+                    + "pipeline, compared Apple's on-device service with Soniox, and asked "
+                    + "again for the missing API key so the cloud path can be tested.",
+                start: today(9, 44), end: today(10, 48),
+                tags: [
+                    ConversationTag(id: "tag-work", name: "work", source: "ai"),
+                    ConversationTag(id: "tag-transcription", name: "transcription", source: "ai"),
+                ],
+                hasMissingAudio: true,
+                transcript: [
+                    turn("ld1", "S1", "Roger", .you,
+                         "Testing one two three, testing one two three."),
+                    .quiet(id: "ld2", duration: Copy.Conversation.quietFor("1 min")),
+                    turn("ld3", "S1", "Roger", .you,
+                         "Let's do the obvious issues first — onboarding never prompted me "
+                         + "to turn transcription on."),
+                    .missing(
+                        id: "ld4",
+                        marker: "audio interrupted for 12 sec "
+                            + "(watch buffer filled while disconnected)"),
+                    turn("ld5", "S1", "Roger", .you,
+                         "Today's screen showed the recent conversations, and that was "
+                         + "helpful."),
+                ],
+                player: PlayerDisplay(
+                    durationMs: 33 * 60_000 + 12_000, missingTickFraction: 0.42),
+                provenanceProvider: "Soniox", provenanceDate: today(10, 49)
+            ),
             MockConversation(
                 id: "tv-household",
                 title: "TV and household plans",
