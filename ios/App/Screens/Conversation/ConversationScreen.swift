@@ -41,6 +41,17 @@ struct ConversationScreen: View {
             if model.display != nil { bottomBar }
         }
         .task(id: conversationId) { await load() }
+        // Stay live while it is open. A conversation opened straight from Today is usually
+        // still being transcribed and has no title yet; without this the transcript, the AI
+        // title and summary, and the follow-ups all land invisibly and the screen only catches
+        // up if you navigate away and back.
+        .task(id: conversationId) {
+            for await _ in AskLibraryDataSources.current.conversations.updates(
+                conversationId: conversationId)
+            {
+                await load()
+            }
+        }
         .onDisappear { player.stop() }
         .sheet(item: $model.renameTurn) { turn in
             SpeakerRenameSheet(conversationId: conversationId, turn: turn) {
@@ -482,8 +493,12 @@ final class ConversationViewModel {
         actionResult = "Exporting…"
         Task {
             do {
-                try await AskLibraryDataSources.current.conversations.exportAudio(id: id)
-                actionResult = Copy.Settings.Storage.exported(1)
+                // The real file count: one WAV per member segment, so a conversation that
+                // survived reconnects writes several. Reporting a hard-coded "1 file exported"
+                // sent people to Files looking for a single recording that was actually four.
+                let written = try await AskLibraryDataSources.current.conversations.exportAudio(
+                    id: id)
+                actionResult = Copy.Settings.Storage.exported(written)
             } catch {
                 actionResult = nil
             }

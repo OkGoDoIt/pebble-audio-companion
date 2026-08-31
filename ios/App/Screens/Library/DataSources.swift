@@ -319,13 +319,21 @@ protocol SearchDataSource: AnyObject {
 @MainActor
 protocol ConversationDataSource: AnyObject {
     func display(id: String) async throws -> ConversationDisplay?
+    /// One tick per database write that changes THIS conversation. The screen used to load once
+    /// and reload only after the user's own actions, so a conversation opened while it was
+    /// still being transcribed never updated in place: the transcript, the AI title and summary
+    /// and the follow-ups all landed invisibly, and you had to leave and come back to see them.
+    func updates(conversationId: String) -> AsyncStream<Void>
     /// The playback engine for this conversation's stored audio; nil when there is none.
     func playback(id: String) async throws -> (any ConversationPlayback)?
     func rename(id: String, to title: String) async throws
     func retranscribe(id: String) async throws
     func transcribeNow(id: String) async throws
     func retryNow(id: String) async throws
-    func exportAudio(id: String) async throws
+    /// Writes WAV copies of the conversation's audio. Returns how many files were written — a
+    /// conversation that survived reconnects is several segments, so it is several files, and
+    /// the screen has to say the real number or the user goes to Files looking for one.
+    func exportAudio(id: String) async throws -> Int
     func delete(id: String) async throws
     func undoDelete(id: String) async throws
     func toggleFollowUp(id: String) async throws
