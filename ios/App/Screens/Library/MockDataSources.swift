@@ -261,8 +261,8 @@ final class MockWorld {
                     + "and to book the theater walkthrough for Tuesday so the trip doesn't collide "
                     + "with it [2]. Packing was left open — Sam offered to handle it Friday evening [2].",
                 citations: [
-                    AskCitation(segmentId: "coffee-dana", number: 1),
-                    AskCitation(segmentId: "evening-home", number: 2),
+                    AskCitation(segmentId: Self.member("coffee-dana", 1), number: 1),
+                    AskCitation(segmentId: Self.member("evening-home", 2), number: 2),
                 ],
                 scopeDescription: Copy.Ask.scopeLastDays(2),
                 createdAtMs: ms(now.addingTimeInterval(-2 * 3600))),
@@ -270,14 +270,14 @@ final class MockWorld {
                 id: "ask-walkthrough",
                 question: "When is the theater walkthrough?",
                 answerText: "Tuesday afternoon — you set it so the ferry weekend stays clear [1].",
-                citations: [AskCitation(segmentId: "coffee-dana", number: 1)],
+                citations: [AskCitation(segmentId: Self.member("coffee-dana", 2), number: 1)],
                 scopeDescription: Copy.Ask.scopeLast7Days,
                 createdAtMs: ms(now.addingTimeInterval(-26 * 3600))),
             AskEntry(
                 id: "ask-house",
                 question: "Did anything need fixing at home?",
                 answerText: "The hallway light is broken; you added a bulb to the weekend list [1].",
-                citations: [AskCitation(segmentId: "tv-household", number: 1)],
+                citations: [AskCitation(segmentId: Self.member("tv-household", 1), number: 1)],
                 scopeDescription: Copy.Ask.scopeEverything,
                 createdAtMs: ms(now.addingTimeInterval(-2 * 86_400))),
         ]
@@ -297,8 +297,8 @@ final class MockWorld {
                 momentsLabel: Copy.Ask.moments(
                     2, "\(TimeFmt.time(yesterday(21, 36))), \(TimeFmt.time(yesterday(21, 51)))"),
                 citations: [
-                    AskCitation(segmentId: "planning-work", number: 1),
-                    AskCitation(segmentId: "planning-work", number: 2),
+                    AskCitation(segmentId: Self.member("planning-work", 1), number: 1),
+                    AskCitation(segmentId: Self.member("planning-work", 2), number: 2),
                 ]),
         ]
 
@@ -370,8 +370,12 @@ final class MockWorld {
             tags: conversation.tags,
             lifecycle: conversation.lifecycle,
             player: conversation.player,
-            transcript: Self.stamped(conversation.transcript, from: conversation.start,
-                                     to: conversation.isLive ? Date() : conversation.end),
+            transcript: Self.stamped(
+                conversation.transcript,
+                conversationId: conversation.id,
+                from: conversation.start,
+                to: conversation.isLive ? Date() : conversation.end,
+                mediaDurationMs: conversation.player?.durationMs ?? 0),
             provenance: provenance,
             followUps: followUps.filter { $0.sourceConversationId == conversation.id }
         )
@@ -379,23 +383,35 @@ final class MockWorld {
 
     /// The artboard fixtures carry no per-row times, so the mock world spreads them evenly
     /// across the conversation — enough for the stamps beside each speaker to look and behave
-    /// like real ones in demo builds and previews.
+    /// like real ones in demo builds and previews. The same pass splits the rows into the two
+    /// members the mock's citations name, and puts each row where it would sit on the
+    /// scrubber, so the cited highlight and "Play from here" are exercisable here too.
     private static func stamped(
-        _ transcript: [TranscriptItem], from start: Date, to end: Date
+        _ transcript: [TranscriptItem],
+        conversationId: String,
+        from start: Date,
+        to end: Date,
+        mediaDurationMs: Int64
     ) -> [TranscriptItem] {
         guard transcript.count > 1, end > start else { return transcript }
         let step = end.timeIntervalSince(start) / Double(transcript.count)
+        let half = (transcript.count + 1) / 2
         return transcript.enumerated().map { offset, item in
             let at = start.addingTimeInterval(step * Double(offset))
             switch item {
             case .turn(var turn):
                 turn.startedAt = at
+                turn.segmentId = member(conversationId, offset < half ? 1 : 2)
+                turn.mediaOffsetMs = mediaDurationMs > 0
+                    ? mediaDurationMs * Int64(offset) / Int64(transcript.count) : nil
                 return .turn(turn)
             case .quiet(var marker):
                 marker.startedAt = at
+                marker.segmentId = member(conversationId, offset < half ? 1 : 2)
                 return .quiet(marker)
             case .missing(var marker):
                 marker.startedAt = at
+                marker.segmentId = member(conversationId, offset < half ? 1 : 2)
                 return .missing(marker)
             }
         }
@@ -646,7 +662,7 @@ extension MockWorld: AskDataSource {
                 question: question,
                 answerText: "You decided to stop for the night and finish the plan tomorrow [1]. "
                     + "Roger sends the money so the work can go faster [1].",
-                citations: [AskCitation(segmentId: conversation.id, number: 1)],
+                citations: [AskCitation(segmentId: Self.member(conversation.id, 1), number: 1)],
                 scopeDescription: scope.label,
                 createdAtMs: ms(Date()))
         } else if lowered.contains("trip") || lowered.contains("ferry") {
@@ -657,8 +673,8 @@ extension MockWorld: AskDataSource {
                 answerText: askEntries.first { $0.id == "ask-trip" }?.answerText
                     ?? "You decided to take the ferry Saturday morning instead of driving [1].",
                 citations: [
-                    AskCitation(segmentId: "coffee-dana", number: 1),
-                    AskCitation(segmentId: "evening-home", number: 2),
+                    AskCitation(segmentId: Self.member("coffee-dana", 1), number: 1),
+                    AskCitation(segmentId: Self.member("evening-home", 2), number: 2),
                 ],
                 scopeDescription: scope.label,
                 createdAtMs: ms(Date()))
@@ -669,7 +685,7 @@ extension MockWorld: AskDataSource {
                 question: question,
                 answerText: "Travel came up twice: the ferry booking for Saturday [1] and keeping "
                     + "the theater walkthrough clear of the trip [1].",
-                citations: [AskCitation(segmentId: "coffee-dana", number: 1)],
+                citations: [AskCitation(segmentId: Self.member("coffee-dana", 1), number: 1)],
                 scopeDescription: scope.label,
                 createdAtMs: ms(Date()))
         } else if thread != nil {
@@ -707,7 +723,41 @@ extension MockWorld: AskDataSource {
     }
 
     func conversationTitle(citedId: String) -> String? {
-        index(of: citedId).map { conversations[$0].title }
+        index(of: MockWorld.conversation(ofMember: citedId)).map { conversations[$0].title }
+    }
+
+    /// The artboard conversations each stand in for a two-member recording, so a mock citation
+    /// names a PART of one exactly the way a real one does — which is what makes the cited
+    /// highlight, the scroll and "Play from here" demonstrable without a watch in the room.
+    func citationTarget(citedId: String) async -> CitationTarget? {
+        let conversationId = MockWorld.conversation(ofMember: citedId)
+        guard let index = index(of: conversationId) else { return nil }
+        let conversation = conversations[index]
+        let ordinal = MockWorld.memberOrdinal(citedId)
+        let duration = conversation.player?.durationMs ?? 0
+        let startedAt =
+            conversation.start.addingTimeInterval(
+                conversation.end.timeIntervalSince(conversation.start)
+                    * (ordinal == 2 ? 0.5 : 0))
+        return CitationTarget(
+            conversationId: conversationId,
+            conversationTitle: conversation.title,
+            segmentId: MockWorld.member(conversationId, ordinal),
+            mediaOffsetMs: duration > 0 ? (ordinal == 2 ? duration / 2 : 0) : nil,
+            startedAt: startedAt)
+    }
+
+    /// "<conversationId>#<ordinal>" — the mock's stand-in for a real segment id.
+    static func member(_ conversationId: String, _ ordinal: Int) -> String {
+        "\(conversationId)#\(ordinal)"
+    }
+
+    static func conversation(ofMember memberId: String) -> String {
+        memberId.split(separator: "#").first.map(String.init) ?? memberId
+    }
+
+    static func memberOrdinal(_ memberId: String) -> Int {
+        memberId.split(separator: "#").last.flatMap { Int($0) } ?? 1
     }
 }
 
@@ -748,7 +798,9 @@ extension MockWorld: NotesDataSource {
                 time: TimeFmt.time(Date()), model: "GPT-5.6 Luna"),
             body: (conversation.summary ?? conversation.title) + " [1].",
             momentsLabel: Copy.Ask.moments(1, TimeFmt.time(conversation.start)),
-            citations: [AskCitation(segmentId: conversationId, number: 1)])
+            citations: [
+                AskCitation(segmentId: Self.member(conversationId, 1), number: 1)
+            ])
         noteRecords.append(note)
         bump()
         return note

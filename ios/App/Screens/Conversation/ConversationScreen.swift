@@ -9,6 +9,9 @@ import AppDB
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
+    /// The cited member a Saved Notes / Ask chip sent us to: the transcript scrolls to it,
+    /// bands it, and offers to play from there. Nil on every ordinary open.
+    var focusSegmentId: String?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
@@ -17,6 +20,9 @@ struct ConversationScreen: View {
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
+    /// One jump per arrival: re-scrolling on every reload (rename, tag edit, retranscribe)
+    /// would yank the screen back under the user mid-read.
+    @State private var didScrollToCited = false
 
     var body: some View {
         Group {
@@ -84,6 +90,7 @@ struct ConversationScreen: View {
     // MARK: - Content
 
     private func content(_ display: ConversationDisplay) -> some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 header(display)
@@ -95,10 +102,18 @@ struct ConversationScreen: View {
                     TranscriptView(
                         transcript: display.transcript,
                         provenance: display.provenance,
-                        timeZone: display.timeZone
-                    ) { turn in
-                        model.renameTurn = turn
-                    }
+                        timeZone: display.timeZone,
+                        focusSegmentId: focusSegmentId,
+                        onSpeakerTap: { turn in model.renameTurn = turn },
+                        // Playing is always the user's move: arriving from a citation cues the
+                        // scrubber to the moment, and this is the tap that starts it.
+                        onPlayFrom: display.player == nil
+                            ? nil
+                            : { offsetMs in
+                                player.seek(positionMs: offsetMs)
+                                if !player.playing { player.togglePlay() }
+                            }
+                    )
                 }
                 if let result = model.actionResult {
                     Text(result)
@@ -110,6 +125,28 @@ struct ConversationScreen: View {
             .padding(.horizontal, Tokens.screenMargin)
             .padding(.top, 4)
             .padding(.bottom, Tokens.blockGap)
+        }
+        .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
+        }
+    }
+
+    /// Land on the cited stretch rather than at the top of a long transcript — the chip named
+    /// a moment, so the moment is what should be on screen.
+    private func scrollToCitedMoment(_ proxy: ScrollViewProxy, transcript: [TranscriptItem]) {
+        guard let focusSegmentId, !didScrollToCited else { return }
+        let present = transcript.contains { item in
+            if case .turn(let turn) = item { return turn.segmentId == focusSegmentId }
+            return false
+        }
+        guard present else { return }
+        didScrollToCited = true
+        Task { @MainActor in
+            // One frame after the transcript is laid out; scrolling into a card that does not
+            // have its height yet lands short.
+            try? await Task.sleep(for: .milliseconds(120))
+            withAnimation(Motion.animation(.easeOut(duration: 0.25))) {
+                proxy.scrollTo(TranscriptView.citedAnchor, anchor: .center)
+            }
         }
     }
 

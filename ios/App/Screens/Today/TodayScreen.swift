@@ -60,10 +60,11 @@ struct TodayScreen: View {
             } else {
                 SavedNotesScreen(noteId: id)
             }
-        case .conversation(let id, let atMs):
+        case .conversation(let id, let atMs, let focusSegmentId):
             // The same detail screen the Library pushes — the native back button names
             // whichever parent actually pushed it, so no origin needs threading through.
-            ConversationScreen(conversationId: id, atMs: atMs)
+            ConversationScreen(
+                conversationId: id, atMs: atMs, focusSegmentId: focusSegmentId)
         default:
             Color.clear.background(Tokens.ground)
         }

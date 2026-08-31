@@ -318,6 +318,11 @@ enum Copy {
             "Transcribed with \(provider) · \(when)"
         }
 
+        // Arriving from a citation (a Saved Notes / Ask chip). The band says why the
+        // transcript jumped, and offers the one thing you came to do.
+        static let citedMoment = "The moment this cites"
+        static let playFromHere = "Play from here"
+
         // Lifecycle cards (States · Conversation artboard).
         static let capturedWaiting = "Captured · waiting to transcribe"
         /// e.g. "3rd in line. Audio is safe on this phone."

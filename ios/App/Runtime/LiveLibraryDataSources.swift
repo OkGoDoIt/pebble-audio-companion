@@ -244,7 +244,8 @@ extension LiveWorld: ConversationDataSource {
                     SearchKit.TranscriptWord(
                         text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
                 },
-                assignments: assignments
+                assignments: assignments,
+                mediaBeforeMemberMs: mediaBeforeMemberMs
             )
             transcript.append(contentsOf: built.items)
             missingTicks.append(
@@ -469,7 +470,7 @@ extension LiveWorld: AskDataSource {
             return try await save(
                 question: question,
                 answer: "There is nothing recorded in that window to answer from.",
-                citedIds: [],
+                citations: [],
                 scope: kitScope,
                 threadId: threadId,
                 nowMs: nowMs
@@ -494,11 +495,14 @@ extension LiveWorld: AskDataSource {
                 transcripts: [TranscriptExcerpt(segmentId: "ask", text: content)]
             )
         )
-        let grounded = parseGroundedAnswer(result.text, sourceIds: sourceOrder)
+        // The answer card shows the model's text verbatim, so a chip reading "2" has to be
+        // the segment the prompt called [2]. Renumbering by first appearance (what
+        // `parseGroundedAnswer` does, for its own re-rendered lines) sent chips to the wrong
+        // moment whenever an answer's first citation was not [1].
         return try await save(
             question: question,
             answer: result.text,
-            citedIds: grounded.citedSegmentIds,
+            citations: renderedAnswerCitations(result.text, sourceIds: sourceOrder),
             scope: kitScope,
             threadId: threadId,
             nowMs: nowMs
@@ -506,13 +510,13 @@ extension LiveWorld: AskDataSource {
     }
 
     private func save(
-        question: String, answer: String, citedIds: [String],
+        question: String, answer: String, citations: [AskCitation],
         scope: Intelligence.AskScope, threadId: String?, nowMs: Int64
     ) async throws -> AskEntry {
         try await saveAskAnswer(
             question: question,
             answerText: answer,
-            citedSegmentIds: citedIds,
+            citations: citations,
             scope: scope,
             history: composition.askHistory,
             threadId: threadId,
@@ -528,6 +532,38 @@ extension LiveWorld: AskDataSource {
     func conversationTitle(citedId: String) -> String? {
         guard let meta = composition.files.readMeta(citedId) else { return nil }
         return segmentTitle(meta, transcriptText: composition.transcripts.load(citedId)?.text)
+    }
+
+    /// Resolve a citation all the way to something the UI can act on: which conversation holds
+    /// the cited segment, where that segment starts on the player's scrubber (media time, gaps
+    /// excluded — the same accumulation `display(id:)` walks), and when it was recorded.
+    func citationTarget(citedId: String) async -> CitationTarget? {
+        guard
+            let conversationId = try? await composition.runtime.library.conversationId(
+                ofSegment: citedId),
+            let detail = try? await composition.runtime.library.conversation(id: conversationId)
+        else { return nil }
+
+        var mediaBeforeMemberMs: Int64 = 0
+        var mediaOffsetMs: Int64?
+        for member in detail.members {
+            guard let meta = composition.files.readMeta(member.segmentId) else { continue }
+            if member.segmentId == citedId {
+                mediaOffsetMs = mediaDurationMs(meta) > 0 ? mediaBeforeMemberMs : nil
+                break
+            }
+            mediaBeforeMemberMs += mediaDurationMs(meta)
+        }
+        let meta = composition.files.readMeta(citedId)
+        return CitationTarget(
+            conversationId: conversationId,
+            conversationTitle: detail.row.title ?? "Conversation",
+            segmentId: citedId,
+            mediaOffsetMs: mediaOffsetMs,
+            startedAt: meta.map {
+                Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000)
+            }
+        )
     }
 }
 
@@ -558,13 +594,28 @@ extension LiveWorld: NotesDataSource {
         conversationId: String, template: NoteTemplate, customPrompt: String?
     ) async throws -> NoteDisplay {
         let segmentIds = await members(of: conversationId)
+        let prompt = Self.prompt(for: template, customPrompt: customPrompt)
+        // A citing template labels each member "[1]", "[2]" … in the order they were recorded,
+        // and the model cites those numbers. That labelling is the whole reason a saved note
+        // can point back at a moment: without it the notes carried no citations at all, so
+        // every chip, the moments footer and the tap-through were dead weight on screen.
+        var citationNumber = 0
         let excerpts = segmentIds.compactMap { segmentId -> TranscriptExcerpt? in
             guard let transcript = composition.transcripts.load(segmentId),
                 !transcript.text.isEmpty
             else { return nil }
-            return TranscriptExcerpt(segmentId: segmentId, text: transcript.text)
+            citationNumber += 1
+            let meta = composition.files.readMeta(segmentId)
+            return TranscriptExcerpt(
+                segmentId: segmentId,
+                text: transcript.text,
+                startTimeMs: meta.map { Int64($0.startTimeMs) },
+                timeLabel: meta.map {
+                    TimeFmt.time(Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000))
+                },
+                citationNumber: prompt.citesSources ? citationNumber : nil
+            )
         }
-        let prompt = Self.prompt(for: template, customPrompt: customPrompt)
         let result = try await composition.aiRouter.run(
             AiRunRequest(
                 requestId: UUID().uuidString.lowercased(),
@@ -572,11 +623,16 @@ extension LiveWorld: NotesDataSource {
                 transcripts: excerpts
             )
         )
+        // The note is rendered verbatim, so the chips carry the model's OWN numbers.
+        let citations = prompt.citesSources
+            ? renderedAnswerCitations(result.text, sourceIds: excerpts.map(\.segmentId))
+            : []
         let stored = try await composition.notes.create(
             conversationId: conversationId,
             templateId: template.id,
             title: template.title,
             body: result.text,
+            citationsJson: Self.citationsJson(citations),
             provider: result.providerId,
             model: result.modelUsed,
             nowMs: composition.clock.nowMs
@@ -632,6 +688,11 @@ extension LiveWorld: NotesDataSource {
         }
         return AiPromptTemplates.builtIn.first { $0.id == template.id }
             ?? AiPromptTemplates.meetingNotes
+    }
+
+    static func citationsJson(_ citations: [AskCitation]) -> String {
+        guard let data = try? JSONEncoder().encode(citations) else { return "[]" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func display(_ note: Note, conversationTitle: String) -> NoteDisplay {

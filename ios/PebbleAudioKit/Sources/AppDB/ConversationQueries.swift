@@ -381,4 +381,16 @@ public struct ConversationQueries: Sendable {
             try Self.buildDetail(db, id: id)
         }.values(in: db.reader)
     }
+
+    /// The conversation a segment belongs to. AI citations name SEGMENTS while every screen
+    /// navigates by CONVERSATION (`conv-<firstMemberSegmentId>`), so this is the hop between
+    /// them - without it a citation tap opens "conversation not found".
+    public func conversationId(ofSegment segmentId: String) async throws -> String? {
+        try await db.reader.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT conversationId FROM conversation_segments WHERE segmentId = ?",
+                arguments: [segmentId])
+        }
+    }
 }

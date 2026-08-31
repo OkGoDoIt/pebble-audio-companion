@@ -40,6 +40,11 @@ public struct LibraryStore: Sendable {
         try await queries.detail(id: id)
     }
 
+    /// The conversation holding a cited segment - see `ConversationQueries.conversationId(ofSegment:)`.
+    public func conversationId(ofSegment segmentId: String) async throws -> String? {
+        try await queries.conversationId(ofSegment: segmentId)
+    }
+
     public func allTags() async throws -> [TagWithCount] { try await tags.listTags() }
 
     public func openFollowUps() async throws -> [FollowUp] { try await followUps.list(done: false) }
