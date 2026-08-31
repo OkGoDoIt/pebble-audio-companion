@@ -148,11 +148,13 @@ final class LiveTodayDataSource {
         }
         let nowMs = composition.clock.nowMs
         let started = Date(timeIntervalSince1970: Double(live.startMs) / 1000)
-        // Cloud streaming wins when it is running; the local chunk preview is the fallback.
-        var preview = await composition.cloudLive.previews[openSegmentId]
-        if preview == nil {
-            preview = await composition.localLive.previewFor(openSegmentId)
-        }
+        // Both live sources can have produced text for this segment — the realtime socket while
+        // it was up, the chunk path before it connected or after it died — so the card shows
+        // their union rather than dropping one, and names whichever produced the newest words.
+        let preview = LiveTranscriptPreview.merged(
+            cloud: await composition.cloudLive.previews[openSegmentId],
+            local: await composition.localLive.previewFor(openSegmentId)
+        )
         // The open segment's meta places the transcript in time and carries the gaps the watch
         // has already reported, so quiet/missing show up while recording rather than at the end.
         let meta = composition.files.readMeta(openSegmentId)
@@ -372,21 +374,29 @@ final class LiveTodayDataSource {
         meta?.recordedTimeZone.flatMap { TimeZone(identifier: $0) } ?? .current
     }
 
-    /// Names the engine actually producing the live text — a cloud preview must not claim to
-    /// be on-device.
+    /// Names the engine actually producing the live text — a cloud preview must not claim to be
+    /// on-device, and an on-device fallback must not claim a cloud provider.
+    ///
+    /// Matched by PREFIX because the realtime backends carry their own ids ("soniox-realtime",
+    /// "openai-realtime"): before this, a working Soniox live socket labelled itself
+    /// "soniox-realtime" in the UI, and the on-device recognizer labelled itself
+    /// "speechanalyzer" — accurate, but not what either of them is called.
     private static func liveProvenance(_ preview: LiveTranscriptPreview?) -> String {
         guard let providerId = preview?.providerId, !providerId.isEmpty else {
-            return Copy.Live.provenance()
+            // No engine has claimed this text; say nothing rather than assert on-device.
+            return Copy.Live.provenance(source: Copy.Live.unknownSource)
         }
-        switch providerId {
-        case "soniox": return Copy.Live.provenance(source: "Soniox")
-        case "openai": return Copy.Live.provenance(source: "OpenAI")
-        default:
-            // Every local engine ("cactus-local", the system recognizer) is on-device.
-            return providerId.hasSuffix("-local") || providerId.hasPrefix("apple")
-                ? Copy.Live.provenance()
-                : Copy.Live.provenance(source: providerId)
-        }
+        if providerId.hasPrefix("soniox") { return Copy.Live.provenance(source: "Soniox") }
+        if providerId.hasPrefix("openai") { return Copy.Live.provenance(source: "OpenAI") }
+        // Every local engine (the system recognizer, "cactus-local") is on-device.
+        return isOnDeviceProvider(providerId)
+            ? Copy.Live.provenance()
+            : Copy.Live.provenance(source: providerId)
+    }
+
+    private static func isOnDeviceProvider(_ providerId: String) -> Bool {
+        providerId.hasSuffix("-local") || providerId.hasPrefix("apple")
+            || providerId == SpeechAnalyzerProvider.providerId
     }
 }
 
