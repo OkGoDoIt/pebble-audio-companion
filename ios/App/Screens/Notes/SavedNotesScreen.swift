@@ -141,7 +141,7 @@ struct SavedNotesScreen: View {
     // MARK: - Pills [Copy][Edit][Regenerate]
 
     private var pillsRow: some View {
-        HStack(spacing: 10) {
+        FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
             ActionPill(title: model.copied ? "✓" : Copy.Notes.copy) { model.copyNote() }
             ActionPill(title: Copy.Common.edit) { model.beginEdit() }
             if model.regenerating {
@@ -157,8 +157,8 @@ struct SavedNotesScreen: View {
             } else {
                 ActionPill(title: Copy.Notes.regenerate) { model.regenerate() }
             }
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Edit mode (B19 — Cancel alongside Save)
@@ -172,13 +172,13 @@ struct SavedNotesScreen: View {
                     .frame(minHeight: 180)
                     .scrollContentBackground(.hidden)
             }
-            HStack(spacing: 10) {
+            FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
                 ActionPill(title: Copy.Common.cancel) { model.cancelEdit() }
                 ActionPill(title: Copy.Common.save, style: .filled) {
                     model.saveEdit(noteId: noteId)
                 }
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

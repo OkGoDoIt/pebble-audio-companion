@@ -17,7 +17,8 @@ struct FilterChip: View {
             }
             .font(AppFont.chip)
             .foregroundStyle(Tokens.tint)
-            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.vertical, 4)
             .padding(.horizontal, 11)
             .background(Capsule().fill(Tokens.tintFill10))
@@ -50,7 +51,8 @@ struct TagChip: View {
         Text(text)
             .font(AppFont.tagChip)
             .foregroundStyle(Tokens.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.vertical, style == .onCard ? 2 : 3)
             .padding(.horizontal, style == .onCard ? 8 : 9)
             .background(Capsule().fill(style == .onCard ? Tokens.grayChipFill : Tokens.surface))
@@ -70,7 +72,8 @@ struct EditableTagChip: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(text).font(AppFont.editableChip)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .fixedSize()
             if isRenaming {
                 RoundedRectangle(cornerRadius: 0.75)
                     .fill(Tokens.tint)
@@ -117,7 +120,8 @@ struct SuggestionChip: View {
             Text("+ \(name)")
                 .font(AppFont.editableChip)
                 .foregroundStyle(Tokens.tint)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .fixedSize()
                 .padding(.vertical, 6)
                 .padding(.horizontal, 12)
                 .background(Capsule().fill(Tokens.surface))
@@ -149,7 +153,8 @@ struct ActionPill: View {
                         .font(.system(size: 12, weight: .semibold))
                 }
                 Text(title).font(style == .filled ? AppFont.cardHead : AppFont.pill)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .foregroundStyle(style == .filled ? Tokens.onTint : Tokens.label)
             .padding(.horizontal, 16)

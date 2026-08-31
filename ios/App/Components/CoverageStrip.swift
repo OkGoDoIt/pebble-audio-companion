@@ -27,6 +27,8 @@ struct CoverageStrip: View {
     var onSpanTap: ((CoverageSpan) -> Void)? = nil
 
     @ScaledMetric(relativeTo: .caption2) private var axisHeight: CGFloat = 12
+    /// Rough width of one axis label at the current type size ("6 AM" at 11 pt ≈ 34).
+    @ScaledMetric(relativeTo: .caption2) private var axisLabelWidth: CGFloat = 34
 
     // Axis fractions in the 5 AM–5 AM domain: 6 AM = 1/24, noon = 7/24, 6 PM = 13/24.
     private static let axisMarks: [(String, Double)] = [
@@ -110,17 +112,34 @@ struct CoverageStrip: View {
 
     private var axis: some View {
         GeometryReader { geo in
-            ForEach(Self.axisMarks, id: \.0) { label, fraction in
+            ForEach(marks(fitting: geo.size.width), id: \.0) { label, fraction in
                 Text(label)
                     .font(AppFont.micro)
                     .foregroundStyle(Tokens.faint)
                     .fixedSize()
-                    .position(x: geo.size.width * fraction, y: axisHeight / 2)
+                    .position(
+                        x: min(
+                            max(geo.size.width * fraction, axisLabelWidth / 2),
+                            max(geo.size.width - axisLabelWidth / 2, axisLabelWidth / 2)
+                        ),
+                        y: axisHeight / 2
+                    )
             }
         }
         // The strip is a data graphic with a fixed height, but its axis labels scale (U10).
         .frame(height: axisHeight)
         .accessibilityHidden(true)
+    }
+
+    /// Axis labels grow with Dynamic Type, so past a point three of them cannot sit side by
+    /// side. Drop ticks — the way a chart does — rather than let them overlap into mush.
+    private func marks(fitting width: CGFloat) -> [(String, Double)] {
+        let all = Self.axisMarks
+        guard width > 0, all.count == 3 else { return all }
+        let needed = axisLabelWidth + 6
+        if width * (all[1].1 - all[0].1) >= needed { return all }
+        if width * (all[2].1 - all[0].1) >= needed { return [all[0], all[2]] }
+        return [all[1]]
     }
 
     private var accessibilitySummary: String {
