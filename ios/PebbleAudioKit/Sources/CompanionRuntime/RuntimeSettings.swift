@@ -24,8 +24,8 @@ public protocol RuntimeSettings: Sendable {
     var onboardingComplete: Bool { get }
     /// REAL (the KMP one was placebo): days of audio kept, wired into `RetentionManager`.
     var retentionDays: Int { get }
-    /// Total on-disk cap for stored audio, wired into `RetentionManager`. Defaulted so callers
-    /// that only expose "Keep audio for N days" need not declare it.
+    /// Total on-disk cap for stored audio, wired into `RetentionManager`. **`0` means no limit.**
+    /// Defaulted so callers that only expose "Keep audio for N days" need not declare it.
     var retentionMaxBytes: Int64 { get }
     /// False until the user picks a transcription mode ("Later" in onboarding leaves it false).
     var transcriptsConfigured: Bool { get }
@@ -53,13 +53,42 @@ extension RuntimeSettings {
     public var retentionConfig: RetentionConfigInputs {
         RetentionConfigInputs(
             maxAgeMs: Int64(max(1, retentionDays)) * 24 * 60 * 60 * 1000,
-            maxTotalBytes: retentionMaxBytes
+            // 0 (and anything below it) is "no size limit", not "delete everything on the next
+            // sweep" — which is what a literal 0 would have meant to `RetentionManager`.
+            maxTotalBytes: retentionMaxBytes > 0 ? retentionMaxBytes : .max
         )
     }
 }
 
 public enum RuntimeSettingsDefaults {
-    public static let retentionMaxBytes: Int64 = 2 * 1024 * 1024 * 1024
+    /// Total-bytes cap for stored audio. **0 = no limit, and that is the default.**
+    ///
+    /// It used to be a hard 2 GiB that no screen named and no user chose. At the shipped Speex
+    /// bitrate that is roughly 19 days of continuous capture, so it silently PRE-EMPTED the one
+    /// retention rule the user actually picked: "Keep audio · 30 days" already lost audio to it,
+    /// and "365 days" was off by more than an order of magnitude. Conversations vanished with no
+    /// screen, no warning and no trace — and the retention sweep moved from once per launch to
+    /// every 15 minutes, so the exposure went up, not down.
+    ///
+    /// The device is already protected without deleting anything: `RetentionConfig`'s free-space
+    /// floors raise LOW_STORAGE at 500 MB free and ask the watch to PAUSE capture at 200 MB. That
+    /// is a reversible, surfaced, user-visible response; deleting the user's only copy of a
+    /// conversation is neither. So the byte cap is now opt-in: it evicts nothing unless the user
+    /// set a limit themselves, which is the only way "no audio disappears without you having been
+    /// told the rule" can actually hold.
+    public static let retentionMaxBytes: Int64 = 0
+
+    /// The limits the Settings picker offers, in bytes; `0` is the "No limit" row and the default.
+    /// Lives here so the kit and the app cannot drift on what the picker may store.
+    public static let retentionMaxBytesOptions: [Int64] = [
+        0,
+        2 * 1024 * 1024 * 1024,
+        5 * 1024 * 1024 * 1024,
+        10 * 1024 * 1024 * 1024,
+        25 * 1024 * 1024 * 1024,
+        50 * 1024 * 1024 * 1024,
+    ]
+
     public static let retentionDays = 30
 }
 

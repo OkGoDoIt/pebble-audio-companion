@@ -61,6 +61,25 @@ import Transcription
         #expect(retentionConfig(for: settings).maxAgeMs == 14 * 24 * 60 * 60 * 1000)
     }
 
+    /// The byte cap deletes audio the "Keep audio · N days" rule says to keep, and no screen ever
+    /// named it. It is opt-in now: nothing is evicted by size unless the user set a limit.
+    @Test func theSizeCapIsOffUntilSomebodyChoosesOne() {
+        #expect(RuntimeSettingsDefaults.retentionMaxBytes == 0)
+        #expect(RuntimeSettingsDefaults.retentionMaxBytesOptions.first == 0)
+
+        let untouched = RuntimeSettingsSnapshot(retentionDays: 365)
+        #expect(
+            untouched.retentionConfig.maxTotalBytes == .max,
+            "a cap nobody chose must evict nothing — not even at 2 GiB")
+
+        // ...and 0 must never be read literally: that would delete everything on the next sweep.
+        let zeroed = RuntimeSettingsSnapshot(retentionMaxBytes: 0)
+        #expect(zeroed.retentionConfig.maxTotalBytes == .max)
+
+        let chosen = RuntimeSettingsSnapshot(retentionMaxBytes: 5 * 1024 * 1024 * 1024)
+        #expect(chosen.retentionConfig.maxTotalBytes == 5 * 1024 * 1024 * 1024)
+    }
+
     @Test func theSettingsBoxIsReadableFromAnyIsolationDomain() async {
         let box = RuntimeSettingsBox(RuntimeSettingsSnapshot(captureIntent: .off))
         #expect(box.captureIntent == .off)
