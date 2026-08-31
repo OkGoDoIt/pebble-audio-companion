@@ -139,11 +139,16 @@ public actor CompanionRuntime {
         }
         await environment.live.setForeground(foreground.value)
 
+        // BEFORE the receiver: the live-audio tap only delivers events emitted after a
+        // subscriber attaches, and the realtime cloud transcriber can only join a segment it
+        // saw open. Starting the receiver first leaves a window where the first segment of the
+        // session opens unheard, and live cloud transcription is dead until the next rotation.
+        await environment.live.start()
+
         if environment.settings.captureIntent != .off {
             await environment.receiver.start()
         }
         await environment.transcription.startUploader()
-        await environment.live.start()
         await environment.recap.start()
 
         guard loopTask == nil else { return }

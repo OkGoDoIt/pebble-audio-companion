@@ -63,9 +63,23 @@ public actor LiveAudioService {
 
     // --- pipeline steps ------------------------------------------------------------------------
 
-    /// Local live preview: one chunk, then prune anything the durable transcript superseded.
+    /// Chunk-based live preview: one chunk, then prune anything the durable transcript
+    /// superseded.
+    ///
+    /// Cost: this path now follows the user's transcription mode, so in a remote mode a chunk
+    /// can go to the cloud. While the realtime socket is actually delivering text for the open
+    /// segment it owns that audio outright — the chunk path stands down and only advances its
+    /// cursor, so the same seconds are never transcribed (or billed) twice, and a takeover after
+    /// a socket failure resumes at the handoff instead of re-running the whole segment.
     public func localLivePass() async throws -> Bool {
         guard let localLive else { return false }
+        if let streaming = await cloudLive?.deliveringSegmentId(),
+            await store.openSegmentId == streaming
+        {
+            await localLive.markCoveredByOtherSource()
+            await localLive.prune(hasFinalTranscript: hasDurableTranscript)
+            return false
+        }
         let worked = try await localLive.processOnce()
         await localLive.prune(hasFinalTranscript: hasDurableTranscript)
         return worked
