@@ -76,7 +76,9 @@ struct LibraryScreen: View {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 titleRow
                 restingSearchField
-                tagChipsRow
+                // With no tags there is nothing to filter by, so the row (and its lone
+                // "more…" affordance) would be a control that does nothing.
+                if !model.tags.isEmpty { tagChipsRow }
 
                 if model.sections.isEmpty {
                     Text(Copy.Empty.library)
@@ -168,11 +170,13 @@ struct LibraryScreen: View {
                 ForEach(model.tags.prefix(4), id: \.id) { tag in
                     tagChip(tag)
                 }
-                Button(Copy.Library.moreTags) { showAllTags = true }
-                    .font(AppFont.chip)
-                    .foregroundStyle(Tokens.meta)
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 4)
+                if model.tags.count > 4 {
+                    Button(Copy.Library.moreTags) { showAllTags = true }
+                        .font(AppFont.chip)
+                        .foregroundStyle(Tokens.meta)
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 4)
+                }
             }
         }
         .scrollClipDisabled(false)

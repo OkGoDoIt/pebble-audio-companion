@@ -32,14 +32,18 @@ struct SettingsDiagnosticsScreen: View {
                 )
             }
 
-            SettingsSectionHeader(title: Copy.Settings.Diagnostics.recentSegments)
-            ListCard {
-                ForEach(diagnostics.recentSegments) { segment in
-                    SettingsRow(
-                        title: segment.title,
-                        value: segment.detail,
-                        showsChevron: false
-                    )
+            // Before the first recording there are no segments; a header over an empty card
+            // reads like something failed to load.
+            if !diagnostics.recentSegments.isEmpty {
+                SettingsSectionHeader(title: Copy.Settings.Diagnostics.recentSegments)
+                ListCard {
+                    ForEach(diagnostics.recentSegments) { segment in
+                        SettingsRow(
+                            title: segment.title,
+                            value: segment.detail,
+                            showsChevron: false
+                        )
+                    }
                 }
             }
 

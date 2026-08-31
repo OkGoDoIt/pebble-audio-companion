@@ -349,24 +349,33 @@ extension LiveTodayDataSource: TodayDataSource {
     func perform(_ action: StatusAction) {
         switch action {
         case .start:
-            // The one place the watch prompt is armed: an explicit Start.
+            // The one place the watch prompt is armed: an explicit Start. The settings write
+            // comes first so the card flips the moment the user taps, rather than waiting for
+            // a watch that may not be in range.
+            composition.settings.captureIntent = .active
             Task { [composition] in
                 await composition.runtime.startCapture()
-                composition.settings.captureIntent = .active
+                await self.refresh()
             }
         case .resume:
             setIntent(.active, source: .statusCard)
         case .stop:
             setIntent(.paused, source: .statusCard)
         case .findWatch:
-            Task { [composition] in await composition.runtime.reconnect() }
+            Task { [composition] in
+                await composition.runtime.reconnect()
+                await self.refresh()
+            }
         case .openSettings:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
-        case .setUpTranscripts, .tryAgain, .troubleshoot, .setUpAgain:
-            // Navigation-only actions; the screens route these themselves.
-            break
+        case .setUpTranscripts:
+            // Through the app's own URL scheme, so a status-card tap and a pasted deep link
+            // take exactly the same navigation path.
+            UIApplication.shared.open(Route.settings(.transcription).url)
+        case .tryAgain, .troubleshoot, .setUpAgain:
+            UIApplication.shared.open(Route.settings(.watch).url)
         }
     }
 
