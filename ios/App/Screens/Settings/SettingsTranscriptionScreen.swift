@@ -180,8 +180,7 @@ private struct LocalModelRow: View {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Tokens.meta)
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
+                            .hitTarget()
                     }
                     .accessibilityLabel(Copy.Settings.TranscriptionAI.deleteModel)
                 }
@@ -203,7 +202,10 @@ private struct LocalModelRow: View {
             isPresented: $confirmDelete,
             titleVisibility: .visible
         ) {
-            Button("Delete Model", role: .destructive, action: model.deleteModel)
+            Button("Delete Model", role: .destructive) {
+                Haptics.destructiveConfirmed()
+                model.deleteModel()
+            }
         }
     }
 

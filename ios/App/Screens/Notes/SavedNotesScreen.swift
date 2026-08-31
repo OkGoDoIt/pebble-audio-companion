@@ -24,8 +24,7 @@ struct SavedNotesScreen: View {
                         Image(systemName: "plus")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Tokens.tint)
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
+                            .hitTarget()
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Copy.Conversation.notes)
@@ -92,6 +91,7 @@ struct SavedNotesScreen: View {
             titleVisibility: .visible
         ) {
             Button("Delete Note", role: .destructive) {
+                Haptics.destructiveConfirmed()
                 Task {
                     try? await AskLibraryDataSources.current.notes.deleteNote(id: noteId)
                     dismiss()

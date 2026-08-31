@@ -79,6 +79,7 @@ struct SettingsStorageScreen: View {
             titleVisibility: .hidden
         ) {
             Button("Delete All Recordings", role: .destructive) {
+                Haptics.destructiveConfirmed()
                 storage.deleteAllRecordings()
             }
         }

@@ -116,10 +116,12 @@ struct LiveConversationScreen: View {
     private var transportBar: some View {
         HStack(spacing: 10) {
             TransportButton(title: Copy.Live.pause, systemImage: "pause.fill") {
+                Haptics.captureEnded()
                 viewModel.pauseTapped()
                 dismiss()
             }
             TransportButton(title: Copy.Live.stop, systemImage: "stop.fill", role: .stop) {
+                Haptics.captureEnded()
                 viewModel.stopTapped()
                 dismiss()
             }

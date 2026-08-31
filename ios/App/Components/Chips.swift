@@ -17,10 +17,13 @@ struct FilterChip: View {
             }
             .font(AppFont.chip)
             .foregroundStyle(Tokens.tint)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 4)
             .padding(.horizontal, 11)
             .background(Capsule().fill(Tokens.tintFill10))
+            .contentShape(Capsule())
         }
+        .accessibilityLabel(Copy.A11y.filterChip(text, count: count))
     }
 
     @ViewBuilder
@@ -47,9 +50,11 @@ struct TagChip: View {
         Text(text)
             .font(AppFont.tagChip)
             .foregroundStyle(Tokens.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, style == .onCard ? 2 : 3)
             .padding(.horizontal, style == .onCard ? 8 : 9)
             .background(Capsule().fill(style == .onCard ? Tokens.grayChipFill : Tokens.surface))
+            .accessibilityLabel(Copy.A11y.tag(text))
     }
 }
 
@@ -65,6 +70,7 @@ struct EditableTagChip: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(text).font(AppFont.editableChip)
+                .fixedSize(horizontal: false, vertical: true)
             if isRenaming {
                 RoundedRectangle(cornerRadius: 0.75)
                     .fill(Tokens.tint)
@@ -75,11 +81,16 @@ struct EditableTagChip: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Tokens.tint.opacity(0.7))
+                        // Drawn at 16 pt so the chip keeps its mockup height; the hit area
+                        // is grown to 44 pt and the surrounding padding pulled back, so
+                        // touch gets the HIG target without inflating the layout.
                         .frame(width: 16, height: 16)
+                        .padding(14)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Copy.A11y.removeTag(text))
+                .accessibilityHidden(true)  // surfaced as a rotor action on the chip
+                .padding(-14)
             }
         }
         .foregroundStyle(Tokens.tint)
@@ -87,6 +98,10 @@ struct EditableTagChip: View {
         .padding(.horizontal, isRenaming ? 11 : 12)
         .background(Capsule().fill(isRenaming ? Tokens.surface : Tokens.tintFill10))
         .overlay(Capsule().strokeBorder(Tokens.tint, lineWidth: isRenaming ? 1.5 : 0))
+        // One element per chip, with Remove as a named action (U10).
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Copy.A11y.tag(text))
+        .accessibilityAction(named: Copy.A11y.removeTag(text)) { onRemove?() }
     }
 }
 
@@ -102,11 +117,15 @@ struct SuggestionChip: View {
             Text("+ \(name)")
                 .font(AppFont.editableChip)
                 .foregroundStyle(Tokens.tint)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 12)
                 .background(Capsule().fill(Tokens.surface))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Add tag \(name)")
     }
 }
 
@@ -130,11 +149,14 @@ struct ActionPill: View {
                         .font(.system(size: 12, weight: .semibold))
                 }
                 Text(title).font(style == .filled ? AppFont.cardHead : AppFont.pill)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundStyle(style == .filled ? .white : Tokens.label)
+            .foregroundStyle(style == .filled ? Tokens.onTint : Tokens.label)
             .padding(.horizontal, 16)
+            .padding(.vertical, 8)
             .frame(minHeight: 36)
             .background(Capsule().fill(style == .filled ? Tokens.tint : Tokens.pillFill))
+            .frame(minHeight: 44)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

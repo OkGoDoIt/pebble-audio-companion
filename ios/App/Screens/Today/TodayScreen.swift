@@ -128,7 +128,15 @@ struct TodayScreen: View {
                     return StatusCard.Action(
                         title: action.defaultLabel ?? Copy.Common.tryAgain,
                         style: action.cardStyle
-                    ) { viewModel.perform(action) }
+                    ) {
+                        // Only the capture transport gets a haptic; helper actions stay silent.
+                        switch action {
+                        case .start, .resume: Haptics.captureStarted()
+                        case .stop: Haptics.captureEnded()
+                        default: break
+                        }
+                        viewModel.perform(action)
+                    }
                 }
             )
         }
@@ -145,10 +153,18 @@ struct TodayScreen: View {
                         .font(AppFont.headline)
                         .foregroundStyle(Tokens.label)
                     Spacer()
-                    Button(Copy.Today.pause) { viewModel.pauseTapped() }
-                        .font(AppFont.pill)
-                        .foregroundStyle(Tokens.tint)
-                        .buttonStyle(.plain)
+                    Button(Copy.Today.pause) {
+                        Haptics.captureEnded()
+                        viewModel.pauseTapped()
+                    }
+                    .font(AppFont.pill)
+                    .foregroundStyle(Tokens.tint)
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 11)
+                    .padding(.leading, 12)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, -11)
+                    .padding(.leading, -12)
                 }
                 if let detail = status.detail {
                     Text(detail)
@@ -267,35 +283,43 @@ struct TodayScreen: View {
     }
 
     private func followUpRow(_ item: FollowUpDisplay, showsSeeAll: Bool) -> some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Button {
+                Haptics.checkedOff()
                 viewModel.toggleFollowUp(item)
             } label: {
-                if item.done {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(Tokens.tint)
-                } else {
-                    Circle()
-                        .strokeBorder(Tokens.chevron, lineWidth: 1.5)
-                        .frame(width: 20, height: 20)
+                Group {
+                    if item.done {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Tokens.tint)
+                    } else {
+                        Circle()
+                            .strokeBorder(Tokens.chevron, lineWidth: 1.5)
+                            .frame(width: 20, height: 20)
+                    }
                 }
+                .hitTarget()
             }
             .buttonStyle(.plain)
+            .padding(.vertical, -12)
             .accessibilityLabel(item.text)
-            .accessibilityAddTraits(item.done ? .isSelected : [])
+            .accessibilityValue(item.done
+                ? Copy.A11y.followUpDone : Copy.A11y.followUpNotDone)
+            .accessibilityHint(Copy.A11y.followUpHint)
 
             Text(item.text)
                 .font(AppFont.subBody)
                 .foregroundStyle(item.done ? Tokens.meta : Tokens.label)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
 
             if showsSeeAll, !viewModel.showAllFollowUps,
                 viewModel.snapshot.followUps.count > 2
             {
                 Button(Copy.Today.seeAll(viewModel.snapshot.followUps.count)) {
-                    withAnimation(.snappy) { viewModel.showAllFollowUps = true }
+                    withAnimation(Motion.animation(.snappy)) { viewModel.showAllFollowUps = true }
                 }
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.tint)
