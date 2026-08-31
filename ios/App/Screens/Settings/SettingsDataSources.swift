@@ -11,8 +11,9 @@ import SwiftUI
 @MainActor
 protocol WatchStatusSource: AnyObject {
     var deviceName: String { get }
-    var batteryPercent: Int { get }
-    var firmwareVersion: String { get }
+    /// Nil until the watch reports one — an unknown battery renders as nothing, never as 0%.
+    var batteryPercent: Int? { get }
+    var firmwareVersion: String? { get }
     /// The watch's own reported state — approved vocabulary ("Recording", "Paused", …).
     var watchReports: String { get }
     var isConnected: Bool { get }
@@ -22,8 +23,8 @@ protocol WatchStatusSource: AnyObject {
 @Observable
 final class MockWatchStatusSource: WatchStatusSource {
     var deviceName = "Pebble Time 2"
-    var batteryPercent = 78
-    var firmwareVersion = "v4.36"
+    var batteryPercent: Int? = 78
+    var firmwareVersion: String? = "v4.36"
     var watchReports = Copy.Status.recording
     var isConnected = true
 }

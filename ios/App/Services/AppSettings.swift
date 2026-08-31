@@ -64,49 +64,114 @@ final class AppSettings {
     /// Secrets live here, never in defaults. Exposed for the key-change screens.
     @ObservationIgnored let keychain: KeychainStore
 
+    /// The runtime's view of this truth table.
+    ///
+    /// `AppSettings` is `@MainActor @Observable`, so it CANNOT conform to the kit's
+    /// `RuntimeSettings` (a non-isolated `Sendable` protocol) soundly — the runtime reads
+    /// settings from actors and background passes, and a main-actor-isolated getter reached
+    /// from there is a data race the compiler only forgives in Swift 5 mode. So the truth
+    /// table is mirrored into this lock-guarded box from every `didSet`, and the runtime
+    /// reads the box. One writer (this class), one reader surface (the box).
+    @ObservationIgnored let runtimeSettings = RuntimeSettingsBox()
+
+    /// Installed by `AppComposition` so a settings change wakes the pipeline immediately
+    /// instead of waiting for the loop's next tick.
+    @ObservationIgnored var onRuntimeSettingsChanged: (@Sendable () -> Void)?
+
+    /// Rebuilds the runtime mirror. Called from every `didSet` and once at the end of `init`
+    /// (property observers do not fire during initialization).
+    private func mirrorToRuntime() {
+        runtimeSettings.set(
+            RuntimeSettingsSnapshot(
+                captureIntent: captureIntent,
+                transcriptionMode: transcriptionMode,
+                localTranscriptionModelId: localTranscriptionModelId,
+                cloudTranscriptionProvider: cloudTranscriptionProvider,
+                aiMode: aiMode,
+                aiModel: aiModel,
+                automaticWavExportEnabled: automaticWavExportEnabled,
+                onboardingComplete: onboardingComplete,
+                retentionDays: retentionDays,
+                retentionMaxBytes: RuntimeSettingsDefaults.retentionMaxBytes,
+                transcriptsConfigured: transcriptsConfigured
+            )
+        )
+        onRuntimeSettingsChanged?()
+    }
+
     // ─── Truth table (Part 4.6) ─────────────────────────────────────────────
 
     var captureIntent: CaptureIntent {
-        didSet { defaults.set(captureIntent.settingValue, forKey: Keys.captureIntent) }
+        didSet {
+            defaults.set(captureIntent.settingValue, forKey: Keys.captureIntent)
+            mirrorToRuntime()
+        }
     }
 
     var transcriptionMode: TranscriptionMode {
-        didSet { defaults.set(transcriptionMode.rawValue, forKey: Keys.transcriptionMode) }
+        didSet {
+            defaults.set(transcriptionMode.rawValue, forKey: Keys.transcriptionMode)
+            mirrorToRuntime()
+        }
     }
 
     var localTranscriptionModelId: String {
-        didSet { defaults.set(localTranscriptionModelId, forKey: Keys.localModel) }
+        didSet {
+            defaults.set(localTranscriptionModelId, forKey: Keys.localModel)
+            mirrorToRuntime()
+        }
     }
 
     var cloudTranscriptionProvider: CloudProvider {
-        didSet { defaults.set(cloudTranscriptionProvider.rawValue, forKey: Keys.cloudProvider) }
+        didSet {
+            defaults.set(cloudTranscriptionProvider.rawValue, forKey: Keys.cloudProvider)
+            mirrorToRuntime()
+        }
     }
 
     var aiMode: AiProcessingMode {
-        didSet { defaults.set(aiMode.rawValue, forKey: Keys.aiMode) }
+        didSet {
+            defaults.set(aiMode.rawValue, forKey: Keys.aiMode)
+            mirrorToRuntime()
+        }
     }
 
     var aiModel: String {
-        didSet { defaults.set(aiModel, forKey: Keys.aiModel) }
+        didSet {
+            defaults.set(aiModel, forKey: Keys.aiModel)
+            mirrorToRuntime()
+        }
     }
 
     var automaticWavExportEnabled: Bool {
-        didSet { defaults.set(automaticWavExportEnabled, forKey: Keys.wavExport) }
+        didSet {
+            defaults.set(automaticWavExportEnabled, forKey: Keys.wavExport)
+            mirrorToRuntime()
+        }
     }
 
     var onboardingComplete: Bool {
-        didSet { defaults.set(onboardingComplete, forKey: Keys.onboardingComplete) }
+        didSet {
+            defaults.set(onboardingComplete, forKey: Keys.onboardingComplete)
+            mirrorToRuntime()
+        }
     }
 
     /// REAL (Q7 — the old app's was placebo). Days of audio kept; enforced by retention.
     var retentionDays: Int {
-        didSet { defaults.set(retentionDays, forKey: Keys.retentionDays) }
+        didSet {
+            defaults.set(retentionDays, forKey: Keys.retentionDays)
+            mirrorToRuntime()
+        }
     }
 
     /// Whether a Q14 transcription choice has been made. "Later" leaves this false, which
     /// drives the "Transcripts are off" status family until a mode is configured (6.7).
     var transcriptsConfigured: Bool {
-        didSet { defaults.set(transcriptsConfigured, forKey: Keys.transcriptsConfigured) }
+        didSet {
+            defaults.set(transcriptsConfigured, forKey: Keys.transcriptsConfigured)
+            mirrorToRuntime()
+        }
     }
 
     /// The approved "Keep audio" options (6.7).
@@ -175,6 +240,9 @@ final class AppSettings {
             defaults.set(true, forKey: Keys.onboardingComplete)
         }
         #endif
+
+        // Property observers do not fire during initialization, so seed the mirror here.
+        mirrorToRuntime()
     }
 
     private enum Keys {
