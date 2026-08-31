@@ -56,6 +56,13 @@ public actor CloudLiveTranscriber {
     private var activeFrameSamples = 320
     private var streamedFrameCount = 0
     private var lastSampleIndexExclusive: UInt64 = 0
+    /// The segment this transcriber is actually carrying text for right now (a session that has
+    /// delivered at least one update). See `deliveringSegmentId`.
+    private var deliveringSegment: String?
+    /// After a session gives up on a segment, the earliest time a new session may be opened for
+    /// THAT segment. Without it, the next frame batch would immediately restart the whole
+    /// reconnect cycle — a hot loop of failing sockets for the rest of the recording.
+    private var retryGate: (segmentId: String, notBeforeMs: Int64)?
 
     public init(
         tap: LiveAudioTap,
@@ -103,6 +110,14 @@ public actor CloudLiveTranscriber {
         }
     }
 
+    /// The segment whose live text is currently coming off the realtime socket, or nil.
+    ///
+    /// "Delivering" means a session is running AND it has produced at least one update — a
+    /// socket that is merely connecting must not silence the chunk-based fallback, or the first
+    /// seconds of a segment would be a hole in the preview. The runtime uses this to keep the
+    /// two live paths from transcribing (and billing for) the same audio.
+    public func deliveringSegmentId() -> String? { deliveringSegment }
+
     /// Lifecycle hook; the `enabled` gate decides policy, so this is deliberately a no-op
     /// (an in-flight live socket keeps streaming until its segment closes or the gate stops
     /// the next session).
@@ -133,6 +148,9 @@ public actor CloudLiveTranscriber {
     private func maybeStartSession(_ event: LiveAudioEvent.SegmentOpened) {
         guard enabled() else { return }
         if activeSegmentId == event.segmentId && frameChannel != nil { return }
+        if let gate = retryGate, gate.segmentId == event.segmentId, nowMs() < gate.notBeforeMs {
+            return
+        }
         stopSession()
         let channel = LiveFrameChannel()
         activeSegmentId = event.segmentId
@@ -148,8 +166,17 @@ public actor CloudLiveTranscriber {
         while true {
             do {
                 try await streamSession(event, channel: channel)
+                releaseSession(event.segmentId)
                 return
             } catch is CancellationError {
+                return
+            } catch let error as CloudLiveUnavailable {
+                // No key, no consent, or the selected provider has no realtime backend. Not a
+                // cloud FAILURE (nothing was reached), so cloud health is left alone — but the
+                // session is released so the chunk-based path takes the segment over instead of
+                // frames piling up in a channel nobody reads.
+                _ = error
+                gaveUp(on: event.segmentId, after: Self.unavailableRetryDelayMs)
                 return
             } catch {
                 onOutcome(.failed(message: failureMessage(error)))
@@ -159,12 +186,14 @@ public actor CloudLiveTranscriber {
                 // wants live cloud transcription; otherwise give up (the banner, if the failure
                 // streak crossed the threshold, has already surfaced it).
                 if attempt > maxReconnects || !enabled() || activeSegmentId != event.segmentId {
+                    gaveUp(on: event.segmentId, after: Self.gaveUpRetryDelayMs)
                     return
                 }
                 do {
                     let delayMs = max(reconnectBackoffMs(attempt), 0)
                     try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                 } catch {
+                    releaseSession(event.segmentId)
                     return
                 }
             }
@@ -174,7 +203,7 @@ public actor CloudLiveTranscriber {
     private func streamSession(
         _ event: LiveAudioEvent.SegmentOpened, channel: LiveFrameChannel
     ) async throws {
-        guard await provider.isAvailable() else { return }
+        guard await provider.isAvailable() else { throw CloudLiveUnavailable() }
         let pcm = decodePcm(event, channel.stream())
         var reportedOk = false
         for try await update in provider.transcribeStream(pcm: pcm, sampleRateHz: event.sampleRateHz) {
@@ -182,6 +211,7 @@ public actor CloudLiveTranscriber {
                 onOutcome(.ok())
                 reportedOk = true
             }
+            deliveringSegment = event.segmentId
             previews[event.segmentId] = LiveTranscriptPreview(
                 segmentId: event.segmentId,
                 text: update.displayText,
@@ -200,6 +230,27 @@ public actor CloudLiveTranscriber {
         sessionTask?.cancel()
         sessionTask = nil
         activeSegmentId = nil
+        deliveringSegment = nil
+    }
+
+    /// Gives up on a segment: release the session so the chunk-based path takes over, and hold
+    /// a retry gate so the next frame batch does not immediately restart the same failure.
+    private func gaveUp(on segmentId: String, after delayMs: Int64) {
+        retryGate = (segmentId: segmentId, notBeforeMs: nowMs() + delayMs)
+        releaseSession(segmentId)
+    }
+
+    /// Ends a session from inside its own task: same teardown as `stopSession` minus cancelling
+    /// the task we are running on. Load-bearing — without it a session that gave up leaves
+    /// `activeSegmentId` pinned, so every later frame is appended to a channel nobody reads and
+    /// the chunk-based fallback never learns it owns the segment again.
+    private func releaseSession(_ segmentId: String) {
+        guard activeSegmentId == segmentId else { return }
+        frameChannel?.close()
+        frameChannel = nil
+        sessionTask = nil
+        activeSegmentId = nil
+        deliveringSegment = nil
     }
 
     /// Drops a segment's live preview once its durable transcript supersedes it.
@@ -220,7 +271,15 @@ public actor CloudLiveTranscriber {
     public static let defaultMaxReconnects = 4
     public static let baseReconnectDelayMs: Int64 = 1_000
     public static let maxReconnectDelayMs: Int64 = 15_000
+    /// No key/consent: nothing to reach, so wait a while before touching the keychain again.
+    static let unavailableRetryDelayMs: Int64 = 30_000
+    /// The reconnect budget is spent; the chunk path owns the segment until this elapses.
+    static let gaveUpRetryDelayMs: Int64 = 60_000
 }
+
+/// The realtime backend is not configured (no key, no consent). Distinct from a failure: nothing
+/// was reached, so it must not be reported as cloud health trouble.
+private struct CloudLiveUnavailable: Error {}
 
 /// Unbounded FIFO of encoded frames feeding one live session (the Kotlin
 /// `Channel<ByteArray>(UNLIMITED)`). Reconnects re-consume from the current position via a
@@ -260,6 +319,15 @@ final class LiveFrameChannel: @unchecked Sendable {
     private func next() async -> Data? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
             lock.lock()
+            // A reconnect abandons the previous `stream()` mid-wait. Finish that consumer
+            // instead of overwriting its continuation, which leaks it ("SWIFT TASK CONTINUATION
+            // MISUSE" in the reconnect tests) and strands the task awaiting it.
+            if let stale = waiter {
+                waiter = nil
+                lock.unlock()
+                stale.resume(returning: nil)
+                lock.lock()
+            }
             if !buffer.isEmpty {
                 let first = buffer.removeFirst()
                 lock.unlock()
