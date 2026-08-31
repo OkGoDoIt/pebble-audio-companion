@@ -1083,3 +1083,40 @@ Beyond the suites named in Part 4, port the full contents of: `AudioCompanionRun
 the spec for the rebuilt transcript renderer and search) · `WireTest` · `StatusUiTest` (36) ·
 plus every other test file under `core/*/src/*Test` and `app/src/commonTest` — the rule is
 ALL of them, with the named lists serving as milestone anchors.
+
+## M3 decision record — local transcription engine
+
+**Decision (2026-08-30): Apple SpeechAnalyzer** (iOS 26 `Speech.framework` —
+`SpeechAnalyzer` + `SpeechTranscriber`) is the on-device engine. The Parakeet/Cactus port is
+NOT happening for v1.
+
+Reasons:
+
+- The API is real and present in the SDK we build against (verified in the iOS 26.5
+  `Speech.swiftinterface`): `SpeechAnalyzer`/`SpeechTranscriber` with `AnalyzerInput` PCM
+  buffers, `.volatileResults` for the live path, `audioTimeRange` result attributes for
+  phrase/word timings, and `AssetInventory`/`AssetInstallationRequest` for asset lifecycle.
+- **System-managed language assets** replace the KMP app's self-managed ~700 MB Parakeet
+  download: the OS downloads, deduplicates across apps, updates, and reclaims the models;
+  the app only reserves its locale and observes install state. No resumable-download code,
+  no storage accounting for model files, no stale-model problem.
+- Porting Parakeet meant vendoring the Cactus GGML C++ stack into the Swift build (plan 4.7
+  already flagged the vendored extras as do-not-port) plus owning tokenizer/decoder
+  correctness — weeks of work that Apple's native engine makes unnecessary.
+- Native speaker APIs are plausible future room on the same seam (the framework already
+  exposes per-run attribute machinery), which the Q17 speaker-identity work can pick up.
+
+Consequences:
+
+- `LocalTranscriptionModels`' downloadable-model catalog reduces to the single system engine;
+  the Settings "Local model" row is now `LocalModelManager` state
+  (notInstalled / waitingForWiFi / downloading(progress) / installed / failed) over
+  `AssetInventory`, not a model list. The Wi-Fi-only preference gates download START — the
+  system API exposes no network constraint on the download itself.
+- The `cactus/` vendored tree stays unported (per 4.7); provider id is `speechanalyzer`
+  (batch `SpeechAnalyzerProvider`, live `LiveSpeechAnalyzerProvider` in
+  `Sources/Transcription/Local/`).
+
+Fallback: the `TranscriptionProvider`/`StreamingTranscriptionProvider` seam is fixed, so if
+real-device quality at the M6 on-device gate disappoints, a Parakeet port can slot back in as
+another provider id without touching the queue, router, or UI.
