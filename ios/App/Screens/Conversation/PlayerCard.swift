@@ -137,6 +137,10 @@ final class PlayerModel {
         positionMs = min(atMs ?? display.initialPositionMs, durationMs)
         if let engine {
             engine.setSpeed(speed)
+            // Seed the engine BEFORE subscribing: its first update carries the engine's own
+            // position, which would otherwise immediately overwrite the deep link's `?t=`
+            // (or the display's initial position) with zero.
+            engine.seek(toMs: positionMs)
             observe(engine)
         }
     }
