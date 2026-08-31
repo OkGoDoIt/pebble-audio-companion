@@ -168,8 +168,11 @@ struct ConversationScreen: View {
         guard let display = model.display, let playerDisplay = display.player else { return }
         // `configure` is a no-op once this conversation's engine is attached, so the reloads
         // after a rename or a tag edit never interrupt playback.
-        let engine = try? await AskLibraryDataSources.current.conversations.playback(
-            id: conversationId)
+        var engine: (any ConversationPlayback)?
+        if player.needsEngine(for: conversationId) {
+            engine = try? await AskLibraryDataSources.current.conversations.playback(
+                id: conversationId)
+        }
         player.configure(playerDisplay, atMs: atMs, id: conversationId, engine: engine)
     }
 
