@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Fallback entitlements for sideloading before the App Group is provisioned on the
+	  developer account. Dropping the group costs the widget, the Control Center control and
+	  the App Intents (they read the shared container); AppDatabase falls back to Application
+	  Support, so the app itself runs normally. Use App.entitlements for real builds.
+	-->
+</dict>
+</plist>
