@@ -152,7 +152,48 @@ public final class TranscriptIndex: TranscriptIndexing {
     }
 
     public func search(_ query: String, limit: Int) throws -> [IndexHit] {
+        try search(query, limit: limit, kinds: nil, within: nil)
+    }
+
+    /// Search narrowed to the documents that can actually be shown.
+    ///
+    /// The Search screen's scope pill (Today / Yesterday / Last 7 days / a date range) used to be
+    /// applied AFTER an unscoped `LIMIT 40`, which meant a conversation inside the window that
+    /// ranked 41st across the whole library was invisible under its own pill — a quiet
+    /// under-report that gets worse with every conversation added. Both narrowings belong in the
+    /// query: `kinds` because the caller throws away every other kind anyway, and `ids` because
+    /// the window resolves to a known set of conversations. The limit is then spent entirely on
+    /// rows the caller can use, so the top N is the true top N *within the scope*.
+    ///
+    /// `ids` travels as one JSON array rather than N bound parameters, so a wide date range on a
+    /// large library cannot run into SQLite's variable ceiling. An EMPTY set means "the window
+    /// holds nothing" and short-circuits; `nil` means unrestricted.
+    public func search(
+        _ query: String,
+        limit: Int,
+        kinds: Set<IndexKind>? = nil,
+        within ids: Set<String>? = nil
+    ) throws -> [IndexHit] {
         guard let match = Self.ftsQuery(query) else { return [] }
+        if let ids, ids.isEmpty { return [] }
+        if let kinds, kinds.isEmpty { return [] }
+
+        var conditions = ["search_fts MATCH ?"]
+        var arguments: [any DatabaseValueConvertible] = [
+            Self.matchStart, Self.matchEnd, match,
+        ]
+        if let kinds {
+            let sorted = kinds.map(\.rawValue).sorted()
+            conditions.append(
+                "kind IN (\(Array(repeating: "?", count: sorted.count).joined(separator: ", ")))")
+            arguments.append(contentsOf: sorted)
+        }
+        if let ids {
+            conditions.append("entityId IN (SELECT value FROM json_each(?))")
+            arguments.append(Self.jsonArray(ids))
+        }
+        arguments.append(limit)
+
         let rows = try database.reader.read { db in
             try Row.fetchAll(
                 db,
@@ -161,11 +202,11 @@ public final class TranscriptIndex: TranscriptIndexing {
                            snippet(search_fts, -1, ?, ?, '…', 12) AS snip,
                            bm25(search_fts) AS rank
                     FROM search_fts
-                    WHERE search_fts MATCH ?
+                    WHERE \(conditions.joined(separator: " AND "))
                     ORDER BY bm25(search_fts)
                     LIMIT ?
                     """,
-                arguments: [Self.matchStart, Self.matchEnd, match, limit]
+                arguments: StatementArguments(arguments)
             )
         }
         return rows.compactMap { row in
@@ -206,6 +247,29 @@ public final class TranscriptIndex: TranscriptIndexing {
         try database.writer.write { db in
             try db.execute(sql: "DELETE FROM search_fts")
         }
+    }
+
+    /// The id set as a JSON array literal for `json_each`. Hand-built rather than
+    /// `JSONEncoder`ed so the escaping is explicit and the function cannot throw mid-query;
+    /// entity ids are our own UUID-shaped strings, but a quote or backslash in one would still
+    /// have produced a silently empty result set rather than an error.
+    static func jsonArray(_ ids: Set<String>) -> String {
+        let escaped = ids.sorted().map { id -> String in
+            var out = ""
+            for character in id {
+                switch character {
+                case "\"": out += "\\\""
+                case "\\": out += "\\\\"
+                case let control where control.unicodeScalars.allSatisfy({ $0.value < 0x20 }):
+                    for scalar in control.unicodeScalars {
+                        out += String(format: "\\u%04x", scalar.value)
+                    }
+                default: out.append(character)
+                }
+            }
+            return "\"\(out)\""
+        }
+        return "[\(escaped.joined(separator: ","))]"
     }
 
     /// Indexed body: summary + full text (transcript). Both indexed — D7.

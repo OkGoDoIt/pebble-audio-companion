@@ -117,14 +117,26 @@ extension LiveWorld: SearchDataSource {
             timeZoneID: TimeZone.current.identifier
         )
 
-        // The FTS index carries transcript text (this is the D7 fix — the old app indexed only
-        // titles), so a hit here is a hit in what was actually said.
-        let index = composition.index
-        let hits = (try? index.search(trimmed, limit: 40)) ?? []
         let sections = try await composition.runtime.library.library()
         let rows = sections.flatMap(\.rows).filter { window?.contains($0.dateKey) ?? true }
+
+        // The FTS index carries transcript text (this is the D7 fix — the old app indexed only
+        // titles), so a hit here is a hit in what was actually said.
+        //
+        // The window and the kind go INTO the query. Taking the global top 40 and filtering
+        // afterwards spent the whole limit on rows this function then discarded: under "Today",
+        // a conversation from today that ranked 41st across the library simply did not appear,
+        // and that gets steadily worse as the library grows. Scoped, the 40 are 40 conversations
+        // from inside the window, so the pill reports what is actually there.
+        let index = composition.index
+        let hits =
+            (try? index.search(
+                trimmed,
+                limit: 40,
+                kinds: [.conversation],
+                within: window == nil ? nil : Set(rows.map(\.id))
+            )) ?? []
         let conversations = hits
-            .filter { $0.kind == .conversation }
             .compactMap { hit -> SearchConversationHit? in
                 guard let row = rows.first(where: { $0.id == hit.id }) else { return nil }
                 let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
