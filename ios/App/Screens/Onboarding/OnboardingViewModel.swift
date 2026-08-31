@@ -13,31 +13,74 @@ enum OnboardingFailure: String, CaseIterable, Identifiable {
     case boundElsewhere
     case timedOut
     case bluetoothDenied
+    case bluetoothOff
+    case needsReconnect
 
     var id: String { rawValue }
 }
 
-enum PairingOutcome: Equatable {
+/// One step-2 moment, as the pairing source reports it.
+enum PairingUpdate: Equatable {
+    /// Scanning / connecting / authorizing — nothing is waiting on the person yet.
+    case searching
+    /// A prompt is on the watch (receiver consent, or "turn Background Audio on").
+    case confirmOnWatch
     case authorized
     case failed(OnboardingFailure)
 }
 
-/// The receiver-side pairing seam: discovery → firmware check → on-watch consent. The real
-/// implementation wraps `ReceiverSession`; the mock simulates the waiting → success path.
+/// The receiver-side pairing seam: discovery → firmware check → on-watch consent.
+/// `LiveWatchPairingSource` drives the real receiver; the mock replays the same shape for
+/// previews and the DEBUG staging walkthrough.
 protocol WatchPairingSource: Sendable {
-    /// Runs one full pairing attempt. Cancelling the surrounding task abandons it.
-    func requestPairing() async -> PairingOutcome
+    /// One pairing attempt, as a stream that ends at `.authorized` or `.failed`. Terminating
+    /// the stream (cancelling the consuming task) abandons the attempt.
+    func pairingUpdates() -> AsyncStream<PairingUpdate>
+
+    /// The user backed out of step 2 — undo whatever the attempt switched on.
+    func cancelPairing() async
 }
 
-/// Default mock: two seconds of "Waiting for your Pebble…" then success. `nextOutcome`
-/// lets the DEBUG staging control script each failure branch.
-final class MockWatchPairingSource: WatchPairingSource, @unchecked Sendable {
-    var nextOutcome: PairingOutcome = .authorized
-    var delay: Duration = .seconds(2)
+extension WatchPairingSource {
+    func cancelPairing() async {}
+}
 
-    func requestPairing() async -> PairingOutcome {
-        try? await Task.sleep(for: delay)
-        return nextOutcome
+/// The onboarding pairing seam, flipped from the mock to the live receiver by
+/// `AppComposition.install` — the same mock-until-bootstrap pattern the three screen
+/// data-source holders use, so `#Preview` still renders without a graph.
+struct OnboardingDataSources {
+    var pairing: any WatchPairingSource
+
+    static var current = OnboardingDataSources(pairing: MockWatchPairingSource())
+}
+
+/// Preview/staging double: a beat of searching, a beat of confirm-on-watch, then `nextOutcome`.
+/// The DEBUG staging control scripts each failure branch and can freeze either waiting state.
+final class MockWatchPairingSource: WatchPairingSource, @unchecked Sendable {
+    enum Freeze { case none, searching, confirmOnWatch }
+
+    var nextOutcome: PairingUpdate = .authorized
+    var searchingDelay: Duration = .seconds(1)
+    var confirmDelay: Duration = .seconds(1)
+    var freeze: Freeze = .none
+
+    func pairingUpdates() -> AsyncStream<PairingUpdate> {
+        AsyncStream { continuation in
+            let outcome = nextOutcome
+            let searching = freeze == .searching ? .seconds(3600) : searchingDelay
+            let confirm = freeze == .confirmOnWatch ? .seconds(3600) : confirmDelay
+            let work = Task {
+                continuation.yield(.searching)
+                try? await Task.sleep(for: searching)
+                guard !Task.isCancelled else { return continuation.finish() }
+                continuation.yield(.confirmOnWatch)
+                try? await Task.sleep(for: confirm)
+                guard !Task.isCancelled else { return continuation.finish() }
+                continuation.yield(outcome)
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
     }
 }
 
@@ -63,7 +106,10 @@ final class OnboardingViewModel {
 
     enum PairingState: Equatable {
         case idle
-        case waiting
+        /// Looking for the watch — no prompt exists on it yet, so the screen must not imply one.
+        case searching
+        /// A prompt is waiting on the watch.
+        case confirmOnWatch
         case failed(OnboardingFailure)
     }
 
@@ -80,14 +126,12 @@ final class OnboardingViewModel {
 
     init(source: WatchPairingSource? = nil) {
         #if DEBUG
-        let mock = MockWatchPairingSource()
-        if ProcessInfo.processInfo.arguments.contains("-onboarding.hold") {
-            mock.delay = .seconds(3600)  // freeze "Waiting for your Pebble…" for screenshots
-        }
-        self.source = source ?? mock
+        // Real launches pair for real; the mock is reachable only from a preview (no graph
+        // installed) or an explicit `-onboarding.*` staging flag.
+        self.source = source ?? Self.debugStagedSource() ?? OnboardingDataSources.current.pairing
         applyDebugLaunchArguments()
         #else
-        self.source = source ?? MockWatchPairingSource()
+        self.source = source ?? OnboardingDataSources.current.pairing
         #endif
     }
 
@@ -95,7 +139,24 @@ final class OnboardingViewModel {
     /// Hidden staging control for simulator automation (sanctioned by the plan: failure
     /// branches must be reachable in DEBUG builds without a watch):
     /// `-onboarding.phase connect|confirm|transcripts|cloudKey`, `-onboarding.fail <case>`,
-    /// `-onboarding.hold` (pairing never resolves).
+    /// `-onboarding.hold [searching|confirm]` (pairing never resolves), `-onboarding.mock`
+    /// (the scripted happy path). `-onboarding.reset` is NOT one of these: it only re-enters
+    /// the gate, and pairing there is real.
+    private static let stagingFlags = [
+        "-onboarding.fail", "-onboarding.phase", "-onboarding.hold", "-onboarding.mock",
+    ]
+
+    private static func debugStagedSource() -> WatchPairingSource? {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains(where: stagingFlags.contains) else { return nil }
+        let mock = MockWatchPairingSource()
+        if let index = args.firstIndex(of: "-onboarding.hold") {
+            let which = index + 1 < args.count ? args[index + 1] : ""
+            mock.freeze = which == "searching" ? .searching : .confirmOnWatch
+        }
+        return mock
+    }
+
     private func applyDebugLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "-onboarding.fail"), index + 1 < args.count,
@@ -122,19 +183,28 @@ final class OnboardingViewModel {
         startRequest()
     }
 
+    /// One attempt. Every state the screen shows from here on is the receiver's own — searching,
+    /// the on-watch prompt, and each failure branch.
     func startRequest() {
         pairingTask?.cancel()
-        pairing = .waiting
+        pairing = .searching
         pairingTask = Task { [weak self] in
             guard let self else { return }
-            let outcome = await self.source.requestPairing()
-            guard !Task.isCancelled else { return }
-            switch outcome {
-            case .authorized:
-                self.pairing = .idle
-                self.phase = .transcripts
-            case .failed(let failure):
-                self.pairing = .failed(failure)
+            for await update in self.source.pairingUpdates() {
+                guard !Task.isCancelled else { return }
+                switch update {
+                case .searching:
+                    self.pairing = .searching
+                case .confirmOnWatch:
+                    self.pairing = .confirmOnWatch
+                case .authorized:
+                    self.pairing = .idle
+                    self.phase = .transcripts
+                    return
+                case .failed(let failure):
+                    self.pairing = .failed(failure)
+                    return
+                }
             }
         }
     }
@@ -143,12 +213,14 @@ final class OnboardingViewModel {
         pairingTask?.cancel()
         pairing = .idle
         phase = .connect
+        Task { [source] in await source.cancelPairing() }
     }
 
     // MARK: Transcripts → done
 
-    /// Applies the Q14 choice. Consent on the watch authorizes RECEIVING; it never silently
-    /// enables capture (anti-B3) — capture intent stays wherever the user left it.
+    /// Applies the Q14 choice. Capture intent was set by the explicit "Connect Watch" tap in
+    /// step 1 (the same path Today's Start takes) and is not touched again here — consent on the
+    /// watch by itself never switches capture on (anti-B3).
     func continueFromTranscripts(settings: AppSettings) {
         switch choice {
         case .onPhone:
@@ -163,6 +235,11 @@ final class OnboardingViewModel {
             settings.transcriptsConfigured = false
             finish(settings: settings)
         }
+    }
+
+    /// Back from the key screen to the transcripts choice (B15: no dead ends).
+    func backToTranscripts() {
+        phase = .transcripts
     }
 
     func finish(settings: AppSettings) {
@@ -190,6 +267,8 @@ extension OnboardingFailure {
         case .boundElsewhere: return Copy.Onboarding.Failure.boundElsewhere
         case .timedOut: return Copy.Onboarding.Failure.noAnswer
         case .bluetoothDenied: return Copy.Onboarding.Failure.bluetoothDenied
+        case .bluetoothOff: return Copy.Onboarding.Failure.bluetoothOff
+        case .needsReconnect: return Copy.Onboarding.Failure.needsReconnect
         }
     }
 
@@ -201,6 +280,8 @@ extension OnboardingFailure {
         case .boundElsewhere: return Copy.Onboarding.Failure.boundElsewhereLine
         case .timedOut: return Copy.Onboarding.Failure.noAnswerLine
         case .bluetoothDenied: return Copy.Onboarding.Failure.bluetoothDeniedLine
+        case .bluetoothOff: return Copy.Onboarding.Failure.bluetoothOffLine
+        case .needsReconnect: return Copy.Onboarding.Failure.needsReconnectLine
         }
     }
 
@@ -208,7 +289,7 @@ extension OnboardingFailure {
         switch self {
         case .cantSendAudio: return Copy.Onboarding.Failure.firmwareGuide
         case .timedOut: return Copy.Onboarding.Failure.askAgain
-        case .bluetoothDenied: return Copy.Status.openSettings
+        case .bluetoothDenied, .bluetoothOff: return Copy.Status.openSettings
         default: return Copy.Common.tryAgain
         }
     }
@@ -217,8 +298,8 @@ extension OnboardingFailure {
     /// destructive for the Bluetooth-permission branch.
     var dotStyle: DotStyle {
         switch self {
-        case .cantSendAudio, .boundElsewhere: return .attention
-        case .bluetoothDenied: return .destructive
+        case .cantSendAudio, .boundElsewhere, .needsReconnect: return .attention
+        case .bluetoothDenied, .bluetoothOff: return .destructive
         default: return .neutral
         }
     }

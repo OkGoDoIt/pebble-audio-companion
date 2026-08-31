@@ -75,6 +75,8 @@ enum Copy {
 
         static let confirmTitle = "Confirm on your watch"
         static let waiting = "Waiting for your Pebble…"
+        /// Sub-line while the phone is still looking for the watch (before any on-watch prompt).
+        static let waitingLine = "Keep the watch nearby. This usually takes a few seconds."
 
         // Watch-face mock on the Confirm screen.
         static let watchFaceTitle = "AUDIO COMPANION"
@@ -95,10 +97,21 @@ enum Copy {
         static let transcriptsFootnote = "You can change this any time in Settings."
 
         // Cloud key hand-off (6.7): one key screen before Today.
-        /// Title reuses the option-card vocabulary ("You add a provider key.").
-        static let addProviderKey = "Add a provider key"
+        /// Both providers are offered at once — one can transcribe while the other runs the AI,
+        /// so a screen that only takes one key at a time hides half the product.
+        static let addProviderKey = "Add your provider keys"
+        /// The one calm sentence that explains the split (P0: no over-explaining).
+        static let providerKeysLine =
+            "Soniox only transcribes; OpenAI can transcribe and run the AI features — add one, "
+            + "or one of each."
+        static let sonioxRole = "transcription"
+        static let openAiRole = "transcription and AI"
+        static let keyPlaceholder = "API key"
+        static let keyReplacePlaceholder = "Replace key"
         static let saveToKeychain = "Save to Keychain"
         static let skipForNow = "Skip for now"
+        /// Back affordance on the key screen — names the actual parent step (B15).
+        static let backToTranscripts = "Transcripts"
 
         /// Failure branches (States · Onboarding artboard + the 6.7 Bluetooth-denied branch).
         /// All recoverable → bordered actions.
@@ -123,6 +136,17 @@ enum Copy {
 
             static let bluetoothDenied = "Bluetooth access is off for this app"
             static let bluetoothDeniedLine = "Allow Bluetooth in Settings to receive audio."
+
+            /// Phone-side Bluetooth switched off entirely — same words the status card uses.
+            static let bluetoothOff = Copy.Status.bluetoothOff
+            static let bluetoothOffLine = Copy.Status.bluetoothOffLine
+
+            /// The watch's GATT server refused a handle: a stale iOS cache, typical right after
+            /// flashing firmware. Retrying the same handles never clears it — only re-discovery.
+            static let needsReconnect = "Your Pebble needs to reconnect"
+            static let needsReconnectLine =
+                "Turn Bluetooth off and back on, then try again. This can happen right after "
+                + "updating the watch firmware."
         }
     }
 
@@ -273,7 +297,15 @@ enum Copy {
         static func startedLine(time: String, elapsed: String) -> String {
             "Started \(time) · \(elapsed) so far"
         }
-        static let provenance = "Live transcript · on-device · final transcript may differ"
+        /// The live engine as the provenance line names it.
+        static let onDeviceSource = "on-device"
+        /// e.g. "Live transcript · on-device · final transcript may differ". The source is named
+        /// honestly — a cloud live transcript must not claim to be on-device.
+        static func provenance(source: String = onDeviceSource) -> String {
+            "Live transcript · \(source) · final transcript may differ"
+        }
+        /// The calm line before the first words arrive (one line, per the state-card rule).
+        static let waiting = "Listening — words appear here as they are recognized."
         static let pause = "Pause"
         static let stop = "Stop"
     }
@@ -323,6 +355,11 @@ enum Copy {
             static let storagePrivacy = "Storage & Privacy"
             static let aboutYou = "About You"
             static let diagnostics = "Diagnostics"
+            /// Q9 alert, opt-in (default off).
+            static let lossAlerts = "Alert me about missed audio"
+            static let lossAlertsSub = "Only long gaps, at most one an hour."
+            /// Shown instead of the sub-line when iOS notifications are off for the app.
+            static let lossAlertsDenied = "Notifications are off in iOS Settings."
             static let footer = "Recordings stay on this phone unless you choose a cloud provider."
         }
 
@@ -360,13 +397,25 @@ enum Copy {
             /// Key-row value before any key exists (matches the "not installed" register).
             static let notSet = "not set"
 
-            // Local-model row states (6.7).
+            // Local-model row states (6.7). The row never acts on its own — it pushes the
+            // language screen below, where a download starts only on an explicit choice.
             static let notInstalled = "not installed"
             static func downloading(_ percent: Int) -> String { "downloading · \(percent)%" }
-            static func installed(_ size: String) -> String { "installed · \(size)" }
             static let downloadFailed = "download failed"
-            static let deleteModel = "Delete Model…"
-            static let wifiFootnote = "Downloads run on Wi-Fi only."
+            static let waitingForWiFi = "waiting for Wi-Fi"
+
+            // Local-model screen (M3: an on-device "model" is a system language asset).
+            static let languageSection = "Language"
+            static let installedValue = "installed"
+            static let downloadAction = "Download"
+            static let inUse = "In use"
+            /// Destructive row naming exactly what goes, e.g. "Remove English (US)…".
+            static func removeLanguage(_ name: String) -> String { "Remove \(name)…" }
+            static let removeLanguageButton = "Remove Language"
+            /// Honest about who owns the files: releasing them is a request, not a delete.
+            static let removeLanguageNote = "iOS frees the files when it needs the space."
+            static let wifiFootnote =
+                "Downloads run on Wi-Fi only. iOS downloads and manages the language files."
 
             static let testConnection = "Test Connection"
             /// e.g. "Connected · 2 min ago".
@@ -501,6 +550,19 @@ enum Copy {
         static func tag(_ name: String) -> String { "Tag: \(name)" }
         static func scope(_ label: String) -> String { "Search scope: \(label)" }
         static let scopeHint = "Double tap to change how far back Ask looks"
+
+        /// One transcript turn as a single VoiceOver element, e.g.
+        /// "9:46 AM, Dana, let's move the walkthrough" — the time is always spoken, even when
+        /// the visual rail suppresses a repeated minute.
+        static func transcriptTurn(time: String?, speaker: String?, text: String) -> String {
+            [time, speaker, text].compactMap { $0 }.joined(separator: ", ")
+        }
+        /// Suffix for the turn still being transcribed.
+        static let turnInProgress = "still being transcribed"
+        /// One inline marker row, e.g. "9:48 AM, quiet for 2 min".
+        static func transcriptMarker(time: String?, text: String) -> String {
+            [time, text].compactMap { $0 }.joined(separator: ", ")
+        }
 
         /// Live-minute summary, e.g. "42 seconds recorded, 10 seconds quiet, 8 seconds missing".
         static func waveformSummary(recordedSec: Int, quietSec: Int, missingSec: Int) -> String {

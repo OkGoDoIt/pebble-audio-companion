@@ -100,25 +100,8 @@ final class PreviewTodayData {
         return String(format: "%d:%02d %@", hour, minute, meridiem)
     }
 
-    private static let liveItems: [LiveTranscriptItem] = [
-        .turn(
-            LiveTurn(
-                id: "t1", speaker: .you("Roger"),
-                text: "The settings pages each push from one clean root instead of the giant scroll."
-            )),
-        .quiet(id: "q1", text: Copy.Conversation.quietFor("2 min")),
-        .turn(
-            LiveTurn(
-                id: "t2", speaker: .you("Roger"),
-                text: "Okay, and the tag editor gets the rename cursor —"
-            )),
-        .turn(
-            LiveTurn(
-                id: "t3", speaker: .unresolved,
-                text: "so the suggestions row can stay under the field…",
-                isInProgress: true
-            )),
-    ]
+    // The LiveDetail sample conversation lives beside the screen it feeds
+    // (`LiveSnapshot.demo`, Screens/Live).
 
     // MARK: Snapshot builders
 
@@ -192,11 +175,7 @@ final class PreviewTodayData {
     }
 
     private func buildLive() -> LiveSnapshot {
-        LiveSnapshot(
-            startedLine: Copy.Live.startedLine(time: "12:04 PM", elapsed: "48 min"),
-            isLive: phase == .recording,
-            items: Self.liveItems
-        )
+        LiveSnapshot.demo(isLive: phase == .recording)
     }
 
     private func publish() {

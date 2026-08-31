@@ -489,13 +489,18 @@ final class AppComposition {
         let runtime = self.runtime
         settings.onRuntimeSettingsChanged = { runtime.notifyConfigChanged() }
 
-        // The screens' three data-source holders, flipped from mocks to the live graph.
+        // The screens' data-source holders, flipped from mocks to the live graph. Onboarding is
+        // one of them: without this it would pair against `MockWatchPairingSource` and the first
+        // real connection would only happen later, from Today's Start.
         let today = LiveTodayDataSource(composition: self)
         todaySource = today
         if !Self.usesDemoData {
             AppDataSources.current = AppDataSources(today: today, live: today)
             AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
             SettingsDataSources.current = LiveSettingsDataSources.make(composition: self)
+            OnboardingDataSources.current = OnboardingDataSources(
+                pairing: LiveWatchPairingSource(composition: self)
+            )
         }
 
         registerBackgroundTask()
