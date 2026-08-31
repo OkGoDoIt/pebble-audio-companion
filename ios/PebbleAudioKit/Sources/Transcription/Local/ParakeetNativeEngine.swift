@@ -13,6 +13,13 @@ import Foundation
 // The implementations live in the iOS-only `CactusBinary` xcframework, so the whole native
 // engine is `#if os(iOS)`; `swift test` (macOS) sees only the seam and its fakes.
 
+// NOT ported: a streaming (`StreamingTranscriptionProvider`) flavor over
+// `cactus_stream_transcribe_start/process/stop`. The header does not say whether the JSON each
+// `process` call returns is the transcript so far or only the newest words, nothing in the KMP
+// app ever called those functions, and guessing wrong produces a live transcript that either
+// duplicates or drops text. The live path runs on SpeechAnalyzer, which is on-device already,
+// so there is nothing to gain from a guess. Revisit with real device output to read from.
+
 public enum ParakeetEngineError: Error, Equatable, Sendable {
     /// No Cactus binary on this platform (macOS host builds, previews).
     case unsupportedPlatform
