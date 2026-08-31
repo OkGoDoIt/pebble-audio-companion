@@ -48,6 +48,11 @@ public struct SegmentMeta: Equatable, Sendable {
     /// the segment is still empty its own `lastSequence` is nil, so this floor keeps those
     /// already-persisted frames from being appended again as duplicates.
     public var dedupeFloorSequence: UInt32?
+    /// IANA timezone id of the phone at segment open (Q16 — all display anchors where
+    /// recorded). NEW in the rebuild: files written by the KMP app lack it (decodes nil,
+    /// callers fall back to the device's current zone per plan 6.4), and nil is omitted on
+    /// encode so migration-read files round-trip byte-identically.
+    public var recordedTimeZone: String?
 
     public init(
         segmentId: String,
@@ -73,7 +78,8 @@ public struct SegmentMeta: Equatable, Sendable {
         closedAtMs: Int64? = nil,
         transcriptionState: TranscriptionState = .pending,
         provenance: ProvenanceMeta? = nil,
-        dedupeFloorSequence: UInt32? = nil
+        dedupeFloorSequence: UInt32? = nil,
+        recordedTimeZone: String? = nil
     ) {
         self.segmentId = segmentId
         self.streamId = streamId
@@ -99,6 +105,7 @@ public struct SegmentMeta: Equatable, Sendable {
         self.transcriptionState = transcriptionState
         self.provenance = provenance
         self.dedupeFloorSequence = dedupeFloorSequence
+        self.recordedTimeZone = recordedTimeZone
     }
 
     public var isOpen: Bool { closeReason == nil }
@@ -117,7 +124,7 @@ extension SegmentMeta: Codable {
         case sampleRateHz, bitRateBps, frameDurationMs, startTimeMs, startMonotonicMs
         case receivedAtMs, firstSequence, lastSequence, firstSampleIndex
         case lastSampleIndexExclusive, frameCount, logBytes, gaps, closeReason, closedAtMs
-        case transcriptionState, provenance, dedupeFloorSequence
+        case transcriptionState, provenance, dedupeFloorSequence, recordedTimeZone
     }
 
     public init(from decoder: Decoder) throws {
@@ -147,6 +154,7 @@ extension SegmentMeta: Codable {
             try c.decodeIfPresent(TranscriptionState.self, forKey: .transcriptionState) ?? .pending
         provenance = try c.decodeIfPresent(ProvenanceMeta.self, forKey: .provenance)
         dedupeFloorSequence = try c.decodeIfPresent(UInt32.self, forKey: .dedupeFloorSequence)
+        recordedTimeZone = try c.decodeIfPresent(String.self, forKey: .recordedTimeZone)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -177,6 +185,7 @@ extension SegmentMeta: Codable {
         }
         try c.encodeIfPresent(provenance, forKey: .provenance)
         try c.encodeIfPresent(dedupeFloorSequence, forKey: .dedupeFloorSequence)
+        try c.encodeIfPresent(recordedTimeZone, forKey: .recordedTimeZone)
     }
 }
 
