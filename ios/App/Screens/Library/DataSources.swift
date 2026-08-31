@@ -294,10 +294,12 @@ struct NoteTemplate: Equatable, Identifiable {
 struct CitationTarget: Equatable {
     var conversationId: String
     var conversationTitle: String
-    /// The cited member: the transcript marks its turns and scrolls to the first of them.
-    var segmentId: String
-    /// Where that member starts on the conversation's scrubber. Nil when it has no stored
-    /// audio, which is also when there is nothing to play.
+    /// The cited member, and — for citations written against numbered stretches — the
+    /// wall-clock bounds of the stretch inside it. The transcript marks exactly those lines;
+    /// with no bounds (older citations, imports) it can only mark the whole member.
+    var focus: TranscriptFocus
+    /// Where the cited stretch starts on the conversation's scrubber. Nil when the member has
+    /// no stored audio, which is also when there is nothing to play.
     var mediaOffsetMs: Int64?
     /// Wall-clock start of the cited moment ("9:36 PM").
     var startedAt: Date?
@@ -355,7 +357,7 @@ protocol AskDataSource: AnyObject {
     func conversationTitle(citedId: String) -> String?
     /// The conversation, moment and scrubber position a citation names. Nil once the cited
     /// segment is gone (retention), which is when a chip must not navigate at all.
-    func citationTarget(citedId: String) async -> CitationTarget?
+    func citationTarget(for citation: AskCitation) async -> CitationTarget?
 }
 
 @MainActor

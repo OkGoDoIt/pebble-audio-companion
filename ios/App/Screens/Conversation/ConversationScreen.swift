@@ -9,9 +9,9 @@ import AppDB
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
-    /// The cited member a Saved Notes / Ask chip sent us to: the transcript scrolls to it,
-    /// bands it, and offers to play from there. Nil on every ordinary open.
-    var focusSegmentId: String?
+    /// The stretch a Saved Notes / Ask chip sent us to: the transcript scrolls to it, bands
+    /// those lines, and offers to play from there. Nil on every ordinary open.
+    var focus: TranscriptFocus?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
@@ -114,7 +114,7 @@ struct ConversationScreen: View {
                         transcript: display.transcript,
                         provenance: display.provenance,
                         timeZone: display.timeZone,
-                        focusSegmentId: focusSegmentId,
+                        focus: focus,
                         onSpeakerTap: { turn in model.renameTurn = turn },
                         // Playing is always the user's move: arriving from a citation cues the
                         // scrubber to the moment, and this is the tap that starts it.
@@ -144,9 +144,11 @@ struct ConversationScreen: View {
     /// Land on the cited stretch rather than at the top of a long transcript — the chip named
     /// a moment, so the moment is what should be on screen.
     private func scrollToCitedMoment(_ proxy: ScrollViewProxy, transcript: [TranscriptItem]) {
-        guard let focusSegmentId, !didScrollToCited else { return }
+        guard let focus, !didScrollToCited else { return }
         let present = transcript.contains { item in
-            if case .turn(let turn) = item { return turn.segmentId == focusSegmentId }
+            if case .turn(let turn) = item {
+                return focus.contains(segmentId: turn.segmentId, at: turn.startedAt)
+            }
             return false
         }
         guard present else { return }

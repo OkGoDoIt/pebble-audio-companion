@@ -124,6 +124,26 @@ public struct AskRetriever: Sendable {
             return "\(cite)[segment \(chunk.segmentId)\(time)]\(gaps)\n\(chunk.text)"
         }.joined(separator: "\n\n")
     }
+
+    /// Render numbered STRETCHES for the prompt. One number per stretch rather than per
+    /// segment, so a `[n]` the model writes names a moment the transcript can mark and the
+    /// player can start from — not a whole recording. Gap summaries ride on the first stretch
+    /// of each segment: they describe the recording, not the sentence.
+    public func formatForPrompt(
+        stretches: [CitableExcerpt],
+        whenLabel: (CitableExcerpt) -> String?,
+        gapSummary: (String) -> String?
+    ) -> String {
+        var seenSegments = Set<String>()
+        return stretches.map { stretch -> String in
+            let when = whenLabel(stretch).map { " (recorded \($0))" } ?? ""
+            let gaps =
+                seenSegments.insert(stretch.segmentId).inserted
+                ? gapSummary(stretch.segmentId).map { "\nGAPS: \($0)" } ?? ""
+                : ""
+            return "[\(stretch.number)]\(when)\(gaps)\n\(stretch.text)"
+        }.joined(separator: "\n\n")
+    }
 }
 
 // MARK: - Time context

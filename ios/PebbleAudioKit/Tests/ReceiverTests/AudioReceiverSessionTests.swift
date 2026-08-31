@@ -65,7 +65,54 @@ import WireProtocol
         }
 
         func settle() async {
-            await TestClock.settle()
+            await clock.settle()
+        }
+
+        /// Moves the BLE link and returns once the session has finished reacting to the move.
+        ///
+        /// `settle()` cannot see this on its own: a link-state change is delivered through the
+        /// link's StateFlow and handled between suspension points the harness does not own (that
+        /// flow and the connection's abort deferred), so there is no park for the ledger to wait
+        /// on. Every transition does have one definite, causally-guaranteed outcome, and that is
+        /// what this waits for.
+        func setLink(_ linkState: LinkState) async {
+            let writesBefore = link.controlWrites.count
+            link.linkState.value = linkState
+            switch linkState {
+            case .ready:
+                // The connection handshake either announces us to the watch (an ENABLE_REQUEST,
+                // or the AUTH_REQUEST when the watch is already enabled) or refuses to, which it
+                // reports as a denial.
+                await waitFor("the session to announce itself to the watch") {
+                    self.link.controlWrites.count > writesBefore
+                        || self.session.state.value.deniedStatus != nil
+                }
+            case .connecting:
+                await waitFor("the session to report Connecting") {
+                    self.session.state.value == .connecting
+                }
+            case .disconnected:
+                await waitFor("the session to report the link down") {
+                    if case .connectionFailed = self.session.state.value { return true }
+                    return self.session.state.value == .disconnected
+                }
+            }
+        }
+
+        /// Stops the session and waits for its task to finish unwinding — the exact signal that
+        /// teardown (close the open segment, publish Disconnected) has completed.
+        func stop() async {
+            sessionTask.cancel()
+            await sessionTask.value
+            await settle()
+        }
+
+        private func waitFor(_ description: String, _ condition: @escaping () -> Bool) async {
+            for _ in 0..<500 {
+                await settle()
+                if condition() { return }
+            }
+            Issue.record("timed out waiting for \(description)")
         }
     }
 
@@ -74,11 +121,13 @@ import WireProtocol
         captureIntent: @escaping @Sendable () -> CaptureIntent = { .active },
         consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil
     ) async -> Fixture {
-        let link = infoBytes.map { FakeAudioGattLink(infoBytes: $0) } ?? FakeAudioGattLink()
-        let sink = FakeSegmentSink()
+        let scheduler = TestScheduler()
+        let link = infoBytes.map { FakeAudioGattLink(scheduler: scheduler, infoBytes: $0) }
+            ?? FakeAudioGattLink(scheduler: scheduler)
+        let sink = FakeSegmentSink(scheduler: scheduler)
         let policy = FakeReceiverPolicy()
-        let resumeStore = FakeResumeStore()
-        let clock = TestClock()
+        let resumeStore = FakeResumeStore(scheduler: scheduler)
+        let clock = TestClock(scheduler: scheduler)
         let session = AudioReceiverSession(
             link: link,
             sink: sink,
@@ -90,7 +139,7 @@ import WireProtocol
             consumeEnableRequestPermission: consumeEnableRequestPermission
         )
         let task = session.start()
-        await TestClock.settle()
+        await clock.settle()
         return Fixture(
             link: link, sink: sink, policy: policy, resumeStore: resumeStore,
             session: session, clock: clock, sessionTask: task
@@ -99,8 +148,7 @@ import WireProtocol
 
     @discardableResult
     private func authorize(_ fx: Fixture) async -> Int {
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let token = fx.authRequest().requestToken
         fx.link.pushControl(AuthResult(requestToken: token, statusRaw: 0, grantedProtoVersion: 1))
         await fx.settle()
@@ -142,8 +190,7 @@ import WireProtocol
 
     @Test func happyPath_authStartDataCheckpointStop() async {
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
 
         // AUTH_REQUEST carries our identity.
         let auth = fx.authRequest()
@@ -252,8 +299,7 @@ import WireProtocol
 
     @Test func pendingConsentThenOk() async {
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let token = fx.authRequest().requestToken
 
         fx.link.pushControl(AuthResult(requestToken: token, statusRaw: 1, grantedProtoVersion: 0))
@@ -268,8 +314,7 @@ import WireProtocol
 
     @Test func deniedMismatchFailsClosed() async {
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let token = fx.authRequest().requestToken
 
         fx.link.pushControl(AuthResult(requestToken: token, statusRaw: 2, grantedProtoVersion: 0))
@@ -429,8 +474,7 @@ import WireProtocol
         fx.link.pushData(data(0, 8))
         await fx.settle()
 
-        fx.link.linkState.value = .disconnected
-        await fx.settle()
+        await fx.setLink(.disconnected)
 
         #expect(fx.sink.closes == [SegmentCloseReason.interrupted])
         #expect(fx.session.state.value == .disconnected)
@@ -443,15 +487,13 @@ import WireProtocol
 
     @Test func reconnectingClearsConnectionFailedState() async {
         let fx = await startSession()
-        fx.link.linkState.value = .connecting
-        await fx.settle()
+        await fx.setLink(.connecting)
 
         fx.link.failureState.value = ConnectFailure(
             kind: .bluetoothUnavailable,
             detail: "Bluetooth is unavailable to this app right now."
         )
-        fx.link.linkState.value = .disconnected
-        await fx.settle()
+        await fx.setLink(.disconnected)
 
         #expect(
             fx.session.state.value == .connectionFailed(
@@ -460,8 +502,7 @@ import WireProtocol
             )
         )
 
-        fx.link.linkState.value = .connecting
-        await fx.settle()
+        await fx.setLink(.connecting)
 
         #expect(fx.session.state.value == .connecting)
     }
@@ -594,8 +635,7 @@ import WireProtocol
         let fx = await startSession(
             infoBytes: FakeAudioGattLink.defaultInfo(serviceStateRaw: 5).encode()
         )
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let auth = fx.authRequest()
         fx.link.pushControl(AuthResult(requestToken: auth.requestToken, statusRaw: 0, grantedProtoVersion: 1))
         await fx.settle()
@@ -609,8 +649,7 @@ import WireProtocol
         // intent off (e.g. a sticky service reconnected after Stop), authorization must pause
         // the watch rather than let it stream.
         let fx = await startSession(captureIntent: { .off })
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let auth = fx.authRequest()
         fx.link.pushControl(AuthResult(requestToken: auth.requestToken, statusRaw: 0, grantedProtoVersion: 1))
         await fx.settle()
@@ -630,8 +669,7 @@ import WireProtocol
             captureIntent: { .active },
             consumeEnableRequestPermission: { false }
         )
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
 
         let writes = fx.writes()
         #expect(writes.compactMap { $0 as? EnableRequest }.isEmpty)
@@ -651,8 +689,7 @@ import WireProtocol
             captureIntent: { .active },
             consumeEnableRequestPermission: { armed.consume() }
         )
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
 
         let enables = fx.writes().compactMap { $0 as? EnableRequest }
         #expect(enables.count == 1)
@@ -676,8 +713,7 @@ import WireProtocol
         // the watch later reports a policy pause (STATE_CHANGED) while the user wants audio,
         // the safety net resumes it without depending on the pre-auth Info snapshot.
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let auth = fx.authRequest()
         fx.link.pushControl(AuthResult(requestToken: auth.requestToken, statusRaw: 0, grantedProtoVersion: 1))
         await fx.settle()
@@ -692,8 +728,7 @@ import WireProtocol
 
     @Test func watchPowerSavePauseDoesNotTriggerResume() async {
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let auth = fx.authRequest()
         fx.link.pushControl(AuthResult(requestToken: auth.requestToken, statusRaw: 0, grantedProtoVersion: 1))
         await fx.settle()
@@ -707,16 +742,14 @@ import WireProtocol
 
     @Test func sessionTeardownResetsStateToDisconnected() async {
         let fx = await startSession()
-        fx.link.linkState.value = .ready
-        await fx.settle()
+        await fx.setLink(.ready)
         let auth = fx.authRequest()
         fx.link.pushControl(AuthResult(requestToken: auth.requestToken, statusRaw: 0, grantedProtoVersion: 1))
         fx.link.pushData(streamStart())
         await fx.settle()
         #expect(fx.session.state.value == .streaming(streamId: streamId))
 
-        fx.sessionTask.cancel()
-        await fx.settle()
+        await fx.stop()
         #expect(
             fx.session.state.value == .disconnected,
             "a stopped session must not keep claiming it is streaming"

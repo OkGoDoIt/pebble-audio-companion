@@ -256,7 +256,7 @@ struct AskSheetView: View {
                 if showSources {
                     ForEach(sources(entry), id: \.number) { source in
                         Button {
-                            openConversation(citedId: source.id)
+                            open(citation: source.citation)
                         } label: {
                             HStack(spacing: 8) {
                                 CitationChip(number: source.number)
@@ -275,16 +275,16 @@ struct AskSheetView: View {
     }
 
     private struct Source {
-        let number: Int
-        let id: String
+        let citation: AskCitation
         let title: String
+
+        var number: Int { citation.number }
     }
 
     private func sources(_ entry: AskEntry) -> [Source] {
         entry.citations.map { citation in
             Source(
-                number: citation.number,
-                id: citation.segmentId,
+                citation: citation,
                 title: AskLibraryDataSources.current.ask
                     .conversationTitle(citedId: citation.segmentId) ?? "Conversation")
         }
@@ -302,24 +302,25 @@ struct AskSheetView: View {
     private func openCitation(entry: AskEntry, number: Int) {
         guard let citation = entry.citations.first(where: { $0.number == number })
         else { return }
-        openConversation(citedId: citation.segmentId)
+        open(citation: citation)
     }
 
-    /// A citation names a SEGMENT, and `conversation/<segmentId>` is not a conversation id —
-    /// which is why every chip used to land on "Conversation not found". Resolve it to the
-    /// conversation holding it, cue the scrubber to where that segment starts, and mark it.
-    private func openConversation(citedId: String) {
+    /// A citation names a stretch of a SEGMENT, and `conversation/<segmentId>` is not a
+    /// conversation id — which is why every chip used to land on "Conversation not found".
+    /// Resolve it to the conversation holding it, cue the scrubber to where the cited stretch
+    /// begins, and mark those lines on arrival.
+    private func open(citation: AskCitation) {
         Task { @MainActor in
             guard
                 let target = await AskLibraryDataSources.current.ask.citationTarget(
-                    citedId: citedId)
+                    for: citation)
             else { return }
             dismiss()
             router.navigate(
                 to: .conversation(
                     id: target.conversationId,
                     atMs: target.mediaOffsetMs,
-                    focusSegmentId: target.segmentId))
+                    focus: target.focus))
         }
     }
 

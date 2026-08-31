@@ -10,9 +10,9 @@ struct TranscriptView: View {
     let provenance: String?
     /// Q16 — stamps read in the zone the audio was recorded in, not the one you're in now.
     var timeZone: TimeZone = .current
-    /// The member a citation chip sent us to. Its rows are banded and carry the play control;
-    /// nil on every ordinary open, which is most of them.
-    var focusSegmentId: String?
+    /// The stretch a citation chip sent us to. Its rows are banded and carry the play
+    /// control; nil on every ordinary open, which is most of them.
+    var focus: TranscriptFocus?
     /// Nil where names aren't editable yet (the live screen, whose diarization is still
     /// provisional): the name renders as plain text rather than a button that does nothing.
     var onSpeakerTap: ((TranscriptTurn) -> Void)?
@@ -46,11 +46,11 @@ struct TranscriptView: View {
     @ViewBuilder
     private func blockRow(_ block: TranscriptBlock) -> some View {
         switch block {
-        case .speech(_, let turns):
+        case .speech(_, let turns, _):
             speechBlock(turns)
-        case .quiet(let marker):
+        case .quiet(let marker, _):
             markerRow(marker, color: Tokens.faint, rule: Tokens.hairline)
-        case .missing(let marker):
+        case .missing(let marker, _):
             markerRow(marker, color: Tokens.missing, rule: Tokens.missingHair)
         }
     }
@@ -111,7 +111,7 @@ struct TranscriptView: View {
     private var runs: [BlockRun] {
         var runs: [BlockRun] = []
         for block in blocks {
-            let cited = focusSegmentId != nil && block.segmentId == focusSegmentId
+            let cited = block.isCited
             if var last = runs.last, last.isCited == cited {
                 last.blocks.append(block)
                 runs[runs.count - 1] = last
@@ -131,23 +131,34 @@ struct TranscriptView: View {
         for item in transcript {
             switch item {
             case .turn(let turn):
-                if case .speech(let id, var turns) = blocks.last,
+                let cited = isCited(segmentId: turn.segmentId, at: turn.startedAt)
+                // Citedness joins the grouping key: a citation that starts partway through one
+                // person still talking has to break the block, or the band would swallow lines
+                // the note never drew on.
+                if case .speech(let id, var turns, let wasCited) = blocks.last,
+                    wasCited == cited,
                     let previous = turns.last, previous.speakerLabel == turn.speakerLabel,
                     previous.name == turn.name, previous.role == turn.role,
                     previous.isInProgress == turn.isInProgress
                 {
                     turns.append(turn)
-                    blocks[blocks.count - 1] = .speech(id: id, turns: turns)
+                    blocks[blocks.count - 1] = .speech(id: id, turns: turns, isCited: cited)
                 } else {
-                    blocks.append(.speech(id: turn.id, turns: [turn]))
+                    blocks.append(.speech(id: turn.id, turns: [turn], isCited: cited))
                 }
             case .quiet(let marker):
-                blocks.append(.quiet(marker))
+                blocks.append(
+                    .quiet(marker, isCited: isCited(segmentId: marker.segmentId, at: marker.startedAt)))
             case .missing(let marker):
-                blocks.append(.missing(marker))
+                blocks.append(
+                    .missing(marker, isCited: isCited(segmentId: marker.segmentId, at: marker.startedAt)))
             }
         }
         return blocks
+    }
+
+    private func isCited(segmentId: String, at startedAt: Date?) -> Bool {
+        focus?.contains(segmentId: segmentId, at: startedAt) ?? false
     }
 
     private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
@@ -262,28 +273,28 @@ struct TranscriptView: View {
 
 /// One rendered row of the transcript: a run of consecutive same-speaker turns, or a marker.
 private enum TranscriptBlock: Identifiable {
-    case speech(id: String, turns: [TranscriptTurn])
-    case quiet(TranscriptMarker)
-    case missing(TranscriptMarker)
+    case speech(id: String, turns: [TranscriptTurn], isCited: Bool)
+    case quiet(TranscriptMarker, isCited: Bool)
+    case missing(TranscriptMarker, isCited: Bool)
 
     var id: String {
         switch self {
-        case .speech(let id, _): return id
-        case .quiet(let marker), .missing(let marker): return marker.id
+        case .speech(let id, _, _): return id
+        case .quiet(let marker, _), .missing(let marker, _): return marker.id
         }
     }
 
-    var segmentId: String {
+    var isCited: Bool {
         switch self {
-        case .speech(_, let turns): return turns.first?.segmentId ?? ""
-        case .quiet(let marker), .missing(let marker): return marker.segmentId
+        case .speech(_, _, let cited), .quiet(_, let cited), .missing(_, let cited):
+            return cited
         }
     }
 
-    /// Where this block starts on the conversation's scrubber; markers inherit nothing, so a
-    /// run takes the first position any of its blocks knows.
+    /// Where this block starts on the conversation's scrubber; markers carry no position, so a
+    /// run takes the first one any of its blocks knows.
     var mediaOffsetMs: Int64? {
-        if case .speech(_, let turns) = self { return turns.first?.mediaOffsetMs }
+        if case .speech(_, let turns, _) = self { return turns.first?.mediaOffsetMs }
         return nil
     }
 }

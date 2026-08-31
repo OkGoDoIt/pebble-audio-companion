@@ -34,9 +34,8 @@ struct LibraryScreen: View {
         .navigationTitle(searchActive ? "Search" : Copy.Library.title)
         .navigationDestination(for: Route.self) { route in
             switch route {
-            case .conversation(let id, let atMs, let focusSegmentId):
-                ConversationScreen(
-                    conversationId: id, atMs: atMs, focusSegmentId: focusSegmentId)
+            case .conversation(let id, let atMs, let focus):
+                ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
             case .note(let id):
                 SavedNotesScreen(noteId: id)
             default:

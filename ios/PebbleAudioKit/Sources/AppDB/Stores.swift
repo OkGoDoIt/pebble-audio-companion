@@ -58,10 +58,17 @@ public struct FollowUp: Equatable, Sendable {
 public struct AskCitation: Codable, Equatable, Sendable {
     public var segmentId: String
     public var number: Int
+    /// Absolute wall-clock bounds of the stretch this cites, when the answer was written
+    /// against numbered stretches rather than whole segments. Nil for citations stored before
+    /// that (and for imports), which can only be followed as far as the member segment.
+    public var startMs: Int64?
+    public var endMs: Int64?
 
-    public init(segmentId: String, number: Int) {
+    public init(segmentId: String, number: Int, startMs: Int64? = nil, endMs: Int64? = nil) {
         self.segmentId = segmentId
         self.number = number
+        self.startMs = startMs
+        self.endMs = endMs
     }
 }
 

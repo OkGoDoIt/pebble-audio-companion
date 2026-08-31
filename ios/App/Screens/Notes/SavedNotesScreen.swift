@@ -141,7 +141,7 @@ struct SavedNotesScreen: View {
             to: .conversation(
                 id: target.conversationId,
                 atMs: target.mediaOffsetMs,
-                focusSegmentId: target.segmentId))
+                focus: target.focus))
     }
 
     // MARK: - Pills [Copy][Edit][Regenerate]
@@ -202,10 +202,10 @@ final class SavedNotesViewModel {
     var copied = false
     var showTemplates = false
     var confirmDelete = false
-    /// Resolved citation destinations, keyed by cited segment id. Resolution is a lookup
-    /// (which conversation holds the segment, where it starts on the scrubber), so it happens
-    /// once per load rather than on every tap.
-    private(set) var targets: [String: CitationTarget] = [:]
+    /// Resolved citation destinations, keyed by the citation's NUMBER — two citations can
+    /// name different stretches of one segment, so a segment id no longer identifies a
+    /// destination. Resolution is a lookup, so it happens once per load, not on every tap.
+    private(set) var targets: [Int: CitationTarget] = [:]
 
     func load(id: String) async {
         note = try? await AskLibraryDataSources.current.notes.note(id: id)
@@ -217,10 +217,10 @@ final class SavedNotesViewModel {
             targets = [:]
             return
         }
-        var resolved: [String: CitationTarget] = [:]
-        for citation in note.citations where resolved[citation.segmentId] == nil {
-            resolved[citation.segmentId] = await AskLibraryDataSources.current.ask
-                .citationTarget(citedId: citation.segmentId)
+        var resolved: [Int: CitationTarget] = [:]
+        for citation in note.citations where resolved[citation.number] == nil {
+            resolved[citation.number] = await AskLibraryDataSources.current.ask
+                .citationTarget(for: citation)
         }
         targets = resolved.compactMapValues { $0 }
     }
@@ -229,20 +229,17 @@ final class SavedNotesViewModel {
     /// model citing [9] with three sources, or an answer imported from the old app) must do
     /// nothing rather than open a moment it does not name.
     func target(forCitation number: Int) -> CitationTarget? {
-        guard let note, let citation = note.citations.first(where: { $0.number == number })
-        else { return nil }
-        return targets[citation.segmentId]
+        targets[number]
     }
 
     /// "2 moments · 9:36 PM, 9:51 PM" — the times of the moments this note actually cites.
     /// Nil when it cites none, which is when the footer must not appear at all.
     var momentsLabel: String? {
         guard let note else { return nil }
-        var seen = Set<String>()
+        var seen = Set<TranscriptFocus>()
         var labels: [String] = []
         for citation in note.citations {
-            guard let target = targets[citation.segmentId],
-                seen.insert(target.segmentId).inserted
+            guard let target = targets[citation.number], seen.insert(target.focus).inserted
             else { continue }
             labels.append(
                 target.startedAt.map { TimeFmt.time($0) } ?? target.conversationTitle)

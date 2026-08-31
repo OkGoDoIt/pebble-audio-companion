@@ -772,22 +772,32 @@ extension MockWorld: AskDataSource {
     /// The artboard conversations each stand in for a two-member recording, so a mock citation
     /// names a PART of one exactly the way a real one does — which is what makes the cited
     /// highlight, the scroll and "Play from here" demonstrable without a watch in the room.
-    func citationTarget(citedId: String) async -> CitationTarget? {
-        let conversationId = MockWorld.conversation(ofMember: citedId)
+    func citationTarget(for citation: AskCitation) async -> CitationTarget? {
+        let conversationId = MockWorld.conversation(ofMember: citation.segmentId)
         guard let index = index(of: conversationId) else { return nil }
         let conversation = conversations[index]
-        let ordinal = MockWorld.memberOrdinal(citedId)
+        let rows = conversation.transcript.count
+        guard rows > 0 else { return nil }
+        let ordinal = MockWorld.memberOrdinal(citation.segmentId)
+        // The mock's fixtures carry no timings, so the cited stretch is derived the same way
+        // `stamped` derives the row times: two rows, at the head of the named member. Enough
+        // to show a citation landing on a couple of lines rather than half a conversation.
+        let firstRow = ordinal == 2 ? (rows + 1) / 2 : 0
+        let lastRow = min(firstRow + 1, rows - 1)
+        let step = conversation.end.timeIntervalSince(conversation.start) / Double(rows)
+        func rowStart(_ row: Int) -> Date {
+            conversation.start.addingTimeInterval(step * Double(row))
+        }
         let duration = conversation.player?.durationMs ?? 0
-        let startedAt =
-            conversation.start.addingTimeInterval(
-                conversation.end.timeIntervalSince(conversation.start)
-                    * (ordinal == 2 ? 0.5 : 0))
         return CitationTarget(
             conversationId: conversationId,
             conversationTitle: conversation.title,
-            segmentId: MockWorld.member(conversationId, ordinal),
-            mediaOffsetMs: duration > 0 ? (ordinal == 2 ? duration / 2 : 0) : nil,
-            startedAt: startedAt)
+            focus: TranscriptFocus(
+                segmentId: MockWorld.member(conversationId, ordinal),
+                startMs: ms(rowStart(firstRow)),
+                endMs: ms(rowStart(lastRow))),
+            mediaOffsetMs: duration > 0 ? duration * Int64(firstRow) / Int64(rows) : nil,
+            startedAt: rowStart(firstRow))
     }
 
     /// "<conversationId>#<ordinal>" — the mock's stand-in for a real segment id.

@@ -11,10 +11,14 @@ enum AiTranscriptFormatting {
         content += request.prompt.userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         content += "\n\n"
         for transcript in request.transcripts {
-            content += "--- Transcript segment "
             // A citing template addresses its sources by number: the raw id is what models
-            // copy into the prose as "seg-01H..." or an invented markdown link.
-            content += transcript.citationNumber.map { "[\($0)]" } ?? transcript.segmentId
+            // copy into the prose as "seg-01H..." or an invented markdown link. Numbered input
+            // is also a STRETCH of a recording rather than a whole one, so it is named as such.
+            if let number = transcript.citationNumber {
+                content += "--- Transcript excerpt [\(number)]"
+            } else {
+                content += "--- Transcript segment \(transcript.segmentId)"
+            }
             if let timeLabel = transcript.timeLabel {
                 content += " (starts \(timeLabel))"
             } else if let startTimeMs = transcript.startTimeMs {
