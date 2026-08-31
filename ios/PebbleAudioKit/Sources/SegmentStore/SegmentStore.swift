@@ -735,20 +735,7 @@ public actor SegmentStore: SegmentSink {
     }
 
     private func parseRecords(_ bytes: [UInt8]) -> (records: [FrameRecord], validBytes: Int) {
-        var records: [FrameRecord] = []
-        var offset = 0
-        var reader = WireReader(bytes)
-        while true {
-            if reader.remaining < Self.recordHeaderBytes { break }
-            let sequence = reader.u32()
-            let sampleIndex = reader.u64()
-            let len = reader.u16()
-            if len > ProtocolConstants.maxEncodedFrameBytes || reader.remaining < len { break }
-            records.append(
-                FrameRecord(sequence: sequence, sampleIndex: sampleIndex, payload: reader.readBytes(len)))
-            offset += Self.recordHeaderBytes + len
-        }
-        return (records, offset)
+        SegmentFrameLog.parse(bytes)
     }
 
     /// POSIX rename: atomically replaces `to` (Kotlin `FileSystem.atomicMove` semantics).

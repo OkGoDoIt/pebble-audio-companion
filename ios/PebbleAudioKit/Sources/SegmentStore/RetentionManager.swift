@@ -38,18 +38,33 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
     private let store: SegmentStore
     private let freeSpace: FreeSpaceProvider
     private let nowMs: @Sendable () -> Int64
-    private let config: RetentionConfig
+    private let configProvider: @Sendable () -> RetentionConfig
 
-    public init(
+    /// The policy in force right now. Read through the provider on every use so a settings
+    /// change ("Keep audio for N days") takes effect on the next pass, not the next launch.
+    private var config: RetentionConfig { configProvider() }
+
+    public convenience init(
         store: SegmentStore,
         freeSpace: FreeSpaceProvider,
         nowMs: @escaping @Sendable () -> Int64,
         config: RetentionConfig = RetentionConfig()
     ) {
+        self.init(store: store, freeSpace: freeSpace, nowMs: nowMs, config: { config })
+    }
+
+    /// Live-policy variant: the app passes a closure over its settings so the user-configurable
+    /// cap is honoured without rebuilding the manager.
+    public init(
+        store: SegmentStore,
+        freeSpace: FreeSpaceProvider,
+        nowMs: @escaping @Sendable () -> Int64,
+        config: @escaping @Sendable () -> RetentionConfig
+    ) {
         self.store = store
         self.freeSpace = freeSpace
         self.nowMs = nowMs
-        self.config = config
+        self.configProvider = config
     }
 
     /// Applies age and size caps. Returns the segment ids deleted.
