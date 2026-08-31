@@ -37,7 +37,7 @@ struct TodayScreen: View {
         .background(Tokens.ground)
         .navigationTitle(Copy.Today.title)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { askPill }
+            ToolbarItem(placement: .topBarTrailing) { askButton }
         }
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
@@ -67,25 +67,47 @@ struct TodayScreen: View {
         }
     }
 
-    // MARK: Title-bar Ask pill (sparkle, h32 r16, tintFill10)
+    // MARK: Title-bar Ask — the system draws the pill
+    //
+    // iOS 26 places toolbar items on a shared Liquid Glass background automatically, so a
+    // hand-rolled `Capsule().fill(Tokens.tintFill10)` nests a violet pill inside the system's
+    // own and fights the scroll-edge effect that keeps the control legible as cards scroll
+    // under the bar (`.buttonStyle(.plain)` is what suppresses the system treatment). The
+    // artboard's semantics are unchanged — trailing on the title bar, sparkle + "Ask", violet
+    // as tint only — and the system supplies the shape, the material, the ≥44 pt hit region
+    // (U10; a fixed 32 pt frame is 12 pt short) and the Dynamic Type metrics. Violet arrives
+    // via the app-wide `.tint(Tokens.tint)`.
+    //
+    // Deliberately absent, so this is not re-litigated:
+    //   • no `.buttonStyle(.glass)` — the item already has glass; the glass styles are for
+    //     buttons in your own content.
+    //   • no `.buttonStyle(.glassProminent)` — it tints the *material* with the accent: a
+    //     filled violet surface with a near-white label. That inverts the token table (tint is
+    //     the Ask pill's TEXT) and Q1's "violet as tint only".
+    //   • no `sharedBackgroundVisibility` / `ToolbarSpacer` — one item, so no group to split.
+    //     A second trailing item would silently merge into this capsule and Ask would stop
+    //     reading as primary; separate them with
+    //     `ToolbarSpacer(.fixed, placement: .topBarTrailing)`, never by drawing a shape.
+    //   • no `.buttonBorderShape(.capsule)` — the toolbar already draws a capsule.
+    //
+    // The label keeps the word "Ask": HIG prefers symbols, but its stated exception is actions
+    // not well represented by one, and the sparkle spans summarize/generate/enhance across the
+    // industry — nobody infers "ask about your day" from it. It also keeps Voice Control's
+    // "Tap Ask" working.
 
-    private var askPill: some View {
+    private var askButton: some View {
         Button {
-            router.askSheet = .ask(scope: "today", query: nil)
+            router.askSheet = .ask(scope: AskScope.today.routeKey, query: nil)
         } label: {
-            HStack(spacing: 6) {
+            // An explicit glyph + text pair, NOT a `Label`: iOS 26 toolbars render `Label`
+            // icon-only and ignore `.labelStyle(.titleAndIcon)` in either position. The system
+            // still supplies the capsule, the material, the hit region and the metrics — this
+            // only decides what goes inside it.
+            HStack(spacing: 4) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
                 Text(Copy.Today.ask)
-                    .font(AppFont.cardHead)
             }
-            .foregroundStyle(Tokens.tint)
-            .padding(.horizontal, 13)
-            .frame(height: 32)
-            .background(Capsule().fill(Tokens.tintFill10))
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
         .accessibilityLabel(Copy.Today.ask)
     }
 
