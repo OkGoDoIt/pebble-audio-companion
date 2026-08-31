@@ -26,7 +26,8 @@ struct SettingsDiagnosticsScreen: View {
                     title: Copy.Settings.Diagnostics.transcriptionQueue,
                     value: Copy.Settings.Diagnostics.queueValue(
                         waiting: diagnostics.queueWaiting,
-                        failed: diagnostics.queueFailed
+                        failed: diagnostics.queueFailed,
+                        heldInBackground: diagnostics.transcriptionHeldInBackground
                     ),
                     showsChevron: false
                 )

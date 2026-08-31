@@ -78,6 +78,8 @@ final class AppComposition {
     let localLive: LiveTranscriber
     let cloudLive: CloudLiveTranscriber
     let runtime: CompanionRuntime
+    /// "Is startup recovery still running?", for the screens. See `StartupActivity`.
+    let startup: StartupActivity
     /// The background `URLSession` transport, held so `handleEventsForBackgroundURLSession` can
     /// hand it the system completion handler.
     private let backgroundUploader: URLSessionBackgroundUploader
@@ -637,6 +639,13 @@ final class AppComposition {
         let importRunner = LegacyImportRunner(
             importer: importer, log: AppRuntimeLog.runtimeLog
         )
+        // The sequencer has always announced each step through `onStep`; nothing supplied the
+        // closure, so its default `{ _ in }` swallowed every one of them. On a migrated first
+        // launch that recovery takes tens of seconds — during which Today truthfully has no
+        // rows and therefore showed the first-run "Ready when you are." empty state to someone
+        // with hundreds of recordings. This is the closure that was missing.
+        let startupActivity = StartupActivity()
+        self.startup = startupActivity
         let startup = StartupSequencer(
             steps: StartupSteps(
                 runLegacyImportIfNeeded: {
@@ -654,6 +663,7 @@ final class AppComposition {
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
                 refreshDiagnostics: { await diagnostics.refresh() }
             ),
+            onStep: { startupActivity.record($0) },
             log: AppRuntimeLog.runtimeLog
         )
 
@@ -882,6 +892,30 @@ struct VolumeFreeSpace: FreeSpaceProvider {
             let capacity = values.volumeAvailableCapacityForImportantUsage
         else { return .max }
         return Int64(capacity)
+    }
+}
+
+/// Whether startup recovery is still running, readable from any thread.
+///
+/// `StartupSequencer` reports each step through its `onStep` closure, and until now nothing
+/// supplied one. The distinction it carries is the difference between two identical-looking
+/// screens: a library that is empty because nothing was ever recorded, and a library that is
+/// empty because the store is still being recovered (or, on the first launch after the upgrade,
+/// still being imported from the old app — tens of seconds of it).
+///
+/// It starts in the recovering state on purpose: the graph is built before `recoverIfNeeded()`
+/// runs, and the honest answer in that window is "not read yet", not "nothing here".
+final class StartupActivity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    var isRecovering: Bool { lock.withLock { !finished } }
+
+    /// `.refreshDiagnostics` is the sequencer's last step, and the only one it emits on the
+    /// already-recovered path — so it is the one that means "the durable work is done".
+    func record(_ step: StartupStep) {
+        guard step == .refreshDiagnostics else { return }
+        lock.withLock { finished = true }
     }
 }
 

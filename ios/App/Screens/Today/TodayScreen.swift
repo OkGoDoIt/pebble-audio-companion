@@ -13,8 +13,8 @@ struct TodayScreen: View {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 statusCard
 
-                if viewModel.isFirstRun {
-                    firstRunLine
+                if let line = viewModel.emptyLine {
+                    emptyLineView(line)
                 } else {
                     if let coverage = viewModel.snapshot.coverage {
                         coverageCard(coverage)
@@ -182,10 +182,10 @@ struct TodayScreen: View {
         }
     }
 
-    // MARK: First-run empty state (6.7)
+    // MARK: Empty state (6.7) — first run, or startup recovery still reading the store
 
-    private var firstRunLine: some View {
-        Text(Copy.Empty.todayFirstRun)
+    private func emptyLineView(_ line: String) -> some View {
+        Text(line)
             .font(AppFont.subBody)
             .foregroundStyle(Tokens.tertiary)
             .frame(maxWidth: .infinity)

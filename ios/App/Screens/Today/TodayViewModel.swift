@@ -30,9 +30,23 @@ final class TodayViewModel {
     /// Plan 6.2: the live minute renders only while the recording family is showing.
     var showsLiveMinute: Bool { status.family == .recording }
 
-    /// First-run empty state (6.7): nothing recorded yet — the status card carries the action.
-    var isFirstRun: Bool {
+    /// Today has nothing on it yet. Says nothing about WHY — see the two properties below.
+    var isEmpty: Bool {
         snapshot.conversations.isEmpty && snapshot.recap == nil && snapshot.coverage == nil
+    }
+
+    /// First-run empty state (6.7): nothing recorded yet — the status card carries the action.
+    /// Only once recovery has finished: while it is running, an empty Today means "not read
+    /// yet", and telling a migrated user they have nothing is the one thing it must not do.
+    var isFirstRun: Bool { isEmpty && !snapshot.recovering }
+
+    /// Startup recovery / the one-time import is still running behind an empty Today.
+    var isRecovering: Bool { isEmpty && snapshot.recovering }
+
+    /// The one calm line under an empty Today, or nil when there is content to show.
+    var emptyLine: String? {
+        guard isEmpty else { return nil }
+        return snapshot.recovering ? Copy.Empty.todayRecovering : Copy.Empty.todayFirstRun
     }
 
     var visibleFollowUps: [FollowUpDisplay] {

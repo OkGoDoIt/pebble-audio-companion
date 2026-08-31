@@ -515,6 +515,11 @@ protocol DiagnosticsSource: AnyObject {
     func rebuildSearchIndex() async
     var queueWaiting: Int { get }
     var queueFailed: Int { get }
+    /// The queue is waiting because the app was not in the foreground, not because anything is
+    /// wrong: local transcription and AI are deferred while backgrounded. The runtime has
+    /// always computed this (`RuntimeDiagnostics.transcriptionDeferredInBackground`) and no
+    /// screen ever read it, so a queue held for that reason showed a bare "N waiting".
+    var transcriptionHeldInBackground: Bool { get }
     /// The failed tasks with their reasons — the answer to "6 failed, but why?", which until
     /// now was persisted in `transcription_tasks.lastError` and shown nowhere.
     var failedItems: [DiagnosticFailure] { get }
@@ -537,6 +542,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var indexRebuild: IndexRebuildState = .idle
     var queueWaiting = 0
     var queueFailed = 0
+    var transcriptionHeldInBackground = false
     var enrichmentWaiting = 0
     var enrichmentRunning = false
     var failedItems: [DiagnosticFailure] = []
@@ -569,7 +575,9 @@ final class MockDiagnosticsSource: DiagnosticsSource {
         Audio Companion support report
         Receiver: \(receiverStatus)
         Watch reports: \(watchReports)
-        Transcription queue: \(queueWaiting) waiting · \(queueFailed) failed
+        Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
+            waiting: queueWaiting, failed: queueFailed,
+            heldInBackground: transcriptionHeldInBackground))
         \(SupportReportText.failures(failedItems))Recent segments:
         \(recentSegments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)

@@ -91,6 +91,11 @@ struct TodaySnapshot: Equatable {
     var recap: RecapDisplay?
     var followUps: [FollowUpDisplay]
     var conversations: [ConversationRowDisplay]
+    /// Startup recovery (and the one-time import from the old app) is still running, so an
+    /// empty Today means "not read yet", not "nothing recorded". `StartupSequencer` has always
+    /// reported its steps through `onStep`; nothing supplied that closure, so a migrated first
+    /// launch sat on the first-run empty state for the whole of recovery.
+    var recovering = false
 }
 
 // MARK: - Data source seam
