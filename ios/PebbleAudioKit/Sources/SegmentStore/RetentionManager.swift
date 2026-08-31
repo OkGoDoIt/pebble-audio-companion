@@ -88,8 +88,8 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
             deleted.append(meta.segmentId)
         }
 
-        // Size cap: delete oldest fully-transcribed first, then oldest untranscribed;
-        // the open segment is never deleted.
+        // Size cap: delete oldest fully-transcribed first, then oldest untranscribed, and
+        // recovered audio last of all; the open segment is never deleted.
         segments = await store.listSegments()
         var total: Int64 = 0
         for meta in segments {
@@ -100,6 +100,15 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
             .enumerated()
             .filter { $0.element.segmentId != openId }
             .sorted { a, b in
+                // Recovered audio is evicted LAST. The age cap already exempts it (see above);
+                // letting the size cap take it first would undo a migration recovery the user
+                // deliberately performed — audio that exists nowhere else, and that is older than
+                // everything around it, so an "oldest first" rule would target it immediately. It
+                // is still evictable: this is an ordering, not a second exemption, so a spool over
+                // the cap with nothing but recovered audio in it still shrinks.
+                if a.element.isRecovered != b.element.isRecovered {
+                    return b.element.isRecovered  // not-recovered first
+                }
                 if a.element.isFullyTranscribed != b.element.isFullyTranscribed {
                     return a.element.isFullyTranscribed  // transcribed first
                 }

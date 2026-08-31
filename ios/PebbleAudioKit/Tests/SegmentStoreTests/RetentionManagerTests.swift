@@ -52,6 +52,16 @@ import WireProtocol
         return segmentId
     }
 
+    /// Stamps `recoveredAtMs` on a segment's durable sidecar, the way `QuarantineRecovery` does.
+    /// A store re-read from the same root then sees it as recovered audio.
+    private func markRecovered(_ root: URL, _ segmentId: String, at ms: Int64) throws {
+        let url = root.appendingPathComponent(
+            "segments/\(segmentId)\(SegmentStore.metaSuffix)")
+        var meta = try JSONDecoder().decode(SegmentMeta.self, from: Data(contentsOf: url))
+        meta.recoveredAtMs = ms
+        try JSONEncoder().encode(meta).write(to: url)
+    }
+
     @Test func sizeCap_deletesOldestFullyTranscribedFirst() async throws {
         let root = try tempRoot()
         let store = makeStore(root)
@@ -103,6 +113,46 @@ import WireProtocol
         let deleted = try await manager.enforce()
         #expect(deleted == [ancient])
         #expect(await store.listSegments().map(\.segmentId) == [recent])
+    }
+
+    /// Audio the migration recovered from `quarantine/` is older than the retention window by
+    /// definition — being orphaned long enough to outlive its sidecar is what made it orphaned —
+    /// so an age sweep would delete it again on the first pass after the user recovered it. Now
+    /// that retention runs from the pipeline, that first pass is seconds away rather than a
+    /// relaunch away, which is what makes this exemption load-bearing rather than theoretical.
+    @Test func ageCap_neverDeletesRecoveredAudio() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let recovered = try await makeSegment(store, id: 1)
+        let ancient = try await makeSegment(store, id: 2)
+        clock.now += 31 * 24 * 60 * 60 * 1000
+        try markRecovered(root, recovered, at: clock.now)
+
+        let reopened = makeStore(root)
+        let manager = RetentionManager(
+            store: reopened, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig())
+        #expect(try await manager.enforce() == [ancient])
+        #expect(await reopened.listSegments().map(\.segmentId) == [recovered])
+    }
+
+    /// The size cap still applies to recovered audio — it is an ordering, not a second exemption —
+    /// but it is the LAST thing evicted. Without this the oldest-first rule targets recovered
+    /// audio immediately, which is precisely the audio that exists nowhere else.
+    @Test func sizeCap_evictsRecoveredAudioLast() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let recovered = try await makeSegment(store, id: 1, transcribed: true)
+        let ordinary = try await makeSegment(store, id: 2, transcribed: true)
+        try markRecovered(root, recovered, at: clock.now)
+
+        // Cap fits one of the two 390-byte segments.
+        let reopened = makeStore(root)
+        let manager = RetentionManager(
+            store: reopened, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: 500))
+        #expect(try await manager.enforce() == [ordinary])
+        #expect(await reopened.listSegments().map(\.segmentId) == [recovered])
     }
 
     @Test func storageFloors_driveReceiverFlagsAndHint() throws {

@@ -90,6 +90,9 @@ public actor CompanionRuntime {
 
     private var loopTask: Task<Void, Never>?
     private var stageObserver: (@Sendable (PipelineStage) -> Void)?
+    /// Retention with its own pacing, built from the environment's manager + cascade so no caller
+    /// has to re-derive "enforce, then cascade over everything it evicted" a fourth time.
+    private let retention: RetentionService
 
     public init(
         environment: CompanionRuntimeEnvironment,
@@ -102,6 +105,13 @@ public actor CompanionRuntime {
         self.log = environment.log
         self.foreground = environment.foreground
         self.stageObserver = onStage
+        self.retention = RetentionService(
+            enforce: { try await environment.retention.enforce() },
+            cascadeDeleted: { _ = await environment.cascade.deleteSegment($0) },
+            policy: { environment.settings.retentionConfig },
+            clock: environment.clock,
+            log: environment.log
+        )
     }
 
     // --- published surfaces --------------------------------------------------------------------
@@ -138,6 +148,9 @@ public actor CompanionRuntime {
         await refreshSnapshot(.manual)
 
         await environment.startup.recoverIfNeeded()
+        // The startup order already ran the identical sweep (`StartupStep.retentionEnforce`), so
+        // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
+        await retention.noteSweptElsewhere()
 
         // Restoration relaunch: receive-only is applied BEFORE the receiver starts, so a
         // background wake never spins up transcription or AI.
@@ -268,13 +281,9 @@ public actor CompanionRuntime {
     /// processing-task timeout must not be able to disable recording.
     public func runBackgroundMaintenance() async {
         await environment.startup.recoverIfNeeded()
-        do {
-            for deleted in try await environment.retention.enforce() {
-                _ = await environment.cascade.deleteSegment(deleted)
-            }
-        } catch {
-            log.failure("background retention", error)
-        }
+        // Unconditional: a BGProcessing window exists to do exactly this, so it is not turned
+        // away by the pipeline's interval.
+        await retention.sweep()
         await environment.transcription.submitPendingToUploader()
         await environment.diagnostics.refresh()
         await refreshSnapshot(.manual)
@@ -384,6 +393,7 @@ public actor CompanionRuntime {
         let env = environment
         let foreground = self.foreground
         let log = self.log
+        let retention = self.retention
         return PipelineSteps(
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
@@ -393,6 +403,11 @@ public actor CompanionRuntime {
             drainQueue: {
                 try await env.transcription.drainQueue { await env.diagnostics.refresh() }
             },
+            // Self-paced inside the service: normally an interval check and nothing else. This is
+            // what makes "Keep audio" take effect while the app is open instead of at the next
+            // launch — a settings write wakes the loop, and the changed policy is itself the
+            // trigger.
+            enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
             regroup: { try await env.enrichment.regroupPass() },
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
