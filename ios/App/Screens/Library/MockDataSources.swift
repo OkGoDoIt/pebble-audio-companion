@@ -564,6 +564,10 @@ extension MockWorld: ConversationDataSource {
         return displayModel(conversations[index])
     }
 
+    /// Every mutation in the mock world calls `bump()`, so the same continuation set the
+    /// library screens use is the right (and only) change signal here too.
+    func updates(conversationId: String) -> AsyncStream<Void> { updates() }
+
     /// The mock world holds no audio, so there is nothing to play: the card falls back to its
     /// simulated scrub rather than pretending a decoder is running.
     func playback(id: String) async throws -> (any ConversationPlayback)? { nil }
@@ -621,8 +625,16 @@ extension MockWorld: ConversationDataSource {
         bump()
     }
 
-    func exportAudio(id: String) async throws {
+    func exportAudio(id: String) async throws -> Int {
         try? await Task.sleep(for: .seconds(1.2))
+        // One file per member segment, same as the live path.
+        let transcript = conversations.first { $0.id == id }?.transcript ?? []
+        let segments = Set(
+            transcript.compactMap { item -> String? in
+                guard case .turn(let turn) = item else { return nil }
+                return turn.segmentId
+            })
+        return max(1, segments.count)
     }
 
     func delete(id: String) async throws {

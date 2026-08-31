@@ -322,6 +322,21 @@ extension LiveWorld: ConversationDataSource {
         )
     }
 
+    /// Ticks whenever this conversation's own row, members, transcript state, annotation or
+    /// follow-ups change — the DB observation that existed all along and nothing subscribed to.
+    func updates(conversationId: String) -> AsyncStream<Void> {
+        let library = composition.runtime.library
+        return AsyncStream { continuation in
+            let task = Task {
+                for await _ in library.observeConversation(id: conversationId) {
+                    continuation.yield(())
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Playback over every member segment of the conversation, as one continuous stream.
     func playback(id: String) async throws -> (any ConversationPlayback)? {
         let segments = await members(of: id)
@@ -375,11 +390,16 @@ extension LiveWorld: ConversationDataSource {
 
     func retryNow(id: String) async throws { try await retranscribe(id: id) }
 
-    func exportAudio(id: String) async throws {
+    /// One WAV per member segment. The count is returned rather than assumed: a conversation
+    /// that survived three reconnects is four files, and the screen used to report "1 file
+    /// exported" for all of them.
+    func exportAudio(id: String) async throws -> Int {
+        let live = await composition.runtime.environment.live
+        var written = 0
         for segmentId in await members(of: id) {
-            let live = await composition.runtime.environment.live
-            _ = try await live.exportSegment(segmentId)
+            written += try await live.exportSegment(segmentId).files.count
         }
+        return written
     }
 
     /// Delete with the 5 s undo window. NOTHING is destroyed here — the runtime hides the
