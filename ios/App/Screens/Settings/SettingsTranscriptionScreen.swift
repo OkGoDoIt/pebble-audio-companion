@@ -372,11 +372,9 @@ struct ApiKeyChangeScreen: View {
     /// The app's field idiom (as on the onboarding key screen): a filled inset inside the white
     /// card, so the row reads as something to type in rather than a third label.
     private var keyField: some View {
-        SecureField(
-            savedKey == nil
-                ? Copy.Onboarding.keyPlaceholder : Copy.Onboarding.keyReplacePlaceholder,
-            text: $newKey
-        )
+        // Placeholder names the thing, not the act: the section header above already says
+        // whether this adds or replaces, and "Replace key" under "REPLACE KEY" said it twice.
+        SecureField(Copy.Onboarding.keyPlaceholder, text: $newKey)
         .font(AppFont.callout)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
