@@ -164,6 +164,7 @@ struct SearchStateView: View {
                                 Text(hit.title)
                                     .font(AppFont.rowTitle)
                                     .foregroundStyle(Tokens.label)
+                                    .lineLimit(2)
                                 Text(hit.whenLabel)
                                     .font(AppFont.footnote)
                                     .foregroundStyle(Tokens.meta)

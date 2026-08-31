@@ -127,12 +127,12 @@ public enum SegmentAnnotationPrompt {
             // Lenient fallback: first non-blank line is the title, the rest the summary.
             let lines = text.components(separatedBy: .newlines)
                 .compactMap { AiPlainText.cleanLine($0) }
-            title = lines.first.map { String($0.prefix(maxTitleChars)) }
+            title = lines.first
             let rest = lines.dropFirst().joined(separator: " ")
             summary = rest.trimmingCharacters(in: .whitespaces).isEmpty ? nil : rest
         }
         return Parsed(
-            title: AiPlainText.clean(title, maxChars: maxTitleChars),
+            title: shortenTitle(title),
             summary: AiPlainText.clean(summary, maxChars: maxSummaryChars),
             tags: tags
         )
@@ -144,7 +144,7 @@ public enum SegmentAnnotationPrompt {
             let structured = try? JSONDecoder().decode(Structured.self, from: Data(trimmed.utf8))
         else { return nil }
         return Parsed(
-            title: AiPlainText.clean(structured.title, maxChars: maxTitleChars),
+            title: shortenTitle(structured.title),
             summary: AiPlainText.clean(structured.summary, maxChars: maxSummaryChars),
             tags: structured.tags
                 .compactMap { cleanTag($0) }
@@ -152,6 +152,56 @@ public enum SegmentAnnotationPrompt {
                 .prefix(maxTags)
                 .map { $0 }
         )
+    }
+
+    /// Titles are capped at `maxTitleChars`, and the models overshoot the prompt's "at most
+    /// 8 words" often enough that the cap is what the user actually reads. A hard `prefix`
+    /// cut it mid-word — real rows read "…Soniox, and a request for", which looks like the
+    /// app lost the rest. So: prefer ending on a clause boundary (a comma, dash or colon past
+    /// the halfway mark) where the shortened title still reads as a whole phrase; otherwise
+    /// cut on a word boundary and mark it with an ellipsis. Either way the title never ends
+    /// on a dangling "and"/"for"/"the" or on stray punctuation.
+    static func shortenTitle(_ text: String?) -> String? {
+        guard let cleaned = AiPlainText.clean(text), !cleaned.isEmpty else { return nil }
+        guard cleaned.count > maxTitleChars else { return cleaned }
+        let window = String(cleaned.prefix(maxTitleChars))
+        if let clause = window.lastIndex(where: { clauseBreaks.contains($0) }),
+            window.distance(from: window.startIndex, to: clause) >= maxTitleChars / 2
+        {
+            let head = trimTitleEdge(String(window[window.startIndex..<clause]))
+            if !head.isEmpty { return head }
+        }
+        if let space = window.lastIndex(of: " ") {
+            let head = trimTitleEdge(String(window[window.startIndex..<space]))
+            if !head.isEmpty { return head + "…" }
+        }
+        let head = trimTitleEdge(window)
+        return head.isEmpty ? nil : head + "…"
+    }
+
+    private static let clauseBreaks: Set<Character> = [",", ";", ":", "—", "–"]
+    private static let danglingWords: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "with", "for", "to", "of", "in", "on", "at",
+        "from", "about", "by", "into", "over", "than", "that",
+    ]
+
+    private static func trimTitleEdge(_ value: String) -> String {
+        var result = value.trimmingCharacters(in: .whitespaces)
+        func trimTrailingPunctuation() {
+            while let last = result.last,
+                last.isWhitespace || clauseBreaks.contains(last) || last == "-" || last == "."
+            {
+                result.removeLast()
+            }
+        }
+        trimTrailingPunctuation()
+        while let word = result.split(separator: " ").last,
+            danglingWords.contains(word.lowercased())
+        {
+            result.removeLast(word.count)
+            trimTrailingPunctuation()
+        }
+        return result
     }
 
     private static func cleanTag(_ value: String) -> String? {
