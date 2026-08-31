@@ -150,8 +150,19 @@ struct AskSheetView: View {
     }
 
     private func answerPreview(_ text: String) -> String {
-        text.replacingOccurrences(
+        let withoutCitations = text.replacingOccurrences(
             of: " ?\\[\\d+\\]", with: "", options: .regularExpression)
+        // One-line history row: drop list/heading markers and emphasis so the preview reads
+        // as a sentence rather than as Markdown source.
+        let firstLine =
+            withoutCitations
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        let unmarked = firstLine.replacingOccurrences(
+            of: "^(#{1,6}\\s+|[-*+]\\s+|\\d{1,3}[.)]\\s+|>\\s*)", with: "",
+            options: .regularExpression)
+        return InlineMarkdown.plainText(unmarked)
     }
 
     // MARK: - Answer
@@ -164,7 +175,7 @@ struct AskSheetView: View {
 
                 Card {
                     VStack(alignment: .leading, spacing: 10) {
-                        CitedText(entry.answerText, lineSpacing: 7) { number in
+                        MarkdownText(entry.answerText, lineSpacing: 7) { number in
                             openCitation(entry: entry, number: number)
                         }
 

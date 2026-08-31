@@ -105,11 +105,8 @@ struct SavedNotesScreen: View {
     private func noteCard(_ note: NoteDisplay) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(note.body.split(separator: "\n").enumerated()), id: \.offset) {
-                    _, line in
-                    CitedText(String(line), lineSpacing: 7) { number in
-                        openCitation(note: note, number: number)
-                    }
+                MarkdownText(note.body, lineSpacing: 7) { number in
+                    openCitation(note: note, number: number)
                 }
 
                 Rectangle().fill(Tokens.hairline).frame(height: 0.5)
