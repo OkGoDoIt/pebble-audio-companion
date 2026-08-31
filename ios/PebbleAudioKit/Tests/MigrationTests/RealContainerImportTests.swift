@@ -12,7 +12,12 @@ import Transcription
 // device copy also carries `transcription/transcripts/`). Skips cleanly where the directory
 // is absent so CI elsewhere stays green.
 
-private let realContainerPath = "/Users/roger/Repos/pebble/tmp-appdata"
+// Override with PEBBLE_LEGACY_CONTAINER to run the gate against a container pulled off the
+// phone (`xcrun devicectl device copy from --domain-type appDataContainer …`), which is the
+// only copy that carries `transcription/transcripts/` and `ai/`.
+private let realContainerPath =
+    ProcessInfo.processInfo.environment["PEBBLE_LEGACY_CONTAINER"]
+    ?? "/Users/roger/Repos/pebble/tmp-appdata"
 
 private var realContainerAvailable: Bool {
     FileManager.default.fileExists(
@@ -96,9 +101,22 @@ private var realContainerAvailable: Bool {
                 anchored >= meta.receivedAtMs - LegacyImporter.pastToleranceMs,
                 "\(id) anchored start is implausibly old")
             if let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive {
-                let durationMs = Int64(last - first) * 1000 / rate
-                #expect(durationMs >= 0 && durationMs <= 2 * 3_600_000,
-                    "\(id) has an insane duration \(durationMs) ms")
+                // The sample-index span is WALL time, not audio time: the watch keeps advancing
+                // sample_index across VAD-suppressed silence, so a segment can legitimately
+                // span a quiet overnight with only seconds of speech in it (the real container
+                // has one at 15.5 h / 6 s, and one at 4 h / 5 s with no gap records at all —
+                // that hole IS the quiet, which is exactly how coverage derives it, plan 6.2).
+                // Rotation caps a segment's 15 min of ACTIVITY, not the wall clock it straddles.
+                // So bound the span by a logical day (real corruption looks like years or
+                // negatives) and check the audio duration separately against the frame count.
+                let spanMs = Int64(last - first) * 1000 / rate
+                #expect(spanMs >= 0, "\(id) has a negative sample-index span \(spanMs) ms")
+                #expect(spanMs <= 26 * 3_600_000,
+                    "\(id) spans \(spanMs) ms — longer than a logical day")
+
+                let audioMs = meta.frameCount * Int64(meta.frameDurationMs)
+                #expect(audioMs >= 0 && audioMs <= spanMs + Int64(meta.frameDurationMs),
+                    "\(id) claims \(audioMs) ms of audio inside a \(spanMs) ms span")
             }
         }
 
