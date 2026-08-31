@@ -91,21 +91,27 @@ struct TranscriptView: View {
                 Spacer(minLength: 0)
             }
 
-            ForEach(turns) { turn in
-                Text(turn.text)
-                    .font(AppFont.callout)
-                    .foregroundStyle(
-                        turn.role == .unresolved || turn.isInProgress
-                            ? Tokens.meta : Tokens.label)
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // One VoiceOver element per turn, carrying the time the eye reads off
-                    // the stamp beside the name.
-                    .accessibilityLabel(
-                        Copy.A11y.transcriptTurn(
-                            time: turn.startedAt.map { TranscriptStamp.text($0, in: timeZone) },
-                            speaker: turn.name,
-                            text: turn.text))
+            // Provider fragments of one person's speech are paragraphs, not one run-on
+            // block: they get their own spacing under the single name header.
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(turns) { turn in
+                    Text(turn.text)
+                        .font(AppFont.callout)
+                        .foregroundStyle(
+                            turn.role == .unresolved || turn.isInProgress
+                                ? Tokens.meta : Tokens.label)
+                        .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                        // One VoiceOver element per turn, carrying the time the eye reads
+                        // off the stamp beside the name.
+                        .accessibilityLabel(
+                            Copy.A11y.transcriptTurn(
+                                time: turn.startedAt.map {
+                                    TranscriptStamp.text($0, in: timeZone)
+                                },
+                                speaker: turn.name,
+                                text: turn.text))
+                }
             }
         }
     }

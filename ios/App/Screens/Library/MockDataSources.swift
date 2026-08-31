@@ -181,6 +181,23 @@ final class MockWorld {
                     turn("ld5", "S1", "Roger", .you,
                          "Today's screen showed the recent conversations, and that was "
                          + "helpful."),
+                    turn("ld6", "S1", "Roger", .you,
+                         "It spun out too much at first — it comes in, explains itself, and "
+                         + "then goes all the way back out again."),
+                    turn("ld7", "S2", "Dana", .other,
+                         "The streaming ones are worse over that router. Try the TV's own "
+                         + "apps instead and see whether it holds."),
+                    .quiet(TranscriptMarker(id: "ld8",
+                                            text: Copy.Conversation.quietFor("4 min"))),
+                    turn("ld9", "S1", "Roger", .you,
+                         "Right. And for the remote transcription we still need the key — "
+                         + "nothing reaches Soniox without it."),
+                    turn("ld10", "S2", "Dana", .other,
+                         "I'll send it tonight. Then the cloud path can be tested end to "
+                         + "end before the next build goes out."),
+                    turn("ld11", "S1", "Roger", .you,
+                         "Good. Until then everything stays on-device, which is slower but "
+                         + "at least it is honest about what it captured."),
                 ],
                 player: PlayerDisplay(
                     durationMs: 33 * 60_000 + 12_000, missingTickFractions: [0.42]),
