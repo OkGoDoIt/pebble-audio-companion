@@ -155,6 +155,23 @@ import WireProtocol
         #expect(await reopened.listSegments().map(\.segmentId) == [recovered])
     }
 
+    /// The per-call budget its pipeline caller uses: an unbounded age sweep after a big policy
+    /// change would hand its caller hundreds of ids to cascade in one go.
+    @Test func ageCap_stopsAtTheCallersLimitAndResumesOnTheNextCall() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        var ids: [String] = []
+        for id in 1...4 { ids.append(try await makeSegment(store, id: UInt32(id))) }
+        clock.now += 31 * 24 * 60 * 60 * 1000
+
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig())
+        #expect(try await manager.enforce(limit: 2) == Array(ids.prefix(2)))
+        #expect(try await manager.enforce(limit: 2) == Array(ids.suffix(2)))
+        #expect(await store.listSegments().isEmpty)
+    }
+
     @Test func storageFloors_driveReceiverFlagsAndHint() throws {
         let root = try tempRoot()
         let store = makeStore(root)

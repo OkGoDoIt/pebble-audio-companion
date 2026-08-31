@@ -27,9 +27,9 @@ import Testing
         deletes: [String] = ["seg-1"]
     ) -> RetentionService {
         RetentionService(
-            enforce: {
+            enforce: { limit in
                 calls.record("enforce")
-                return deletes
+                return Array(deletes.prefix(limit))
             },
             cascadeDeleted: { id in calls.record("cascade:\(id)") },
             policy: { policy.value },
@@ -93,7 +93,7 @@ import Testing
         let seen = CallRecorder()
         let policy = Policy(days: 7)
         let service = RetentionService(
-            enforce: {
+            enforce: { _ in
                 seen.record("age:\(policy.value.maxAgeMs)")
                 return []
             },
@@ -111,6 +111,25 @@ import Testing
             seen.calls == [
                 "age:\(7 * 24 * 60 * 60 * 1_000)", "age:\(365 * 24 * 60 * 60 * 1_000)",
             ])
+    }
+
+    /// A big policy change (365 days down to 7, months of audio on disk) must not hold one
+    /// pipeline pass open for minutes: each eviction runs the full delete cascade and a regroup,
+    /// and nothing else in the pass runs meanwhile. So a sweep is bounded, and a sweep that fills
+    /// its budget is immediately due again instead of waiting out the interval.
+    @Test func aFullBudgetIsDueAgainImmediatelyInsteadOfWaitingOutTheInterval() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let many = (0..<(RetentionService.maxDeletionsPerSweep * 2)).map { "seg-\($0)" }
+        let service = service(clock: clock, policy: Policy(days: 7), calls: calls, deletes: many)
+
+        let first = await service.sweepIfDue()
+        #expect(first.count == RetentionService.maxDeletionsPerSweep)
+
+        // One second later — the pass's after-work cadence — the rest is still due.
+        await clock.advance(by: PipelinePacing.afterWorkMs)
+        #expect(await service.sweepIfDue().count == RetentionService.maxDeletionsPerSweep)
+        #expect(calls.calls.filter { $0 == "enforce" }.count == 2)
     }
 
     @Test func backgroundMaintenanceSweepIgnoresTheInterval() async throws {
@@ -140,7 +159,7 @@ import Testing
         let clock = TestClock()
         let logged = CallRecorder()
         let service = RetentionService(
-            enforce: { throw TestFailure() },
+            enforce: { _ in throw TestFailure() },
             cascadeDeleted: { _ in },
             policy: { RetentionConfigInputs(maxAgeMs: 1, maxTotalBytes: 1) },
             clock: clock,

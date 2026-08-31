@@ -29,7 +29,15 @@ public actor RetentionService {
     /// durable I/O, and nothing about it is urgent while the policy stands still.
     public static let sweepIntervalMs: Int64 = 15 * 60 * 1_000
 
-    private let enforce: @Sendable () async throws -> [String]
+    /// Segments evicted per sweep. Bounded for the same reason `EnrichmentWorker.maxPerPass` is:
+    /// each eviction runs the full delete cascade and a regroup, so tightening "Keep audio" on a
+    /// library with months of audio would otherwise hold one pipeline pass open for minutes — and
+    /// nothing before or after it in the pass would run, freezing the Library, Today's list and
+    /// the live row while recording carried on. A sweep that fills its budget comes straight back
+    /// on the next pass, so the backlog still drains promptly; it just yields between mouthfuls.
+    public static let maxDeletionsPerSweep = 25
+
+    private let enforce: @Sendable (Int) async throws -> [String]
     private let cascadeDeleted: @Sendable (String) async -> Void
     private let policy: @Sendable () -> RetentionConfigInputs
     private let clock: RuntimeClock
@@ -39,8 +47,9 @@ public actor RetentionService {
     private var lastSweepAtMs: Int64?
     private var lastSweptPolicy: RetentionConfigInputs?
 
+    /// `enforce` takes the per-sweep deletion budget (`RetentionManager.enforce(limit:)`).
     public init(
-        enforce: @escaping @Sendable () async throws -> [String],
+        enforce: @escaping @Sendable (Int) async throws -> [String],
         cascadeDeleted: @escaping @Sendable (String) async -> Void,
         policy: @escaping @Sendable () -> RetentionConfigInputs,
         clock: RuntimeClock,
@@ -66,25 +75,29 @@ public actor RetentionService {
     @discardableResult
     public func sweepIfDue() async -> [String] {
         guard isDue else { return [] }
-        return await sweep()
+        return await sweep(limit: Self.maxDeletionsPerSweep)
     }
 
     /// An unconditional sweep — the BGProcessing maintenance window, which exists precisely to do
     /// this kind of work and should not be turned away by the interval.
     @discardableResult
-    public func sweep() async -> [String] {
+    public func sweep(limit: Int = RetentionService.maxDeletionsPerSweep) async -> [String] {
         // Stamped BEFORE the work: a policy the user changes mid-sweep is then still newer than
         // the one recorded here, so the change gets its own sweep rather than being swallowed.
         lastSweepAtMs = clock.nowMs
         lastSweptPolicy = policy()
         do {
-            let deleted = try await enforce()
+            let deleted = try await enforce(limit)
             for segmentId in deleted {
                 // Audio alone is not enough: the transcript, follow-ups, single-source AI outputs,
                 // recap membership and index rows have to go with it, or content the user asked to
                 // expire stays findable.
                 await cascadeDeleted(segmentId)
             }
+            // Budget filled: there is very likely more to evict, so the next pass sweeps again
+            // rather than waiting out the interval. (The pass also treats a sweep that deleted
+            // something as work, so "the next pass" is a second away, not thirty.)
+            if deleted.count >= limit { lastSweepAtMs = nil }
             return deleted
         } catch {
             log.failure("retention sweep", error)

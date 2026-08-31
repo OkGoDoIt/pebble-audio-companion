@@ -106,7 +106,7 @@ public actor CompanionRuntime {
         self.foreground = environment.foreground
         self.stageObserver = onStage
         self.retention = RetentionService(
-            enforce: { try await environment.retention.enforce() },
+            enforce: { limit in try await environment.retention.enforce(limit: limit) },
             cascadeDeleted: { _ = await environment.cascade.deleteSegment($0) },
             policy: { environment.settings.retentionConfig },
             clock: environment.clock,
