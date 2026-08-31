@@ -60,6 +60,12 @@ public protocol AudioGattLink: Sendable {
     /// Last platform BLE failure, if the current disconnected state followed an error.
     var lastFailure: StateSubject<ConnectFailure?> { get }
 
+    /// The advertised name of the watch this link is bound to ("Pebble Time 2 A1B2"), or nil
+    /// when no watch has ever been seen. Published rather than fetched: the name arrives with
+    /// discovery, long after the settings screen has drawn itself. Links that cannot name their
+    /// peer (fakes, command-line tools) keep the default and never publish one.
+    var deviceName: StateSubject<String?> { get }
+
     /// Reads the Info characteristic (raw 20-byte snapshot).
     func readInfo() async throws -> [UInt8]
 
@@ -84,7 +90,13 @@ public protocol AudioGattLink: Sendable {
     func resync()
 }
 
+/// One shared, permanently-nil subject for links that never learn a peer name. Shared on
+/// purpose: a computed property that minted a new subject per access would hand every
+/// subscriber its own stream and silently drop the (correct) nil.
+private let unnamedDevice = StateSubject<String?>(nil)
+
 public extension AudioGattLink {
+    var deviceName: StateSubject<String?> { unnamedDevice }
     func disconnect() {}
     func resync() {}
 }

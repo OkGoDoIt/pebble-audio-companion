@@ -168,6 +168,8 @@ public actor ReceiverService {
     public nonisolated var state: StateSubject<ReceiverSessionState> { session.state }
     public nonisolated var watchServiceState: StateSubject<Int?> { session.watchServiceState }
     public nonisolated var watchInfo: StateSubject<InfoSnapshot?> { session.watchInfo }
+    /// The bound watch's advertised name, straight from the link. Nil until one has been seen.
+    public nonisolated var deviceName: StateSubject<String?> { link.deviceName }
     public nonisolated var captureIntent: CaptureIntent { intentBox.value }
     public nonisolated var isRunning: Bool { intentBox.running }
     /// Restoration relaunch flag — see `applyLaunchedInBackground()`.
