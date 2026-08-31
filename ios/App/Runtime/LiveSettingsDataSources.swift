@@ -79,6 +79,16 @@ final class LiveWatchStatusSource: WatchStatusSource {
                 firmwareVersion = Self.firmwareLabel(info.fwVersionPacked)
             }
         }
+        // The watch's own advertised name ("Pebble Time 2 4F21"), so someone with two watches
+        // can tell which one is bound. It falls back to the generic word only while no watch
+        // has ever been seen — never as a stand-in for one that has.
+        Task { [weak self] in
+            let receiver = await runtime.environment.receiver
+            for await name in receiver.deviceName.stream() {
+                guard let self else { return }
+                deviceName = name ?? StatusCopy.genericDeviceName
+            }
+        }
     }
 
     /// Attempts a connection. No capture-intent side effects — connecting must never silently

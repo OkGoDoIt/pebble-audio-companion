@@ -25,6 +25,7 @@ public enum AudioCompanionGattIds {
 public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @unchecked Sendable {
     public let connectionState = StateSubject<LinkState>(.disconnected)
     public let lastFailure = StateSubject<ConnectFailure?>(nil)
+    public let deviceName = StateSubject<String?>(nil)
 
     // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
     // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
@@ -78,6 +79,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         self.restoreIdentifier = restoreIdentifier
         self.defaults = defaults
         super.init()
+        deviceName.value = defaults.string(forKey: Self.keyPeripheralName)
     }
 
     /// NSLog so the live device log shows every Core Bluetooth transition with a stable,
@@ -312,8 +314,20 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         manager.connect(target, options: nil)
     }
 
+    /// Remembers the peer so a later launch can reconnect without scanning — and remembers its
+    /// NAME so Settings can say which watch is bound before the radio is up. Core Bluetooth
+    /// leaves `name` nil on a peripheral it has only just retrieved by identifier, so the last
+    /// name we saw is kept rather than overwritten with nil.
     private func rememberPeripheral(_ target: CBPeripheral) {
         defaults.set(target.identifier.uuidString, forKey: Self.keyPeripheralIdentifier)
+        publishName(target.name)
+    }
+
+    private func publishName(_ name: String?) {
+        guard let name, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard name != deviceName.value else { return }
+        defaults.set(name, forKey: Self.keyPeripheralName)
+        deviceName.value = name
     }
 
     /// Moves into `.connecting` and (re)arms the handshake watchdog. Every step that keeps us
@@ -449,6 +463,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     }
 
     private static let keyPeripheralIdentifier = "ios_audio_companion_peripheral_identifier"
+    private static let keyPeripheralName = "ios_audio_companion_peripheral_name"
 
     /// Stable, greppable prefix for the live device log.
     private static let logTag = "[AudioGattLink]"
@@ -543,6 +558,10 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         self.peripheral = peripheral
         peripheral.delegate = self
         rememberPeripheral(peripheral)
+        // The advertisement carries a name even when the peripheral object has not resolved one
+        // yet, which is the usual case on the very first pairing — exactly when Settings most
+        // needs to name the watch it just found.
+        publishName(advertisementData[CBAdvertisementDataLocalNameKey] as? String)
         central.connect(peripheral, options: nil)
     }
 
@@ -607,6 +626,12 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
 }
 
 extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
+    /// A watch renamed on the watch (or a name that only resolves after connecting) updates the
+    /// name Settings shows without waiting for a relaunch.
+    public func peripheralDidUpdateName(_ peripheral: CBPeripheral) {
+        publishName(peripheral.name)
+    }
+
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             log("didDiscoverServices error=\(error.localizedDescription)")
