@@ -318,10 +318,13 @@ private struct SplitMix64: RandomNumberGenerator {
             origin: GapMeta.originWatch,
             reasonRaw: Int(GapReason.silenceSuppressed.rawValue)
         )
+        // Inside the segment's own 500-frame extent, and ahead of the silence gap so no single
+        // silence record covers it. (It used to sit at sequence 6_000 — hours past the end of a
+        // 10 s segment — which now clips to nothing, and never described a real recording.)
         let realSkip = GapMeta(
-            firstMissingSequence: 6_000,
+            firstMissingSequence: 10,
             missingFrameCount: 50,
-            firstMissingSampleIndex: 6_000 * 320,
+            firstMissingSampleIndex: 10 * 320,
             origin: GapMeta.originSequenceSkip
         )
         let segment = meta("seg-real-skip", 0, gaps: [quiet, realSkip])
@@ -440,15 +443,71 @@ private struct SplitMix64: RandomNumberGenerator {
             nowMs,
             gaps: [
                 GapMeta(
-                    firstMissingSequence: 10,
+                    firstMissingSequence: 0,
                     missingFrameCount: 10_000_000,
-                    firstMissingSampleIndex: 3_200,
+                    firstMissingSampleIndex: 0,
                     origin: GapMeta.originSequenceSkip
                 ),
             ]
         )
 
         #expect(displayGapMs(withHugeGap) == 10_000)
+    }
+
+    @Test func outageAfterTheLastFrameIsNotChargedToTheRecording() {
+        // Field case (G17, 2026-08-31 1:54 PM row). The watch's liveness watchdog stopped capture
+        // when the phone went away, and on revival ~3 h 45 min of "no audio exists" was recorded
+        // as ONE TransportReset gap starting one sequence past the segment's last frame. Counting
+        // it whole made totalGapMs 230 min against an 18 min recording, which displayGapMs then
+        // clamped to the full duration — the row read "18 min · 18 min missing" for a recording
+        // with 14 min of playable audio on disk. Only the loss inside the segment counts.
+        let insideLoss = GapMeta(
+            firstMissingSequence: 100,
+            missingFrameCount: 50, // 1 s, inside the 10 s extent
+            firstMissingSampleIndex: 100 * 320,
+            origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.spoolOverflow.rawValue)
+        )
+        let outageAfterTheEnd = GapMeta(
+            firstMissingSequence: 500, // == lastSequence + 1: entirely past the audio
+            missingFrameCount: 675_300, // 3 h 45 min
+            firstMissingSampleIndex: 500 * 320, // == lastSampleIndexExclusive
+            origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.transportReset.rawValue)
+        )
+        let segment = meta("seg-outage", nowMs, gaps: [insideLoss, outageAfterTheEnd])
+
+        #expect(totalGapMs(segment) == 1_000)
+        #expect(displayGapMs(segment) == 1_000)
+        // The record itself is untouched — diagnostics still see the whole outage.
+        #expect(visibleLossGaps(segment).count == 2)
+        #expect(gapDurationMs(outageAfterTheEnd, frameDurationMs: 20) == 13_506_000)
+    }
+
+    @Test func aGapStraddlingTheEndCountsOnlyItsRecordedPart() {
+        // A gap that begins inside the audio and runs past it (the link died mid-recording and the
+        // watch kept accruing pause time) contributes exactly the part that overlaps.
+        let straddling = GapMeta(
+            firstMissingSequence: 400, // 100 frames left in the 500-frame extent
+            missingFrameCount: 100_000,
+            firstMissingSampleIndex: 400 * 320,
+            origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.transportReset.rawValue)
+        )
+        #expect(totalGapMs(meta("seg-straddle", nowMs, gaps: [straddling])) == 2_000)
+    }
+
+    @Test func aGapBeforeTheFirstFrameIsNotChargedToTheRecording() {
+        // Leading gaps describe the hole before this recording began, not a hole in it.
+        let leading = GapMeta(
+            firstMissingSequence: 0,
+            missingFrameCount: 50,
+            firstMissingSampleIndex: 0,
+            origin: GapMeta.originSequenceSkip
+        )
+        var segment = meta("seg-leading", nowMs, gaps: [leading])
+        segment.firstSampleIndex = 100 * 320 // audio starts at frame 100
+        #expect(totalGapMs(segment) == 0)
     }
 
     @Test func segmentTitlePrefersTranscriptSnippet() {

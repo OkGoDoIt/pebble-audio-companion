@@ -120,9 +120,41 @@ public func gapDurationMs(_ gap: GapMeta, frameDurationMs: Int) -> Int64 {
     Int64(gap.missingFrameCount) * Int64(frameDurationMs)
 }
 
-/// Total approximate missing time of a segment (intentionally-skipped silence excluded).
+/// The part of a gap that falls inside the segment's own audio extent.
+///
+/// A gap record routinely runs past the audio its segment covers, so its full length is not this
+/// recording's loss. When the watch's receiver-liveness watchdog trips it STOPS capturing, and on
+/// revival it records the whole elapsed pause as one gap — `elapsed_ms / frame_duration` frames,
+/// starting one sequence past the last frame it sent — against whatever segment is still open. A
+/// four-hour outage therefore lands on the eighteen-minute recording that preceded it, and
+/// counting it there made a mostly-intact recording read as "18 min · 18 min missing" (the total
+/// saturated `displayGapMs`'s clamp, so the clamp, not the loss, was choosing the number). Time
+/// outside the extent is not this recording's audio: it is the hole BETWEEN recordings, which the
+/// timeline already shows as such — `CoverageComputer` has always clipped gaps this way, and this
+/// keeps the Library row telling the same story as the timeline.
+///
+/// Loss stays explicit: nothing inside the extent is trimmed, and the raw metadata is untouched.
+/// A segment with no extent yet (nothing stored) has nothing to clip against, so it counts whole.
+public func gapDurationMsWithinSegment(_ gap: GapMeta, _ meta: SegmentMeta) -> Int64 {
+    let frameSamples = UInt64(meta.frameSamples > 0 ? meta.frameSamples : 320)
+    guard let first = meta.firstSampleIndex,
+          let lastExclusive = meta.lastSampleIndexExclusive,
+          lastExclusive > first
+    else { return gapDurationMs(gap, frameDurationMs: meta.frameDurationMs) }
+    let start = gap.firstMissingSampleIndex
+    let end = start + UInt64(gap.missingFrameCount) * frameSamples
+    let low = max(start, first)
+    let high = min(end, lastExclusive)
+    guard high > low else { return 0 }
+    // Round the overlap up to whole frames so clipping can never under-report loss.
+    let frames = (high - low + frameSamples - 1) / frameSamples
+    return Int64(frames) * Int64(meta.frameDurationMs)
+}
+
+/// Total approximate missing time of a segment (intentionally-skipped silence excluded, and each
+/// gap counted only for the part that overlaps this segment's audio).
 public func totalGapMs(_ meta: SegmentMeta) -> Int64 {
-    visibleLossGaps(meta).reduce(0) { $0 + gapDurationMs($1, frameDurationMs: meta.frameDurationMs) }
+    visibleLossGaps(meta).reduce(0) { $0 + gapDurationMsWithinSegment($1, meta) }
 }
 
 /// User-facing missing time, guarded against stale/impossible gap metadata.
