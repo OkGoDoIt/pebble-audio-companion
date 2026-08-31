@@ -70,6 +70,9 @@ final class AppComposition {
     let localLive: LiveTranscriber
     let cloudLive: CloudLiveTranscriber
     let runtime: CompanionRuntime
+    /// The background `URLSession` transport, held so `handleEventsForBackgroundURLSession` can
+    /// hand it the system completion handler.
+    private let backgroundUploader: URLSessionBackgroundUploader
 
     // --- lifecycle --------------------------------------------------------------------------
 
@@ -230,9 +233,41 @@ final class AppComposition {
             queue: queue,
             router: router,
             pcmSource: TranscriptionProcessor.segmentPcmSource(store: store),
+            // Mirrors the task state onto the segment's own metadata. Without it
+            // `enqueueClosedSegments` (which selects on `isFullyTranscribed`) sees every finished
+            // segment as untranscribed and requeues it on every pass — an endless
+            // re-transcription loop, and for a cloud user an endless re-upload of the same audio.
+            // Detached because the seam is synchronous; the next pass is a pipeline sleep away,
+            // so the write always lands first.
+            onStateChanged: { segmentId, state in
+                Task {
+                    try? await store.updateTranscriptionState(
+                        segmentId, segmentTranscriptionState(for: state)
+                    )
+                }
+            },
             transcriptStore: transcripts,
             isSegmentOpen: { id in await store.openSegmentId == id }
         )
+
+        // The suspension-proof cloud path (plan 4.4). Cloud-PRIMARY modes only: the coordinator
+        // re-checks `cloudIsPrimaryTranscription` on every hand-off, so LocalOnly/LocalFirst audio
+        // is never uploaded from the background.
+        let backgroundUploader = URLSessionBackgroundUploader.shared
+        self.backgroundUploader = backgroundUploader
+        let uploadCoordinator = BackgroundUploadWiring.makeCoordinator(
+            uploader: backgroundUploader,
+            cloudProvider: batchCloud,
+            queue: queue,
+            transcripts: transcripts,
+            store: store,
+            files: files,
+            root: containerRoot,
+            settings: settingsBox,
+            nowMs: nowMs,
+            log: AppRuntimeLog.runtimeLog
+        )
+
         let transcription = TranscriptionService(
             queue: queue,
             processor: processor,
@@ -245,6 +280,10 @@ final class AppComposition {
             // forever; the selectable provider forwards the probe to whichever cloud backend
             // the user picked.
             connectivityCheck: batchCloud,
+            // Without this the background upload path is dead code: cloud-primary segments stop
+            // transcribing the moment the app leaves the foreground and sit Pending until the
+            // user opens it again.
+            uploader: uploadCoordinator,
             // Real now that Parakeet can be the local engine: a resident multi-hundred-MB
             // model must be dropped on backgrounding, memory pressure and idle.
             modelLifecycle: localBatch,
@@ -553,7 +592,23 @@ final class AppComposition {
     }
 
     /// `handleEventsForBackgroundURLSession` — routed from the app delegate.
-    func handleBackgroundUrlSessionEvents() {
+    ///
+    /// The system completion handler is stored on the transport and invoked when the session
+    /// reports its events drained, NOT here: iOS kills an app that returns from this callback
+    /// without ever calling it, and calling it immediately lets the system re-suspend us before
+    /// the finished uploads have been delivered.
+    func handleBackgroundUrlSessionEvents(
+        identifier: String, completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == BackgroundUploadWiring.sessionIdentifier else {
+            // Not our session — nothing here can drain it, so release the system immediately.
+            completionHandler()
+            return
+        }
+        backgroundUploader.addBackgroundEventsCompletion {
+            // UIKit expects it on the main thread; the session delegate calls back on its own.
+            DispatchQueue.main.async(execute: completionHandler)
+        }
         Task { [lifecycle] in await lifecycle.handle(.backgroundUrlSessionEvents) }
     }
 

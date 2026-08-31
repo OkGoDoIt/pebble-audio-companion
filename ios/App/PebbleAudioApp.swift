@@ -26,9 +26,19 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
         completionHandler: @escaping () -> Void
     ) {
         MainActor.assumeIsolated {
-            AppComposition.shared?.handleBackgroundUrlSessionEvents()
+            guard let composition = AppComposition.shared else {
+                // No graph (a composition failure): nothing can drain the session, and iOS kills
+                // an app that never calls this back.
+                completionHandler()
+                return
+            }
+            // The handler is NOT called here — the transport calls it once the session reports
+            // its events drained. Calling it now would let the system re-suspend us before the
+            // finished uploads are delivered, and the transcripts would be lost until relaunch.
+            composition.handleBackgroundUrlSessionEvents(
+                identifier: identifier, completionHandler: completionHandler
+            )
         }
-        completionHandler()
     }
 }
 
