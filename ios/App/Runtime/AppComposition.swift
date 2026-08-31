@@ -230,6 +230,10 @@ final class AppComposition {
             settings: settingsBox,
             clock: clock,
             cloudHealth: cloudHealth,
+            // Without this the explicit Test Connection silently no-ops and the row spins
+            // forever; the selectable provider forwards the probe to whichever cloud backend
+            // the user picked.
+            connectivityCheck: batchCloud,
             modelLifecycle: LocalModelLifecycle(),
             log: AppRuntimeLog.runtimeLog
         )
@@ -392,8 +396,11 @@ final class AppComposition {
             clock: clock,
             statusOf: {
                 // The widget's status line must be the SAME derivation the Today card shows —
-                // one status engine, never a second vocabulary.
-                guard settingsBox.transcriptsConfigured else { return .transcriptsOff }
+                // one status engine, never a second vocabulary (including the 6.7 precedence:
+                // transcripts-off only matters while capture is actually meant to be running).
+                if !settingsBox.transcriptsConfigured, settingsBox.captureIntent != .off {
+                    return .transcriptsOff
+                }
                 return statusModel(
                     state: receiver.state.value,
                     intent: settingsBox.captureIntent,
