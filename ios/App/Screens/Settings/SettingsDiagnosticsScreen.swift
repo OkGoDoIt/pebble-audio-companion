@@ -59,18 +59,11 @@ struct SettingsDiagnosticsScreen: View {
                 }
                 .buttonStyle(.plain)
 
-                NavigationLink {
+                // Navigation, not an action: label colour + chevron, like every other pushed
+                // row in Settings. Tint text is reserved for things that DO something.
+                SettingsPushRow(title: Copy.Settings.Diagnostics.detailedLogs) {
                     DetailedLogsScreen()
-                } label: {
-                    HStack {
-                        Text(Copy.Settings.Diagnostics.detailedLogs)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Tokens.tint)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
 
             SettingsFooter(text: Copy.Settings.Diagnostics.footer)
@@ -104,17 +97,26 @@ private struct DetailedLogsScreen: View {
     private var diagnostics: DiagnosticsSource { SettingsDataSources.current.diagnostics }
 
     var body: some View {
-        ScrollView([.vertical, .horizontal]) {
+        // Lines WRAP rather than scrolling sideways: the two-axis scroll view centred short
+        // content in the middle of the screen and clipped every long line at the right edge,
+        // so the one place with the real detail was the one place you could not read it.
+        ScrollView {
             VStack(alignment: .leading, spacing: 6) {
+                if diagnostics.detailedLogLines.isEmpty {
+                    Text(Copy.Settings.Diagnostics.noLogs)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.meta)
+                }
                 ForEach(Array(diagnostics.detailedLogLines.enumerated()), id: \.offset) {
                     _, line in
                     Text(line)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Tokens.secondaryBody)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(Tokens.screenMargin)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Tokens.ground)
         .navigationTitle(Copy.Settings.Diagnostics.detailedLogs)

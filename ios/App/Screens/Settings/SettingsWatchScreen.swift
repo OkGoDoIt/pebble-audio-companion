@@ -9,7 +9,7 @@ struct SettingsWatchScreen: View {
 
     private var watch: WatchStatusSource { SettingsDataSources.current.watch }
 
-    private enum FindState: Equatable { case idle, connecting, connected }
+    private enum FindState: Equatable { case idle, connecting, connected, notFound }
     @State private var findState: FindState = .idle
     @State private var confirmForget = false
 
@@ -106,6 +106,11 @@ struct SettingsWatchScreen: View {
             Text(Copy.Settings.TranscriptionAI.connectedAgo("just now"))
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.good)
+        case .notFound:
+            // A spinner that just disappears is the same as saying nothing (B10).
+            Text(Copy.Onboarding.Failure.noPebbleFound)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.attention)
         }
     }
 
@@ -121,7 +126,7 @@ struct SettingsWatchScreen: View {
             // Give the link a moment, then report what actually happened rather than a
             // decorative "connected".
             try? await Task.sleep(for: .seconds(6))
-            findState = watch.isConnected ? .connected : .idle
+            findState = watch.isConnected ? .connected : .notFound
         }
     }
 

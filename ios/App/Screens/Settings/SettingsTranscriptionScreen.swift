@@ -82,7 +82,12 @@ struct SettingsTranscriptionScreen: View {
                         selection: $settings.aiModel
                     )
                 }
-                keyRow(for: .openAi)
+                // The AI features use the OpenAI key. When OpenAI is ALSO the cloud
+                // transcription provider that row is already on this screen, and showing the
+                // same setting twice invites the reader to wonder which one is which.
+                if settings.cloudTranscriptionProvider != .openAi {
+                    keyRow(for: .openAi)
+                }
             }
 
             ListCard {
