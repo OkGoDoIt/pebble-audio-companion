@@ -102,21 +102,27 @@ extension LiveWorld: LibraryDataSource {
 // MARK: - SearchDataSource
 
 extension LiveWorld: SearchDataSource {
+    /// `scope` is the pill above the results, and it is load-bearing: narrowing to "Today"
+    /// filters everything below to today's logical day (5 AM boundary, in each conversation's
+    /// own recorded zone — Q16). This used to accept `scope` and ignore it, so the pill changed,
+    /// the search visibly re-ran, and the results were byte-identical to "Everything".
     func search(query: String, scope: AskScope) async throws -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return SearchResults() }
 
-        let allTags = try await composition.runtime.library.allTags()
-        let matchedTags = allTags.filter {
-            $0.name.range(of: trimmed, options: .caseInsensitive) != nil
-        }
+        // nil for `.everything` — no window, so nothing is filtered out below.
+        let window = askScopeDateKeyRange(
+            scope.kitScope,
+            nowMs: composition.clock.nowMs,
+            timeZoneID: TimeZone.current.identifier
+        )
 
         // The FTS index carries transcript text (this is the D7 fix — the old app indexed only
         // titles), so a hit here is a hit in what was actually said.
         let index = composition.index
         let hits = (try? index.search(trimmed, limit: 40)) ?? []
         let sections = try await composition.runtime.library.library()
-        let rows = sections.flatMap(\.rows)
+        let rows = sections.flatMap(\.rows).filter { window?.contains($0.dateKey) ?? true }
         let conversations = hits
             .filter { $0.kind == .conversation }
             .compactMap { hit -> SearchConversationHit? in
@@ -130,12 +136,48 @@ extension LiveWorld: SearchDataSource {
                 )
             }
 
-        let followUps = try await composition.followUps.list().filter {
-            $0.text.range(of: trimmed, options: .caseInsensitive) != nil
+        let dayOfConversation = Dictionary(
+            rows.map { ($0.id, $0.dateKey) }, uniquingKeysWith: { first, _ in first })
+        let followUps = try await composition.followUps.list().filter { followUp in
+            guard followUp.text.range(of: trimmed, options: .caseInsensitive) != nil else {
+                return false
+            }
+            guard let window else { return true }
+            // A follow-up belongs to the day of the conversation it came from; a hand-written
+            // one has no conversation, so it falls back to when it was written.
+            if let conversationId = followUp.sourceConversationId {
+                guard let day = dayOfConversation[conversationId] else { return false }
+                return window.contains(day)
+            }
+            return window.contains(
+                LogicalDay.dateKey(
+                    forMs: followUp.createdAtMs, timeZoneID: TimeZone.current.identifier))
         }
+
         return SearchResults(
-            tags: matchedTags, conversations: conversations, followUps: followUps
+            tags: try await matchingTags(trimmed, scopedTo: window, rows: rows),
+            conversations: conversations,
+            followUps: followUps
         )
+    }
+
+    /// Tags whose name matches, counted within the scope. Outside `.everything` the global
+    /// count would be a second, quieter lie: "travel (34)" under a "Today" pill, on a day with
+    /// one travel conversation. A tag with nothing inside the window is dropped entirely.
+    private func matchingTags(
+        _ query: String, scopedTo window: ClosedRange<String>?, rows: [ConversationListRow]
+    ) async throws -> [TagWithCount] {
+        let all = try await composition.runtime.library.allTags()
+        let matched = all.filter { $0.name.range(of: query, options: .caseInsensitive) != nil }
+        guard window != nil else { return matched }
+        var counts: [String: Int] = [:]
+        for row in rows {
+            for name in row.tags { counts[name.lowercased(), default: 0] += 1 }
+        }
+        return matched.compactMap { tag in
+            guard let count = counts[tag.name.lowercased()], count > 0 else { return nil }
+            return TagWithCount(id: tag.id, name: tag.name, count: count)
+        }
     }
 }
 
