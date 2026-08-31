@@ -251,7 +251,7 @@ private struct ConversationRowView: View {
                         .lineLimit(1)
                 }
                 if !row.isLive, !row.tags.isEmpty {
-                    HStack(spacing: 6) {
+                    FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                         ForEach(row.tags, id: \.self) { TagChip(text: $0) }
                     }
                     .padding(.top, 1)

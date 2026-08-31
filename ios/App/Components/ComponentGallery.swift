@@ -11,15 +11,15 @@ struct ComponentGallery: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                waveform
-                coverage
-                chips
                 statusCards
                 onboardingFailures
                 lifecycleCards
                 cards
+                chips
                 dotsAndBadges
                 buttons
+                waveform
+                coverage
                 rows
                 sheetChrome
                 snackbarSection
@@ -204,25 +204,25 @@ struct ComponentGallery: View {
                     FilterChip(text: Copy.Library.moreTags) {}
                 }
             }
-            HStack(spacing: 6) {
+            FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                 TagChip(text: "work")
                 TagChip(text: "planning")
                 TagChip(text: "money", style: .onGround)
                 Text("(gray · gray · on-ground)")
                     .font(AppFont.micro).foregroundStyle(Tokens.faint)
             }
-            HStack(spacing: 8) {
+            FlowLayout(horizontalSpacing: 8, verticalSpacing: 8) {
                 EditableTagChip(text: "work", onRemove: {})
                 EditableTagChip(text: "planning", isRenaming: renamingChip)
                     .onTapGesture { renamingChip.toggle() }
                 EditableTagChip(text: "money", onRemove: {})
             }
-            HStack(spacing: 8) {
+            FlowLayout(horizontalSpacing: 8, verticalSpacing: 8) {
                 SuggestionChip(name: "budget") {}
                 SuggestionChip(name: "evening") {}
                 SuggestionChip(name: "family") {}
             }
-            HStack(spacing: 10) {
+            FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
                 ActionPill(title: Copy.Conversation.ask, systemImage: "sparkles", style: .filled) {}
                 ActionPill(title: Copy.Conversation.notes) {}
                 ActionPill(title: Copy.Conversation.followUps) {}
@@ -310,12 +310,16 @@ struct ComponentGallery: View {
         section("Day coverage strip") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(Copy.Today.recorded("4 hr 12 min"))
-                            .font(AppFont.cardHead).foregroundStyle(Tokens.label)
-                        Spacer()
-                        Text(Copy.Today.missing("1 min"))
-                            .font(AppFont.speaker).foregroundStyle(Tokens.missing)
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            coverageHeadline
+                            Spacer()
+                            coverageMissing
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            coverageHeadline
+                            coverageMissing
+                        }
                     }
                     CoverageStrip(spans: .sampleDay) { span in
                         tappedSpan = String(describing: span.kind)
@@ -332,6 +336,18 @@ struct ComponentGallery: View {
                 }
             }
         }
+    }
+
+    private var coverageHeadline: some View {
+        Text(Copy.Today.recorded("4 hr 12 min"))
+            .font(AppFont.cardHead).foregroundStyle(Tokens.label)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var coverageMissing: some View {
+        Text(Copy.Today.missing("1 min"))
+            .font(AppFont.speaker).foregroundStyle(Tokens.missing)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Rows

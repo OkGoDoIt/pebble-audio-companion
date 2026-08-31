@@ -134,7 +134,7 @@ struct ConversationScreen: View {
                 Button {
                     model.showTagEditor = true
                 } label: {
-                    HStack(spacing: 6) {
+                    FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                         ForEach(display.tags, id: \.id) { tag in
                             TagChip(text: tag.name, style: .onGround)
                         }
@@ -279,7 +279,8 @@ struct ConversationScreen: View {
     // MARK: - Bottom bar [Ask][Notes][Follow-ups]
 
     private var bottomBar: some View {
-        HStack(spacing: 10) {
+        // Wraps onto extra rows at large Dynamic Type sizes instead of crushing the pills.
+        FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
             ActionPill(
                 title: Copy.Conversation.ask, systemImage: "sparkles", style: .filled
             ) {
@@ -290,8 +291,8 @@ struct ConversationScreen: View {
             }
             ActionPill(title: Copy.Conversation.notes) { openNotes() }
             ActionPill(title: Copy.Conversation.followUps) { model.showFollowUps = true }
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 10)
         .padding(.horizontal, Tokens.screenMargin)
         .padding(.bottom, 8)

@@ -189,20 +189,39 @@ struct TodayScreen: View {
             .padding(.top, 24)
     }
 
+    private func coverageHeadline(_ coverage: CoverageDisplay) -> some View {
+        Text(coverage.headline)
+            .font(AppFont.cardHead)
+            .foregroundStyle(Tokens.label)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func coverageMissingNote(_ coverage: CoverageDisplay) -> some View {
+        if let missing = coverage.missingText {
+            Text(missing)
+                .font(.system(.caption))
+                .foregroundStyle(Tokens.missing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     // MARK: Day coverage (headline · missing · strip · axis; Q11 tap-to-explain)
 
     private func coverageCard(_ coverage: CoverageDisplay) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(coverage.headline)
-                        .font(AppFont.cardHead)
-                        .foregroundStyle(Tokens.label)
-                    Spacer()
-                    if let missing = coverage.missingText {
-                        Text(missing)
-                            .font(.system(.caption))
-                            .foregroundStyle(Tokens.missing)
+                // Side by side while both fit; stacked once Dynamic Type would hyphenate
+                // the headline into fragments.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        coverageHeadline(coverage)
+                        Spacer()
+                        coverageMissingNote(coverage)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        coverageHeadline(coverage)
+                        coverageMissingNote(coverage)
                     }
                 }
                 CoverageStrip(spans: coverage.stripSpans) { tapped in
