@@ -116,6 +116,13 @@ actor UserNotificationLossNotifier: LossNotifier {
         return nowMs - last < Self.rateLimitMs
     }
 
+    /// The Settings switch's half of the consent: turning the alert ON is the moment to ask
+    /// iOS, not the middle of a gap weeks later. Shares `hasPermission`'s ask-once bookkeeping,
+    /// so opting in and the first qualifying loss can never produce two prompts.
+    func requestAuthorizationIfNeeded() async -> Bool {
+        await hasPermission()
+    }
+
     /// Asks exactly once, on the first qualifying loss AFTER the user opted in (turning the
     /// toggle on is the consent; this is just the system half of it). A denial is remembered —
     /// the product keeps working, it just stops talking.

@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// Settings root (artboard 2.9) — fits one screen; everything else is a pushed screen (Q7).
 /// Registers the `.settings(page)` navigation destinations for the settings stack, so deep
@@ -7,6 +8,10 @@ struct SettingsScreen: View {
     @Environment(AppSettings.self) private var settings
 
     private var sources: SettingsDataSources { SettingsDataSources.current }
+
+    /// iOS-level notification permission, re-read whenever this screen appears (it can be
+    /// revoked in iOS Settings while the app's own switch stays on).
+    @State private var notificationsDenied = false
 
     var body: some View {
         SettingsScroll {
@@ -73,7 +78,51 @@ struct SettingsScreen: View {
             }
             .toggleStyle(.switch)
             .tint(Tokens.good)
+
+            Toggle(isOn: lossAlertsBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Copy.Settings.Root.lossAlerts)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(lossAlertsSubline)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(notificationsDenied ? Tokens.attention : Tokens.meta)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .tint(Tokens.good)
         }
+        .task { await refreshNotificationPermission() }
+    }
+
+    /// Turning it ON is the moment to ask iOS — asking during a gap, months later, is an
+    /// ambush. A denial is shown on the row instead of leaving a switch that does nothing.
+    private var lossAlertsBinding: Binding<Bool> {
+        Binding(
+            get: { settings.lossAlertsEnabled },
+            set: { enabled in
+                settings.lossAlertsEnabled = enabled
+                guard enabled else { return }
+                Task {
+                    _ = await UserNotificationLossNotifier().requestAuthorizationIfNeeded()
+                    await refreshNotificationPermission()
+                }
+            }
+        )
+    }
+
+    private var lossAlertsSubline: String {
+        settings.lossAlertsEnabled && notificationsDenied
+            ? Copy.Settings.Root.lossAlertsDenied
+            : Copy.Settings.Root.lossAlertsSub
+    }
+
+    private func refreshNotificationPermission() async {
+        let status = await UNUserNotificationCenter.current().notificationSettings()
+            .authorizationStatus
+        notificationsDenied = status == .denied
     }
 
     /// "Background audio" is the master switch: active↔off. A paused intent still reads as
