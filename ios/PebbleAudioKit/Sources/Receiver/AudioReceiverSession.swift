@@ -537,6 +537,10 @@ public actor AudioReceiverSession {
                 inFlightToken = nil
                 authorized = true
                 grantedProtoVersion.value = result.grantedProtoVersion
+                // The watch accepted us, so whatever it last complained about is settled. This
+                // matters now that the error is read: a stale ERROR from an earlier connection
+                // would otherwise keep explaining a link that is working.
+                lastProtocolError.value = nil
                 state.value = .authorized
                 if dataTask == nil {
                     let dataStream = link.dataNotifications
@@ -718,6 +722,12 @@ public actor AudioReceiverSession {
                 )
             )
         }
+        // The return value is what the sink ACTUALLY persisted (plan Part 4.2). It is legitimately
+        // shorter than `frames` — a post-RESUME spool rewind re-sends frames the sink already
+        // holds, and those are durable, so contiguity below still advances over them. What is NOT
+        // legitimate is the sink having nowhere to put them at all: `SegmentSink.appendFrames`
+        // throws for that, which fails the connection and forces a resync rather than letting the
+        // bookkeeping below checkpoint audio nothing stored.
         _ = try await sink.appendFrames(streamId: ctx.streamId, frames: frames)
 
         if first > ctx.contiguousNext {
@@ -839,6 +849,20 @@ public actor AudioReceiverSession {
             // temporarily refuses a write, keep the stream alive and retry on the next cadence.
             if inFlightToken == token { inFlightToken = nil }
         }
+    }
+
+    /// Ends the current segment from OUTSIDE the receive path — the destructive flows ("delete
+    /// all data") that must not leave a recording behind.
+    ///
+    /// It exists so nothing has to reach past the session into the store. The segment and the
+    /// session's stream context are one thing: closing only the store's half leaves the session
+    /// appending into nothing, and `appendFrames` answers an absent segment with an empty array,
+    /// so the session would advance contiguity and CHECKPOINT frames it never stored — telling
+    /// the watch to free the only surviving copy, with no gap recorded anywhere. Whoever calls
+    /// this owns getting the stream back (a resync); until then the session has no context and
+    /// STREAM_DATA is ignored rather than half-processed, so the watch keeps its spool.
+    public func endOpenSegment(_ reason: SegmentCloseReason = .interrupted) async {
+        try? await closeOpenSegment(reason)
     }
 
     private func closeOpenSegment(_ reason: SegmentCloseReason) async throws {

@@ -249,4 +249,58 @@ import Transcription
         #expect(fixture.transcriptStore.load(closed) == nil)
         #expect(try fixture.queue.all().isEmpty)
     }
+
+    /// The regression the fix above introduced: "Delete All Recordings" closed the STORE's open
+    /// segment directly (`store.closeSegment`), leaving the SESSION's stream context alive. The
+    /// session went on appending into a store with no open segment — `appendFrames` returns `[]`
+    /// there and the session discarded that result — then advanced contiguity and CHECKPOINTED,
+    /// telling the watch those frames were safely received. The watch then frees its spool copy.
+    ///
+    /// So a Delete All tapped mid-stream silently destroyed every frame until the next
+    /// STREAM_START (a rotation: up to 15 minutes), with no gap record and the UI still saying
+    /// "recording". Loss in this product is ALWAYS an explicit gap; a checkpoint is a promise
+    /// that the audio is durable, and a promise about frames we threw away is the worst possible
+    /// failure here.
+    @Test func deleteAllWhileStreamingNeverCheckpointsAudioItDiscarded() async throws {
+        let fixture = try RuntimeFixture()
+        fixture.link.autoAckCheckpoints = true
+        try await fixture.beginStreaming()
+
+        #expect(await fixture.pushFrames(firstSequence: 0, count: 8))
+        await fixture.clock.advance(by: 600)  // make the next checkpoint due
+        #expect(await fixture.pushFrames(firstSequence: 8, count: 8))
+        #expect(
+            await waitUntil { fixture.link.highestCheckpointedSequence == 15 },
+            "16 durable frames must be checkpointed as received")
+        let resyncBefore = fixture.link.resyncCount
+
+        _ = await fixture.runtime.deleteAllRecordings()
+
+        // The watch has no idea the phone just wiped its library; it keeps streaming.
+        await fixture.clock.advance(by: 600)
+        fixture.link.pushData(Fixture.streamData(firstSequence: 16, count: 8))
+        await fixture.drain()
+        await fixture.clock.advance(by: 600)
+        fixture.link.pushData(Fixture.streamData(firstSequence: 24, count: 8))
+        await fixture.drain()
+
+        // Nothing stored those frames...
+        #expect(await fixture.storedSequences().isEmpty)
+        // ...so nothing may claim them. A CHECKPOINT above the last durable sequence is the
+        // watch's cue to free the only surviving copy.
+        let overclaimed = fixture.link.checkpoints
+            .map(\.highestContiguousSequencePersisted)
+            .filter { $0 > 15 }
+        #expect(
+            overclaimed.isEmpty,
+            """
+            checkpointed \(overclaimed) after Delete All with nothing on disk — the watch frees \
+            its spool on that promise and the audio is gone with no gap recorded
+            """)
+        // And the receiver must ask for the stream back, so the frames the watch still holds are
+        // redelivered into a fresh segment instead of dribbling into a torn-down context.
+        #expect(
+            fixture.link.resyncCount > resyncBefore,
+            "Delete All tore the segment down mid-stream without re-establishing one")
+    }
 }

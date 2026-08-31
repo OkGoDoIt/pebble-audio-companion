@@ -17,6 +17,15 @@ public struct FrameRecord: Equatable, Sendable {
     }
 }
 
+/// Refusals the store must never answer with a quiet no-op, because the receiver reads "nothing
+/// happened" as "already durable" and checkpoints on it.
+public enum SegmentStoreError: Error, Equatable {
+    /// Frames or a gap arrived with no segment open to hold them.
+    case noOpenSegment(streamId: UInt32)
+    /// Frames or a gap arrived for a different stream than the open segment's.
+    case streamMismatch(expected: UInt32, got: UInt32)
+}
+
 public struct SegmentStoreConfig: Sendable {
     /// Rotate the open segment after this much wall time (plan 6.2: 15 min).
     public var rotateAfterMs: Int64
@@ -325,8 +334,20 @@ public actor SegmentStore: SegmentSink {
     }
 
     public func appendFrames(streamId: UInt32, frames: [SegmentFrame]) throws -> [SegmentFrame] {
-        guard let segment = current else { return [] }
-        if segment.meta.streamId != streamId { return [] }
+        // Fail LOUD, not empty. Returning `[]` here reads to the caller exactly like "all of this
+        // was already persisted" (the ordinary post-RESUME dedupe result), so a session whose
+        // segment was closed behind its back went on checkpointing audio that reached no disk —
+        // and a checkpoint is what frees the watch's copy. There is no legitimate way to reach
+        // this: a segment is opened and closed only through this sink, and rotation opens the
+        // successor before returning. Throwing fails the connection, which forces a resync and
+        // a fresh STREAM_START, so the watch redelivers everything it still holds.
+        guard let segment = current else {
+            throw SegmentStoreError.noOpenSegment(streamId: streamId)
+        }
+        if segment.meta.streamId != streamId {
+            throw SegmentStoreError.streamMismatch(
+                expected: segment.meta.streamId, got: streamId)
+        }
 
         // A reattached stream rewinds its spool to the last checkpoint, so the first batches
         // after a RESUME can re-send frames already persisted here (the flushed-but-not-yet-
@@ -466,8 +487,15 @@ public actor SegmentStore: SegmentSink {
     ///    record's total dropped duration rather than appending a new one — so one period of lost
     ///    audio is one gap noting the total time, however many packets it spanned.
     public func recordGap(streamId: UInt32, gap: GapRecord) throws {
-        guard let segment = current else { return }
-        if segment.meta.streamId != streamId { return }
+        // Same reasoning as `appendFrames`: a gap that lands nowhere is loss with no record of
+        // it, which is the one thing this product promises never to do quietly.
+        guard let segment = current else {
+            throw SegmentStoreError.noOpenSegment(streamId: streamId)
+        }
+        if segment.meta.streamId != streamId {
+            throw SegmentStoreError.streamMismatch(
+                expected: segment.meta.streamId, got: streamId)
+        }
         let incoming = GapMeta.from(gap)
         guard incoming.shouldPersistAsLoss else { return }
         segment.meta.gaps = withSparseLossGap(segment.meta.gaps, incoming: incoming)
