@@ -24,6 +24,7 @@ enum LiveSettingsDataSources {
             aboutYou: LiveAboutYouSource(composition: composition),
             diagnostics: LiveDiagnosticsSource(composition: composition),
             cloudHealth: LiveCloudHealthSource(composition: composition),
+            apiKeys: LiveApiKeyChecker(composition: composition),
             aiModels: AiModels.all.map {
                 AiModelOption(id: $0.id, displayName: $0.displayName)
             }
@@ -357,6 +358,50 @@ final class LiveAboutYouSource: AboutYouSource {
         let end = start.addingTimeInterval(Double(weeks) * 7 * 24 * 60 * 60)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate).compactMap { $0.title }.filter { !$0.isEmpty }
+    }
+}
+
+// MARK: - Cloud API keys
+
+/// Runs the kit's `CloudKeyValidator` — one cheap authenticated GET per check, nothing created
+/// and nothing billed — and remembers the outcome for the Settings rows.
+///
+/// The result lives for the session only: a verdict from three launches ago is not evidence
+/// about the key today, and re-checking costs one request.
+@MainActor
+@Observable
+final class LiveApiKeyChecker: ApiKeyChecking {
+    @ObservationIgnored private let composition: AppComposition
+    @ObservationIgnored private let validator = CloudKeyValidator(
+        transport: URLSessionHttpTransport()
+    )
+    private var statuses: [CloudProvider: ApiKeyStatus] = [:]
+
+    init(composition: AppComposition) {
+        self.composition = composition
+    }
+
+    func status(for provider: CloudProvider) -> ApiKeyStatus { statuses[provider] ?? .unchecked }
+
+    func check(_ key: String, for provider: CloudProvider) async {
+        statuses[provider] = .checking
+        let outcome = await validator.validate(key, for: Self.validatorProvider(provider))
+        statuses[provider] = .checked(outcome)
+    }
+
+    func recheckSaved(_ provider: CloudProvider) async {
+        guard let key = composition.settings.keychain.string(for: provider.keychainKey) else {
+            statuses[provider] = .checked(.missing)
+            return
+        }
+        await check(key, for: provider)
+    }
+
+    private static func validatorProvider(_ provider: CloudProvider) -> CloudKeyValidator.Provider {
+        switch provider {
+        case .openAi: return .openAi
+        case .soniox: return .soniox
+        }
     }
 }
 

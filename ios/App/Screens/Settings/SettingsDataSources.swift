@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import Transcription
 
 // View-model data seams for the Settings screens. Screens observe these protocols; the mock
 // implementations carry the artboard sample values until the receiver/storage/transcription
@@ -307,6 +308,49 @@ final class MockAboutYouSource: AboutYouSource {
     }
 }
 
+// MARK: - Cloud API keys (checked, not just stored)
+
+/// Where a provider key stands right now. `checking` is a real in-flight request, and the
+/// outcomes come from the kit's `CloudKeyValidator` taxonomy — never from provider prose, whose
+/// 401 bodies quote the key itself back.
+enum ApiKeyStatus: Equatable {
+    /// A key exists but nothing has asked the provider about it yet.
+    case unchecked
+    case checking
+    case checked(ApiKeyCheckOutcome)
+}
+
+@MainActor
+protocol ApiKeyChecking: AnyObject {
+    func status(for provider: CloudProvider) -> ApiKeyStatus
+    /// Checks a key the user has typed (it may already be saved; saving never waits on this).
+    func check(_ key: String, for provider: CloudProvider) async
+    /// Re-checks the key already in the Keychain. No-op when there isn't one.
+    func recheckSaved(_ provider: CloudProvider) async
+}
+
+@MainActor
+@Observable
+final class MockApiKeyChecker: ApiKeyChecking {
+    private var statuses: [CloudProvider: ApiKeyStatus] = [
+        .soniox: .checked(.valid), .openAi: .unchecked,
+    ]
+
+    func status(for provider: CloudProvider) -> ApiKeyStatus { statuses[provider] ?? .unchecked }
+
+    func check(_ key: String, for provider: CloudProvider) async {
+        statuses[provider] = .checking
+        try? await Task.sleep(for: .seconds(1.1))
+        statuses[provider] = .checked(key.count < 12 ? .rejected : .valid)
+    }
+
+    func recheckSaved(_ provider: CloudProvider) async {
+        statuses[provider] = .checking
+        try? await Task.sleep(for: .seconds(1.1))
+        statuses[provider] = .checked(.valid)
+    }
+}
+
 // MARK: - Cloud connectivity (Test Connection)
 
 /// What the Test Connection row has to say. `untested` is honest silence — the row shows no
@@ -414,6 +458,7 @@ final class SettingsDataSources {
     let aboutYou: AboutYouSource
     let diagnostics: DiagnosticsSource
     let cloudHealth: CloudHealthSource
+    let apiKeys: ApiKeyChecking
     let aiModels: [AiModelOption]
 
     init(
@@ -423,6 +468,7 @@ final class SettingsDataSources {
         aboutYou: AboutYouSource? = nil,
         diagnostics: DiagnosticsSource? = nil,
         cloudHealth: CloudHealthSource? = nil,
+        apiKeys: ApiKeyChecking? = nil,
         aiModels: [AiModelOption]? = nil
     ) {
         self.watch = watch ?? MockWatchStatusSource()
@@ -431,6 +477,7 @@ final class SettingsDataSources {
         self.aboutYou = aboutYou ?? MockAboutYouSource()
         self.diagnostics = diagnostics ?? MockDiagnosticsSource()
         self.cloudHealth = cloudHealth ?? MockCloudHealthSource()
+        self.apiKeys = apiKeys ?? MockApiKeyChecker()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
             .init(id: "gpt-5.6-mini", displayName: "GPT-5.6 Mini"),
