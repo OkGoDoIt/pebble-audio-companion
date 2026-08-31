@@ -166,7 +166,13 @@ final class AppComposition {
         self.queue = queue
         let cloudHealth = CloudHealthMonitor(nowMs: nowMs)
         self.cloudHealth = cloudHealth
-        localModel = LocalModelManager(inventory: SystemSpeechAssetInventory())
+        // Wi-Fi-only is a promise Settings makes in writing, so it is enforced where we can:
+        // at download START. (The system asset transfer itself exposes no network constraint.)
+        localModel = LocalModelManager(
+            inventory: SystemSpeechAssetInventory(),
+            wifiOnly: { true },
+            isOnWiFi: { NetworkReachability.shared.isUnmetered }
+        )
 
         // --- transcription providers ---------------------------------------------------------
 

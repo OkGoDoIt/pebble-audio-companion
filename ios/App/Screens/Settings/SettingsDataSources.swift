@@ -76,22 +76,47 @@ final class MockStorageStatsSource: StorageStatsSource {
     }
 }
 
-// MARK: - Local speech language (Part 6.7 row states, M3 engine)
+// MARK: - Local transcription models (Part 6.7 row states)
 
-/// One installable on-device speech language.
+/// One selectable on-device engine, in the shape the Settings picker needs.
 ///
-/// M3: the local engine is Apple's SpeechAnalyzer, and its "models" are per-locale system
-/// speech assets — iOS downloads, shares, updates and reclaims them. So the choice this
-/// product can honestly offer is *which language*, not which third-party model.
-struct LocalSpeechLanguage: Identifiable, Hashable {
-    /// BCP-47 identifier, e.g. "en-US".
+/// Everything here is shown to the user before they commit to a download, so nothing in it may
+/// be guessed: `downloadBytes` is what will actually be fetched, and `nil` means the engine
+/// ships with iOS and downloads no weights of its own (Apple Speech, whose language assets the
+/// system manages).
+struct LocalModelOption: Identifiable, Hashable {
+    /// Persisted in `AppSettings.localTranscriptionModelId` ("apple-speech",
+    /// "parakeet-tdt-0.6b-v3-int8", …).
     let id: String
-    /// Full localized name for the picker, e.g. "English (United States)".
-    let name: String
-    /// Compact name for the Settings row, e.g. "English (US)".
-    let shortName: String
+    /// e.g. "Parakeet TDT 0.6B, high quality".
+    let displayName: String
+    /// Standing in one or two words: "Recommended" · "Small" · "Experimental" · "Built in".
+    let shortLabel: String
+    /// One or two calm sentences about the tradeoff.
+    let description: String
+    /// Bytes fetched on install; nil for an engine iOS already ships.
+    let downloadBytes: Int64?
+    var isRecommended = false
+
+    /// Compact identity for the Settings row, e.g. "Parakeet TDT 0.6B".
+    var compactName: String {
+        displayName.split(separator: ",").first.map { $0.trimmingCharacters(in: .whitespaces) }
+            ?? displayName
+    }
+
+    /// e.g. "706 MB" / "1.18 GB" — nil when there is nothing to download. Whole megabytes
+    /// below a gigabyte: a download size is a decision aid, not a measurement.
+    var sizeText: String? {
+        guard let bytes = downloadBytes else { return nil }
+        let megabytes = Double(bytes) / 1_000_000
+        if megabytes >= 1000 {
+            return String(format: "%.2f GB", megabytes / 1000)
+        }
+        return "\(Int(megabytes.rounded())) MB"
+    }
 }
 
+/// The four Part 6.7 states, per model, plus the two the engines can genuinely report.
 enum LocalModelState: Equatable {
     case notInstalled
     /// Deferred until the phone is on Wi-Fi. Not a failure — nothing is wrong.
@@ -99,77 +124,122 @@ enum LocalModelState: Equatable {
     case downloading(progress: Double)
     case installed
     case failed
+    /// This engine cannot run here at all (e.g. Apple Speech has no model for the phone's
+    /// language). Offering a download would be offering something that can never finish.
+    case unavailable
 }
 
 @MainActor
 protocol LocalModelManaging: AnyObject {
-    /// Every language the on-device engine supports, this phone's own language first.
-    var languages: [LocalSpeechLanguage] { get }
-    /// What iOS reports for one language. Unknown/unqueried languages read `.notInstalled`.
-    func state(for languageId: String) -> LocalModelState
-    /// Re-reads iOS's inventory for every language (cheap; safe to call on appear).
+    /// The models THIS build can actually install — never an aspirational catalog.
+    var models: [LocalModelOption] { get }
+    /// What the engine reports for one model. Unknown ids read `.notInstalled`.
+    func state(for modelId: String) -> LocalModelState
+    /// Re-reads install state for every model (cheap; safe to call on appear).
     func refresh()
-    func download(_ languageId: String)
-    func cancelDownload(_ languageId: String)
-    func delete(_ languageId: String)
+    func download(_ modelId: String)
+    func cancelDownload(_ modelId: String)
+    func delete(_ modelId: String)
     #if DEBUG
-    func debugFailDownload(_ languageId: String)
+    func debugFailDownload(_ modelId: String)
     #endif
 }
 
 extension LocalModelManaging {
-    func language(_ id: String) -> LocalSpeechLanguage? { languages.first { $0.id == id } }
+    func model(_ id: String) -> LocalModelOption? { models.first { $0.id == id } }
+
+    /// The entry a persisted id names, falling back to the first the build has — a choice
+    /// migrated from the old app can name an engine this build does not carry yet.
+    func selectedModel(_ id: String) -> LocalModelOption? { model(id) ?? models.first }
+}
+
+/// Catalog constants shared by `AppSettings` and the live source. The engine side owns the real
+/// catalog; this holds the id that a fresh install starts on.
+enum LocalModelCatalog {
+    /// Present on every iOS 26 phone with nothing to download.
+    static let appleSpeechId = "apple-speech"
+    static let defaultModelId = appleSpeechId
+
+    /// The Apple Speech entry — the one engine that is always available.
+    static let appleSpeech = LocalModelOption(
+        id: appleSpeechId,
+        displayName: "Apple Speech",
+        shortLabel: "Built in",
+        description: "Transcribes in your phone's language, using the models iOS manages.",
+        downloadBytes: nil
+    )
 }
 
 @MainActor
 @Observable
 final class MockLocalModelManager: LocalModelManaging {
-    let languages: [LocalSpeechLanguage] = [
-        .init(id: "en-US", name: "English (United States)", shortName: "English (US)"),
-        .init(id: "en-GB", name: "English (United Kingdom)", shortName: "English (UK)"),
-        .init(id: "de-DE", name: "German (Germany)", shortName: "German (DE)"),
-        .init(id: "es-ES", name: "Spanish (Spain)", shortName: "Spanish (ES)"),
-        .init(id: "fr-FR", name: "French (France)", shortName: "French (FR)"),
-        .init(id: "ja-JP", name: "Japanese (Japan)", shortName: "Japanese (JP)"),
+    /// Preview/`-demo-data` catalog: the shape the live catalog takes once the Parakeet engine
+    /// lands. The LIVE source lists only what this build can install.
+    let models: [LocalModelOption] = [
+        LocalModelCatalog.appleSpeech,
+        .init(
+            id: "parakeet-tdt-0.6b-v3-int8",
+            displayName: "Parakeet TDT 0.6B, high quality",
+            shortLabel: "Recommended",
+            description:
+                "Multilingual Parakeet with int8 weights — the best local accuracy this app "
+                + "offers.",
+            downloadBytes: 706_097_687,
+            isRecommended: true
+        ),
+        .init(
+            id: "parakeet-tdt-0.6b-v3-int4",
+            displayName: "Parakeet TDT 0.6B, small",
+            shortLabel: "Small",
+            description: "Smallest download. Lower precision than the recommended model.",
+            downloadBytes: 430_744_371
+        ),
+        .init(
+            id: "parakeet-ctc-1.1b-int8",
+            displayName: "Parakeet CTC 1.1B, experimental",
+            shortLabel: "Experimental",
+            description:
+                "Fast, English only. It can over-interpret quiet or noisy watch audio.",
+            downloadBytes: 1_184_422_635
+        ),
     ]
 
-    private var states: [String: LocalModelState] = ["en-US": .installed]
+    private var states: [String: LocalModelState] = [LocalModelCatalog.appleSpeechId: .installed]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
-    func state(for languageId: String) -> LocalModelState { states[languageId] ?? .notInstalled }
+    func state(for modelId: String) -> LocalModelState { states[modelId] ?? .notInstalled }
 
     func refresh() {}
 
-    func download(_ languageId: String) {
-        guard state(for: languageId) != .downloading(progress: 0) else { return }
-        states[languageId] = .downloading(progress: 0)
+    func download(_ modelId: String) {
+        states[modelId] = .downloading(progress: 0)
         downloadTask?.cancel()
         downloadTask = Task { [weak self] in
             var progress = 0.0
             while progress < 1 {
                 try? await Task.sleep(for: .milliseconds(140))
                 guard let self, !Task.isCancelled else { return }
-                progress = min(progress + 0.025, 1)
-                self.states[languageId] = .downloading(progress: progress)
+                progress = min(progress + 0.02, 1)
+                self.states[modelId] = .downloading(progress: progress)
             }
-            self?.states[languageId] = .installed
+            self?.states[modelId] = .installed
         }
     }
 
-    func cancelDownload(_ languageId: String) {
+    func cancelDownload(_ modelId: String) {
         downloadTask?.cancel()
-        states[languageId] = .notInstalled
+        states[modelId] = .notInstalled
     }
 
-    func delete(_ languageId: String) {
+    func delete(_ modelId: String) {
         downloadTask?.cancel()
-        states[languageId] = .notInstalled
+        states[modelId] = .notInstalled
     }
 
     #if DEBUG
-    func debugFailDownload(_ languageId: String) {
+    func debugFailDownload(_ modelId: String) {
         downloadTask?.cancel()
-        states[languageId] = .failed
+        states[modelId] = .failed
     }
     #endif
 }

@@ -117,7 +117,7 @@ struct DestructiveRow: View {
                 ) {}
                 SettingsRow(
                     title: Copy.Settings.TranscriptionAI.localModel,
-                    value: "Parakeet v3 · \(Copy.Settings.TranscriptionAI.installed("706 MB"))"
+                    value: "Parakeet TDT 0.6B · 706 MB"
                 ) {}
                 SettingsRow(
                     title: Copy.Settings.TranscriptionAI.keyRow(provider: "Soniox"),

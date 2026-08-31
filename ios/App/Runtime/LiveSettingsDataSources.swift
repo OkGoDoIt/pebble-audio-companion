@@ -153,65 +153,83 @@ final class LiveStorageStatsSource: StorageStatsSource {
     }
 }
 
-// MARK: - Local transcription model
+// MARK: - Local transcription models
 
+/// The local-model catalog as this build can honestly offer it.
+///
+/// Today that is exactly one engine — Apple Speech over `LocalModelManager`/`AssetInventory`.
+/// The Parakeet entries join `models` when their engine lands in the kit; listing a model the
+/// app cannot actually fetch would be a placebo row, which is the pattern this app keeps
+/// removing.
 @MainActor
 @Observable
 final class LiveLocalModelManager: LocalModelManaging {
     @ObservationIgnored private let composition: AppComposition
-    let modelName = "Apple Speech"
-    private(set) var state: LocalModelState = .notInstalled
+    let models: [LocalModelOption] = [LocalModelCatalog.appleSpeech]
+
+    private var states: [String: LocalModelState] = [:]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
     init(composition: AppComposition) {
         self.composition = composition
         Task { [weak self] in
             for await kitState in await composition.localModel.states() {
-                self?.state = Self.map(kitState)
+                self?.states[LocalModelCatalog.appleSpeechId] = Self.map(kitState)
             }
         }
+        refresh()
+    }
+
+    func state(for modelId: String) -> LocalModelState { states[modelId] ?? .notInstalled }
+
+    func refresh() {
+        let composition = self.composition
         Task { [weak self] in
-            self?.state = Self.map(await composition.localModel.refresh())
+            let state = await composition.localModel.refresh()
+            self?.states[LocalModelCatalog.appleSpeechId] = Self.map(state)
         }
     }
 
-    func startDownload() {
-        guard downloadTask == nil else { return }
+    func download(_ modelId: String) {
+        guard modelId == LocalModelCatalog.appleSpeechId, downloadTask == nil else { return }
         let composition = self.composition
         downloadTask = Task { [weak self] in
             let result = await composition.localModel.requestInstall()
-            self?.state = Self.map(result)
+            self?.states[modelId] = Self.map(result)
             self?.downloadTask = nil
         }
     }
 
     /// The system asset installer owns the transfer; cancelling only stops us watching it.
-    func cancelDownload() {
+    func cancelDownload(_ modelId: String) {
         downloadTask?.cancel()
         downloadTask = nil
-        Task { [weak self] in
-            self?.state = Self.map(await self?.composition.localModel.refresh() ?? .notInstalled)
-        }
+        refresh()
     }
 
-    func deleteModel() {
+    func delete(_ modelId: String) {
+        guard modelId == LocalModelCatalog.appleSpeechId else { return }
         downloadTask?.cancel()
         downloadTask = nil
         let composition = self.composition
         Task { [weak self] in
-            self?.state = Self.map(await composition.localModel.uninstall())
+            self?.states[modelId] = Self.map(await composition.localModel.uninstall())
         }
     }
 
     #if DEBUG
-        func debugFailDownload() { state = .failed }
+        func debugFailDownload(_ modelId: String) { states[modelId] = .failed }
     #endif
 
     private static func map(_ state: Transcription.LocalModelState) -> LocalModelState {
         switch state {
-        case .notInstalled, .unsupported, .waitingForWiFi: return .notInstalled
+        case .notInstalled: return .notInstalled
+        // The phone's language is one `SpeechTranscriber` has no model for. Saying "not
+        // installed" would offer a download that can never finish.
+        case .unsupported: return .unavailable
+        case .waitingForWiFi: return .waitingForWiFi
         case .downloading(let progress): return .downloading(progress: progress)
-        case .installed: return .installed(size: "on device")
+        case .installed: return .installed
         case .failed: return .failed
         }
     }

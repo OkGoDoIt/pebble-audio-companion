@@ -85,9 +85,7 @@ final class AppSettings {
             RuntimeSettingsSnapshot(
                 captureIntent: captureIntent,
                 transcriptionMode: transcriptionMode,
-                // The kit's field name predates M3. Under the SpeechAnalyzer engine the
-                // "local model" IS a system language asset, so what travels here is a locale.
-                localTranscriptionModelId: localSpeechLanguageId,
+                localTranscriptionModelId: localTranscriptionModelId,
                 cloudTranscriptionProvider: cloudTranscriptionProvider,
                 aiMode: aiMode,
                 aiModel: aiModel,
@@ -117,14 +115,12 @@ final class AppSettings {
         }
     }
 
-    /// The language on-device transcription runs in, as a BCP-47 identifier ("en-US").
-    ///
-    /// M3: the on-device engine is Apple's SpeechAnalyzer, whose "models" are per-locale system
-    /// speech assets — so the only local-model choice there is to make is the language. (The
-    /// pre-M3 key held a downloadable-model id, which nothing ever read.)
-    var localSpeechLanguageId: String {
+    /// Which on-device engine transcription uses — an id from the local-model catalog
+    /// ("apple-speech", "parakeet-tdt-0.6b-v3-int8", …). Same key the old app persisted, so a
+    /// migrated choice survives.
+    var localTranscriptionModelId: String {
         didSet {
-            defaults.set(localSpeechLanguageId, forKey: Keys.localSpeechLanguage)
+            defaults.set(localTranscriptionModelId, forKey: Keys.localModel)
             mirrorToRuntime()
         }
     }
@@ -233,9 +229,10 @@ final class AppSettings {
         transcriptionMode =
             defaults.string(forKey: Keys.transcriptionMode).flatMap(TranscriptionMode.init)
             ?? .remoteFirst
-        localSpeechLanguageId =
-            defaults.string(forKey: Keys.localSpeechLanguage)
-            ?? Locale.current.identifier(.bcp47)
+        // Apple Speech is the engine that is present on every iOS 26 phone with nothing to
+        // download, so it is the default until the user picks another from the catalog.
+        localTranscriptionModelId =
+            defaults.string(forKey: Keys.localModel) ?? LocalModelCatalog.defaultModelId
         cloudTranscriptionProvider =
             defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) ?? .soniox
         aiMode = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) ?? .remoteFirst
@@ -282,8 +279,8 @@ final class AppSettings {
         ) {
             transcriptionMode = stored
         }
-        if let stored = defaults.string(forKey: Keys.localSpeechLanguage) {
-            localSpeechLanguageId = stored
+        if let stored = defaults.string(forKey: Keys.localModel) {
+            localTranscriptionModelId = stored
         }
         if let stored = defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) {
             cloudTranscriptionProvider = stored
@@ -306,8 +303,7 @@ final class AppSettings {
     private enum Keys {
         static let captureIntent = "capture_intent"
         static let transcriptionMode = "transcription_mode"
-        /// New key on purpose: the pre-M3 one held a model id ("parakeet-v3"), not a locale.
-        static let localSpeechLanguage = "local_speech_language"
+        static let localModel = "local_transcription_model"
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"
         static let aiModel = "ai_model"

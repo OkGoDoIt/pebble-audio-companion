@@ -403,19 +403,20 @@ enum Copy {
             static func downloading(_ percent: Int) -> String { "downloading · \(percent)%" }
             static let downloadFailed = "download failed"
             static let waitingForWiFi = "waiting for Wi-Fi"
+            /// The engine cannot run on this phone at all (unsupported language).
+            static let unavailable = "not available here"
 
-            // Local-model screen (M3: an on-device "model" is a system language asset).
-            static let languageSection = "Language"
+            // Local-model screen: the pushed model catalog.
             static let installedValue = "installed"
             static let downloadAction = "Download"
             static let inUse = "In use"
-            /// Destructive row naming exactly what goes, e.g. "Remove English (US)…".
-            static func removeLanguage(_ name: String) -> String { "Remove \(name)…" }
-            static let removeLanguageButton = "Remove Language"
-            /// Honest about who owns the files: releasing them is a request, not a delete.
-            static let removeLanguageNote = "iOS frees the files when it needs the space."
-            static let wifiFootnote =
-                "Downloads run on Wi-Fi only. iOS downloads and manages the language files."
+            /// Destructive row naming exactly what goes, e.g. "Remove Parakeet TDT 0.6B…".
+            static func removeModel(_ name: String) -> String { "Remove \(name)…" }
+            static let removeModelButton = "Remove Model"
+            static func removeModelNote(_ size: String) -> String { "Frees \(size)." }
+            /// Apple Speech: the files are the system's, so removal is a release, not a delete.
+            static let removeSystemModelNote = "iOS frees the files when it needs the space."
+            static let wifiFootnote = "Downloads run on Wi-Fi only."
 
             static let testConnection = "Test Connection"
             /// e.g. "Connected · 2 min ago".

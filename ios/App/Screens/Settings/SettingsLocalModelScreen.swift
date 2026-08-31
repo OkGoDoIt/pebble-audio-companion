@@ -2,10 +2,10 @@ import SwiftUI
 
 /// Settings · Transcription & AI → **Local model** (pushed).
 ///
-/// M3: the on-device engine is Apple's SpeechAnalyzer, whose "models" are per-locale system
-/// speech assets. So the honest choice here is *which language* — there is no third-party
-/// model catalog to offer. Opening this screen downloads nothing; a download starts only on an
-/// explicit tap, and every state iOS reports is shown as it is (Part 6.7).
+/// The row that leads here never acts on its own: opening this screen downloads nothing, and a
+/// download starts only when a specific model is chosen — with its size shown before the tap.
+/// Every entry carries the four Part 6.7 states (not installed · downloading with real progress
+/// + Cancel · installed · failed + Try Again).
 struct SettingsLocalModelScreen: View {
     @Environment(AppSettings.self) private var settings
 
@@ -15,25 +15,22 @@ struct SettingsLocalModelScreen: View {
 
     var body: some View {
         SettingsScroll {
-            SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.languageSection)
             ListCard {
-                ForEach(model.languages) { language in
-                    LocalLanguageRow(
-                        language: language,
-                        state: model.state(for: language.id),
-                        isSelected: language.id == settings.localSpeechLanguageId,
-                        select: { select(language) },
-                        cancel: { model.cancelDownload(language.id) }
+                ForEach(model.models) { option in
+                    LocalModelRow(
+                        option: option,
+                        state: model.state(for: option.id),
+                        isSelected: option.id == settings.localTranscriptionModelId,
+                        select: { select(option) },
+                        cancel: { model.cancelDownload(option.id) }
                     )
                 }
             }
 
-            if let selected = model.language(settings.localSpeechLanguageId),
-                model.state(for: selected.id) == .installed
-            {
+            if let selected, model.state(for: selected.id) == .installed {
                 ListCard {
                     DestructiveRow(
-                        title: Copy.Settings.TranscriptionAI.removeLanguage(selected.shortName)
+                        title: Copy.Settings.TranscriptionAI.removeModel(selected.compactName)
                     ) {
                         confirmRemove = true
                     }
@@ -45,50 +42,57 @@ struct SettingsLocalModelScreen: View {
             #if DEBUG
                 ListCard {
                     TintActionRow(title: "Debug: simulate failed download") {
-                        model.debugFailDownload(settings.localSpeechLanguageId)
+                        model.debugFailDownload(settings.localTranscriptionModelId)
                     }
                 }
             #endif
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.localModel)
         .navigationBarTitleDisplayMode(.inline)
-        // Reading iOS's inventory is the only thing opening this screen does.
+        // Re-reading install state is the only thing opening this screen does.
         .task { model.refresh() }
         .confirmationDialog(
-            removeTitle,
+            selected?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
             isPresented: $confirmRemove,
             titleVisibility: .visible
         ) {
-            Button(Copy.Settings.TranscriptionAI.removeLanguageButton, role: .destructive) {
+            Button(Copy.Settings.TranscriptionAI.removeModelButton, role: .destructive) {
                 Haptics.destructiveConfirmed()
-                model.delete(settings.localSpeechLanguageId)
+                if let selected { model.delete(selected.id) }
             }
         } message: {
-            Text(Copy.Settings.TranscriptionAI.removeLanguageNote)
+            Text(removeNote)
         }
     }
 
-    private var removeTitle: String {
-        model.language(settings.localSpeechLanguageId)?.name
-            ?? Copy.Settings.TranscriptionAI.localModel
+    private var selected: LocalModelOption? {
+        model.selectedModel(settings.localTranscriptionModelId)
     }
 
-    /// The one action on this screen: pick the language on-device transcription runs in, and
-    /// fetch its assets when iOS does not have them yet.
-    private func select(_ language: LocalSpeechLanguage) {
-        settings.localSpeechLanguageId = language.id
-        if model.state(for: language.id) != .installed {
-            model.download(language.id)
+    /// Honest about what removal actually does: app-owned weights go now, system speech files
+    /// go when iOS decides it needs the room.
+    private var removeNote: String {
+        guard let size = selected?.sizeText else {
+            return Copy.Settings.TranscriptionAI.removeSystemModelNote
+        }
+        return Copy.Settings.TranscriptionAI.removeModelNote(size)
+    }
+
+    /// The one action here: make a model the on-device engine, and fetch it if it isn't here.
+    private func select(_ option: LocalModelOption) {
+        settings.localTranscriptionModelId = option.id
+        if model.state(for: option.id) != .installed {
+            model.download(option.id)
         }
     }
 }
 
-// MARK: - Language row
+// MARK: - Model row
 
-/// One language: name, what iOS reports about it, and — while a download runs — the real
-/// progress with a Cancel (never a spinner that means nothing).
-private struct LocalLanguageRow: View {
-    let language: LocalSpeechLanguage
+/// Name · standing · size · what it is for, then whatever state the engine reports — including
+/// real download progress with a Cancel (never a spinner that stands for nothing).
+private struct LocalModelRow: View {
+    let option: LocalModelOption
     let state: LocalModelState
     let isSelected: Bool
     let select: () -> Void
@@ -97,24 +101,36 @@ private struct LocalLanguageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(action: select) {
-                HStack(spacing: 10) {
-                    Text(language.name)
-                        .font(AppFont.callout)
-                        .foregroundStyle(Tokens.label)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 10)
-                    accessory
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Tokens.tint)
-                            .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 10) {
+                        Text(option.displayName)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.label)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 10)
+                        accessory
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Tokens.tint)
+                                .accessibilityHidden(true)
+                        }
                     }
+                    Text(standingLine)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(option.isRecommended ? Tokens.tint : Tokens.meta)
+                    Text(option.description)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // An engine that cannot run here is shown, and says why, but cannot be chosen.
+            .disabled(state == .unavailable)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -138,6 +154,11 @@ private struct LocalLanguageRow: View {
         }
     }
 
+    /// "Recommended · 706 MB" — or just "Built in" for the engine that downloads nothing.
+    private var standingLine: String {
+        [option.shortLabel, option.sizeText].compactMap { $0 }.joined(separator: " · ")
+    }
+
     @ViewBuilder
     private var accessory: some View {
         switch state {
@@ -158,6 +179,8 @@ private struct LocalLanguageRow: View {
             }
         case .failed:
             stateText(Copy.Settings.TranscriptionAI.downloadFailed, color: Tokens.attention)
+        case .unavailable:
+            stateText(Copy.Settings.TranscriptionAI.unavailable, color: Tokens.meta)
         }
     }
 
@@ -169,9 +192,9 @@ private struct LocalLanguageRow: View {
             .minimumScaleFactor(0.8)
     }
 
-    /// VoiceOver reads name + state + whether this is the language in use.
+    /// VoiceOver reads name, standing, state, and whether this is the engine in use.
     private var accessibilityLabel: String {
-        var parts = [language.name]
+        var parts = [option.displayName, standingLine]
         switch state {
         case .notInstalled: parts.append(Copy.Settings.TranscriptionAI.downloadAction)
         case .waitingForWiFi: parts.append(Copy.Settings.TranscriptionAI.waitingForWiFi)
@@ -179,6 +202,7 @@ private struct LocalLanguageRow: View {
             parts.append(Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)))
         case .installed: parts.append(Copy.Settings.TranscriptionAI.installedValue)
         case .failed: parts.append(Copy.Settings.TranscriptionAI.downloadFailed)
+        case .unavailable: parts.append(Copy.Settings.TranscriptionAI.unavailable)
         }
         if isSelected { parts.append(Copy.Settings.TranscriptionAI.inUse) }
         return parts.joined(separator: ", ")
