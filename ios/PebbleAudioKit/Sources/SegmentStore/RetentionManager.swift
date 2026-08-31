@@ -39,6 +39,11 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
     private let freeSpace: FreeSpaceProvider
     private let nowMs: @Sendable () -> Int64
     private let configProvider: @Sendable () -> RetentionConfig
+    /// Says what a sweep took and under which cap. The SIZE cap especially: it is not a setting
+    /// anyone can see, so without a line here a user who chose "Keep audio · 365 days" and then
+    /// crossed the byte cap loses whole conversations with no trace anywhere — not in the UI, not
+    /// in a support report, not in Detailed Logs.
+    private let log: @Sendable (String) -> Void
 
     /// The policy in force right now. Read through the provider on every use so a settings
     /// change ("Keep audio for N days") takes effect on the next pass, not the next launch.
@@ -48,9 +53,11 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         store: SegmentStore,
         freeSpace: FreeSpaceProvider,
         nowMs: @escaping @Sendable () -> Int64,
-        config: RetentionConfig = RetentionConfig()
+        config: RetentionConfig = RetentionConfig(),
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
-        self.init(store: store, freeSpace: freeSpace, nowMs: nowMs, config: { config })
+        self.init(
+            store: store, freeSpace: freeSpace, nowMs: nowMs, config: { config }, log: log)
     }
 
     /// Live-policy variant: the app passes a closure over its settings so the user-configurable
@@ -59,12 +66,14 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         store: SegmentStore,
         freeSpace: FreeSpaceProvider,
         nowMs: @escaping @Sendable () -> Int64,
-        config: @escaping @Sendable () -> RetentionConfig
+        config: @escaping @Sendable () -> RetentionConfig,
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.store = store
         self.freeSpace = freeSpace
         self.nowMs = nowMs
         self.configProvider = config
+        self.log = log
     }
 
     /// Applies age and size caps. Returns the segment ids deleted.
@@ -94,8 +103,12 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         {
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
-            if deleted.count >= limit { return deleted }
+            if deleted.count >= limit {
+                logAgeSweep(deleted.count)
+                return deleted
+            }
         }
+        logAgeSweep(deleted.count)
 
         // Size cap: delete oldest fully-transcribed first, then oldest untranscribed, and
         // recovered audio last of all; the open segment is never deleted.
@@ -105,6 +118,7 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
             total += await store.logSizeBytes(meta.segmentId)
         }
         if total <= config.maxTotalBytes { return deleted }
+        let overCapBy = total - config.maxTotalBytes
         let candidates = segments
             .enumerated()
             .filter { $0.element.segmentId != openId }
@@ -127,13 +141,29 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
                 return a.offset < b.offset  // stable, matching Kotlin's sortedWith
             }
             .map(\.element)
+        let beforeSizeCap = deleted.count
         for meta in candidates {
             if total <= config.maxTotalBytes || deleted.count >= limit { break }
             total -= await store.logSizeBytes(meta.segmentId)
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
         }
+        let bySize = deleted.count - beforeSizeCap
+        if bySize > 0 {
+            // The one eviction nobody asked for: no screen names a byte cap, so this line is the
+            // only way to answer "where did my conversations go?".
+            log(
+                "retention: size cap evicted \(bySize) segment(s) — spool was "
+                    + "\(overCapBy / (1024 * 1024)) MB over the \(config.maxTotalBytes / (1024 * 1024)) MB cap"
+            )
+        }
         return deleted
+    }
+
+    private func logAgeSweep(_ count: Int) {
+        guard count > 0 else { return }
+        let days = config.maxAgeMs / 86_400_000
+        log("retention: age cap evicted \(count) segment(s) older than \(days) day(s)")
     }
 
     public var lowStorage: Bool { freeSpace.freeBytes() < config.lowStorageFloorBytes }

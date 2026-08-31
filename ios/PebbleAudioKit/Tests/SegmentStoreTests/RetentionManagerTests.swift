@@ -172,6 +172,32 @@ import WireProtocol
         #expect(await store.listSegments().isEmpty)
     }
 
+    /// The size cap is the one eviction nobody asked for — no screen names a byte cap — so it has
+    /// to leave a trace. Without it, a person who chose "Keep audio · 365 days" and crossed the
+    /// cap loses whole conversations with nothing anywhere to explain it.
+    @Test func sizeCap_saysWhatItTook() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        _ = try await makeSegment(store, id: 1, transcribed: true)
+        _ = try await makeSegment(store, id: 2, transcribed: true)
+        let lines = LineRecorder()
+
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: 500), log: { lines.record($0) })
+        _ = try await manager.enforce()
+
+        #expect(lines.lines.count == 1)
+        #expect(lines.lines[0].contains("size cap evicted 1 segment"))
+    }
+
+    final class LineRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _lines: [String] = []
+        var lines: [String] { lock.withLock { _lines } }
+        func record(_ line: String) { lock.withLock { _lines.append(line) } }
+    }
+
     @Test func storageFloors_driveReceiverFlagsAndHint() throws {
         let root = try tempRoot()
         let store = makeStore(root)
