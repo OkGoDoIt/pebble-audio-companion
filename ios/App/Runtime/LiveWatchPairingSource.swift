@@ -63,6 +63,12 @@ final class LiveWatchPairingSource: WatchPairingSource {
         composition.settings.captureIntent = .active
         await runtime.startCapture()
 
+        // …and then the part that actually reaches the watch. `startCapture` starts the SESSION,
+        // which only observes the link; nothing in the runtime asks the link to connect except
+        // this call (Today's Find Watch / Settings → Reconnect go through the same seam). Without
+        // it the screen would wait forever on a connection nobody ever requested.
+        await runtime.reconnect()
+
         // A prompt waiting on the watch is the one state that can hang forever, so it — and only
         // it — carries a deadline.
         var confirmTimeout: Task<Void, Never>?

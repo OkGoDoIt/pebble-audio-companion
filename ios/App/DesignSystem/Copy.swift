@@ -151,6 +151,49 @@ enum Copy {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Provider-key checks (kit taxonomy → what to DO about it)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// A typed key is checked against the provider automatically. The kit returns a taxonomy and
+    /// no prose ON PURPOSE — both providers' 401 bodies quote the key back — so these lines are
+    /// the only wording shown, and they never repeat provider text or any part of a key.
+    /// `rejected` and `outOfCredit` deliberately give opposite advice.
+    enum KeyCheck {
+        static let checking = "Checking…"
+        static let valid = "Key works."
+        static let checkAgain = "Check Again"
+
+        /// 401 — wrong key, or half a paste.
+        static let rejected = "Not accepted. Check for a missing character and paste it again."
+        /// 403 — real key, wrong permissions.
+        static let notPermitted = "This key isn’t allowed to use this API. Check its permissions."
+        /// 429 + quota — fixing the key is the wrong instinct here.
+        static let outOfCredit = "The key works, but the account is out of credit."
+        /// 429 — ordinary throttling.
+        static let rateLimited = "Too many checks just now. Try again in a moment."
+        /// 5xx — nothing is wrong with the key.
+        static let providerUnavailable = "The provider is having trouble. The key may be fine."
+        static let unreachable = "No connection, so the key couldn’t be checked."
+        static let unexpected = "The key couldn’t be checked right now."
+
+        /// The Settings key screen saves first and checks second — the check is guidance, not a
+        /// gate — so its verdict is prefixed with what already happened.
+        static func saved(_ verdict: String) -> String { "Saved. \(verdict)" }
+
+        /// The same verdicts in one word, for the Settings key rows ("sk-…4f2a · no credit").
+        enum Row {
+            static let checking = "checking…"
+            static let valid = "verified"
+            static let rejected = "not accepted"
+            static let notPermitted = "not permitted"
+            static let outOfCredit = "no credit"
+            static let rateLimited = "provider busy"
+            static let providerUnavailable = "provider down"
+            static let unreachable = "no connection"
+            static let unexpected = "not checked"
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // MARK: Today
     // ─────────────────────────────────────────────────────────────────────────
     enum Today {
@@ -404,6 +447,8 @@ enum Copy {
             // language screen below, where a download starts only on an explicit choice.
             static let notInstalled = "not installed"
             static func downloading(_ percent: Int) -> String { "downloading · \(percent)%" }
+            /// Next to a progress bar the word is already implied — just the number.
+            static func percent(_ percent: Int) -> String { "\(percent)%" }
             static let downloadFailed = "download failed"
             static let waitingForWiFi = "waiting for Wi-Fi"
             /// The engine cannot run on this phone at all (unsupported language).
@@ -428,6 +473,9 @@ enum Copy {
 
             // API-key change flow (6.7).
             static let keyChangeFootnote = "Replaces the saved key."
+
+            // Key-check wording lives in `Copy.KeyCheck` — one catalog for both the onboarding
+            // key screen and this one, so the two can never drift apart (U9).
         }
 
         enum Storage {
