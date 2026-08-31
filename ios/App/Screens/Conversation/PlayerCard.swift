@@ -118,6 +118,11 @@ final class PlayerModel {
         }
     }
 
+    /// False once this conversation's engine is attached — the screen reloads its display
+    /// after every rename, tag edit and retranscribe, and building a second engine each time
+    /// would be pure waste.
+    func needsEngine(for id: String) -> Bool { configuredId != id }
+
     /// Idempotent per conversation: the screen reloads its display after every rename, tag
     /// edit and retranscribe, and playback must not restart under the user each time.
     func configure(
