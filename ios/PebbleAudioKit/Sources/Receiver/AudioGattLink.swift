@@ -78,6 +78,14 @@ public protocol AudioGattLink: Sendable {
     /// One emission per Data notification (one complete message each).
     var dataNotifications: AsyncStream<[UInt8]> { get }
 
+    /// Expresses the intent to hold a GATT connection, and starts working towards one.
+    ///
+    /// Idempotent and non-destructive: a live or in-progress link is left alone, so it is safe on
+    /// every launch and foreground entry. It never asks the watch to enable Background Audio —
+    /// that prompt has its own one-shot arming (plan 4.2). Default no-op for links that cannot
+    /// dial (fakes, command-line tools).
+    func connect()
+
     /// Drops the GATT connection (the platform may keep the underlying ACL link for other
     /// apps). No-op when already disconnected; `connectionState` moves to Disconnected.
     func disconnect()
@@ -97,6 +105,7 @@ private let unnamedDevice = StateSubject<String?>(nil)
 
 public extension AudioGattLink {
     var deviceName: StateSubject<String?> { unnamedDevice }
+    func connect() {}
     func disconnect() {}
     func resync() {}
 }

@@ -516,8 +516,16 @@ final class AppComposition {
         // the receiver's own state for the status it writes. The relay closes that loop below.
         let coverageTriggers = CoverageTriggerRelay()
 
+        // Built and prepared HERE, synchronously during launch: iOS hands `willRestoreState` only
+        // to a central manager that already exists when the process comes up. The link used to
+        // create its manager lazily on the first user-driven connect, so a Core Bluetooth
+        // relaunch found no manager, got no restored peripheral, and the whole restoration path
+        // never ran once in production.
+        let gattLink = CoreBluetoothAudioGattLink()
+        gattLink.prepareForRestoration()
+
         let receiver = ReceiverService(
-            link: CoreBluetoothAudioGattLink(),
+            link: gattLink,
             store: store,
             retention: retention,
             resumeStore: FileReceiverResumeStore(root: containerRoot),
@@ -787,7 +795,12 @@ final class AppComposition {
     }
 
     /// Core Bluetooth relaunched us in the background: receive-only, before anything starts.
+    ///
+    /// The flag is set SYNCHRONOUSLY here — see `ReceiverService.markLaunchedInBackground()`. The
+    /// lifecycle event still runs, for the rest of the transition and for the handled-events
+    /// ledger the tests assert on.
     func handleRestorationRelaunch() {
+        receiver.markLaunchedInBackground()
         Task { [lifecycle] in await lifecycle.handle(.restorationRelaunch) }
     }
 

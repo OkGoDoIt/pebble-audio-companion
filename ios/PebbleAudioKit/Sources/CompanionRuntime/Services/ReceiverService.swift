@@ -187,7 +187,16 @@ public actor ReceiverService {
 
     /// Starts the session. Idempotent: repeated calls (foreground entry, restoration relaunch,
     /// a Start tap) never stack sessions.
+    ///
+    /// Dials the link too. The session only OBSERVES `link.connectionState`; it never dials. So
+    /// before this, the ONLY things that ever brought the radio up were explicit user gestures
+    /// (Start, Reconnect, onboarding) — meaning an app relaunched by iOS with capture intent
+    /// already `.active` sat there observing a link nobody had asked to connect, indefinitely,
+    /// while the status card said recording. `connect()` is idempotent, returns immediately when a
+    /// link is up or in progress, and cannot prompt the watch: only `armWatchEnableRequest()` can
+    /// do that (plan 4.2).
     public func start() {
+        link.connect()
         guard sessionTask == nil else { return }
         intentBox.running = true
         sessionTask = session.start()
@@ -276,6 +285,19 @@ public actor ReceiverService {
     /// Restoration relaunch (plan Part 4.6): the app woke in the background, so receive-only is
     /// applied BEFORE the receiver starts. Never changes the user's intent.
     public func applyLaunchedInBackground() {
+        intentBox.launchedInBackground = true
+    }
+
+    /// The same flag, settable synchronously from `didFinishLaunchingWithOptions`.
+    ///
+    /// "BEFORE the receiver starts" is an ordering claim, and hopping onto this actor cannot make
+    /// it. `.didFinishLaunching` is enqueued from the composition root (the SwiftUI `App.init`,
+    /// which runs first) and `.restorationRelaunch` from the app delegate, so the async events
+    /// arrive in exactly the wrong order — the receiver would start in foreground mode, loading a
+    /// transcription model for a UI nobody is looking at, on the tightest memory budget iOS ever
+    /// gives us. The flag is a plain lock-protected box, so setting it synchronously in the
+    /// delegate lands before `CompanionRuntime.start()` reads it, whatever the task ordering.
+    public nonisolated func markLaunchedInBackground() {
         intentBox.launchedInBackground = true
     }
 
