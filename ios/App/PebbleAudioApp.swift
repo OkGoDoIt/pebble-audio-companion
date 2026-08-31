@@ -1,15 +1,34 @@
 import CoreSpotlight
 import SwiftUI
 
-/// Exists for one reason: the notification delegate has to be in place before launch finishes,
-/// or a loss notification tapped while the app was dead is delivered to nobody.
+/// Exists for two reasons the SwiftUI lifecycle cannot cover: the notification delegate has to
+/// be in place before launch finishes (or a loss notification tapped while the app was dead is
+/// delivered to nobody), and `handleEventsForBackgroundURLSession` has no scene equivalent.
 final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        MainActor.assumeIsolated { LossNotificationRouter.shared.prepare() }
+        MainActor.assumeIsolated {
+            LossNotificationRouter.shared.prepare()
+            // Core Bluetooth restored us in the background: receive-only, applied before the
+            // receiver starts.
+            if options?[.bluetoothCentrals] != nil {
+                AppComposition.shared?.handleRestorationRelaunch()
+            }
+        }
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        MainActor.assumeIsolated {
+            AppComposition.shared?.handleBackgroundUrlSessionEvents()
+        }
+        completionHandler()
     }
 }
 
@@ -24,8 +43,15 @@ struct PebbleAudioApp: App {
 
     init() {
         let settings = AppSettings()
+        let surfaces = NativeSurfaceCoordinator(settings: settings)
         _settings = State(initialValue: settings)
-        _nativeSurfaces = State(initialValue: NativeSurfaceCoordinator(settings: settings))
+        _nativeSurfaces = State(initialValue: surfaces)
+        // The composition root: opens the database, builds the runtime, and swaps the screens'
+        // data sources from the mock world to the live one. Built here (not in `.task`) so the
+        // lifecycle observers exist before the first `didBecomeActive` notification fires.
+        MainActor.assumeIsolated {
+            AppComposition.bootstrap(settings: settings, nativeSurfaces: surfaces)
+        }
     }
 
     var body: some Scene {

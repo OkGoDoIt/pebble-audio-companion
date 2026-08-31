@@ -54,9 +54,11 @@ struct SettingsWatchScreen: View {
                         .foregroundStyle(statusColor)
                 }
                 Spacer(minLength: 10)
-                Text("\(watch.batteryPercent)%")
-                    .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.meta)
+                if let battery = watch.batteryPercent {
+                    Text("\(battery)%")
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.meta)
+                }
             }
         }
     }
@@ -65,7 +67,7 @@ struct SettingsWatchScreen: View {
         ListCard {
             SettingsRow(
                 title: Copy.Settings.Watch.firmware,
-                value: Copy.Settings.Watch.firmwareValue(watch.firmwareVersion),
+                value: watch.firmwareVersion.map(Copy.Settings.Watch.firmwareValue) ?? "—",
                 showsChevron: false
             )
             SettingsRow(
