@@ -28,10 +28,14 @@ struct SettingsRow: View {
                 .foregroundStyle(Tokens.label)
             Spacer(minLength: 10)
             if let value {
+                // One-line values per the artboards ("30 days · 383 recordings" never
+                // wraps); scale slightly before truncating.
                 Text(value)
                     .font(AppFont.subBody)
                     .foregroundStyle(valueColor)
                     .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             if showsChevron {
                 Image(systemName: "chevron.right")
