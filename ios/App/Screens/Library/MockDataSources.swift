@@ -98,7 +98,7 @@ final class MockWorld {
                          "Before any long travel we should book the ferry and sort the theater dates."),
                     turn("cd2", "S2", "Dana", .other,
                          "Ferry Saturday morning, then — I'll check the theater calendar for Tuesday."),
-                    .quiet(id: "cd3", duration: Copy.Conversation.quietFor("1 min")),
+                    .quiet(TranscriptMarker(id: "cd3", text: Copy.Conversation.quietFor("1 min"))),
                     turn("cd4", "S1", "Roger", .you,
                          "Tuesday works. Walkthrough first, then lunch."),
                 ],
@@ -126,17 +126,17 @@ final class MockWorld {
                          "Yeah, I'll just — you can shop. Stay here."),
                     turn("pw3", "S1", "Roger", .you,
                          "Reading. Okay. All right. Have a good night."),
-                    .quiet(id: "pw4", duration: Copy.Conversation.quietFor("40 sec")),
+                    .quiet(TranscriptMarker(id: "pw4", text: Copy.Conversation.quietFor("40 sec"))),
                     turn("pw5", "S1", "Roger", .you,
                          "So before you leave — do you want ice cream for lunchtime?"),
-                    .missing(id: "pw6", marker: Copy.Conversation.missingMarker("2 sec")),
+                    .missing(TranscriptMarker(id: "pw6", text: Copy.Conversation.missingMarker("2 sec"))),
                     turn("pw7", "S2", "Sam", .other,
                          "No, I like ice cream. Okay — it's not too bad."),
                 ],
                 player: PlayerDisplay(
                     durationMs: 18 * 60_000 + 12_000,
                     initialPositionMs: 4 * 60_000 + 1_000,
-                    missingTickFraction: 0.61
+                    missingTickFractions: [0.61]
                 ),
                 provenanceProvider: "Soniox", provenanceDate: yesterday(21, 54)
             ),
@@ -169,20 +169,21 @@ final class MockWorld {
                 transcript: [
                     turn("ld1", "S1", "Roger", .you,
                          "Testing one two three, testing one two three."),
-                    .quiet(id: "ld2", duration: Copy.Conversation.quietFor("1 min")),
+                    .quiet(TranscriptMarker(id: "ld2", text: Copy.Conversation.quietFor("1 min"))),
                     turn("ld3", "S1", "Roger", .you,
                          "Let's do the obvious issues first — onboarding never prompted me "
                          + "to turn transcription on."),
                     .missing(
-                        id: "ld4",
-                        marker: "audio interrupted for 12 sec "
-                            + "(watch buffer filled while disconnected)"),
+                        TranscriptMarker(
+                            id: "ld4",
+                            text: "audio interrupted for 12 sec "
+                                + "(watch buffer filled while disconnected)")),
                     turn("ld5", "S1", "Roger", .you,
                          "Today's screen showed the recent conversations, and that was "
                          + "helpful."),
                 ],
                 player: PlayerDisplay(
-                    durationMs: 33 * 60_000 + 12_000, missingTickFraction: 0.42),
+                    durationMs: 33 * 60_000 + 12_000, missingTickFractions: [0.42]),
                 provenanceProvider: "Soniox", provenanceDate: today(10, 49)
             ),
             MockConversation(
@@ -330,10 +331,35 @@ final class MockWorld {
             tags: conversation.tags,
             lifecycle: conversation.lifecycle,
             player: conversation.player,
-            transcript: conversation.transcript,
+            transcript: Self.stamped(conversation.transcript, from: conversation.start,
+                                     to: conversation.isLive ? Date() : conversation.end),
             provenance: provenance,
             followUps: followUps.filter { $0.sourceConversationId == conversation.id }
         )
+    }
+
+    /// The artboard fixtures carry no per-row times, so the mock world spreads them evenly
+    /// across the conversation — enough for the stamps beside each speaker to look and behave
+    /// like real ones in demo builds and previews.
+    private static func stamped(
+        _ transcript: [TranscriptItem], from start: Date, to end: Date
+    ) -> [TranscriptItem] {
+        guard transcript.count > 1, end > start else { return transcript }
+        let step = end.timeIntervalSince(start) / Double(transcript.count)
+        return transcript.enumerated().map { offset, item in
+            let at = start.addingTimeInterval(step * Double(offset))
+            switch item {
+            case .turn(var turn):
+                turn.startedAt = at
+                return .turn(turn)
+            case .quiet(var marker):
+                marker.startedAt = at
+                return .quiet(marker)
+            case .missing(var marker):
+                marker.startedAt = at
+                return .missing(marker)
+            }
+        }
     }
 
     private func searchableText(_ conversation: MockConversation) -> String {
@@ -479,6 +505,10 @@ extension MockWorld: ConversationDataSource {
         return displayModel(conversations[index])
     }
 
+    /// The mock world holds no audio, so there is nothing to play: the card falls back to its
+    /// simulated scrub rather than pretending a decoder is running.
+    func playback(id: String) async throws -> (any ConversationPlayback)? { nil }
+
     func rename(id: String, to title: String) async throws {
         guard let index = index(of: id) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespaces)
@@ -519,7 +549,7 @@ extension MockWorld: ConversationDataSource {
                 .turn(TranscriptTurn(
                     id: "eh1", speakerLabel: "S2", name: "Sam", role: .other,
                     text: "Leftovers are in the fridge if you're up late.")),
-                .quiet(id: "eh2", duration: Copy.Conversation.quietFor("25 min")),
+                .quiet(TranscriptMarker(id: "eh2", text: Copy.Conversation.quietFor("25 min"))),
                 .turn(TranscriptTurn(
                     id: "eh3", speakerLabel: "S1", name: "Roger", role: .you,
                     text: "Heading up — lights on a timer tonight.")),

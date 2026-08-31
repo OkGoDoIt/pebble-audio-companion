@@ -161,6 +161,10 @@ struct SettingsTranscriptionScreen: View {
     }
 
     private func keyRowColor(for provider: CloudProvider) -> Color {
+        // A verdict outlives the key it was about: the checker keeps its last answer for the
+        // session, so after a key is deleted "not set" would otherwise render in the green of
+        // the key that is gone. No key, no verdict.
+        guard settings.hasApiKey(for: provider) else { return Tokens.meta }
         switch keyChecker.status(for: provider) {
         case .checked(.valid): return Tokens.good
         case .checked(let outcome) where outcome != .missing: return Tokens.attention
@@ -210,17 +214,25 @@ struct SettingsTranscriptionScreen: View {
 
 // MARK: - API-key change flow (6.7)
 
-/// Pushed screen per provider: masked current value, secure field, [Save] to Keychain,
-/// "Replaces the saved key." Keys never render in plaintext (B13).
+/// Pushed screen per provider, in three labelled sections: the key that is saved and what the
+/// provider says about it, a field that replaces it, and a way to remove it outright. Keys
+/// never render in plaintext (B13).
 ///
-/// Saving also TESTS the key against the provider and says what came back. The save itself is
-/// never gated on that — a key can be right while the network is down — so a failed check reads
-/// as "Saved, but …", never as a silent green tick or a lost key.
+/// Two things the earlier single-stack layout got wrong, and why this shape exists:
+/// the masked key was the *value* of a row titled "saved in Keychain" — the key is the subject,
+/// so it is now the row itself and the Keychain is a footnote; and the verdict the user came
+/// here to read ("verified" / "no credit") was visible on the parent row but vanished on the
+/// screen that manages the key. It is now the first thing on the screen, with [Check Again]
+/// beside it so "is my key still good?" no longer requires re-pasting the key.
+///
+/// Saving also TESTS the key against the provider. The save itself is never gated on that — a
+/// key can be right while the network is down — so "Saved to this phone's Keychain." is stated
+/// on its own under the field, and the provider's verdict appears separately above it. A failed
+/// check can never read as a lost key, nor a passing one as a silent green tick.
 struct ApiKeyChangeScreen: View {
     let provider: CloudProvider
 
     @Environment(AppSettings.self) private var settings
-    @Environment(\.dismiss) private var dismiss
     @State private var newKey = ""
     @State private var didSave = false
     @State private var confirmDelete = false
@@ -228,41 +240,55 @@ struct ApiKeyChangeScreen: View {
     private var keyChecker: ApiKeyChecking { SettingsDataSources.current.apiKeys }
 
     private var trimmedKey: String { newKey.trimmingCharacters(in: .whitespaces) }
+    private var savedKey: String? { settings.maskedApiKey(for: provider) }
+    private var status: ApiKeyStatus { keyChecker.status(for: provider) }
+    private var canSave: Bool { !trimmedKey.isEmpty && status != .checking }
 
     var body: some View {
         SettingsScroll {
-            if let masked = settings.maskedApiKey(for: provider) {
+            if let savedKey {
+                SettingsSectionHeader(
+                    title: Copy.Settings.TranscriptionAI.currentKeySection
+                )
                 ListCard {
-                    SettingsRow(
-                        title: Copy.Settings.TranscriptionAI.savedInKeychain,
-                        value: masked,
-                        showsChevron: false
-                    )
+                    savedKeyRow(savedKey)
+                    TintActionRow(title: Copy.KeyCheck.checkAgain) {
+                        Task { await keyChecker.recheckSaved(provider) }
+                    }
                 }
+                SettingsFooter(text: Copy.Settings.TranscriptionAI.keychainFootnote)
             }
-            Card {
-                SecureField("New key", text: $newKey)
-                    .font(AppFont.callout)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+
+            SettingsSectionHeader(
+                title: savedKey == nil
+                    ? Copy.Settings.TranscriptionAI.addKeySection
+                    : Copy.Settings.TranscriptionAI.replaceKeySection
+            )
+            Card { keyField }
+            // The primary action exists only once there is something to save. A permanently
+            // disabled filled button is the loudest thing on a screen where it can do nothing.
+            if !trimmedKey.isEmpty {
+                Button(Copy.Settings.TranscriptionAI.saveKey, action: saveAndCheck)
+                    .buttonStyle(.primaryFilled)
+                    .disabled(!canSave)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
-            Button(Copy.Common.save, action: saveAndCheck)
-                .buttonStyle(.primaryFilled)
-                .disabled(trimmedKey.isEmpty || keyChecker.status(for: provider) == .checking)
-                .opacity(trimmedKey.isEmpty ? 0.4 : 1)
+            SettingsFooter(text: replaceFooter)
 
-            checkResult
-
-            if settings.maskedApiKey(for: provider) != nil {
+            if savedKey != nil {
                 ListCard {
                     DestructiveRow(title: Copy.Settings.TranscriptionAI.deleteKey) {
                         confirmDelete = true
                     }
                 }
+                SettingsFooter(
+                    text: Copy.Settings.TranscriptionAI
+                        .deleteKeyFootnote(provider: provider.displayName)
+                )
             }
-
-            SettingsFooter(text: Copy.Settings.TranscriptionAI.keyChangeFootnote)
         }
+        .animation(.snappy(duration: 0.22), value: trimmedKey.isEmpty)
+        .animation(.snappy(duration: 0.22), value: savedKey)
         .navigationTitle(Copy.Settings.TranscriptionAI.keyRow(provider: provider.displayName))
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -276,43 +302,106 @@ struct ApiKeyChangeScreen: View {
                 newKey = ""
                 didSave = false
             }
+        } message: {
+            Text(
+                Copy.Settings.TranscriptionAI
+                    .deleteKeyMessage(provider: provider.displayName)
+            )
         }
     }
 
-    /// Checking · verified · what went wrong + [Check Again]. Only after a save on this
-    /// screen — an untouched screen makes no claims.
-    @ViewBuilder
-    private var checkResult: some View {
-        if didSave {
-            switch keyChecker.status(for: provider) {
-            case .checking:
-                Card {
-                    HStack(spacing: 10) {
-                        ProgressView().controlSize(.small)
-                        Text(Copy.KeyCheck.checking)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Tokens.meta)
-                    }
-                }
-            case .checked(let outcome):
-                Card {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(outcome.savedMessage)
-                            .font(AppFont.callout)
-                            .foregroundStyle(outcome.isValid ? Tokens.good : Tokens.attention)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !outcome.isValid {
-                            Button(Copy.KeyCheck.checkAgain) {
-                                Task { await keyChecker.recheckSaved(provider) }
-                            }
-                            .buttonStyle(.smallBordered)
-                        }
-                    }
-                }
-            case .unchecked:
-                EmptyView()
+    // MARK: Current key
+
+    /// The masked key IS the row; the verdict is its trailing value, and a failure explains
+    /// itself on a second line rather than leaving one ambiguous word on screen.
+    private func savedKeyRow(_ masked: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(masked)
+                    // Monospaced: a masked key is an opaque token to compare, not prose.
+                    .font(AppFont.callout.monospaced())
+                    .foregroundStyle(Tokens.label)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 10)
+                verdict
+            }
+            if case .checked(let outcome) = status, let reason = outcome.failureReason {
+                Text(reason)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// One word for the verdict, in the colour that word deserves. Silent until something has
+    /// actually asked the provider — an unchecked key makes no claim either way.
+    @ViewBuilder
+    private var verdict: some View {
+        switch status {
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(Copy.KeyCheck.Row.checking)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+            }
+        case .checked(let outcome) where outcome != .missing:
+            HStack(spacing: 5) {
+                if outcome.isValid {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Tokens.good)
+                        .accessibilityHidden(true)
+                }
+                Text(outcome.rowWord ?? "")
+                    .font(AppFont.subBody)
+                    .foregroundStyle(outcome.isValid ? Tokens.good : Tokens.attention)
+                    .lineLimit(1)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    // MARK: Replace / add
+
+    /// The app's field idiom (as on the onboarding key screen): a filled inset inside the white
+    /// card, so the row reads as something to type in rather than a third label.
+    private var keyField: some View {
+        SecureField(
+            savedKey == nil
+                ? Copy.Onboarding.keyPlaceholder : Copy.Onboarding.keyReplacePlaceholder,
+            text: $newKey
+        )
+        .font(AppFont.callout)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.done)
+        .onSubmit { if canSave { saveAndCheck() } }
+        // Typing again retires the previous "Saved." — it describes a key that is no longer
+        // the one in the field.
+        .onChange(of: newKey) { _, value in
+            if !value.isEmpty { didSave = false }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+        .accessibilityLabel(
+            Copy.Settings.TranscriptionAI.keyRow(provider: provider.displayName)
+        )
+    }
+
+    /// What Save will do, or — right after one — that it did. Never the verdict: that belongs
+    /// to the key above, so the two facts can never be mistaken for each other.
+    private var replaceFooter: String {
+        if didSave { return Copy.Settings.TranscriptionAI.keySavedFootnote }
+        return savedKey == nil
+            ? Copy.Settings.TranscriptionAI.keychainFootnote
+            : Copy.Settings.TranscriptionAI.keyChangeFootnote
     }
 
     /// Save first, then ask the provider: the key belongs to the user, so it is stored whatever

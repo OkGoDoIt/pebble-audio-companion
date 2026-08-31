@@ -108,18 +108,36 @@ struct TranscriptTurn: Equatable, Identifiable {
     var name: String
     var role: SpeakerRole
     var text: String
+    /// Wall-clock start of the turn, shown beside the speaker name. Formatted in the
+    /// conversation's recorded zone (Q16), never here. Nil when the timing is unknown.
+    var startedAt: Date?
+}
+
+/// A non-speech row: calm known-quiet, or genuine loss. Never conflated.
+struct TranscriptMarker: Equatable, Identifiable {
+    var id: String
+    /// e.g. "quiet for 40 sec" / "audio interrupted for 12 sec (…)".
+    var text: String
+    var startedAt: Date?
 }
 
 enum TranscriptItem: Equatable, Identifiable {
     case turn(TranscriptTurn)
-    case quiet(id: String, duration: String)    // "quiet for 40 sec"
-    case missing(id: String, marker: String)    // "2 sec missing · Bluetooth hiccup"
+    case quiet(TranscriptMarker)
+    case missing(TranscriptMarker)
 
     var id: String {
         switch self {
         case .turn(let turn): return turn.id
-        case .quiet(let id, _): return id
-        case .missing(let id, _): return id
+        case .quiet(let marker): return marker.id
+        case .missing(let marker): return marker.id
+        }
+    }
+
+    var startedAt: Date? {
+        switch self {
+        case .turn(let turn): return turn.startedAt
+        case .quiet(let marker), .missing(let marker): return marker.startedAt
         }
     }
 }
@@ -135,10 +153,35 @@ enum LifecycleDisplay: Equatable {
 }
 
 struct PlayerDisplay: Equatable {
+    /// MEDIA duration — the audio actually stored, gaps excluded. Never the wall-clock span
+    /// of the conversation: a 1 hr 4 min conversation holding 33 min of audio has a 33 min
+    /// scrubber, and the gaps are the amber ticks on it.
     var durationMs: Int64
     var initialPositionMs: Int64 = 0
-    /// Amber missing tick position (0…1), nil when no visible loss.
-    var missingTickFraction: Double?
+    /// Amber missing-tick positions (0…1) — one per gap, at its position in MEDIA time.
+    var missingTickFractions: [Double] = []
+}
+
+/// One update from a conversation's playback engine.
+struct PlaybackProgress: Equatable, Sendable {
+    var playing: Bool
+    var positionMs: Int64
+    var durationMs: Int64
+}
+
+/// Playback of a conversation's stored audio, spanning its member segments as one stream.
+/// `MockWorld` has no audio and returns none, which is what puts the player card into its
+/// simulated demo mode.
+@MainActor
+protocol ConversationPlayback: AnyObject {
+    /// Media duration of everything stored for the conversation.
+    var durationMs: Int64 { get }
+    func progress() -> AsyncStream<PlaybackProgress>
+    func play(fromMs: Int64)
+    func pause()
+    func seek(toMs: Int64)
+    func setSpeed(_ speed: Double)
+    func stop()
 }
 
 struct ConversationDisplay: Equatable {
@@ -154,6 +197,9 @@ struct ConversationDisplay: Equatable {
     /// "Transcribed with Soniox · yesterday 9:54 PM"
     var provenance: String?
     var followUps: [FollowUp]
+    /// Q16: transcript stamps read in the zone the audio was RECORDED in, so a conversation
+    /// keeps the times it actually happened at after you fly home.
+    var timeZone: TimeZone = .current
 
     var shareText: String {
         var lines = [title, metaLine]
@@ -235,6 +281,8 @@ protocol SearchDataSource: AnyObject {
 @MainActor
 protocol ConversationDataSource: AnyObject {
     func display(id: String) async throws -> ConversationDisplay?
+    /// The playback engine for this conversation's stored audio; nil when there is none.
+    func playback(id: String) async throws -> (any ConversationPlayback)?
     func rename(id: String, to title: String) async throws
     func retranscribe(id: String) async throws
     func transcribeNow(id: String) async throws

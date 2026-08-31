@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// The conversation player card (mockup 2.6): 44pt play, scrubber with the amber missing
-/// tick, timecodes, and the 1× speed pill cycling 1 → 1.5 → 2. Backed by `PlayerModel`, a
-/// display-side stand-in with the same surface as `SegmentPlaybackController` so the runtime
-/// can swap the real decoder-backed controller in later.
+/// ticks, timecodes, and the 1× speed pill cycling 1 → 1.5 → 2. Backed by `PlayerModel`,
+/// which drives the real decoder-backed engine when the conversation has stored audio and
+/// falls back to a simulated scrub only in the mock/demo world, which has none.
 struct PlayerCard: View {
     @Bindable var model: PlayerModel
 
@@ -57,7 +57,8 @@ struct PlayerCard: View {
                 Capsule().fill(Tokens.fieldFill).frame(height: 4)
                 Capsule().fill(Tokens.tint)
                     .frame(width: max(4, width * min(fraction, 1)), height: 4)
-                if let tick = model.missingTickFraction {
+                // Every gap, not just the first: loss is never summarized away.
+                ForEach(Array(model.missingTicks.enumerated()), id: \.offset) { _, tick in
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(Tokens.missing)
                         .frame(width: 3, height: 6)
@@ -100,8 +101,13 @@ final class PlayerModel {
     var positionMs: Int64 = 0
     var durationMs: Int64 = 0
     var speed: Double = 1
-    var missingTickFraction: Double?
+    var missingTicks: [Double] = []
 
+    /// The decoder-backed engine over the conversation's stored frames. Nil in the mock and
+    /// preview worlds, where `ticker` stands in for it.
+    private var engine: (any ConversationPlayback)?
+    private var configuredId: String?
+    private var observation: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
 
     var speedLabel: String {
@@ -112,10 +118,39 @@ final class PlayerModel {
         }
     }
 
-    func configure(_ display: PlayerDisplay, atMs: Int64?) {
-        durationMs = display.durationMs
-        positionMs = min(atMs ?? display.initialPositionMs, display.durationMs)
-        missingTickFraction = display.missingTickFraction
+    /// Idempotent per conversation: the screen reloads its display after every rename, tag
+    /// edit and retranscribe, and playback must not restart under the user each time.
+    func configure(
+        _ display: PlayerDisplay, atMs: Int64?, id: String,
+        engine: (any ConversationPlayback)? = nil
+    ) {
+        missingTicks = display.missingTickFractions
+        guard configuredId != id else {
+            if durationMs == 0 { durationMs = display.durationMs }
+            return
+        }
+        stop()
+        configuredId = id
+        self.engine = engine
+        durationMs = engine.map { $0.durationMs > 0 ? $0.durationMs : display.durationMs }
+            ?? display.durationMs
+        positionMs = min(atMs ?? display.initialPositionMs, durationMs)
+        if let engine {
+            engine.setSpeed(speed)
+            observe(engine)
+        }
+    }
+
+    private func observe(_ engine: any ConversationPlayback) {
+        observation?.cancel()
+        observation = Task { [weak self] in
+            for await update in engine.progress() {
+                guard let self, !Task.isCancelled else { return }
+                self.playing = update.playing
+                self.positionMs = update.positionMs
+                if update.durationMs > 0 { self.durationMs = update.durationMs }
+            }
+        }
     }
 
     func togglePlay() {
@@ -126,6 +161,54 @@ final class PlayerModel {
         guard durationMs > 0 else { return }
         if positionMs >= durationMs { positionMs = 0 }
         playing = true
+        if let engine {
+            engine.play(fromMs: positionMs)
+        } else {
+            simulate()
+        }
+    }
+
+    func pause() {
+        playing = false
+        ticker?.cancel()
+        ticker = nil
+        engine?.pause()
+    }
+
+    /// Leaving the screen has to end the audio — a conversation that keeps playing from a
+    /// screen the user popped is the kind of thing this app can never do.
+    func stop() {
+        playing = false
+        ticker?.cancel()
+        ticker = nil
+        observation?.cancel()
+        observation = nil
+        engine?.stop()
+    }
+
+    /// 1× → 1.5× → 2× → 1× (mockup 2.6).
+    func cycleSpeed() {
+        switch speed {
+        case 1: speed = 1.5
+        case 1.5: speed = 2
+        default: speed = 1
+        }
+        engine?.setSpeed(speed)
+    }
+
+    func seek(fraction: Double) {
+        seek(positionMs: Int64(fraction * Double(durationMs)))
+    }
+
+    func seek(positionMs: Int64) {
+        let clamped = min(max(positionMs, 0), durationMs)
+        self.positionMs = clamped
+        engine?.seek(toMs: clamped)
+    }
+
+    /// The demo/preview stand-in: no audio exists in the mock world, so the scrubber moves on
+    /// its own to show the card working. Never used against real recordings.
+    private func simulate() {
         ticker?.cancel()
         ticker = Task { [weak self] in
             while let self, self.playing, !Task.isCancelled {
@@ -139,29 +222,6 @@ final class PlayerModel {
             }
         }
     }
-
-    func pause() {
-        playing = false
-        ticker?.cancel()
-        ticker = nil
-    }
-
-    /// 1× → 1.5× → 2× → 1× (mockup 2.6).
-    func cycleSpeed() {
-        switch speed {
-        case 1: speed = 1.5
-        case 1.5: speed = 2
-        default: speed = 1
-        }
-    }
-
-    func seek(fraction: Double) {
-        seek(positionMs: Int64(fraction * Double(durationMs)))
-    }
-
-    func seek(positionMs: Int64) {
-        self.positionMs = min(max(positionMs, 0), durationMs)
-    }
 }
 
 #Preview("Player") {
@@ -171,8 +231,8 @@ final class PlayerModel {
             PlayerDisplay(
                 durationMs: 18 * 60_000 + 12_000,
                 initialPositionMs: 4 * 60_000 + 1_000,
-                missingTickFraction: 0.61),
-            atMs: nil)
+                missingTickFractions: [0.61]),
+            atMs: nil, id: "preview")
         return model
     }())
     .padding(Tokens.screenMargin)
