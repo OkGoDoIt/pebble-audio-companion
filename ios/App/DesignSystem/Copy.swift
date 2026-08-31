@@ -694,6 +694,19 @@ enum Copy {
             }
             static let deleteAll = "Delete All Recordings…"
             static let footer = "You are responsible for following local recording laws."
+
+            // Storage limit. Off by default: an invisible size cap used to delete recordings
+            // before "Keep audio" ever did, which made the visible rule a lie. The rule is
+            // stated whether or not a limit is set, so nothing disappears unexplained.
+            static let storageLimit = "Storage limit"
+            static let noLimit = "No limit"
+            static func usedOfLimit(used: String, limit: String) -> String {
+                "\(used) of \(limit) used"
+            }
+            static let limitFooter =
+                "Recordings are removed once they pass Keep audio. With a storage limit set, the "
+                + "oldest fully-transcribed recordings also go when the total goes over it — "
+                + "recovered audio last."
         }
 
         enum AboutYou {

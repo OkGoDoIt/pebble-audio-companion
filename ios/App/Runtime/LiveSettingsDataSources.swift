@@ -143,6 +143,7 @@ final class LiveStorageStatsSource: StorageStatsSource {
     @ObservationIgnored private let composition: AppComposition
     private(set) var recordingCount = 0
     private(set) var recordingsSize = "0 KB"
+    private(set) var recordingsBytes: Int64 = 0
     /// Stored, not computed: a computed property has no observable state behind it, so SwiftUI
     /// never re-read it and the free-space line was frozen at whatever it said on first draw.
     private(set) var freeSpace = "—"
@@ -197,6 +198,7 @@ final class LiveStorageStatsSource: StorageStatsSource {
         )
         if recordingCount != count { recordingCount = count }
         if recordingsSize != size { recordingsSize = size }
+        if recordingsBytes != bytes { recordingsBytes = bytes }
         if freeSpace != free { freeSpace = free }
     }
 
