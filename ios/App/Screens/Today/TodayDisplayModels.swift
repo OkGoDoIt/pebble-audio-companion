@@ -50,6 +50,10 @@ struct RecapDetailDisplay: Equatable {
 
 /// The RECAP card (extraction §2.4 D).
 struct RecapDisplay: Equatable {
+    /// Digest ids are `day-<dateKey>`; the Today stack tells a recap push apart from a saved
+    /// note push (both ride `.note`) by this prefix.
+    static let digestIdPrefix = "day-"
+
     /// e.g. "updated 12:40 PM".
     let updatedText: String
     /// The 2–3 sentence digest body.

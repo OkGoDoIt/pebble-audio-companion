@@ -35,7 +35,7 @@ struct LibraryScreen: View {
         .navigationDestination(for: Route.self) { route in
             switch route {
             case .conversation(let id, let atMs):
-                ConversationScreen(conversationId: id, atMs: atMs, originLabel: originLabel)
+                ConversationScreen(conversationId: id, atMs: atMs)
             case .note(let id):
                 SavedNotesScreen(noteId: id)
             default:
@@ -54,8 +54,6 @@ struct LibraryScreen: View {
             }
         }
     }
-
-    private var originLabel: String { searchActive ? "Search" : Copy.Library.title }
 
     private func exitSearch() {
         searchActive = false

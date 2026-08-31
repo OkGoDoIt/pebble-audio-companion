@@ -81,7 +81,7 @@ struct SavedNotesScreen: View {
                 TemplateSheet(conversationId: conversationId) { note in
                     model.showTemplates = false
                     if note.id != noteId {
-                        router.libraryPath.append(Route.note(id: note.id))
+                        router.push(.note(id: note.id))
                     }
                 }
             }

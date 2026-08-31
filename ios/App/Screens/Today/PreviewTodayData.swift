@@ -138,7 +138,7 @@ final class PreviewTodayData {
         if phase == .recording {
             conversations.append(
                 ConversationRowDisplay(
-                    id: "conv-redesign",
+                    id: "app-redesign",
                     title: "App redesign session",
                     meta: "12:04 PM · 48 min so far",
                     snippet: "“…so the settings pages each push from one clean root…”",
@@ -148,16 +148,26 @@ final class PreviewTodayData {
             // Q13: a pause or stop ends the conversation — the row finishes.
             conversations.append(
                 ConversationRowDisplay(
-                    id: "conv-redesign",
+                    id: "app-redesign",
                     title: "App redesign session",
                     meta: "12:04 PM · 48 min",
                     snippet: nil,
                     isLive: false
                 ))
         }
+        // The long-title row: Today has to clamp it the same way Library does.
         conversations.append(
             ConversationRowDisplay(
-                id: "conv-coffee",
+                id: "long-day",
+                title: "Issues with Apple's AI-powered transcription service, Soniox, and a "
+                    + "request for a missing API key",
+                meta: "9:44 AM · 1 hr 4 min",
+                snippet: nil,
+                isLive: false
+            ))
+        conversations.append(
+            ConversationRowDisplay(
+                id: "coffee-dana",
                 title: "Coffee with Dana",
                 meta: "9:12 AM · 24 min",
                 snippet: nil,

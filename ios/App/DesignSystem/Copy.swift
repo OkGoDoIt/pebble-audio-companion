@@ -329,6 +329,10 @@ enum Copy {
 
         // Delete-undo snackbar (5 s).
         static let deleted = "Conversation deleted"
+
+        /// Shown when the id resolves to nothing — a deleted conversation reached from a
+        /// stale widget tap, Spotlight result, or notification.
+        static let unavailable = "This conversation is no longer available."
     }
 
     // ─────────────────────────────────────────────────────────────────────────
