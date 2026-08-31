@@ -4,6 +4,6 @@ import SwiftUI
 struct SettingsScreen: View {
     var body: some View {
         List {}
-            .navigationTitle(Copy.Settings.title)
+            .navigationTitle(Copy.Settings.Root.title)
     }
 }
