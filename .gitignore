@@ -12,3 +12,4 @@ iosApp/Pods/
 captures/
 .externalNativeBuild/
 .cxx/
+.env
