@@ -18,19 +18,35 @@ import WireProtocol
             fallbackTimeZoneID: "UTC", previous: previous)
     }
 
-    @Test func sameStreamChainsAcrossMoreThanFiveMinutes() {
-        // Rotation/reattach chain: same stream id, next start 8 min after previous end.
+    @Test func sameStreamRotationChainsWhenSegmentsAbut() {
+        // What the stream-id clause is actually for: a 15-min rotation hands straight over,
+        // so the successor abuts its predecessor and stays in the same conversation.
         let a = makeSegment(
             id: "a", stream: 7, startTimeMs: t0, durationSamples: minutesSamples(10))
         let b = makeSegment(
-            id: "b", stream: 7, startTimeMs: t0, firstSample: minutesSamples(18),
+            id: "b", stream: 7, startTimeMs: t0, firstSample: minutesSamples(10),
             durationSamples: minutesSamples(5))
         let convos = group([a, b])
         #expect(convos.count == 1)
         #expect(convos[0].id == "conv-a")
         #expect(convos[0].memberSegmentIds == ["a", "b"])
         #expect(convos[0].startMs == t0)
-        #expect(convos[0].endMs == t0 + minutesMs(23))
+        #expect(convos[0].endMs == t0 + minutesMs(15))
+    }
+
+    @Test func sameStreamDoesNotChainAcrossARealBreak() {
+        // A Pebble stream id survives a long silent disconnect, so "same stream" cannot mean
+        // "same conversation" on its own. Roger's library had 34 breaks of 5 min to 10.5 HOURS
+        // glued back together by the unbounded clause, collapsing 438 segments into 17
+        // conversations of up to 53 h. Past the 5-minute window it is a new conversation.
+        let a = makeSegment(
+            id: "a", stream: 7, startTimeMs: t0, durationSamples: minutesSamples(10))
+        let b = makeSegment(
+            id: "b", stream: 7, startTimeMs: t0, firstSample: minutesSamples(18),
+            durationSamples: minutesSamples(5))
+        let convos = group([a, b])
+        #expect(convos.map(\.memberSegmentIds) == [["a"], ["b"]])
+        #expect(convos[0].endMs == t0 + minutesMs(10))
     }
 
     @Test func differentStreamsChainWithinFiveMinutes() {

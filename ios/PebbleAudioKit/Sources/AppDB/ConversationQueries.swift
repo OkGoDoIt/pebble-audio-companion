@@ -11,13 +11,33 @@ import SegmentStore
 public enum ConversationLifecycle: String, Equatable, Sendable {
     /// Any member Running/Uploading.
     case transcribing
-    /// Else any member Pending (or Disabled — waiting for a usable provider), or missing a
-    /// task row entirely.
+    /// Else any member with NO durable transcript that is Pending (or Disabled — waiting for a
+    /// usable provider), or missing a task row entirely.
     case capturedWaiting
-    /// Else any member Failed.
+    /// Else any member Failed with nothing on disk.
     case failed
     /// All members terminal-success (Complete/NoSpeech).
     case complete
+}
+
+/// One member as the aggregation sees it: what the QUEUE thinks, and what is actually on disk.
+public struct ConversationMemberState: Equatable, Sendable {
+    /// `transcription_tasks.state`, or nil where the segment has no queue row — pruned, or
+    /// never enqueued because it arrived already transcribed.
+    public var task: TranscriptionState?
+    /// The segment's own `SegmentMeta.transcriptionState`, mirrored into the derived table.
+    public var segment: TranscriptionState?
+
+    public init(task: TranscriptionState?, segment: TranscriptionState?) {
+        self.task = task
+        self.segment = segment
+    }
+
+    /// Terminal success on disk. A transcript that exists is finished work, whatever a queue
+    /// row does or doesn't say about it.
+    public var hasDurableTranscript: Bool {
+        segment == .complete || segment == .noSpeech
+    }
 }
 
 /// The Library "All ⌄" menu (plan 6.7).
@@ -46,8 +66,19 @@ public struct ConversationListRow: Equatable, Sendable {
     public var openFollowUpCount: Int
     /// Logical-day key (5 AM boundary) in the conversation's recorded zone.
     public var dateKey: String
+    /// True once enrichment has written anything for this conversation (a title or a summary).
+    /// False means AI has not landed yet — which the UI must say out loud rather than render
+    /// as an untitled, untagged row that looks broken.
+    public var hasAnnotation: Bool
+    /// Authoritative-pass attempts already spent (`EnrichmentWorker.maxAttempts` bounds them).
+    /// Lets the UI tell "still working on it" apart from "it tried and gave up".
+    public var annotationFinalAttempts: Int
 
     public var durationMs: Int64 { max(0, endMs - startMs) }
+
+    /// Enrichment has produced nothing yet AND the transcript it needs is ready — so the row
+    /// is waiting on AI, not on capture.
+    public var awaitingAnnotation: Bool { !hasAnnotation && lifecycle == .complete }
 }
 
 public struct LibraryDaySection: Equatable, Sendable {
@@ -59,7 +90,10 @@ public struct LibraryDaySection: Equatable, Sendable {
 public struct SegmentProvenance: Equatable, Sendable {
     public var segmentId: String
     public var ordinal: Int
+    /// Queue state (`transcription_tasks`), nil where the segment has no row.
     public var state: TranscriptionState?
+    /// The segment's own durable state — the truth about whether a transcript exists.
+    public var segmentState: TranscriptionState?
     public var providerId: String?
     public var modelUsed: String?
     public var modeUsed: String?
@@ -81,13 +115,30 @@ public struct ConversationQueries: Sendable {
     /// Plan Part 3: any Running/Uploading ⇒ transcribing; else any Pending ⇒ captured-waiting;
     /// else any Failed ⇒ failed; else complete. A member without a task row counts as Pending;
     /// Disabled counts as Pending (eligible again once a provider is usable).
-    static func aggregateLifecycle(_ states: [TranscriptionState?]) -> ConversationLifecycle {
-        if states.contains(where: { $0 == .running || $0 == .uploading }) { return .transcribing }
-        if states.contains(where: { $0 == nil || $0 == .pending || $0 == .disabled }) {
+    ///
+    /// **A member holding a durable transcript is done, whatever the queue table says.** The
+    /// queue is a work list, not a record of what exists: rows get pruned, and a segment
+    /// imported with its transcript already on disk never had one. Reading the task rows alone
+    /// made every migrated conversation announce "Captured · waiting to transcribe" directly
+    /// above its own finished transcript, and offer a pointless "Transcribe Now" (anti-goal B2).
+    static func aggregateLifecycle(_ members: [ConversationMemberState]) -> ConversationLifecycle {
+        // A re-transcribe in flight is worth showing even over an existing transcript.
+        if members.contains(where: { $0.task == .running || $0.task == .uploading }) {
+            return .transcribing
+        }
+        let unfinished = members.filter { !$0.hasDurableTranscript }
+        if unfinished.contains(where: {
+            $0.task == nil || $0.task == .pending || $0.task == .disabled
+        }) {
             return .capturedWaiting
         }
-        if states.contains(.failed) { return .failed }
+        if unfinished.contains(where: { $0.task == .failed }) { return .failed }
         return .complete
+    }
+
+    /// Task-row-only overload (no durable-transcript information available).
+    static func aggregateLifecycle(_ states: [TranscriptionState?]) -> ConversationLifecycle {
+        aggregateLifecycle(states.map { ConversationMemberState(task: $0, segment: nil) })
     }
 
     /// Sums quiet/missing coverage overlapping [startMs, endMs) from cached day spans.
@@ -128,25 +179,31 @@ public struct ConversationQueries: Sendable {
             sql: """
                 SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs,
                     c.timezone AS timezone, c.state AS state,
-                    a.title AS title, a.summary AS summary
+                    a.title AS title, a.summary AS summary, a.finalAttempts AS finalAttempts
                 FROM conversations c
                 LEFT JOIN annotations a ON a.conversationId = c.id
                 ORDER BY c.startMs DESC, c.id
                 """
         )
 
-        var memberStates: [String: [TranscriptionState?]] = [:]
+        var memberStates: [String: [ConversationMemberState]] = [:]
         for row in try Row.fetchAll(
             db,
             sql: """
-                SELECT cs.conversationId AS conversationId, tt.state AS state
+                SELECT cs.conversationId AS conversationId, tt.state AS state,
+                    cs.transcriptionState AS segmentState
                 FROM conversation_segments cs
                 LEFT JOIN transcription_tasks tt ON tt.segmentId = cs.segmentId
                 ORDER BY cs.conversationId, cs.ordinal
                 """
         ) {
-            let state = (row["state"] as String?).flatMap(TranscriptionState.init(rawValue:))
-            memberStates[row["conversationId"], default: []].append(state)
+            memberStates[row["conversationId"], default: []].append(
+                ConversationMemberState(
+                    task: (row["state"] as String?).flatMap(TranscriptionState.init(rawValue:)),
+                    segment: (row["segmentState"] as String?)
+                        .flatMap(TranscriptionState.init(rawValue:))
+                )
+            )
         }
 
         var tagNames: [String: [String]] = [:]
@@ -209,10 +266,12 @@ public struct ConversationQueries: Sendable {
             let spans = prelim.keys.flatMap { coverage[$0] ?? [] }
             let stats = coverageStats(spans: spans, startMs: startMs, endMs: endMs)
             let counts = followUps[id] ?? (0, 0)
+            let title: String? = row["title"]
+            let summary: String? = row["summary"]
             return ConversationListRow(
                 id: id,
-                title: row["title"],
-                summary: row["summary"],
+                title: title,
+                summary: summary,
                 startMs: startMs,
                 endMs: endMs,
                 timeZoneID: row["timezone"],
@@ -223,7 +282,9 @@ public struct ConversationQueries: Sendable {
                 hasMissingAudio: stats.missingMs > 0,
                 followUpCount: counts.total,
                 openFollowUpCount: counts.open,
-                dateKey: prelim.keys[0]
+                dateKey: prelim.keys[0],
+                hasAnnotation: !(title ?? "").isEmpty || !(summary ?? "").isEmpty,
+                annotationFinalAttempts: row["finalAttempts"] ?? 0
             )
         }
     }
@@ -284,6 +345,7 @@ public struct ConversationQueries: Sendable {
             db,
             sql: """
                 SELECT cs.segmentId AS segmentId, cs.ordinal AS ordinal, tt.state AS state,
+                    cs.transcriptionState AS segmentState,
                     tt.providerId AS providerId, tt.modelUsed AS modelUsed,
                     tt.modeUsed AS modeUsed, tt.attempts AS attempts, tt.lastError AS lastError
                 FROM conversation_segments cs
@@ -297,6 +359,8 @@ public struct ConversationQueries: Sendable {
                 segmentId: member["segmentId"],
                 ordinal: member["ordinal"],
                 state: (member["state"] as String?).flatMap(TranscriptionState.init(rawValue:)),
+                segmentState: (member["segmentState"] as String?)
+                    .flatMap(TranscriptionState.init(rawValue:)),
                 providerId: member["providerId"],
                 modelUsed: member["modelUsed"],
                 modeUsed: member["modeUsed"],

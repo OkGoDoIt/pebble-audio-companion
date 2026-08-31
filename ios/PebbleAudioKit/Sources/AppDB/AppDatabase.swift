@@ -173,6 +173,17 @@ public struct AppDatabase: Sendable {
                 t.column("tags")
             }
         }
+        // The segment's OWN durable transcription state, mirrored from its meta at every
+        // regroup. `transcription_tasks` is a queue detail — rows are pruned, and segments
+        // imported with a transcript already on disk never had one — so the queue alone
+        // reported an entire migrated library as "captured · waiting to transcribe" while
+        // showing its transcript. The transcript is the truth; this column carries it into
+        // the aggregation. Derived, like the rest of the grouping.
+        migrator.registerMigration("v2-segment-transcription-state") { db in
+            try db.alter(table: "conversation_segments") { t in
+                t.add(column: "transcriptionState", .text)
+            }
+        }
         try migrator.migrate(writer)
     }
 }
