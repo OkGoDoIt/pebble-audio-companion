@@ -676,7 +676,9 @@ final class AppComposition {
         if !Self.usesDemoData {
             AppDataSources.current = AppDataSources(today: today, live: today)
             AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
-            SettingsDataSources.current = LiveSettingsDataSources.make(composition: self)
+            SettingsDataSources.current = LiveSettingsDataSources.make(
+                composition: self, capture: today
+            )
             OnboardingDataSources.current = OnboardingDataSources(
                 pairing: LiveWatchPairingSource(composition: self)
             )

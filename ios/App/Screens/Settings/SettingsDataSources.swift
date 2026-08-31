@@ -1,11 +1,42 @@
 import Foundation
 import Observation
+import Receiver
 import SwiftUI
 import Transcription
 
 // View-model data seams for the Settings screens. Screens observe these protocols; the mock
 // implementations carry the artboard sample values until the receiver/storage/transcription
 // services wire in (they swap via `SettingsDataSources.current`).
+
+// MARK: - Capture (the Background Audio master switch)
+
+/// The runtime half of a capture change, for the Settings screens.
+///
+/// Writing `AppSettings.captureIntent` records a PREFERENCE and nothing more. The receiver keeps
+/// its own intent and only observes the link rather than dialling it, so a bare write leaves the
+/// watch uncontacted when the switch goes on (the app, the widget and Control Center all say
+/// "Recording" while nothing is captured) and leaves the receiver running when it goes off (the
+/// user switches recording off and is still recorded). Every other surface pairs the write with a
+/// runtime call — Today's Start/Stop, onboarding, Control Center (`aa2a934`, `8ecace0`) — and
+/// this seam is that same call, reachable from Settings. There is no second sequence: the live
+/// implementation is `LiveTodayDataSource`, which routes into `CompanionRuntime`.
+@MainActor
+protocol CaptureControlling: AnyObject {
+    /// `.active` arms the one-shot on-watch enable prompt and dials the link; `.off` stops the
+    /// receiver and closes any open pause interval, so coverage reads "off" rather than a pause
+    /// that never ended. Call it AFTER writing `AppSettings.captureIntent`, so the row flips at
+    /// once rather than waiting on a watch that may not be in range.
+    func applyCaptureIntent(_ intent: CaptureIntent)
+}
+
+/// Previews and `-demo-data`: records what was asked for, since there is no runtime to ask.
+@MainActor
+@Observable
+final class MockCaptureControl: CaptureControlling {
+    private(set) var applied: [CaptureIntent] = []
+
+    func applyCaptureIntent(_ intent: CaptureIntent) { applied.append(intent) }
+}
 
 // MARK: - Watch
 
@@ -458,6 +489,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
 final class SettingsDataSources {
     static var current = SettingsDataSources()
 
+    let capture: CaptureControlling
     let watch: WatchStatusSource
     let storage: StorageStatsSource
     let localModel: LocalModelManaging
@@ -468,6 +500,7 @@ final class SettingsDataSources {
     let aiModels: [AiModelOption]
 
     init(
+        capture: CaptureControlling? = nil,
         watch: WatchStatusSource? = nil,
         storage: StorageStatsSource? = nil,
         localModel: LocalModelManaging? = nil,
@@ -477,6 +510,7 @@ final class SettingsDataSources {
         apiKeys: ApiKeyChecking? = nil,
         aiModels: [AiModelOption]? = nil
     ) {
+        self.capture = capture ?? MockCaptureControl()
         self.watch = watch ?? MockWatchStatusSource()
         self.storage = storage ?? MockStorageStatsSource()
         self.localModel = localModel ?? MockLocalModelManager()

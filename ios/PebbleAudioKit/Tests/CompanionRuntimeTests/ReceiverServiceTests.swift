@@ -162,6 +162,43 @@ import WireProtocol
         #expect(fixture.runtime.captureIntent == .off)
     }
 
+    // MARK: - The Settings "Background audio" master switch
+
+    // The switch wrote `AppSettings.captureIntent` and nothing else, which made it lie in both
+    // directions: ON left the watch uncontacted while every surface said "Recording", and OFF
+    // left the receiver running on someone who had just switched recording off. It now calls
+    // `applyExternalCaptureIntent` — the same entry point Control Center uses — so these two
+    // tests are the contract that switch depends on.
+
+    @Test func theMasterSwitchOnArmsTheWatchPromptAndDialsTheLink() async throws {
+        let fixture = try RuntimeFixture(
+            settings: RuntimeSettingsSnapshot(captureIntent: .off)
+        )
+
+        await fixture.runtime.applyExternalCaptureIntent(.active)
+
+        #expect(fixture.receiver.isWatchEnableRequestArmed, "ON must ask the watch, once")
+        #expect(fixture.link.resyncCount == 1, "an intent nothing dials never reaches the watch")
+        #expect(fixture.runtime.captureIntent == .active)
+    }
+
+    @Test func theMasterSwitchOffStopsReceivingAndEndsAnyPause() async throws {
+        let fixture = try RuntimeFixture(
+            settings: RuntimeSettingsSnapshot(captureIntent: .paused)
+        )
+        await fixture.receiver.start()
+        _ = try await fixture.pauseJournal.begin(source: .statusCard, atMs: 0)
+        await fixture.clock.advance(by: 30_000)
+
+        await fixture.runtime.applyExternalCaptureIntent(.off)
+
+        #expect(fixture.runtime.captureIntent == .off)
+        #expect(!fixture.receiver.isRunning, "OFF must stop the receiver, not just the preference")
+        #expect(fixture.link.disconnectCount == 1)
+        // Left open, coverage would render every hour after "off" as an endless pause.
+        #expect(try await fixture.pauseJournal.openInterval() == nil)
+    }
+
     @Test func revokingLocallyClearsTheResumeStateAndDropsTheLink() async throws {
         let fixture = try RuntimeFixture()
         let resumeStore = FileReceiverResumeStore(root: fixture.root)
