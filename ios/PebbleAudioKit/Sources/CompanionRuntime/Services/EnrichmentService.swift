@@ -145,6 +145,13 @@ public actor EnrichmentService {
         return true
     }
 
+    /// Delete-cascade support: a conversation that no longer exists keeps no extraction
+    /// bookkeeping. (Its follow-up ROWS are removed by the per-segment cascade, which is what
+    /// their `sourceSegmentId` is for.)
+    public func forgetFollowUpExtraction(conversationId: String) async {
+        await followUps.forgetExtraction(conversationId: conversationId)
+    }
+
     /// Donates the changed conversations into the persistent index + Spotlight. Separate from
     /// `enrichPass` so the pipeline's ORDER is observable (enrich, then donate).
     public func donate(conversationIds: [String]) async {

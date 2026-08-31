@@ -181,6 +181,12 @@ public final class FollowUpWorker: @unchecked Sendable {
         self.nowMs = nowMs
     }
 
+    /// Drops the extraction bookkeeping for a conversation that no longer exists, so the
+    /// derived table does not accumulate a row per deleted conversation forever.
+    public func forgetExtraction(conversationId: String) async {
+        try? await state.delete(conversationId)
+    }
+
     /// Runs one bounded extraction pass. Returns the items newly written this pass (so the
     /// caller can donate exactly those to the search index).
     public func extract(
