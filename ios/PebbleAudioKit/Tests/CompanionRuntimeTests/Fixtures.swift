@@ -458,6 +458,12 @@ final class RuntimeFixture: @unchecked Sendable {
             worker: EnrichmentWorker(
                 annotations: annotations, router: nil, nowMs: { clock.nowMs }
             ),
+            followUps: FollowUpWorker(
+                items: ActionItemStore(db: database, nowMs: { clock.nowMs }),
+                state: try FollowUpExtractionStore(db: database),
+                router: nil,
+                nowMs: { clock.nowMs }
+            ),
             annotations: annotations,
             store: store,
             database: database,

@@ -32,8 +32,12 @@ import Testing
                 .reconsiderDisabled,
                 .enqueueClosedSegments,
                 .drainQueue,
+                // Grouping precedes the AI layer and never waits on it — the whole UI reads the
+                // grouped tables.
+                .regroup,
                 .enrich,
                 .donate,
+                .followUps,
                 .recap,
                 .liveLocal,
                 .liveCloudPrune,
@@ -96,6 +100,43 @@ import Testing
         #expect(calls.calls.isEmpty)
         // The stage is still visited, so the ORDER assertion above stays stable.
         #expect(recorder.stages.contains(.donate))
+    }
+
+    /// Regression: grouping used to be the first line of `enrich`, so a long AI backfill froze
+    /// the user's entire view of reality — Library, Today's conversation list, the live row and
+    /// the Recording-now screen all read the grouped tables — while recording carried on. The
+    /// grouping is its own stage now, ahead of the AI layer and independent of whether it works.
+    @Test func groupingRunsBeforeTheAiLayerAndSurvivesItsFailure() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let pass = pass(clock: clock, recorder: recorder) { steps in
+            steps.regroup = { calls.record("regroup") }
+            steps.enrich = {
+                calls.record("enrich")
+                throw CancellationError()
+            }
+        }
+
+        _ = try? await pass.run()
+
+        #expect(calls.calls == ["regroup", "enrich"])
+        #expect(recorder.stages.contains(.regroup))
+    }
+
+    /// A pass that annotated something counts as having done work, so the loop comes straight
+    /// back for the next bite of the backlog instead of idling for 30 s between mouthfuls.
+    @Test func aPassThatAnnotatedOrExtractedComesBackPromptly() async throws {
+        let clock = TestClock()
+        let annotated = pass(clock: clock, recorder: StageRecorder()) { steps in
+            steps.enrich = { ["conv-1"] }
+        }
+        #expect(try await annotated.run() == PipelinePacing.afterWorkMs)
+
+        let extracted = pass(clock: clock, recorder: StageRecorder()) { steps in
+            steps.extractFollowUps = { true }
+        }
+        #expect(try await extracted.run() == PipelinePacing.afterWorkMs)
     }
 
     @Test func idleModelReleaseIsSkippedWhenThePassDidWork() async throws {

@@ -46,6 +46,16 @@ public final class EnrichmentWorker: @unchecked Sendable {
     /// Bounds the authoritative final pass so a persistently failing provider cannot spin.
     public static let maxAttempts = 3
 
+    /// Conversations actually SENT to the provider in one `enrich` call.
+    ///
+    /// This loop used to run the entire backlog in a single invocation, and that made the whole
+    /// pipeline pass as long as the backlog: with 145 unenriched conversations the pass did not
+    /// return for many minutes, so nothing after it ran and nothing before it ran again — the
+    /// grouping went stale and the user's Library, Today list, live row and Recording-now screen
+    /// all froze at whatever moment the backfill began, while recording continued. The backlog
+    /// still drains; it just yields the pass between mouthfuls.
+    public static let maxPerPass = 3
+
     /// Minimum combined-text length before the first provisional annotation is worthwhile.
     public static let liveMinChars = 120
 
@@ -88,22 +98,40 @@ public final class EnrichmentWorker: @unchecked Sendable {
 
         let now = nowMs()
         var annotated: [String] = []
-        for conversation in conversations {
-            // A migrated library hands this loop a whole backlog at once (one provider call per
-            // outstanding conversation, in a single pass — that is what makes the backfill
-            // prompt). Check between conversations so backgrounding or shutdown stops the
-            // backlog at the next boundary instead of running it out.
+        var calls = 0
+        // NEWEST FIRST. A migrated library hands this loop a whole backlog at once, and in
+        // arrival order the conversation happening RIGHT NOW is last — a migrated user waited
+        // for 145 months-old conversations before today's got a title. Recency is the max member
+        // start time; a live conversation is by construction the most recent thing there is.
+        for conversation in conversations.sorted(by: Self.newestFirst) {
+            // Check between conversations so backgrounding or shutdown stops the backlog at the
+            // next boundary instead of running it out.
             try Task.checkCancellation()
+            if calls >= Self.maxPerPass { break }
             let existing = try await annotations.load(conversation.conversationId)
             let plan = planFor(
                 conversation, existing: existing, transcriptOf: transcriptOf,
                 liveTextOf: liveTextOf, now: now)
             guard case .generate = plan else { continue }
+            // Counted on the PROVIDER call, not on the conversation examined: a library of
+            // already-annotated conversations must not eat the budget before reaching the one
+            // that needs work.
+            calls += 1
             if try await runPlan(activeRouter, conversation, existing: existing, plan: plan) {
                 annotated.append(conversation.conversationId)
             }
         }
         return annotated
+    }
+
+    /// Most recent conversation first; a conversation with no members sorts last. Ties break on
+    /// the id so the order is TOTAL — Swift's sort is not stable, and a per-pass budget handed a
+    /// non-deterministic order would pick a different few conversations every pass.
+    static func newestFirst(_ a: EnrichmentConversation, _ b: EnrichmentConversation) -> Bool {
+        let left = a.members.map(\.startTimeMs).max() ?? 0
+        let right = b.members.map(\.startTimeMs).max() ?? 0
+        if left != right { return left > right }
+        return a.conversationId < b.conversationId
     }
 
     private func planFor(

@@ -12,8 +12,12 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     case reconsiderDisabled
     case enqueueClosedSegments
     case drainQueue
+    /// Rebuild the conversation grouping. Cheap, local, AI-free — and its OWN stage, because
+    /// the entire UI reads the grouped tables and must never wait on the AI layer to see them.
+    case regroup
     case enrich
     case donate
+    case followUps
     case recap
     case liveLocal
     case liveCloudPrune
@@ -35,9 +39,13 @@ public struct PipelineSteps: Sendable {
     public var enqueueClosedSegments: @Sendable () async throws -> Void
     /// Returns true when at least one task advanced.
     public var drainQueue: @Sendable () async throws -> Bool
+    /// Rebuilds the conversation grouping the whole UI reads.
+    public var regroup: @Sendable () async throws -> Void
     /// Returns the conversation ids whose annotation changed.
     public var enrich: @Sendable () async throws -> [String]
     public var donate: @Sendable ([String]) async -> Void
+    /// Follow-up extraction over finished conversations. Returns true when it wrote anything.
+    public var extractFollowUps: @Sendable () async throws -> Bool
     public var refreshRecap: @Sendable () async -> Void
     /// `LiveTranscriber.processOnce()` + prune. Returns true when it did work.
     public var liveLocalPass: @Sendable () async throws -> Bool
@@ -62,8 +70,10 @@ public struct PipelineSteps: Sendable {
         reconsiderDisabled: @escaping @Sendable () async throws -> Bool = { false },
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
         drainQueue: @escaping @Sendable () async throws -> Bool = { false },
+        regroup: @escaping @Sendable () async throws -> Void = {},
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
+        extractFollowUps: @escaping @Sendable () async throws -> Bool = { false },
         refreshRecap: @escaping @Sendable () async -> Void = {},
         liveLocalPass: @escaping @Sendable () async throws -> Bool = { false },
         liveCloudPrune: @escaping @Sendable () async -> Void = {},
@@ -80,8 +90,10 @@ public struct PipelineSteps: Sendable {
         self.reconsiderDisabled = reconsiderDisabled
         self.enqueueClosedSegments = enqueueClosedSegments
         self.drainQueue = drainQueue
+        self.regroup = regroup
         self.enrich = enrich
         self.donate = donate
+        self.extractFollowUps = extractFollowUps
         self.refreshRecap = refreshRecap
         self.liveLocalPass = liveLocalPass
         self.liveCloudPrune = liveCloudPrune
@@ -167,33 +179,53 @@ public struct PipelinePass: Sendable {
             await steps.onDiagnosticsDirty()
         }
 
-        // 5/6. Titles + summaries, then search/Spotlight donation of exactly what changed.
+        // 5. Rebuild the conversation grouping — BEFORE the AI layer and never behind it.
+        //    Library, Today's list, the live row and the Recording-now screen all read the
+        //    grouped tables, so this is the step that makes a just-closed segment visible and
+        //    shows the open one as live. It used to be the first line of `enrich`, which meant
+        //    a long AI backfill froze the user's entire view of reality while recording
+        //    continued.
+        onStage(.regroup)
+        try await steps.regroup()
+
+        // 6/7. Titles + summaries, then search/Spotlight donation of exactly what changed.
+        //      BOUNDED per pass: the backlog drains over many passes rather than holding this
+        //      one open for minutes.
         onStage(.enrich)
         let enriched = try await steps.enrich()
         onStage(.donate)
         if !enriched.isEmpty {
+            processed = true
             await steps.donate(enriched)
             await steps.onDiagnosticsDirty()
         }
 
-        // 7. Daily recap (its own debounce decides whether anything actually runs).
+        // 8. Follow-up extraction over finished conversations (plan Part 4.5) — after enrich,
+        //    on the same durable transcripts, and bounded the same way.
+        onStage(.followUps)
+        if try await steps.extractFollowUps() {
+            processed = true
+            await steps.onDiagnosticsDirty()
+        }
+
+        // 9. Daily recap (its own debounce decides whether anything actually runs).
         onStage(.recap)
         await steps.refreshRecap()
 
-        // 8. Live preview of the OPEN segment — after the durable closed-segment work, in the
-        //    same loop, so a possibly single-instance native model is never used concurrently.
+        // 10. Live preview of the OPEN segment — after the durable closed-segment work, in the
+        //     same loop, so a possibly single-instance native model is never used concurrently.
         onStage(.liveLocal)
         if try await steps.liveLocalPass() { processed = true }
 
-        // 9. Cloud live previews are pruned once the durable transcript supersedes them.
+        // 11. Cloud live previews are pruned once the durable transcript supersedes them.
         onStage(.liveCloudPrune)
         await steps.liveCloudPrune()
 
-        // 10. Mirror closed segments to WAV when the user asked for it.
+        // 12. Mirror closed segments to WAV when the user asked for it.
         onStage(.wavExport)
         try await steps.exportWavIfEnabled()
 
-        // 11. Shrink the foreground footprint between bursts: release the resident model once it
+        // 13. Shrink the foreground footprint between bursts: release the resident model once it
         //     has been idle. It reloads lazily on the next segment, which is also how a
         //     selected-model change takes effect.
         onStage(.idleModelRelease)
@@ -201,7 +233,7 @@ public struct PipelinePass: Sendable {
             await steps.releaseModelIfIdle()
         }
 
-        // 12. Hand the widget what this pass just produced — a new transcript line, a title
+        // 14. Hand the widget what this pass just produced — a new transcript line, a title
         //     enrichment finally wrote, a follow-up that appeared. The widget has no other way
         //     to learn any of it.
         await steps.refreshCoverageSnapshot()

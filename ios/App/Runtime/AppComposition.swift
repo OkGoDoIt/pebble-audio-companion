@@ -397,6 +397,15 @@ final class AppComposition {
             worker: EnrichmentWorker(
                 annotations: annotations, router: aiRouter, nowMs: nowMs
             ),
+            // Follow-up extraction (plan Part 4.5). `FollowUps.swift` was ported whole and then
+            // never called by anything, which is why every conversation truthfully reported
+            // "All caught up." — nothing had ever written a follow-up.
+            followUps: FollowUpWorker(
+                items: ActionItemStore(db: database, nowMs: nowMs),
+                state: try FollowUpExtractionStore(db: database),
+                router: aiRouter,
+                nowMs: nowMs
+            ),
             annotations: annotations,
             store: store,
             database: database,

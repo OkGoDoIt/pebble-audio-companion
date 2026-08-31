@@ -23,14 +23,16 @@ import WireProtocol
 
         let stages = fixture.stages.stages
         #expect(!stages.isEmpty)
-        let firstPass = Array(stages.prefix(10))
+        let firstPass = Array(stages.prefix(12))
         #expect(
             firstPass == [
                 .reconsiderDisabled,
                 .enqueueClosedSegments,
                 .drainQueue,
+                .regroup,
                 .enrich,
                 .donate,
+                .followUps,
                 .recap,
                 .liveLocal,
                 .liveCloudPrune,

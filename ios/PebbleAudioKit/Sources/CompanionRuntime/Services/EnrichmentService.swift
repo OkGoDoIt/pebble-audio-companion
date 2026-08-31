@@ -13,6 +13,11 @@ import Transcription
 /// user pause end a conversation.
 public actor EnrichmentService {
     private let worker: EnrichmentWorker
+    /// Follow-up extraction shares this service's grouping, transcripts and donator rather than
+    /// standing up a second copy of all three. NOT optional and NOT defaulted: the reason
+    /// `FollowUps.swift` sat dead was a subsystem nothing was obliged to construct, and a
+    /// required parameter is the only version of this the compiler enforces.
+    private let followUps: FollowUpWorker
     private let annotations: AnnotationStore
     private let store: SegmentStore
     private let pauseJournal: PauseJournal?
@@ -25,6 +30,7 @@ public actor EnrichmentService {
 
     public init(
         worker: EnrichmentWorker,
+        followUps: FollowUpWorker,
         annotations: AnnotationStore,
         store: SegmentStore,
         database: AppDatabase,
@@ -36,6 +42,7 @@ public actor EnrichmentService {
         log: RuntimeLog = .silent
     ) {
         self.worker = worker
+        self.followUps = followUps
         self.annotations = annotations
         self.store = store
         self.database = database
@@ -60,26 +67,82 @@ public actor EnrichmentService {
         return sections.flatMap(\.rows).filter { $0.awaitingAnnotation }.count
     }
 
-    /// Rebuilds the conversation grouping and runs one enrichment pass over it.
+    /// Runs one enrichment pass over the CURRENT grouping.
     /// Returns the conversation ids whose annotation changed.
+    ///
+    /// It deliberately does NOT regroup: grouping is cheap, local, AI-free work and belongs to
+    /// its own pipeline stage (`regroupPass`). This used to call `regroup()` first, which meant
+    /// the whole app's view of reality — Library, Today's conversation list, the live row, the
+    /// Recording-now screen, all of which read the grouped tables — was blocked behind however
+    /// long the AI backlog took. A migrated library with 145 unenriched conversations therefore
+    /// froze the world at whatever moment the backfill started, while recording carried on.
     public func enrichPass() async throws -> [String] {
         isEnriching = true
         defer { isEnriching = false }
-        let conversations = try await regroup()
+        let inputs = await enrichmentInputs()
+        guard !inputs.isEmpty else { return [] }
+        return try await worker.enrich(
+            inputs, transcriptOf: transcriptOf, liveTextOf: liveTextOf
+        )
+    }
+
+    /// The conversation grouping as the worker sees it: current grouping + member metas.
+    private func enrichmentInputs() async -> [EnrichmentConversation] {
+        let conversations = await grouping()
         guard !conversations.isEmpty else { return [] }
         let metasById = Dictionary(
             uniqueKeysWithValues: await store.listSegments().map { ($0.segmentId, $0) }
         )
-        let inputs = conversations.map { conversation in
+        return conversations.map { conversation in
             EnrichmentConversation(
                 conversationId: conversation.id,
                 isOpen: conversation.isLive,
                 members: conversation.memberSegmentIds.compactMap { metasById[$0] }
             )
         }
-        return try await worker.enrich(
-            inputs, transcriptOf: transcriptOf, liveTextOf: liveTextOf
-        )
+    }
+
+    /// The grouping stage: rebuild `conversations` / `conversation_segments` from the segment
+    /// metas and the pause journal. Every pass, unconditionally, independent of the AI layer —
+    /// this is what makes a segment visible as soon as it closes.
+    public func regroupPass() async throws {
+        _ = try await regroup()
+    }
+
+    /// True while `followUpPass` is inside the worker.
+    public private(set) var isExtractingFollowUps = false
+
+    /// Extracts follow-ups from finished conversations (plan Part 4.5). Runs after `enrich`
+    /// because it wants the same durable, complete transcripts the final annotation pass wants,
+    /// and reuses the grouping that pass just rebuilt rather than regrouping again.
+    ///
+    /// Returns true when it wrote at least one new follow-up, so the pipeline treats the pass as
+    /// having done work and comes back promptly for the rest of the backlog.
+    @discardableResult
+    public func followUpPass() async throws -> Bool {
+        isExtractingFollowUps = true
+        defer { isExtractingFollowUps = false }
+        let inputs = await enrichmentInputs()
+        guard !inputs.isEmpty else { return false }
+        let written = try await followUps.extract(inputs, transcriptOf: transcriptOf)
+        guard !written.isEmpty else { return false }
+        // Make them findable too. `donateFollowUp` had no production caller before this — the
+        // search index knew about the `followup` kind and nothing ever wrote one.
+        if let donator {
+            for item in written {
+                do {
+                    try await donator.donateFollowUp(
+                        id: item.id,
+                        text: item.text,
+                        sourceConversationId: item.sourceConversationId,
+                        createdAtMs: item.createdAtMs
+                    )
+                } catch {
+                    log.failure("follow-up donation", error)
+                }
+            }
+        }
+        return true
     }
 
     /// Donates the changed conversations into the persistent index + Spotlight. Separate from

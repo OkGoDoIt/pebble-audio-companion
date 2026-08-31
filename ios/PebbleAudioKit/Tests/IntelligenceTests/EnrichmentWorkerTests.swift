@@ -395,4 +395,77 @@ private struct FakeFailure: LocalizedError {
         #expect(annotation?.isFinal == true)
         #expect(annotation?.title == "Team sync")
     }
+
+    // MARK: - Backlog pacing
+
+    /// Regression: this loop used to run the ENTIRE backlog in one invocation. With 145
+    /// unenriched conversations the pipeline pass did not return for many minutes, so the
+    /// grouping stage never ran again — Library, Today's list, the live row and the
+    /// Recording-now screen all froze at the moment the backfill began, while recording
+    /// continued. The backlog still drains; it just yields the pass between mouthfuls.
+    @Test func aLargeBacklogIsBoundedToAFewProviderCallsPerPass() async throws {
+        let provider = FakeAiProvider()
+        let backlog = (0..<50).map { index in
+            EnrichmentConversation(
+                conversationId: "conv-\(index)", isOpen: false,
+                members: [meta("seg-\(index)")])
+        }
+
+        let annotated = try await worker(provider).enrich(
+            backlog, transcriptOf: { transcript($0) })
+
+        #expect(provider.runCount == EnrichmentWorker.maxPerPass)
+        #expect(annotated.count == EnrichmentWorker.maxPerPass)
+    }
+
+    /// A migrated user waited for 145 months-old conversations before today's got a title.
+    /// Newest first, so the conversation that just happened is annotated in the first pass.
+    @Test func theNewestConversationIsAnnotatedBeforeAnOlderBacklog() async throws {
+        let provider = FakeAiProvider()
+        let old = (0..<10).map { index in
+            EnrichmentConversation(
+                conversationId: "conv-old-\(index)", isOpen: false,
+                members: [metaAt("seg-old-\(index)", startTimeMs: UInt64(1_000 + index))])
+        }
+        let newest = EnrichmentConversation(
+            conversationId: "conv-today", isOpen: false,
+            members: [metaAt("seg-today", startTimeMs: 9_000_000)])
+
+        let annotated = try await worker(provider).enrich(
+            old + [newest], transcriptOf: { transcript($0) })
+
+        #expect(annotated.first == "conv-today")
+    }
+
+    /// A budget counted on conversations EXAMINED rather than provider calls would be eaten by
+    /// an already-annotated library before ever reaching the one that needs work.
+    @Test func alreadyAnnotatedConversationsDoNotConsumeTheBudget() async throws {
+        let provider = FakeAiProvider()
+        for index in 0..<20 {
+            try await store.save(
+                ConversationAnnotation(
+                    conversationId: "conv-done-\(index)", title: "Done", summary: "Done",
+                    tags: ["work"], isFinal: true, finalAttempts: 1))
+        }
+        let settled = (0..<20).map { index in
+            EnrichmentConversation(
+                conversationId: "conv-done-\(index)", isOpen: false,
+                members: [metaAt("seg-done-\(index)", startTimeMs: UInt64(9_000_000 + index))])
+        }
+        let pending = EnrichmentConversation(
+            conversationId: "conv-pending", isOpen: false,
+            members: [metaAt("seg-pending-1", startTimeMs: 1_000)])
+
+        let annotated = try await worker(provider).enrich(
+            settled + [pending], transcriptOf: { transcript($0) })
+
+        #expect(annotated == ["conv-pending"])
+        #expect(provider.runCount == 1)
+    }
+
+    private func metaAt(_ segmentId: String, startTimeMs: UInt64) -> SegmentMeta {
+        var value = meta(segmentId)
+        value.startTimeMs = startTimeMs
+        return value
+    }
 }
