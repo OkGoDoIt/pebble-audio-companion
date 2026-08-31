@@ -299,6 +299,9 @@ enum Copy {
         }
         /// The live engine as the provenance line names it.
         static let onDeviceSource = "on-device"
+        /// Text no engine has claimed. Rare and defensive — but "on-device" is a claim, so an
+        /// unknown source must never fall back to it.
+        static let unknownSource = "engine unknown"
         /// e.g. "Live transcript · on-device · final transcript may differ". The source is named
         /// honestly — a cloud live transcript must not claim to be on-device.
         static func provenance(source: String = onDeviceSource) -> String {
