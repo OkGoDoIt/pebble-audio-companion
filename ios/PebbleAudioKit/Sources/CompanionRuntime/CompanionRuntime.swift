@@ -199,6 +199,12 @@ public actor CompanionRuntime {
     public func startCapture() async {
         await environment.receiver.armWatchEnableRequest()
         await environment.receiver.applyCaptureIntent(.active)
+        // Setting the intent only tells the SESSION what to want; the session observes the link
+        // rather than dialling it, so without this the watch is never actually contacted and the
+        // screen waits forever. "Start Recording" is an explicit user gesture, so it connects —
+        // this is the same call the Connect / Find Watch buttons make, and it is idempotent when
+        // a link is already up.
+        environment.receiver.reconnect()
         wake.signal()
         await refreshSnapshot(.pauseChanged)
     }
