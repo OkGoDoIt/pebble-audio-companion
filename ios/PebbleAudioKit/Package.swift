@@ -74,7 +74,7 @@ let package = Package(
             name: "CompanionRuntime",
             dependencies: [
                 "Receiver", "Transcription", "Intelligence", "LiveAudio", "SearchKit",
-                "Migration", "StatusUI",
+                "Migration", "StatusUI", "AppDB", "SegmentStore", "AudioCodec",
             ],
             swiftSettings: swiftSettings
         ),
@@ -95,6 +95,13 @@ let package = Package(
         .testTarget(name: "LiveAudioTests", dependencies: ["LiveAudio"], swiftSettings: swiftSettings),
         .testTarget(name: "SearchKitTests", dependencies: ["SearchKit"], swiftSettings: swiftSettings),
         .testTarget(name: "MigrationTests", dependencies: ["Migration"], swiftSettings: swiftSettings),
-        .testTarget(name: "CompanionRuntimeTests", dependencies: ["CompanionRuntime"], swiftSettings: swiftSettings),
+        .testTarget(
+            name: "CompanionRuntimeTests",
+            dependencies: [
+                "CompanionRuntime", "AppDB", "SegmentStore", "Receiver", "Transcription",
+                "Intelligence", "LiveAudio", "SearchKit", "StatusUI", "WireProtocol",
+            ],
+            swiftSettings: swiftSettings
+        ),
     ]
 )
