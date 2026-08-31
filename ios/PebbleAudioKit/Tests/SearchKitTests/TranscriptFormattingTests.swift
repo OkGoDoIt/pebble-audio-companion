@@ -5,10 +5,10 @@ import WireProtocol
 
 @testable import SearchKit
 
-// Port of `app/src/commonTest/.../ui/TranscriptFormattingTest.kt` — ALL cases. These behaviors
-// (timeline gap collapsing, quiet labeling, snippet behaviors) are the spec for the rebuilt
-// transcript renderer and search snippets (plan 4.7); the KMP `SegmentTranscript` fixture is
-// the local `TranscriptContent` slice.
+// Port of `app/src/commonTest/.../ui/TranscriptFormattingTest.kt`. Timeline gap collapsing and
+// quiet labelling are the spec for the rebuilt transcript renderer. The KMP fuzzy search-match
+// cases went with the engine they pinned (plan 4.7): the product searches through SearchKit's
+// FTS5 index, so a second in-memory scorer had no surface to reach.
 
 @Suite struct TranscriptFormattingTests {
     // MARK: - Speaker presentation
@@ -280,12 +280,5 @@ import WireProtocol
             frameCount: 500,
             gaps: gaps
         )
-    }
-
-    private func testTranscript(
-        text: String,
-        segments: [TranscriptSegment] = []
-    ) -> TranscriptContent {
-        TranscriptContent(text: text, segments: segments)
     }
 }

@@ -9,8 +9,8 @@ import WireProtocol
 //
 // Structural adjustments vs KMP (mirrored in SearchKitTests):
 // - `SegmentTranscript` (a Transcription-module type) is replaced by the local
-//   `TranscriptContent` slice (text + segments + words) — SearchKit deliberately does not
-//   depend on the Transcription module.
+//   `TranscriptSegment` / `TranscriptWord` slices — SearchKit deliberately does not depend on
+//   the Transcription module.
 // - The KMP sealed interface `TranscriptTimelineItem` is a Swift enum with payload structs.
 //
 // NOT here (plan 4.7): the old hand-rolled fuzzy-search ENGINE. The product's search is the
@@ -25,19 +25,6 @@ import WireProtocol
 // actually renders transcripts — never got that fix.
 
 // MARK: - Input slices
-
-/// Transcript display slice: durable text plus provider phrase/word timings.
-public struct TranscriptContent: Equatable, Sendable {
-    public var text: String
-    public var segments: [TranscriptSegment]
-    public var words: [TranscriptWord]
-
-    public init(text: String, segments: [TranscriptSegment] = [], words: [TranscriptWord] = []) {
-        self.text = text
-        self.segments = segments
-        self.words = words
-    }
-}
 
 /// One provider phrase/window with timings (display slice).
 public struct TranscriptSegment: Equatable, Sendable {
