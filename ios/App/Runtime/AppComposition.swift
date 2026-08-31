@@ -144,7 +144,11 @@ final class AppComposition {
             store: store,
             freeSpace: VolumeFreeSpace(),
             nowMs: nowMs,
-            config: { retentionConfig(for: settingsBox) }
+            config: { retentionConfig(for: settingsBox) },
+            // Retention is the one thing in the app that deletes a person's recordings without
+            // being asked to. Both caps say what they took, so "where did my conversations go?"
+            // has an answer in Detailed Logs and in a support report.
+            log: { AppRuntimeLog.shared.record($0) }
         )
         self.retention = retention
 
