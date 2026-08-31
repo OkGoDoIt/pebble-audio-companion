@@ -635,6 +635,39 @@ extension LiveWorld: NotesDataSource {
     func generate(
         conversationId: String, template: NoteTemplate, customPrompt: String?
     ) async throws -> NoteDisplay {
+        let produced = try await produce(
+            conversationId: conversationId, template: template, customPrompt: customPrompt)
+        let stored = try await composition.notes.create(
+            conversationId: conversationId,
+            templateId: template.id,
+            title: template.title,
+            body: produced.body,
+            citationsJson: produced.citationsJson,
+            provider: produced.provider,
+            model: produced.model,
+            nowMs: composition.clock.nowMs
+        )
+        try? await composition.donator.donateNote(
+            id: stored.id, title: stored.title, body: stored.body,
+            createdAtMs: stored.createdAtMs
+        )
+        let title = await self.title(of: conversationId) ?? "Conversation"
+        return Self.display(stored, conversationTitle: title)
+    }
+
+    /// One model run over a conversation's transcripts. Split out from `generate` so
+    /// `regenerate` can write the result back onto the EXISTING note instead of creating a
+    /// second one and deleting the first.
+    private struct ProducedNote {
+        var body: String
+        var citationsJson: String
+        var provider: String?
+        var model: String?
+    }
+
+    private func produce(
+        conversationId: String, template: NoteTemplate, customPrompt: String?
+    ) async throws -> ProducedNote {
         let segmentIds = await members(of: conversationId)
         let prompt = Self.prompt(for: template, customPrompt: customPrompt)
         // A citing template labels each member "[1]", "[2]" … in the order they were recorded,
@@ -669,24 +702,19 @@ extension LiveWorld: NotesDataSource {
         let citations = prompt.citesSources
             ? renderedAnswerCitations(result.text, sourceIds: excerpts.map(\.segmentId))
             : []
-        let stored = try await composition.notes.create(
-            conversationId: conversationId,
-            templateId: template.id,
-            title: template.title,
+        return ProducedNote(
             body: result.text,
             citationsJson: Self.citationsJson(citations),
             provider: result.providerId,
-            model: result.modelUsed,
-            nowMs: composition.clock.nowMs
+            model: result.modelUsed
         )
-        try? await composition.donator.donateNote(
-            id: stored.id, title: stored.title, body: stored.body,
-            createdAtMs: stored.createdAtMs
-        )
-        let title = await self.title(of: conversationId) ?? "Conversation"
-        return Self.display(stored, conversationTitle: title)
     }
 
+    /// Rewrites the note IN PLACE. The screen that asked for this is addressing the note by its
+    /// route id, so a regeneration that minted a new id (and deleted the old row) left that
+    /// screen pointing at nothing: Edit → Save silently discarded the user's text and the note
+    /// appeared to vanish, and Delete Note deleted an already-dead row while the regenerated
+    /// note stayed in the library.
     func regenerate(noteId: String) async throws -> NoteDisplay {
         guard let existing = try await composition.notes.get(id: noteId) else {
             throw CocoaError(.fileNoSuchFile)
@@ -695,11 +723,29 @@ extension LiveWorld: NotesDataSource {
         let template =
             templates.first { $0.id == existing.templateId }
             ?? NoteTemplate(id: existing.templateId, title: existing.title)
-        let regenerated = try await generate(
-            conversationId: existing.conversationId, template: template, customPrompt: template.prompt
+        let produced = try await produce(
+            conversationId: existing.conversationId, template: template,
+            customPrompt: template.prompt
         )
-        try await composition.notes.delete(id: noteId)
-        return regenerated
+        let nowMs = composition.clock.nowMs
+        try await composition.notes.replaceContent(
+            id: noteId,
+            title: existing.title,
+            body: produced.body,
+            citationsJson: produced.citationsJson,
+            provider: produced.provider,
+            model: produced.model,
+            nowMs: nowMs
+        )
+        guard let stored = try await composition.notes.get(id: noteId) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try? await composition.donator.donateNote(
+            id: stored.id, title: stored.title, body: stored.body,
+            createdAtMs: stored.createdAtMs
+        )
+        let title = await self.title(of: existing.conversationId) ?? "Conversation"
+        return Self.display(stored, conversationTitle: title)
     }
 
     func saveEdit(noteId: String, title: String, body: String) async throws {
