@@ -253,6 +253,16 @@ extension Array where Element == String {
 /// Built-in manual templates for the AI flow (ux-visual-design-plan Section 19). Users can
 /// also run a custom prompt; custom templates persist via `CustomTemplateStore` (AppDB).
 public enum AiPromptTemplates {
+    /// The `[n]` convention, shared by every template whose output is read beside the
+    /// recording. The numbers are the excerpt labels the prompt builder writes, and they are
+    /// what map a chip in the UI back to a segment - so the model must never invent one.
+    static let citationRules =
+        "Each transcript segment is labelled with a citation number like [2]. When a point "
+        + "comes from a segment, place that bracketed number right after it, e.g. \"They "
+        + "decided to take the ferry [2].\" Cite more than one when several apply, e.g. "
+        + "[2][5]. Use only the numbers you were given - never a segment id, a markdown link, "
+        + "or a number for a segment that was not provided."
+
     static let commonSystemRules =
         "You are processing transcripts of background audio captured by the user's own "
         + "wearable microphone. Transcripts may contain transcription errors, fragments, and "
@@ -276,8 +286,9 @@ public enum AiPromptTemplates {
         id: "meeting-notes",
         title: "Meeting notes",
         systemPrompt: "\(commonSystemRules) Produce structured meeting notes: topic, "
-            + "discussion points, decisions, and open questions.",
-        userPrompt: "Write meeting notes for this conversation."
+            + "discussion points, decisions, and open questions. \(citationRules)",
+        userPrompt: "Write meeting notes for this conversation.",
+        citesSources: true
     )
 
     public static let actionItems = AiPromptTemplate(
@@ -295,8 +306,10 @@ public enum AiPromptTemplates {
         id: "decisions",
         title: "Decisions",
         systemPrompt: "\(commonSystemRules) List the decisions that were made, each with the "
-            + "context that led to it. If no decisions were made, say so plainly.",
-        userPrompt: "List the decisions made in these transcripts."
+            + "context that led to it. If no decisions were made, say so plainly. "
+            + "\(citationRules)",
+        userPrompt: "List the decisions made in these transcripts.",
+        citesSources: true
     )
 
     public static let followUpEmail = AiPromptTemplate(
@@ -312,16 +325,18 @@ public enum AiPromptTemplates {
         id: "study-notes",
         title: "Study notes",
         systemPrompt: "\(commonSystemRules) Produce clear study notes: key concepts, "
-            + "definitions, and takeaways organized for review.",
-        userPrompt: "Create study notes from these transcripts."
+            + "definitions, and takeaways organized for review. \(citationRules)",
+        userPrompt: "Create study notes from these transcripts.",
+        citesSources: true
     )
 
     public static let interviewHighlights = AiPromptTemplate(
         id: "interview-highlights",
         title: "Interview highlights",
         systemPrompt: "\(commonSystemRules) Summarize interview highlights: candidate "
-            + "strengths, concerns, and notable quotes. Be factual.",
-        userPrompt: "Summarize interview highlights from these transcripts."
+            + "strengths, concerns, and notable quotes. Be factual. \(citationRules)",
+        userPrompt: "Summarize interview highlights from these transcripts.",
+        citesSources: true
     )
 
     public static let ask = AiPromptTemplate(
