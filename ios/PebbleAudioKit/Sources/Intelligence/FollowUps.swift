@@ -19,16 +19,23 @@ public struct ActionItem: Equatable, Sendable {
     public var text: String
     public var done: Bool
     public var sourceSegmentId: String
+    /// The conversation the item was extracted from. Load-bearing, not decoration: the
+    /// conversation view's Follow-ups sheet reads `FollowUpStore.list(conversationId:)`, which
+    /// filters on this column — an item written with NULL here is invisible everywhere except
+    /// the global Today card.
+    public var sourceConversationId: String?
     public var createdAtMs: Int64
 
     public init(
         id: String, text: String, done: Bool = false, sourceSegmentId: String,
+        sourceConversationId: String? = nil,
         createdAtMs: Int64
     ) {
         self.id = id
         self.text = text
         self.done = done
         self.sourceSegmentId = sourceSegmentId
+        self.sourceConversationId = sourceConversationId
         self.createdAtMs = createdAtMs
     }
 }
@@ -248,11 +255,18 @@ public struct ActionItemStore: Sendable {
     static func item(from row: Row) -> ActionItem {
         ActionItem(
             id: row["id"], text: row["text"], done: row["done"],
-            sourceSegmentId: row["sourceSegmentId"] ?? "", createdAtMs: row["createdAtMs"])
+            sourceSegmentId: row["sourceSegmentId"] ?? "",
+            sourceConversationId: row["sourceConversationId"],
+            createdAtMs: row["createdAtMs"])
     }
 
     /// Upserts by id (re-running extraction for a segment overwrites, never duplicates).
     /// A zero `createdAtMs` is stamped with the store clock, matching the KMP store.
+    ///
+    /// `done` is deliberately NOT part of the conflict update: `follow_ups` is an
+    /// AUTHORITATIVE table (plan Part 6.5) and `done` is user-authored, so a re-extraction
+    /// that produces the same item text must never un-tick it. The caller decides the initial
+    /// value for a genuinely new row.
     @discardableResult
     public func save(_ item: ActionItem) async throws -> ActionItem {
         var stamped = item
@@ -263,15 +277,15 @@ public struct ActionItemStore: Sendable {
                 sql: """
                     INSERT INTO follow_ups
                         (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs)
-                    VALUES (?, ?, ?, NULL, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
-                        text = excluded.text, done = excluded.done,
-                        sourceSegmentId = excluded.sourceSegmentId,
-                        createdAtMs = excluded.createdAtMs
+                        text = excluded.text,
+                        sourceConversationId = excluded.sourceConversationId,
+                        sourceSegmentId = excluded.sourceSegmentId
                     """,
                 arguments: [
-                    toWrite.id, toWrite.text, toWrite.done, toWrite.sourceSegmentId,
-                    toWrite.createdAtMs,
+                    toWrite.id, toWrite.text, toWrite.done, toWrite.sourceConversationId,
+                    toWrite.sourceSegmentId, toWrite.createdAtMs,
                 ]
             )
         }

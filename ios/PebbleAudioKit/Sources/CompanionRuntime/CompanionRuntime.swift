@@ -393,8 +393,10 @@ public actor CompanionRuntime {
             drainQueue: {
                 try await env.transcription.drainQueue { await env.diagnostics.refresh() }
             },
+            regroup: { try await env.enrichment.regroupPass() },
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
+            extractFollowUps: { try await env.enrichment.followUpPass() },
             refreshRecap: { await env.recap.refresh() },
             liveLocalPass: { try await env.live.localLivePass() },
             liveCloudPrune: { await env.live.cloudLivePrune() },
