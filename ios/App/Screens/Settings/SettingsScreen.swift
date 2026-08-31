@@ -79,7 +79,8 @@ struct SettingsScreen: View {
             .toggleStyle(.switch)
             .tint(Tokens.good)
 
-            Toggle(isOn: lossAlertsBinding) {
+            // Two-line toggle row, same shape as Storage's auto-export row.
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(Copy.Settings.Root.lossAlerts)
                         .font(AppFont.callout)
@@ -90,9 +91,11 @@ struct SettingsScreen: View {
                         .foregroundStyle(notificationsDenied ? Tokens.attention : Tokens.meta)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 10)
+                Toggle(Copy.Settings.Root.lossAlerts, isOn: lossAlertsBinding)
+                    .labelsHidden()
+                    .tint(Tokens.good)
             }
-            .toggleStyle(.switch)
-            .tint(Tokens.good)
         }
         .task { await refreshNotificationPermission() }
     }
