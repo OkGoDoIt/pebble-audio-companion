@@ -22,9 +22,18 @@ targets:
         excludes:
           - "Info.plist"
           - "App.entitlements"
+      # Shared/ compiles into the app AND the widget extension. CoverageSnapshot.swift is the
+      # one exception: the app already links the kit's `CompanionRuntime.CoverageSnapshot`
+      # (the writer), so compiling the widget's dependency-free mirror here too would shadow
+      # it inside the app module.
+      - path: Shared
+        excludes:
+          - "CoverageSnapshot.swift"
     dependencies:
       - package: PebbleAudioKit
         product: PebbleAudioKit
+      - target: Widgets
+        embed: true
     settings:
       base:
         INFOPLIST_FILE: App/Info.plist
@@ -41,12 +50,73 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app
+
+  # WidgetKit extension: the Today-coverage widget (Home + Lock Screen) and the Control
+  # Center capture toggle. It links NOTHING from PebbleAudioKit — it renders the App Group
+  # snapshot JSON and writes capture requests through Shared/ (plan 6.8).
+  Widgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+        excludes:
+          - "Info.plist"
+          - "Widgets.entitlements"
+      - path: Shared
+      # Design tokens, the string catalog, and the route space are shared verbatim so the
+      # widget can never drift into its own colors or its own vocabulary (U9).
+      - path: App/DesignSystem/Tokens.swift
+      - path: App/DesignSystem/Copy.swift
+      - path: App/Router.swift
+      # The same intent types Siri and the app use — Control Center must not have its own.
+      - path: App/Intents/CaptureIntents.swift
+    settings:
+      base:
+        INFOPLIST_FILE: Widgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Widgets/Widgets.entitlements
+        PRODUCT_NAME: PebbleAudioWidgets
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: Pebble Audio
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev.widgets
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.widgets
+
+  # Pure-logic tests for the Shared/ helpers (no app host: nothing here touches UIKit).
+  SharedTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: SharedTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.sharedtests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
 schemes:
   App:
     build:
       targets:
         App: all
+        Widgets: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - SharedTests
     archive:
       config: Release
+  SharedTests:
+    build:
+      targets:
+        SharedTests: [test]
+    test:
+      config: Debug
+      targets:
+        - SharedTests
