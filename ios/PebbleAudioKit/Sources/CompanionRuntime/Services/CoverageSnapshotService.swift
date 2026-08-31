@@ -4,17 +4,53 @@ import Receiver
 import SegmentStore
 import StatusUI
 
+/// What the widget needs that coverage alone cannot say: which conversation is being recorded
+/// right now, the last thing heard in it, and what is still open. Supplied by the app's
+/// composition root, because it is the only place that holds both the database and the
+/// enrichment layer.
+public struct CoverageLiveContext: Sendable, Equatable {
+    /// The conversation still being recorded, if there is one.
+    public var conversationTitle: String?
+    /// Its most recent transcript line.
+    public var latestLine: String?
+    /// Head of the open follow-up list, newest first.
+    public var followUps: [CoverageSnapshot.FollowUpRef]
+    /// How many are open in total.
+    public var openFollowUpCount: Int
+
+    public init(
+        conversationTitle: String? = nil,
+        latestLine: String? = nil,
+        followUps: [CoverageSnapshot.FollowUpRef] = [],
+        openFollowUpCount: Int = 0
+    ) {
+        self.conversationTitle = conversationTitle
+        self.latestLine = latestLine
+        self.followUps = followUps
+        self.openFollowUpCount = openFollowUpCount
+    }
+}
+
 /// Keeps `coverage_snapshot.json` current (plan 6.8). The widget reads the file and nothing else,
 /// so the three required triggers — segment close, pause events, app background — must all land
-/// here, and every write must be complete (spans AND headline together).
+/// here, and every write must be complete (spans AND headline AND live context together).
 public actor CoverageSnapshotService {
     private let store: SegmentStore
     private let pauseJournal: PauseJournal?
     private let writer: CoverageSnapshotWriter
     private let clock: RuntimeClock
     private let statusOf: @Sendable () -> StatusModel
+    /// `isRunning` lets the provider skip the conversation lookup when nothing is being
+    /// recorded — the follow-up half is still wanted, the live half would only be discarded.
+    private let liveContextOf: (@Sendable (Bool) async -> CoverageLiveContext)?
     private let timeZoneID: @Sendable () -> String
     private let log: RuntimeLog
+
+    /// The recent-activity window the widget draws: the last ten minutes, in 20-second buckets.
+    /// Long enough to show whether a conversation is actually alive, short enough that every
+    /// bar is about *now* rather than about the day.
+    public static let activityWindowMs: Int64 = 10 * 60 * 1000
+    public static let activityBarMs: Int64 = 20 * 1000
 
     public init(
         store: SegmentStore,
@@ -22,6 +58,7 @@ public actor CoverageSnapshotService {
         clock: RuntimeClock,
         statusOf: @escaping @Sendable () -> StatusModel,
         pauseJournal: PauseJournal? = nil,
+        liveContextOf: (@Sendable (Bool) async -> CoverageLiveContext)? = nil,
         timeZoneID: @escaping @Sendable () -> String = { TimeZone.current.identifier },
         log: RuntimeLog = .silent
     ) {
@@ -30,6 +67,7 @@ public actor CoverageSnapshotService {
         self.clock = clock
         self.statusOf = statusOf
         self.pauseJournal = pauseJournal
+        self.liveContextOf = liveContextOf
         self.timeZoneID = timeZoneID
         self.log = log
     }
@@ -87,6 +125,10 @@ public actor CoverageSnapshotService {
             nowMs: nowMs, timeZoneID: zone, segments: inputs, pauses: pauses
         )
         let status = statusOf()
+        let isRunning = status.family == .recording
+        // The live context is the only part that touches the database; `isRunning` lets the
+        // provider skip the conversation lookup when its answer would be discarded anyway.
+        let live = await liveContextOf?(isRunning) ?? CoverageLiveContext()
         let snapshot = CoverageSnapshot(
             generatedAtMs: nowMs,
             dateKey: coverage.dateKey,
@@ -99,10 +141,78 @@ public actor CoverageSnapshotService {
             headline: status.headline,
             detail: status.detail,
             dot: status.dot.snapshotValue,
-            isRecording: status.family == .recording
+            isRecording: isRunning,
+            state: status.family.snapshotValue,
+            // Only claim a running stretch while capture is actually running: a paused or
+            // disconnected widget must not show a timer that keeps counting up.
+            currentStartedAtMs: isRunning
+                ? Self.runningStretchStartMs(spans: coverage.spans, nowMs: nowMs) : nil,
+            liveTitle: isRunning ? live.conversationTitle : nil,
+            liveLine: isRunning ? live.latestLine : nil,
+            activity: Self.activityBars(spans: coverage.spans, nowMs: nowMs),
+            activityWindowMs: Self.activityWindowMs,
+            followUps: live.followUps,
+            openFollowUpCount: live.openFollowUpCount
         )
         writer.write(snapshot)
         return snapshot
+    }
+
+    // MARK: - v2 derivations (pure — no I/O, no decode)
+
+    /// Where the stretch of capture that is still running began: walk back from `nowMs` through
+    /// contiguous `recorded` / `quiet` spans and stop at the first thing that is not capture.
+    ///
+    /// A short gap in the middle of a conversation is genuine loss, not a new conversation, so
+    /// `missing` shorter than `gapToleranceMs` is walked through as well — otherwise a
+    /// four-second Bluetooth blip would reset the elapsed timer and read as "just started".
+    static func runningStretchStartMs(
+        spans: [CoverageSpan], nowMs: Int64, gapToleranceMs: Int64 = 2 * 60 * 1000
+    ) -> Int64? {
+        var start: Int64?
+        for span in spans.reversed() {
+            // Ignore anything that has not happened yet.
+            guard span.startMs < nowMs else { continue }
+            switch span.kind {
+            case .recorded, .quiet:
+                start = span.startMs
+            case .missing where span.durationMs <= gapToleranceMs && start != nil:
+                start = span.startMs
+            case .missing, .paused, .off:
+                return start
+            }
+        }
+        return start
+    }
+
+    /// The recent-activity profile: `activityWindowMs` ending at `nowMs`, bucketed. Each bar
+    /// takes the most severe kind that overlaps it (loss must never be averaged away) and a
+    /// `level` equal to the share of the bucket that was recorded audio.
+    static func activityBars(
+        spans: [CoverageSpan],
+        nowMs: Int64,
+        windowMs: Int64 = CoverageSnapshotService.activityWindowMs,
+        barMs: Int64 = CoverageSnapshotService.activityBarMs
+    ) -> [CoverageSnapshot.ActivityBar] {
+        guard windowMs > 0, barMs > 0 else { return [] }
+        let count = Int(windowMs / barMs)
+        guard count > 0 else { return [] }
+        let windowStart = nowMs - windowMs
+        // Severity order — the first kind present in a bucket wins its color.
+        let priority: [CoverageKind] = [.missing, .paused, .recorded, .quiet, .off]
+
+        return (0..<count).map { index in
+            let barStart = windowStart + Int64(index) * barMs
+            let barEnd = barStart + barMs
+            var overlap: [CoverageKind: Int64] = [:]
+            for span in spans where span.endMs > barStart && span.startMs < barEnd {
+                let ms = min(span.endMs, barEnd) - max(span.startMs, barStart)
+                if ms > 0 { overlap[span.kind, default: 0] += ms }
+            }
+            let kind = priority.first { (overlap[$0] ?? 0) > 0 } ?? .off
+            let level = Double(overlap[.recorded] ?? 0) / Double(barMs)
+            return CoverageSnapshot.ActivityBar(kind: kind, level: level)
+        }
     }
 
     /// The triggers seen so far (tests assert all three fire; the app ignores this).

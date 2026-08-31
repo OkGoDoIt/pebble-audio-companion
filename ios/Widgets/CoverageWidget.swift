@@ -1,77 +1,16 @@
 import SwiftUI
 import WidgetKit
 
-// "Today's coverage" (plan 6.8). The timeline provider reads ONE thing: `coverage_snapshot.json`
-// in the App Group. No database, no segment directory, no coverage computation — a widget that
-// opened the DB would fight the app for the writer lock and blow the extension's memory budget.
+// "Day coverage" (plan 6.8) — kept, demoted.
 //
-// The widget therefore renders exactly what the app last knew, and says so honestly when the
-// snapshot is missing rather than inventing an empty day.
-
-struct CoverageEntry: TimelineEntry {
-    let date: Date
-    /// nil = nothing has been written yet (fresh install, or capture never started).
-    let snapshot: CoverageSnapshot?
-
-    static func current(now: Date = Date()) -> CoverageEntry {
-        CoverageEntry(date: now, snapshot: CoverageSnapshot.loadFromAppGroup())
-    }
-
-    /// Redacted-placeholder + gallery sample: shape-accurate, obviously not real data.
-    static func placeholder(now: Date = Date()) -> CoverageEntry {
-        let dayStart = Int64(now.timeIntervalSince1970 * 1000) - 10 * 3600 * 1000
-        func span(_ kind: CoverageSnapshot.Span.Kind, _ fromHr: Double, _ toHr: Double)
-            -> CoverageSnapshot.Span
-        {
-            CoverageSnapshot.Span(
-                kind: kind,
-                startMs: dayStart + Int64(fromHr * 3_600_000),
-                endMs: dayStart + Int64(toHr * 3_600_000)
-            )
-        }
-        return CoverageEntry(
-            date: now,
-            snapshot: CoverageSnapshot(
-                generatedAtMs: Int64(now.timeIntervalSince1970 * 1000),
-                dateKey: "",
-                dayStartMs: dayStart,
-                nowMs: dayStart + 10 * 3_600_000,
-                spans: [
-                    span(.recorded, 2, 4.4), span(.quiet, 4.4, 5.8), span(.recorded, 5.8, 8.7),
-                    span(.missing, 8.7, 8.9), span(.recorded, 8.9, 10),
-                ],
-                totalRecordedMs: Int64(4.2 * 3_600_000),
-                totalMissingMs: 60_000,
-                headline: Copy.Status.recording,
-                detail: nil,
-                dot: "active",
-                isRecording: true
-            )
-        )
-    }
-}
-
-struct CoverageProvider: TimelineProvider {
-    func placeholder(in context: Context) -> CoverageEntry { .placeholder() }
-
-    func getSnapshot(in context: Context, completion: @escaping (CoverageEntry) -> Void) {
-        // The widget gallery must never show a stranger's real day; everywhere else is live.
-        completion(context.isPreview ? .placeholder() : .current())
-    }
-
-    func getTimeline(in context: Context, completion: @escaping (Timeline<CoverageEntry>) -> Void) {
-        let entry = CoverageEntry.current()
-        // ~15 min cadence. The app also calls `WidgetCenter.reloadTimelines` on the snapshot
-        // triggers (segment close, pause, background), so this is only the floor.
-        let next = Calendar.current.date(byAdding: .minute, value: 15, to: entry.date)
-            ?? entry.date.addingTimeInterval(900)
-        completion(Timeline(entries: [entry], policy: .after(next)))
-    }
-}
+// It is a rear-view diagnostic: it reports what already happened, in a form you cannot act on.
+// That is genuinely useful when you are asking "did I lose anything today?", and useless as the
+// one thing a person sees on a Home Screen, so it stays in the bundle and says so in its own
+// gallery description. `CaptureStatusWidget` is the headline now.
 
 struct CoverageWidgetView: View {
     @Environment(\.widgetFamily) private var family
-    let entry: CoverageEntry
+    let entry: CompanionEntry
 
     var body: some View {
         Group {
@@ -147,17 +86,7 @@ struct CoverageWidgetView: View {
     }
 
     private var headlineRow: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
-            Text(headline)
-                .font(AppFont.cardHead)
-                .foregroundStyle(Tokens.label)
-                .lineLimit(2)
-                .minimumScaleFactor(0.85)
-        }
+        StatusDotLabel(word: entry.status.word, color: entry.status.dot)
     }
 
     private var emptyStrip: some View {
@@ -171,7 +100,7 @@ struct CoverageWidgetView: View {
 
     private var accessory: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(headline)
+            Text(entry.status.word)
                 .font(.headline)
                 .lineLimit(1)
             if let snapshot = entry.snapshot {
@@ -185,35 +114,17 @@ struct CoverageWidgetView: View {
         }
         .widgetAccentable()
     }
-
-    // MARK: - Derived
-
-    /// The status headline comes from the snapshot already in approved plain language; the
-    /// widget never re-derives status vocabulary of its own (U9).
-    private var headline: String {
-        let text = entry.snapshot?.headline ?? ""
-        return text.isEmpty ? Copy.Status.notRecording : text
-    }
-
-    private var dotColor: Color {
-        switch entry.snapshot?.dot {
-        case "active": return Tokens.good
-        case "attention", "consent": return Tokens.attention
-        case "problem": return Tokens.destructive
-        case "info": return Tokens.tint
-        default: return Tokens.neutralDot
-        }
-    }
 }
 
 struct CoverageWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: SharedAppGroup.coverageWidgetKind, provider: CoverageProvider()) {
-            entry in
+        StaticConfiguration(
+            kind: SharedAppGroup.coverageWidgetKind, provider: CompanionProvider()
+        ) { entry in
             CoverageWidgetView(entry: entry)
         }
-        .configurationDisplayName("Today's coverage")
-        .description("What your Pebble captured today — recorded, quiet, and missing.")
+        .configurationDisplayName(Copy.Widgets.coverageName)
+        .description(Copy.Widgets.coverageDescription)
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
     }
 }
@@ -221,12 +132,12 @@ struct CoverageWidget: Widget {
 #Preview("Small", as: .systemSmall) {
     CoverageWidget()
 } timeline: {
-    CoverageEntry.placeholder()
-    CoverageEntry(date: Date(), snapshot: nil)
+    CompanionEntry.placeholder()
+    CompanionEntry.empty()
 }
 
 #Preview("Medium", as: .systemMedium) {
     CoverageWidget()
 } timeline: {
-    CoverageEntry.placeholder()
+    CompanionEntry.placeholder()
 }

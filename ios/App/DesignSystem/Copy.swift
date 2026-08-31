@@ -596,6 +596,53 @@ enum Copy {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Home Screen / Lock Screen widgets + Control Center (6.8)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // A widget is the only surface the user sees without opening the app, so it answers this
+    // product's core question — "is it actually recording right now?" — and never overclaims.
+    // Vocabulary is reused from `Status` wherever a state already has an approved word; only
+    // the widget-specific chrome lives here.
+    enum Widgets {
+        // Gallery entries. Names are what the user scrolls past in the widget picker, so each
+        // says what it is FOR, not what it contains.
+        static let statusName = "Recording status"
+        static let statusDescription = "Whether your Pebble is recording, for how long, and a button to pause or resume."
+        static let nowName = "Recording now"
+        static let nowDescription = "The conversation being recorded: its title, the last thing heard, and recent activity."
+        static let followUpsName = "Follow-ups"
+        static let followUpsDescription = "Open follow-ups from your conversations. Tap one to open it."
+        static let coverageName = "Day coverage"
+        static let coverageDescription = "A diagnostic strip of the whole day — what was recorded, quiet, and missing. Start with Recording status if you want to see or change what is happening now."
+
+        /// Shown while a requested change has not been confirmed by the app yet. The trailing
+        /// ellipsis is the honesty: the switch moved, the watch has not answered.
+        static let resuming = "Resuming…"
+        static let pausing = "Pausing…"
+
+        /// The snapshot is too old to be presented as the live state — say when it is from
+        /// rather than assert a state the app has not confirmed since.
+        static func asOf(_ time: String) -> String { "as of \(time)" }
+        /// Nothing has ever been written (fresh install, widget added before first launch).
+        static let noData = "Open Pebble Audio to get started."
+
+        /// Live-conversation chrome.
+        static let untitledConversation = "This conversation"
+        /// Short form of `Live.waiting` — a widget has one line, not a sentence and a half.
+        static let listening = "Listening…"
+        static let nothingRecording = "Nothing recording right now."
+
+        /// Follow-ups count, e.g. "4 open".
+        static func openCount(_ count: Int) -> String { "\(count) open" }
+
+        /// Accessibility labels for the interactive control (the button itself is an icon).
+        static let pauseHint = "Pause capture"
+        static let resumeHint = "Resume capture"
+        /// Recent-activity bars are decorative next to the words that already say the state.
+        static let activityLabel = "Recent activity"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // MARK: Shared verbs
     // ─────────────────────────────────────────────────────────────────────────
     enum Common {

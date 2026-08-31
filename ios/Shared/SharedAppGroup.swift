@@ -26,7 +26,16 @@ enum SharedAppGroup {
     /// normal ReceiverService path — the extension never touches the receiver itself.
     static let captureIntentChangedNotification = "dev.audiocompanion.captureIntentChanged"
 
-    /// WidgetKit kind for the Today-coverage widget.
+    // WidgetKit kinds. These strings are user data once a widget is on a Home Screen — the
+    // system keys placed widgets off them, so renaming one orphans it. Add, never rename.
+
+    /// "Is it recording?" plus a Pause/Resume button (small + both lock-screen accessories).
+    static let statusWidgetKind = "dev.audiocompanion.widget.status"
+    /// The current conversation: title, newest line, recent activity, control (medium).
+    static let nowWidgetKind = "dev.audiocompanion.widget.now"
+    /// Open follow-ups, each deep-linking into its conversation (small + medium).
+    static let followUpsWidgetKind = "dev.audiocompanion.widget.followups"
+    /// The day-coverage strip — kept as the non-default diagnostic view.
     static let coverageWidgetKind = "dev.audiocompanion.widget.coverage"
     /// Control Center control kind.
     static let captureControlKind = "dev.audiocompanion.control.capture"

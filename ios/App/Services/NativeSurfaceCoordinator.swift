@@ -9,10 +9,11 @@ import WidgetKit
 // requests and taps onto paths that already exist — `AppSettings` for capture intent, the
 // router for navigation — and never invents a second one.
 //
-//   • Capture intents: an intent (Siri, Shortcuts, Control Center) leaves a request in the App
-//     Group and posts a Darwin notification. This coordinator picks it up — live, or at the
-//     next activation if the app was asleep — and applies it by setting `AppSettings
-//     .captureIntent`, which is the same thing the Pause/Resume buttons touch.
+//   • Capture intents: an intent (Siri, Shortcuts, Control Center, a widget button) leaves a
+//     request in the App Group and posts a Darwin notification. This coordinator picks it up —
+//     live, or at the next activation if the app was asleep — and applies it through the
+//     runtime's own start/pause API, which is the SAME path Today's buttons and onboarding
+//     take.
 //   • Widget/Control freshness: reloaded when the intent lands and when the app backgrounds
 //     (the runtime writes `coverage_snapshot.json` on its own triggers).
 //   • Spotlight: an incremental donation pass on foreground, once a database is attached.
@@ -24,9 +25,28 @@ final class NativeSurfaceCoordinator {
     private var navigate: ((Route) -> Void)?
     @ObservationIgnored private var darwinObserver: CaptureIntentDarwinObserver?
     @ObservationIgnored private var spotlight: SpotlightService?
+    /// How an applied intent reaches the receiver. Injected so tests can observe the call; the
+    /// default resolves the live composition.
+    @ObservationIgnored var applyToRuntime: (CaptureIntent) async -> Void =
+        NativeSurfaceCoordinator.liveApply
 
     init(settings: AppSettings) {
         self.settings = settings
+    }
+
+    /// The production transport. `startCapture()` is deliberate: setting the intent alone only
+    /// tells the session what to WANT — the session observes the link rather than dialling it,
+    /// so without the reconnect inside `startCapture` the watch is never contacted and the
+    /// toggle appears to do nothing. This is the same defect fixed for Today's Start button in
+    /// `aa2a934`; the intent path now shares that fix instead of re-implementing it.
+    private static func liveApply(_ intent: CaptureIntent) async {
+        guard let composition = AppComposition.shared else { return }
+        switch intent {
+        case .active:
+            await composition.runtime.startCapture()
+        case .paused, .off:
+            await composition.runtime.setCaptureIntent(intent, source: .intent)
+        }
     }
 
     /// Installs the cross-process listeners. Safe to call once per app launch.
@@ -67,25 +87,34 @@ final class NativeSurfaceCoordinator {
 
     // MARK: - Capture intent
 
-    /// Applies whatever an intent asked for, through the app's normal settings path.
+    /// Applies whatever an intent asked for, through the app's normal capture path.
+    ///
+    /// Every request is honoured, including `off → active`. That used to be dropped on an
+    /// anti-B3 rationale, but B3 is about SIDE EFFECTS — Connect quietly enabling recording —
+    /// not about a switch the user deliberately pressed on a system surface. The consent that
+    /// matters is unchanged and enforced where it always was: `startCapture()` arms exactly one
+    /// on-watch enable prompt, and the watch fails closed until the person answers it. A toggle
+    /// that silently does nothing was the worse failure.
     func applyPendingCaptureRequest() {
-        guard let request = CaptureIntentBridge.pendingRequest() else { return }
+        guard let request = CaptureIntentBridge.pendingRequest(),
+            let applied = CaptureIntent(settingValue: request.intent.rawValue)
+        else { return }
 
-        // Capture is OFF: turning it back on is a consent-bearing choice that belongs to the
-        // app's own flow (anti-B3). Drop the request rather than silently enabling a
-        // microphone — the intent already told the user to open the app.
-        if settings.captureIntent == .off, request.intent == .active {
-            CaptureIntentBridge.clearPendingRequest()
-            return
-        }
-
-        if let applied = CaptureIntent(settingValue: request.intent.rawValue),
-            settings.captureIntent != applied
-        {
+        // The preference first, so the app's own UI flips the moment the request lands rather
+        // than waiting on a watch that may not be in range — the same order Today's Start uses.
+        if settings.captureIntent != applied {
             settings.captureIntent = applied
         }
+        // Answer the mailbox now: the app has committed to applying this, and the intent that
+        // posted it is blocked waiting to learn whether anything is alive to act on it.
         CaptureIntentBridge.consume(request.intent)
         reloadSurfaces()
+
+        let apply = applyToRuntime
+        Task { @MainActor [weak self] in
+            await apply(applied)
+            self?.reloadSurfaces()
+        }
     }
 
     /// Keeps the App Group's applied value in step with settings, so Control Center and the
@@ -110,8 +139,10 @@ final class NativeSurfaceCoordinator {
 
     // MARK: - Refresh
 
+    /// All four widget kinds read the same snapshot, so they refresh together — naming them
+    /// individually here is how one of them silently stops updating after a rename.
     private func reloadSurfaces() {
-        WidgetCenter.shared.reloadTimelines(ofKind: SharedAppGroup.coverageWidgetKind)
+        WidgetCenter.shared.reloadAllTimelines()
         ControlCenter.shared.reloadControls(ofKind: SharedAppGroup.captureControlKind)
     }
 }
