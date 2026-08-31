@@ -140,6 +140,23 @@ final class MockWorld {
                 ),
                 provenanceProvider: "Soniox", provenanceDate: yesterday(21, 54)
             ),
+            // Transcribed, but AI has not caught up yet — the state a freshly migrated or
+            // recovered library sits in for a while. It must not look like a broken row.
+            MockConversation(
+                id: "awaiting-summary",
+                title: "",
+                start: yesterday(20, 48), end: yesterday(21, 6),
+                lifecycle: .summaryComing,
+                transcript: [
+                    turn("as1", "S1", "Speaker 1", .unresolved,
+                         "The transcript is finished and saved — this is what a durable "
+                            + "transcript looks like before AI has written a title for it."),
+                    turn("as2", "S2", "Speaker 2", .unresolved,
+                         "Nothing is missing here; the words are final even though nobody has "
+                            + "been named yet."),
+                ],
+                player: PlayerDisplay(durationMs: 18 * 60_000)
+            ),
             MockConversation(
                 id: "evening-home",
                 title: "Evening at home",
@@ -310,11 +327,15 @@ final class MockWorld {
         case .capturedWaiting: lifecycle = .capturedWaiting
         case .transcribing: lifecycle = .transcribing
         case .failed: lifecycle = .failed
+        // Enrichment states are conversation-level only: transcription itself is finished.
+        case .summaryComing, .noSummary: lifecycle = .complete
         }
         let total = followUps.filter { $0.sourceConversationId == conversation.id }
+        let awaiting: Bool = if case .summaryComing = conversation.lifecycle { true } else { false }
         return LibraryRow(
             id: conversation.id,
-            title: conversation.title,
+            // An empty mock title stands for "AI has not written one yet".
+            title: conversation.title.isEmpty ? nil : conversation.title,
             summary: conversation.summary,
             startMs: startMs,
             endMs: ms(conversation.end),
@@ -324,7 +345,8 @@ final class MockWorld {
             mostlyQuiet: conversation.mostlyQuiet,
             hasMissingAudio: conversation.hasMissingAudio,
             followUpCount: max(total.count, conversation.followUpCount),
-            dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: zone)
+            dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: zone),
+            awaitingAnnotation: awaiting
         )
     }
 

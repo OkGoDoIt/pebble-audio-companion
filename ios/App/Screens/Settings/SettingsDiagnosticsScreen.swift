@@ -30,6 +30,14 @@ struct SettingsDiagnosticsScreen: View {
                     ),
                     showsChevron: false
                 )
+                SettingsRow(
+                    title: Copy.Settings.Diagnostics.aiEnrichment,
+                    value: Copy.Settings.Diagnostics.enrichmentValue(
+                        waiting: diagnostics.enrichmentWaiting,
+                        running: diagnostics.enrichmentRunning
+                    ),
+                    showsChevron: false
+                )
             }
 
             // Before the first recording there are no segments; a header over an empty card

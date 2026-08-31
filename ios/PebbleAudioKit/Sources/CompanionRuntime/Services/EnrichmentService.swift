@@ -47,9 +47,24 @@ public actor EnrichmentService {
         self.log = log
     }
 
+    /// True while `enrichPass` is inside the worker. Diagnostics and the conversation state
+    /// card read it so background AI work is visible instead of silent.
+    public private(set) var isEnriching = false
+
+    /// Conversations that are fully transcribed but still carry no AI title or summary — the
+    /// backlog the enrichment pass will work through. Counted straight off the derived tables
+    /// so it stays true after a migration that deliberately imported no AI content.
+    public func awaitingEnrichmentCount() async -> Int {
+        let queries = ConversationQueries(db: database)
+        let sections = (try? await queries.library()) ?? []
+        return sections.flatMap(\.rows).filter { $0.awaitingAnnotation }.count
+    }
+
     /// Rebuilds the conversation grouping and runs one enrichment pass over it.
     /// Returns the conversation ids whose annotation changed.
     public func enrichPass() async throws -> [String] {
+        isEnriching = true
+        defer { isEnriching = false }
         let conversations = try await regroup()
         guard !conversations.isEmpty else { return [] }
         let metasById = Dictionary(

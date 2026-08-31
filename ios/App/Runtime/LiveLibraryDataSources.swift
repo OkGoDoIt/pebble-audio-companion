@@ -50,7 +50,8 @@ final class LiveWorld {
             mostlyQuiet: source.mostlyQuiet,
             hasMissingAudio: source.hasMissingAudio,
             followUpCount: source.openFollowUpCount,
-            dateKey: source.dateKey
+            dateKey: source.dateKey,
+            awaitingAnnotation: source.awaitingAnnotation
         )
     }
 
@@ -255,13 +256,15 @@ extension LiveWorld: ConversationDataSource {
         // conversation holding 33 min of audio) made the player claim time that does not
         // exist, and every position on it was wrong by however much was missing.
         let duration = mediaBeforeMemberMs
+        let hasWords = transcript.contains { if case .turn = $0 { return true } else { return false } }
+        let aiAvailable = await composition.aiRouter.isAvailable()
         return ConversationDisplay(
             id: id,
             title: source.title ?? (source.isLive ? "Recording now" : "Conversation"),
             metaLine: TimeFmt.conversationMeta(start: start, end: end),
             summary: source.summary,
             tags: tagRows,
-            lifecycle: Self.lifecycle(detail),
+            lifecycle: Self.lifecycle(detail, hasWords: hasWords, aiAvailable: aiAvailable),
             player: duration > 0
                 ? PlayerDisplay(
                     durationMs: duration,
@@ -363,22 +366,42 @@ extension LiveWorld: ConversationDataSource {
 
     // --- mapping helpers -----------------------------------------------------------------
 
-    private static func lifecycle(_ detail: ConversationDetail) -> LifecycleDisplay {
+    /// The one state card the conversation shows. Transcription first (it gates everything
+    /// else), then the AI pass — so a conversation always says which kind of work, if any, is
+    /// still owed to it, and never claims to be waiting for work that is already done.
+    ///
+    /// `aiAvailable` separates "AI is working through the backlog" from "AI is off, so there
+    /// is genuinely nothing coming" — the distinction Roger could not make from the UI.
+    private static func lifecycle(
+        _ detail: ConversationDetail, hasWords: Bool, aiAvailable: Bool
+    ) -> LifecycleDisplay {
         switch detail.row.lifecycle {
         case .complete:
-            return .complete
+            guard !detail.row.hasAnnotation else { return .complete }
+            // Enrichment writes nothing for a conversation with no words in it; a silent
+            // stretch is finished, not pending.
+            guard hasWords else { return .complete }
+            if detail.row.annotationFinalAttempts >= EnrichmentWorker.maxAttempts {
+                return .noSummary(gaveUp: true)
+            }
+            return aiAvailable ? .summaryComing : .noSummary(gaveUp: false)
         case .capturedWaiting:
-            let waiting = detail.members.filter { $0.state == .pending }.count
+            // Members already holding a transcript are not "ahead of" anything.
+            let waiting = detail.members.filter {
+                !($0.segmentState == .complete || $0.segmentState == .noSpeech)
+            }.count
             return .capturedWaiting(
                 queueLine: waiting <= 1
                     ? "Next in the queue" : "\(waiting) recordings ahead of this one"
             )
         case .transcribing:
-            let done = detail.members.filter { $0.state == .complete }.count
+            let done = detail.members.filter {
+                $0.segmentState == .complete || $0.segmentState == .noSpeech
+            }.count
             let total = max(detail.members.count, 1)
             return .transcribing(
                 progress: Double(done) / Double(total),
-                line: "Transcribing \(done + 1) of \(total)"
+                line: "Transcribing \(min(done + 1, total)) of \(total)"
             )
         case .failed:
             return .failed

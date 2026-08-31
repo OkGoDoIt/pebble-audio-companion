@@ -432,7 +432,10 @@ final class AppComposition {
             retention: retention,
             tasks: { (try? queue.all()) ?? [] },
             isForeground: { foreground.value },
-            clock: clock
+            clock: clock,
+            enrichment: {
+                (await enrichment.awaitingEnrichmentCount(), await enrichment.isEnriching)
+            }
         )
 
         let receiver = ReceiverService(

@@ -459,6 +459,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var watchReports = watchServiceStateLabel(nil)
     private(set) var queueWaiting = 0
     private(set) var queueFailed = 0
+    private(set) var enrichmentWaiting = 0
+    private(set) var enrichmentRunning = false
     private(set) var recentSegments: [DiagnosticSegment] = []
 
     /// Counters and gap metadata only — never audio or transcript text.
@@ -482,6 +484,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         let diagnostics = composition.runtime.diagnostics.value
         queueWaiting = diagnostics.queuedTranscriptionTasks
         queueFailed = diagnostics.failedTranscriptionTasks
+        enrichmentWaiting = diagnostics.conversationsAwaitingEnrichment
+        enrichmentRunning = diagnostics.enrichmentRunning
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
         receiverStatus = Self.receiverLine(composition.runtime.receiverState.value)
         recentSegments = Self.segments(
@@ -533,6 +537,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         Segments stored: \(report.diagnostics.segmentCount)
         Transcription queue: \(report.diagnostics.queuedTranscriptionTasks) waiting · \
         \(report.diagnostics.failedTranscriptionTasks) failed
+        AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
+        running: \(report.diagnostics.enrichmentRunning)
         Low storage: \(report.diagnostics.lowStorage)
         Recent segments:
         \(segments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
