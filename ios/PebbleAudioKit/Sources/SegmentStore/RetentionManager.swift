@@ -68,8 +68,16 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
     }
 
     /// Applies age and size caps. Returns the segment ids deleted.
-    public func enforce() async throws -> [String] {
+    ///
+    /// `limit` bounds ONE call. The caller runs a delete cascade over every id returned — which
+    /// touches the transcript, follow-ups, AI outputs, recaps and the search index, and regroups
+    /// — so an unbounded sweep after a big policy change (365 days down to 7, with months of
+    /// audio on disk) would hold its caller open for minutes. Bounded, the backlog drains over
+    /// consecutive sweeps instead, exactly as the enrichment backlog does. The default is
+    /// unbounded, for the startup and maintenance paths that are not inside the pipeline.
+    public func enforce(limit: Int = .max) async throws -> [String] {
         var deleted: [String] = []
+        guard limit > 0 else { return deleted }
         let openId = await store.openSegmentId
 
         // Age cap first. Audio the migration importer recovered from `quarantine/` is exempt:
@@ -86,6 +94,7 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         {
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
+            if deleted.count >= limit { return deleted }
         }
 
         // Size cap: delete oldest fully-transcribed first, then oldest untranscribed, and
@@ -119,7 +128,7 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
             }
             .map(\.element)
         for meta in candidates {
-            if total <= config.maxTotalBytes { break }
+            if total <= config.maxTotalBytes || deleted.count >= limit { break }
             total -= await store.logSizeBytes(meta.segmentId)
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
