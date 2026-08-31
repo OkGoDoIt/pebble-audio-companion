@@ -327,42 +327,8 @@ struct ApiKeyChangeScreen: View {
     }
 }
 
-// MARK: - Outcome vocabulary (U9: the app's words, never the provider's)
-
-extension ApiKeyCheckOutcome {
-    /// The verdict on its own — the same sentence the onboarding key screen shows.
-    var verdict: String {
-        switch self {
-        case .valid: return Copy.KeyCheck.valid
-        case .missing: return Copy.KeyCheck.unexpected
-        case .rejected: return Copy.KeyCheck.rejected
-        case .notPermitted: return Copy.KeyCheck.notPermitted
-        case .outOfCredit: return Copy.KeyCheck.outOfCredit
-        case .rateLimited: return Copy.KeyCheck.rateLimited
-        case .providerUnavailable: return Copy.KeyCheck.providerUnavailable
-        case .unreachable: return Copy.KeyCheck.unreachable
-        case .unexpected: return Copy.KeyCheck.unexpected
-        }
-    }
-
-    /// After a save: the key is in the Keychain either way, and then what came back.
-    var savedMessage: String { Copy.KeyCheck.saved(verdict) }
-
-    /// The same verdict in one word, for the Settings row.
-    var rowWord: String? {
-        switch self {
-        case .valid: return Copy.KeyCheck.Row.valid
-        case .missing: return nil
-        case .rejected: return Copy.KeyCheck.Row.rejected
-        case .notPermitted: return Copy.KeyCheck.Row.notPermitted
-        case .outOfCredit: return Copy.KeyCheck.Row.outOfCredit
-        case .rateLimited: return Copy.KeyCheck.Row.rateLimited
-        case .providerUnavailable: return Copy.KeyCheck.Row.providerUnavailable
-        case .unreachable: return Copy.KeyCheck.Row.unreachable
-        case .unexpected: return Copy.KeyCheck.Row.unexpected
-        }
-    }
-}
+// Outcome→words lives in `DesignSystem/ApiKeyCheckOutcome+Copy.swift`, shared with the
+// onboarding key screen so the two surfaces cannot drift apart again.
 
 extension ApiKeyStatus {
     /// What the key row appends after the masked value; nil when there is nothing to say.

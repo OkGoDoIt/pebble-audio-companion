@@ -555,19 +555,10 @@ private struct OnboardingCloudKeyView: View {
         }
     }
 
-    /// The kit returns a taxonomy and no prose on purpose: the providers' own 401 bodies quote
-    /// the key back. These lines say what to DO, and never repeat provider text or key material.
+    /// Outcome→words is shared with Settings (`ApiKeyCheckOutcome+Copy.swift`); this screen
+    /// shows a check mark for success, so it wants only the failure line.
     private static func reason(for outcome: ApiKeyCheckOutcome) -> String {
-        switch outcome {
-        case .valid, .missing: return ""
-        case .rejected: return Copy.KeyCheck.rejected
-        case .notPermitted: return Copy.KeyCheck.notPermitted
-        case .outOfCredit: return Copy.KeyCheck.outOfCredit
-        case .rateLimited: return Copy.KeyCheck.rateLimited
-        case .providerUnavailable: return Copy.KeyCheck.providerUnavailable
-        case .unreachable: return Copy.KeyCheck.unreachable
-        case .unexpected: return Copy.KeyCheck.unexpected
-        }
+        outcome.failureReason ?? ""
     }
 
     private func runCheck(
