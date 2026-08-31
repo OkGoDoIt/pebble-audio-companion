@@ -168,6 +168,14 @@ public actor ReceiverService {
     public nonisolated var state: StateSubject<ReceiverSessionState> { session.state }
     public nonisolated var watchServiceState: StateSubject<Int?> { session.watchServiceState }
     public nonisolated var watchInfo: StateSubject<InfoSnapshot?> { session.watchInfo }
+    /// The last `ERROR` the watch sent. Read by the status/diagnostics layer through
+    /// `WatchLinkFault`: without it a de-authorized receiver loops connect → authorize → resync
+    /// forever behind the word "Connecting…", with nothing anywhere to say why.
+    public nonisolated var lastProtocolError: StateSubject<ErrorMessage?> {
+        session.lastProtocolError
+    }
+    /// The version the watch granted at authorization (nil until one is). Diagnostics only.
+    public nonisolated var grantedProtoVersion: StateSubject<Int?> { session.grantedProtoVersion }
     /// The bound watch's advertised name, straight from the link. Nil until one has been seen.
     public nonisolated var deviceName: StateSubject<String?> { link.deviceName }
     public nonisolated var captureIntent: CaptureIntent { intentBox.value }
@@ -284,9 +292,36 @@ public actor ReceiverService {
         await resumeStore.clear()
     }
 
-    /// Closes the open segment (interrupted) — used by "delete all data".
+    /// Closes the open segment (interrupted) — used by "delete all data", so the cascade has
+    /// nothing left to refuse.
+    ///
+    /// Routed through the SESSION, never straight at the store. The store's open segment and the
+    /// session's stream context are one object split across two owners: closing only the store's
+    /// half left the session appending into nothing (`appendFrames` answers an absent segment
+    /// with an empty array, which reads exactly like an ordinary dedupe) and CHECKPOINTING the
+    /// result, which tells the watch to free the only remaining copy of audio this app threw
+    /// away — no gap, no error, and the UI still saying "recording".
+    ///
+    /// Pair it with `resumeAfterBulkDelete()`: until the stream is re-established the session has
+    /// no context and drops STREAM_DATA on the floor (uncheckpointed, so the watch keeps it).
     public func closeOpenSegment() async {
+        await session.endOpenSegment()
+        // Belt and braces. The session owns every open segment, so this is a no-op in practice;
+        // if the two ever disagreed, "delete all" leaving a live recording behind is the failure
+        // this whole path exists to prevent.
         try? await store.closeSegment(reason: .interrupted)
+    }
+
+    /// Re-establishes the stream after a destructive bulk delete tore the segment down under it.
+    ///
+    /// A fresh GATT session makes the watch re-announce STREAM_START, which opens a new segment
+    /// and redelivers everything past our last checkpoint. Without it the receiver would sit
+    /// contextless — still connected, still "recording" — until the watch's next rotation, up to
+    /// 15 minutes away. Called AFTER the cascade, so the re-announced stream cannot reattach to a
+    /// segment that is about to be deleted.
+    public func resumeAfterBulkDelete() {
+        guard sessionTask != nil else { return }
+        link.resync()
     }
 
     private func beginPauseInterval(source: PauseSource) async {

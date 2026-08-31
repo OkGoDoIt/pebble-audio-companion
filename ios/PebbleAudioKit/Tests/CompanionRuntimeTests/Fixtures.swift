@@ -16,20 +16,78 @@ import WireProtocol
 
 // MARK: - Fakes
 
-/// A link that never connects: the receiver session idles and never reads or streams.
-/// (Port of `AudioCompanionRuntimeBackgroundTest.IdleGattLink`.)
+/// A link that never connects *by itself*: the receiver session idles and never reads or streams
+/// until a test drives `connectionState` to `.ready` and pushes notifications in.
+/// (Port of `AudioCompanionRuntimeBackgroundTest.IdleGattLink`, plus the scripting half of
+/// `ReceiverTests.FakeAudioGattLink` so a runtime test can drive a real stream end to end.)
 final class IdleGattLink: AudioGattLink, @unchecked Sendable {
     let connectionState = StateSubject<LinkState>(.disconnected)
     let lastFailure = StateSubject<ConnectFailure?>(nil)
-    private(set) var resyncCount = 0
-    private(set) var disconnectCount = 0
 
-    func readInfo() async throws -> [UInt8] { [] }
-    func writeControl(_ message: [UInt8]) async throws {}
-    var controlNotifications: AsyncStream<[UInt8]> { AsyncStream { $0.finish() } }
-    var dataNotifications: AsyncStream<[UInt8]> { AsyncStream { $0.finish() } }
-    func disconnect() { disconnectCount += 1 }
-    func resync() { resyncCount += 1 }
+    private let lock = NSLock()
+    private var _resyncCount = 0
+    private var _disconnectCount = 0
+    private var _controlWrites: [[UInt8]] = []
+
+    private let controlChannel = ByteChannel()
+    private let dataChannel = ByteChannel()
+
+    var resyncCount: Int { lock.withLock { _resyncCount } }
+    var disconnectCount: Int { lock.withLock { _disconnectCount } }
+
+    /// Raw control writes seen by the "watch".
+    var controlWrites: [[UInt8]] { lock.withLock { _controlWrites } }
+
+    func readInfo() async throws -> [UInt8] { Self.info.encode() }
+
+    /// ACK every CHECKPOINT the way a live watch does. Without it the first checkpoint's request
+    /// token stays in flight forever and every later one is silently skipped — which would hide
+    /// exactly the checkpoint behaviour a receive-path test is there to pin down.
+    var autoAckCheckpoints = false
+
+    func writeControl(_ message: [UInt8]) async throws {
+        lock.withLock { _controlWrites.append(message) }
+        guard autoAckCheckpoints,
+            case .decoded(let decoded) = AudioCompanionProtocol.decodeControlIn(message),
+            let checkpoint = decoded as? Checkpoint
+        else { return }
+        pushControl(Ack(requestToken: checkpoint.requestToken, statusRaw: 0))
+    }
+
+    var controlNotifications: AsyncStream<[UInt8]> { controlChannel.stream() }
+    var dataNotifications: AsyncStream<[UInt8]> { dataChannel.stream() }
+    func disconnect() { lock.withLock { _disconnectCount += 1 } }
+    func resync() { lock.withLock { _resyncCount += 1 } }
+
+    func pushControl(_ message: AudioCompanionMessage) { controlChannel.send(message.encode()) }
+    func pushData(_ message: AudioCompanionMessage) { dataChannel.send(message.encode()) }
+
+    /// Decoded control writes, in order.
+    var decodedWrites: [AudioCompanionMessage] {
+        controlWrites.compactMap {
+            if case .decoded(let message) = AudioCompanionProtocol.decodeControlIn($0) {
+                return message
+            }
+            return nil
+        }
+    }
+
+    var checkpoints: [Checkpoint] { decodedWrites.compactMap { $0 as? Checkpoint } }
+    var authRequests: [AuthRequest] { decodedWrites.compactMap { $0 as? AuthRequest } }
+    /// The highest sequence any CHECKPOINT has promised the watch is durably received.
+    var highestCheckpointedSequence: UInt32? {
+        checkpoints.map(\.highestContiguousSequencePersisted).max()
+    }
+
+    static let info = InfoSnapshot(
+        infoVersion: 1,
+        protocolMin: 1,
+        protocolMax: ProtocolConstants.protocolVersion,
+        serviceStateRaw: ServiceState.streaming.rawValue,
+        codecBitmap: ProtocolConstants.codecBitmapSpeexWideband,
+        flags: ProtocolConstants.infoFlagReceiverAuthorized | ProtocolConstants.infoFlagEnabled,
+        fwVersionPacked: (4 << 24) | (9 << 16) | 2
+    )
 }
 
 /// Records model release calls. (Port of `RecordingLifecycle`.)
@@ -219,6 +277,19 @@ enum Fixture {
             startTimeMs: startTimeMs,
             startMonotonicMs: 0,
             flags: 0
+        )
+    }
+
+    /// `count` consecutive 20 ms frames starting at `firstSequence`, as the watch would send them.
+    static func streamData(
+        streamId: UInt32 = 0x5EED_0001, firstSequence: UInt32, count: Int
+    ) -> StreamData {
+        StreamData(
+            streamId: streamId,
+            firstSequence: firstSequence,
+            firstSampleIndex: UInt64(firstSequence) * 320,
+            flags: 0,
+            frames: Array(repeating: Array(repeating: UInt8(0x11), count: 20), count: count)
         )
     }
 
@@ -558,6 +629,66 @@ final class RuntimeFixture: @unchecked Sendable {
 
     /// Shared with the runtime: the pass and diagnostics read the same object.
     let foreground: RuntimeForegroundState
+
+    /// Drives the whole receive path — link ready, AUTH_RESULT(ok), STREAM_START — so a runtime
+    /// test can exercise a live stream instead of only what a test wrote into the store by hand.
+    /// Leaves the session `.streaming` with a segment open.
+    ///
+    /// The handshake crosses several actors and a real file store, so the waits here are
+    /// `waitUntil` (bounded real time) rather than `TestClock.settle()`: virtual time only
+    /// governs what the session SLEEPS on, not how fast those hops are scheduled.
+    func beginStreaming(streamId: UInt32 = 0x5EED_0001) async throws {
+        await receiver.start()
+        link.connectionState.value = .ready
+        guard await waitUntil({ !self.link.authRequests.isEmpty }),
+            let auth = link.authRequests.last
+        else { throw FixtureError.noAuthRequest }
+
+        link.pushControl(
+            AuthResult(
+                requestToken: auth.requestToken, statusRaw: 0,
+                grantedProtoVersion: ProtocolConstants.protocolVersion
+            )
+        )
+        guard await waitUntil({ self.receiver.state.value == .authorized }) else {
+            throw FixtureError.notAuthorized
+        }
+
+        link.pushData(Fixture.streamStart(streamId: streamId))
+        guard await waitUntil({ await self.store.openSegmentId != nil }) else {
+            throw FixtureError.noOpenSegment
+        }
+    }
+
+    /// Pushes one STREAM_DATA batch and waits for it to be durable.
+    func pushFrames(
+        streamId: UInt32 = 0x5EED_0001, firstSequence: UInt32, count: Int
+    ) async -> Bool {
+        link.pushData(
+            Fixture.streamData(streamId: streamId, firstSequence: firstSequence, count: count))
+        let last = firstSequence + UInt32(count) - 1
+        return await waitUntil { await self.storedSequences().contains(last) }
+    }
+
+    /// Lets every in-flight continuation run when the thing under test is the ABSENCE of an
+    /// effect (nothing appears that a `waitUntil` could wait for).
+    func drain() async {
+        for _ in 0..<20 {
+            await TestClock.settle(yields: 50)
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+    }
+
+    /// Every frame sequence durably on disk, across every segment.
+    func storedSequences() async -> [UInt32] {
+        var all: [UInt32] = []
+        for meta in await store.listSegments() {
+            all.append(contentsOf: await store.readFrames(meta.segmentId).map(\.sequence))
+        }
+        return all.sorted()
+    }
+
+    enum FixtureError: Error { case noAuthRequest, notAuthorized, noOpenSegment }
 
     deinit {
         try? FileManager.default.removeItem(at: root)

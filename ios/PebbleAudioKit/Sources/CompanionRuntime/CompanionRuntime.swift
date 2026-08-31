@@ -348,15 +348,22 @@ public actor CompanionRuntime {
 
     /// "Delete All Recordings" — everything, including the one still being recorded.
     ///
-    /// Three steps, in this order, because each one is a hole the naive loop left behind:
-    /// 1. Close the open segment. `DeleteCascade` refuses an open segment (its store
-    ///    `precondition` would trap), so a loop over `listSegments()` silently skipped the
-    ///    recording in progress and it reappeared in the Library the moment it closed.
+    /// Four steps, in this order, because each one is a hole an earlier version left behind:
+    /// 1. Close the open segment THROUGH THE RECEIVER. `DeleteCascade` refuses an open segment
+    ///    (its store `precondition` would trap), so a loop over `listSegments()` silently
+    ///    skipped the recording in progress and it reappeared in the Library the moment it
+    ///    closed. Going straight at the store instead was worse: it left the receiver session
+    ///    holding a stream context over a segment that no longer existed, appending into nothing
+    ///    and checkpointing it as received — see `ReceiverService.closeOpenSegment`.
     /// 2. Cascade every segment: audio, transcript, follow-ups, single-source AI outputs,
     ///    quoting recaps, annotations and the search-index rows.
     /// 3. Sweep transcription state that has no segment left to hang off — queue tasks and
     ///    transcript files orphaned by an earlier interrupted delete or a crash mid-cascade.
     ///    Without it "delete all" can leave a queue that keeps retrying vanished audio.
+    /// 4. Put the live stream back into a fresh segment. Deleting recordings is not a request to
+    ///    stop recording; the watch is still streaming and its buffered audio is still ours to
+    ///    collect. This runs AFTER the cascade so the re-announced stream cannot reattach to a
+    ///    segment that is about to be deleted.
     ///
     /// Returns how many segments were destroyed.
     @discardableResult
@@ -370,6 +377,7 @@ public actor CompanionRuntime {
         do { try await environment.transcription.deleteAllTranscriptionData() } catch {
             log.failure("delete all transcription data", error)
         }
+        await environment.receiver.resumeAfterBulkDelete()
         await environment.diagnostics.refresh()
         await refreshSnapshot(.manual)
         return deleted
