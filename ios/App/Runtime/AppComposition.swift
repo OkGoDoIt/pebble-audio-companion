@@ -123,7 +123,13 @@ final class AppComposition {
 
         let database = try AppDatabase.open(at: AppDatabase.defaultDatabaseURL())
         self.database = database
-        let store = SegmentStore(root: containerRoot, nowMs: nowMs)
+        // The store's log is the ONLY explanation of why a RESUME reattach failed and a
+        // recording was split into a new Library row. Without it the segment-churn question is
+        // unanswerable from a support report.
+        let store = SegmentStore(
+            root: containerRoot, nowMs: nowMs,
+            log: { AppRuntimeLog.shared.record($0) }
+        )
         self.store = store
         let files = SegmentFileReader(root: containerRoot)
         self.files = files
@@ -432,7 +438,11 @@ final class AppComposition {
 
         let lossEvaluator = LossEventEvaluator(
             notifier: NativeSurfaceCoordinator.lossNotifier,
-            captureIsActive: { settingsBox.captureIntent == .active }
+            captureIsActive: { settingsBox.captureIntent == .active },
+            // The other half of the safeguard, ported and never connected: a pause journal row
+            // can outlive an intent flip during teardown, and with the default `{ false }` a
+            // "we missed some audio" alert could fire for a window the user deliberately paused.
+            isPaused: { (try? await pauseJournal.openInterval()) != nil }
         )
         let wake = WakeChannel()
         let foreground = RuntimeForegroundState()
@@ -482,14 +492,20 @@ final class AppComposition {
             enrichment: enrichment,
             index: index,
             donator: donator,
-            lossEvaluator: lossEvaluator
+            lossEvaluator: lossEvaluator,
+            // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
+            // the Spotlight entry behind reported success and recorded nothing anywhere.
+            log: AppRuntimeLog.runtimeLog
         )
         let deferredDeletes = DeferredDeleteBuffer(cascade: cascade, clock: clock)
         let conversations = ConversationQueries(db: database)
 
         let snapshots = CoverageSnapshotService(
             store: store,
-            writer: CoverageSnapshotWriter(),
+            // The writer's own doc says a silent snapshot failure is indistinguishable from a
+            // widget nobody wired up, and that "has already cost a debugging session" — and then
+            // it was constructed with the silent default anyway.
+            writer: CoverageSnapshotWriter(log: AppRuntimeLog.runtimeLog),
             clock: clock,
             statusOf: {
                 // The widget's status line must be the SAME derivation the Today card shows —
