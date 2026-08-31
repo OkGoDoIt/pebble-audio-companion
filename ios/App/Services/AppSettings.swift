@@ -85,7 +85,9 @@ final class AppSettings {
             RuntimeSettingsSnapshot(
                 captureIntent: captureIntent,
                 transcriptionMode: transcriptionMode,
-                localTranscriptionModelId: localTranscriptionModelId,
+                // The kit's field name predates M3. Under the SpeechAnalyzer engine the
+                // "local model" IS a system language asset, so what travels here is a locale.
+                localTranscriptionModelId: localSpeechLanguageId,
                 cloudTranscriptionProvider: cloudTranscriptionProvider,
                 aiMode: aiMode,
                 aiModel: aiModel,
@@ -115,9 +117,14 @@ final class AppSettings {
         }
     }
 
-    var localTranscriptionModelId: String {
+    /// The language on-device transcription runs in, as a BCP-47 identifier ("en-US").
+    ///
+    /// M3: the on-device engine is Apple's SpeechAnalyzer, whose "models" are per-locale system
+    /// speech assets — so the only local-model choice there is to make is the language. (The
+    /// pre-M3 key held a downloadable-model id, which nothing ever read.)
+    var localSpeechLanguageId: String {
         didSet {
-            defaults.set(localTranscriptionModelId, forKey: Keys.localModel)
+            defaults.set(localSpeechLanguageId, forKey: Keys.localSpeechLanguage)
             mirrorToRuntime()
         }
     }
@@ -226,8 +233,9 @@ final class AppSettings {
         transcriptionMode =
             defaults.string(forKey: Keys.transcriptionMode).flatMap(TranscriptionMode.init)
             ?? .remoteFirst
-        localTranscriptionModelId =
-            defaults.string(forKey: Keys.localModel) ?? "parakeet-v3"
+        localSpeechLanguageId =
+            defaults.string(forKey: Keys.localSpeechLanguage)
+            ?? Locale.current.identifier(.bcp47)
         cloudTranscriptionProvider =
             defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) ?? .soniox
         aiMode = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) ?? .remoteFirst
@@ -274,7 +282,9 @@ final class AppSettings {
         ) {
             transcriptionMode = stored
         }
-        if let stored = defaults.string(forKey: Keys.localModel) { localTranscriptionModelId = stored }
+        if let stored = defaults.string(forKey: Keys.localSpeechLanguage) {
+            localSpeechLanguageId = stored
+        }
         if let stored = defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) {
             cloudTranscriptionProvider = stored
         }
@@ -296,7 +306,8 @@ final class AppSettings {
     private enum Keys {
         static let captureIntent = "capture_intent"
         static let transcriptionMode = "transcription_mode"
-        static let localModel = "local_transcription_model"
+        /// New key on purpose: the pre-M3 one held a model id ("parakeet-v3"), not a locale.
+        static let localSpeechLanguage = "local_speech_language"
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"
         static let aiModel = "ai_model"

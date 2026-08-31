@@ -1120,3 +1120,25 @@ Consequences:
 Fallback: the `TranscriptionProvider`/`StreamingTranscriptionProvider` seam is fixed, so if
 real-device quality at the M6 on-device gate disappoints, a Parakeet port can slot back in as
 another provider id without touching the queue, router, or UI.
+
+### Revision, 2026-08-31 — Parakeet reinstated alongside SpeechAnalyzer
+
+Roger asked for the previous version's Parakeet support back, so local transcription is no
+longer single-engine. Both ship: **Apple SpeechAnalyzer** stays the default for a fresh install
+(no large download, system-managed assets), and the three **Cactus/Parakeet** models the old app
+offered return as explicit choices — TDT 0.6B v3 int8 (recommended, ~706 MB), TDT 0.6B v3 int4
+(small, ~431 MB), and CTC 1.1B int8 (experimental, English-only, ~1.18 GB).
+
+This is the fallback the original decision deliberately left open, exercised: because the choice
+was expressed through the `TranscriptionProvider` seam rather than baked into the pipeline, a
+second local engine slots in without touching the queue, router or processor.
+
+Consequences: the vendored `cactus/` static libraries (`libcactus.a` + `libcurl.a`, ios-arm64 and
+ios-arm64-simulator) and `cactus_ffi.h` are linked into the Swift package as a C target; the
+model catalog, the HuggingFace archive download (`{repo}/resolve/{revision}/{archivePath}`,
+streamed to disk with byte progress) and the `config.txt` + version-file install check are ported
+from `IosCactusModelPathProvider.kt` verbatim, including preserving the original install
+directory name so an existing download is not re-fetched. `AppSettings.localTranscriptionModelId`
+(the old `local_transcription_model` key) selects the engine, so a migrated user keeps whatever
+model they were using. The Cactus VAD/diarization/RAG/embedding extras remain unported, per
+Part 4.7.

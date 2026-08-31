@@ -76,39 +76,73 @@ final class MockStorageStatsSource: StorageStatsSource {
     }
 }
 
-// MARK: - Local transcription model (Part 6.7 row states)
+// MARK: - Local speech language (Part 6.7 row states, M3 engine)
+
+/// One installable on-device speech language.
+///
+/// M3: the local engine is Apple's SpeechAnalyzer, and its "models" are per-locale system
+/// speech assets — iOS downloads, shares, updates and reclaims them. So the choice this
+/// product can honestly offer is *which language*, not which third-party model.
+struct LocalSpeechLanguage: Identifiable, Hashable {
+    /// BCP-47 identifier, e.g. "en-US".
+    let id: String
+    /// Full localized name for the picker, e.g. "English (United States)".
+    let name: String
+    /// Compact name for the Settings row, e.g. "English (US)".
+    let shortName: String
+}
 
 enum LocalModelState: Equatable {
     case notInstalled
+    /// Deferred until the phone is on Wi-Fi. Not a failure — nothing is wrong.
+    case waitingForWiFi
     case downloading(progress: Double)
-    case installed(size: String)
+    case installed
     case failed
 }
 
 @MainActor
 protocol LocalModelManaging: AnyObject {
-    var modelName: String { get }
-    var state: LocalModelState { get }
-    func startDownload()
-    func cancelDownload()
-    func deleteModel()
+    /// Every language the on-device engine supports, this phone's own language first.
+    var languages: [LocalSpeechLanguage] { get }
+    /// What iOS reports for one language. Unknown/unqueried languages read `.notInstalled`.
+    func state(for languageId: String) -> LocalModelState
+    /// Re-reads iOS's inventory for every language (cheap; safe to call on appear).
+    func refresh()
+    func download(_ languageId: String)
+    func cancelDownload(_ languageId: String)
+    func delete(_ languageId: String)
     #if DEBUG
-    func debugFailDownload()
+    func debugFailDownload(_ languageId: String)
     #endif
+}
+
+extension LocalModelManaging {
+    func language(_ id: String) -> LocalSpeechLanguage? { languages.first { $0.id == id } }
 }
 
 @MainActor
 @Observable
 final class MockLocalModelManager: LocalModelManaging {
-    let modelName = "Parakeet v3"
-    private let installedSize = "706 MB"
-    private(set) var state: LocalModelState = .installed(size: "706 MB")
+    let languages: [LocalSpeechLanguage] = [
+        .init(id: "en-US", name: "English (United States)", shortName: "English (US)"),
+        .init(id: "en-GB", name: "English (United Kingdom)", shortName: "English (UK)"),
+        .init(id: "de-DE", name: "German (Germany)", shortName: "German (DE)"),
+        .init(id: "es-ES", name: "Spanish (Spain)", shortName: "Spanish (ES)"),
+        .init(id: "fr-FR", name: "French (France)", shortName: "French (FR)"),
+        .init(id: "ja-JP", name: "Japanese (Japan)", shortName: "Japanese (JP)"),
+    ]
 
+    private var states: [String: LocalModelState] = ["en-US": .installed]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
-    func startDownload() {
-        guard state == .notInstalled || state == .failed else { return }
-        state = .downloading(progress: 0)
+    func state(for languageId: String) -> LocalModelState { states[languageId] ?? .notInstalled }
+
+    func refresh() {}
+
+    func download(_ languageId: String) {
+        guard state(for: languageId) != .downloading(progress: 0) else { return }
+        states[languageId] = .downloading(progress: 0)
         downloadTask?.cancel()
         downloadTask = Task { [weak self] in
             var progress = 0.0
@@ -116,26 +150,26 @@ final class MockLocalModelManager: LocalModelManaging {
                 try? await Task.sleep(for: .milliseconds(140))
                 guard let self, !Task.isCancelled else { return }
                 progress = min(progress + 0.025, 1)
-                self.state = .downloading(progress: progress)
+                self.states[languageId] = .downloading(progress: progress)
             }
-            self?.state = .installed(size: self?.installedSize ?? "")
+            self?.states[languageId] = .installed
         }
     }
 
-    func cancelDownload() {
+    func cancelDownload(_ languageId: String) {
         downloadTask?.cancel()
-        state = .notInstalled
+        states[languageId] = .notInstalled
     }
 
-    func deleteModel() {
+    func delete(_ languageId: String) {
         downloadTask?.cancel()
-        state = .notInstalled
+        states[languageId] = .notInstalled
     }
 
     #if DEBUG
-    func debugFailDownload() {
+    func debugFailDownload(_ languageId: String) {
         downloadTask?.cancel()
-        state = .failed
+        states[languageId] = .failed
     }
     #endif
 }

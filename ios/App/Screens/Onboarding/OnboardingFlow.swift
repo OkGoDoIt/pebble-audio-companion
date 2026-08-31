@@ -124,8 +124,10 @@ private struct OnboardingConfirmView: View {
             case .failed(let failure):
                 failureCard(failure)
                     .padding(.horizontal, Tokens.screenMargin)
+            case .confirmOnWatch:
+                confirmContent
             default:
-                waitingContent
+                searchingContent
             }
 
             Spacer()
@@ -141,7 +143,29 @@ private struct OnboardingConfirmView: View {
         .motionAware(.snappy(duration: 0.25), value: model.pairing)
     }
 
-    private var waitingContent: some View {
+    /// Scanning / connecting / authorizing. NOTHING is waiting on the watch yet, so this must
+    /// not draw the consent prompt — that would ask the user to look for something that is not
+    /// there.
+    private var searchingContent: some View {
+        VStack(spacing: 20) {
+            ConnectHeroGlyph()
+            Text(Copy.Onboarding.waiting)
+                .font(AppFont.screenTitle)
+                .foregroundStyle(Tokens.label)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                StatusDot(color: Tokens.tint, size: .lifecycle)
+                Text(Copy.Onboarding.waitingLine)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.tertiary)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.horizontal, 32)
+    }
+
+    /// The watch is genuinely asking (receiver consent, or "turn Background Audio on").
+    private var confirmContent: some View {
         VStack(spacing: 20) {
             WatchFaceMock()
             Text(Copy.Onboarding.confirmTitle)
@@ -150,9 +174,10 @@ private struct OnboardingConfirmView: View {
                 .multilineTextAlignment(.center)
             HStack(spacing: 8) {
                 StatusDot(color: Tokens.tint, size: .lifecycle)
-                Text(Copy.Onboarding.waiting)
+                Text(Copy.Status.confirmOnWatchLine)
                     .font(AppFont.subBody)
                     .foregroundStyle(Tokens.tertiary)
+                    .multilineTextAlignment(.leading)
             }
         }
         .padding(.horizontal, 32)
@@ -181,7 +206,7 @@ private struct OnboardingConfirmView: View {
         switch failure {
         case .cantSendAudio:
             openURL(OnboardingViewModel.firmwareGuideURL)
-        case .bluetoothDenied:
+        case .bluetoothDenied, .bluetoothOff:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 openURL(url)
             }
@@ -322,56 +347,56 @@ private struct OnboardingTranscriptsView: View {
 
 // MARK: - Cloud key hand-off (6.7)
 
-/// One key screen between "In the cloud" and Today: provider segmented row (the single
-/// approved segmented control — onboarding only), secure field, [Save to Keychain],
-/// "Skip for now". Keys go straight to the Keychain (B13).
+/// One key screen between "In the cloud" and Today. BOTH providers are offered at once —
+/// Soniox transcribes, OpenAI transcribes and/or runs the AI, and using one for each is a
+/// normal setup, so a screen that only takes one key at a time hid half the product. Each row
+/// writes its own Keychain entry (B13, the same entries Settings → Transcription & AI reads);
+/// a saved key only ever renders masked. Back returns to the transcripts choice (B15).
 private struct OnboardingCloudKeyView: View {
     let model: OnboardingViewModel
     @Environment(AppSettings.self) private var settings
 
-    @State private var provider: CloudProvider = .soniox
-    @State private var key = ""
+    @State private var sonioxKey = ""
+    @State private var openAiKey = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
+            OnboardingBackBar(label: Copy.Onboarding.backToTranscripts) {
+                model.backToTranscripts()
+            }
 
-            VStack(spacing: 18) {
-                Text(Copy.Onboarding.addProviderKey)
-                    .font(AppFont.screenTitle)
-                    .foregroundStyle(Tokens.label)
-                    .multilineTextAlignment(.center)
+            ScrollView {
+                VStack(spacing: 18) {
+                    Text(Copy.Onboarding.addProviderKey)
+                        .font(AppFont.screenTitle)
+                        .foregroundStyle(Tokens.label)
+                        .multilineTextAlignment(.center)
 
-                Picker(Copy.Settings.TranscriptionAI.cloudProvider, selection: $provider) {
-                    ForEach(CloudProvider.allCases, id: \.self) { provider in
-                        Text(provider.displayName).tag(provider)
+                    Text(Copy.Onboarding.providerKeysLine)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.tertiary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
+                        .frame(maxWidth: 320)
+
+                    ListCard(rowVerticalPadding: 14) {
+                        keyRow(.soniox, role: Copy.Onboarding.sonioxRole, key: $sonioxKey)
+                        keyRow(.openAi, role: Copy.Onboarding.openAiRole, key: $openAiKey)
                     }
                 }
-                .pickerStyle(.segmented)
-
-                Card {
-                    SecureField("API key", text: $key)
-                        .font(AppFont.callout)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 24)
-
-            Spacer()
+            .scrollBounceBehavior(.basedOnSize)
 
             VStack(spacing: 12) {
-                Button(Copy.Onboarding.saveToKeychain) {
-                    settings.setApiKey(key, for: provider)
-                    settings.cloudTranscriptionProvider = provider
-                    model.finish(settings: settings)
-                }
-                .buttonStyle(.primaryFilled)
-                .disabled(trimmedKey.isEmpty)
-                .opacity(trimmedKey.isEmpty ? 0.4 : 1)
+                Button(Copy.Onboarding.saveToKeychain, action: save)
+                    .buttonStyle(.primaryFilled)
+                    .disabled(!hasAnyKey)
+                    .opacity(hasAnyKey ? 1 : 0.4)
 
                 Button(Copy.Onboarding.skipForNow) {
-                    settings.cloudTranscriptionProvider = provider
                     model.finish(settings: settings)
                 }
                 .font(AppFont.bodyPlain)
@@ -381,11 +406,93 @@ private struct OnboardingCloudKeyView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
-        .onAppear { provider = settings.cloudTranscriptionProvider }
     }
 
-    private var trimmedKey: String {
-        key.trimmingCharacters(in: .whitespaces)
+    /// "Soniox — transcription", the saved key masked on the right, and a field that replaces it.
+    private func keyRow(
+        _ provider: CloudProvider, role: String, key: Binding<String>
+    ) -> some View {
+        let masked = settings.maskedApiKey(for: provider)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(provider.displayName)
+                    .font(AppFont.headline)
+                    .foregroundStyle(Tokens.label)
+                Spacer(minLength: 8)
+                if let masked {
+                    Text(masked)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .accessibilityLabel(
+                            "\(Copy.Settings.TranscriptionAI.savedInKeychain), \(masked)"
+                        )
+                }
+            }
+            // What this provider is actually for — the whole point of showing both at once.
+            Text(role)
+                .font(AppFont.caption)
+                .foregroundStyle(Tokens.tertiary)
+                .padding(.bottom, 2)
+            SecureField(
+                masked == nil
+                    ? Copy.Onboarding.keyPlaceholder : Copy.Onboarding.keyReplacePlaceholder,
+                text: key
+            )
+            .font(AppFont.callout)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .accessibilityLabel(
+                "\(provider.displayName) \(Copy.Onboarding.keyPlaceholder)"
+            )
+        }
+    }
+
+    /// Writes only what was typed — an untouched row keeps whatever the Keychain already holds.
+    private func save() {
+        let soniox = sonioxKey.trimmingCharacters(in: .whitespaces)
+        let openAi = openAiKey.trimmingCharacters(in: .whitespaces)
+        if !soniox.isEmpty { settings.setApiKey(soniox, for: .soniox) }
+        if !openAi.isEmpty { settings.setApiKey(openAi, for: .openAi) }
+
+        // Only one provider can transcribe at a time. If exactly one of them ends up with a key,
+        // that is unambiguously the one to use; with both, the existing Settings choice stands.
+        let hasSoniox = settings.hasApiKey(for: .soniox)
+        let hasOpenAi = settings.hasApiKey(for: .openAi)
+        if hasSoniox != hasOpenAi {
+            settings.cloudTranscriptionProvider = hasSoniox ? .soniox : .openAi
+        }
+        model.finish(settings: settings)
+    }
+
+    private var hasAnyKey: Bool {
+        !sonioxKey.trimmingCharacters(in: .whitespaces).isEmpty
+            || !openAiKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+/// Onboarding's back affordance: a chevron plus the name of the actual parent step (B15).
+private struct OnboardingBackBar: View {
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: action) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text(label).font(AppFont.bodyPlain).lineLimit(1)
+                }
+                .foregroundStyle(Tokens.tint)
+                .padding(.vertical, 12)
+                .padding(.trailing, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back to \(label)")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Tokens.screenMargin)
     }
 }
 

@@ -153,6 +153,9 @@ final class LiveTodayDataSource {
         if preview == nil {
             preview = await composition.localLive.previewFor(openSegmentId)
         }
+        // The open segment's meta places the transcript in time and carries the gaps the watch
+        // has already reported, so quiet/missing show up while recording rather than at the end.
+        let meta = composition.files.readMeta(openSegmentId)
 
         liveSnapshotValue = LiveSnapshot(
             startedLine: Copy.Live.startedLine(
@@ -160,7 +163,9 @@ final class LiveTodayDataSource {
                 elapsed: Formatting.duration(max(0, nowMs - live.startMs))
             ),
             isLive: true,
-            items: Self.liveItems(preview)
+            items: Self.liveItems(preview, meta: meta, startMs: live.startMs),
+            timeZone: Self.liveTimeZone(meta),
+            provenance: Self.liveProvenance(preview)
         )
     }
 
@@ -296,11 +301,22 @@ final class LiveTodayDataSource {
         )
     }
 
-    /// The rolling live transcript. The preview carries diarized segments when the provider
-    /// supplies them; the tail is marked in-progress so it renders dimmed rather than final.
-    private static func liveItems(_ preview: LiveTranscriptPreview?) -> [LiveTranscriptItem] {
+    /// The rolling live transcript, derived by the same `transcriptTimelineItems` the finished
+    /// Conversation uses — so a turn keeps its wall-clock stamp, and the quiet/missing rows the
+    /// watch already reported render inline while recording instead of only appearing at the
+    /// end. Turn times are the segment's start plus the provider's offset; the tail is marked
+    /// in-progress (dimmed, unstamped) because its text is still being revised.
+    private static func liveItems(
+        _ preview: LiveTranscriptPreview?, meta: SegmentMeta?, startMs: Int64
+    ) -> [LiveTranscriptItem] {
         guard let preview else { return [] }
-        if preview.segments.isEmpty {
+        let anchorMs = meta?.receivedAtMs ?? startMs
+        func date(_ offsetMs: Int64) -> Date {
+            Date(timeIntervalSince1970: Double(anchorMs + offsetMs) / 1000)
+        }
+
+        // No timings yet (or no meta to place them against): one unstamped in-progress tail.
+        guard let meta, !preview.segments.isEmpty else {
             let text = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return [] }
             return [
@@ -311,15 +327,65 @@ final class LiveTodayDataSource {
                     ))
             ]
         }
-        return preview.segments.enumerated().map { index, segment in
-            .turn(
-                LiveTurn(
-                    id: "\(preview.segmentId)-\(index)",
-                    speaker: segment.speaker.map { LiveSpeaker.other(speakerLabel($0)) }
-                        ?? .unresolved,
-                    text: segment.text,
-                    isInProgress: index == preview.segments.count - 1
-                ))
+
+        let timeline = transcriptTimelineItems(
+            meta: meta,
+            segments: preview.segments.map {
+                SearchKit.TranscriptSegment(
+                    text: $0.text, startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker)
+            }
+        )
+        let lastSpeechIndex = timeline.lastIndex { $0.asSpeech != nil }
+        var items: [LiveTranscriptItem] = []
+        for (offset, item) in timeline.enumerated() {
+            let id = "\(preview.segmentId)-\(offset)"
+            switch item {
+            case .speech(let speech):
+                items.append(
+                    .turn(
+                        LiveTurn(
+                            id: id,
+                            speaker: speech.speaker.map { LiveSpeaker.other($0) } ?? .unresolved,
+                            text: speech.text,
+                            startedAt: date(speech.startMs),
+                            // Only the newest block is still growing.
+                            isInProgress: offset == lastSpeechIndex
+                        )))
+            case .silenceBreak:
+                break  // an unlabeled visual break; the card's row spacing carries it
+            case .pause(let pause):
+                items.append(
+                    .marker(
+                        LiveMarker(
+                            id: id,
+                            text: pause.label,
+                            kind: pause.missing ? .missing : .quiet,
+                            startedAt: date(pause.startMs)
+                        )))
+            }
+        }
+        return items
+    }
+
+    /// Q16: live stamps format in the zone the audio is being recorded in.
+    private static func liveTimeZone(_ meta: SegmentMeta?) -> TimeZone {
+        meta?.recordedTimeZone.flatMap { TimeZone(identifier: $0) } ?? .current
+    }
+
+    /// Names the engine actually producing the live text — a cloud preview must not claim to
+    /// be on-device.
+    private static func liveProvenance(_ preview: LiveTranscriptPreview?) -> String {
+        guard let providerId = preview?.providerId, !providerId.isEmpty else {
+            return Copy.Live.provenance()
+        }
+        switch providerId {
+        case "soniox": return Copy.Live.provenance(source: "Soniox")
+        case "openai": return Copy.Live.provenance(source: "OpenAI")
+        default:
+            // Every local engine ("cactus-local", the system recognizer) is on-device.
+            return providerId.hasSuffix("-local") || providerId.hasPrefix("apple")
+                ? Copy.Live.provenance()
+                : Copy.Live.provenance(source: providerId)
         }
     }
 }
