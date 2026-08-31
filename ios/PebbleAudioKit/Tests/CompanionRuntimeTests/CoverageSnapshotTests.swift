@@ -410,3 +410,149 @@ import Testing
         #expect(await fixture.snapshots.triggers.contains(.pauseChanged))
     }
 }
+
+// The presence gate. Roger's phone had no `coverage_snapshot.json` at all, so every widget he
+// added showed its "no data yet" state — a redesigned-but-empty widget, which is worse than the
+// one he complained about. These pin the four ways the file now comes into existence and stays
+// current: at the very top of startup, on the receive path, on every foreground entry, and as a
+// rate-limited heartbeat at the end of each pipeline pass.
+
+/// Lets a test hold `StartupSequencer` open while it inspects what `start()` did before it.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    var isOpen: Bool { lock.withLock { opened } }
+    func open() { lock.withLock { opened = true } }
+    func wait() async {
+        while !isOpen { try? await Task.sleep(nanoseconds: 500_000) }
+    }
+}
+
+@Suite struct CoverageSnapshotPresenceTests {
+
+    @Test func startWritesTheSnapshotBeforeTheSlowRecovery() async throws {
+        // Capture off, so `start()` brings up nothing but the loop and the snapshot — this test
+        // is about ORDER, and a live receiver would only add noise to it.
+        let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: .off))
+        #expect(!FileManager.default.fileExists(atPath: fixture.snapshotWriter.url.path))
+
+        // A recovery that never finishes: on a migrated container this step really does take
+        // tens of seconds, and that whole window used to be a blank widget.
+        let gate = Gate()
+        var environment = await fixture.runtime.environment
+        environment.startup = StartupSequencer(
+            steps: StartupSteps(recoverStore: { await gate.wait() })
+        )
+        let runtime = CompanionRuntime(environment: environment)
+
+        let starting = Task { await runtime.start() }
+        let appeared = await waitUntil {
+            FileManager.default.fileExists(atPath: fixture.snapshotWriter.url.path)
+        }
+        #expect(appeared, "the snapshot must exist before recovery finishes")
+        #expect(!gate.isOpen, "the gate proves recovery had not returned yet")
+
+        gate.open()
+        await starting.value
+        await runtime.stop()
+
+        #expect(await fixture.snapshots.triggers.first == .manual)
+        #expect(fixture.snapshotWriter.read() != nil)
+    }
+
+    @Test func theReceiverPathIsConnectedToTheSnapshotService() async throws {
+        let fixture = try RuntimeFixture()
+        #expect(fixture.coverageTriggers.isConnected)
+
+        // What the receiver's sink fires when a segment closes. Unconnected, this is the no-op
+        // that left the widget frozen for a whole background recording session.
+        await fixture.coverageTriggers.fire(.segmentClosed)
+
+        #expect(await fixture.snapshots.lastTrigger == .segmentClosed)
+        #expect(FileManager.default.fileExists(atPath: fixture.snapshotWriter.url.path))
+    }
+
+    @Test func anUnconnectedRelayDropsTriggersInsteadOfFailing() async {
+        let relay = CoverageTriggerRelay()
+        #expect(!relay.isConnected)
+        await relay.fire(.segmentClosed)
+    }
+
+    @Test func foregroundEntryRewritesTheSnapshot() async throws {
+        let fixture = try RuntimeFixture()
+        let lifecycle = AppLifecycleCoordinator(runtime: fixture.runtime)
+
+        await lifecycle.handle(.didBecomeActive)
+
+        #expect(await fixture.snapshots.triggers.contains(.manual))
+        #expect(FileManager.default.fileExists(atPath: fixture.snapshotWriter.url.path))
+    }
+
+    @Test func theHeartbeatIsRateLimitedButResumesWhenTheIntervalPasses() async throws {
+        let fixture = try RuntimeFixture()
+
+        #expect(await fixture.snapshots.refreshIfDue(.pipelinePass, minIntervalMs: 60_000) != nil)
+        // Same instant: a pipeline pass runs once a second while work is flowing, and each
+        // refresh re-reads the OPEN segment's frame log.
+        #expect(await fixture.snapshots.refreshIfDue(.pipelinePass, minIntervalMs: 60_000) == nil)
+
+        await fixture.clock.advance(by: 60_000)
+        #expect(await fixture.snapshots.refreshIfDue(.pipelinePass, minIntervalMs: 60_000) != nil)
+    }
+
+    @Test func aPipelinePassRefreshesTheSnapshot() async throws {
+        let refreshed = Counter()
+        let pass = PipelinePass(
+            steps: PipelineSteps(refreshCoverageSnapshot: { await refreshed.increment() }),
+            clock: TestClock()
+        )
+
+        _ = try await pass.run()
+
+        #expect(await refreshed.value == 1)
+    }
+
+    @Test func evenABackgroundedPassRefreshesTheSnapshot() async throws {
+        let refreshed = Counter()
+        let pass = PipelinePass(
+            steps: PipelineSteps(
+                isForeground: { false },
+                refreshCoverageSnapshot: { await refreshed.increment() }
+            ),
+            clock: TestClock()
+        )
+
+        // Backgrounded is when this product records; a widget that freezes there is the bug.
+        _ = try await pass.run()
+
+        #expect(await refreshed.value == 1)
+    }
+
+    @Test func aWriteFailureIsReportedRatherThanSwallowed() throws {
+        // A directory where the file's own name is already taken by a directory: the rename
+        // cannot land, and the caller has to be told.
+        let root = Fixture.temporaryDirectory("unwritable-group")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(CoverageSnapshot.fileName),
+            withIntermediateDirectories: true
+        )
+        let writer = CoverageSnapshotWriter(directory: root)
+
+        let wrote = writer.write(
+            CoverageSnapshot(
+                generatedAtMs: 1, dateKey: "2026-08-31", timeZoneID: "UTC", dayStartMs: 0,
+                nowMs: 1, spans: [], totalRecordedMs: 0, totalMissingMs: 0,
+                headline: "Not recording", dot: "neutral", isRecording: false
+            )
+        )
+
+        #expect(!wrote)
+        #expect(writer.read() == nil)
+    }
+}
+
+private actor Counter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}

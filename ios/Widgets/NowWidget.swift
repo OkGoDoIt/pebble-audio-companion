@@ -93,15 +93,6 @@ struct NowWidgetView: View {
     }
 }
 
-extension String {
-    /// Blank strings are absent strings: a title of spaces must fall back to the honest
-    /// placeholder rather than render as an empty row that looks like a layout bug.
-    var nonBlank: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
 #Preview("Medium", as: .systemMedium) {
     NowWidget()
 } timeline: {

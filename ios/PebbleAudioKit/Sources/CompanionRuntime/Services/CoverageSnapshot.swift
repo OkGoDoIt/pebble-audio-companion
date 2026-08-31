@@ -226,9 +226,48 @@ public enum CoverageSnapshotTrigger: String, Sendable, Equatable, CaseIterable {
     case segmentClosed
     case pauseChanged
     case appBackgrounded
-    /// Explicit refresh (startup, retention cascade) — not one of the three required triggers,
-    /// but harmless and keeps the widget honest after a delete.
+    /// Explicit refresh (startup, foreground entry, retention cascade) — not one of the three
+    /// required triggers, but harmless and keeps the widget honest after a delete.
     case manual
+    /// The rate-limited write at the end of a pipeline pass. The three required triggers are
+    /// events; this one is the heartbeat that keeps a widget current *between* them, so a
+    /// conversation that has been running for an hour without rotating a segment does not age
+    /// into "as of 10:14".
+    case pipelinePass
+}
+
+/// Closes a construction-order loop: `ReceiverService` is built BEFORE
+/// `CoverageSnapshotService` (the receiver's state is one of the inputs to the status the
+/// snapshot carries), so the trigger the receiver fires on segment open/close cannot be handed
+/// to it at construction. The receiver fires into this relay from the moment it exists and the
+/// composition connects it as soon as the snapshot service is built.
+///
+/// This is not a nicety. Without it the `onCoverageTrigger` parameter defaults to a no-op, and
+/// nothing that happens on the *receive* path — the only thing happening while the app is
+/// backgrounded and actually recording — ever reaches the widget's file.
+///
+/// A fire before `connect` is dropped, not queued: the snapshot is a statement about *now*, and
+/// replaying a stale trigger later would only rewrite the same file the connection already does.
+public final class CoverageTriggerRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sink: (@Sendable (CoverageSnapshotTrigger) async -> Void)?
+
+    public init() {}
+
+    public func connect(_ sink: @escaping @Sendable (CoverageSnapshotTrigger) async -> Void) {
+        lock.withLock { self.sink = sink }
+    }
+
+    public var isConnected: Bool {
+        lock.withLock { sink != nil }
+    }
+
+    public func fire(_ trigger: CoverageSnapshotTrigger) async {
+        // The lock is released before the await: a snapshot refresh must never be run while
+        // holding it, and nothing here needs the two to be atomic.
+        let sink = lock.withLock { self.sink }
+        await sink?(trigger)
+    }
 }
 
 /// Writes `coverage_snapshot.json` into the App Group container (temp file + atomic rename).
@@ -257,7 +296,12 @@ public struct CoverageSnapshotWriter: Sendable {
 
     public var url: URL { directory.appendingPathComponent(CoverageSnapshot.fileName) }
 
-    public func write(_ snapshot: CoverageSnapshot) {
+    /// Writes the snapshot, reporting whether it landed. A failure NEVER propagates — it only
+    /// costs the widget freshness — but it must never be invisible either: a widget stuck on its
+    /// "no data yet" state with nothing in the log is indistinguishable from a widget nobody
+    /// wired up, and that ambiguity has already cost a debugging session.
+    @discardableResult
+    public func write(_ snapshot: CoverageSnapshot) -> Bool {
         do {
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true
@@ -267,10 +311,21 @@ public struct CoverageSnapshotWriter: Sendable {
             let data = try encoder.encode(snapshot)
             let tmp = directory.appendingPathComponent(CoverageSnapshot.fileName + ".tmp")
             try data.write(to: tmp)
-            _ = rename(tmp.path, url.path)
+            // The atomic half. `rename` reports through errno, not by throwing, so ignoring its
+            // result is how a snapshot silently stops updating while every write "succeeds".
+            guard rename(tmp.path, url.path) == 0 else {
+                let code = errno
+                log.failure(
+                    "coverage snapshot rename to \(url.path)",
+                    NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+                )
+                try? FileManager.default.removeItem(at: tmp)
+                return false
+            }
+            return true
         } catch {
-            // A failed snapshot only costs the widget freshness; never fail the pipeline for it.
-            log.failure("coverage snapshot write", error)
+            log.failure("coverage snapshot write to \(url.path)", error)
+            return false
         }
     }
 

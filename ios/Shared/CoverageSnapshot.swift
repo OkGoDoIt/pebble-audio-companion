@@ -277,8 +277,10 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
     /// How stale this snapshot is at `now`. Never negative — a clock that moved backwards is
     /// not evidence of freshness.
     func ageMs(at now: Date = Date()) -> Int64 {
-        max(0, Int64(now.timeIntervalSince1970 * 1000) - generatedAtMs)
+        ageMs(atMs: Int64(now.timeIntervalSince1970 * 1000))
     }
+
+    func ageMs(atMs nowMs: Int64) -> Int64 { max(0, nowMs - generatedAtMs) }
 
     /// A snapshot this old must not be presented as the live state. The app rewrites on every
     /// capture change and on backgrounding, so anything beyond half an hour means the app has
@@ -286,6 +288,8 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
     static let staleAfterMs: Int64 = 30 * 60 * 1000
 
     func isStale(at now: Date = Date()) -> Bool { ageMs(at: now) > Self.staleAfterMs }
+
+    func isStale(atMs nowMs: Int64) -> Bool { ageMs(atMs: nowMs) > Self.staleAfterMs }
 
     /// The moment the running stretch began, when the snapshot knows one.
     var currentStartedAt: Date? {

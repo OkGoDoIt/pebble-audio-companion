@@ -64,6 +64,11 @@ public actor AppLifecycleCoordinator {
                 await runtime.environment.receiver.start()
             }
             await runtime.reconcilePendingTranscriptions()
+            // Foreground entry always rewrites the widget's file. `setForeground(true)` cannot
+            // be relied on for this: it is a transition guard, and the very first activation of
+            // a launch finds the runtime already marked foreground, so it returns without doing
+            // anything. That is precisely the launch where the snapshot most needs to exist.
+            await runtime.refreshSnapshot(.manual)
 
         case .didEnterBackground:
             await runtime.setForeground(false)

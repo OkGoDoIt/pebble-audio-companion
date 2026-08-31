@@ -72,12 +72,27 @@ public actor CoverageSnapshotService {
         self.log = log
     }
 
+    /// The heartbeat refresh, rate-limited. Recomputing coverage re-reads the OPEN segment's
+    /// frame log (its fingerprint changes with every frame, so the cache cannot help it), which
+    /// is far too much work to do on every pipeline pass — foreground passes come round once a
+    /// second while anything is being processed.
+    ///
+    /// Returns nil when the call was skipped, so a caller can tell "not due" from "written".
+    @discardableResult
+    public func refreshIfDue(
+        _ trigger: CoverageSnapshotTrigger, minIntervalMs: Int64
+    ) async -> CoverageSnapshot? {
+        if let last = lastWriteMs, clock.nowMs - last < minIntervalMs { return nil }
+        return await refresh(trigger)
+    }
+
     /// Recomputes today's coverage and writes the snapshot. Records the trigger for tests and
     /// diagnostics — the plan names exactly three that must fire.
     @discardableResult
     public func refresh(_ trigger: CoverageSnapshotTrigger) async -> CoverageSnapshot {
         lastTrigger = trigger
         triggers.append(trigger)
+        lastWriteMs = clock.nowMs
 
         let nowMs = clock.nowMs
         let zone = timeZoneID()
@@ -226,6 +241,17 @@ public actor CoverageSnapshotService {
     /// The triggers seen so far (tests assert all three fire; the app ignores this).
     public private(set) var triggers: [CoverageSnapshotTrigger] = []
     public private(set) var lastTrigger: CoverageSnapshotTrigger?
+    /// When the last write went out, for `refreshIfDue`'s rate limit.
+    public private(set) var lastWriteMs: Int64?
+
+    /// How often the pipeline-pass heartbeat may rewrite the snapshot.
+    ///
+    /// Foreground: often enough that a widget glanced at during a live conversation is current.
+    /// Background: rarely enough that a ~10 s Bluetooth wake is not spent re-reading the open
+    /// segment's frame log, while still landing well inside the widget's 30-minute staleness
+    /// window — the receive-path triggers (segment open/close) carry the rest.
+    public static let foregroundHeartbeatMs: Int64 = 60 * 1000
+    public static let backgroundHeartbeatMs: Int64 = 10 * 60 * 1000
 
     private var cache: [String: CachedCoverage] = [:]
 

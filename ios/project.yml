@@ -22,13 +22,14 @@ targets:
         excludes:
           - "Info.plist"
           - "App.entitlements"
-      # Shared/ compiles into the app AND the widget extension. CoverageSnapshot.swift is the
-      # one exception: the app already links the kit's `CompanionRuntime.CoverageSnapshot`
-      # (the writer), so compiling the widget's dependency-free mirror here too would shadow
-      # it inside the app module.
+      # Shared/ compiles into the app AND the widget extension. Two files are excluded here:
+      # the app already links the kit's `CompanionRuntime.CoverageSnapshot` (the writer), so
+      # compiling the widget's dependency-free mirror would shadow it inside the app module —
+      # and `WidgetStatusRules.swift` reads that mirror, so it follows it out.
       - path: Shared
         excludes:
           - "CoverageSnapshot.swift"
+          - "WidgetStatusRules.swift"
     dependencies:
       - package: PebbleAudioKit
         product: PebbleAudioKit

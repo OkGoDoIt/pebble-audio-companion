@@ -335,6 +335,9 @@ final class RuntimeFixture: @unchecked Sendable {
     let index: RecordingIndex
     let spotlight: RecordingSpotlight
     let snapshotWriter: CoverageSnapshotWriter
+    /// Wired exactly as `AppComposition` wires it, so a test that closes a segment exercises the
+    /// production path from the receiver's sink to the file on disk.
+    let coverageTriggers: CoverageTriggerRelay
 
     let receiver: ReceiverService
     let transcription: TranscriptionService
@@ -390,6 +393,8 @@ final class RuntimeFixture: @unchecked Sendable {
         index = RecordingIndex()
         spotlight = RecordingSpotlight()
         snapshotWriter = CoverageSnapshotWriter(directory: snapshotRoot)
+        let coverageRelay = CoverageTriggerRelay()
+        coverageTriggers = coverageRelay
 
         let router = TranscriptionModeRouter(
             local: nil, remote: nil, mode: { settingsBox.transcriptionMode }
@@ -415,7 +420,8 @@ final class RuntimeFixture: @unchecked Sendable {
             clock: clock,
             initialIntent: settings.captureIntent,
             pauseJournal: pauseJournal,
-            lossEvaluator: withLossNotifier ? evaluator : nil
+            lossEvaluator: withLossNotifier ? evaluator : nil,
+            onCoverageTrigger: { await coverageRelay.fire($0) }
         )
         let uploadCoordinator: BackgroundCloudUploadCoordinator? =
             withBackgroundUploads
@@ -489,13 +495,15 @@ final class RuntimeFixture: @unchecked Sendable {
             lossEvaluator: evaluator
         )
         deferredDeletes = DeferredDeleteBuffer(cascade: cascade, clock: clock)
-        snapshots = CoverageSnapshotService(
+        let snapshotService = CoverageSnapshotService(
             store: store,
             writer: snapshotWriter,
             clock: clock,
             statusOf: { StatusModel.transcriptsOff },
             pauseJournal: pauseJournal
         )
+        snapshots = snapshotService
+        coverageRelay.connect { await snapshotService.refresh($0) }
         let transcription = self.transcription
         let retention = self.retention
         let cascade = self.cascade
