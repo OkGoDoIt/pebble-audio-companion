@@ -26,6 +26,10 @@ struct LiveConversationScreen: View {
     /// stamp moves above the turn and the rail disappears.
     private var stacksTimeAboveTurn: Bool { dynamicTypeSize.isAccessibilitySize }
 
+    /// The hairline beside a marker is decoration. Once the label wraps it strands itself
+    /// against a blank half-line, so it goes away before that happens.
+    private var showsMarkerRule: Bool { dynamicTypeSize <= .xxLarge }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -162,7 +166,11 @@ struct LiveConversationScreen: View {
                     rail(row.stamp)
                     HStack(spacing: 8) {
                         label
-                        Rectangle().fill(rule).frame(height: 0.5)
+                        if showsMarkerRule {
+                            Rectangle().fill(rule).frame(height: 0.5)
+                        } else {
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
             }
