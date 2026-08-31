@@ -39,10 +39,10 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
     private let freeSpace: FreeSpaceProvider
     private let nowMs: @Sendable () -> Int64
     private let configProvider: @Sendable () -> RetentionConfig
-    /// Says what a sweep took and under which cap. The SIZE cap especially: it is not a setting
-    /// anyone can see, so without a line here a user who chose "Keep audio · 365 days" and then
-    /// crossed the byte cap loses whole conversations with no trace anywhere — not in the UI, not
-    /// in a support report, not in Detailed Logs.
+    /// Says what a sweep took and under which cap, so a support report can answer "where did my
+    /// conversations go?". The SIZE cap is opt-in now (`RuntimeSettingsDefaults.retentionMaxBytes`
+    /// is 0 = no limit, and the Storage screen names the rule), so a line here is always about a
+    /// limit the user chose — but it is still the only record of which recordings it took.
     private let log: @Sendable (String) -> Void
 
     /// The policy in force right now. Read through the provider on every use so a settings
@@ -150,8 +150,8 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         }
         let bySize = deleted.count - beforeSizeCap
         if bySize > 0 {
-            // The one eviction nobody asked for: no screen names a byte cap, so this line is the
-            // only way to answer "where did my conversations go?".
+            // The size cap is opt-in, so this is a limit the user set — but it is still the only
+            // record of WHICH recordings it took.
             log(
                 "retention: size cap evicted \(bySize) segment(s) — spool was "
                     + "\(overCapBy / (1024 * 1024)) MB over the \(config.maxTotalBytes / (1024 * 1024)) MB cap"

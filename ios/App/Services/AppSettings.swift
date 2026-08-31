@@ -92,7 +92,7 @@ final class AppSettings {
                 automaticWavExportEnabled: automaticWavExportEnabled,
                 onboardingComplete: onboardingComplete,
                 retentionDays: retentionDays,
-                retentionMaxBytes: RuntimeSettingsDefaults.retentionMaxBytes,
+                retentionMaxBytes: retentionMaxBytes,
                 transcriptsConfigured: transcriptsConfigured
             )
         )
@@ -168,6 +168,22 @@ final class AppSettings {
         }
     }
 
+    /// Total on-disk limit for stored audio, in bytes. **0 = no limit, and that is the default.**
+    ///
+    /// This was a hardcoded 2 GiB that no screen named and no user chose, applied on top of
+    /// "Keep audio · N days" — so at the shipped bitrate it quietly pre-empted every retention
+    /// choice past ~19 days of capture and took whole conversations with it. It is a real,
+    /// user-set limit now: it evicts nothing unless someone asks it to, and the Storage screen
+    /// states the rule. Device storage is still protected without deleting anything — retention's
+    /// free-space floors raise LOW_STORAGE at 500 MB free and pause capture on the watch at
+    /// 200 MB, both of which the user can see and undo.
+    var retentionMaxBytes: Int64 {
+        didSet {
+            defaults.set(retentionMaxBytes, forKey: Keys.retentionMaxBytes)
+            mirrorToRuntime()
+        }
+    }
+
     /// The Q9 loss alert, OFF by default and opt-in. An unasked-for notification the moment a
     /// Bluetooth blip drops a few seconds is noise on a device you wear all day; the coverage
     /// strip already tells the story calmly, in place, whenever you look. Turning this on is
@@ -190,6 +206,17 @@ final class AppSettings {
 
     /// The approved "Keep audio" options (6.7).
     static let retentionOptions = [7, 14, 30, 90, 180, 365]
+
+    /// The "Storage limit" options, in bytes; `0` is "No limit" and the default. Sourced from the
+    /// kit so the picker can only ever store a value retention understands.
+    static let retentionLimitOptions = RuntimeSettingsDefaults.retentionMaxBytesOptions
+
+    /// Row value for a storage limit — "No limit" or e.g. "5 GB".
+    static func retentionLimitLabel(_ bytes: Int64) -> String {
+        bytes <= 0
+            ? "No limit"
+            : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
 
     // ─── API keys (Keychain only — B13) ─────────────────────────────────────
 
@@ -248,6 +275,10 @@ final class AppSettings {
         let storedRetention = defaults.integer(forKey: Keys.retentionDays)
         retentionDays = AppSettings.retentionOptions.contains(storedRetention)
             ? storedRetention : 30
+        // Absent key => 0 => no limit. Nobody has ever been offered this choice, so nobody's
+        // audio may be evicted by it until they make one.
+        let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
+        retentionMaxBytes = AppSettings.retentionLimitOptions.contains(storedLimit) ? storedLimit : 0
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
@@ -298,6 +329,8 @@ final class AppSettings {
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
         let storedRetention = defaults.integer(forKey: Keys.retentionDays)
         if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
+        let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
+        if AppSettings.retentionLimitOptions.contains(storedLimit) { retentionMaxBytes = storedLimit }
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
@@ -316,6 +349,7 @@ final class AppSettings {
         static let wavExport = "automatic_wav_export"
         static let onboardingComplete = "onboarding_complete"
         static let retentionDays = "retention_days"
+        static let retentionMaxBytes = "retention_max_bytes"
         static let transcriptsConfigured = "transcripts_configured"
         static let lossAlerts = "loss_alerts_enabled"
     }
