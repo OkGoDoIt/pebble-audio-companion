@@ -378,6 +378,9 @@ struct TodayScreen: View {
                     Text(row.title)
                         .font(AppFont.rowTitle)
                         .foregroundStyle(Tokens.label)
+                        // A generated title can run long; two lines here, the whole thing
+                        // on the detail screen.
+                        .lineLimit(2)
                     Text(row.meta)
                         .font(AppFont.footnote)
                         .foregroundStyle(Tokens.meta)

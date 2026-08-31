@@ -239,6 +239,7 @@ private struct ConversationRowView: View {
                 Text(row.title ?? "Conversation")
                     .font(AppFont.rowTitle)
                     .foregroundStyle(Tokens.label)
+                    .lineLimit(2)
                 Text(TimeFmt.rowMeta(row))
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.meta)

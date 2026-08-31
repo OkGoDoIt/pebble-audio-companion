@@ -16,6 +16,31 @@ import Testing
         #expect(parsed.tags == ["work", "budget"])
     }
 
+    /// Over-long titles used to be cut with a bare `prefix(80)`, mid-word and mid-clause.
+    @Test func longTitleEndsOnAClauseBoundary() {
+        let parsed = SegmentAnnotationPrompt.parse(
+            "TITLE: Issues with Apple's AI-powered transcription service, Soniox, and a "
+                + "request for a missing API key\nSUMMARY: Nothing worked.")
+        #expect(parsed.title == "Issues with Apple's AI-powered transcription service, Soniox")
+    }
+
+    @Test func longTitleWithoutAClauseBoundaryCutsOnAWordAndSaysSo() {
+        let parsed = SegmentAnnotationPrompt.parse(
+            "TITLE: A very long uninterrupted discussion about the replacement hallway light "
+                + "fixture and the weekend grocery run")
+        let title = try! #require(parsed.title)
+        #expect(title.hasSuffix("…"))
+        #expect(title.count <= SegmentAnnotationPrompt.maxTitleChars + 1)
+        // Never a dangling connective before the ellipsis.
+        #expect(!title.hasSuffix("and…"))
+        #expect(!title.hasSuffix("the…"))
+    }
+
+    @Test func shortTitlesAreUntouched() {
+        #expect(SegmentAnnotationPrompt.shortenTitle("Budget review") == "Budget review")
+        #expect(SegmentAnnotationPrompt.shortenTitle("   ") == nil)
+    }
+
     @Test func actionItemParserExtractsChecklistLines() {
         let items = ActionItemParser.parse(
             raw: "- Follow up with Sarah\n* Send deck\n[ ] Book room",
