@@ -46,8 +46,12 @@ struct LibraryScreen: View {
         }
         .snackbar(item: $undo.snackbar)
         .task { await model.start() }
-        .onAppear { consumePendingSearch() }
+        .onAppear {
+            consumePendingSearch()
+            consumePendingTag()
+        }
         .onChange(of: router.pendingSearchQuery) { consumePendingSearch() }
+        .onChange(of: router.pendingLibraryTag) { consumePendingTag() }
         .sheet(isPresented: $showAllTags) {
             AllTagsSheet(tags: model.tags) { tag in
                 model.selectedTag = tag
@@ -66,6 +70,15 @@ struct LibraryScreen: View {
         router.pendingSearchQuery = nil
         searchModel.query = query
         searchActive = true
+    }
+
+    /// `companion://library?tag=travel` — the tag the deep link asked for becomes the selected
+    /// chip. Nothing read `pendingLibraryTag` before this, so the link opened an unfiltered
+    /// Library and the filter was dropped without a word.
+    private func consumePendingTag() {
+        guard let tag = router.consumePendingLibraryTag() else { return }
+        searchActive = false
+        model.selectedTag = tag
     }
 
     // MARK: - Library state
