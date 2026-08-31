@@ -81,6 +81,10 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Pebble Audio
         CODE_SIGN_STYLE: Automatic
         SKIP_INSTALL: YES
+        # `CaptureIntents.swift` compiles into both targets, and one API it needs
+        # (`ForegroundContinuableIntent`, used to wake a dead app) is unavailable in app
+        # extensions. This flag selects the extension-safe half of that file.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev.widgets

@@ -9,14 +9,19 @@ import Foundation
 // the app target's own UI `CoverageSpan` keeps its name. The app compiles the kit's version,
 // not this one (see `ios/project.yml`) — this file ships to the widget and the tests.
 
-/// Decoded `coverage_snapshot.json` — today's coverage spans plus the status headline.
+/// Decoded `coverage_snapshot.json` — the live capture state, the current conversation, the
+/// recent-activity profile, open follow-ups, and today's coverage spans.
 ///
 /// Compatibility rule (shared with the writer): **`version` is the only layout selector.**
 /// Unknown fields are ignored and every field decodes with a default, so a snapshot written by
-/// a newer app never crashes an older widget — it just renders what it understands.
+/// a newer app never crashes an older widget — and a v1 file written by an older app decodes
+/// into a v2 struct whose new fields are simply absent, which every view treats as "unknown"
+/// rather than as "nothing is happening".
 struct CoverageSnapshot: Codable, Equatable, Sendable {
     static let fileName = "coverage_snapshot.json"
-    static let currentVersion = 1
+    /// v2 (2026-08-31): added `state`, `currentStartedAtMs`, `liveTitle`, `liveLine`,
+    /// `activity`, `activityWindowMs`, `followUps`, `openFollowUpCount`.
+    static let currentVersion = 2
 
     /// One contiguous span of the logical day, in wall-clock milliseconds.
     struct Span: Codable, Equatable, Sendable {
@@ -44,6 +49,70 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
         var durationMs: Int64 { max(0, endMs - startMs) }
     }
 
+    /// One bucket of the recent-activity profile (v2).
+    ///
+    /// Deliberately NOT an audio waveform: the snapshot is written by a process that must not
+    /// Speex-decode audio on a Bluetooth wake, and a real waveform would freeze the moment the
+    /// app was suspended — a frozen waveform on a "recording" widget is a lie. `level` is the
+    /// share of the bucket that carried voice-detected audio, so the bars still read as speech
+    /// activity, and `kind` keeps the four-state taxonomy honest inside the window.
+    struct ActivityBar: Codable, Equatable, Sendable {
+        var kind: Span.Kind
+        /// 0…1 — the fraction of this bucket that was recorded audio.
+        var level: Double
+
+        init(kind: Span.Kind, level: Double) {
+            self.kind = kind
+            self.level = min(max(level, 0), 1)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try c.decodeIfPresent(Span.Kind.self, forKey: .kind) ?? .off
+            level = min(max(try c.decodeIfPresent(Double.self, forKey: .level) ?? 0, 0), 1)
+        }
+    }
+
+    /// An open follow-up, trimmed to what a widget row can show (v2).
+    struct FollowUp: Codable, Equatable, Sendable {
+        var id: String
+        var text: String
+        /// Deep-link target, so a tapped row opens the conversation it came from.
+        var conversationId: String?
+
+        init(id: String, text: String, conversationId: String? = nil) {
+            self.id = id
+            self.text = text
+            self.conversationId = conversationId
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+            text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+            conversationId = try c.decodeIfPresent(String.self, forKey: .conversationId)
+        }
+    }
+
+    /// `StatusFamily` as a lowercase string — the machine-readable half of the status, so the
+    /// widget picks a layout and a color without parsing the prose headline (which is written
+    /// for people, may be localized, and must never be pattern-matched).
+    ///
+    /// `recording` · `paused` · `reconnecting` · `connecting` · `bluetoothOff` ·
+    /// `notRecording` · `confirmOnWatch` · `transcriptsOff` · `needsAttention`.
+    /// Empty means a v1 snapshot that predates the field.
+    enum State: String, Codable, Sendable {
+        case recording, paused, reconnecting, connecting, bluetoothOff
+        case notRecording, confirmOnWatch, transcriptsOff, needsAttention
+        /// A v1 snapshot, or a family this widget build does not know.
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = State(rawValue: raw) ?? .unknown
+        }
+    }
+
     var version: Int
     var generatedAtMs: Int64
     /// Logical-day key (5 AM boundary) in `timeZoneID`.
@@ -62,6 +131,25 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
     var dot: String
     var isRecording: Bool
 
+    // --- v2 -------------------------------------------------------------------------------
+
+    var state: State
+    /// When the stretch of capture that is still running began, or nil when nothing is
+    /// running. The widget renders elapsed time from this with a self-ticking timer, so the
+    /// number stays live without a single extra timeline reload.
+    var currentStartedAtMs: Int64?
+    /// Title of the conversation being recorded right now (nil until enrichment names it).
+    var liveTitle: String?
+    /// The most recent line of transcript in that conversation.
+    var liveLine: String?
+    /// Recent-activity buckets, oldest → newest, covering `activityWindowMs` ending at `nowMs`.
+    var activity: [ActivityBar]
+    var activityWindowMs: Int64
+    /// The first few open follow-ups, newest first.
+    var followUps: [FollowUp]
+    /// How many are open in total (`followUps` is only the head of the list).
+    var openFollowUpCount: Int
+
     init(
         version: Int = CoverageSnapshot.currentVersion,
         generatedAtMs: Int64,
@@ -75,7 +163,15 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
         headline: String,
         detail: String? = nil,
         dot: String = "neutral",
-        isRecording: Bool = false
+        isRecording: Bool = false,
+        state: State = .unknown,
+        currentStartedAtMs: Int64? = nil,
+        liveTitle: String? = nil,
+        liveLine: String? = nil,
+        activity: [ActivityBar] = [],
+        activityWindowMs: Int64 = 0,
+        followUps: [FollowUp] = [],
+        openFollowUpCount: Int = 0
     ) {
         self.version = version
         self.generatedAtMs = generatedAtMs
@@ -90,6 +186,14 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
         self.detail = detail
         self.dot = dot
         self.isRecording = isRecording
+        self.state = state
+        self.currentStartedAtMs = currentStartedAtMs
+        self.liveTitle = liveTitle
+        self.liveLine = liveLine
+        self.activity = activity
+        self.activityWindowMs = activityWindowMs
+        self.followUps = followUps
+        self.openFollowUpCount = openFollowUpCount
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +212,19 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
         dot = try c.decodeIfPresent(String.self, forKey: .dot) ?? "neutral"
         isRecording = try c.decodeIfPresent(Bool.self, forKey: .isRecording) ?? false
+        // v2 — every field optional, so a v1 file still decodes. `state` falls back to the v1
+        // `isRecording` flag: it is less precise, but it is true, and inventing `.notRecording`
+        // for an older snapshot would claim knowledge the file does not carry.
+        state =
+            try c.decodeIfPresent(State.self, forKey: .state)
+            ?? (isRecording ? .recording : .unknown)
+        currentStartedAtMs = try c.decodeIfPresent(Int64.self, forKey: .currentStartedAtMs)
+        liveTitle = try c.decodeIfPresent(String.self, forKey: .liveTitle)
+        liveLine = try c.decodeIfPresent(String.self, forKey: .liveLine)
+        activity = try c.decodeIfPresent([ActivityBar].self, forKey: .activity) ?? []
+        activityWindowMs = try c.decodeIfPresent(Int64.self, forKey: .activityWindowMs) ?? 0
+        followUps = try c.decodeIfPresent([FollowUp].self, forKey: .followUps) ?? []
+        openFollowUpCount = try c.decodeIfPresent(Int.self, forKey: .openFollowUpCount) ?? 0
     }
 
     // MARK: - Loading (pure; the timeline provider does no other I/O)
@@ -154,4 +271,28 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
     var isEmptyDay: Bool {
         spans.allSatisfy { $0.kind == .off } || spans.isEmpty
     }
+
+    // MARK: - v2 derived (pure)
+
+    /// How stale this snapshot is at `now`. Never negative — a clock that moved backwards is
+    /// not evidence of freshness.
+    func ageMs(at now: Date = Date()) -> Int64 {
+        max(0, Int64(now.timeIntervalSince1970 * 1000) - generatedAtMs)
+    }
+
+    /// A snapshot this old must not be presented as the live state. The app rewrites on every
+    /// capture change and on backgrounding, so anything beyond half an hour means the app has
+    /// not run since — the widget says "as of <time>" instead of asserting the state.
+    static let staleAfterMs: Int64 = 30 * 60 * 1000
+
+    func isStale(at now: Date = Date()) -> Bool { ageMs(at: now) > Self.staleAfterMs }
+
+    /// The moment the running stretch began, when the snapshot knows one.
+    var currentStartedAt: Date? {
+        currentStartedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    /// True when this file predates the v2 fields, so views can choose "unknown" over a
+    /// confident-looking zero.
+    var hasLiveDetail: Bool { version >= 2 }
 }

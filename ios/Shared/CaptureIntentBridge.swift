@@ -18,8 +18,11 @@ enum SharedCaptureIntent: String, Codable, Sendable, CaseIterable {
 
     var isActive: Bool { self == .active }
 
-    /// Toggling never reaches `off`: `off` is a deliberate, consent-bearing choice made in the
-    /// app, so a Control Center toggle only moves between active and paused.
+    /// A toggle only ever asks for "capturing" or "not capturing". From `off` that means
+    /// `active`: an explicit tap on a system on/off switch IS the user's decision, and the
+    /// consent gate that matters lives on the watch (first authorization still needs an
+    /// on-watch confirmation, and the firmware fails closed without it). Dropping the request
+    /// here bought no safety and cost the user a switch that lied.
     var toggled: SharedCaptureIntent { self == .active ? .paused : .active }
 }
 
@@ -93,6 +96,29 @@ enum CaptureIntentBridge {
         notify: Bool = true
     ) -> SharedCaptureIntent {
         request(effectiveIntent(in: defaults).toggled, at: nowMs, in: defaults, notify: notify)
+    }
+
+    // MARK: - Acknowledgement (the intent side)
+
+    /// Waits for the app to answer the mailbox — it clears the pending request as soon as it
+    /// has committed to applying one. Returns true if that happened inside `timeoutMs`.
+    ///
+    /// This is what lets an intent tell the truth. Without it every intent reported success
+    /// the moment it wrote a file, which is exactly the bug Roger hit: the toggle flipped, the
+    /// dialog said "resumed", and nothing had reached the watch because no app was running to
+    /// read the mailbox.
+    static func waitForApply(
+        timeoutMs: Int = 1500,
+        pollMs: Int = 100,
+        in defaults: UserDefaults = SharedAppGroup.defaults
+    ) async -> Bool {
+        var waited = 0
+        while waited < timeoutMs {
+            if pendingRequest(in: defaults) == nil { return true }
+            try? await Task.sleep(nanoseconds: UInt64(max(1, pollMs)) * 1_000_000)
+            waited += max(1, pollMs)
+        }
+        return pendingRequest(in: defaults) == nil
     }
 
     // MARK: - Consuming (the app side)

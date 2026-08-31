@@ -467,6 +467,7 @@ final class AppComposition {
             lossEvaluator: lossEvaluator
         )
         let deferredDeletes = DeferredDeleteBuffer(cascade: cascade, clock: clock)
+        let conversations = ConversationQueries(db: database)
 
         let snapshots = CoverageSnapshotService(
             store: store,
@@ -485,7 +486,49 @@ final class AppComposition {
                     watchServiceStateRaw: receiver.watchServiceState.value
                 )
             },
-            pauseJournal: pauseJournal
+            pauseJournal: pauseJournal,
+            // Snapshot v2: what the widget shows besides coverage — the conversation being
+            // recorded, its newest line, and the open follow-ups. This is the ONLY part of the
+            // snapshot that reads the database, and the conversation half is skipped whenever
+            // capture is not actually running.
+            liveContextOf: { isRunning in
+                var context = CoverageLiveContext()
+                let open = (try? await followUps.list(done: false)) ?? []
+                context.openFollowUpCount = open.count
+                context.followUps = open.prefix(3).map {
+                    CoverageSnapshot.FollowUpRef(
+                        id: $0.id, text: $0.text, conversationId: $0.sourceConversationId
+                    )
+                }
+                guard isRunning else { return context }
+
+                let rows = ((try? await conversations.library()) ?? []).flatMap(\.rows)
+                guard let live = rows.first(where: \.isLive) else { return context }
+                context.conversationTitle = live.title
+
+                // Newest words first: the open segment's live preview if one exists, else the
+                // durable transcript of the newest member that has one. Never a fabricated
+                // placeholder — an empty line reads honestly as "nothing recognized yet".
+                let openSegmentId = await store.openSegmentId
+                if let openSegmentId {
+                    let preview = LiveTranscriptPreview.merged(
+                        cloud: await cloudLive.previews[openSegmentId],
+                        local: await localLive.previewFor(openSegmentId)
+                    )
+                    context.latestLine = Self.lastLine(of: preview?.segments.map(\.text))
+                }
+                if context.latestLine == nil {
+                    let detail = try? await conversations.detail(id: live.id)
+                    for member in (detail?.members ?? []).reversed() {
+                        let text = transcripts.load(member.segmentId)?.text
+                        if let line = Self.lastLine(of: text.map { [$0] }) {
+                            context.latestLine = line
+                            break
+                        }
+                    }
+                }
+                return context
+            }
         )
 
         let importer = LegacyImporter(
@@ -546,6 +589,25 @@ final class AppComposition {
     }
 
     // MARK: - Install
+
+    /// The last thing actually said, for the widget's one line of live transcript. Takes the
+    /// newest non-blank sentence out of the newest non-blank block and trims it, so the widget
+    /// never shows a leading fragment of a paragraph it has no room for.
+    nonisolated static func lastLine(of texts: [String]?, limit: Int = 160) -> String? {
+        guard let texts else { return nil }
+        for text in texts.reversed() {
+            let sentences =
+                text
+                .replacingOccurrences(of: "\n", with: " ")
+                .components(separatedBy: CharacterSet(charactersIn: ".!?"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard var line = sentences.last else { continue }
+            if line.count > limit { line = String(line.suffix(limit)) }
+            return line
+        }
+        return nil
+    }
 
     /// `-demo-data` keeps the screens on the artboard sample set instead of the live graph, so a
     /// populated Today/Library/Conversation can be reviewed — dark mode, Dynamic Type, layout —
