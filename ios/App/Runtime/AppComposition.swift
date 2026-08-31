@@ -469,6 +469,18 @@ final class AppComposition {
 
     // MARK: - Install
 
+    /// `-demo-data` keeps the screens on the artboard sample set instead of the live graph, so a
+    /// populated Today/Library/Conversation can be reviewed — dark mode, Dynamic Type, layout —
+    /// without a watch in the room. DEBUG only: the real graph is still built and started, only
+    /// the three display holders are left pointing at the mocks.
+    static var usesDemoData: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-demo-data")
+        #else
+        return false
+        #endif
+    }
+
     private func install(nativeSurfaces: NativeSurfaceCoordinator) {
         // Spotlight donation reuses this database connection rather than opening a second pool.
         nativeSurfaces.attachDatabase(database)
@@ -480,9 +492,11 @@ final class AppComposition {
         // The screens' three data-source holders, flipped from mocks to the live graph.
         let today = LiveTodayDataSource(composition: self)
         todaySource = today
-        AppDataSources.current = AppDataSources(today: today, live: today)
-        AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
-        SettingsDataSources.current = LiveSettingsDataSources.make(composition: self)
+        if !Self.usesDemoData {
+            AppDataSources.current = AppDataSources(today: today, live: today)
+            AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
+            SettingsDataSources.current = LiveSettingsDataSources.make(composition: self)
+        }
 
         registerBackgroundTask()
 
