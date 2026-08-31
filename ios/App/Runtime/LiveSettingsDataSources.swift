@@ -16,8 +16,13 @@ import Transcription
 
 @MainActor
 enum LiveSettingsDataSources {
-    static func make(composition: AppComposition) -> SettingsDataSources {
+    /// `capture` is the live Today source: the Settings master switch and Today's Start/Stop
+    /// must be the same object, so the two can never drift into separate capture sequences.
+    static func make(
+        composition: AppComposition, capture: any CaptureControlling
+    ) -> SettingsDataSources {
         SettingsDataSources(
+            capture: capture,
             watch: LiveWatchStatusSource(composition: composition),
             storage: LiveStorageStatsSource(composition: composition),
             localModel: LiveLocalModelManager(composition: composition),

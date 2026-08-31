@@ -479,6 +479,24 @@ extension LiveTodayDataSource: TodayDataSource {
     }
 }
 
+// MARK: - CaptureControlling
+
+extension LiveTodayDataSource: CaptureControlling {
+    /// The Settings "Background audio" switch, on the same rails as everything else that changes
+    /// capture. `applyExternalCaptureIntent` is the runtime's one entry point for "apply this
+    /// intent, whole": `.active` goes through `startCapture()` (arm the on-watch prompt, set the
+    /// receiver's intent, dial the link) and `.off` through `setCaptureIntent` (stop receiving,
+    /// close any open pause interval). The caller has already written `AppSettings.captureIntent`
+    /// — same order as Today's Start and the Control Center intent — so the row flips at once.
+    func applyCaptureIntent(_ intent: CaptureIntent) {
+        let composition = self.composition
+        Task {
+            await composition.runtime.applyExternalCaptureIntent(intent)
+            await self.refresh()
+        }
+    }
+}
+
 // MARK: - LiveDataSource
 
 extension LiveTodayDataSource: LiveDataSource {

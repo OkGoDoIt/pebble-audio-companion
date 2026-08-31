@@ -220,9 +220,9 @@ public actor CompanionRuntime {
         await refreshSnapshot(.pauseChanged)
     }
 
-    /// A capture change asked for from OUTSIDE the app's own screens: Control Center, a widget
-    /// button, Siri, Shortcuts. One entry point, so an external surface can never invent its
-    /// own half of the sequence.
+    /// A capture change asked for by a surface that is not the status card: Control Center, a
+    /// widget button, Siri, Shortcuts, and the Settings "Background audio" master switch. One
+    /// entry point, so no surface can invent its own half of the sequence.
     ///
     /// `.active` deliberately routes through `startCapture()` rather than `setCaptureIntent`.
     /// Setting the intent only tells the SESSION what to want; the session observes the link

@@ -8,6 +8,7 @@ struct SettingsWatchScreen: View {
     @Environment(AppRouter.self) private var router
 
     private var watch: WatchStatusSource { SettingsDataSources.current.watch }
+    private var capture: CaptureControlling { SettingsDataSources.current.capture }
 
     private enum FindState: Equatable { case idle, connecting, connected, notFound }
     @State private var findState: FindState = .idle
@@ -136,7 +137,11 @@ struct SettingsWatchScreen: View {
         // Drop the binding first: capture off alone would leave the watch still authorized
         // to this phone.
         watch.forget()
+        // The preference AND the runtime, in that order. Writing the intent alone left the
+        // receiver holding its own `.active` — and an open pause interval open forever, so
+        // coverage went on rendering the rest of the day as paused.
         settings.captureIntent = .off
+        capture.applyCaptureIntent(.off)
         router.settingsPath = []
         settings.onboardingComplete = false
     }

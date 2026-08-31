@@ -1,3 +1,4 @@
+import Receiver
 import SwiftUI
 import UserNotifications
 
@@ -131,10 +132,20 @@ struct SettingsScreen: View {
     /// "Background audio" is the master switch: active↔off. A paused intent still reads as
     /// ON (pause is the temporary form of on — plan 6.1); flipping OFF from paused turns
     /// capture fully off, flipping ON resumes.
+    ///
+    /// The write alone is only a preference. This switch used to do nothing else, which made it
+    /// lie in both directions: ON left the watch uncontacted while every surface said
+    /// "Recording", and OFF left the receiver running on a person who had just switched
+    /// recording off. `capture` is the runtime follow-through every other capture surface makes
+    /// (`aa2a934`, `8ecace0`) — intent first so the row flips at once, then the link.
     private var backgroundAudioBinding: Binding<Bool> {
         Binding(
             get: { settings.captureIntent != .off },
-            set: { settings.captureIntent = $0 ? .active : .off }
+            set: { on in
+                let intent: CaptureIntent = on ? .active : .off
+                settings.captureIntent = intent
+                sources.capture.applyCaptureIntent(intent)
+            }
         )
     }
 
