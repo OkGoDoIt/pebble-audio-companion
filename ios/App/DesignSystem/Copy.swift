@@ -486,6 +486,21 @@ enum Copy {
         static let sendQuestion = "Send question"
         static let play = "Play"
         static let pausePlayback = "Pause playback"
+        static let more = "More actions"
+        static let share = "Share"
+        static let followUpDone = "Done"
+        static let followUpNotDone = "Not done"
+        static let followUpHint = "Double tap to change"
+        static let waveformLabel = "Live minute waveform"
+        static let coverageLabel = "Day coverage"
+        static let coverageHint = "Double tap for a breakdown of the day"
+        static func filterChip(_ name: String, count: Int?) -> String {
+            guard let count else { return name }
+            return "\(name), \(count) conversation\(count == 1 ? "" : "s")"
+        }
+        static func tag(_ name: String) -> String { "Tag: \(name)" }
+        static func scope(_ label: String) -> String { "Search scope: \(label)" }
+        static let scopeHint = "Double tap to change how far back Ask looks"
 
         /// Live-minute summary, e.g. "42 seconds recorded, 10 seconds quiet, 8 seconds missing".
         static func waveformSummary(recordedSec: Int, quietSec: Int, missingSec: Int) -> String {

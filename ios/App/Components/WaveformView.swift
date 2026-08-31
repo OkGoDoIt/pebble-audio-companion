@@ -39,8 +39,10 @@ struct WaveformView: View {
         }
         .frame(height: containerHeight, alignment: .bottom)
         .frame(maxWidth: .infinity)
+        // One element, never 40 — VoiceOver gets the spoken summary, not the bars (U10).
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilitySummary)
+        .accessibilityLabel(Copy.A11y.waveformLabel)
+        .accessibilityValue(accessibilitySummary)
     }
 
     private func color(for state: WaveformBar.State) -> Color {
@@ -85,7 +87,8 @@ struct WaveformLegend: View {
     var showPaused: Bool = false
 
     var body: some View {
-        HStack(spacing: 14) {
+        // Flows onto extra lines at large Dynamic Type sizes instead of truncating (M10).
+        FlowLayout(horizontalSpacing: 14, verticalSpacing: 6) {
             item(Copy.Legend.transcribed, Tokens.tint)
             item(Copy.Legend.captured, Tokens.captured)
             item(Copy.Legend.quiet, Tokens.quiet)
@@ -99,6 +102,7 @@ struct WaveformLegend: View {
         HStack(spacing: 5) {
             StatusDot(color: color, size: .legend)
             Text(label).font(AppFont.legend).foregroundStyle(Tokens.meta)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -108,11 +112,12 @@ struct WaveformLegend: View {
                 .fill(Tokens.track)
                 .overlay(
                     DiagonalStripes()
-                        .stroke(Tokens.tint.opacity(0.2), lineWidth: 1.5)
+                        .stroke(Tokens.pausedStripe, lineWidth: 1.5)
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 )
                 .frame(width: 10, height: 7)
             Text(Copy.Legend.paused).font(AppFont.legend).foregroundStyle(Tokens.meta)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

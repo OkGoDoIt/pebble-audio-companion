@@ -26,6 +26,8 @@ struct CoverageStrip: View {
     var showAxis: Bool = true
     var onSpanTap: ((CoverageSpan) -> Void)? = nil
 
+    @ScaledMetric(relativeTo: .caption2) private var axisHeight: CGFloat = 12
+
     // Axis fractions in the 5 AM–5 AM domain: 6 AM = 1/24, noon = 7/24, 6 PM = 13/24.
     private static let axisMarks: [(String, Double)] = [
         (Copy.Today.axisMorning, 1.0 / 24.0),
@@ -64,8 +66,23 @@ struct CoverageStrip: View {
             }
         }
         .frame(height: 12)
+        // One element carrying a spoken summary — never the individual spans (U10).
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilitySummary)
+        .accessibilityLabel(Copy.A11y.coverageLabel)
+        .accessibilityValue(accessibilitySummary)
+        .accessibilityAddTraits(onSpanTap == nil ? [] : .isButton)
+        .accessibilityHint(onSpanTap == nil ? "" : Copy.A11y.coverageHint)
+        .accessibilityAction {
+            // VoiceOver can't tap a location, so activate explains the span that matters
+            // most: loss first, then a pause, then whatever the day mostly was.
+            guard let onSpanTap else { return }
+            let priority: [CoverageSpan.Kind] = [.missing, .paused, .quiet, .recorded]
+            if let span = priority.lazy.compactMap({ kind in
+                spans.first(where: { $0.kind == kind })
+            }).first {
+                onSpanTap(span)
+            }
+        }
     }
 
     @ViewBuilder
@@ -80,7 +97,7 @@ struct CoverageStrip: View {
         case .paused:
             Rectangle()
                 .fill(Tokens.track)
-                .overlay(DiagonalStripes().stroke(Tokens.tint.opacity(0.2), lineWidth: 1.5))
+                .overlay(DiagonalStripes().stroke(Tokens.pausedStripe, lineWidth: 1.5))
                 .clipped()
         case .off:
             EmptyView()
@@ -98,10 +115,11 @@ struct CoverageStrip: View {
                     .font(AppFont.micro)
                     .foregroundStyle(Tokens.faint)
                     .fixedSize()
-                    .position(x: geo.size.width * fraction, y: 6)
+                    .position(x: geo.size.width * fraction, y: axisHeight / 2)
             }
         }
-        .frame(height: 12)
+        // The strip is a data graphic with a fixed height, but its axis labels scale (U10).
+        .frame(height: axisHeight)
         .accessibilityHidden(true)
     }
 

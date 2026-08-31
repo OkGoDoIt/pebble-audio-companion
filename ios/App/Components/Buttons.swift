@@ -7,7 +7,11 @@ struct PrimaryFilledButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(AppFont.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(Tokens.onTint)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: 50)
             .background(
                 RoundedRectangle(cornerRadius: Tokens.primaryButtonRadius)
@@ -23,8 +27,12 @@ struct InCardFilledButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(AppFont.cardHead)
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .foregroundStyle(Tokens.onTint)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: 11)
                     .fill(configuration.isPressed ? Tokens.tintPressed : Tokens.tint)
@@ -40,7 +48,11 @@ struct BorderedTintButtonStyle: ButtonStyle {
         configuration.label
             .font(AppFont.cardHead)
             .foregroundStyle(configuration.isPressed ? Tokens.tintPressed : Tokens.tint)
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: 11).strokeBorder(Tokens.tintBorder)
             )
@@ -56,9 +68,12 @@ struct SmallBorderedButtonStyle: ButtonStyle {
         configuration.label
             .font(AppFont.smallButton)
             .foregroundStyle(configuration.isPressed ? Tokens.tintPressed : Tokens.tint)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 14)
+            .padding(.vertical, 9)
             .frame(minHeight: 36)
             .background(RoundedRectangle(cornerRadius: 10).strokeBorder(Tokens.tintBorder))
+            .frame(minHeight: 44)
             .contentShape(RoundedRectangle(cornerRadius: 10))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
@@ -94,13 +109,17 @@ struct TransportButton: View {
             HStack(spacing: 6) {
                 Image(systemName: systemImage).font(.system(size: 13, weight: .semibold))
                 Text(title).font(AppFont.cardHead)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(role == .stop ? Tokens.destructive : Tokens.label)
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .background(RoundedRectangle(cornerRadius: 18).strokeBorder(Tokens.cardBorder))
             .contentShape(RoundedRectangle(cornerRadius: 18))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -115,7 +134,7 @@ struct CirclePlayButton: View {
         Button(action: action) {
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Tokens.onTint)
                 .frame(width: 44, height: 44)
                 .background(Circle().fill(Tokens.tint))
                 .contentShape(Circle())
@@ -133,11 +152,10 @@ struct CircleSendButton: View {
         Button(action: action) {
             Image(systemName: "arrow.up")
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Tokens.onTint)
                 .frame(width: 36, height: 36)
                 .background(Circle().fill(Tokens.tint))
-                .padding(4)
-                .contentShape(Circle())
+                .hitTarget()
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Copy.A11y.sendQuestion)

@@ -99,6 +99,7 @@ struct ConversationScreen: View {
             titleVisibility: .visible
         ) {
             Button("Delete Conversation", role: .destructive) {
+                Haptics.destructiveConfirmed()
                 deleteConversation()
             }
         }
@@ -377,8 +378,9 @@ struct FollowUpsSheet: View {
             } else if !followUps.isEmpty {
                 ListCard(rowVerticalPadding: 11) {
                     ForEach(followUps, id: \.id) { followUp in
-                        HStack(spacing: 12) {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
                             Button {
+                                Haptics.checkedOff()
                                 toggle(followUp)
                             } label: {
                                 Image(systemName: followUp.done
@@ -386,14 +388,20 @@ struct FollowUpsSheet: View {
                                     .font(.system(size: 20, weight: .light))
                                     .foregroundStyle(
                                         followUp.done ? Tokens.tint : Tokens.chevron)
-                                    .frame(width: 28, height: 28)
-                                    .contentShape(Rectangle())
+                                    .hitTarget()
                             }
                             .buttonStyle(.plain)
+                            .padding(.vertical, -10)
+                            .accessibilityLabel(followUp.text)
+                            .accessibilityValue(followUp.done
+                                ? Copy.A11y.followUpDone : Copy.A11y.followUpNotDone)
+                            .accessibilityHint(Copy.A11y.followUpHint)
                             Text(followUp.text)
                                 .font(AppFont.subBody)
                                 .foregroundStyle(Tokens.label)
                                 .strikethrough(followUp.done, color: Tokens.meta)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityHidden(true)
                             Spacer(minLength: 0)
                         }
                     }

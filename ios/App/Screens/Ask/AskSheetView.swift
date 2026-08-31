@@ -171,7 +171,7 @@ struct AskSheetView: View {
                         if !entry.citations.isEmpty {
                             Rectangle().fill(Tokens.hairline).frame(height: 0.5)
                             Button {
-                                withAnimation(.snappy(duration: 0.2)) {
+                                withAnimation(Motion.animation(.snappy(duration: 0.2))) {
                                     model.showSources.toggle()
                                 }
                             } label: {
@@ -257,15 +257,22 @@ struct AskSheetView: View {
             )
             .font(AppFont.callout)
             .padding(.horizontal, 16)
-            .frame(height: 40)
+            .padding(.vertical, 11)
+            .frame(minHeight: 44)
             .background(
                 Capsule().fill(Tokens.surface)
                     .overlay(Capsule().strokeBorder(Tokens.barHairline, lineWidth: 0.5))
             )
             .submitLabel(.send)
-            .onSubmit { model.sendDraft() }
+            .onSubmit {
+                Haptics.sent()
+                model.sendDraft()
+            }
 
-            CircleSendButton { model.sendDraft() }
+            CircleSendButton {
+                Haptics.sent()
+                model.sendDraft()
+            }
                 .disabled(model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 .opacity(
                     model.draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
@@ -300,11 +307,15 @@ struct ScopeMenu: View {
             }
             .font(AppFont.chip)
             .foregroundStyle(Tokens.tint)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 4)
             .padding(.horizontal, 11)
             .background(Capsule().fill(Tokens.tintFill10))
+            .frame(minHeight: 44)
             .contentShape(Capsule())
         }
+        .accessibilityLabel(Copy.A11y.scope(scope.label))
+        .accessibilityHint(Copy.A11y.scopeHint)
         .sheet(isPresented: $showDatePicker) {
             NavigationStack {
                 Form {

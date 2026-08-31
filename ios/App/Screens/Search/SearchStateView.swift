@@ -195,6 +195,7 @@ struct SearchStateView: View {
         HStack(spacing: 12) {
             Button {
                 Task {
+                    Haptics.checkedOff()
                     try? await AskLibraryDataSources.current.conversations
                         .toggleFollowUp(id: followUp.id)
                     await model.search()
@@ -203,8 +204,7 @@ struct SearchStateView: View {
                 Image(systemName: followUp.done ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 20, weight: .light))
                     .foregroundStyle(followUp.done ? Tokens.tint : Tokens.chevron)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+                    .hitTarget()
             }
             .buttonStyle(.plain)
 

@@ -25,7 +25,7 @@ struct DetailNavBar<TrailingExtras: View, MenuContent: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 2) {
             Button(action: onBack) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
@@ -35,6 +35,8 @@ struct DetailNavBar<TrailingExtras: View, MenuContent: View>: View {
                         .lineLimit(1)
                 }
                 .foregroundStyle(Tokens.tint)
+                .padding(.vertical, 11)
+                .padding(.trailing, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -49,17 +51,18 @@ struct DetailNavBar<TrailingExtras: View, MenuContent: View>: View {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(Tokens.tint)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
+                        .hitTarget()
                 }
+                .accessibilityLabel(Copy.A11y.share)
             }
 
             // ⋯ sits last, per the Conversation/Saved Notes artboards.
             menu
         }
-        .padding(.horizontal, Tokens.screenMargin)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.leading, Tokens.screenMargin)
+        .padding(.trailing, Tokens.screenMargin - 6)
+        .padding(.top, 0)
+        .padding(.bottom, 2)
     }
 }
 
@@ -74,9 +77,8 @@ struct EllipsisMenu<Items: View>: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Tokens.tint)
-                .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
+                .hitTarget()
         }
-        .accessibilityLabel("More")
+        .accessibilityLabel(Copy.A11y.more)
     }
 }
