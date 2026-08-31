@@ -39,17 +39,23 @@ public struct AskRetriever: Sendable {
         public let text: String
         public let startTimeMs: Int64?
         public let endTimeMs: Int64?
+        /// When this was recorded, in words ("Saturday, 29 August 2026, 9:35 PM – 9:51 PM
+        /// (yesterday; Asia/Ho_Chi_Minh)"). Epoch ms mean nothing to a language model, and
+        /// without a real date it reads every transcript as if it happened today.
+        public let timeLabel: String?
         public let gapSummary: String?
         public let score: Float
 
         public init(
             segmentId: String, text: String, startTimeMs: Int64? = nil,
-            endTimeMs: Int64? = nil, gapSummary: String? = nil, score: Float = 0
+            endTimeMs: Int64? = nil, timeLabel: String? = nil, gapSummary: String? = nil,
+            score: Float = 0
         ) {
             self.segmentId = segmentId
             self.text = text
             self.startTimeMs = startTimeMs
             self.endTimeMs = endTimeMs
+            self.timeLabel = timeLabel
             self.gapSummary = gapSummary
             self.score = score
         }
@@ -72,6 +78,7 @@ public struct AskRetriever: Sendable {
                 text: excerpt.text,
                 startTimeMs: excerpt.startTimeMs,
                 endTimeMs: excerpt.endTimeMs,
+                timeLabel: excerpt.timeLabel,
                 gapSummary: gapSummaries[excerpt.segmentId] ?? nil,
                 score: hit.score)
         }
@@ -84,6 +91,7 @@ public struct AskRetriever: Sendable {
                     text: excerpt.text,
                     startTimeMs: excerpt.startTimeMs,
                     endTimeMs: excerpt.endTimeMs,
+                    timeLabel: excerpt.timeLabel,
                     gapSummary: gapSummaries[excerpt.segmentId] ?? nil)
             }
         return Array((fromIndex + remainder).prefix(maxChunks))
@@ -100,7 +108,11 @@ public struct AskRetriever: Sendable {
     ) -> String {
         chunks.map { chunk in
             let time: String
-            if let start = chunk.startTimeMs, let end = chunk.endTimeMs {
+            if let label = chunk.timeLabel {
+                // Words, not epoch ms: the model has to reason about WHEN each conversation
+                // happened to place "tomorrow"/"next weekend" said inside it.
+                time = ", recorded \(label)"
+            } else if let start = chunk.startTimeMs, let end = chunk.endTimeMs {
                 time = " @\(start)-\(end)ms"
             } else if let start = chunk.startTimeMs {
                 time = " @\(start)ms"
@@ -112,6 +124,118 @@ public struct AskRetriever: Sendable {
             return "\(cite)[segment \(chunk.segmentId)\(time)]\(gaps)\n\(chunk.text)"
         }.joined(separator: "\n\n")
     }
+}
+
+// MARK: - Time context
+
+// Everything the model needs to place a transcript in time. Without this it sees only epoch
+// milliseconds and answers as though every recording happened today — so "we fly out
+// tomorrow", said in a conversation from last week, gets reported as tomorrow.
+
+private func askDateFormatter(_ format: String, _ timeZoneID: String) -> DateFormatter {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = format
+    formatter.timeZone = TimeZone(identifier: timeZoneID) ?? .current
+    return formatter
+}
+
+private func askDate(_ ms: Int64) -> Date {
+    Date(timeIntervalSince1970: Double(ms) / 1000)
+}
+
+/// Whole days between two `YYYY-MM-DD` keys (`to - from`). Keys are plain dates, so UTC math
+/// is exact regardless of either wall zone's DST.
+public func askDayDelta(from: String, to: String) -> Int {
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "UTC")!
+    func date(_ key: String) -> Date? {
+        let parts = key.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return cal.date(
+            from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+    guard let start = date(from), let end = date(to) else { return 0 }
+    return cal.dateComponents([.day], from: start, to: end).day ?? 0
+}
+
+/// "today" / "yesterday" / "6 days ago" — how far back a logical day is from today's.
+public func askRelativeDayPhrase(daysAgo: Int) -> String {
+    switch daysAgo {
+    case 0: return "today"
+    case 1: return "yesterday"
+    case ..<0: return daysAgo == -1 ? "tomorrow" : "in \(-daysAgo) days"
+    default: return "\(daysAgo) days ago"
+    }
+}
+
+/// When a segment was recorded, in words the model can reason with:
+/// "Saturday, 29 August 2026, 9:35 PM – 9:51 PM (yesterday; Asia/Ho_Chi_Minh)".
+/// Formatted in the zone the audio was RECORDED in (Q16), so a conversation keeps the times
+/// it actually happened at after the user flies home.
+public func askWhenLabel(
+    startMs: Int64, endMs: Int64?, timeZoneID: String, nowMs: Int64,
+    deviceTimeZoneID: String = TimeZone.current.identifier
+) -> String {
+    let day = askDateFormatter("EEEE, d MMMM yyyy", timeZoneID).string(from: askDate(startMs))
+    let clock = askDateFormatter("h:mm a", timeZoneID)
+    var label = "\(day), \(clock.string(from: askDate(startMs)))"
+    if let endMs, endMs > startMs {
+        label += " – \(clock.string(from: askDate(endMs)))"
+    }
+    // Relative to the user's own today, using the app's 5 AM logical day so "yesterday" here
+    // means the same day the Library groups it under.
+    let daysAgo = askDayDelta(
+        from: LogicalDay.dateKey(forMs: startMs, timeZoneID: timeZoneID),
+        to: LogicalDay.dateKey(forMs: nowMs, timeZoneID: deviceTimeZoneID))
+    var suffix = askRelativeDayPhrase(daysAgo: daysAgo)
+    // The zone is worth naming only when it is not the one the user is standing in.
+    if timeZoneID != deviceTimeZoneID { suffix += "; \(timeZoneID)" }
+    return "\(label) (\(suffix))"
+}
+
+/// The header that anchors "now" for the whole prompt. A model with no current date cannot
+/// resolve "tomorrow", "last week", or "how long ago" in either the question or the audio.
+public func askNowContext(
+    nowMs: Int64, timeZoneID: String = TimeZone.current.identifier, scopeDescription: String
+) -> String {
+    let now = askDateFormatter("EEEE, d MMMM yyyy 'at' h:mm a", timeZoneID)
+        .string(from: askDate(nowMs))
+    return """
+        RIGHT NOW: \(now) (\(timeZoneID)).
+        TRANSCRIPT RANGE: \(scopeDescription). Each transcript below is labelled with the \
+        date and time it was recorded — that is when the people in it were speaking.
+        """
+}
+
+/// The turns of this Ask conversation so far, so a follow-up is answered in context instead
+/// of as a fresh, contextless question. Bounded: the newest `maxTurns`, each answer clipped,
+/// because the transcripts still need most of the model's input budget.
+public func askThreadContext(
+    _ turns: [AskEntry], maxTurns: Int = 6, maxAnswerChars: Int = 1_200
+) -> String? {
+    let recent = turns.suffix(maxTurns)
+    guard !recent.isEmpty else { return nil }
+    // The `-> String` is load-bearing: GRDB (via AppDB) makes its own SQL type expressible by
+    // string interpolation, and without it the compiler infers THAT here and the prompt gets a
+    // serialized SQL AST instead of the conversation.
+    let body = recent.map { turn -> String in
+        var answer = turn.answerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if answer.count > maxAnswerChars {
+            answer = String(answer.prefix(maxAnswerChars)) + "…"
+        }
+        return "User: \(turn.question)\nYou: \(answer)"
+    }.joined(separator: "\n\n")
+    return "CONVERSATION SO FAR:\n\(body)"
+}
+
+/// Retrieval query for a follow-up. "So what's the plan?" retrieves nothing on its own — the
+/// subject lives in the earlier turns, so they seed the search alongside the new question.
+public func askRetrievalQuery(
+    question: String, priorTurns: [AskEntry], priorQuestions: Int = 2
+) -> String {
+    (priorTurns.suffix(priorQuestions).map(\.question) + [question])
+        .joined(separator: " ")
 }
 
 // MARK: - Citation numbering (source-segment order)
@@ -311,6 +435,7 @@ public func saveAskAnswer(
     citedSegmentIds: [String],
     scope: AskScope,
     history: AskHistoryStore,
+    threadId: String? = nil,
     nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
 ) async throws -> AskEntry {
     try await history.save(
@@ -318,5 +443,6 @@ public func saveAskAnswer(
         answerText: answerText,
         citations: askCitations(citedSegmentIds: citedSegmentIds),
         scopeDescription: scope.displayName,
+        threadId: threadId,
         nowMs: nowMs)
 }

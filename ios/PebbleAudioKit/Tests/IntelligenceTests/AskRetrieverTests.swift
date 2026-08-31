@@ -27,6 +27,107 @@ import WireProtocol
         #expect(prompt.contains("We decided to move the launch."))
     }
 
+    /// Epoch ms are meaningless to a language model — with a real label the prompt says WHEN.
+    @Test func formatForPromptPrefersTheHumanReadableRecordingTime() {
+        let prompt = AskRetriever().formatForPrompt([
+            AskRetriever.RetrievedChunk(
+                segmentId: "seg-1",
+                text: "We fly out tomorrow.",
+                startTimeMs: 1_000,
+                endTimeMs: 9_000,
+                timeLabel: "Saturday, 29 August 2026, 9:35 PM (yesterday)")
+        ])
+
+        #expect(prompt.contains(
+            "[segment seg-1, recorded Saturday, 29 August 2026, 9:35 PM (yesterday)]"))
+        #expect(!prompt.contains("ms]"))
+    }
+
+    // MARK: Time context
+
+    /// The label is built in the zone the audio was RECORDED in (Q16), and names that zone
+    /// only when it differs from where the user is standing now.
+    @Test func whenLabelStatesTheRecordedDateTimeAndHowLongAgo() {
+        let start = atUtc(2026, 8, 29, 21, 35)
+        let now = atUtc(2026, 8, 30, 12, 0)
+
+        #expect(
+            askWhenLabel(
+                startMs: start, endMs: atUtc(2026, 8, 29, 21, 51), timeZoneID: "UTC",
+                nowMs: now, deviceTimeZoneID: "UTC")
+                == "Saturday, 29 August 2026, 9:35 PM – 9:51 PM (yesterday)")
+        // Same instant, recorded in Tokyo: local wall time, and the zone is worth naming.
+        #expect(
+            askWhenLabel(
+                startMs: start, endMs: nil, timeZoneID: "Asia/Tokyo",
+                nowMs: now, deviceTimeZoneID: "UTC")
+                == "Sunday, 30 August 2026, 6:35 AM (today; Asia/Tokyo)")
+    }
+
+    @Test func relativeDayPhrasesReadNaturally() {
+        #expect(askRelativeDayPhrase(daysAgo: 0) == "today")
+        #expect(askRelativeDayPhrase(daysAgo: 1) == "yesterday")
+        #expect(askRelativeDayPhrase(daysAgo: 6) == "6 days ago")
+        #expect(askDayDelta(from: "2026-08-29", to: "2026-09-02") == 4)
+    }
+
+    /// Without "right now" the model cannot resolve "tomorrow" said in any transcript.
+    @Test func nowContextAnchorsTheCurrentDateAndTheScope() {
+        let context = askNowContext(
+            nowMs: atUtc(2026, 8, 31, 12, 4), timeZoneID: "UTC",
+            scopeDescription: "Last 7 days")
+        #expect(context.contains("RIGHT NOW: Monday, 31 August 2026 at 12:04 PM (UTC)"))
+        #expect(context.contains("TRANSCRIPT RANGE: Last 7 days"))
+    }
+
+    // MARK: Follow-ups carry the conversation
+
+    @Test func threadContextReplaysTheEarlierTurnsAndClipsLongAnswers() {
+        let turns = [
+            AskEntry(
+                id: "1", question: "What's the plan?", answerText: "Stay in Saigon [1].",
+                citations: [], scopeDescription: "Today", createdAtMs: 1),
+            AskEntry(
+                id: "2", threadId: "1", question: "For how long?",
+                answerText: String(repeating: "x", count: 2_000), citations: [],
+                scopeDescription: "Today", createdAtMs: 2),
+        ]
+        let context = askThreadContext(turns, maxAnswerChars: 1_200)
+
+        #expect(context?.hasPrefix("CONVERSATION SO FAR:") == true)
+        #expect(context?.contains("User: What's the plan?\nYou: Stay in Saigon [1].") == true)
+        #expect(context?.contains("User: For how long?") == true)
+        #expect(context?.contains(String(repeating: "x", count: 1_200) + "…") == true)
+        #expect(askThreadContext([]) == nil)
+    }
+
+    /// Only the newest turns ride along — the transcripts still need the input budget.
+    @Test func threadContextKeepsOnlyTheNewestTurns() {
+        let turns = (1...10).map {
+            AskEntry(
+                id: "\($0)", threadId: "1", question: "q\($0)", answerText: "a\($0)",
+                citations: [], scopeDescription: "Today", createdAtMs: Int64($0))
+        }
+        let context = askThreadContext(turns, maxTurns: 3) ?? ""
+        #expect(context.contains("User: q8"))
+        #expect(!context.contains("User: q7"))
+    }
+
+    /// "So what's the plan?" retrieves nothing on its own; the earlier questions seed it.
+    @Test func retrievalQueryForAFollowUpIncludesTheEarlierQuestions() {
+        let turns = [
+            AskEntry(id: "1", question: "What did we decide about Bangkok?", answerText: "…",
+                citations: [], scopeDescription: "Today", createdAtMs: 1),
+            AskEntry(id: "2", threadId: "1", question: "And the flights?", answerText: "…",
+                citations: [], scopeDescription: "Today", createdAtMs: 2),
+        ]
+        #expect(
+            askRetrievalQuery(question: "So what's the plan?", priorTurns: turns)
+                == "What did we decide about Bangkok? And the flights? So what's the plan?")
+        #expect(
+            askRetrievalQuery(question: "What's new?", priorTurns: []) == "What's new?")
+    }
+
     @Test func retrieveOrdersIndexHitsFirstThenStuffsRemainderUpToCap() async {
         let excerpts = (1...15).map {
             TranscriptExcerpt(segmentId: "seg-\($0)", text: "text \($0)")
@@ -189,5 +290,70 @@ import WireProtocol
             AskCitation(segmentId: "seg-a", number: 2),
         ])
         #expect(recent[0].scopeDescription == "Last 7 days")
+        // An opening question is its own thread; that id is what follow-ups join.
+        #expect(recent[0].threadId == recent[0].id)
+    }
+
+    /// A follow-up joins the thread it was asked in, and Recent hands the whole conversation
+    /// back — that is what makes reopening one restore all of it.
+    @Test func followUpsJoinTheirThreadAndReopenTogether() async throws {
+        let db = try AppDatabase.inMemory()
+        let history = AskHistoryStore(db: db)
+        let opening = try await saveAskAnswer(
+            question: "What's the plan?", answerText: "Saigon, then Bangkok.",
+            citedSegmentIds: [], scope: .today, history: history, nowMs: 1_000)
+        let followUp = try await saveAskAnswer(
+            question: "When do I leave?", answerText: "Tomorrow or early in the week.",
+            citedSegmentIds: [], scope: .today, history: history,
+            threadId: opening.threadId, nowMs: 2_000)
+        // An unrelated question, asked later, is a separate conversation.
+        let other = try await saveAskAnswer(
+            question: "Did anything break at home?", answerText: "The hallway light.",
+            citedSegmentIds: [], scope: .everything, history: history, nowMs: 3_000)
+
+        #expect(followUp.threadId == opening.threadId)
+        let threads = try await history.recentThreads()
+        #expect(threads.count == 2)
+        // Newest conversation first; turns oldest-first, the order they were had.
+        #expect(threads[0].id == other.threadId)
+        #expect(threads[1].turns.map(\.question) == ["What's the plan?", "When do I leave?"])
+        #expect(threads[1].openingQuestion == "What's the plan?")
+        #expect(threads[1].updatedAtMs == 2_000)
+    }
+
+    /// Trimming by row would decapitate a long conversation and leave its follow-ups behind
+    /// as orphaned fragments, so the window is counted in THREADS.
+    @Test func historyTrimsWholeConversationsNeverMidThread() async throws {
+        let db = try AppDatabase.inMemory()
+        let history = AskHistoryStore(db: db)
+        let long = try await saveAskAnswer(
+            question: "q0", answerText: "a0", citedSegmentIds: [], scope: .today,
+            history: history, nowMs: 1_000)
+        for turn in 1...4 {
+            try await saveAskAnswer(
+                question: "q\(turn)", answerText: "a\(turn)", citedSegmentIds: [],
+                scope: .today, history: history, threadId: long.threadId,
+                nowMs: Int64(1_000 + turn))
+        }
+        // Four more conversations fill the window; a fifth pushes the long one out whole.
+        for other in 1...4 {
+            try await saveAskAnswer(
+                question: "other\(other)", answerText: "a", citedSegmentIds: [],
+                scope: .today, history: history, nowMs: Int64(2_000 + other))
+        }
+        var threads = try await history.recentThreads()
+        #expect(threads.count == AskHistoryStore.maxEntries)
+        // All five turns of the long conversation survived alongside the four others.
+        #expect(threads.first { $0.id == long.threadId }?.turns.count == 5)
+
+        try await saveAskAnswer(
+            question: "newest", answerText: "a", citedSegmentIds: [], scope: .today,
+            history: history, nowMs: 3_000)
+        threads = try await history.recentThreads()
+        #expect(threads.count == AskHistoryStore.maxEntries)
+        #expect(!threads.contains { $0.id == long.threadId })
+        // And it left nothing behind: no orphaned turns from the evicted conversation.
+        let remaining = try await history.recent(limit: 100)
+        #expect(!remaining.contains { $0.threadId == long.threadId })
     }
 }

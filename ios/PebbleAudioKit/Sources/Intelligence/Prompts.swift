@@ -348,8 +348,27 @@ public enum AiPromptTemplates {
             + "right after the statement, e.g. \"You're considering Brazil [2].\" Cite more than "
             + "one when several apply, e.g. [2][5]. Do not write out raw segment ids, timestamps, "
             + "or markdown links — only the [n] numbers. If audio gaps matter, say so honestly. "
-            + "Never fabricate.",
-        userPrompt: "Answer this question based on the transcripts:"
+            + "Never fabricate.\n"
+            // The transcripts are recordings of the user's own past days, so every answer is a
+            // statement about time. Anchor it: RIGHT NOW is given, and each transcript carries
+            // the date it was recorded.
+            + "TIME: The recordings were made on different days, and RIGHT NOW is given above "
+            + "them. Relative words spoken inside a transcript — \"tomorrow\", \"this weekend\", "
+            + "\"next week\", \"in three days\" — are relative to THAT transcript's recording "
+            + "date, not to today. Work out the real date before answering, and say it plainly "
+            + "(\"Friday the 5th\", \"this coming weekend\") when it matters. Do not present a "
+            + "plan made days ago as if it were made today, and do not describe a date that has "
+            + "already passed as upcoming. When transcripts from different days disagree, the "
+            + "most recent one wins — say when the change happened.\n"
+            // Ask is a running conversation; earlier turns are handed back on every follow-up.
+            + "CONVERSATION: If a CONVERSATION SO FAR section is present, you are mid-discussion "
+            + "with the user. Resolve pronouns and shorthand (\"that\", \"the plan\", \"what "
+            + "about Friday?\") against those earlier turns, keep your earlier statements "
+            + "consistent, and answer only the new question — do not repeat a whole previous "
+            + "answer.",
+        userPrompt: "Continue this conversation, using the transcripts as the only source of "
+            + "facts.",
+        citesSources: true
     )
 
     public static let builtIn: [AiPromptTemplate] = [

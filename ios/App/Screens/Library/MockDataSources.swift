@@ -628,18 +628,21 @@ extension MockWorld: ConversationDataSource {
 // MARK: - AskDataSource
 
 extension MockWorld: AskDataSource {
-    func recent() async throws -> [AskEntry] {
-        Array(askEntries.sorted { $0.createdAtMs > $1.createdAtMs }.prefix(5))
+    func recentThreads() async throws -> [AskThread] {
+        Array(AskThread.group(askEntries).prefix(5))
     }
 
-    func ask(question: String, scope: AskScope) async throws -> AskEntry {
+    func ask(question: String, thread: AskThread?, scope: AskScope) async throws -> AskEntry {
         try? await Task.sleep(for: .seconds(1.2))
         let lowered = question.lowercased()
+        let id = UUID().uuidString
+        let threadId = thread?.id
         let entry: AskEntry
-        if case .conversation(let id, _) = scope, let index = index(of: id) {
+        if case .conversation(let conversationId, _) = scope, let index = index(of: conversationId) {
             let conversation = conversations[index]
             entry = AskEntry(
-                id: UUID().uuidString,
+                id: id,
+                threadId: threadId,
                 question: question,
                 answerText: "You decided to stop for the night and finish the plan tomorrow [1]. "
                     + "Roger sends the money so the work can go faster [1].",
@@ -648,7 +651,8 @@ extension MockWorld: AskDataSource {
                 createdAtMs: ms(Date()))
         } else if lowered.contains("trip") || lowered.contains("ferry") {
             entry = AskEntry(
-                id: UUID().uuidString,
+                id: id,
+                threadId: threadId,
                 question: question,
                 answerText: askEntries.first { $0.id == "ask-trip" }?.answerText
                     ?? "You decided to take the ferry Saturday morning instead of driving [1].",
@@ -660,16 +664,29 @@ extension MockWorld: AskDataSource {
                 createdAtMs: ms(Date()))
         } else if lowered.contains("travel") {
             entry = AskEntry(
-                id: UUID().uuidString,
+                id: id,
+                threadId: threadId,
                 question: question,
                 answerText: "Travel came up twice: the ferry booking for Saturday [1] and keeping "
                     + "the theater walkthrough clear of the trip [1].",
                 citations: [AskCitation(segmentId: "coffee-dana", number: 1)],
                 scopeDescription: scope.label,
                 createdAtMs: ms(Date()))
+        } else if thread != nil {
+            // A follow-up the mock has no canned answer for still reads as part of the
+            // conversation rather than as a fresh, contextless miss.
+            entry = AskEntry(
+                id: id,
+                threadId: threadId,
+                question: question,
+                answerText: "Nothing more about that in the recordings for this range.",
+                citations: [],
+                scopeDescription: scope.label,
+                createdAtMs: ms(Date()))
         } else {
             entry = AskEntry(
-                id: UUID().uuidString,
+                id: id,
+                threadId: threadId,
                 question: question,
                 answerText: "Nothing about that in the recordings for this range.",
                 citations: [],
@@ -677,7 +694,9 @@ extension MockWorld: AskDataSource {
                 createdAtMs: ms(Date()))
         }
         askEntries.insert(entry, at: 0)
-        askEntries = Array(askEntries.prefix(5))
+        // Trim by conversation, never mid-thread.
+        let kept = Set(AskThread.group(askEntries).prefix(5).map(\.id))
+        askEntries = askEntries.filter { kept.contains($0.threadId) }
         bump()
         return entry
     }

@@ -265,6 +265,13 @@ enum Copy {
         static let followUpPlaceholder = "Ask a follow-up"
         static let recentSection = "Recent"
         static let clearHistory = "Clear history"
+        /// Leaves the open conversation (already saved) and starts an unrelated one.
+        static let newConversation = "New"
+        static let didNotGoThrough = "That didn’t go through."
+        /// Recent row, e.g. "1 follow-up" / "3 follow-ups".
+        static func followUpCount(_ count: Int) -> String {
+            count == 1 ? "1 follow-up" : "\(count) follow-ups"
+        }
         /// Answer footer, e.g. "2 moments · Coffee with Dana, Evening at home".
         /// Also the Saved Notes footer ("2 moments · 9:36 PM, 9:51 PM").
         static func moments(_ count: Int, _ list: String) -> String {
@@ -701,6 +708,11 @@ enum Copy {
         static func tag(_ name: String) -> String { "Tag: \(name)" }
         static func scope(_ label: String) -> String { "Search scope: \(label)" }
         static let scopeHint = "Double tap to change how far back Ask looks"
+        static let newConversationHint = "Double tap to start a new Ask conversation"
+        /// The waiting turn reads as an answer on its way, not as a stalled screen.
+        static func askThinking(_ question: String) -> String {
+            "\(question). Answering…"
+        }
 
         /// One transcript turn as a single VoiceOver element, e.g.
         /// "9:46 AM, Dana, let's move the walkthrough" — the time is always spoken, even when

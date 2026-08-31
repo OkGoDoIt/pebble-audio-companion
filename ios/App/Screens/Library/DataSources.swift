@@ -309,8 +309,11 @@ protocol ConversationDataSource: AnyObject {
 protocol AskDataSource: AnyObject {
     /// False until the first recording exists ("Nothing to ask about yet…").
     var hasContent: Bool { get }
-    func recent() async throws -> [AskEntry]
-    func ask(question: String, scope: AskScope) async throws -> AskEntry
+    /// Recent Ask conversations, newest first, each with all of its turns.
+    func recentThreads() async throws -> [AskThread]
+    /// Answers `question` as the next turn of `thread` (nil starts a new conversation): the
+    /// earlier turns go to the model as context and the answer joins the same thread.
+    func ask(question: String, thread: AskThread?, scope: AskScope) async throws -> AskEntry
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?
