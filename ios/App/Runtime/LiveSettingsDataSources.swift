@@ -87,7 +87,7 @@ final class LiveWatchStatusSource: WatchStatusSource {
             let receiver = await runtime.environment.receiver
             for await name in receiver.deviceName.stream() {
                 guard let self else { return }
-                deviceName = name ?? StatusCopy.genericDeviceName
+                deviceName = Self.label(advertisedName: name)
             }
         }
     }
@@ -104,6 +104,16 @@ final class LiveWatchStatusSource: WatchStatusSource {
             let receiver = await composition.runtime.environment.receiver
             await receiver.revokeReceiverLocally()
         }
+    }
+
+    /// The watch's own advertised name, or the generic word when no watch has ever been seen.
+    ///
+    /// The generic word is a placeholder for "we do not know yet" and never a stand-in for a
+    /// watch we DO know: someone with two Pebbles has to be able to tell from this row which one
+    /// is bound. An advertised name that is blank or whitespace is no name at all.
+    static func label(advertisedName name: String?) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? StatusCopy.genericDeviceName : trimmed
     }
 
     /// The watch packs its firmware version as major/minor/patch bytes; battery is not part of
@@ -610,6 +620,15 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var indexRebuild: IndexRebuildState = .idle
     private(set) var queueWaiting = 0
     private(set) var queueFailed = 0
+    private(set) var transcriptionHeldInBackground = false
+    /// Latches the runtime's flag across the return to the foreground.
+    ///
+    /// `RuntimeDiagnostics.transcriptionDeferredInBackground` is literally `!isForeground()`, so
+    /// by the time anyone can READ this screen it has already flipped back to false — which is
+    /// why surfacing the raw flag would be a row that is never true. What the user needs to know
+    /// is why the tasks in front of them did not move, so the observation is held until the
+    /// queue that was held actually drains.
+    @ObservationIgnored private var sawDeferralWhileQueued = false
     private(set) var enrichmentWaiting = 0
     private(set) var enrichmentRunning = false
     private(set) var failedItems: [DiagnosticFailure] = []
@@ -636,6 +655,12 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         let diagnostics = composition.runtime.diagnostics.value
         queueWaiting = diagnostics.queuedTranscriptionTasks
         queueFailed = diagnostics.failedTranscriptionTasks
+        if queueWaiting == 0 {
+            sawDeferralWhileQueued = false
+        } else if diagnostics.transcriptionDeferredInBackground {
+            sawDeferralWhileQueued = true
+        }
+        transcriptionHeldInBackground = queueWaiting > 0 && sawDeferralWhileQueued
         enrichmentWaiting = diagnostics.conversationsAwaitingEnrichment
         enrichmentRunning = diagnostics.enrichmentRunning
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
@@ -767,8 +792,10 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         Receiver: \(report.receiverState)
         \(watchLink)Capture intent: \(report.captureIntent)
         Segments stored: \(report.diagnostics.segmentCount)
-        Transcription queue: \(report.diagnostics.queuedTranscriptionTasks) waiting · \
-        \(report.diagnostics.failedTranscriptionTasks) failed
+        Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
+            waiting: report.diagnostics.queuedTranscriptionTasks,
+            failed: report.diagnostics.failedTranscriptionTasks,
+            heldInBackground: report.diagnostics.transcriptionDeferredInBackground))
         \(SupportReportText.failures(failures))AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
         running: \(report.diagnostics.enrichmentRunning)
         Low storage: \(report.diagnostics.lowStorage)

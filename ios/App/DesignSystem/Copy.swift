@@ -728,9 +728,18 @@ enum Copy {
             static let receiverRecording = "Recording from Pebble"
             static let watchReports = "Watch reports"
             static let transcriptionQueue = "Transcription queue"
-            /// e.g. "0 waiting · 0 failed".
-            static func queueValue(waiting: Int, failed: Int) -> String {
-                "\(waiting) waiting · \(failed) failed"
+            /// e.g. "0 waiting · 0 failed" / "3 waiting · held in the background · 0 failed".
+            ///
+            /// `heldInBackground` is why nothing moved: local transcription and AI are deferred
+            /// while the app is not in the foreground. The runtime has always computed that flag
+            /// and no surface ever read it, so a queue that was simply waiting for the user to
+            /// open the app looked identical to one that was stuck.
+            static func queueValue(
+                waiting: Int, failed: Int, heldInBackground: Bool = false
+            ) -> String {
+                var line = "\(waiting) waiting"
+                if waiting > 0, heldInBackground { line += " · held in the background" }
+                return line + " · \(failed) failed"
             }
             static let aiEnrichment = "AI titles & summaries"
             /// e.g. "writing 12 more" / "12 waiting" / "all caught up". Background work, so
@@ -792,6 +801,10 @@ enum Copy {
     enum Empty {
         /// First-run Today; the status card carries the action.
         static let todayFirstRun = "Ready when you are."
+        /// Startup recovery / the one-time import from the old app. On a migrated first launch
+        /// that takes tens of seconds, during which the library genuinely reads as empty — and
+        /// "Ready when you are." told a user with hundreds of recordings that they had none.
+        static let todayRecovering = "Getting your recordings ready…"
         static let library = "Recordings appear here after your first conversation."
         static let followUpsAllDone = "All caught up."
         // No-search-matches lives in Search.noMatches(_:).
