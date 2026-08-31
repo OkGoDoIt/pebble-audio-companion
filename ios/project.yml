@@ -92,6 +92,42 @@ targets:
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.widgets
 
+  # Logic / view-model / data-source tests for the App layer.
+  #
+  # It compiles the App sources itself rather than testing a hosted app: a host application
+  # would make every run wait on a full app launch (and on the App Group container, which a
+  # test bundle has no entitlement for), and nothing here needs a running app — these are
+  # view models, mappers, the router, and the live-vs-mock conformance suite.
+  #
+  # `PebbleAudioApp.swift` is the one App source excluded: it carries `@main`, which a
+  # loadable test bundle has no entry point for. `AppRouter` was moved out of it into
+  # `App/AppRouter.swift` precisely so it stays testable. `Assets.xcassets` is excluded
+  # because compiling an asset catalog into the test bundle buys nothing and costs seconds.
+  AppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "Info.plist"
+          - "App.entitlements"
+          - "PebbleAudioApp.swift"
+          - "Assets.xcassets"
+      # Same two exclusions as the App target, for the same reason (see above).
+      - path: Shared
+        excludes:
+          - "CoverageSnapshot.swift"
+          - "WidgetStatusRules.swift"
+      - path: AppTests
+    dependencies:
+      - package: PebbleAudioKit
+        product: PebbleAudioKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.apptests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
   # Pure-logic tests for the Shared/ helpers (no app host: nothing here touches UIKit).
   SharedTests:
     type: bundle.unit-test
@@ -117,6 +153,7 @@ schemes:
       config: Debug
       targets:
         - SharedTests
+        - AppTests
     archive:
       config: Release
   SharedTests:
@@ -127,3 +164,11 @@ schemes:
       config: Debug
       targets:
         - SharedTests
+  AppTests:
+    build:
+      targets:
+        AppTests: [test]
+    test:
+      config: Debug
+      targets:
+        - AppTests
