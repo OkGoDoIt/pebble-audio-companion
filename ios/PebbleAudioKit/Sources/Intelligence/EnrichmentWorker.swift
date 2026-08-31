@@ -89,6 +89,11 @@ public final class EnrichmentWorker: @unchecked Sendable {
         let now = nowMs()
         var annotated: [String] = []
         for conversation in conversations {
+            // A migrated library hands this loop a whole backlog at once (one provider call per
+            // outstanding conversation, in a single pass — that is what makes the backfill
+            // prompt). Check between conversations so backgrounding or shutdown stops the
+            // backlog at the next boundary instead of running it out.
+            try Task.checkCancellation()
             let existing = try await annotations.load(conversation.conversationId)
             let plan = planFor(
                 conversation, existing: existing, transcriptOf: transcriptOf,

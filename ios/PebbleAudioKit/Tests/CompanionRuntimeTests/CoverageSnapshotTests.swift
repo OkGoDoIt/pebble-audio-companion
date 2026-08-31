@@ -125,3 +125,288 @@ import Testing
         #expect(!snapshot.spans.contains { $0.kind == .missing })
     }
 }
+
+// v2 (2026-08-31) — the widget stopped being a coverage strip and became a status/now/follow-ups
+// set, so the snapshot has to carry the live state as well as the day. These pin the new half:
+// the derivations that run on every write, and the JSON keys the widget decodes.
+
+@Suite struct CoverageSnapshotLiveFieldsTests {
+
+    private func recording() -> StatusModel {
+        StatusModel(
+            family: .recording, headline: "Recording", detail: "Pebble Time 2 · connected",
+            dot: .active, action: .stop
+        )
+    }
+
+    /// A recording snapshot carries everything the "Recording now" widget draws, and the writer
+    /// stamps v2 so an older widget binary can tell "this file does not know" from "off".
+    @Test func recordingSnapshotCarriesTheLiveFields() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.clock.advance(by: 1_756_512_000_000)
+        // Ten seconds of audio ending at "now": a conversation that is still running, so the
+        // trailing coverage span is capture and the elapsed timer has a start to count from.
+        _ = try await Fixture.writeSegment(
+            into: fixture.store,
+            startTimeMs: UInt64(fixture.clock.nowMs - 10_000),
+            frames: 500,
+            receivedAtMs: fixture.clock.nowMs - 10_000
+        )
+        let status = recording()
+        let service = CoverageSnapshotService(
+            store: fixture.store,
+            writer: fixture.snapshotWriter,
+            clock: fixture.clock,
+            statusOf: { status },
+            pauseJournal: fixture.pauseJournal,
+            liveContextOf: { isRunning in
+                #expect(isRunning)
+                return CoverageLiveContext(
+                    conversationTitle: "Standup",
+                    latestLine: "Push the release to Thursday",
+                    followUps: [
+                        .init(id: "f1", text: "Email Dana", conversationId: "c1")
+                    ],
+                    openFollowUpCount: 3
+                )
+            }
+        )
+
+        let written = await service.refresh(.manual)
+
+        #expect(written.version == 2)
+        #expect(written.state == "recording")
+        #expect(written.liveTitle == "Standup")
+        #expect(written.liveLine == "Push the release to Thursday")
+        #expect(written.currentStartedAtMs != nil)
+        #expect(written.openFollowUpCount == 3)
+        #expect(written.followUps.first?.conversationId == "c1")
+        #expect(written.activityWindowMs == CoverageSnapshotService.activityWindowMs)
+        #expect(
+            written.activity.count
+                == Int(CoverageSnapshotService.activityWindowMs / CoverageSnapshotService.activityBarMs)
+        )
+
+        // Wire contract: the widget decodes these keys by name.
+        let object = try #require(
+            try JSONSerialization.jsonObject(
+                with: Data(contentsOf: fixture.snapshotWriter.url)
+            ) as? [String: Any]
+        )
+        let required: Set<String> = [
+            "state", "currentStartedAtMs", "liveTitle", "liveLine", "activity",
+            "activityWindowMs", "followUps", "openFollowUpCount",
+        ]
+        #expect(required.isSubset(of: Set(object.keys)))
+        if let bars = object["activity"] as? [[String: Any]], let first = bars.first {
+            #expect(Set(first.keys) == ["kind", "level"])
+        }
+    }
+
+    /// Honesty rule: nothing that says "right now" survives into a snapshot where capture is not
+    /// running. A widget must never show a live title, a live line, or a counting-up timer for a
+    /// conversation that has stopped.
+    @Test func aPausedSnapshotCarriesNoLiveConversationAndNoTimer() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.clock.advance(by: 1_756_512_000_000)
+        let paused = StatusModel(
+            family: .paused, headline: "Paused", detail: nil, dot: .attention, action: .resume
+        )
+        let service = CoverageSnapshotService(
+            store: fixture.store,
+            writer: fixture.snapshotWriter,
+            clock: fixture.clock,
+            statusOf: { paused },
+            pauseJournal: fixture.pauseJournal,
+            liveContextOf: { isRunning in
+                #expect(!isRunning)
+                // The provider still reports follow-ups; only the live half is dropped.
+                return CoverageLiveContext(
+                    conversationTitle: "Should not appear",
+                    latestLine: "Should not appear either",
+                    followUps: [.init(id: "f1", text: "Still open", conversationId: nil)],
+                    openFollowUpCount: 1
+                )
+            }
+        )
+
+        let written = await service.refresh(.pauseChanged)
+
+        #expect(written.state == "paused")
+        #expect(written.isRecording == false)
+        #expect(written.liveTitle == nil)
+        #expect(written.liveLine == nil)
+        #expect(written.currentStartedAtMs == nil)
+        #expect(written.openFollowUpCount == 1)
+    }
+
+    /// A snapshot written with no live-context provider is still a valid v2 file — the app can
+    /// be composed without one and the widget must degrade, not break.
+    @Test func snapshotWithoutALiveContextProviderStillWritesV2() async throws {
+        let fixture = try RuntimeFixture()
+        let written = await fixture.snapshots.refresh(.manual)
+
+        #expect(written.version == 2)
+        #expect(!written.state.isEmpty)
+        #expect(written.followUps.isEmpty)
+        #expect(written.openFollowUpCount == 0)
+    }
+
+    // MARK: - Pure derivations
+
+    private func span(_ kind: CoverageKind, _ from: Int64, _ to: Int64) -> CoverageSpan {
+        CoverageSpan(kind: kind, startMs: from, endMs: to)
+    }
+
+    @Test func runningStretchWalksThroughAShortGapButStopsAtAPause() {
+        let now: Int64 = 10_000_000
+        let spans = [
+            span(.recorded, now - 3_600_000, now - 1_800_000),
+            span(.paused, now - 1_800_000, now - 900_000),
+            // The conversation the user is in: a 30 s Bluetooth blip is loss inside it, not a
+            // boundary — resetting the elapsed timer there would read as "just started".
+            span(.recorded, now - 900_000, now - 300_000),
+            span(.missing, now - 300_000, now - 270_000),
+            span(.quiet, now - 270_000, now - 120_000),
+            span(.recorded, now - 120_000, now),
+        ]
+
+        #expect(
+            CoverageSnapshotService.runningStretchStartMs(spans: spans, nowMs: now)
+                == now - 900_000
+        )
+    }
+
+    @Test func runningStretchStopsAtALongGapBecauseThatIsADifferentConversation() {
+        let now: Int64 = 10_000_000
+        let spans = [
+            span(.recorded, now - 3_600_000, now - 1_800_000),
+            span(.missing, now - 1_800_000, now - 600_000),  // 20 minutes — not a blip
+            span(.recorded, now - 600_000, now),
+        ]
+
+        #expect(
+            CoverageSnapshotService.runningStretchStartMs(spans: spans, nowMs: now)
+                == now - 600_000
+        )
+    }
+
+    @Test func runningStretchIsNilWhenTheDayEndsInSomethingThatIsNotCapture() {
+        let now: Int64 = 10_000_000
+        let spans = [
+            span(.recorded, now - 3_600_000, now - 600_000),
+            span(.off, now - 600_000, now),
+        ]
+
+        #expect(CoverageSnapshotService.runningStretchStartMs(spans: spans, nowMs: now) == nil)
+    }
+
+    /// Coverage is built from frames that have ARRIVED, so a live conversation always ends in a
+    /// few seconds of not-yet-counted time. Treating that as the end of the stretch would leave
+    /// a recording widget with no elapsed time at all, which is the common case, not the edge.
+    @Test func runningStretchSurvivesTheSecondsOfAudioThatHaveNotLandedYet() {
+        let now: Int64 = 10_000_000
+        let spans = [
+            span(.recorded, now - 1_800_000, now - 8_000),
+            span(.off, now - 8_000, now),
+        ]
+
+        #expect(
+            CoverageSnapshotService.runningStretchStartMs(spans: spans, nowMs: now)
+                == now - 1_800_000
+        )
+    }
+
+    /// …but a pause is a real boundary, however short. The user said stop.
+    @Test func aPauseAlwaysEndsTheStretchEvenAShortOne() {
+        let now: Int64 = 10_000_000
+        let spans = [
+            span(.recorded, now - 1_800_000, now - 60_000),
+            span(.paused, now - 60_000, now - 50_000),
+            span(.recorded, now - 50_000, now),
+        ]
+
+        #expect(
+            CoverageSnapshotService.runningStretchStartMs(spans: spans, nowMs: now)
+                == now - 50_000
+        )
+    }
+
+    @Test func activityBarsBucketTheWindowAndKeepLossVisible() {
+        let now: Int64 = 10_000_000
+        let window = CoverageSnapshotService.activityWindowMs
+        let bar = CoverageSnapshotService.activityBarMs
+        let spans = [
+            span(.recorded, now - window, now - window + 4 * bar),
+            span(.quiet, now - window + 4 * bar, now - window + 6 * bar),
+            // One bucket's worth of genuine loss: it must win its bucket outright.
+            span(.missing, now - window + 6 * bar, now - window + 7 * bar),
+            span(.recorded, now - window + 7 * bar, now),
+        ]
+
+        let bars = CoverageSnapshotService.activityBars(spans: spans, nowMs: now)
+
+        #expect(bars.count == Int(window / bar))
+        #expect(bars[0].kind == .recorded)
+        #expect(bars[0].level == 1)
+        #expect(bars[4].kind == .quiet)
+        #expect(bars[4].level == 0)
+        #expect(bars[6].kind == .missing)
+        #expect(bars.last?.kind == .recorded)
+        #expect(bars.allSatisfy { $0.level >= 0 && $0.level <= 1 })
+    }
+
+    @Test func activityBarsAreEmptyWhenNothingOverlapsTheWindow() {
+        let now: Int64 = 10_000_000
+        let spans = [span(.recorded, now - 86_400_000, now - 86_000_000)]
+
+        let bars = CoverageSnapshotService.activityBars(spans: spans, nowMs: now)
+
+        #expect(bars.allSatisfy { $0.kind == .off && $0.level == 0 })
+    }
+}
+
+// The path Roger's Control Center toggle takes once the app has the request. Setting the intent
+// alone leaves the watch uncontacted; only `startCapture` dials the link.
+@Suite struct ExternalCaptureIntentTests {
+
+    @Test func resumingFromAnExternalSurfaceDialsTheLink() async throws {
+        let fixture = try RuntimeFixture(
+            settings: RuntimeSettingsSnapshot(captureIntent: .paused)
+        )
+        let before = fixture.link.resyncCount
+
+        await fixture.runtime.applyExternalCaptureIntent(.active)
+
+        #expect(fixture.runtime.captureIntent == .active)
+        #expect(fixture.link.resyncCount > before)
+        #expect(fixture.receiver.isWatchEnableRequestArmed)
+    }
+
+    /// The formerly-dropped case: capture is OFF and a Control Center toggle asks for it back.
+    /// It is honoured now, and it still cannot enable the watch by itself — `startCapture` arms
+    /// exactly one on-watch enable prompt, and the watch decides.
+    @Test func turningCaptureOnFromOffIsHonouredAndArmsTheWatchPrompt() async throws {
+        let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: .off))
+        let before = fixture.link.resyncCount
+
+        await fixture.runtime.applyExternalCaptureIntent(.active)
+
+        #expect(fixture.runtime.captureIntent == .active)
+        #expect(fixture.receiver.isWatchEnableRequestArmed)
+        #expect(fixture.link.resyncCount > before)
+    }
+
+    /// Pausing does NOT dial: reconnecting a link in order to stop using it would be pointless
+    /// radio work, and the pause journal is what makes coverage show the window as paused.
+    @Test func pausingFromAnExternalSurfaceDoesNotDialTheLink() async throws {
+        let fixture = try RuntimeFixture()
+        let before = fixture.link.resyncCount
+
+        await fixture.runtime.applyExternalCaptureIntent(.paused)
+
+        #expect(fixture.runtime.captureIntent == .paused)
+        #expect(fixture.link.resyncCount == before)
+        #expect(await fixture.snapshots.triggers.contains(.pauseChanged))
+    }
+}

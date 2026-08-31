@@ -56,21 +56,25 @@ struct CaptureStatusView: View {
                     .minimumScaleFactor(0.6)
                     .padding(.top, 6)
             } else if let secondary = status.secondary {
+                // Some status lines are a full sentence, and a two-line headline above them
+                // leaves little room. Scaling beats clipping: a slightly smaller sentence still
+                // says what is wrong, half a sentence does not.
                 Text(secondary)
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.tertiary)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.75)
                     .padding(.top, 4)
             }
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             if !status.bars(from: entry).isEmpty {
                 ActivityBars(bars: status.bars(from: entry), height: 20)
                     .padding(.bottom, 8)
             }
 
-            CaptureControlButton(offersPause: status.offersPause)
+            CaptureControlButton(offersPause: status.offersPause, isOff: status.isOff)
         }
     }
 
@@ -140,6 +144,10 @@ struct StatusDotLabel: View {
 /// there is exactly one way capture changes from outside the app.
 struct CaptureControlButton: View {
     let offersPause: Bool
+    /// Capture is off rather than paused, so the button starts something instead of resuming
+    /// it. Same intent either way — only the word changes, because "Resume" on a phone that has
+    /// never recorded is the wrong promise.
+    var isOff: Bool = false
 
     var body: some View {
         Group {
@@ -150,9 +158,14 @@ struct CaptureControlButton: View {
                 .accessibilityLabel(Copy.Widgets.pauseHint)
             } else {
                 Button(intent: ResumeCaptureIntent()) {
-                    label(Copy.Status.resume, systemImage: "waveform")
+                    label(
+                        isOff ? Copy.Status.startRecording : Copy.Status.resume,
+                        systemImage: "waveform"
+                    )
                 }
-                .accessibilityLabel(Copy.Widgets.resumeHint)
+                .accessibilityLabel(
+                    isOff ? Copy.Widgets.startHint : Copy.Widgets.resumeHint
+                )
             }
         }
         .buttonStyle(.plain)
@@ -162,7 +175,7 @@ struct CaptureControlButton: View {
     private func label(_ text: String, systemImage: String) -> some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage).font(.system(size: 11, weight: .bold))
-            Text(text).font(AppFont.microBold)
+            Text(text).font(AppFont.microBold).lineLimit(1).minimumScaleFactor(0.7)
         }
         .foregroundStyle(Tokens.tint)
         .padding(.horizontal, 10)
@@ -173,10 +186,15 @@ struct CaptureControlButton: View {
 }
 
 extension WidgetStatus {
-    /// The activity profile, but only while the snapshot is fresh enough to stand behind it —
-    /// a stale strip of bars would draw a conversation that ended hours ago as if it were now.
+    /// The activity profile, but only when it has something to say.
+    ///
+    /// Two ways it does not: a stale snapshot (its bars would draw a conversation that ended
+    /// hours ago as if it were now), and a window in which nothing happened at all — an
+    /// all-`off` strip renders as a row of grey stubs that reads as a broken view rather than
+    /// as "nothing happened", which the words above already say better.
     func bars(from entry: CompanionEntry) -> [CoverageSnapshot.ActivityBar] {
         guard !isStale, let snapshot = entry.snapshot else { return [] }
+        guard snapshot.activity.contains(where: { $0.kind != .off }) else { return [] }
         return snapshot.activity
     }
 }

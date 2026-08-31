@@ -121,3 +121,176 @@ final class CoverageSnapshotTests: XCTestCase {
         XCTAssertEqual(range?.lowerBound, 0)
     }
 }
+
+/// v2 (2026-08-31). The widget set grew from one coverage strip to status/now/follow-ups, so the
+/// snapshot carries the live state too. The rule that matters most here is the OLD-FILE one: a
+/// v1 snapshot written by an app that has not been updated yet must decode into something the
+/// new widgets render honestly — "unknown", never a confident-looking zero.
+final class CoverageSnapshotV2Tests: XCTestCase {
+    private func sample() -> CoverageSnapshot {
+        CoverageSnapshot(
+            generatedAtMs: 1_756_512_000_000,
+            dateKey: "2026-08-30",
+            timeZoneID: "America/Los_Angeles",
+            dayStartMs: 1_756_472_400_000,
+            nowMs: 1_756_512_000_000,
+            spans: [.init(kind: .recorded, startMs: 1_756_472_400_000, endMs: 1_756_476_000_000)],
+            totalRecordedMs: 3_600_000,
+            totalMissingMs: 0,
+            headline: "Recording",
+            detail: "Pebble Time 2 · connected",
+            dot: "active",
+            isRecording: true,
+            state: .recording,
+            currentStartedAtMs: 1_756_510_800_000,
+            liveTitle: "Standup",
+            liveLine: "Push the release to Thursday",
+            activity: [
+                .init(kind: .recorded, level: 0.9),
+                .init(kind: .quiet, level: 0),
+                .init(kind: .missing, level: 0.2),
+            ],
+            activityWindowMs: 600_000,
+            followUps: [
+                .init(id: "f1", text: "Email Dana", conversationId: "c1"),
+                .init(id: "f2", text: "Order tiles", conversationId: nil),
+            ],
+            openFollowUpCount: 5
+        )
+    }
+
+    func testRoundTripsEveryV2Field() throws {
+        let original = sample()
+        let data = try JSONEncoder().encode(original)
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: data))
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.state, .recording)
+        XCTAssertEqual(decoded.followUps.first?.conversationId, "c1")
+        XCTAssertNil(decoded.followUps.last?.conversationId)
+    }
+
+    func testDecodesTheWriterKeysVerbatim() throws {
+        // Field-for-field with `CompanionRuntime.CoverageSnapshot`'s documented v2 contract.
+        let json = """
+            {
+              "version": 2,
+              "generatedAtMs": 1756512000000,
+              "dateKey": "2026-08-30",
+              "timeZoneID": "America/Los_Angeles",
+              "dayStartMs": 1756472400000,
+              "nowMs": 1756512000000,
+              "spans": [{ "kind": "recorded", "startMs": 1756472400000, "endMs": 1756476000000 }],
+              "totalRecordedMs": 3600000,
+              "totalMissingMs": 0,
+              "headline": "Recording",
+              "detail": "Pebble Time 2 · connected",
+              "dot": "active",
+              "isRecording": true,
+              "state": "recording",
+              "currentStartedAtMs": 1756510800000,
+              "liveTitle": "Standup",
+              "liveLine": "Push the release to Thursday",
+              "activity": [{ "kind": "recorded", "level": 0.9 }],
+              "activityWindowMs": 600000,
+              "followUps": [{ "id": "f1", "text": "Email Dana", "conversationId": "c1" }],
+              "openFollowUpCount": 5
+            }
+            """
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: Data(json.utf8)))
+
+        XCTAssertEqual(decoded.state, .recording)
+        XCTAssertEqual(decoded.currentStartedAtMs, 1_756_510_800_000)
+        XCTAssertEqual(decoded.liveTitle, "Standup")
+        XCTAssertEqual(decoded.liveLine, "Push the release to Thursday")
+        XCTAssertEqual(decoded.activity, [.init(kind: .recorded, level: 0.9)])
+        XCTAssertEqual(decoded.activityWindowMs, 600_000)
+        XCTAssertEqual(decoded.followUps.count, 1)
+        XCTAssertEqual(decoded.openFollowUpCount, 5)
+    }
+
+    /// The compatibility case this version bump exists for.
+    func testAV1FileDecodesWithTheNewFieldsAbsentRatherThanWrong() throws {
+        let json = """
+            {
+              "version": 1,
+              "generatedAtMs": 1756512000000,
+              "dateKey": "2026-08-30",
+              "timeZoneID": "America/Los_Angeles",
+              "dayStartMs": 1756472400000,
+              "nowMs": 1756512000000,
+              "spans": [],
+              "totalRecordedMs": 0,
+              "totalMissingMs": 0,
+              "headline": "Recording",
+              "dot": "active",
+              "isRecording": true
+            }
+            """
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: Data(json.utf8)))
+
+        XCTAssertEqual(decoded.version, 1)
+        XCTAssertFalse(decoded.hasLiveDetail, "a v1 file must announce that it cannot say more")
+        // `isRecording` is the only live fact v1 carries, so `state` is derived from it rather
+        // than invented — claiming `.notRecording` would be a lie in the dangerous direction.
+        XCTAssertEqual(decoded.state, .recording)
+        XCTAssertNil(decoded.currentStartedAtMs, "no timer without a start the file knows")
+        XCTAssertNil(decoded.liveTitle)
+        XCTAssertNil(decoded.liveLine)
+        XCTAssertEqual(decoded.activity, [])
+        XCTAssertEqual(decoded.followUps, [])
+        XCTAssertEqual(decoded.openFollowUpCount, 0)
+    }
+
+    func testAV1FileThatWasNotRecordingDecodesAsUnknownNotAsPaused() throws {
+        let json = """
+            { "version": 1, "headline": "Paused", "dot": "attention", "isRecording": false }
+            """
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: Data(json.utf8)))
+
+        XCTAssertEqual(decoded.state, .unknown)
+        // The prose headline is still the approved vocabulary, so the widget has something true
+        // to show even though the machine-readable state is unavailable.
+        XCTAssertEqual(decoded.headline, "Paused")
+    }
+
+    func testAnUnknownFutureStateDecodesAsUnknownRatherThanFailing() throws {
+        let json = """
+            { "version": 3, "state": "levitating", "headline": "Hovering", "dot": "sparkly" }
+            """
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: Data(json.utf8)))
+
+        XCTAssertEqual(decoded.state, .unknown)
+        XCTAssertEqual(decoded.headline, "Hovering")
+    }
+
+    func testActivityLevelsAreClampedOnTheWayIn() throws {
+        let json = """
+            { "activity": [{ "kind": "recorded", "level": 4.5 },
+                           { "kind": "wormhole", "level": -2 }] }
+            """
+        let decoded = try XCTUnwrap(CoverageSnapshot.load(from: Data(json.utf8)))
+
+        XCTAssertEqual(decoded.activity[0].level, 1)
+        XCTAssertEqual(decoded.activity[1].level, 0)
+        XCTAssertEqual(decoded.activity[1].kind, .off, "an unknown kind draws as nothing")
+    }
+
+    func testStalenessIsMeasuredFromTheWriteTimeAndNeverNegative() {
+        var snapshot = sample()
+        let generated = Date(timeIntervalSince1970: Double(snapshot.generatedAtMs) / 1000)
+
+        XCTAssertFalse(snapshot.isStale(at: generated.addingTimeInterval(60)))
+        XCTAssertTrue(snapshot.isStale(at: generated.addingTimeInterval(3 * 3600)))
+        XCTAssertEqual(snapshot.ageMs(at: generated.addingTimeInterval(-100)), 0)
+
+        snapshot.generatedAtMs = 0
+        XCTAssertTrue(snapshot.isStale(at: Date()), "a file with no timestamp is not fresh")
+    }
+
+    func testCurrentStartedAtConvertsMillisecondsToADate() throws {
+        let snapshot = sample()
+        let started = try XCTUnwrap(snapshot.currentStartedAt)
+        XCTAssertEqual(started.timeIntervalSince1970, 1_756_510_800, accuracy: 0.001)
+    }
+}

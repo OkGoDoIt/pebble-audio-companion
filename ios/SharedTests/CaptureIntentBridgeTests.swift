@@ -96,3 +96,69 @@ final class CaptureIntentBridgeTests: XCTestCase {
         CaptureIntentBridge.postDarwinNotification()
     }
 }
+
+/// The acknowledgement half (2026-08-31). Before this existed, an intent reported success the
+/// moment it wrote a file — which is why Roger's Control Center toggle said "resumed" while
+/// nothing had reached the watch. `waitForApply` is what makes the answer honest.
+final class CaptureIntentAcknowledgementTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "ack-tests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
+        super.tearDown()
+    }
+
+    func testWaitReturnsImmediatelyWhenThereIsNothingPending() async {
+        let applied = await CaptureIntentBridge.waitForApply(timeoutMs: 50, in: defaults)
+        XCTAssertTrue(applied)
+    }
+
+    func testWaitReportsFailureWhenNobodyConsumesTheRequest() async {
+        CaptureIntentBridge.request(.paused, in: defaults, notify: false)
+
+        let applied = await CaptureIntentBridge.waitForApply(
+            timeoutMs: 150, pollMs: 25, in: defaults
+        )
+
+        XCTAssertFalse(applied, "no app process answered, so the intent must not claim success")
+        XCTAssertEqual(
+            CaptureIntentBridge.pendingRequest(in: defaults)?.intent, .paused,
+            "the request stays queued for the next launch rather than being thrown away"
+        )
+    }
+
+    func testWaitSucceedsOnceTheAppConsumesTheRequest() async {
+        CaptureIntentBridge.request(.active, in: defaults, notify: false)
+        let defaults = self.defaults!
+        Task {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            CaptureIntentBridge.consume(.active, in: defaults)
+        }
+
+        let applied = await CaptureIntentBridge.waitForApply(
+            timeoutMs: 2000, pollMs: 10, in: defaults
+        )
+
+        XCTAssertTrue(applied)
+        XCTAssertEqual(CaptureIntentBridge.appliedIntent(in: defaults), .active)
+    }
+
+    /// The behaviour reversal: a toggle pressed while capture is off asks for `active`. It used
+    /// to be refused; the consent that matters is the on-watch prompt, which still gates it.
+    func testTogglingFromOffAsksToStartRatherThanDoingNothing() {
+        defaults.set("off", forKey: CaptureIntentBridge.Keys.applied)
+
+        let requested = CaptureIntentBridge.requestToggle(in: defaults, notify: false)
+
+        XCTAssertEqual(requested, .active)
+        XCTAssertEqual(CaptureIntentBridge.effectiveIntent(in: defaults), .active)
+    }
+}

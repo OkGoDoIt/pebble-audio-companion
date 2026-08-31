@@ -60,6 +60,8 @@ struct WidgetStatus {
     let startedAt: Date?
     /// The control to offer: pausing what is running, or resuming what is not.
     let offersPause: Bool
+    /// Capture is off rather than paused — the button says "Start Recording", not "Resume".
+    let isOff: Bool
     /// Secondary line: the status detail, or the "as of" hedge when the snapshot is stale.
     let secondary: String?
     let isStale: Bool
@@ -84,12 +86,25 @@ struct WidgetStatus {
             word = observed ?? Copy.Status.notRecording
         }
 
-        // The applied intent is always current; the snapshot may not be. Offering "Pause" for
-        // something already paused is the kind of small lie this product cannot afford.
-        offersPause = (entry.pending ?? entry.applied) == .active
-
         let claimsRecording = snapshot?.state == .recording && !stale
         isRecording = claimsRecording
+
+        // Which control to offer, in order of what is most certainly true:
+        //   1. an unconfirmed request — the user just pressed this button, honour their aim;
+        //   2. a fresh snapshot that says capture IS running — then the action is Pause, no
+        //      matter what the preference says. The two can legitimately disagree (a watch-side
+        //      stop, a preference written but not yet applied), and a widget that says
+        //      "Recording" above a "Resume" button is incoherent whichever half is right;
+        //   3. otherwise the applied preference, which is always current even when the snapshot
+        //      is stale.
+        if let pending = entry.pending {
+            offersPause = pending == .active
+        } else if claimsRecording {
+            offersPause = true
+        } else {
+            offersPause = entry.applied == .active
+        }
+        isOff = !offersPause && (entry.pending ?? entry.applied) == .off
         startedAt = claimsRecording ? snapshot?.currentStartedAt : nil
 
         if snapshot == nil {

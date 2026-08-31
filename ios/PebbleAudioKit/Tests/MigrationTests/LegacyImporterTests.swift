@@ -232,9 +232,13 @@ import Transcription
         let outcome = try await env.importer().run()
 
         let queue = TranscriptionQueue(database: env.db, nowMs: { [now = env.now] in now })
-        #expect(try queue.load("seg-a") == nil)
+        // A and C are finished work, so they now get TERMINAL rows rather than no row at all.
+        // A missing row reads as Pending downstream, which is what made every already-
+        // transcribed migrated conversation claim "Captured · waiting to transcribe" above its
+        // own finished transcript.
+        #expect(try queue.load("seg-a")?.state == .complete)
         #expect(try queue.load("seg-b")?.state == .pending)
-        #expect(try queue.load("seg-c") == nil)
+        #expect(try queue.load("seg-c")?.state == .noSpeech)
         #expect(try queue.load("seg-d")?.state == .pending)
         // The requeued segment's meta went back to Pending so files and queue agree.
         #expect(try readMetaFile(root: env.root, id: "seg-b").transcriptionState == .pending)
