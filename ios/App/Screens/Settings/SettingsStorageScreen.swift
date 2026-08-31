@@ -1,3 +1,4 @@
+import StatusUI
 import SwiftUI
 
 /// Settings · Storage & Privacy (artboard 2.12): stats, the REAL "Keep audio" retention
@@ -41,6 +42,30 @@ struct SettingsStorageScreen: View {
                         selection: $settings.retentionDays
                     )
                 }
+                SettingsPushRow(
+                    title: Copy.Settings.Storage.storageLimit,
+                    value: AppSettings.retentionLimitLabel(settings.retentionMaxBytes)
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Settings.Storage.storageLimit,
+                        options: AppSettings.retentionLimitOptions.map {
+                            .init(value: $0, label: AppSettings.retentionLimitLabel($0))
+                        },
+                        selection: $settings.retentionMaxBytes,
+                        footer: Copy.Settings.Storage.limitFooter
+                    )
+                }
+                // Only meaningful once a limit exists — with none set there is no proportion to
+                // report, and a bare size is already the Recordings row above.
+                if settings.retentionMaxBytes > 0 {
+                    SettingsRow(
+                        title: Copy.Settings.Storage.usedOfLimit(
+                            used: Formatting.storageSize(storage.recordingsBytes),
+                            limit: AppSettings.retentionLimitLabel(settings.retentionMaxBytes)
+                        ),
+                        showsChevron: false
+                    )
+                }
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(Copy.Settings.Storage.autoExport)
@@ -57,6 +82,8 @@ struct SettingsStorageScreen: View {
                         .tint(Tokens.good)
                 }
             }
+            // Sits under the two controls it describes, not with the legal note at the foot.
+            SettingsFooter(text: Copy.Settings.Storage.limitFooter)
 
             ListCard {
                 TintActionRow(title: Copy.Settings.Storage.exportAll, action: exportAll) {

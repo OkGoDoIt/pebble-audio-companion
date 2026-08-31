@@ -74,6 +74,9 @@ final class MockWatchStatusSource: WatchStatusSource {
 protocol StorageStatsSource: AnyObject {
     var recordingCount: Int { get }
     var recordingsSize: String { get }
+    /// The same figure as `recordingsSize`, unformatted, so the storage-limit row can say how
+    /// much of the limit is used without re-deriving it from a display string.
+    var recordingsBytes: Int64 { get }
     var freeSpace: String { get }
     func deleteAllRecordings()
     /// Writes WAV copies of every closed recording. Returns how many files were written.
@@ -85,6 +88,7 @@ protocol StorageStatsSource: AnyObject {
 final class MockStorageStatsSource: StorageStatsSource {
     var recordingCount = 383
     var recordingsSize = "1.2 GB"
+    var recordingsBytes: Int64 = 1_288_490_188
 
     /// Real free space — an honest stat surface even in the mock stage.
     var freeSpace: String {
@@ -100,6 +104,7 @@ final class MockStorageStatsSource: StorageStatsSource {
     func deleteAllRecordings() {
         recordingCount = 0
         recordingsSize = "0 KB"
+        recordingsBytes = 0
     }
 
     func exportAllAudio() async -> Int {
