@@ -153,11 +153,53 @@ public actor AudioReceiverSession {
     private var inFlightToken: Int?
     private var ackWaiter: OneShot<Bool>?
 
+    /// When the current in-flight token was taken, so an unanswered request cannot hold the only
+    /// slot forever.
+    private var inFlightSinceMs: Int64 = 0
+
+    /// LOAD-BEARING (this is the four-hour-blackout bug). CHECKPOINT is fire-and-forget: it takes
+    /// the single in-flight slot and only the watch's ACK gives it back. `sendControlAwaitAck`
+    /// releases its own slot on timeout, but nothing released the checkpoint's — so one dropped
+    /// ACK notification wedged `takeToken()` at nil for the rest of the connection and the app
+    /// never sent the watch another control message.
+    ///
+    /// That is fatal rather than merely lossy, because the watch's 15 s liveness watchdog
+    /// (`prv_check_receiver_liveness_locked`) is re-armed ONLY by inbound control traffic, and
+    /// during active streaming CHECKPOINT is the only control message we send. A wedged slot
+    /// therefore stops capture on the watch 15 s later, and the watch then goes silent — which
+    /// removes the Core Bluetooth events that are the only thing able to wake a suspended app.
+    ///
+    /// Generous on purpose: longer than `requestAckWaitMs` (2 s), so it never races a watch that
+    /// is merely slow. Checkpoints carry a monotonically advancing watermark, so a duplicate or
+    /// late one is harmless.
+    private static let inFlightTokenReclaimMs: Int64 = 3_000
+
     private func takeToken() -> Int? {
-        if inFlightToken != nil { return nil }
+        if inFlightToken != nil {
+            // Only ever reclaim POST-authorization traffic. Before that the slot legitimately
+            // sits in flight for a long time: `pendingUserConsent` holds it while a human answers
+            // the watch's prompt, and stealing it there would orphan the AUTH_RESULT.
+            guard authorized, clock.nowMs - inFlightSinceMs >= Self.inFlightTokenReclaimMs else {
+                return nil
+            }
+            inFlightToken = nil
+            ackWaiter?.complete(false)
+            ackWaiter = nil
+        }
         tokenCounter = (tokenCounter + 1) & 0xFF
         inFlightToken = tokenCounter
+        inFlightSinceMs = clock.nowMs
         return tokenCounter
+    }
+
+    /// Wall time of the last control message we successfully handed to the link.
+    ///
+    /// The watch re-arms its liveness watchdog from OUR traffic, so this — not `lastInboundMs` —
+    /// is what the keepalive has to watch. See `runKeepalive`.
+    private var lastOutboundControlMs: Int64 = 0
+
+    private func noteOutboundControl() {
+        lastOutboundControlMs = clock.nowMs
     }
 
     /// Asks the watch to pause capture (maps to the watch's PausedPolicy state, visible in its
@@ -204,6 +246,7 @@ public actor AudioReceiverSession {
         var acked = false
         do {
             try await link.writeControl(build(token))
+            noteOutboundControl()
             acked = await withReceiverTimeout(clock: clock, ms: ackWaitMs) {
                 await waiter.value()
             } ?? false
@@ -230,6 +273,7 @@ public actor AudioReceiverSession {
     // Per-connection child tasks (the Kotlin connection coroutineScope's children).
     private var controlTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
+    private var checkpointTask: Task<Void, Never>?
     private var dataTask: Task<Void, Never>?
     private var auxTasks: [Task<Void, Never>] = []
 
@@ -247,14 +291,22 @@ public actor AudioReceiverSession {
         }
     }
 
-    /// Per-connection keepalive. While authorized but not actively receiving (the watch is not
-    /// streaming to us, or the link has stalled), ping RECEIVER_HEALTH every interval. This:
+    /// Per-connection keepalive. While authorized but not sending the watch anything, ping
+    /// RECEIVER_HEALTH every interval. This:
     ///  - re-arms the watch's 15 s liveness watchdog so it does not stop capturing, and
     ///  - revives a watch that already presumed us gone — its control handler re-evaluates on the
     ///    next message and resumes streaming, re-announcing STREAM_START to us.
-    /// Active streaming keeps `lastInboundMs` fresh (data + our checkpoints), so no ping fires
-    /// then. If the watch stops answering entirely the link is stale even though the platform
-    /// still reports it connected, so force a fresh GATT connection via `AudioGattLink.resync`.
+    /// If the watch stops answering entirely the link is stale even though the platform still
+    /// reports it connected, so force a fresh GATT connection via `AudioGattLink.resync`.
+    ///
+    /// TRAP: the idle test is on OUTBOUND traffic, not inbound. The watch's watchdog is re-armed
+    /// only by control messages IT receives, so "we are hearing audio" is no evidence at all that
+    /// the watch still believes in us. Keying this off `lastInboundMs` meant a steady STREAM_DATA
+    /// flow suppressed the ping for as long as it lasted — so when checkpointing wedged, the app
+    /// went completely silent toward the watch while still being fed, the watch stopped capturing
+    /// 15 s later, and the safety net that exists for exactly this never fired. Healthy streaming
+    /// checkpoints every ≤2 s of audio, which keeps `lastOutboundControlMs` fresh, so this stays
+    /// just as quiet as before in the normal case.
     private func runKeepalive() async {
         var failures = 0
         while true {
@@ -268,8 +320,8 @@ public actor AudioReceiverSession {
                 failures = 0
                 continue
             }
-            if clock.nowMs - lastInboundMs < config.keepaliveIntervalMs {
-                failures = 0 // active traffic; no ping needed
+            if clock.nowMs - lastOutboundControlMs < config.keepaliveIntervalMs {
+                failures = 0 // we are still talking to the watch; no ping needed
                 continue
             }
             if await sendReceiverHealth() {
@@ -281,6 +333,37 @@ public actor AudioReceiverSession {
                     return
                 }
             }
+        }
+    }
+
+    /// Per-connection checkpoint tick: flushes a due CHECKPOINT on a CLOCK, not only when data
+    /// happens to arrive.
+    ///
+    /// `audio_companion_spool_trim_through(highest_contiguous_sequence_persisted)` is the only
+    /// thing that frees the watch's spool, so the checkpoint is the watch's flow-control credit.
+    /// Sending it only from `handleStreamData`/`handleStreamGap` made that credit self-starving:
+    /// once the spool filled, the watch had nothing it was allowed to send, so no data arrived, so
+    /// the phone never checkpointed, so the spool stayed full and dropped what the mic captured
+    /// next. The real device shows exactly that cycle — a run of overflow gaps spaced 103 frames
+    /// (2.06 s of audio) apart, each one a frame or two larger than the last, ratcheting up until
+    /// the segment rotated.
+    ///
+    /// Deliberately a STALL-BREAKER rather than a second cadence: while data is flowing, the
+    /// data-driven path already checkpoints at the configured rate and this sends nothing. It only
+    /// steps in once a streaming watch has been quiet for `checkpointStallMs`, which is the state
+    /// that used to be unrecoverable. `maybeSendCheckpoint` is idempotent
+    /// (`checkpointedSinceLastChange`), so a stall with nothing new persisted stays silent too.
+    private func runCheckpointTicker() async {
+        while true {
+            do {
+                try await clock.sleep(ms: config.checkpointMinIntervalMs)
+            } catch {
+                return // cancelled with the connection
+            }
+            if Task.isCancelled { return }
+            guard authorized, let ctx = stream else { continue }
+            guard clock.nowMs - lastInboundMs >= Self.checkpointStallMs else { continue }
+            await maybeSendCheckpoint(ctx)
         }
     }
 
@@ -448,6 +531,7 @@ public actor AudioReceiverSession {
             var tasks: [Task<Void, Never>] = []
             if let task = controlTask { tasks.append(task); controlTask = nil }
             if let task = keepaliveTask { tasks.append(task); keepaliveTask = nil }
+            if let task = checkpointTask { tasks.append(task); checkpointTask = nil }
             if let task = dataTask { tasks.append(task); dataTask = nil }
             tasks.append(contentsOf: auxTasks)
             auxTasks = []
@@ -471,9 +555,11 @@ public actor AudioReceiverSession {
         }
 
         lastInboundMs = clock.nowMs
+        lastOutboundControlMs = clock.nowMs
         let controlStream = link.controlNotifications
         controlTask = Task { await self.consumeControl(controlStream, abort: abort) }
         keepaliveTask = Task { await self.runKeepalive() }
+        checkpointTask = Task { await self.runCheckpointTicker() }
 
         if captureIntent() != .off && watchInfo.value?.enabled == false {
             if !consumeEnableRequestPermission() {
@@ -507,6 +593,7 @@ public actor AudioReceiverSession {
                 name: config.receiverName
             ).encode()
         )
+        noteOutboundControl()
     }
 
     private func consumeControl(_ stream: AsyncStream<[UInt8]>, abort: OneShot<Bool>) async {
@@ -842,6 +929,7 @@ public actor AudioReceiverSession {
                     freeStorageHintKb: policy.freeStorageHintKb()
                 ).encode()
             )
+            noteOutboundControl()
             ctx.samplesSinceCheckpoint = 0
             ctx.checkpointedSinceLastChange = true
         } catch {
@@ -884,6 +972,8 @@ public actor AudioReceiverSession {
         authorized = false
         dataTask = nil
         inFlightToken = nil
+        inFlightSinceMs = 0
+        lastOutboundControlMs = 0
         ackWaiter?.complete(false)
         ackWaiter = nil
         grantedProtoVersion.value = nil
@@ -901,4 +991,9 @@ public actor AudioReceiverSession {
 
     /// Enable waits on a human watch dialog; match the watch's consent-sized interaction.
     private static let enableRequestAckWaitMs: Int64 = 35_000
+
+    /// How long a streaming watch may go quiet before `runCheckpointTicker` flushes credit
+    /// anyway. Comfortably longer than an ordinary pause between batches, and far short of the
+    /// watch's 15 s liveness timeout, so the spool is refreshed long before capture is at risk.
+    private static let checkpointStallMs: Int64 = 2_000
 }

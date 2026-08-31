@@ -893,6 +893,100 @@ import WireProtocol
         await fx.settle()
         #expect(fx.link.resyncCount >= 1, "a stale link must be force-reconnected")
     }
+
+    // --- the four-hour blackout: a wedged control channel ---------------------------------------
+
+    /// CHECKPOINT is fire-and-forget and holds the single in-flight request slot until the watch
+    /// ACKs it. One dropped ACK used to wedge that slot for the rest of the connection, so the app
+    /// never sent the watch another control message — and CHECKPOINT is the ONLY control message
+    /// an actively-streaming session sends, so the watch's 15 s liveness watchdog then stopped
+    /// capture. Four hours of silence, with the phone still believing it was connected.
+    @Test func unackedCheckpointDoesNotWedgeTheControlChannelForever() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        // First checkpoint goes out on the time-based cadence...
+        fx.link.pushData(data(0, 8))
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(8, 1))
+        await fx.settle()
+        #expect(fx.checkpoints().count == 1)
+
+        // ...and the watch never ACKs it (a dropped control notification). Audio keeps arriving.
+        for batch in 0..<6 {
+            await fx.clock.advance(by: 1_000)
+            fx.link.pushData(data(9 + UInt32(batch), 1))
+            await fx.settle()
+        }
+
+        // The slot is reclaimed, so checkpointing resumes: the watch can free its spool, and —
+        // far more important — the watch keeps hearing from us inside its 15 s window.
+        #expect(
+            fx.checkpoints().count > 1,
+            "an unanswered checkpoint must not stop the app talking to the watch"
+        )
+        let latest = fx.checkpoints().last
+        #expect(latest?.highestContiguousSequencePersisted == 14)
+    }
+
+    /// The watch frees spool only on CHECKPOINT, so checkpointing has to run on a clock. Sending
+    /// it only in response to arriving data made the credit self-starving: a full spool means no
+    /// data, no data meant no checkpoint, and no checkpoint meant the spool stayed full — the
+    /// ratcheting overflow gaps the real device shows, 103 frames apart, each one bigger.
+    @Test func checkpointIsFlushedOnAClockWhenTheWatchStopsSending() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        // Audio arrives, then the watch goes quiet (its spool is full and untrimmed). Too little
+        // audio for the size-based cadence, and no further append to drive the data path.
+        fx.link.pushData(data(0, 8))
+        await fx.settle()
+        #expect(fx.checkpoints().isEmpty)
+
+        await fx.clock.advance(by: 3_000)
+        await fx.settle()
+        #expect(
+            fx.checkpoints().count == 1,
+            "the watch cannot free its spool until we checkpoint; that must not wait for data"
+        )
+        #expect(fx.checkpoints().first?.highestContiguousSequencePersisted == 7)
+
+        // Idempotent: nothing new persisted, so the ticker stays silent rather than spamming.
+        fx.link.pushControl(Ack(requestToken: fx.checkpoints()[0].requestToken, statusRaw: 0))
+        await fx.clock.advance(by: 5_000)
+        await fx.settle()
+        #expect(fx.checkpoints().count == 1)
+    }
+
+    /// The keepalive's idle test has to be on OUTBOUND traffic. Inbound STREAM_DATA is no evidence
+    /// the watch still believes in us, so a steady audio flow must not suppress the ping when we
+    /// have gone silent toward the watch.
+    @Test func streamingInboundDataDoesNotSuppressTheKeepalive() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        // Frames arrive continuously for well over a keepalive interval, but nothing we send can
+        // reach the watch (its ACKs are gone and its ATT writes fail) — the half-dead link.
+        fx.link.failControlWrites = true
+        for batch in 0..<14 {
+            await fx.clock.advance(by: 1_000)
+            fx.link.pushData(data(UInt32(batch), 1))
+            await fx.settle()
+        }
+
+        // The session noticed it was talking into a void and forced a fresh GATT session, rather
+        // than sitting "streaming" behind a watch that had already stopped capturing.
+        #expect(
+            fx.link.resyncCount >= 1,
+            "inbound audio must not mask a control channel that stopped reaching the watch"
+        )
+    }
 }
 
 /// One-shot arming flag for the enable-request permission (the Kotlin test's captured `var`).
