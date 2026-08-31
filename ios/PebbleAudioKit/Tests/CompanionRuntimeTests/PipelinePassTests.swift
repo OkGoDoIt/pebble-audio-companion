@@ -32,6 +32,9 @@ import Testing
                 .reconsiderDisabled,
                 .enqueueClosedSegments,
                 .drainQueue,
+                // Retention runs BEFORE the regroup, so a sweep's deletions are reflected by the
+                // same pass that made them.
+                .retention,
                 // Grouping precedes the AI layer and never waits on it — the whole UI reads the
                 // grouped tables.
                 .regroup,
@@ -137,6 +140,37 @@ import Testing
             steps.extractFollowUps = { true }
         }
         #expect(try await extracted.run() == PipelinePacing.afterWorkMs)
+
+        // A retention sweep that deleted something changed what every storage/library surface
+        // shows, so it counts as work too.
+        let swept = pass(clock: clock, recorder: StageRecorder()) { steps in
+            steps.enforceRetentionIfDue = { true }
+        }
+        #expect(try await swept.run() == PipelinePacing.afterWorkMs)
+    }
+
+    /// Retention has to be visible in the same pass that performs it: the grouping the whole UI
+    /// reads is rebuilt AFTER the sweep, so the Library never lists a conversation whose audio,
+    /// transcript and follow-ups retention just deleted.
+    @Test func retentionSweepsBeforeTheRegroupAndMarksDiagnosticsDirty() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let pass = pass(clock: clock, recorder: StageRecorder()) { steps in
+            steps.drainQueue = {
+                calls.record("drain")
+                return false
+            }
+            steps.enforceRetentionIfDue = {
+                calls.record("retention")
+                return true
+            }
+            steps.regroup = { calls.record("regroup") }
+            steps.onDiagnosticsDirty = { calls.record("diagnostics") }
+        }
+
+        _ = try await pass.run()
+
+        #expect(calls.calls == ["drain", "retention", "diagnostics", "regroup"])
     }
 
     @Test func idleModelReleaseIsSkippedWhenThePassDidWork() async throws {
