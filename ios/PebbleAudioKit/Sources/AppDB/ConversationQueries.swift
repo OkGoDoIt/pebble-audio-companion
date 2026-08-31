@@ -74,6 +74,46 @@ public struct ConversationListRow: Equatable, Sendable {
     /// Lets the UI tell "still working on it" apart from "it tried and gave up".
     public var annotationFinalAttempts: Int
 
+    /// Public so callers outside the kit can build one. Without it the memberwise initializer is
+    /// internal, and the app layer's mappers from this type into its display models (Today's
+    /// conversation rows, the Library rows) could not be tested at all — which is exactly where
+    /// a hard-coded field goes unnoticed.
+    public init(
+        id: String,
+        title: String? = nil,
+        summary: String? = nil,
+        startMs: Int64 = 0,
+        endMs: Int64 = 0,
+        timeZoneID: String = TimeZone.current.identifier,
+        isLive: Bool = false,
+        tags: [String] = [],
+        lifecycle: ConversationLifecycle = .complete,
+        mostlyQuiet: Bool = false,
+        hasMissingAudio: Bool = false,
+        followUpCount: Int = 0,
+        openFollowUpCount: Int = 0,
+        dateKey: String = "",
+        hasAnnotation: Bool = false,
+        annotationFinalAttempts: Int = 0
+    ) {
+        self.id = id
+        self.title = title
+        self.summary = summary
+        self.startMs = startMs
+        self.endMs = endMs
+        self.timeZoneID = timeZoneID
+        self.isLive = isLive
+        self.tags = tags
+        self.lifecycle = lifecycle
+        self.mostlyQuiet = mostlyQuiet
+        self.hasMissingAudio = hasMissingAudio
+        self.followUpCount = followUpCount
+        self.openFollowUpCount = openFollowUpCount
+        self.dateKey = dateKey
+        self.hasAnnotation = hasAnnotation
+        self.annotationFinalAttempts = annotationFinalAttempts
+    }
+
     public var durationMs: Int64 { max(0, endMs - startMs) }
 
     /// Enrichment has produced nothing yet AND the transcript it needs is ready — so the row

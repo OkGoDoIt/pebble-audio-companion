@@ -1,5 +1,6 @@
 import Foundation
 import AppDB
+import Intelligence
 import StatusUI
 
 // The mock world behind `AskLibraryDataSources.current` — carries the EXACT sample data from
@@ -510,10 +511,28 @@ extension MockWorld: LibraryDataSource {
 // MARK: - SearchDataSource
 
 extension MockWorld: SearchDataSource {
+    /// The mock honours `scope` for the same reason the live source now does: while BOTH sides
+    /// ignored it, a test for scoped search would have passed against a broken app, so nobody
+    /// ever wrote one. Narrowing here is what makes `searchNarrowsToTheScopedDay` able to fail.
     func search(query: String, scope: AskScope) async throws -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return SearchResults() }
         let lowered = trimmed.lowercased()
+
+        // nil for `.everything` — no window, so nothing below is filtered out.
+        let window = askScopeDateKeyRange(
+            scope.kitScope,
+            nowMs: ms(Date()),
+            timeZoneID: TimeZone.current.identifier
+        )
+        let inScope: (String) -> Bool = { [weak self] conversationId in
+            guard let window else { return true }
+            guard let self, let index = self.index(of: conversationId) else { return false }
+            return window.contains(
+                LogicalDay.dateKey(
+                    forMs: self.ms(self.conversations[index].start),
+                    timeZoneID: TimeZone.current.identifier))
+        }
 
         let allTags = try await tags()
         let tagHits = allTags.filter { $0.name.lowercased().contains(lowered) }
@@ -544,7 +563,12 @@ extension MockWorld: SearchDataSource {
             }
         }
 
-        let followUpHits = followUps.filter { $0.text.lowercased().contains(lowered) }
+        conversationHits = conversationHits.filter { inScope($0.id) }
+        let followUpHits = followUps.filter {
+            guard $0.text.lowercased().contains(lowered) else { return false }
+            guard let conversationId = $0.sourceConversationId else { return window == nil }
+            return inScope(conversationId)
+        }
         return SearchResults(
             tags: tagHits, conversations: conversationHits, followUps: followUpHits)
     }
@@ -627,12 +651,15 @@ extension MockWorld: ConversationDataSource {
 
     func exportAudio(id: String) async throws -> Int {
         try? await Task.sleep(for: .seconds(1.2))
-        // One file per member segment, same as the live path.
-        let transcript = conversations.first { $0.id == id }?.transcript ?? []
+        // One file per member segment, same as the live path. Counted off the DISPLAYED
+        // transcript, because that is where the mock world's member ids are stamped on — the
+        // raw fixture carries none, so counting there reported one file for every conversation
+        // no matter how many segments the screen had just shown.
+        guard let display = try await self.display(id: id) else { return 0 }
         let segments = Set(
-            transcript.compactMap { item -> String? in
+            display.transcript.compactMap { item -> String? in
                 guard case .turn(let turn) = item else { return nil }
-                return turn.segmentId
+                return turn.segmentId.isEmpty ? nil : turn.segmentId
             })
         return max(1, segments.count)
     }
