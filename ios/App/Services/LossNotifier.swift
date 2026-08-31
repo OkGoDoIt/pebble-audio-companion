@@ -63,6 +63,12 @@ actor UserNotificationLossNotifier: LossNotifier {
     private let defaults: UserDefaults
     private let now: @Sendable () -> Int64
 
+    /// The Q9 alert is OPT-IN (default off). Read at fire time rather than captured at
+    /// construction so toggling it in Settings takes effect immediately.
+    private var isEnabled: Bool {
+        defaults.bool(forKey: "loss_alerts_enabled")
+    }
+
     init(
         scheduler: any LossNotificationScheduling = SystemLossNotificationScheduler(),
         defaults: UserDefaults = SharedAppGroup.defaults,
@@ -78,6 +84,9 @@ actor UserNotificationLossNotifier: LossNotifier {
     static var routeURLString: String { Route.today(date: nil).url.absoluteString }
 
     func notifyAudioMissed(_ event: LossEvent) async {
+        // Opt-in gate first: when the alert is off the app must be completely silent, and in
+        // particular must never prompt for notification permission off the back of a gap.
+        guard isEnabled else { return }
         let nowMs = now()
         guard !isRateLimited(nowMs: nowMs) else { return }
         guard await hasPermission() else { return }
@@ -107,8 +116,9 @@ actor UserNotificationLossNotifier: LossNotifier {
         return nowMs - last < Self.rateLimitMs
     }
 
-    /// Asks exactly once, at the first qualifying loss. A denial is remembered — the product
-    /// keeps working, it just stops talking.
+    /// Asks exactly once, on the first qualifying loss AFTER the user opted in (turning the
+    /// toggle on is the consent; this is just the system half of it). A denial is remembered —
+    /// the product keeps working, it just stops talking.
     private func hasPermission() async -> Bool {
         switch await scheduler.authorizationStatus() {
         case .authorized, .provisional, .ephemeral:

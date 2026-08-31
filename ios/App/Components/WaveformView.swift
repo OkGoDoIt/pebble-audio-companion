@@ -24,21 +24,42 @@ struct WaveformBar: Equatable {
 struct WaveformView: View {
     let bars: [WaveformBar]
 
+    /// The window is a FIXED number of slots, always the most recent minute, filling from the
+    /// right. The live monitor emits one bar per decoded chunk inside its 60 s window, so the
+    /// count grows as audio arrives — laying those out at a fixed 3 pt each made the row wider
+    /// than the screen and dragged the whole Today layout sideways with it. Slots also keep the
+    /// bar spacing stable instead of stretching a handful of early bars across the full width.
+    static let slotCount = 40
+
     private let containerHeight: CGFloat = 32
     private let quietHeight: CGFloat = 4
     private let missingHeight: CGFloat = 10
 
+    /// Newest-last, padded at the FRONT so a partly-filled minute grows in from the right.
+    private var window: [WaveformBar?] {
+        let recent = bars.suffix(Self.slotCount)
+        return Array(repeating: nil, count: Self.slotCount - recent.count) + recent.map { $0 }
+    }
+
     var body: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            ForEach(bars.indices, id: \.self) { index in
-                if index > 0 { Spacer(minLength: 1) }
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(color(for: bars[index].state))
-                    .frame(width: 3, height: height(for: bars[index]))
+        HStack(alignment: .bottom, spacing: 1) {
+            ForEach(window.indices, id: \.self) { index in
+                // Each slot flexes, so the row fits any width and never overflows its card.
+                Group {
+                    if let bar = window[index] {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(color(for: bar.state))
+                            .frame(width: 3, height: height(for: bar))
+                    } else {
+                        Color.clear.frame(width: 3, height: 1)
+                    }
+                }
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(height: containerHeight, alignment: .bottom)
         .frame(maxWidth: .infinity)
+        .clipped()
         // One element, never 40 — VoiceOver gets the spoken summary, not the bars (U10).
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Copy.A11y.waveformLabel)
