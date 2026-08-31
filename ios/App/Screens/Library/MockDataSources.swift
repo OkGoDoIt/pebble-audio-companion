@@ -51,6 +51,10 @@ final class MockWorld {
     var noteRecords: [NoteDisplay] = []
     var customTemplates: [NoteTemplate] = []
     var peopleRegistry: [Person] = []
+    /// The mock's speaker_assignments table: "conversationId|label" -> person id. It exists so
+    /// the mock can answer "is this label assigned, and to whom?" the way the database does —
+    /// the mock used to only stamp a name onto the turns, which cannot be undone or renamed.
+    var speakerAssignments: [String: String] = [:]
     /// Artboard tag counts ("travel 12 · work 8 · family 5 · dining 3") + suggestion tags.
     var extraTagCounts: [String: Int] = [
         "travel": 12, "work": 8, "family": 5, "dining": 3, "budget": 1, "evening": 1,
@@ -901,16 +905,94 @@ extension MockWorld: PeopleDataSource {
     func assign(conversationId: String, label: String, personName: String) async throws {
         let trimmed = personName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        if !peopleRegistry.contains(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            peopleRegistry.append(Person(id: UUID().uuidString.lowercased(), name: trimmed))
+        let person =
+            peopleRegistry.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+            ?? {
+                let created = Person(id: UUID().uuidString.lowercased(), name: trimmed)
+                peopleRegistry.append(created)
+                return created
+            }()
+        speakerAssignments[Self.assignmentKey(conversationId, label)] = person.id
+        rename(label: label, in: conversationId, to: trimmed)
+        bump()
+    }
+
+    func assignedPerson(conversationId: String, label: String) async throws -> Person? {
+        guard let personId = speakerAssignments[Self.assignmentKey(conversationId, label)]
+        else { return nil }
+        return peopleRegistry.first { $0.id == personId }
+    }
+
+    /// Q17 in miniature: the registry is the only place the name lives, so renaming it here
+    /// rewrites every conversation that points at this person.
+    func renamePerson(id: String, to newName: String) async throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        // Renaming onto an existing name merges, matching `PeopleStore.renamePerson`.
+        if let survivor = peopleRegistry.first(where: {
+            $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        }) {
+            for (key, personId) in speakerAssignments where personId == id {
+                speakerAssignments[key] = survivor.id
+            }
+            peopleRegistry.removeAll { $0.id == id }
+        } else {
+            guard let index = peopleRegistry.firstIndex(where: { $0.id == id }) else { return }
+            peopleRegistry[index].name = trimmed
         }
+        applyAssignmentsToTranscripts()
+        bump()
+    }
+
+    func unassign(conversationId: String, label: String) async throws {
+        speakerAssignments.removeValue(forKey: Self.assignmentKey(conversationId, label))
+        rename(label: label, in: conversationId, to: nil)
+        bump()
+    }
+
+    func deletePerson(id: String) async throws {
+        peopleRegistry.removeAll { $0.id == id }
+        for (key, personId) in speakerAssignments where personId == id {
+            speakerAssignments.removeValue(forKey: key)
+        }
+        applyAssignmentsToTranscripts()
+        bump()
+    }
+
+    private static func assignmentKey(_ conversationId: String, _ label: String) -> String {
+        "\(conversationId)|\(label)"
+    }
+
+    /// Writes `name` onto every turn carrying `label`; nil restores the diarizer's own
+    /// "Speaker N" and the unresolved role.
+    private func rename(label: String, in conversationId: String, to name: String?) {
         guard let index = index(of: conversationId) else { return }
         conversations[index].transcript = conversations[index].transcript.map { item in
             guard case .turn(var turn) = item, turn.speakerLabel == label else { return item }
-            turn.name = trimmed
-            if turn.role == .unresolved { turn.role = .other }
+            turn.name = name ?? Self.unresolvedName(for: label)
+            turn.role = name == nil ? .unresolved : (turn.role == .unresolved ? .other : turn.role)
             return .turn(turn)
         }
-        bump()
+    }
+
+    private func applyAssignmentsToTranscripts() {
+        for conversation in conversations {
+            let labels = Set(
+                conversation.transcript.compactMap { item -> String? in
+                    guard case .turn(let turn) = item else { return nil }
+                    return turn.speakerLabel
+                })
+            for label in labels {
+                let personId = speakerAssignments[Self.assignmentKey(conversation.id, label)]
+                let name = peopleRegistry.first { $0.id == personId }?.name
+                rename(label: label, in: conversation.id, to: name)
+            }
+        }
+    }
+
+    /// "S2" -> "Speaker 2"; anything unrecognised keeps its raw label rather than inventing one.
+    private static func unresolvedName(for label: String) -> String {
+        let digits = label.filter(\.isNumber)
+        return digits.isEmpty ? label : "Speaker \(digits)"
     }
 }

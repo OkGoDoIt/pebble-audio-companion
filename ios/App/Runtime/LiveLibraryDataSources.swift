@@ -852,6 +852,26 @@ extension LiveWorld: PeopleDataSource {
             conversationId: conversationId, label: label, personId: person.id
         )
     }
+
+    func assignedPerson(conversationId: String, label: String) async throws -> Person? {
+        try await composition.people.assignments(forConversation: conversationId)
+            .first { $0.label == label }
+            .map { Person(id: $0.personId, name: $0.personName) }
+    }
+
+    /// Q17: one row update in `people`, and every conversation assigned to them follows,
+    /// because assignments reference the person by id and never copy the name.
+    func renamePerson(id: String, to newName: String) async throws {
+        try await composition.people.renamePerson(id: id, to: newName)
+    }
+
+    func unassign(conversationId: String, label: String) async throws {
+        try await composition.people.unassign(conversationId: conversationId, label: label)
+    }
+
+    func deletePerson(id: String) async throws {
+        try await composition.people.deletePerson(id: id)
+    }
 }
 
 // MARK: - Scope bridging
