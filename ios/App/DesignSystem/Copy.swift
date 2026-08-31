@@ -473,6 +473,8 @@ enum Copy {
 
             // API-key change flow (6.7).
             static let keyChangeFootnote = "Replaces the saved key."
+            static let deleteKey = "Delete Saved Key…"
+            static let deleteKeyButton = "Delete Saved Key"
 
             // Key-check wording lives in `Copy.KeyCheck` — one catalog for both the onboarding
             // key screen and this one, so the two can never drift apart (U9).
