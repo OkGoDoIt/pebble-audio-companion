@@ -528,6 +528,8 @@ enum Copy {
             static let segmentStopped = "stopped"
             static let supportReport = "Support Report"
             static let detailedLogs = "Detailed Logs"
+            /// Before anything has happened there is nothing to show — say so, calmly.
+            static let noLogs = "Nothing logged yet."
             static let footer = "Counters and gap metadata only — never audio or transcript text."
         }
     }
