@@ -263,7 +263,10 @@ final class LiveTodayDataSource {
             state: composition.runtime.receiverState.value,
             intent: settings.captureIntent,
             storagePauseRequested: composition.runtime.diagnostics.value.pauseRequested,
-            watchServiceStateRaw: composition.runtime.watchServiceState.value
+            watchServiceStateRaw: composition.runtime.watchServiceState.value,
+            // What the watch said when it refused, if it did. Without this the connect →
+            // authorize → resync loop of a de-authorized receiver reads as "Connecting…" forever.
+            linkFault: composition.watchLinkFault
         )
     }
 

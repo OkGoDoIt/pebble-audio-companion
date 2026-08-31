@@ -211,11 +211,11 @@ final class AppSettings {
     /// kit so the picker can only ever store a value retention understands.
     static let retentionLimitOptions = RuntimeSettingsDefaults.retentionMaxBytesOptions
 
-    /// Row value for a storage limit — "No limit" or e.g. "5 GB".
+    /// Row value for a storage limit — "No limit" or e.g. "5 GB". The options are exact
+    /// gibibytes, so they are named as round numbers rather than run through a measured-size
+    /// formatter that would render the chosen "2 GB" back as "2.0 GB".
     static func retentionLimitLabel(_ bytes: Int64) -> String {
-        bytes <= 0
-            ? "No limit"
-            : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        bytes <= 0 ? "No limit" : "\(bytes / (1 << 30)) GB"
     }
 
     // ─── API keys (Keychain only — B13) ─────────────────────────────────────
