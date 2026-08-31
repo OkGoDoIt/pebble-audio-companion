@@ -255,17 +255,31 @@ enum Copy {
     enum TranscriptionFailure {
         static let keyRejected = "The provider didn’t accept your key. Check it in Transcription & AI."
         static let keyNotPermitted = "Your key isn’t allowed to use this API. Check its permissions."
-        static let rateLimited = "The provider was busy or the account is out of credit. It keeps trying."
-        static let providerTrouble = "The provider had trouble. It keeps trying."
-        static let providerRefusedAudio = "The provider didn’t accept the recording. It keeps trying."
-        static let timedOut = "The provider took too long to answer. It keeps trying."
+        static let rateLimited = "The provider was busy, or the account is out of credit."
+        static let providerTrouble = "The provider had trouble on its side."
+        static let providerRefusedAudio = "The provider didn’t accept the recording."
+        static let timedOut = "The provider took too long to answer."
         static let recordingTooLong = "This recording is too long for the provider to accept in one piece."
-        static let noConnection = "It couldn’t reach the provider. It retries when you’re back online."
+        static let noConnection = "It couldn’t reach the provider."
         static let modelMissing = "The on-device model couldn’t load. Check Local model in Transcription & AI."
-        static let localEngineFailed = "On-device transcription failed on this recording. It keeps trying."
+        static let localEngineFailed = "On-device transcription failed on this recording."
         static let audioUnreadable = "The stored audio for this recording couldn’t be read."
         static let notConfigured = "No transcription provider was available. Check Transcription & AI."
-        static let unknown = "It didn’t finish, and didn’t say why. It keeps trying."
+        static let unknown = "It didn’t finish, and didn’t say why."
+
+        // Whether it will try again is a SEPARATE fact from why it failed, and it is stated in
+        // exactly one place per surface: the Diagnostics row carries it in its trailing
+        // "3 tries · retrying", and a conversation's state card — which has no such column —
+        // appends it to the reason with `line(_:retrying:)`. Baking "It keeps trying." into the
+        // reasons themselves produced the contradiction "8 tries · stopped retrying" sitting
+        // directly above "It keeps trying."
+        static let keepsTrying = "It keeps trying."
+        static let stoppedTrying = "It has stopped retrying."
+
+        /// Reason + retry status as one calm line, for a surface with room for only one.
+        static func line(_ reason: String, retrying: Bool) -> String {
+            "\(reason) \(retrying ? keepsTrying : stoppedTrying)"
+        }
 
         /// The same reasons in two or three words, for a Diagnostics row's trailing value.
         enum Row {
@@ -600,6 +614,11 @@ enum Copy {
                 "\(name) isn’t downloaded, so Apple Speech is transcribing. "
                     + "Tap it to download and switch."
             }
+            /// The same fact once the download is running: still true, but "tap it" would be
+            /// telling the reader to start something that is already going.
+            static func fallbackNoticeInProgress(_ name: String) -> String {
+                "Apple Speech is transcribing until \(name) finishes downloading."
+            }
 
             // Local-model screen: the pushed model catalog.
             static let installedValue = "installed"
@@ -661,8 +680,12 @@ enum Copy {
             static let autoExport = "Auto-export WAV files"
             static let autoExportSub = "Plain audio copies in the export folder"
             static let exportAll = "Export All Audio"
-            /// Inline completion line for [Export All Audio] (B10).
-            static func exported(_ count: Int) -> String { "Exported \(count) files" }
+            /// Inline completion line for [Export All Audio] and the conversation's Export
+            /// Audio… (B10). A single-segment conversation is one file, so it must not read
+            /// "Exported 1 files".
+            static func exported(_ count: Int) -> String {
+                count == 1 ? "Exported 1 file" : "Exported \(count) files"
+            }
             static let deleteAll = "Delete All Recordings…"
             static let footer = "You are responsible for following local recording laws."
         }
@@ -710,6 +733,9 @@ enum Copy {
                 guard waiting > 0 else { return "all caught up" }
                 return running ? "writing · \(waiting) to go" : "\(waiting) waiting"
             }
+            /// Section over the failed-task rows. Named for what it holds, so an empty queue
+            /// simply has no section rather than a reassuring "0 problems".
+            static let failures = "Didn’t transcribe"
             static let recentSegments = "Recent segments"
             // Plain-language segment states — never key=value dumps.
             static let segmentRecordingNow = "recording now"

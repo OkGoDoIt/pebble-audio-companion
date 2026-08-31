@@ -114,11 +114,18 @@ struct SettingsTranscriptionScreen: View {
     private var localModelValue: String {
         switch model.state(for: settings.localTranscriptionModelId) {
         case .notInstalled:
-            return Copy.Settings.TranscriptionAI.notInstalled
+            // A chosen model that has to be downloaded and isn't here means Apple Speech is
+            // doing the transcribing. The row names the engine that is actually running — the
+            // alternative is a settings row that quietly describes nothing.
+            return model.fallsBackToAppleSpeech(settings.localTranscriptionModelId)
+                ? Copy.Settings.TranscriptionAI.notInstalledUsingAppleSpeech
+                : Copy.Settings.TranscriptionAI.notInstalled
         case .waitingForWiFi:
             return Copy.Settings.TranscriptionAI.waitingForWiFi
         case .downloading(let progress):
             return Copy.Settings.TranscriptionAI.downloading(Int(progress * 100))
+        case .installing:
+            return Copy.Settings.TranscriptionAI.installing
         case .failed:
             return Copy.Settings.TranscriptionAI.downloadFailed
         case .unavailable:
@@ -133,9 +140,17 @@ struct SettingsTranscriptionScreen: View {
         }
     }
 
+    /// Attention for a failed download, and equally for a selection that is not running — a
+    /// model this phone does not have is a gap the user has to know about, not a grey detail.
     private var localModelValueColor: Color {
-        model.state(for: settings.localTranscriptionModelId) == .failed
-            ? Tokens.attention : Tokens.meta
+        let state = model.state(for: settings.localTranscriptionModelId)
+        if state == .failed { return Tokens.attention }
+        if state == .notInstalled,
+            model.fallsBackToAppleSpeech(settings.localTranscriptionModelId)
+        {
+            return Tokens.attention
+        }
+        return Tokens.meta
     }
 
     // MARK: Key rows

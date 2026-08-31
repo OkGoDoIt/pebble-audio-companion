@@ -215,26 +215,43 @@ final class LiveStorageStatsSource: StorageStatsSource {
 
 // MARK: - Local transcription models
 
-/// The local-model catalog as this build can honestly offer it.
+/// The local-model catalog as this build can honestly offer it: Apple Speech over the system's
+/// `AssetInventory`, and the downloadable Parakeet models over `ParakeetModelStore`.
 ///
-/// Today that is exactly one engine — Apple Speech over `LocalModelManager`/`AssetInventory`.
-/// The Parakeet entries join `models` when their engine lands in the kit; listing a model the
-/// app cannot actually fetch would be a placebo row, which is the pattern this app keeps
-/// removing.
+/// Two engines, two very different installers, one row vocabulary. Apple Speech's assets belong
+/// to iOS (we can ask for them and watch, nothing more); a Parakeet model is a Hugging Face
+/// archive this app fetches, unpacks and owns. `models` lists only what this build can genuinely
+/// install — a row for a model the app cannot fetch is a placebo, which is what this whole
+/// screen keeps removing.
 @MainActor
 @Observable
 final class LiveLocalModelManager: LocalModelManaging {
     @ObservationIgnored private let composition: AppComposition
-    let models: [LocalModelOption] = [LocalModelCatalog.appleSpeech]
+    /// The shared store, deliberately: a download started here has to keep reporting progress
+    /// after the user navigates away and comes back.
+    @ObservationIgnored private let parakeet: any ParakeetModelStoring = ParakeetModelStore.shared
+    @ObservationIgnored private let isOnWiFi: () -> Bool
+    let models: [LocalModelOption] = LocalModelCatalog.installable
 
     private var states: [String: LocalModelState] = [:]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
+    /// Models the user asked for while off Wi-Fi. They start on their own the next time this
+    /// screen refreshes on Wi-Fi — the row says "waiting for Wi-Fi", so it must mean it.
+    @ObservationIgnored private var deferredForWiFi: Set<String> = []
 
-    init(composition: AppComposition) {
+    init(composition: AppComposition, isOnWiFi: @escaping () -> Bool = {
+        NetworkReachability.shared.isUnmetered
+    }) {
         self.composition = composition
+        self.isOnWiFi = isOnWiFi
         Task { [weak self] in
             for await kitState in await composition.localModel.states() {
                 self?.states[LocalModelCatalog.appleSpeechId] = Self.map(kitState)
+            }
+        }
+        Task { [weak self, parakeet] in
+            for await entries in await parakeet.states() {
+                self?.apply(entries)
             }
         }
         refresh()
@@ -248,9 +265,64 @@ final class LiveLocalModelManager: LocalModelManaging {
             let state = await composition.localModel.refresh()
             self?.states[LocalModelCatalog.appleSpeechId] = Self.map(state)
         }
+        Task { [weak self, parakeet] in
+            let entries = await parakeet.refresh()
+            self?.apply(entries)
+            self?.startDeferredDownloadsIfOnWiFi()
+        }
     }
 
     func download(_ modelId: String) {
+        guard ParakeetModelCatalog.isParakeetId(modelId) else {
+            downloadAppleSpeech(modelId)
+            return
+        }
+        // Wi-Fi is a promise this screen makes in writing next to a 430 MB–1.2 GB number. The
+        // downloader refuses an expensive network anyway, but refusing it here means the row
+        // says "waiting for Wi-Fi" instead of "download failed" for something that is not
+        // broken.
+        guard isOnWiFi() else {
+            deferredForWiFi.insert(modelId)
+            states[modelId] = .waitingForWiFi
+            return
+        }
+        deferredForWiFi.remove(modelId)
+        Task { [parakeet] in await parakeet.install(modelId) }
+    }
+
+    func cancelDownload(_ modelId: String) {
+        guard ParakeetModelCatalog.isParakeetId(modelId) else {
+            // The system asset installer owns that transfer; cancelling only stops us watching.
+            downloadTask?.cancel()
+            downloadTask = nil
+            refresh()
+            return
+        }
+        deferredForWiFi.remove(modelId)
+        states[modelId] = .notInstalled
+        Task { [parakeet] in await parakeet.cancel(modelId) }
+    }
+
+    func delete(_ modelId: String) {
+        guard ParakeetModelCatalog.isParakeetId(modelId) else {
+            guard modelId == LocalModelCatalog.appleSpeechId else { return }
+            downloadTask?.cancel()
+            downloadTask = nil
+            let composition = self.composition
+            Task { [weak self] in
+                self?.states[modelId] = Self.map(await composition.localModel.uninstall())
+            }
+            return
+        }
+        deferredForWiFi.remove(modelId)
+        Task { [parakeet] in await parakeet.uninstall(modelId) }
+    }
+
+    #if DEBUG
+        func debugFailDownload(_ modelId: String) { states[modelId] = .failed }
+    #endif
+
+    private func downloadAppleSpeech(_ modelId: String) {
         guard modelId == LocalModelCatalog.appleSpeechId, downloadTask == nil else { return }
         let composition = self.composition
         downloadTask = Task { [weak self] in
@@ -260,26 +332,31 @@ final class LiveLocalModelManager: LocalModelManaging {
         }
     }
 
-    /// The system asset installer owns the transfer; cancelling only stops us watching it.
-    func cancelDownload(_ modelId: String) {
-        downloadTask?.cancel()
-        downloadTask = nil
-        refresh()
+    private func startDeferredDownloadsIfOnWiFi() {
+        guard isOnWiFi(), !deferredForWiFi.isEmpty else { return }
+        for modelId in deferredForWiFi { download(modelId) }
     }
 
-    func delete(_ modelId: String) {
-        guard modelId == LocalModelCatalog.appleSpeechId else { return }
-        downloadTask?.cancel()
-        downloadTask = nil
-        let composition = self.composition
-        Task { [weak self] in
-            self?.states[modelId] = Self.map(await composition.localModel.uninstall())
+    /// Folds a store snapshot into the row states.
+    ///
+    /// Progress is quantised to whole percent on purpose: `URLSession` reports bytes on every
+    /// chunk, which is thousands of updates across a 700 MB archive, and the row renders one
+    /// integer. Without this the whole Settings tree would recompose for changes it cannot show.
+    private func apply(_ entries: [ParakeetModelEntry]) {
+        for entry in entries {
+            let next = Self.map(entry.state)
+            if case .downloading(let progress) = next,
+                case .downloading(let shown)? = states[entry.id],
+                Int(progress * 100) == Int(shown * 100)
+            {
+                continue
+            }
+            // A model the user is waiting on Wi-Fi for has no store state of its own yet; the
+            // store would report it as plain "not installed" and erase the row's explanation.
+            if deferredForWiFi.contains(entry.id), next == .notInstalled { continue }
+            states[entry.id] = next
         }
     }
-
-    #if DEBUG
-        func debugFailDownload(_ modelId: String) { states[modelId] = .failed }
-    #endif
 
     private static func map(_ state: Transcription.LocalModelState) -> LocalModelState {
         switch state {
@@ -289,6 +366,17 @@ final class LiveLocalModelManager: LocalModelManaging {
         case .unsupported: return .unavailable
         case .waitingForWiFi: return .waitingForWiFi
         case .downloading(let progress): return .downloading(progress: progress)
+        case .installed: return .installed
+        case .failed: return .failed
+        }
+    }
+
+    private static func map(_ state: ParakeetInstallState) -> LocalModelState {
+        switch state {
+        case .notInstalled: return .notInstalled
+        case .downloading:
+            return .downloading(progress: state.fractionCompleted ?? 0)
+        case .installing: return .installing
         case .installed: return .installed
         case .failed: return .failed
         }
@@ -520,6 +608,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var queueFailed = 0
     private(set) var enrichmentWaiting = 0
     private(set) var enrichmentRunning = false
+    private(set) var failedItems: [DiagnosticFailure] = []
     private(set) var recentSegments: [DiagnosticSegment] = []
 
     /// Counters and gap metadata only — never audio or transcript text.
@@ -547,11 +636,49 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         enrichmentRunning = diagnostics.enrichmentRunning
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
         receiverStatus = Self.receiverLine(composition.runtime.receiverState.value)
-        recentSegments = Self.segments(
-            composition.files.listSegments(), openId: diagnostics.openSegmentId
+        let metas = composition.files.listSegments()
+        recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
+        failedItems = Self.failures(
+            (try? composition.queue.all()) ?? [], segments: metas
         )
         let report = await composition.runtime.supportReport()
-        supportReportText = Self.report(report, segments: recentSegments)
+        supportReportText = Self.report(
+            report, segments: recentSegments, failures: failedItems
+        )
+    }
+
+    /// The failed tasks, newest first, each classified into the app's own vocabulary.
+    ///
+    /// `lastError` never leaves this function: it is developer prose that splices in up to 240
+    /// bytes of the provider's response body, which on a 4xx is the request URL and can be the
+    /// key. Only the classified reason and the attempt count reach the screen (B20).
+    private static func failures(
+        _ tasks: [TranscriptionTask], segments: [SegmentMeta]
+    ) -> [DiagnosticFailure] {
+        let startById = Dictionary(
+            segments.map { ($0.segmentId, $0.startTimeMs) }, uniquingKeysWith: { first, _ in first }
+        )
+        return
+            tasks
+            .filter { $0.state == .failed }
+            .sorted { $0.updatedAtMs > $1.updatedAtMs }
+            // The list is a diagnosis, not an inventory: enough rows to see the pattern, and
+            // the count above it is already the total.
+            .prefix(8)
+            .map { task in
+                // When the recording was made; failing that, when it last tried. Either way the
+                // row names a moment the reader can place, never a segment id.
+                let stampMs = startById[task.segmentId].map(Int64.init) ?? task.updatedAtMs
+                let date = Date(timeIntervalSince1970: Double(stampMs) / 1000)
+                return DiagnosticFailure(
+                    id: task.segmentId,
+                    title: "\(TimeFmt.dayLabel(for: date)) \(TimeFmt.time(date))",
+                    reason: task.failureKind.reason,
+                    attemptsLine: Copy.TranscriptionFailure.tries(
+                        task.attempts, retrying: task.retryable
+                    )
+                )
+            }
     }
 
     /// Plain language only — no protocol vocabulary on this row.
@@ -586,7 +713,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     }
 
     private static func report(
-        _ report: SupportReport, segments: [DiagnosticSegment]
+        _ report: SupportReport, segments: [DiagnosticSegment], failures: [DiagnosticFailure]
     ) -> String {
         """
         Audio Companion support report
@@ -596,7 +723,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         Segments stored: \(report.diagnostics.segmentCount)
         Transcription queue: \(report.diagnostics.queuedTranscriptionTasks) waiting · \
         \(report.diagnostics.failedTranscriptionTasks) failed
-        AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
+        \(SupportReportText.failures(failures))AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
         running: \(report.diagnostics.enrichmentRunning)
         Low storage: \(report.diagnostics.lowStorage)
         Recent segments:

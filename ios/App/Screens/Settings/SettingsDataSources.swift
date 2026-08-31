@@ -136,6 +136,9 @@ struct LocalModelOption: Identifiable, Hashable {
             ?? displayName
     }
 
+    /// True when choosing this engine means fetching weights. Apple Speech does not.
+    var isDownloadable: Bool { downloadBytes != nil }
+
     /// e.g. "706 MB" / "1.18 GB" — nil when there is nothing to download. Whole megabytes
     /// below a gigabyte: a download size is a decision aid, not a measurement.
     var sizeText: String? {
@@ -148,17 +151,45 @@ struct LocalModelOption: Identifiable, Hashable {
     }
 }
 
+extension LocalModelOption {
+    /// One catalog model, in the picker's shape. The fields map 1:1 — this exists so the
+    /// catalog is written once, in the kit that owns the download, and the picker cannot drift
+    /// from what the app can actually install. (In an extension so the memberwise init the
+    /// mocks use survives.)
+    init(_ spec: ParakeetModelSpec) {
+        self.init(
+            id: spec.id,
+            displayName: spec.displayName,
+            shortLabel: spec.shortLabel,
+            description: spec.modelDescription,
+            downloadBytes: spec.downloadBytes,
+            isRecommended: spec.recommended
+        )
+    }
+}
+
 /// The four Part 6.7 states, per model, plus the two the engines can genuinely report.
 enum LocalModelState: Equatable {
     case notInstalled
     /// Deferred until the phone is on Wi-Fi. Not a failure — nothing is wrong.
     case waitingForWiFi
     case downloading(progress: Double)
+    /// The archive is down and unpacking. Real work with no byte progress to report — showing
+    /// "100%" for the ~20 s a 700 MB model takes to extract would read as a stall.
+    case installing
     case installed
     case failed
     /// This engine cannot run here at all (e.g. Apple Speech has no model for the phone's
     /// language). Offering a download would be offering something that can never finish.
     case unavailable
+
+    /// A transfer or an unpack is in flight, so the row shows progress and a Cancel.
+    var isBusy: Bool {
+        switch self {
+        case .downloading, .installing: return true
+        case .notInstalled, .waitingForWiFi, .installed, .failed, .unavailable: return false
+        }
+    }
 }
 
 @MainActor
@@ -183,6 +214,15 @@ extension LocalModelManaging {
     /// The entry a persisted id names, falling back to the first the build has — a choice
     /// migrated from the old app can name an engine this build does not carry yet.
     func selectedModel(_ id: String) -> LocalModelOption? { model(id) ?? models.first }
+
+    /// True when the persisted selection names a model that has to be downloaded and is not
+    /// here yet — so the kit is transcribing with Apple Speech in the meantime
+    /// (`SelectableLocalTranscriptionProvider.resolution`). Every surface that shows the
+    /// selection has to say this rather than name an engine that is not running.
+    func fallsBackToAppleSpeech(_ id: String) -> Bool {
+        guard let option = model(id), option.isDownloadable else { return false }
+        return state(for: id) != .installed
+    }
 }
 
 /// Catalog constants shared by `AppSettings` and the live source. The engine side owns the real
@@ -200,41 +240,20 @@ enum LocalModelCatalog {
         description: "Transcribes in your phone's language, using the models iOS manages.",
         downloadBytes: nil
     )
+
+    /// Everything this build can genuinely run on device: the built-in engine, then the
+    /// downloadable Parakeet models in `ParakeetModelCatalog` order. One list, from the kit
+    /// that owns both the download and the transcription — never an aspirational catalog.
+    static let installable: [LocalModelOption] =
+        [appleSpeech] + ParakeetModelCatalog.all.map(LocalModelOption.init)
 }
 
 @MainActor
 @Observable
 final class MockLocalModelManager: LocalModelManaging {
-    /// Preview/`-demo-data` catalog: the shape the live catalog takes once the Parakeet engine
-    /// lands. The LIVE source lists only what this build can install.
-    let models: [LocalModelOption] = [
-        LocalModelCatalog.appleSpeech,
-        .init(
-            id: "parakeet-tdt-0.6b-v3-int8",
-            displayName: "Parakeet TDT 0.6B, high quality",
-            shortLabel: "Recommended",
-            description:
-                "Multilingual Parakeet with int8 weights — the best local accuracy this app "
-                + "offers.",
-            downloadBytes: 706_097_687,
-            isRecommended: true
-        ),
-        .init(
-            id: "parakeet-tdt-0.6b-v3-int4",
-            displayName: "Parakeet TDT 0.6B, small",
-            shortLabel: "Small",
-            description: "Smallest download. Lower precision than the recommended model.",
-            downloadBytes: 430_744_371
-        ),
-        .init(
-            id: "parakeet-ctc-1.1b-int8",
-            displayName: "Parakeet CTC 1.1B, experimental",
-            shortLabel: "Experimental",
-            description:
-                "Fast, English only. It can over-interpret quiet or noisy watch audio.",
-            downloadBytes: 1_184_422_635
-        ),
-    ]
+    /// The same catalog the live source lists — read from the kit rather than transcribed by
+    /// hand, so a preview can never advertise a model (or a size) the app cannot install.
+    let models: [LocalModelOption] = LocalModelCatalog.installable
 
     private var states: [String: LocalModelState] = [LocalModelCatalog.appleSpeechId: .installed]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
@@ -254,6 +273,11 @@ final class MockLocalModelManager: LocalModelManaging {
                 progress = min(progress + 0.02, 1)
                 self.states[modelId] = .downloading(progress: progress)
             }
+            // The real store unpacks the archive after the transfer; the mock spends a beat
+            // there too so previews show the same four states the device does.
+            self?.states[modelId] = .installing
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
             self?.states[modelId] = .installed
         }
     }
@@ -425,12 +449,44 @@ struct DiagnosticSegment: Identifiable {
     let detail: String
 }
 
+/// The failure block of the Support Report, shared by the live and mock sources — the report is
+/// what gets sent when something is wrong, so the reasons have to travel with it.
+enum SupportReportText {
+    /// Empty string when nothing failed (no header over an empty list), otherwise one
+    /// classified line per failure, newline-terminated so it drops into the report as a block.
+    static func failures(_ items: [DiagnosticFailure]) -> String {
+        guard !items.isEmpty else { return "" }
+        let lines = items.map { "  \($0.title) — \($0.reason) [\($0.attemptsLine)]" }
+        return "Failed transcriptions:\n" + lines.joined(separator: "\n") + "\n"
+    }
+}
+
+/// One transcription task that is sitting in Failed, and WHY.
+///
+/// The reason is always a sentence from `Copy.TranscriptionFailure` — the stored `lastError` is
+/// developer prose with up to 240 bytes of the provider's response body spliced into it, which
+/// can hold the request URL and the key (B20). It is classified, never quoted.
+struct DiagnosticFailure: Identifiable, Equatable {
+    /// The segment id — the row key, not something the screen prints.
+    let id: String
+    /// When the recording was made, e.g. "Tue 1:12 PM". A person recognises a failure by the
+    /// conversation it belongs to, not by a UUID.
+    let title: String
+    /// The plain-language reason, one sentence.
+    let reason: String
+    /// e.g. "3 tries · will retry" / "gave up after 8 tries".
+    let attemptsLine: String
+}
+
 @MainActor
 protocol DiagnosticsSource: AnyObject {
     var receiverStatus: String { get }
     var watchReports: String { get }
     var queueWaiting: Int { get }
     var queueFailed: Int { get }
+    /// The failed tasks with their reasons — the answer to "6 failed, but why?", which until
+    /// now was persisted in `transcription_tasks.lastError` and shown nowhere.
+    var failedItems: [DiagnosticFailure] { get }
     /// Conversations transcribed but still owed an AI title/summary/tags, and whether a pass
     /// is running right now. The enrichment counterpart of the transcription queue.
     var enrichmentWaiting: Int { get }
@@ -450,6 +506,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var queueFailed = 0
     var enrichmentWaiting = 0
     var enrichmentRunning = false
+    var failedItems: [DiagnosticFailure] = []
 
     var recentSegments: [DiagnosticSegment] = [
         .init(title: "1:42 PM · recording now", detail: "12 min · quiet 2 min"),
@@ -475,7 +532,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
         Receiver: \(receiverStatus)
         Watch reports: \(watchReports)
         Transcription queue: \(queueWaiting) waiting · \(queueFailed) failed
-        Recent segments:
+        \(SupportReportText.failures(failedItems))Recent segments:
         \(recentSegments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)
         """

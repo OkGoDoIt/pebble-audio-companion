@@ -40,6 +40,20 @@ struct SettingsDiagnosticsScreen: View {
                 )
             }
 
+            // "6 failed" above is a count without a cause, which is the one thing a person
+            // reading Diagnostics is actually trying to find out. The reason has always been
+            // persisted (`transcription_tasks.lastError`); these rows are where it surfaces.
+            // The stored string is never shown — it is classified into the app's own vocabulary
+            // first, because the cloud paths splice the provider's response body into it (B20).
+            if !diagnostics.failedItems.isEmpty {
+                SettingsSectionHeader(title: Copy.Settings.Diagnostics.failures)
+                ListCard {
+                    ForEach(diagnostics.failedItems) { item in
+                        FailedTranscriptionRow(item: item)
+                    }
+                }
+            }
+
             // Before the first recording there are no segments; a header over an empty card
             // reads like something failed to load.
             if !diagnostics.recentSegments.isEmpty {
@@ -97,6 +111,37 @@ struct SettingsDiagnosticsScreen: View {
         }
     }
     #endif
+}
+
+/// One failed recording: when it was made, then the reason in full underneath.
+///
+/// A `SettingsRow` would truncate the reason to one trailing line, and the reason is the whole
+/// point of the row — so this stacks instead, in the same shape the local-model rows use.
+private struct FailedTranscriptionRow: View {
+    let item: DiagnosticFailure
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Text(item.title)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                Spacer(minLength: 10)
+                Text(item.attemptsLine)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Text(item.reason)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
 }
 
 /// The raw technical view — the one place protocol vocabulary is allowed. Counters and gap
