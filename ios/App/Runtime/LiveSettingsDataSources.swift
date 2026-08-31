@@ -604,6 +604,10 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     @ObservationIgnored private let composition: AppComposition
     private(set) var receiverStatus = ""
     private(set) var watchReports = watchServiceStateLabel(nil)
+    /// What the watch said when it refused this phone. Nil while it has not — the row is absent
+    /// rather than reassuring, the same way the failed-transcription section is.
+    private(set) var watchLink: DiagnosticLinkFault?
+    private(set) var indexRebuild: IndexRebuildState = .idle
     private(set) var queueWaiting = 0
     private(set) var queueFailed = 0
     private(set) var enrichmentWaiting = 0
@@ -636,6 +640,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         enrichmentRunning = diagnostics.enrichmentRunning
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
         receiverStatus = Self.receiverLine(composition.runtime.receiverState.value)
+        watchLink = Self.linkFault(composition)
         let metas = composition.files.listSegments()
         recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
         failedItems = Self.failures(
@@ -643,7 +648,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         )
         let report = await composition.runtime.supportReport()
         supportReportText = Self.report(
-            report, segments: recentSegments, failures: failedItems
+            report, segments: recentSegments, failures: failedItems, link: watchLink
         )
     }
 
@@ -681,6 +686,36 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
             }
     }
 
+    /// The watch's refusal, classified once and worded once.
+    ///
+    /// The "Receiver" row above says "Connecting" for a de-authorized receiver — truthfully,
+    /// forever, because the reconnect loop really is connecting. This row is where the reason
+    /// lives, and the same sentence goes into the support report so a reader who was not there
+    /// can see it too.
+    private static func linkFault(_ composition: AppComposition) -> DiagnosticLinkFault? {
+        guard let fault = composition.watchLinkFault else { return nil }
+        return DiagnosticLinkFault(
+            short: fault.rowVerdict,
+            reason: fault.reason,
+            trace: composition.watchLinkTraceLine
+        )
+    }
+
+    /// Rebuilds the search index from the database. Foreground and awaited — it is a deliberate
+    /// recovery action, and the row reports what it did rather than finishing invisibly.
+    func rebuildSearchIndex() async {
+        guard indexRebuild != .running else { return }
+        indexRebuild = .running
+        do {
+            let count = try await SearchIndexRebuilder(composition: composition).run()
+            AppRuntimeLog.shared.record("search    index rebuilt · \(count) conversations")
+            indexRebuild = .done(Copy.Settings.Diagnostics.rebuildIndexDone(count))
+        } catch {
+            AppRuntimeLog.shared.record("search    index rebuild failed: \(error)")
+            indexRebuild = .failed
+        }
+    }
+
     /// Plain language only — no protocol vocabulary on this row.
     private static func receiverLine(_ state: ReceiverSessionState) -> String {
         switch state {
@@ -713,13 +748,24 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     }
 
     private static func report(
-        _ report: SupportReport, segments: [DiagnosticSegment], failures: [DiagnosticFailure]
+        _ report: SupportReport,
+        segments: [DiagnosticSegment],
+        failures: [DiagnosticFailure],
+        link: DiagnosticLinkFault?
     ) -> String {
-        """
+        // The refusal, if there is one, sits directly under the receiver state it explains —
+        // the sentence the user was shown, then the raw code, which is the one thing a reader
+        // of this report needs and the one thing the screen must never print.
+        let watchLink =
+            link.map {
+                "Watch link: \($0.reason)\n"
+                    + ($0.trace.map { trace in "Watch link (raw): \(trace)\n" } ?? "")
+            } ?? ""
+        return """
         Audio Companion support report
         Generated: \(Date(timeIntervalSince1970: Double(report.generatedAtMs) / 1000))
         Receiver: \(report.receiverState)
-        Capture intent: \(report.captureIntent)
+        \(watchLink)Capture intent: \(report.captureIntent)
         Segments stored: \(report.diagnostics.segmentCount)
         Transcription queue: \(report.diagnostics.queuedTranscriptionTasks) waiting · \
         \(report.diagnostics.failedTranscriptionTasks) failed

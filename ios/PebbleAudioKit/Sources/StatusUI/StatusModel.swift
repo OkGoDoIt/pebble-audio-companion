@@ -232,6 +232,51 @@ public enum StatusCopy {
     public static let connectionInterrupted = "Connection interrupted"
     public static let connectionInterruptedLine =
         "Trying to reconnect. If this keeps up, turn Bluetooth off and back on."
+
+    // Watch-refusal copy (`WatchLinkFault`). The watch names its refusals precisely; these are
+    // those names in the user's words. Each line ends where the reader's next move is, and the
+    // two faults that are OURS to fix say so rather than offering a retry that would only spin.
+    // `boundElsewhere` / `watchAudioOff` / `watchNeedsAttention` above are reused verbatim —
+    // one vocabulary, so a mismatch reads the same wherever it surfaces.
+    public static let linkAuthorizationRemoved = "This watch no longer allows this phone"
+    public static let linkAuthorizationRemovedLine =
+        "The watch stopped allowing this phone to receive audio. Try again, then approve the "
+        + "prompt on your Pebble."
+    public static let linkReleasedByThisPhone = "This phone let go of the watch"
+    public static let linkReleasedByThisPhoneLine =
+        "Nothing is being recorded until you connect again and approve the prompt on your Pebble."
+    public static let linkAppTooOld = "This app is too old for your watch"
+    public static let linkAppTooOldLine =
+        "Your watch firmware is newer than this app. Update the app to receive audio again."
+    public static let linkWatchTooOld = "Your watch firmware is too old"
+    public static let linkWatchTooOldLine =
+        "Update your Pebble to the current audio firmware to receive audio again."
+    public static let linkVersionMismatch = "This app and your watch don’t match"
+    public static let linkVersionMismatchLine =
+        "The app and the watch firmware are different versions. Updating both to the current "
+        + "release fixes it."
+    public static let linkAppSentSomethingUnexpected = "The watch didn’t understand this app"
+    public static let linkAppSentSomethingUnexpectedLine =
+        "This is a fault in the app, not something you did. Send the support report from "
+        + "Settings → Diagnostics."
+    public static let linkUnknownRefusal = "Your watch turned this phone away"
+    public static let linkUnknownRefusalLine =
+        "It didn’t say why. Try again, and send the support report from Settings → Diagnostics "
+        + "if it keeps happening."
+
+    /// The same verdicts in two or three words, for a Diagnostics row's trailing value.
+    public enum Row {
+        public static let boundToAnotherPhone = "another phone"
+        public static let authorizationRemoved = "no longer allowed"
+        public static let releasedByThisPhone = "disconnected here"
+        public static let captureOffOnWatch = "off on the watch"
+        public static let appTooOldForWatch = "app out of date"
+        public static let watchFirmwareTooOld = "firmware out of date"
+        public static let versionMismatch = "versions differ"
+        public static let watchTrouble = "watch trouble"
+        public static let appSentSomethingUnexpected = "app fault"
+        public static let unknown = "no reason given"
+    }
 }
 
 // MARK: - Mapping
@@ -241,12 +286,20 @@ public enum StatusCopy {
 /// `watchServiceStateRaw` is the watch's own reported state (Info read + state-change pushes);
 /// when the watch says it is paused/disabled, that wins over the session-level view so the
 /// phone always matches what the watch’s Settings screen shows.
+///
+/// `linkFault` is what the watch said when it refused this phone (`WatchLinkFault.classify`).
+/// It outranks the transitional copy because it explains a loop the transitional copy cannot:
+/// a de-authorized receiver reconnects and re-authorizes forever, and every pass through that
+/// loop is a legitimate `.connecting` — so "Connecting…" is true, useless, and permanent. A
+/// fault is only shown while the user actually wants audio: someone who switched capture off
+/// does not need to be told the watch refused.
 public func statusModel(
     state: ReceiverSessionState,
     intent: CaptureIntent,
     storagePauseRequested: Bool = false,
     watchServiceStateRaw: Int? = nil,
-    deviceName: String? = nil
+    deviceName: String? = nil,
+    linkFault: WatchLinkFault? = nil
 ) -> StatusModel {
     switch state {
     case .streaming, .authorized:
@@ -255,8 +308,12 @@ public func statusModel(
         ) {
             return override
         }
-    default:
+    case .pendingConsent, .pendingEnable:
+        // The watch is waiting on the person. That is progress, not a refusal, and the prompt
+        // on the wrist is the only thing worth saying.
         break
+    default:
+        if intent != .off, let linkFault { return linkFault.statusModel }
     }
     return statusForSessionState(
         state,

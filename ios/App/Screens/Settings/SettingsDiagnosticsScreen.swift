@@ -40,6 +40,16 @@ struct SettingsDiagnosticsScreen: View {
                 )
             }
 
+            // "Receiver: Connecting" above is true and useless when the watch has de-authorized
+            // this phone: the reconnect loop really is connecting, forever. The watch says
+            // precisely why it refused — this is where that reaches a person. Absent when there
+            // is nothing wrong, rather than a reassuring "link OK" nobody asked for.
+            if let link = diagnostics.watchLink {
+                ListCard {
+                    WatchLinkRow(fault: link)
+                }
+            }
+
             // "6 failed" above is a count without a cause, which is the one thing a person
             // reading Diagnostics is actually trying to find out. The reason has always been
             // persisted (`transcription_tasks.lastError`); these rows are where it surfaces.
@@ -89,6 +99,18 @@ struct SettingsDiagnosticsScreen: View {
             }
 
             SettingsFooter(text: Copy.Settings.Diagnostics.footer)
+
+            // The recovery path for a stale or half-written index: Search and Spotlight are
+            // derived from the database, so this can always put them right. It lives next to
+            // the support report because that is where someone goes when something is wrong,
+            // and it says plainly what it does NOT touch — near "Delete All Data", a button
+            // called "Rebuild" needs to.
+            ListCard {
+                RebuildIndexRow(state: diagnostics.indexRebuild) {
+                    await diagnostics.rebuildSearchIndex()
+                }
+            }
+            SettingsFooter(text: Copy.Settings.Diagnostics.rebuildIndexFooter)
 
             #if DEBUG
             designSection
@@ -141,6 +163,85 @@ private struct FailedTranscriptionRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Why the watch is turning this phone away: the verdict on the right, the sentence beneath.
+///
+/// Built like `FailedTranscriptionRow` for the same reason — the reason IS the row, and a
+/// trailing value would truncate it. The raw code the watch sent never appears here; it goes to
+/// the support report and Detailed Logs (B20).
+private struct WatchLinkRow: View {
+    let fault: DiagnosticLinkFault
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Text(WatchLinkCopy.rowTitle)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                Spacer(minLength: 10)
+                Text(fault.short)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Text(fault.reason)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Rebuild Search Index. Tinted because it DOES something, disabled while it runs, and it keeps
+/// the result on screen afterwards — a repair that finishes invisibly leaves the person who ran
+/// it no better off than before they tapped it.
+private struct RebuildIndexRow: View {
+    let state: IndexRebuildState
+    let run: () async -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button {
+                Task { await run() }
+            } label: {
+                HStack(spacing: 10) {
+                    Text(
+                        state == .running
+                            ? Copy.Settings.Diagnostics.rebuildIndexBusy
+                            : Copy.Settings.Diagnostics.rebuildIndex
+                    )
+                    .font(AppFont.callout)
+                    .foregroundStyle(state == .running ? Tokens.meta : Tokens.tint)
+                    Spacer(minLength: 0)
+                    if state == .running { ProgressView().controlSize(.small) }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(state == .running)
+
+            if let result {
+                Text(result)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var result: String? {
+        switch state {
+        case .done(let line): return line
+        case .failed: return Copy.Settings.Diagnostics.rebuildIndexFailed
+        case .idle, .running: return nil
+        }
     }
 }
 

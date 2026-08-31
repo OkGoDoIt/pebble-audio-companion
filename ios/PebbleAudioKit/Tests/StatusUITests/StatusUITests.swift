@@ -492,3 +492,211 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(Formatting.storageSize(12_288) == "12 KB")
     }
 }
+
+// The refusal taxonomy (`WatchLinkFault`). Tested the way `StatusUiTest` tests its copy layer,
+// because it IS that layer: the same invariants apply — no protocol vocabulary in what a person
+// reads, no raw code or platform text, and something to do for every failure they can act on.
+@Suite struct WatchLinkFaultTest {
+
+    private func info(min: Int, max: Int, state: UInt8 = 1) -> InfoSnapshot {
+        InfoSnapshot(
+            infoVersion: 1,
+            protocolMin: min,
+            protocolMax: max,
+            serviceStateRaw: state,
+            codecBitmap: 1,
+            flags: 0
+        )
+    }
+
+    @Test func deniedMismatchIsTheForgetReceiverCase() {
+        // The one that matters in practice: the watch is bound to a DIFFERENT receiver, and only
+        // the watch can let go. The approved onboarding wording is reused, not rewritten.
+        let fault = WatchLinkFault.from(authStatusRaw: Int(AuthStatus.deniedMismatch.rawValue))
+        #expect(fault == .boundToAnotherPhone)
+        #expect(fault?.headline == StatusCopy.boundElsewhere)
+        #expect(fault?.detail.contains("Forget Receiver") == true)
+        #expect(fault?.needsWatchAction == true)
+
+        // A watch that bound someone else in our place is the same situation and the same fix.
+        #expect(
+            WatchLinkFault.from(revokeReasonRaw: Int(RevokeReason.replaced.rawValue))
+                == .boundToAnotherPhone
+        )
+    }
+
+    @Test func everyWireRefusalCodeIsClassified() {
+        // AUTH_RESULT: success and "ask the person" are not refusals; the rest are.
+        #expect(WatchLinkFault.from(authStatusRaw: Int(AuthStatus.ok.rawValue)) == nil)
+        #expect(
+            WatchLinkFault.from(authStatusRaw: Int(AuthStatus.pendingUserConsent.rawValue)) == nil)
+        #expect(
+            WatchLinkFault.from(authStatusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+                == .captureOffOnWatch
+        )
+        #expect(
+            WatchLinkFault.from(authStatusRaw: Int(AuthStatus.invalid.rawValue)) == .watchTrouble)
+        // Firmware newer than this build may add codes; the honest answer is "unknown".
+        #expect(WatchLinkFault.from(authStatusRaw: 99) == .unknown)
+
+        // REVOKED.
+        #expect(
+            WatchLinkFault.from(revokeReasonRaw: Int(RevokeReason.userOnWatch.rawValue))
+                == .authorizationRemoved
+        )
+        #expect(
+            WatchLinkFault.from(revokeReasonRaw: Int(RevokeReason.appRequested.rawValue))
+                == .releasedByThisPhone
+        )
+        #expect(WatchLinkFault.from(revokeReasonRaw: 0) == .unknown)
+
+        // ERROR.
+        for code in ProtocolErrorCode.allCases {
+            let fault = WatchLinkFault.from(
+                protocolError: ErrorMessage(errorCodeRaw: code.rawValue, detail: 0))
+            #expect(fault != .unknown, "code \(code) must classify to something better")
+        }
+        #expect(
+            WatchLinkFault.from(protocolError: ErrorMessage(errorCodeRaw: 200, detail: 0))
+                == .unknown
+        )
+        #expect(
+            WatchLinkFault.from(
+                protocolError: ErrorMessage(
+                    errorCodeRaw: ProtocolErrorCode.unauthorized.rawValue, detail: 0))
+                == .authorizationRemoved
+        )
+    }
+
+    @Test func versionNegotiationNamesTheSideThatIsBehind() {
+        #expect(WatchLinkFault.versionFault(info: info(min: 2, max: 3), protoVersion: 1)
+            == .appTooOldForWatch)
+        #expect(WatchLinkFault.versionFault(info: info(min: 1, max: 1), protoVersion: 2)
+            == .watchFirmwareTooOld)
+        #expect(WatchLinkFault.versionFault(info: info(min: 1, max: 3), protoVersion: 2) == nil)
+        #expect(WatchLinkFault.versionFault(info: nil, protoVersion: 1) == nil)
+
+        // UNSUPPORTED_VERSION with an Info read in hand says which side; without one it admits
+        // it does not know rather than guessing at the user's expense.
+        let error = ErrorMessage(
+            errorCodeRaw: ProtocolErrorCode.unsupportedVersion.rawValue, detail: 0)
+        #expect(
+            WatchLinkFault.from(protocolError: error, info: info(min: 2, max: 4), protoVersion: 1)
+                == .appTooOldForWatch
+        )
+        #expect(WatchLinkFault.from(protocolError: error) == .versionMismatch)
+    }
+
+    @Test func deAuthorizedReceiverStopsSayingConnecting() {
+        // The whole point: the session never reaches `.denied` when the watch answers with ERROR
+        // and drops the link, so every pass through connect → authorize → resync is a legitimate
+        // `.connecting`. Without the fault the card says "Connecting…" forever.
+        let error = ErrorMessage(
+            errorCodeRaw: ProtocolErrorCode.unauthorized.rawValue, detail: 0)
+        let fault = WatchLinkFault.classify(state: .connecting, protocolError: error)
+        #expect(fault == .authorizationRemoved)
+
+        let bare = statusModel(state: .connecting, intent: .active)
+        #expect(bare.headline == StatusCopy.connecting)
+
+        let explained = statusModel(state: .connecting, intent: .active, linkFault: fault)
+        #expect(explained.family == .needsAttention)
+        #expect(explained.headline != StatusCopy.connecting)
+        #expect(explained.headline == StatusCopy.linkAuthorizationRemoved)
+        #expect(explained.action != nil)
+
+        // It survives the loop: the same fault explains the disconnected and failed passes too.
+        for state: ReceiverSessionState in [
+            .disconnected, .authorizing, .connectionFailed(kind: .unknown, detail: "raw"),
+        ] {
+            let status = statusModel(state: state, intent: .active, linkFault: fault)
+            #expect(status.headline == StatusCopy.linkAuthorizationRemoved, "\(state)")
+        }
+    }
+
+    @Test func aWorkingLinkAndAWaitingPromptHaveNoFault() {
+        let error = ErrorMessage(
+            errorCodeRaw: ProtocolErrorCode.unauthorized.rawValue, detail: 0)
+        // A stale error from a previous connection must not haunt a working one.
+        #expect(WatchLinkFault.classify(state: .authorized, protocolError: error) == nil)
+        #expect(
+            WatchLinkFault.classify(state: .streaming(streamId: 4), protocolError: error) == nil)
+        // The watch is asking the person: progress, not a refusal.
+        #expect(WatchLinkFault.classify(state: .pendingConsent, protocolError: error) == nil)
+        #expect(WatchLinkFault.classify(state: .pendingEnable, protocolError: error) == nil)
+
+        // And even if a caller passes one, the prompt on the wrist is what the card says.
+        let pending = statusModel(
+            state: .pendingConsent, intent: .active, linkFault: .authorizationRemoved)
+        #expect(pending.family == .confirmOnWatch)
+
+        // Nothing to explain when the watch never complained.
+        #expect(WatchLinkFault.classify(state: .connecting) == nil)
+        // The watch's own error state is a fault even with no ERROR message on the wire.
+        #expect(
+            WatchLinkFault.classify(
+                state: .connecting,
+                watchServiceStateRaw: Int(ServiceState.error.rawValue)) == .watchTrouble
+        )
+    }
+
+    @Test func aRefusalIsNotShoutedAtSomeoneWhoTurnedCaptureOff() {
+        let status = statusModel(
+            state: .disconnected, intent: .off, linkFault: .boundToAnotherPhone)
+        #expect(status.family == .notRecording)
+        #expect(status.headline == StatusCopy.notRecording)
+    }
+
+    @Test func everyFaultSpeaksPlainlyAndOffersSomethingToDo() {
+        // Same invariants the connection-failure test pins, over the refusal vocabulary.
+        let banned = [
+            "GATT", "AUTH", "checkpoint", "spool", "sequence", "stream id", "NimBLE",
+            "protocol", "characteristic", "0x", "receiver id", "notification",
+        ]
+        for fault in WatchLinkFault.allCases {
+            let text = fault.headline + " " + fault.detail + " " + fault.shortReason
+            #expect(isNotBlank(fault.headline), "\(fault) needs a headline")
+            #expect(isNotBlank(fault.detail), "\(fault) needs a sentence")
+            #expect(isNotBlank(fault.shortReason), "\(fault) needs a short verdict")
+            for word in banned {
+                #expect(!text.contains(word), "\(fault) copy must not mention '\(word)': \(text)")
+            }
+            // No raw code, status number or byte count ever reaches a person (B20).
+            let hasDigit = text.contains { $0.isNumber }
+            #expect(!hasDigit, "\(fault) copy must not carry a raw number: \(text)")
+            // Every failure has a next move — the ones only the watch can fix name the watch,
+            // and the ones that are ours point at the support report.
+            #expect(fault.action != nil, "\(fault) must offer an action")
+            if fault.needsWatchAction {
+                #expect(
+                    fault.detail.range(of: "watch", options: .caseInsensitive) != nil
+                        || fault.detail.contains("Pebble"),
+                    "\(fault) is only fixable on the watch and must say so: \(fault.detail)"
+                )
+            }
+            // And the card it produces is a complete card.
+            let model = fault.statusModel
+            #expect(model.detail == fault.detail)
+            #expect(model.action == fault.action)
+            #expect(isNotBlank(fault.diagnosticLine))
+        }
+    }
+
+    @Test func rawCodesLiveOnlyInTheDiagnosticTrace() {
+        let error = ErrorMessage(
+            errorCodeRaw: ProtocolErrorCode.unsupportedVersion.rawValue, detail: 77)
+        let trace = watchLinkFaultTrace(
+            protocolError: error, info: info(min: 2, max: 4), protoVersion: 1)
+        #expect(trace?.contains("77") == true)
+        #expect(trace?.contains("2–4") == true)
+
+        // ... and never in what the card shows for the same failure.
+        let fault = WatchLinkFault.from(
+            protocolError: error, info: info(min: 2, max: 4), protoVersion: 1)
+        #expect(fault == .appTooOldForWatch)
+        #expect(!fault.headline.contains("77"))
+        #expect(!fault.detail.contains("77"))
+
+        #expect(watchLinkFaultTrace(protocolError: nil, info: nil) == nil)
+    }
+}

@@ -65,6 +65,13 @@ final class NativeSurfaceCoordinator {
         spotlight = SpotlightService(database: database)
     }
 
+    /// Forgets the incremental donation watermark, so the next pass rebuilds from scratch
+    /// instead of concluding "nothing changed since last time" over an index that was just
+    /// emptied. Called by Diagnostics → Rebuild Search Index.
+    func resetSpotlightWatermark() {
+        spotlight?.resetWatermark()
+    }
+
     // MARK: - Lifecycle
 
     func handleForeground() async {
