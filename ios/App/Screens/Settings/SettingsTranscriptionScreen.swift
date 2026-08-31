@@ -31,7 +31,15 @@ struct SettingsTranscriptionScreen: View {
                         footer: Copy.Settings.TranscriptionAI.footer
                     )
                 }
-                LocalModelRow(model: model)
+                // Never starts a download by itself — it pushes the catalog, where the size is
+                // visible before anything is fetched.
+                SettingsPushRow(
+                    title: Copy.Settings.TranscriptionAI.localModel,
+                    value: localModelValue,
+                    valueColor: localModelValueColor
+                ) {
+                    SettingsLocalModelScreen()
+                }
                 SettingsPushRow(
                     title: Copy.Settings.TranscriptionAI.cloudProvider,
                     value: settings.cloudTranscriptionProvider.displayName
@@ -46,7 +54,6 @@ struct SettingsTranscriptionScreen: View {
                 }
                 keyRow(for: settings.cloudTranscriptionProvider)
             }
-            SettingsFooter(text: Copy.Settings.TranscriptionAI.wifiFootnote)
 
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.aiSection)
             ListCard {
@@ -88,6 +95,38 @@ struct SettingsTranscriptionScreen: View {
             SettingsFooter(text: Copy.Settings.TranscriptionAI.footer)
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.title)
+        .task { model.refresh() }
+    }
+
+    // MARK: Local model row
+
+    /// "Apple Speech" · "Parakeet TDT 0.6B · 706 MB" when installed; otherwise the state
+    /// itself, in the same lowercase register as "not set" on the key rows.
+    private var localModelValue: String {
+        switch model.state(for: settings.localTranscriptionModelId) {
+        case .notInstalled:
+            return Copy.Settings.TranscriptionAI.notInstalled
+        case .waitingForWiFi:
+            return Copy.Settings.TranscriptionAI.waitingForWiFi
+        case .downloading(let progress):
+            return Copy.Settings.TranscriptionAI.downloading(Int(progress * 100))
+        case .failed:
+            return Copy.Settings.TranscriptionAI.downloadFailed
+        case .unavailable:
+            return Copy.Settings.TranscriptionAI.unavailable
+        case .installed:
+            guard let option = model.selectedModel(settings.localTranscriptionModelId) else {
+                return Copy.Settings.TranscriptionAI.notInstalled
+            }
+            return [option.compactName, option.sizeText]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+        }
+    }
+
+    private var localModelValueColor: Color {
+        model.state(for: settings.localTranscriptionModelId) == .failed
+            ? Tokens.attention : Tokens.meta
     }
 
     // MARK: Key rows
@@ -127,107 +166,6 @@ struct SettingsTranscriptionScreen: View {
     }
 
     private func testConnection() { cloudHealth.test() }
-}
-
-// MARK: - Local model row (the four 6.7 states)
-
-/// "not installed" (tap downloads) · "downloading · N%" (progress + Cancel) ·
-/// "<name> · installed" (⋯ / long-press → Delete Model…) · "download failed" (+ Retry).
-private struct LocalModelRow: View {
-    let model: LocalModelManaging
-
-    @State private var confirmDelete = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch model.state {
-            case .notInstalled:
-                Button(action: model.startDownload) {
-                    labelRow(value: Copy.Settings.TranscriptionAI.notInstalled, chevron: false)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-            case .downloading(let progress):
-                labelRow(
-                    value: Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)),
-                    chevron: false
-                )
-                HStack(spacing: 12) {
-                    ProgressView(value: progress)
-                        .tint(Tokens.tint)
-                    Button(Copy.Common.cancel, action: model.cancelDownload)
-                        .font(AppFont.smallButton)
-                        .foregroundStyle(Tokens.tint)
-                        .buttonStyle(.plain)
-                }
-
-            case .installed:
-                HStack(spacing: 10) {
-                    labelRow(
-                        value: "\(model.modelName) · installed",
-                        chevron: false
-                    )
-                    Menu {
-                        Button(Copy.Settings.TranscriptionAI.deleteModel, role: .destructive) {
-                            confirmDelete = true
-                        }
-                        #if DEBUG
-                        Button("Debug: simulate failed download") {
-                            model.debugFailDownload()
-                        }
-                        #endif
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Tokens.meta)
-                            .hitTarget()
-                    }
-                    .accessibilityLabel(Copy.Settings.TranscriptionAI.deleteModel)
-                }
-
-            case .failed:
-                HStack(spacing: 10) {
-                    labelRow(
-                        value: Copy.Settings.TranscriptionAI.downloadFailed,
-                        valueColor: Tokens.attention,
-                        chevron: false
-                    )
-                    Button(Copy.Common.retry, action: model.startDownload)
-                        .buttonStyle(.smallBordered)
-                }
-            }
-        }
-        .confirmationDialog(
-            deleteDialogTitle,
-            isPresented: $confirmDelete,
-            titleVisibility: .visible
-        ) {
-            Button("Delete Model", role: .destructive) {
-                Haptics.destructiveConfirmed()
-                model.deleteModel()
-            }
-        }
-    }
-
-    /// Names what gets deleted (model + size), e.g. "Parakeet v3 · 706 MB".
-    private var deleteDialogTitle: String {
-        if case .installed(let size) = model.state {
-            return "\(model.modelName) · \(size)"
-        }
-        return model.modelName
-    }
-
-    private func labelRow(
-        value: String, valueColor: Color = Tokens.meta, chevron: Bool
-    ) -> some View {
-        SettingsRow(
-            title: Copy.Settings.TranscriptionAI.localModel,
-            value: value,
-            valueColor: valueColor,
-            showsChevron: chevron
-        )
-    }
 }
 
 // MARK: - API-key change flow (6.7)
