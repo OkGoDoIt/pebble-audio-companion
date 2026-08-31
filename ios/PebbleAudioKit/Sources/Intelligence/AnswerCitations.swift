@@ -1,4 +1,5 @@
 import Foundation
+import AppDB
 
 // Port of `app/.../ui/AnswerCitations.kt` — pure parsing/resolution for the citations an AI
 // answer makes to the transcript moments it drew from. Kept UI-framework-free so the messy
@@ -73,6 +74,32 @@ public func parseGroundedAnswer(_ text: String, sourceIds: [String]) -> Grounded
         return AnswerLine(marker: block.marker, tokens: tokens)
     }
     return GroundedAnswer(lines: lines, citedSegmentIds: numberOrder)
+}
+
+/// Citations for an answer the UI renders VERBATIM (Saved Notes, the Ask answer card): the
+/// model's own `[n]` numbers are kept and mapped straight back to the excerpt they label, so a
+/// chip reading "2" always navigates to the segment the prompt called `[2]`.
+///
+/// `parseGroundedAnswer` renumbers by first appearance instead, which is correct only when the
+/// answer is re-rendered from its `lines`. Storing those numbers against text that still says
+/// `[2]` is what sent a chip to the wrong moment whenever a model's first citation was not
+/// `[1]`.
+///
+/// Numbers with no matching excerpt are dropped rather than guessed: a chip that navigates
+/// nowhere is worse than no chip.
+public func renderedAnswerCitations(_ text: String, sourceIds: [String]) -> [AskCitation] {
+    let footnote = regex(#"\[(\d{1,3})]"#)
+    let ns = text as NSString
+    var seen = Set<Int>()
+    var citations: [AskCitation] = []
+    for match in footnote.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+        guard let number = Int(ns.substring(with: match.range(at: 1))),
+            sourceIds.indices.contains(number - 1),
+            seen.insert(number).inserted
+        else { continue }
+        citations.append(AskCitation(segmentId: sourceIds[number - 1], number: number))
+    }
+    return citations.sorted { $0.number < $1.number }
 }
 
 // MARK: - Internals

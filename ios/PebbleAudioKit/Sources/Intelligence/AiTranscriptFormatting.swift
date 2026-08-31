@@ -12,7 +12,9 @@ enum AiTranscriptFormatting {
         content += "\n\n"
         for transcript in request.transcripts {
             content += "--- Transcript segment "
-            content += transcript.segmentId
+            // A citing template addresses its sources by number: the raw id is what models
+            // copy into the prose as "seg-01H..." or an invented markdown link.
+            content += transcript.citationNumber.map { "[\($0)]" } ?? transcript.segmentId
             if let timeLabel = transcript.timeLabel {
                 content += " (starts \(timeLabel))"
             } else if let startTimeMs = transcript.startTimeMs {
