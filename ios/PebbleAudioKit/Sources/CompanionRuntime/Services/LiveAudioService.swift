@@ -17,6 +17,10 @@ public actor LiveAudioService {
     private let store: SegmentStore
     private let hasDurableTranscript: @Sendable (String) -> Bool
     private let automaticWavExportEnabled: @Sendable () -> Bool
+    /// Sync-readable mirror of the two transcribers' previews, for callers that cannot await an
+    /// actor — chiefly the enrichment pass, which needs the open member's rolling text to give a
+    /// live conversation a provisional title before it closes.
+    private let previewCache: LivePreviewCache?
     private let log: RuntimeLog
 
     private var cloudLiveTask: Task<Void, Never>?
@@ -31,6 +35,7 @@ public actor LiveAudioService {
         playback: SegmentPlaybackController? = nil,
         hasDurableTranscript: @escaping @Sendable (String) -> Bool,
         automaticWavExportEnabled: @escaping @Sendable () -> Bool,
+        previewCache: LivePreviewCache? = nil,
         log: RuntimeLog = .silent
     ) {
         self.store = store
@@ -42,6 +47,7 @@ public actor LiveAudioService {
         self.playback = playback
         self.hasDurableTranscript = hasDurableTranscript
         self.automaticWavExportEnabled = automaticWavExportEnabled
+        self.previewCache = previewCache
         self.log = log
     }
 
@@ -78,15 +84,39 @@ public actor LiveAudioService {
         {
             await localLive.markCoveredByOtherSource()
             await localLive.prune(hasFinalTranscript: hasDurableTranscript)
+            await publishPreviews()
             return false
         }
         let worked = try await localLive.processOnce()
         await localLive.prune(hasFinalTranscript: hasDurableTranscript)
+        await publishPreviews()
         return worked
     }
 
     public func cloudLivePrune() async {
         await cloudLive?.prune(hasDurableTranscript: hasDurableTranscript)
+        // Also after the cloud prune: the realtime socket publishes on its own task, not on this
+        // pass, so this is where its newest text (or its removal) reaches the mirror.
+        await publishPreviews()
+    }
+
+    /// Mirrors both transcribers' previews into the sync-readable cache.
+    ///
+    /// The merge is the same one the live screen and the widget show — cloud first, then whatever
+    /// the chunk path covered after it — so nothing derived from this cache can disagree with what
+    /// the person is watching on the Recording-now screen.
+    private func publishPreviews() async {
+        guard let previewCache else { return }
+        let cloudPreviews = await cloudLive?.previews ?? [:]
+        let localPreviews = await localLive?.previews ?? [:]
+        var texts: [String: String] = [:]
+        for segmentId in Set(cloudPreviews.keys).union(localPreviews.keys) {
+            let merged = LiveTranscriptPreview.merged(
+                cloud: cloudPreviews[segmentId], local: localPreviews[segmentId]
+            )
+            if let text = merged?.text { texts[segmentId] = text }
+        }
+        previewCache.replaceAll(texts)
     }
 
     /// True when a segment is open AND a live transcriber follows it — the 5 s pacing case.
