@@ -23,10 +23,16 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
     private var _resyncCount = 0
     private var _infoBytes: [UInt8]
 
-    private let controlChannel = ByteChannel()
-    private let dataChannel = ByteChannel()
+    /// Notification channels report parks and wakes so `TestClock.settle()` knows when the
+    /// session's consumer loops have finished with a message and asked for the next one.
+    private let scheduler: TestScheduler
+    private let controlChannel: TrackedByteChannel
+    private let dataChannel: TrackedByteChannel
 
-    init(infoBytes: [UInt8] = FakeAudioGattLink.defaultInfo().encode()) {
+    init(scheduler: TestScheduler, infoBytes: [UInt8] = FakeAudioGattLink.defaultInfo().encode()) {
+        self.scheduler = scheduler
+        controlChannel = TrackedByteChannel(scheduler: scheduler)
+        dataChannel = TrackedByteChannel(scheduler: scheduler)
         _infoBytes = infoBytes
     }
 
@@ -47,9 +53,13 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
         set { lock.withLock { _infoBytes = newValue } }
     }
 
-    func readInfo() async throws -> [UInt8] { infoBytes }
+    func readInfo() async throws -> [UInt8] {
+        scheduler.noteEvent()
+        return infoBytes
+    }
 
     func writeControl(_ message: [UInt8]) async throws {
+        scheduler.noteEvent()
         try lock.withLock {
             if _failControlWrites { throw FakeLinkError.linkDead }
             _controlWrites.append(message)
@@ -57,6 +67,7 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
     }
 
     func resync() {
+        scheduler.noteEvent()
         lock.withLock { _resyncCount += 1 }
     }
 
@@ -104,13 +115,19 @@ enum SinkEvent: Equatable {
 
 final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
     private let lock = NSLock()
+    private let scheduler: TestScheduler
     private var _events: [SinkEvent] = []
     private var _open = false
+
+    init(scheduler: TestScheduler) {
+        self.scheduler = scheduler
+    }
 
     var events: [SinkEvent] { lock.withLock { _events } }
     var isOpen: Bool { lock.withLock { _open } }
 
     func openSegment(start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?) async throws {
+        scheduler.noteEvent()
         lock.withLock {
             _events.append(.open(start))
             _open = true
@@ -118,15 +135,18 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
     }
 
     func appendFrames(streamId: UInt32, frames: [SegmentFrame]) async throws -> [SegmentFrame] {
+        scheduler.noteEvent()
         lock.withLock { _events.append(.append(streamId: streamId, frames: frames)) }
         return frames
     }
 
     func recordGap(streamId: UInt32, gap: GapRecord) async throws {
+        scheduler.noteEvent()
         lock.withLock { _events.append(.gap(streamId: streamId, gap: gap)) }
     }
 
     func closeSegment(reason: SegmentCloseReason) async throws {
+        scheduler.noteEvent()
         lock.withLock {
             guard _open else { return }
             _events.append(.close(reason))
@@ -177,22 +197,32 @@ final class FakeReceiverPolicy: ReceiverPolicy, @unchecked Sendable {
 
 final class FakeResumeStore: ReceiverResumeStore, @unchecked Sendable {
     private let lock = NSLock()
+    private let scheduler: TestScheduler
     private var _saved: ReceiverResumeState?
     private var _history: [ReceiverResumeState] = []
+
+    init(scheduler: TestScheduler) {
+        self.scheduler = scheduler
+    }
 
     var saved: ReceiverResumeState? { lock.withLock { _saved } }
     var history: [ReceiverResumeState] { lock.withLock { _history } }
 
     func save(_ state: ReceiverResumeState) async {
+        scheduler.noteEvent()
         lock.withLock {
             _saved = state
             _history.append(state)
         }
     }
 
-    func load() async -> ReceiverResumeState? { saved }
+    func load() async -> ReceiverResumeState? {
+        scheduler.noteEvent()
+        return saved
+    }
 
     func clear() async {
+        scheduler.noteEvent()
         lock.withLock { _saved = nil }
     }
 }

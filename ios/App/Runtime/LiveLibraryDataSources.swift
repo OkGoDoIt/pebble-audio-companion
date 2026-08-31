@@ -567,14 +567,23 @@ extension LiveWorld: AskDataSource {
             )
         }
 
-        let sourceOrder = askSourceOrder(excerpts)
         let chunks = await composition.askRetriever.retrieve(
             query: askRetrievalQuery(question: question, priorTurns: priorTurns),
             excerpts: excerpts, gapSummaries: gapSummaries
         )
-        let formatted = composition.askRetriever.formatForPrompt(chunks) {
-            askCitationNumber(of: $0, sourceOrder: sourceOrder)
-        }
+        // Retrieval picks SEGMENTS; the model cites STRETCHES of them, in recording order, so
+        // a `[n]` in the answer names the moment it drew on rather than the whole recording.
+        let retrieved = chunks
+            .sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
+            .map(\.segmentId)
+        let stretches = citableStretches(of: retrieved)
+        let whenLabels = Dictionary(
+            chunks.map { ($0.segmentId, $0.timeLabel) }, uniquingKeysWith: { first, _ in first })
+        let formatted = composition.askRetriever.formatForPrompt(
+            stretches: stretches,
+            whenLabel: { whenLabels[$0.segmentId] ?? nil },
+            gapSummary: { gapSummaries[$0] ?? nil }
+        )
         var content = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
         if let thread = askThreadContext(priorTurns) { content += "\n\n\(thread)" }
         content += "\n\nQUESTION: \(question)\n\nTRANSCRIPTS:\n\(formatted)"
@@ -592,7 +601,7 @@ extension LiveWorld: AskDataSource {
         return try await save(
             question: question,
             answer: result.text,
-            citations: renderedAnswerCitations(result.text, sourceIds: sourceOrder),
+            citations: renderedAnswerCitations(result.text, sources: stretches),
             scope: kitScope,
             threadId: threadId,
             nowMs: nowMs
@@ -624,10 +633,35 @@ extension LiveWorld: AskDataSource {
         return segmentTitle(meta, transcriptText: composition.transcripts.load(citedId)?.text)
     }
 
+    /// A conversation's transcripts cut into citable stretches, in recording order and
+    /// numbered once. Provider spans give the boundaries, so every stretch starts where
+    /// someone started speaking.
+    func citableStretches(of segmentIds: [String]) -> [CitableExcerpt] {
+        var drafts: [CitableExcerptDraft] = []
+        for segmentId in segmentIds {
+            guard let transcript = composition.transcripts.load(segmentId),
+                !transcript.text.isEmpty,
+                let meta = composition.files.readMeta(segmentId)
+            else { continue }
+            let startMs = Int64(meta.startTimeMs)
+            drafts.append(
+                contentsOf: CitableExcerpts.split(
+                    segmentId: segmentId,
+                    segmentStartMs: startMs,
+                    segmentEndMs: startMs + segmentDurationMs(meta),
+                    spans: transcript.segments.map {
+                        TranscriptSpan(text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
+                    },
+                    wholeText: transcript.text))
+        }
+        return CitableExcerpts.numbered(CitableExcerpts.coalesced(drafts))
+    }
+
     /// Resolve a citation all the way to something the UI can act on: which conversation holds
     /// the cited segment, where that segment starts on the player's scrubber (media time, gaps
     /// excluded — the same accumulation `display(id:)` walks), and when it was recorded.
-    func citationTarget(citedId: String) async -> CitationTarget? {
+    func citationTarget(for citation: AskCitation) async -> CitationTarget? {
+        let citedId = citation.segmentId
         guard
             let conversationId = try? await composition.runtime.library.conversationId(
                 ofSegment: citedId),
@@ -638,21 +672,30 @@ extension LiveWorld: AskDataSource {
         var mediaOffsetMs: Int64?
         for member in detail.members {
             guard let meta = composition.files.readMeta(member.segmentId) else { continue }
+            let mediaMs = mediaDurationMs(meta)
             if member.segmentId == citedId {
-                mediaOffsetMs = mediaDurationMs(meta) > 0 ? mediaBeforeMemberMs : nil
+                // Where the cited STRETCH starts on the scrubber, not where its recording
+                // does. Wall time maps onto media time proportionally — the same mapping the
+                // transcript rows and the missing ticks use, since media time is the wall
+                // span minus its gaps.
+                guard mediaMs > 0 else { break }
+                let memberStartMs = Int64(meta.startTimeMs)
+                let wallSpanMs = max(segmentDurationMs(meta), 1)
+                let into = min(max((citation.startMs ?? memberStartMs) - memberStartMs, 0), wallSpanMs)
+                mediaOffsetMs = mediaBeforeMemberMs + mediaMs * into / wallSpanMs
                 break
             }
-            mediaBeforeMemberMs += mediaDurationMs(meta)
+            mediaBeforeMemberMs += mediaMs
         }
         let meta = composition.files.readMeta(citedId)
+        let startedAtMs = citation.startMs ?? meta.map { Int64($0.startTimeMs) }
         return CitationTarget(
             conversationId: conversationId,
             conversationTitle: detail.row.title ?? "Conversation",
-            segmentId: citedId,
+            focus: TranscriptFocus(
+                segmentId: citedId, startMs: citation.startMs, endMs: citation.endMs),
             mediaOffsetMs: mediaOffsetMs,
-            startedAt: meta.map {
-                Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000)
-            }
+            startedAt: startedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         )
     }
 }
@@ -718,27 +761,38 @@ extension LiveWorld: NotesDataSource {
     ) async throws -> ProducedNote {
         let segmentIds = await members(of: conversationId)
         let prompt = Self.prompt(for: template, customPrompt: customPrompt)
-        // A citing template labels each member "[1]", "[2]" … in the order they were recorded,
-        // and the model cites those numbers. That labelling is the whole reason a saved note
-        // can point back at a moment: without it the notes carried no citations at all, so
-        // every chip, the moments footer and the tap-through were dead weight on screen.
-        var citationNumber = 0
-        let excerpts = segmentIds.compactMap { segmentId -> TranscriptExcerpt? in
-            guard let transcript = composition.transcripts.load(segmentId),
-                !transcript.text.isEmpty
-            else { return nil }
-            citationNumber += 1
-            let meta = composition.files.readMeta(segmentId)
-            return TranscriptExcerpt(
-                segmentId: segmentId,
-                text: transcript.text,
-                startTimeMs: meta.map { Int64($0.startTimeMs) },
-                timeLabel: meta.map {
-                    TimeFmt.time(Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000))
-                },
-                citationNumber: prompt.citesSources ? citationNumber : nil
-            )
-        }
+        // A citing template numbers STRETCHES — a paragraph of speech each, not whole
+        // recordings. That is what makes a chip land on the lines the point came from and the
+        // player start there; numbering by member sent every citation to the top of a
+        // twenty-minute segment.
+        let stretches = prompt.citesSources ? citableStretches(of: segmentIds) : []
+        let excerpts =
+            stretches.isEmpty
+            ? segmentIds.compactMap { segmentId -> TranscriptExcerpt? in
+                guard let transcript = composition.transcripts.load(segmentId),
+                    !transcript.text.isEmpty
+                else { return nil }
+                let meta = composition.files.readMeta(segmentId)
+                return TranscriptExcerpt(
+                    segmentId: segmentId,
+                    text: transcript.text,
+                    startTimeMs: meta.map { Int64($0.startTimeMs) },
+                    timeLabel: meta.map {
+                        TimeFmt.time(Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000))
+                    }
+                )
+            }
+            : stretches.map { stretch in
+                TranscriptExcerpt(
+                    segmentId: stretch.segmentId,
+                    text: stretch.text,
+                    startTimeMs: stretch.startMs,
+                    endTimeMs: stretch.endMs,
+                    timeLabel: TimeFmt.time(
+                        Date(timeIntervalSince1970: Double(stretch.startMs) / 1000)),
+                    citationNumber: stretch.number
+                )
+            }
         let result = try await composition.aiRouter.run(
             AiRunRequest(
                 requestId: UUID().uuidString.lowercased(),
@@ -747,9 +801,7 @@ extension LiveWorld: NotesDataSource {
             )
         )
         // The note is rendered verbatim, so the chips carry the model's OWN numbers.
-        let citations = prompt.citesSources
-            ? renderedAnswerCitations(result.text, sourceIds: excerpts.map(\.segmentId))
-            : []
+        let citations = renderedAnswerCitations(result.text, sources: stretches)
         return ProducedNote(
             body: result.text,
             citationsJson: Self.citationsJson(citations),

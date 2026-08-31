@@ -88,18 +88,42 @@ public func parseGroundedAnswer(_ text: String, sourceIds: [String]) -> Grounded
 /// Numbers with no matching excerpt are dropped rather than guessed: a chip that navigates
 /// nowhere is worse than no chip.
 public func renderedAnswerCitations(_ text: String, sourceIds: [String]) -> [AskCitation] {
+    citedNumbers(in: text).compactMap { number in
+        guard sourceIds.indices.contains(number - 1) else { return nil }
+        return AskCitation(segmentId: sourceIds[number - 1], number: number)
+    }
+}
+
+/// The same, over numbered STRETCHES rather than whole segments: the citation carries the
+/// wall-clock bounds of the piece it names, which is what lets the transcript mark the lines
+/// the note actually drew on and the player start there.
+public func renderedAnswerCitations(
+    _ text: String, sources: [CitableExcerpt]
+) -> [AskCitation] {
+    let byNumber = Dictionary(sources.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
+    return citedNumbers(in: text).compactMap { number in
+        guard let source = byNumber[number] else { return nil }
+        return AskCitation(
+            segmentId: source.segmentId,
+            number: number,
+            startMs: source.startMs,
+            endMs: source.endMs)
+    }
+}
+
+/// Distinct `[n]` numbers in the order they first appear.
+private func citedNumbers(in text: String) -> [Int] {
     let footnote = regex(#"\[(\d{1,3})]"#)
     let ns = text as NSString
     var seen = Set<Int>()
-    var citations: [AskCitation] = []
+    var numbers: [Int] = []
     for match in footnote.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
         guard let number = Int(ns.substring(with: match.range(at: 1))),
-            sourceIds.indices.contains(number - 1),
             seen.insert(number).inserted
         else { continue }
-        citations.append(AskCitation(segmentId: sourceIds[number - 1], number: number))
+        numbers.append(number)
     }
-    return citations.sorted { $0.number < $1.number }
+    return numbers.sorted()
 }
 
 // MARK: - Internals
