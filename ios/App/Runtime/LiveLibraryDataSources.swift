@@ -187,11 +187,12 @@ private final class ConversationPlaybackEngine: ConversationPlayback {
 
     func seek(toMs: Int64) { controller.seekTo(key, positionMs: toMs) }
 
+    /// The controller only cycles 1 → 1.5 → 2, so reaching a speed means stepping to it —
+    /// bounded by the length of that cycle so an unexpected value can never spin here.
     func setSpeed(_ speed: Double) {
-        while controller.state.speed != Float(speed) {
-            let before = controller.state.speed
+        for _ in 0..<3 {
+            if controller.state.speed == Float(speed) { return }
             controller.cycleSpeed()
-            if controller.state.speed == before { return }
         }
     }
 
