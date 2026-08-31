@@ -108,6 +108,12 @@ enum Copy {
         static let live = "Live"
     }
 
+    // Watch refusals ("Authorized to another phone", "This watch no longer allows this phone",
+    // …) are the one part of the catalog that does NOT live here. Their words belong to
+    // `StatusUI.StatusCopy` because the status card is rendered from the kit, which cannot
+    // import this target — and this file compiles into the widget extension, which links
+    // nothing from the kit. `DesignSystem/WatchLinkFault+Copy.swift` is the app-side seam.
+
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: Onboarding (Connect / Confirm / Transcripts + failure branches)
     // ─────────────────────────────────────────────────────────────────────────
@@ -747,6 +753,25 @@ enum Copy {
             /// Before anything has happened there is nothing to show — say so, calmly.
             static let noLogs = "Nothing logged yet."
             static let footer = "Counters and gap metadata only — never audio or transcript text."
+
+            /// The refusal row. Present only when the watch actually said no — an absent row
+            /// is the calm way to say "nothing is wrong with the link".
+            static let watchLink = "Watch link"
+
+            // Rebuild Search Index. The index is derived data, so losing it costs nothing but
+            // the time to write it again — which is exactly what the row has to say, because
+            // "rebuild" next to "Delete All Data" reads like a destructive button otherwise.
+            static let rebuildIndex = "Rebuild Search Index"
+            static let rebuildIndexBusy = "Rebuilding…"
+            static let rebuildIndexFooter =
+                "Rebuilds what Search and Spotlight look through. Recordings, transcripts and "
+                + "notes are not touched. Takes a few seconds for a large library."
+            static func rebuildIndexDone(_ count: Int) -> String {
+                count == 1
+                    ? "Rebuilt · 1 conversation indexed"
+                    : "Rebuilt · \(count) conversations indexed"
+            }
+            static let rebuildIndexFailed = "Couldn’t rebuild the index. Try again."
         }
     }
 

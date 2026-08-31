@@ -59,6 +59,10 @@ final class AppComposition {
 
     // --- pipeline ---------------------------------------------------------------------------
 
+    /// The receive half, held so the status/diagnostics layer can read the watch's own refusal
+    /// (`lastProtocolError`, `watchInfo`) synchronously — `runtime.environment` is actor-isolated
+    /// and the status card is derived on the main actor without an await.
+    let receiver: ReceiverService
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
@@ -82,6 +86,8 @@ final class AppComposition {
 
     private let lifecycle: AppLifecycleCoordinator
     private let lifecycleObserver: UIApplicationLifecycleObserver
+    /// Set at install; owns the Spotlight donation watermark the index rebuild has to clear.
+    private(set) weak var nativeSurfaces: NativeSurfaceCoordinator?
     private var didRegisterBackgroundTask = false
     private var todaySource: LiveTodayDataSource?
 
@@ -527,6 +533,7 @@ final class AppComposition {
             onCoverageTrigger: { await coverageTriggers.fire($0) },
             log: AppRuntimeLog.runtimeLog
         )
+        self.receiver = receiver
 
         let cascade = DeleteCascade(
             store: store,
@@ -563,7 +570,13 @@ final class AppComposition {
                 return statusModel(
                     state: receiver.state.value,
                     intent: settingsBox.captureIntent,
-                    watchServiceStateRaw: receiver.watchServiceState.value
+                    watchServiceStateRaw: receiver.watchServiceState.value,
+                    linkFault: WatchLinkFault.classify(
+                        state: receiver.state.value,
+                        protocolError: receiver.lastProtocolError.value,
+                        info: receiver.watchInfo.value,
+                        watchServiceStateRaw: receiver.watchServiceState.value
+                    )
                 )
             },
             pauseJournal: pauseJournal,
@@ -709,6 +722,8 @@ final class AppComposition {
     private func install(nativeSurfaces: NativeSurfaceCoordinator) {
         // Spotlight donation reuses this database connection rather than opening a second pool.
         nativeSurfaces.attachDatabase(database)
+        // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
+        self.nativeSurfaces = nativeSurfaces
 
         // A settings change that could unblock work wakes the pipeline immediately.
         let runtime = self.runtime
