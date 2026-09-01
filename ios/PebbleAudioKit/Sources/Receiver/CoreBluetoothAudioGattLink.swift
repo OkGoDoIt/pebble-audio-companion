@@ -235,10 +235,26 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// this re-runs service discovery, CCCD subscription and AUTH without disturbing the other
     /// app — the recovery for a half-dead connection CoreBluetooth still reports as connected.
     public func resync() {
+        resync(clearingUserRecoveryLatch: true, "resync()")
+    }
+
+    /// The session's own escalations land here. Everything about the rebuild is the same; the one
+    /// difference is that a `.linkRejected` latch survives it, because retrying the identical
+    /// cached handles can only re-fail and would spin the radio indefinitely.
+    public func resyncAutomatically() {
+        resync(clearingUserRecoveryLatch: false, "automatic resync")
+    }
+
+    private func resync(clearingUserRecoveryLatch: Bool, _ reason: String) {
         onMainQueue { [self] in
-            log("resync() requested")
-            // Explicit "Reconnect": honor the request even if we had latched off automatic retries.
-            awaitingUserRecovery = false
+            log("\(reason) requested")
+            if clearingUserRecoveryLatch {
+                // Explicit "Reconnect": honor it even if we had latched off automatic retries.
+                awaitingUserRecovery = false
+            } else if awaitingUserRecovery {
+                log("\(reason) suppressed; awaiting user recovery (Bluetooth off/on or re-pair)")
+                return
+            }
             guard let manager = centralManager else {
                 connect()
                 return

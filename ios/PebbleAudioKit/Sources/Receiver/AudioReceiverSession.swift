@@ -273,6 +273,18 @@ public actor AudioReceiverSession {
 
     // --- per-connection state ------------------------------------------------------------------
     private var authorized = false
+
+    /// Consecutive failed handshakes, for the retry backoff. Reset the moment one succeeds.
+    private var handshakeFailures = 0
+
+    /// One in-place re-authorization per connection after the watch enables Background Audio, so
+    /// a stream of reports cannot stack AUTH_REQUESTs.
+    private var reauthorizingAfterEnable = false
+
+    /// Rate limit for the policy-pause resume, which now fires from every watch report rather
+    /// than from one message; each attempt consumes the single in-flight request slot. Nil means
+    /// "not yet this connection" — a zero would be indistinguishable from time zero.
+    private var lastPolicyResumeAtMs: Int64?
     private var stream: StreamContext?
 
     /// Wall time of the last inbound control/data notification; drives the keepalive idle check.
@@ -329,6 +341,52 @@ public actor AudioReceiverSession {
         evidence.lastWatchReportAtMs = clock.nowMs
         evidence.lastWatchReportRaw = serviceStateRaw
         streamEvidence.value = evidence
+        reactToWatchReport(serviceStateRaw)
+    }
+
+    /// The two states the watch can LEAVE without any further event reaching us, acted on here
+    /// rather than in the STATE_CHANGED arm.
+    ///
+    /// This is the single funnel for everything the watch says about itself — the handshake Info
+    /// read, a STATE_CHANGED push, and every re-verify read — so a push that was lost, or that
+    /// arrived while iOS had the app suspended, is still caught by the next verify tick. Handling
+    /// either of these on the message alone made recovery depend on an edge that may never come
+    /// again.
+    private func reactToWatchReport(_ serviceStateRaw: Int) {
+        guard captureIntent() != .off else { return }
+
+        // (1) The watch had Background Audio off, so we never even sent AUTH_REQUEST, and the
+        // connection has been parked ever since with `authorized == false` — every child task
+        // inert behind their own `authorized` guards. The user then turns Background Audio on at
+        // the wrist, the watch pushes its new state, and until now the app read that and threw it
+        // away. Re-drive the handshake IN PLACE: the watch still has our receiver id bound, so it
+        // authorizes with no prompt on the wrist, and a full resync on a shared ACL would cost a
+        // reconnect for nothing. `enableRequestArmed` is deliberately NOT re-armed — only an
+        // explicit Start may ask the watch to enable anything.
+        if !authorized,
+           state.value == .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue)),
+           serviceStateRaw != Int(ServiceState.disabled.rawValue),
+           !reauthorizingAfterEnable {
+            reauthorizingAfterEnable = true
+            log("watch enabled background audio; re-authorizing without a fresh connection")
+            auxTasks.append(Task { await self.sendAuthRequest() })
+            return
+        }
+
+        // (2) A policy pause the watch cannot leave on its own. The pause was asserted because we
+        // reported low storage in a CHECKPOINT — and CHECKPOINT is the ONLY carrier of those
+        // flags, while a paused watch sends no audio, so nothing ever produces the next one. The
+        // watch's state does not change either, so there is no second STATE_CHANGED to react to.
+        // Driving it from every report instead makes the clearing of the condition sufficient.
+        if authorized,
+           serviceStateRaw == Int(ServiceState.pausedPolicy.rawValue),
+           captureIntent() == .active,
+           policy.receiverFlags() == 0,
+           lastPolicyResumeAtMs.map({ clock.nowMs - $0 >= config.keepaliveIntervalMs }) ?? true {
+            lastPolicyResumeAtMs = clock.nowMs
+            log("watch is holding a policy pause we no longer have a reason for; resuming")
+            auxTasks.append(Task { _ = await self.requestResume() })
+        }
     }
 
     /// Asks the watch what it thinks it is doing, right now.
@@ -410,7 +468,7 @@ public actor AudioReceiverSession {
             // stay connected. The watch re-delivers from its spool, so nothing it captured
             // meanwhile is lost to the reconnect itself.
             log("rebuilding the link: \(unanswered) verifies unanswered during a believed-open stream")
-            link.resync()
+            link.resyncAutomatically()
             return
         }
     }
@@ -451,7 +509,7 @@ public actor AudioReceiverSession {
         )
         guard strikes >= Self.missingStreamMaxStrikes else { return false }
         log("rebuilding the link: the watch is recording and we are not receiving it")
-        link.resync()
+        link.resyncAutomatically()
         return true
     }
 
@@ -461,6 +519,7 @@ public actor AudioReceiverSession {
     private var checkpointTask: Task<Void, Never>?
     private var dataTask: Task<Void, Never>?
     private var verifyTask: Task<Void, Never>?
+    private var authRequestTask: Task<Void, Never>?
     private var auxTasks: [Task<Void, Never>] = []
 
     /// Sends a RECEIVER_HEALTH ping and waits for the watch's ACK. Used as an idle keepalive: the
@@ -516,7 +575,7 @@ public actor AudioReceiverSession {
                 failures += 1
                 if failures >= config.keepaliveMaxFailures {
                     log("rebuilding the link: \(failures) keepalive pings unanswered")
-                    link.resync()
+                    link.resyncAutomatically()
                     return
                 }
             }
@@ -698,19 +757,59 @@ public actor AudioReceiverSession {
     private func runConnection() async {
         let abort = OneShot<Bool>()
         connectionAbort = abort
+        var handshakeError: Error?
         do {
             try await connectionHandshake(abort: abort)
             // Mirror Kotlin's coroutineScope: the connection stays alive (children running)
             // until the link state changes (we get cancelled) or a child aborts it.
             _ = await abort.value()
         } catch {
-            // Handshake failed (readInfo/AUTH write threw): tear the connection down below.
+            handshakeError = error
         }
         // Link dropped (cancel-on-change cancelled us) or the connection failed. Children first
         // (Kotlin's scope joins them), then per-link state — always, even when cancelled.
         await drainConnectionTasks()
         connectionAbort = nil
         await onLinkDown()
+        if let handshakeError { await recoverFromFailedHandshake(handshakeError) }
+    }
+
+    /// A handshake that threw used to be the quiet end of the session.
+    ///
+    /// THIS IS THE TERMINAL SINK FOR EVERY AUTOMATIC RECOVERY IN THIS FILE. The keepalive, the
+    /// stream verify and the no-stream watchdog all recover the same way — ask the link for a
+    /// fresh connection — which produces a new `.ready` and a new handshake. If that handshake
+    /// throws, every child task has just been drained, so nothing is left running; and the link
+    /// is still `.ready` as far as Core Bluetooth is concerned, so `run()`'s `for await` waits on
+    /// a `StateSubject` that (by design) does not re-emit an equal value. Zero tasks, zero
+    /// timers, zero escalations, forever — until a person taps something or relaunches the app.
+    ///
+    /// It is not exotic. `readInfo` throws on the link's own 10 s operation timeout (a half-dead
+    /// connection the platform still calls connected), and on any ATT refusal of the encrypted
+    /// Info characteristic — a bonded-reconnect encryption race, or the stale-GATT-cache case
+    /// this project already knows well.
+    ///
+    /// So: say so plainly, back off, and ask for a fresh connection. Deliberately NO attempt
+    /// limit — this is a background-audio product and giving up recreates exactly the park we are
+    /// escaping. The stale-cache latch still applies (`resyncAutomatically`), so the one failure
+    /// that genuinely cannot be retried does not spin the radio.
+    private func recoverFromFailedHandshake(_ error: Error) async {
+        handshakeFailures += 1
+        setState(
+            .connectionFailed(kind: .watchUnreachable, detail: "handshake failed: \(error)")
+        )
+        let delay = min(
+            Self.handshakeRetryBaseMs << UInt64(min(handshakeFailures - 1, 4)),
+            Self.handshakeRetryMaxMs
+        )
+        log("handshake failed (\(handshakeFailures)); rebuilding the link in \(delay) ms: \(error)")
+        do {
+            try await clock.sleep(ms: delay)
+        } catch {
+            return // a real link-state change pre-empted us; that path owns the recovery now
+        }
+        if Task.isCancelled { return }
+        link.resyncAutomatically()
     }
 
     private func drainConnectionTasks() async {
@@ -721,6 +820,7 @@ public actor AudioReceiverSession {
             if let task = checkpointTask { tasks.append(task); checkpointTask = nil }
             if let task = dataTask { tasks.append(task); dataTask = nil }
             if let task = verifyTask { tasks.append(task); verifyTask = nil }
+            if let task = authRequestTask { tasks.append(task); authRequestTask = nil }
             tasks.append(contentsOf: auxTasks)
             auxTasks = []
             if tasks.isEmpty { return }
@@ -770,10 +870,16 @@ public actor AudioReceiverSession {
             setState(.authorizing)
         }
 
-        guard let token = takeToken() else {
+        guard takeToken() != nil else {
             assertionFailure("fresh connection must have no in-flight request")
             throw ReceiverSessionError.internalInvariant
         }
+        guard let token = inFlightToken else { throw ReceiverSessionError.internalInvariant }
+        try await writeAuthRequest(token: token)
+        authRequestTask = Task { await self.awaitAuthResult(firstToken: token) }
+    }
+
+    private func writeAuthRequest(token: Int) async throws {
         try await link.writeControl(
             AuthRequest(
                 protoVersion: config.protoVersion,
@@ -783,6 +889,56 @@ public actor AudioReceiverSession {
             ).encode()
         )
         noteOutboundControl()
+    }
+
+    /// AUTH_REQUEST used to be fire-and-forget, with nothing anywhere waiting for the answer.
+    ///
+    /// The watch's reply is a GATT notification, and the firmware discards the send result — a
+    /// refused notification (msys exhaustion on a host shared with the official app) is simply
+    /// never retried, unlike STREAM_START which has its own pending flag. One dropped AUTH_RESULT
+    /// therefore left the app at `.authorizing` with the token held, every child task idle behind
+    /// its `authorized` guard, and no deadline anywhere. The watch, meanwhile, believes it
+    /// authorized us.
+    ///
+    /// `.pendingConsent` is the one legitimate long wait — a human is answering a prompt on the
+    /// wrist — so it is given the watch's own consent window plus slack rather than this deadline.
+    /// It is still bounded: a consent whose result never arrives must not park us either.
+    private func awaitAuthResult(firstToken: Int) async {
+        var attempt = 0
+        var token = firstToken
+        while true {
+            let waited = state.value == .pendingConsent
+                ? Self.consentResultWaitMs : Self.authResultWaitMs
+            do {
+                try await clock.sleep(ms: waited)
+            } catch {
+                return // cancelled with the connection
+            }
+            if Task.isCancelled || authorized { return }
+            switch state.value {
+            case .authorizing, .pendingConsent:
+                break // still waiting on an answer that has not come
+            default:
+                return // denied / revoked / torn down: not ours to retry
+            }
+            attempt += 1
+            if attempt > Self.authResultMaxAttempts {
+                log("no AUTH_RESULT after \(attempt) attempts; rebuilding the link")
+                link.resyncAutomatically()
+                return
+            }
+            // Release the stuck slot and ask again with a fresh token, so a late answer to the
+            // old one cannot be mistaken for this one.
+            inFlightToken = nil
+            guard let next = takeToken() else { continue }
+            token = next
+            log("no AUTH_RESULT yet; re-sending AUTH_REQUEST (attempt \(attempt))")
+            do {
+                try await writeAuthRequest(token: token)
+            } catch {
+                log("re-sending AUTH_REQUEST failed: \(error)")
+            }
+        }
     }
 
     private func consumeControl(_ stream: AsyncStream<[UInt8]>, abort: OneShot<Bool>) async {
@@ -812,6 +968,7 @@ public actor AudioReceiverSession {
             case .some(.ok):
                 inFlightToken = nil
                 authorized = true
+                handshakeFailures = 0
                 grantedProtoVersion.value = result.grantedProtoVersion
                 // The watch accepted us, so whatever it last complained about is settled. This
                 // matters now that the error is read: a stale ERROR from an earlier connection
@@ -849,21 +1006,30 @@ public actor AudioReceiverSession {
             dataTask = nil
             setState(.revoked(reasonRaw: Int(revoked.reasonRaw)))
         case let changed as StateChanged:
+            // Recording it IS reacting to it: `noteWatchReport` is the single funnel, so the
+            // safety nets fire here and on every re-verify read alike.
             noteWatchReport(Int(changed.serviceStateRaw))
-            // Safety net for a watch that pauses (policy) after we authorized: if the user
-            // wants audio and we have no storage reason to hold the pause, resume. Fires only
-            // for an ACTIVE intent (plan 6.1) and explicitly NOT for PausedPowerSave.
-            if authorized,
-               changed.serviceStateRaw == ServiceState.pausedPolicy.rawValue,
-               captureIntent() == .active,
-               policy.receiverFlags() == 0 {
-                auxTasks.append(Task { _ = await self.requestResume() })
-            }
         case let error as ErrorMessage:
             lastProtocolError.value = error
         default:
             break
         }
+    }
+
+    /// Re-runs authorization on the CURRENT connection — no reconnect, no watch prompt. Used by
+    /// the Background-Audio-enabled recovery in `reactToWatchReport`.
+    private func sendAuthRequest() async {
+        inFlightToken = nil
+        guard let token = takeToken() else { return }
+        setState(.authorizing)
+        do {
+            try await writeAuthRequest(token: token)
+        } catch {
+            log("in-place re-authorization failed to write: \(error)")
+            return
+        }
+        authRequestTask?.cancel()
+        authRequestTask = Task { await self.awaitAuthResult(firstToken: token) }
     }
 
     private func refreshInfoSnapshot() async {
@@ -1178,6 +1344,8 @@ public actor AudioReceiverSession {
         try? await closeOpenSegment(.interrupted)
         authorized = false
         dataTask = nil
+        reauthorizingAfterEnable = false
+        lastPolicyResumeAtMs = nil
         inFlightToken = nil
         inFlightSinceMs = 0
         lastOutboundControlMs = 0
@@ -1234,6 +1402,25 @@ public actor AudioReceiverSession {
     /// ordinary sub-second gap between one stream ending and the next beginning can never be
     /// mistaken for the deadlock, while the deadlock itself never outlives a minute.
     static let missingStreamMaxStrikes = 2
+
+    /// First delay before rebuilding a link whose handshake threw; doubles per consecutive
+    /// failure up to `handshakeRetryMaxMs`.
+    public static let handshakeRetryBaseMs: Int64 = 2_000
+
+    /// Backoff ceiling for handshake retries. Half a minute keeps a watch that comes back picked
+    /// up quickly without a hot loop against one that is genuinely gone.
+    public static let handshakeRetryMaxMs: Int64 = 30_000
+
+    /// How long to wait for AUTH_RESULT before assuming the request or its answer was dropped.
+    public static let authResultWaitMs: Int64 = 4_000
+
+    /// The same wait while a human is answering the watch's consent prompt: the watch's own
+    /// consent timeout plus slack, so the app never gives up before the watch does — but it does
+    /// give up, because a consent whose answer is lost must not park the session either.
+    public static let consentResultWaitMs: Int64 = 75_000
+
+    /// Re-sends before the link is presumed unusable and rebuilt.
+    public static let authResultMaxAttempts = 2
 }
 
 /// Short, stable words for a session state — for the log, never for the screen.

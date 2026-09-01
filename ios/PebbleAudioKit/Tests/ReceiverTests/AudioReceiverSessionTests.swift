@@ -84,7 +84,8 @@ import WireProtocol
                 // or the AUTH_REQUEST when the watch is already enabled) or refuses to, which it
                 // reports as a denial.
                 await waitFor("the session to announce itself to the watch") {
-                    self.link.controlWrites.count > writesBefore
+                    if case .connectionFailed = self.session.state.value { return true }
+                    return self.link.controlWrites.count > writesBefore
                         || self.session.state.value.deniedStatus != nil
                 }
             case .connecting:
@@ -105,6 +106,12 @@ import WireProtocol
             sessionTask.cancel()
             await sessionTask.value
             await settle()
+        }
+
+        /// Wait for any condition the caller can express. Used by the handshake-failure cases,
+        /// whose definite outcome is a state rather than a control write.
+        func waitUntil(_ description: String, _ condition: @escaping () -> Bool) async {
+            await waitFor(description, condition)
         }
 
         private func waitFor(_ description: String, _ condition: @escaping () -> Bool) async {
@@ -724,6 +731,127 @@ import WireProtocol
         fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.pausedPolicy.rawValue))
         await fx.settle()
         #expect(resumeCount() == 1, "a watch that pauses by policy after auth must be resumed")
+    }
+
+    /// A handshake that throws used to be the quiet end of the session — and it is the terminal
+    /// sink for every automatic recovery here, because each of them recovers by asking for a
+    /// fresh `.ready` and landing back in the handshake. Nothing must be able to park it: the
+    /// link stays `.ready` from Core Bluetooth's point of view, so no further link-state element
+    /// is ever emitted for `run()` to react to.
+    @Test func aHandshakeThatThrowsIsRetriedInsteadOfParkingTheSession() async {
+        let fx = await startSession()
+        fx.link.failInfoReads = true
+        await fx.setLink(.ready)
+
+        // It says so plainly rather than sitting on a stale state.
+        await fx.waitUntil("the handshake failure to be published") {
+            if case .connectionFailed = fx.session.state.value { return true }
+            return false
+        }
+        #expect(fx.link.resyncCount == 0, "the retry is backed off, not immediate")
+
+        await fx.clock.advance(by: AudioReceiverSession.handshakeRetryBaseMs)
+        await fx.settle()
+        #expect(fx.link.resyncCount == 1, "a failed handshake must rebuild the link")
+    }
+
+    /// ...and it is never given up on, however many times it fails. This is a background-audio
+    /// product: latching off automatic recovery recreates exactly the park being escaped.
+    @Test func repeatedHandshakeFailuresAreNeverGivenUpOn() async {
+        let fx = await startSession()
+        fx.link.failInfoReads = true
+        for attempt in 1...4 {
+            await fx.setLink(.disconnected)
+            await fx.waitUntil("the link to settle at disconnected") {
+                fx.session.state.value == .disconnected
+            }
+            await fx.setLink(.ready)
+            await fx.waitUntil("handshake \(attempt) to fail") {
+                if case .connectionFailed = fx.session.state.value { return true }
+                return false
+            }
+            await fx.clock.advance(by: AudioReceiverSession.handshakeRetryMaxMs)
+            await fx.settle()
+            #expect(fx.link.resyncCount == attempt, "attempt \(attempt) must still retry")
+        }
+    }
+
+    /// AUTH_REQUEST was fire-and-forget, and the watch's reply is an unacknowledged notification
+    /// the firmware never retries. One dropped AUTH_RESULT left the session at `.authorizing`
+    /// with the request token held and every child task idle behind its `authorized` guard.
+    @Test func anAuthRequestWithNoAnswerIsResentThenTheLinkIsRebuilt() async {
+        let fx = await startSession()
+        await fx.setLink(.ready)
+        #expect(fx.authRequests().count == 1)
+
+        for _ in 0...AudioReceiverSession.authResultMaxAttempts {
+            await fx.clock.advance(by: AudioReceiverSession.authResultWaitMs)
+            await fx.settle()
+        }
+
+        let requests = fx.authRequests()
+        #expect(requests.count == AudioReceiverSession.authResultMaxAttempts + 1)
+        #expect(
+            Set(requests.map(\.requestToken)).count == requests.count,
+            "each re-send must carry a fresh token so a late answer cannot be mistaken for it"
+        )
+        #expect(fx.link.resyncCount >= 1, "a watch that never answers AUTH must be reconnected")
+    }
+
+    /// The watch had Background Audio off, so we never sent AUTH_REQUEST at all and the
+    /// connection has been parked with `authorized == false` ever since. The user then turns it
+    /// on at the wrist. The watch says so — and the app used to read that and discard it, leaving
+    /// a live connection that would never authorize.
+    @Test func enablingBackgroundAudioOnTheWatchReAuthorizesInPlace() async {
+        let disabledInfo = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.disabled.rawValue,
+            flags: ProtocolConstants.infoFlagReceiverAuthorized
+        )
+        let fx = await startSession(
+            infoBytes: disabledInfo.encode(),
+            captureIntent: { .active },
+            consumeEnableRequestPermission: { false }
+        )
+        await fx.setLink(.ready)
+        #expect(fx.session.state.value.deniedStatus == .deniedDisabled)
+        #expect(fx.authRequests().isEmpty)
+
+        fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.idle.rawValue))
+        await fx.settle()
+
+        #expect(fx.authRequests().count == 1, "the watch enabling audio must re-drive AUTH")
+        #expect(
+            fx.writes().compactMap { $0 as? EnableRequest }.isEmpty,
+            "recovery must never prompt the watch; only an explicit Start may do that"
+        )
+        #expect(fx.session.state.value == .authorizing)
+        #expect(fx.link.resyncCount == 0, "the live connection is reused, not rebuilt")
+    }
+
+    /// A policy pause the watch cannot leave on its own. CHECKPOINT is the only carrier of the
+    /// storage flags that asserted it, and a paused watch sends no audio, so no checkpoint is
+    /// ever produced — and the watch's state does not change again, so there is no second
+    /// STATE_CHANGED either. Clearing the condition has to be enough on its own.
+    @Test func aPolicyPauseIsReleasedByTheVerifyReadWhenStorageRecovers() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.policy.flags = ProtocolConstants.receiverFlagLowStorage
+
+        fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.pausedPolicy.rawValue))
+        await fx.settle()
+        func resumes() -> Int { fx.writes().compactMap { $0 as? ResumeRequest }.count }
+        #expect(resumes() == 0, "we still have a storage reason to hold the pause")
+
+        // Space is recovered. Nothing on the wire announces that — only the next time the watch
+        // tells us what it is doing can the app notice, and the verify read is that moment.
+        fx.policy.flags = 0
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.pausedPolicy.rawValue
+        ).encode()
+        await fx.clock.advance(by: 20_000)
+        await fx.settle()
+
+        #expect(resumes() >= 1, "a pause we no longer have a reason for must be released")
     }
 
     @Test func watchPowerSavePauseDoesNotTriggerResume() async {

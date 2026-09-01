@@ -96,6 +96,15 @@ public protocol AudioGattLink: Sendable {
     /// unanswered — a half-dead connection the platform still reports as connected. Default
     /// no-op for links that cannot self-heal.
     func resync()
+
+    /// `resync()` for a rebuild the APP decided on rather than one a person asked for.
+    ///
+    /// The difference is the stale-cache latch. `resync()` is "Reconnect": it deliberately clears
+    /// `awaitingUserRecovery` because the user has asked for this attempt and is watching it. An
+    /// automatic retry must not, or the one failure that latch exists for — a stale iOS GATT cache
+    /// that can only re-fail the identical handshake — becomes a permanent radio-spinning loop.
+    /// Defaults to `resync()` for links with no such latch (fakes, command-line tools).
+    func resyncAutomatically()
 }
 
 /// One shared, permanently-nil subject for links that never learn a peer name. Shared on
@@ -108,4 +117,5 @@ public extension AudioGattLink {
     func connect() {}
     func disconnect() {}
     func resync() {}
+    func resyncAutomatically() { resync() }
 }
