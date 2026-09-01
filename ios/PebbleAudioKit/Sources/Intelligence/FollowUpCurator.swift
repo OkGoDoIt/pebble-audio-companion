@@ -28,7 +28,10 @@ public final class FollowUpCurator: @unchecked Sendable {
     /// This is deliberately arithmetic rather than a judgement call. A model deciding what to
     /// file away is a model quietly removing things a person may have been relying on; a clock
     /// is predictable, explainable in one sentence on screen, and cannot surprise anybody.
-    public static let staleAfterMs: Int64 = 14 * 24 * 60 * 60 * 1000
+    ///
+    /// `FollowUpWorker.freshnessWindowMs` matches it on purpose: there is no point reading a
+    /// conversation old enough that anything found in it would be filed away on arrival.
+    public static let staleAfterMs: Int64 = FollowUpWorker.freshnessWindowMs
 
     public static let modelId = FollowUpWorker.modelId
     public static let reasoningEffort = "medium"

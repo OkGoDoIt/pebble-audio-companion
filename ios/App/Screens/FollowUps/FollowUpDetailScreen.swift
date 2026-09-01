@@ -84,15 +84,10 @@ struct FollowUpDetailScreen: View {
                     .accessibilityAddTraits(.isHeader)
 
                 if let why = item.why, !why.isEmpty, !item.done {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(Copy.FollowUps.ifForgotten)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.faint)
-                        Text(why)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text(Copy.FollowUps.ifForgotten(why))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Button {
@@ -130,14 +125,25 @@ struct FollowUpDetailScreen: View {
                     value: FollowUpFormatting.priorityLabel(item.priority))
             }
             .buttonStyle(.plain)
-            if let snoozed = item.snoozedUntil, snoozed > model.now {
-                SettingsRow(
-                    title: Copy.FollowUps.snooze,
-                    value: FollowUpFormatting.day(snoozed, now: model.now),
-                    valueColor: Tokens.attention
-                ) {
-                    model.snooze(nil)
+            // Snooze sits with the other attributes rather than in its own card: it is the
+            // third fact about when this matters, not a fourth thing you can do to it. A lone
+            // menu row with no value beside it reads as an unfinished setting.
+            if !item.done {
+                Menu {
+                    Button(Copy.FollowUps.snoozeTomorrow) { model.snooze(model.tomorrow) }
+                    Button(Copy.FollowUps.snoozeNextWeek) { model.snooze(model.nextWeek) }
+                    if item.snoozedUntil != nil {
+                        Button(Copy.FollowUps.unsnooze) { model.snooze(nil) }
+                    }
+                } label: {
+                    SettingsRowLabel(
+                        title: Copy.FollowUps.putOffUntil,
+                        value: item.snoozedUntil.map {
+                            FollowUpFormatting.day($0, now: model.now)
+                        } ?? Copy.FollowUps.notPutOff,
+                        valueColor: item.snoozedUntil == nil ? Tokens.meta : Tokens.attention)
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -227,20 +233,6 @@ struct FollowUpDetailScreen: View {
 
     private func actions(_ item: FollowUpItem) -> some View {
         VStack(spacing: Tokens.blockGap) {
-            if !item.done {
-                ListCard {
-                    Menu {
-                        Button(Copy.FollowUps.snoozeTomorrow) { model.snooze(model.tomorrow) }
-                        Button(Copy.FollowUps.snoozeNextWeek) { model.snooze(model.nextWeek) }
-                        if item.snoozedUntil != nil {
-                            Button(Copy.FollowUps.unsnooze) { model.snooze(nil) }
-                        }
-                    } label: {
-                        SettingsRowLabel(title: Copy.FollowUps.snooze, value: nil)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
             ListCard {
                 if item.isArchived {
                     SettingsRow(title: Copy.FollowUps.restore, showsChevron: false) {
@@ -272,6 +264,7 @@ struct FollowUpDetailScreen: View {
 private struct SettingsRowLabel: View {
     let title: String
     let value: String?
+    var valueColor: Color = Tokens.meta
 
     var body: some View {
         HStack(spacing: 8) {
@@ -282,7 +275,7 @@ private struct SettingsRowLabel: View {
             if let value {
                 Text(value)
                     .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.meta)
+                    .foregroundStyle(valueColor)
             }
             Image(systemName: "chevron.up.chevron.down")
                 .font(.system(size: 11, weight: .semibold))

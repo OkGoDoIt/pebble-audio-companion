@@ -377,6 +377,8 @@ enum Copy {
         static let markDone = "Mark Done"
         static let markNotDone = "Mark Not Done"
         static let snooze = "Snooze"
+        static let putOffUntil = "Put off until"
+        static let notPutOff = "Not put off"
         static let snoozeTomorrow = "Tomorrow"
         static let snoozeNextWeek = "Next Week"
         static let snoozePickDate = "Pick a Date…"
@@ -401,7 +403,13 @@ enum Copy {
         /// witness a decision, it heard a sentence.
         static let heardTitle = "Where this came from"
         static let openConversation = "Open the recording"
-        static let ifForgotten = "If this slips"
+        /// The consequence line under the task. One sentence rather than a label and a
+        /// fragment side by side, which read as two half-thoughts.
+        static func ifForgotten(_ clause: String) -> String {
+            let trimmed = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = trimmed.hasSuffix(".") ? String(trimmed.dropLast()) : trimmed
+            return "If this slips, \(body)."
+        }
         static let addedByYou = "You added this."
         static func capturedOn(_ when: String) -> String { "Heard \(when)" }
 

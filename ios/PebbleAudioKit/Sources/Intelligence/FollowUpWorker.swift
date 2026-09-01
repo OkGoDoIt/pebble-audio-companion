@@ -175,9 +175,15 @@ public final class FollowUpWorker: @unchecked Sendable {
     public static let minChars = 200
 
     /// How far back extraction reaches. A conversation older than this settles at zero without
-    /// a call: a commitment nobody has thought about in a month is not a follow-up, it is
-    /// history, and history is what Ask and the Library are for.
-    public static let freshnessWindowMs: Int64 = 30 * 24 * 60 * 60 * 1000
+    /// a call.
+    ///
+    /// Deliberately the SAME span as `FollowUpCurator.staleAfterMs`. Anything found in an
+    /// older recording would be filed away by the age rule the moment it appeared, so reading
+    /// those conversations could only ever produce something nobody would see — and on a
+    /// migrated library it is the difference between a few dozen provider calls and a few
+    /// hundred. A commitment nobody has thought about in a fortnight is history, and history
+    /// is what Ask and the Library are for.
+    public static let freshnessWindowMs: Int64 = 14 * 24 * 60 * 60 * 1000
 
     /// Transcript characters sent in one call. Well inside every catalogue model's window; the
     /// cap exists so a four-hour conversation cannot quietly become the most expensive call the

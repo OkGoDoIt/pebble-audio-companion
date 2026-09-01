@@ -560,6 +560,7 @@ struct FollowUpsSheet: View {
                                 } label: {
                                     Label(Copy.FollowUps.delete, systemImage: "trash")
                                 }
+                                .tint(Tokens.destructive)
                             }
                             .listRowBackground(Tokens.surface)
                         }

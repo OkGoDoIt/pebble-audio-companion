@@ -24,12 +24,6 @@ struct AskScreen: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Spacer(minLength: 0)
-                ScopeMenu(scope: $model.scope)
-            }
-            .padding(.top, 2)
-
             content
 
             Spacer(minLength: 0)
@@ -48,6 +42,12 @@ struct AskScreen: View {
                     Button(Copy.Ask.newConversation) { model.startNewConversation() }
                         .accessibilityHint(Copy.A11y.newConversationHint)
                 }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                // Chromeless: the toolbar draws its own capsule on iOS 26, and the pill
+                // ScopeMenu paints for Search would sit inside it as a second one.
+                ScopeMenu(scope: $model.scope, style: .bare)
             }
         }
         .navigationDestination(for: Route.self) { route in
@@ -416,7 +416,12 @@ struct AskScreen: View {
 // MARK: - Scope menu (plan 6.6 — shared with Search's date scoping)
 
 struct ScopeMenu: View {
+    /// `pill` paints its own tinted capsule, for use inside content (Search). `bare` renders
+    /// text and a chevron only, for a toolbar that supplies the capsule itself.
+    enum Style { case pill, bare }
+
     @Binding var scope: AskScope
+    var style: Style = .pill
     var includePickDates = true
 
     @State private var showDatePicker = false
@@ -433,19 +438,26 @@ struct ScopeMenu: View {
                 Button(Copy.Ask.scopePickDates) { showDatePicker = true }
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(scope.label)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+            if style == .bare {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar")
+                    Text(scope.label)
+                }
+            } else {
+                HStack(spacing: 5) {
+                    Text(scope.label)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .font(AppFont.chip)
+                .foregroundStyle(Tokens.tint)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 11)
+                .background(Capsule().fill(Tokens.tintFill10))
+                .frame(minHeight: 44)
+                .contentShape(Capsule())
             }
-            .font(AppFont.chip)
-            .foregroundStyle(Tokens.tint)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 11)
-            .background(Capsule().fill(Tokens.tintFill10))
-            .frame(minHeight: 44)
-            .contentShape(Capsule())
         }
         .accessibilityLabel(Copy.A11y.scope(scope.label))
         .accessibilityHint(Copy.A11y.scopeHint)

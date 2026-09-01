@@ -242,19 +242,66 @@ final class MockWorld {
         ]
 
         // ── Follow-ups ──────────────────────────────────────────────────────
+        // The sample exercises every state the list can be in — overdue, due today, due this
+        // week, undated, hand-written, ticked, filed away — because a mock that only shows the
+        // happy row is a mock that lets an empty section header or a missing strikethrough
+        // ship. Same reason `ComponentGallery` renders each component in every state.
+        //
+        // Times are OFFSETS FROM NOW, never a clock time like "today at 11:15": run the app
+        // before 11:15 and that fixture is in the future, and a follow-up completed in the
+        // future renders as "Done just now" — which is how this sample first read.
+        let day: TimeInterval = 86_400
+        let startOfToday = cal.startOfDay(for: now)
+        func ago(_ interval: TimeInterval) -> Int64 { ms(now.addingTimeInterval(-interval)) }
+        func startOfDay(_ offsetDays: Int) -> Int64 {
+            ms(cal.date(byAdding: .day, value: offsetDays, to: startOfToday)!)
+        }
         followUps = [
             FollowUp(
                 id: "fu-firmware", text: "Send Dana the new firmware build", done: false,
-                sourceConversationId: "coffee-dana", sourceSegmentId: nil,
-                createdAtMs: ms(today(9, 40))),
+                sourceConversationId: "coffee-dana", sourceSegmentId: "seg-coffee-1",
+                createdAtMs: ago(3 * 3_600),
+                quote: "I'll get the new build over to Dana before she leaves on Friday.",
+                why: "Dana is blocked on it",
+                dueAtMs: startOfDay(-1), priority: .high, sourceStartMs: 42_000),
             FollowUp(
-                id: "fu-walkthrough", text: "Book the studio walkthrough for Tuesday", done: false,
-                sourceConversationId: "coffee-dana", sourceSegmentId: nil,
-                createdAtMs: ms(today(9, 39))),
+                id: "fu-walkthrough", text: "Book the studio walkthrough for Tuesday",
+                done: false, sourceConversationId: "coffee-dana",
+                sourceSegmentId: "seg-coffee-1", createdAtMs: ago(3 * 3_600 + 60),
+                quote: "We should get the walkthrough booked for Tuesday.",
+                why: "the Tuesday slot goes to someone else",
+                dueAtMs: startOfDay(0)),
             FollowUp(
                 id: "fu-ferry", text: "Book the ferry for the travel weekend", done: false,
-                sourceConversationId: "coffee-dana", sourceSegmentId: nil,
-                createdAtMs: ms(today(9, 38))),
+                sourceConversationId: "coffee-dana", sourceSegmentId: "seg-coffee-1",
+                createdAtMs: ago(3 * 3_600 + 120),
+                quote: "Let's book the ferry for the weekend before the prices go up.",
+                why: "the crossing sells out",
+                dueAtMs: startOfDay(3)),
+            FollowUp(
+                id: "fu-lease", text: "Reply to Owen about the lease paperwork", done: false,
+                sourceConversationId: "evening-home", sourceSegmentId: "seg-evening-1",
+                createdAtMs: ago(2 * day),
+                quote: "I still owe Owen an answer on the lease.",
+                why: "Owen is waiting on the signature"),
+            FollowUp(
+                id: "fu-straps", text: "Order spare straps for the Pebble", done: false,
+                sourceConversationId: nil, sourceSegmentId: nil,
+                createdAtMs: ago(5 * 3_600), origin: .user),
+            FollowUp(
+                id: "fu-charge", text: "Charge the watch before the demo", done: true,
+                sourceConversationId: "planning-work", sourceSegmentId: "seg-planning-1",
+                createdAtMs: ago(6 * 3_600),
+                quote: "Remember to charge the watch before the demo.",
+                why: "the demo runs out of battery",
+                completedAtMs: ago(75 * 60)),
+            FollowUp(
+                id: "fu-dashboard", text: "Check the Soniox usage dashboard", done: false,
+                sourceConversationId: "planning-work", sourceSegmentId: "seg-planning-1",
+                createdAtMs: ago(20 * day),
+                quote: "I should check what the Soniox dashboard says this month.",
+                why: "the bill is a surprise otherwise",
+                archivedAtMs: ago(6 * day)),
         ]
 
         // ── Ask history (Q18 — up to 5, newest first) ───────────────────────

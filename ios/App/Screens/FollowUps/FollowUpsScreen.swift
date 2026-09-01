@@ -34,57 +34,55 @@ struct FollowUpsScreen: View {
     }
 
     // MARK: Content
+    //
+    // ONE view identity, always the `List`, with the empty state as an overlay. Swapping the
+    // whole screen between a list and a placeholder changed identity on every load, and the
+    // navigation bar lost its large title to the swap — the screen came up with a collapsed
+    // inline title as if it had been scrolled.
 
-    @ViewBuilder
     private var content: some View {
-        if model.isEmpty {
-            emptyState
-        } else {
-            List {
-                ForEach(model.sections) { section in
-                    Section {
-                        ForEach(section.items) { item in
-                            row(item)
-                        }
-                    } header: {
+        List {
+            ForEach(model.sections) { section in
+                Section {
+                    ForEach(section.items) { item in
+                        row(item)
+                    }
+                } header: {
+                    // A header on the only section says nothing — least of all "No date"
+                    // over a list where nothing has one.
+                    if model.sections.count > 1 && !section.title.isEmpty {
                         Text(section.title)
                     }
                 }
-                if model.scope == .open {
-                    Section {
-                        EmptyView()
-                    } footer: {
-                        Text(Copy.FollowUps.ageFooter)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
+            }
+            if model.scope == .open && !model.isEmpty {
+                Section {
+                    EmptyView()
+                } footer: {
+                    Text(Copy.FollowUps.ageFooter)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Tokens.ground)
+        .animation(Motion.animation(.snappy(duration: 0.25)), value: model.animationKey)
+        .overlay {
+            if model.isEmpty {
+                ContentUnavailableView {
+                    Label(model.emptyTitle, systemImage: model.emptyGlyph)
+                } description: {
+                    Text(model.emptyBody)
+                } actions: {
+                    if model.scope == .open {
+                        Button(Copy.FollowUps.add) { model.showingAdd = true }
+                            .buttonStyle(.borderedProminent)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(Tokens.ground)
-            .animation(Motion.animation(.snappy(duration: 0.25)), value: model.animationKey)
         }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: model.scope == .open ? "checkmark.circle" : "tray")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(Tokens.chevron)
-                .accessibilityHidden(true)
-            Text(model.emptyTitle)
-                .font(AppFont.headline)
-                .foregroundStyle(Tokens.label)
-            Text(model.emptyBody)
-                .font(AppFont.subBody)
-                .foregroundStyle(Tokens.tertiary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Tokens.ground)
     }
 
     // MARK: Row
@@ -105,6 +103,9 @@ struct FollowUpsScreen: View {
             } label: {
                 Label(Copy.FollowUps.delete, systemImage: "trash")
             }
+            // The app-wide violet tint wins over the destructive role in a swipe action, so a
+            // delete came up looking like any other button. Red, explicitly.
+            .tint(Tokens.destructive)
             if !item.done && !item.isArchived {
                 Button {
                     model.snooze(item, until: model.tomorrow)
@@ -203,7 +204,14 @@ struct FollowUpsScreen: View {
                     }
                 }
             } label: {
-                Label(model.scope.title, systemImage: "line.3.horizontal.decrease")
+                // Which slice you are looking at belongs ON the control, not only inside the
+                // menu that set it: a widget or a deep link can land you in "Filed away" with
+                // no idea why the list looks short. An explicit glyph + text pair, because
+                // iOS 26 renders a `Label` icon-only in a bar.
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                    Text(model.scope.title)
+                }
             }
             .accessibilityLabel(Copy.A11y.followUpFilter(model.scope.title))
         }
@@ -409,6 +417,14 @@ final class FollowUpsViewModel {
         case .open: return Copy.FollowUps.emptyOpenTitle
         case .completed: return Copy.FollowUps.emptyCompletedTitle
         case .archived: return Copy.FollowUps.emptyArchivedTitle
+        }
+    }
+
+    var emptyGlyph: String {
+        switch scope {
+        case .open: return "checkmark.circle"
+        case .completed: return "checkmark.circle.badge.questionmark"
+        case .archived: return "archivebox"
         }
     }
 
