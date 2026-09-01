@@ -285,6 +285,10 @@ public actor CompanionRuntime {
             // that only a stale latch was holding up. Re-applying the capture intent (which is
             // all the surface coordinator does here) never probed the link.
             await environment.receiver.verifyWatchState()
+            // ...and act on the answer. A watch that says it is recording while we hold no stream
+            // is the deadlock the user reported; asking and then filing the answer away is what
+            // made "leave the app and come back" a coin flip instead of a fix.
+            environment.receiver.recoverIfWatchIsRecordingWithoutUs()
             // The app is awake and cheap work is allowed again, so bring the widget's file up to
             // date immediately rather than leaving it on whatever the last background write said.
             await refreshSnapshot(.manual)

@@ -249,6 +249,27 @@ public actor ReceiverService {
         await session.verifyWatchState()
     }
 
+    /// "Someone is about to look at this": if the watch says it is recording while this app holds
+    /// no stream, rebuild the link NOW instead of waiting for the session's own watchdog.
+    ///
+    /// The session already catches this on its own within about a minute, and that is the part
+    /// that has to work while nobody is watching. This is the other half: the user's instinctive
+    /// gesture for the failure is to leave the app and come back, and until now that only helped
+    /// by coincidence — foreground entry re-read the watch's state and then did nothing with the
+    /// answer. Now the gesture is the fix.
+    ///
+    /// Costs nothing in the healthy cases: an open stream is `.streaming`, and a watch that is
+    /// idle, paused or off does not report `streaming`.
+    @discardableResult
+    public nonisolated func recoverIfWatchIsRecordingWithoutUs() -> Bool {
+        guard case .authorized = state.value, streamEvidence.value.watchReportedStreaming else {
+            return false
+        }
+        log.write("watch reports recording while we hold no stream; forcing a fresh session")
+        link.resync()
+        return true
+    }
+
     /// User-initiated Stop: pause the watch first (so its own Settings show Paused and it does
     /// not stream into a void), then tear down and drop the connection.
     ///

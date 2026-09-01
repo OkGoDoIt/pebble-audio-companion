@@ -41,6 +41,33 @@ import WireProtocol
         #expect(fixture.runtime.captureIntent == .active)
     }
 
+    /// The reported deadlock, met by the user's own instinctive gesture. Foreground entry already
+    /// asked the watch what it was doing; the answer just went nowhere. When the watch says it is
+    /// recording and this app holds no stream, that answer has to act — otherwise "leave the app
+    /// and come back" helps only by coincidence, which is exactly what was reported.
+    @Test func foregroundEntryRebuildsALinkTheWatchIsRecordingIntoAVoid() async throws {
+        let fixture = try RuntimeFixture()
+        // Authorized with no stream, and the fake watch's Info says it is streaming.
+        fixture.receiver.state.value = .authorized
+
+        await fixture.runtime.setForeground(false)
+        await fixture.runtime.setForeground(true)
+
+        #expect(fixture.link.resyncCount == 1)
+    }
+
+    /// ...and leaves a healthy stream alone. A link that is working must never be rebuilt by the
+    /// act of looking at the app.
+    @Test func foregroundEntryLeavesAStreamWeAreReceivingAlone() async throws {
+        let fixture = try RuntimeFixture()
+        fixture.receiver.state.value = .streaming(streamId: 7)
+
+        await fixture.runtime.setForeground(false)
+        await fixture.runtime.setForeground(true)
+
+        #expect(fixture.link.resyncCount == 0)
+    }
+
     @Test func armingWhileDeniedDisabledResyncsTheLink() async throws {
         let fixture = try RuntimeFixture()
         // The watch refused because Background Audio is off there: without a resync the new
