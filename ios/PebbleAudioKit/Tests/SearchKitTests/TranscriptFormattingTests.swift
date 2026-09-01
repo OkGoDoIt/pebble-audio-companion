@@ -121,7 +121,7 @@ import WireProtocol
         #expect(items[1].asSpeech != nil)
     }
 
-    @Test func transcriptTimelineItemsShowSeveralReasonsWhenLossReasonsCollapseTogether() throws {
+    @Test func transcriptTimelineItemsCountReasonsWhenLossReasonsCollapseTogether() throws {
         let items = transcriptTimelineItems(
             meta: testMeta(
                 gaps: [
@@ -148,7 +148,113 @@ import WireProtocol
 
         let pause = try #require(items.first?.asPause)
         #expect(pause.missing == true)
-        #expect(pause.label == "audio interrupted for 4 sec (several reasons)")
+        // The count, not "several": it says how much is behind the tap that opens the row.
+        #expect(pause.label == "audio interrupted for 4 sec (2 reasons)")
+        #expect(pause.hasReasonBreakdown)
+        // …but four seconds never reaches the transcript at all.
+        #expect(pause.isShownInTranscript == false)
+    }
+
+    @Test func transcriptTimelineItemsCompressRepeatsOfOneReasonIntoThatReason() throws {
+        let items = transcriptTimelineItems(
+            meta: testMeta(
+                gaps: (0..<3).map { index in
+                    GapMeta(
+                        firstMissingSequence: UInt32(index * 300),
+                        missingFrameCount: 300,  // 6 s at 20 ms/frame
+                        firstMissingSampleIndex: UInt64(index * 96_000),
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.micConflict.rawValue)
+                    )
+                },
+                lastSampleIndexExclusive: 1_920_000  // 120 s
+            ),
+            segments: [
+                TranscriptSegment(text: "back after the dictation", startMs: 20_000, endMs: 22_000)
+            ]
+        )
+
+        let pause = try #require(items.first?.asPause)
+        // Three interruptions, one cause: name the cause rather than saying "3 reasons", and
+        // leave nothing to expand.
+        #expect(pause.label == "audio interrupted for 18 sec (watch dictation used the mic)")
+        #expect(pause.hasReasonBreakdown == false)
+        #expect(pause.reasons.count == 1)
+        #expect(pause.reasons[0].count == 3)
+        #expect(pause.reasons[0].durationMs == 18_000)
+    }
+
+    @Test func transcriptTimelineItemsBreakDownMixedLossByCause() throws {
+        let items = transcriptTimelineItems(
+            meta: testMeta(
+                gaps: [
+                    GapMeta(
+                        firstMissingSequence: 0,
+                        missingFrameCount: 300,  // 6 s
+                        firstMissingSampleIndex: 0,
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.transportReset.rawValue)
+                    ),
+                    GapMeta(
+                        firstMissingSequence: 300,
+                        missingFrameCount: 900,  // 18 s
+                        firstMissingSampleIndex: 96_000,
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.spoolOverflow.rawValue)
+                    ),
+                ],
+                lastSampleIndexExclusive: 1_920_000  // 120 s
+            ),
+            segments: [
+                TranscriptSegment(text: "back after the outage", startMs: 30_000, endMs: 32_000)
+            ]
+        )
+
+        let pause = try #require(items.first?.asPause)
+        #expect(pause.durationMs == 24_000)
+        #expect(pause.label == "audio interrupted for 24 sec (2 reasons)")
+        #expect(pause.isShownInTranscript)
+        // Biggest cause first — the one that explains most of the gap leads the breakdown.
+        #expect(pause.reasons.map(\.text) == [
+            "watch buffer filled while disconnected", "connection was interrupted",
+        ])
+        #expect(pause.reasons.map(\.durationMs) == [18_000, 6_000])
+        #expect(pause.reasons.allSatisfy { $0.count == 1 })
+    }
+
+    @Test func transcriptTimelineItemsKeepBriefInterruptionsOutOfTheTranscript() throws {
+        let items = transcriptTimelineItems(
+            meta: testMeta(
+                gaps: [
+                    GapMeta(
+                        firstMissingSequence: 0,
+                        missingFrameCount: 450,  // 9 s — under the floor
+                        firstMissingSampleIndex: 0,
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.codecError.rawValue)
+                    ),
+                    GapMeta(
+                        firstMissingSequence: 3_000,
+                        missingFrameCount: 550,  // 11 s — over it
+                        firstMissingSampleIndex: 960_000,
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.codecError.rawValue)
+                    ),
+                ],
+                lastSampleIndexExclusive: 1_920_000  // 120 s
+            ),
+            segments: [
+                TranscriptSegment(text: "first half", startMs: 20_000, endMs: 22_000),
+                TranscriptSegment(text: "second half", startMs: 80_000, endMs: 82_000),
+            ]
+        )
+
+        // The timeline itself stays complete — loss is never dropped from the model; only the
+        // transcript declines to give the brief one a row.
+        let pauses = items.compactMap { $0.asPause }
+        #expect(pauses.count == 2)
+        #expect(pauses.map(\.durationMs) == [9_000, 11_000])
+        #expect(pauses.map(\.isShownInTranscript) == [false, true])
     }
 
     @Test func transcriptTimelineItemsHideShortSuppressedSilence() {

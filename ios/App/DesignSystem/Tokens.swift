@@ -28,6 +28,9 @@ enum Tokens {
     /// Missing-data encoding — reserved for data surfaces (waveform, coverage, scrubber).
     static let missing = Color(light: 0xFF9500, dark: 0xFF9F0A)
     static let missingHair = Tokens.missing.adaptiveOpacity(light: 0.35, dark: 0.5)
+    /// Ground for an opened interruption's reason list — the same alpha-over-card treatment the
+    /// tint fills use, so the panel reads as part of the marker rather than a warning box.
+    static let missingFill = Tokens.missing.adaptiveOpacity(light: 0.08, dark: 0.11)
     /// Attention states (paused, reconnecting, stock firmware, transcription failed).
     static let attention = Color(light: 0xFF9F0A, dark: 0xFFB340)
     static let destructive = Color(light: 0xFF3B30, dark: 0xFF453A)

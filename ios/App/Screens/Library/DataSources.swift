@@ -136,6 +136,20 @@ struct TranscriptMarker: Equatable, Identifiable {
     /// The member segment the break happened in, so a marker inside a cited stretch stays
     /// inside its highlight instead of cutting the band in two.
     var segmentId: String = ""
+    /// The causes behind an "audio interrupted for … (3 reasons)" row, biggest first — what
+    /// the row shows when it is tapped open. Empty whenever there is nothing more to say than
+    /// `text` already does: quiet rows, and interruptions with a single known cause.
+    var reasons: [TranscriptMarkerReason] = []
+}
+
+/// One line of an opened interruption row: what happened, and how much of the gap it was.
+struct TranscriptMarkerReason: Equatable, Identifiable {
+    /// Plain-language cause, e.g. "watch buffer filled while disconnected".
+    var text: String
+    /// e.g. "45 min" — or "45 min · 3 times" when the cause struck more than once.
+    var detail: String
+
+    var id: String { text }
 }
 
 enum TranscriptItem: Equatable, Identifiable {
