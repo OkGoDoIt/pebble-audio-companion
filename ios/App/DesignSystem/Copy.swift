@@ -340,6 +340,104 @@ enum Copy {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Tabs
+    // ─────────────────────────────────────────────────────────────────────────
+    enum Tabs {
+        static let today = "Today"
+        static let library = "Library"
+        /// "Follow-ups" everywhere — never "Actions", never "Tasks" (Copy.Conversation rule).
+        static let followUps = "Follow-ups"
+        static let ask = "Ask"
+        static let settings = "Settings"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: Follow-ups
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // The register here is deliberately flat and unexcited. This is a list of things a
+    // microphone thought it heard you take on; overselling it is how it becomes annoying.
+    enum FollowUps {
+        static let title = "Follow-ups"
+        static let scopeOpen = "Open"
+        static let scopeCompleted = "Completed"
+        static let scopeArchived = "Filed away"
+
+        static let sectionOverdue = "Overdue"
+        static let sectionToday = "Today"
+        static let sectionSoon = "Next 7 days"
+        static let sectionLater = "Later"
+        static let sectionAnytime = "No date"
+        static let sectionSnoozed = "Put off"
+
+        static let add = "New Follow-up"
+        static let addPlaceholder = "What do you need to remember?"
+        static let edit = "Edit"
+        static let editTitle = "Edit Follow-up"
+        static let markDone = "Mark Done"
+        static let markNotDone = "Mark Not Done"
+        static let snooze = "Snooze"
+        static let snoozeTomorrow = "Tomorrow"
+        static let snoozeNextWeek = "Next Week"
+        static let snoozePickDate = "Pick a Date…"
+        static let unsnooze = "Stop Putting Off"
+        static let fileAway = "File Away"
+        static let restore = "Restore"
+        static let delete = "Delete"
+        static let deleteConfirm = "Delete Follow-up"
+        static let deleted = "Follow-up deleted."
+        static let filedAway = "Filed away."
+        static let restored = "Back on your list."
+
+        static let due = "Due"
+        static let noDue = "No date"
+        static let priority = "Priority"
+        static let priorityHigh = "High"
+        static let priorityNormal = "Normal"
+        static let priorityLow = "Low"
+        static let clearDue = "Clear Date"
+
+        /// The detail screen's provenance card. "Heard" is the honest verb: the app did not
+        /// witness a decision, it heard a sentence.
+        static let heardTitle = "Where this came from"
+        static let openConversation = "Open the recording"
+        static let ifForgotten = "If this slips"
+        static let addedByYou = "You added this."
+        static func capturedOn(_ when: String) -> String { "Heard \(when)" }
+
+        static func snoozedUntil(_ when: String) -> String { "Put off until \(when)" }
+        static func overdueBy(_ duration: String) -> String { "\(duration) overdue" }
+        static let dueToday = "Due today"
+        static func dueOn(_ when: String) -> String { "Due \(when)" }
+        static func completedOn(_ when: String) -> String { "Done \(when)" }
+        static func filedAwayOn(_ when: String) -> String { "Filed away \(when)" }
+
+        /// The footer under the open list. It explains the one behaviour people would
+        /// otherwise experience as the app losing things.
+        static let ageFooter =
+            "Suggestions you never act on are filed away after two weeks. Nothing is deleted — "
+            + "they are under Filed away."
+
+        // Empty states. Each says which kind of empty this is; "All caught up." was shown for
+        // "you ticked everything", "this conversation produced nothing", and "the feature has
+        // never run", which made it meaningless.
+        static let emptyOpenTitle = "Nothing to follow up on"
+        static let emptyOpenBody =
+            "Things you say you will do turn up here. Most conversations have none, and that is "
+            + "normal — you can add your own any time."
+        static let emptyOpenBodyNoAi =
+            "Nothing here yet. Follow-ups are suggested from your recordings once AI processing "
+            + "is set up, and you can always add your own."
+        static let emptyCompletedTitle = "Nothing completed yet"
+        static let emptyCompletedBody = "Ticked-off follow-ups collect here."
+        static let emptyArchivedTitle = "Nothing filed away"
+        static let emptyArchivedBody =
+            "Suggestions you never act on move here after two weeks, so the open list stays "
+            + "about now."
+        static let conversationEmpty = "Nothing to follow up on from this conversation."
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // MARK: Today
     // ─────────────────────────────────────────────────────────────────────────
     enum Today {
@@ -1087,6 +1185,9 @@ enum Copy {
         static let followUpDone = "Done"
         static let followUpNotDone = "Not done"
         static let followUpHint = "Double tap to change"
+        static func followUpFilter(_ label: String) -> String { "Showing: \(label)" }
+        static let followUpOpenHint = "Double tap to open this follow-up"
+        static func followUpDue(_ when: String) -> String { "Due \(when)" }
         static let waveformLabel = "Live minute waveform"
         static let coverageLabel = "Day coverage"
         static let coverageHint = "Double tap for a breakdown of the day"

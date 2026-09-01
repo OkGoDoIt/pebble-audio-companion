@@ -64,6 +64,8 @@ struct LiveMockConformanceTests {
         Pair(protocolName: "TagEditorDataSource", live: "LiveWorld", mock: "MockWorld"),
         Pair(protocolName: "PeopleDataSource", live: "LiveWorld", mock: "MockWorld"),
         Pair(
+            protocolName: "FollowUpsDataSource", live: "LiveFollowUps", mock: "MockFollowUps"),
+        Pair(
             protocolName: "TodayDataSource", live: "LiveTodayDataSource",
             mock: "PreviewTodayData"),
         Pair(

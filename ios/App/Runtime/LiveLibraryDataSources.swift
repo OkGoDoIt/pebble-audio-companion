@@ -19,7 +19,8 @@ enum LiveLibraryDataSources {
         let world = LiveWorld(composition: composition)
         return AskLibraryDataSources(
             library: world, search: world, conversations: world, ask: world,
-            notes: world, tagEditor: world, people: world
+            notes: world, tagEditor: world, people: world,
+            followUps: LiveFollowUps(composition: composition)
         )
     }
 }
@@ -1180,6 +1181,170 @@ extension AskScope {
                 endKey: LogicalDay.dateKey(
                     forMs: Int64(end.timeIntervalSince1970 * 1000), timeZoneID: zone)
             )
+        }
+    }
+}
+
+
+// MARK: - FollowUpsDataSource
+
+/// Its own type rather than another face of `LiveWorld`: follow-ups need `delete(id:)`,
+/// `add(...)` and `updates()`, and every one of those already means something else on the
+/// conversation seam. One object answering to both would have to spell each of them oddly.
+@MainActor
+final class LiveFollowUps {
+    private let composition: AppComposition
+
+    init(composition: AppComposition) {
+        self.composition = composition
+    }
+
+    private func title(of conversationId: String) async -> String? {
+        let detail = try? await composition.runtime.library.conversation(id: conversationId)
+        return detail?.row.title
+    }
+
+    private func citationTarget(for citation: AskCitation) async -> CitationTarget? {
+        await LiveWorld(composition: composition).citationTarget(for: citation)
+    }
+}
+
+extension LiveFollowUps: FollowUpsDataSource {
+    func items(scope: FollowUpListScope) async throws -> [FollowUpItem] {
+        let rows = try await composition.followUps.list(
+            scope: scope.storeScope, nowMs: composition.clock.nowMs)
+        return await withTitles(rows)
+    }
+
+    func item(id: String) async throws -> FollowUpItem? {
+        guard let row = try await composition.followUps.load(id: id) else { return nil }
+        return await withTitles([row]).first
+    }
+
+    /// One conversation lookup per distinct source, not per row: a list of twelve follow-ups
+    /// from three conversations is three reads, and a row without a title would otherwise have
+    /// to say "Conversation" — which tells the reader nothing about where it came from.
+    private func withTitles(_ rows: [FollowUp]) async -> [FollowUpItem] {
+        var titles: [String: String] = [:]
+        for conversationId in Set(rows.compactMap(\.sourceConversationId)) {
+            if let title = await title(of: conversationId) { titles[conversationId] = title }
+        }
+        return rows.map { row in
+            FollowUpItem(
+                id: row.id,
+                text: row.text,
+                done: row.done,
+                dueAtMs: row.dueAtMs,
+                priority: row.priority,
+                quote: row.quote,
+                why: row.why,
+                origin: row.origin,
+                createdAtMs: row.createdAtMs,
+                completedAtMs: row.completedAtMs,
+                archivedAtMs: row.archivedAtMs,
+                snoozedUntilMs: row.snoozedUntilMs,
+                sourceConversationId: row.sourceConversationId,
+                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] })
+        }
+    }
+
+    func followUpUpdates() -> AsyncStream<Void> {
+        let stream = composition.runtime.library.observeOpenFollowUps()
+        return AsyncStream { continuation in
+            let task = Task {
+                for await _ in stream { continuation.yield(()) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    @discardableResult
+    func add(text: String, dueAtMs: Int64?) async throws -> String {
+        let item = try await composition.followUps.add(
+            text: text, dueAtMs: dueAtMs, nowMs: composition.clock.nowMs)
+        return item.id
+    }
+
+    func setDone(id: String, done: Bool) async throws {
+        try await composition.followUps.setDone(id: id, done, nowMs: composition.clock.nowMs)
+    }
+
+    func setText(id: String, text: String) async throws {
+        try await composition.followUps.setText(id: id, text, nowMs: composition.clock.nowMs)
+    }
+
+    func setDue(id: String, dueAtMs: Int64?) async throws {
+        try await composition.followUps.setDue(id: id, dueAtMs)
+    }
+
+    func setPriority(id: String, priority: FollowUpPriority) async throws {
+        try await composition.followUps.setPriority(id: id, priority)
+    }
+
+    func snooze(id: String, untilMs: Int64?) async throws {
+        try await composition.followUps.snooze(id: id, until: untilMs)
+    }
+
+    func setArchived(id: String, archived: Bool) async throws {
+        try await composition.followUps.setArchived(
+            id: id, archived, nowMs: composition.clock.nowMs)
+    }
+
+    func delete(id: String) async throws {
+        try await composition.followUps.delete(id: id)
+        removeFollowUpFromIndex(id: id)
+    }
+
+    /// The recording, cued to the words that created the item.
+    ///
+    /// The stored offsets are relative to the SEGMENT (that is what the transcriber reports),
+    /// while a citation is wall-clock — so the segment's own start is added here. Getting that
+    /// wrong opens the recording at the top and quietly looks like the timestamp is broken.
+    func source(of id: String) async -> CitationTarget? {
+        guard let row = try? await composition.followUps.load(id: id),
+            let segmentId = row.sourceSegmentId
+        else { return nil }
+        let segmentStartMs = composition.files.readMeta(segmentId).map { Int64($0.startTimeMs) }
+        let citation = AskCitation(
+            segmentId: segmentId,
+            number: 1,
+            startMs: row.sourceStartMs.flatMap { offset in
+                segmentStartMs.map { $0 + offset }
+            },
+            endMs: row.sourceEndMs.flatMap { offset in
+                segmentStartMs.map { $0 + offset }
+            })
+        return await citationTarget(for: citation)
+    }
+
+    /// Whether anything is set up to propose follow-ups at all — a local-only mode with no
+    /// on-device model available, or remote AI without consent, means the list will stay as
+    /// empty as the person left it, and the empty state should say so rather than implying
+    /// nothing in their week was worth remembering.
+    var automaticProposalsEnabled: Bool {
+        switch composition.settings.aiMode {
+        case .localOnly:
+            // The on-device model needs no key; whether Apple Intelligence is actually
+            // available on this device is the runtime's question, not this screen's.
+            return true
+        case .remoteOnly, .remoteFirst, .localFirst:
+            return composition.settings.hasApiKey(for: .openAi)
+        }
+    }
+
+    private func removeFollowUpFromIndex(id: String) {
+        try? composition.index.remove(id: id, kind: .followUp)
+    }
+}
+
+extension FollowUpListScope {
+    /// The screen's vocabulary mapped onto the store's.
+    var storeScope: FollowUpScope {
+        switch self {
+        case .open: return .open
+        case .completed: return .completed
+        case .archived: return .archived
         }
     }
 }

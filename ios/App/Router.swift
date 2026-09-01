@@ -34,6 +34,10 @@ enum Route: Equatable, Hashable, Identifiable {
     case library(tag: String?)
     case search(query: String?)
     case ask(scope: String?, query: String?)
+    /// The follow-ups list. `scope` names which slice to show — see `FollowUpListScope`.
+    case followUps(scope: String?)
+    /// One follow-up, opened on its own screen.
+    case followUp(id: String)
     case note(id: String)
     case settings(SettingsPage?)
 
@@ -70,6 +74,11 @@ enum Route: Equatable, Hashable, Identifiable {
             return .search(query: query["q"])
         case "ask":
             return .ask(scope: query["scope"], query: query["q"])
+        case "followups":
+            return .followUps(scope: query["scope"])
+        case "followup":
+            guard let id = pathParts.first else { return nil }
+            return .followUp(id: id)
         case "note":
             guard let id = pathParts.first else { return nil }
             return .note(id: id)
@@ -118,6 +127,12 @@ enum Route: Equatable, Hashable, Identifiable {
             if let scope { items.append(.init(name: "scope", value: scope)) }
             if let q { items.append(.init(name: "q", value: q)) }
             if !items.isEmpty { components.queryItems = items }
+        case .followUps(let scope):
+            components.host = "followups"
+            if let scope { components.queryItems = [.init(name: "scope", value: scope)] }
+        case .followUp(let id):
+            components.host = "followup"
+            components.path = "/\(id)"
         case .note(let id):
             components.host = "note"
             components.path = "/\(id)"

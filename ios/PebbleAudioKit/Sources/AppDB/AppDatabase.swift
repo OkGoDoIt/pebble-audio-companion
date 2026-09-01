@@ -276,6 +276,25 @@ public struct AppDatabase: Sendable {
                         ON follow_up_candidates(state, createdAtMs)
                     """)
         }
+        // Every follow-up on the list right now came out of the extractor this release
+        // replaces, and reads like it: "Water the plants on Sunday.. Owner: Roger" from a
+        // visitor talking about their own laptop, twenty rows of product feedback dictated to
+        // a coding assistant, items from conversations three weeks old. Carrying them forward
+        // would mean the new list is judged on the old one's output.
+        //
+        // So they are FILED AWAY, not deleted — they are still under "Filed away", still
+        // restorable, and anything the person had already ticked keeps its tick. Clearing the
+        // extraction bookkeeping lets recent conversations be read again by the new pass;
+        // conversations outside its freshness window settle for free without a call.
+        migrator.registerMigration("v7-refresh-follow-ups") { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups
+                    SET archivedAtMs = COALESCE(archivedAtMs, createdAtMs)
+                    WHERE origin = 'ai' AND done = 0
+                    """)
+            try db.execute(sql: "DROP TABLE IF EXISTS follow_up_extractions")
+        }
         try migrator.migrate(writer)
     }
 }

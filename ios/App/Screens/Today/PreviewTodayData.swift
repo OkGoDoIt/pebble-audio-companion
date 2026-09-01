@@ -11,14 +11,35 @@ final class PreviewTodayData {
     private enum Phase { case recording, paused, stopped }
 
     private var phase: Phase = .recording
-    private var followUps: [FollowUpDisplay] = [
-        FollowUpDisplay(id: "fu-1", text: "Send Dana the new firmware build", done: false),
-        FollowUpDisplay(id: "fu-2", text: "Book the studio walkthrough for Tuesday", done: false),
-        FollowUpDisplay(id: "fu-3", text: "Reply to Owen about the lease paperwork", done: false),
-        FollowUpDisplay(id: "fu-4", text: "Order spare straps for the Pebble", done: false),
-        FollowUpDisplay(id: "fu-5", text: "Write up the reattach fix for the log", done: false),
-        FollowUpDisplay(id: "fu-6", text: "Check the Soniox usage dashboard", done: false),
-        FollowUpDisplay(id: "fu-7", text: "Charge the watch before the demo", done: false),
+    private static let day: Double = 86_400
+    private static func ms(_ offsetDays: Double) -> Int64 {
+        Int64((Date().timeIntervalSince1970 + offsetDays * day) * 1000)
+    }
+
+    private var followUps: [FollowUpItem] = [
+        FollowUpItem(
+            id: "fu-1", text: "Send Dana the new firmware build", done: false,
+            dueAtMs: PreviewTodayData.ms(-1), priority: .high,
+            quote: "I'll get the new build over to Dana before she leaves.",
+            why: "Dana is blocked on it", origin: .ai, createdAtMs: PreviewTodayData.ms(-2),
+            sourceConversationId: "planning-work",
+            sourceConversationTitle: "App redesign session"),
+        FollowUpItem(
+            id: "fu-2", text: "Book the studio walkthrough for Tuesday", done: false,
+            dueAtMs: PreviewTodayData.ms(0), priority: .normal,
+            quote: "We should get the walkthrough booked for Tuesday.",
+            why: "the slot goes to someone else", origin: .ai,
+            createdAtMs: PreviewTodayData.ms(-1),
+            sourceConversationId: "coffee-dana", sourceConversationTitle: "Coffee with Dana"),
+        FollowUpItem(
+            id: "fu-3", text: "Reply to Owen about the lease paperwork", done: false,
+            priority: .normal, quote: "I still owe Owen an answer on the lease.",
+            why: "Owen is waiting on the signature", origin: .ai,
+            createdAtMs: PreviewTodayData.ms(-3),
+            sourceConversationId: "evening-home", sourceConversationTitle: "Evening at home"),
+        FollowUpItem(
+            id: "fu-4", text: "Order spare straps for the Pebble", done: false,
+            priority: .low, origin: .user, createdAtMs: PreviewTodayData.ms(-4)),
     ]
 
     private var todayContinuations: [UUID: AsyncStream<TodaySnapshot>.Continuation] = [:]
@@ -179,7 +200,8 @@ final class PreviewTodayData {
             liveMinute: .sampleLiveMinute,
             coverage: Self.coverage,
             recap: Self.recap,
-            followUps: followUps,
+            followUps: Array(followUps.prefix(3)),
+            openFollowUpCount: followUps.filter { !$0.done }.count,
             conversations: conversations
         )
     }

@@ -38,6 +38,10 @@ struct LibraryScreen: View {
                 ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
             case .note(let id):
                 SavedNotesScreen(noteId: id)
+            case .followUp(let id):
+                // Search lives inside Library and can hit a follow-up, so this stack has to
+                // know how to show one.
+                FollowUpDetailScreen(id: id)
             default:
                 // Other hosts (Today/Live/Settings) register their own destinations.
                 EmptyView()

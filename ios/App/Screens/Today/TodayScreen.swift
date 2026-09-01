@@ -22,9 +22,7 @@ struct TodayScreen: View {
                     if let recap = viewModel.snapshot.recap {
                         recapCard(recap)
                     }
-                    if !viewModel.snapshot.followUps.isEmpty {
-                        followUpsCard
-                    }
+                    followUpsSection
                     if !viewModel.snapshot.conversations.isEmpty {
                         conversationsSection
                     }
@@ -64,6 +62,10 @@ struct TodayScreen: View {
             // The same detail screen the Library pushes — the native back button names
             // whichever parent actually pushed it, so no origin needs threading through.
             ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
+        case .followUp(let id):
+            // Opened in THIS stack. Tapping a row on Today should not move the person to
+            // another tab; "See all" is the thing that does that, and it says so.
+            FollowUpDetailScreen(id: id)
         default:
             Color.clear.background(Tokens.ground)
         }
@@ -99,7 +101,7 @@ struct TodayScreen: View {
 
     private var askButton: some View {
         Button {
-            router.askSheet = .ask(scope: AskScope.today.routeKey, query: nil)
+            router.navigate(to: .ask(scope: AskScope.today.routeKey, query: nil))
         } label: {
             // An explicit glyph + text pair, NOT a `Label`: iOS 26 toolbars render `Label`
             // icon-only and ignore `.labelStyle(.titleAndIcon)` in either position. The system
@@ -283,71 +285,60 @@ struct TodayScreen: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: Follow-ups (circle checkmarks; "See all N" disclosure; "All caught up.")
+    // MARK: Follow-ups — the three that matter, and a way out to the rest
+    //
+    // Today shows a GLANCE, not a list. It used to show two rows with "See all 20" wedged into
+    // the first one's text (which is why row one was narrower than row two), and "See all"
+    // expanded twenty items into the middle of the feed. There is a tab for the list now; this
+    // is the reminder that it has something in it.
+    //
+    // Nothing here is done: a ticked item leaves the card, because a card capped at three
+    // rows cannot afford to spend one on something already finished.
 
     @ViewBuilder
-    private var followUpsCard: some View {
-        if viewModel.followUpsAllDone {
-            Card {
-                Text(Copy.Empty.followUpsAllDone)
-                    .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.tertiary)
-            }
-        } else {
-            ListCard(rowVerticalPadding: 13) {
-                ForEach(Array(viewModel.visibleFollowUps.enumerated()), id: \.element.id) {
-                    index, item in
-                    followUpRow(item, showsSeeAll: index == 0)
+    private var followUpsSection: some View {
+        if !viewModel.visibleFollowUps.isEmpty {
+            VStack(alignment: .leading, spacing: Tokens.blockGap) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(Copy.FollowUps.title)
+                        .font(AppFont.sectionTitle)
+                        .foregroundStyle(Tokens.label)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 8)
+                    if viewModel.openFollowUpCount > viewModel.visibleFollowUps.count {
+                        Button(Copy.Today.seeAll(viewModel.openFollowUpCount)) {
+                            router.navigate(to: .followUps(scope: nil))
+                        }
+                        .font(AppFont.chip)
+                        .foregroundStyle(Tokens.tint)
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                    }
+                }
+                .padding(.top, 4)
+
+                ListCard(rowVerticalPadding: 10) {
+                    ForEach(viewModel.visibleFollowUps) { item in
+                        followUpRow(item)
+                    }
                 }
             }
         }
     }
 
-    private func followUpRow(_ item: FollowUpDisplay, showsSeeAll: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Button {
+    private func followUpRow(_ item: FollowUpItem) -> some View {
+        Button {
+            router.todayPath.append(.followUp(id: item.id))
+        } label: {
+            FollowUpRow(item: item, now: viewModel.now) {
                 Haptics.checkedOff()
-                viewModel.toggleFollowUp(item)
-            } label: {
-                Group {
-                    if item.done {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(Tokens.tint)
-                    } else {
-                        Circle()
-                            .strokeBorder(Tokens.chevron, lineWidth: 1.5)
-                            .frame(width: 20, height: 20)
-                    }
+                withAnimation(Motion.animation(.snappy(duration: 0.25))) {
+                    viewModel.toggleFollowUp(item)
                 }
-                .hitTarget()
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, -12)
-            .accessibilityLabel(item.text)
-            .accessibilityValue(item.done
-                ? Copy.A11y.followUpDone : Copy.A11y.followUpNotDone)
-            .accessibilityHint(Copy.A11y.followUpHint)
-
-            Text(item.text)
-                .font(AppFont.subBody)
-                .foregroundStyle(item.done ? Tokens.meta : Tokens.label)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityHidden(true)
-
-            if showsSeeAll, !viewModel.showAllFollowUps,
-                viewModel.snapshot.followUps.count > 2
-            {
-                Button(Copy.Today.seeAll(viewModel.snapshot.followUps.count)) {
-                    withAnimation(Motion.animation(.snappy)) { viewModel.showAllFollowUps = true }
-                }
-                .font(AppFont.footnote)
-                .foregroundStyle(Tokens.tint)
-                .buttonStyle(.plain)
-                .fixedSize()
             }
         }
+        .buttonStyle(.plain)
+        .accessibilityHint(Copy.A11y.followUpOpenHint)
     }
 
     // MARK: Conversations (live row w/ rolling snippet + Live badge; finished rows)

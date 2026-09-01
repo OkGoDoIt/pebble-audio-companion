@@ -63,11 +63,10 @@ struct RecapDisplay: Equatable {
 
 // MARK: - Follow-ups / conversations
 
-struct FollowUpDisplay: Equatable, Identifiable {
-    let id: String
-    let text: String
-    var done: Bool
-}
+// Follow-ups on Today are `FollowUpItem` — the same model the Follow-ups tab and the
+// conversation sheet render. There used to be a Today-only `{ id, text, done }`, which is why
+// the card could not show a due date, could not say where an item came from, and could not
+// open one: the screen had never been given anything to open.
 
 struct ConversationRowDisplay: Equatable, Identifiable {
     let id: String
@@ -96,7 +95,12 @@ struct TodaySnapshot: Equatable {
     var liveMinute: [WaveformBar?]
     var coverage: CoverageDisplay?
     var recap: RecapDisplay?
-    var followUps: [FollowUpDisplay]
+    /// The handful Today might show — already filtered to what is open and ordered by
+    /// urgency. Deliberately short: Today is a glance at the list, not the list.
+    var followUps: [FollowUpItem]
+    /// Everything open, including what did not fit above. This is what "See all N" counts, and
+    /// it used to count done items too, capped at 20, so the number was wrong twice over.
+    var openFollowUpCount: Int
     var conversations: [ConversationRowDisplay]
     /// Startup recovery (and the one-time import from the old app) is still running, so an
     /// empty Today means "not read yet", not "nothing recorded". `StartupSequencer` has always

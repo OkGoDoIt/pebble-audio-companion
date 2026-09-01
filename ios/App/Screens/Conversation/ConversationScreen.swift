@@ -437,9 +437,10 @@ struct ConversationScreen: View {
                 title: Copy.Conversation.ask, systemImage: "sparkles", style: .filled
             ) {
                 let title = model.display?.title ?? ""
-                router.askSheet = .ask(
-                    scope: AskScope.conversation(id: conversationId, title: title).routeKey,
-                    query: nil)
+                router.navigate(
+                    to: .ask(
+                        scope: AskScope.conversation(id: conversationId, title: title).routeKey,
+                        query: nil))
             }
             ActionPill(title: Copy.Conversation.notes) { openNotes() }
             ActionPill(title: Copy.Conversation.followUps) { model.showFollowUps = true }
@@ -514,80 +515,103 @@ final class ConversationViewModel {
 
 // MARK: - Follow-ups sheet (conversation bottom bar)
 
+/// This conversation's follow-ups, in the shape iOS already has for a short editable list:
+/// navigation chrome, a real `List`, swipe to delete, a row that opens.
+///
+/// The version this replaces was a fixed 430 pt `VStack` with no scroll view, so an eleventh
+/// follow-up simply fell off the bottom; its rows toggled and did nothing else; and its empty
+/// state said "All caught up." whether you had ticked everything off or the conversation had
+/// never produced anything at all.
 struct FollowUpsSheet: View {
     let conversationId: String
     @Environment(\.dismiss) private var dismiss
-    @State private var followUps: [FollowUp] = []
+    @Environment(AppRouter.self) private var router
+    @State private var items: [FollowUpItem] = []
     @State private var loaded = false
+    @State private var now = Date()
+
+    private var source: any FollowUpsDataSource { AskLibraryDataSources.current.followUps }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SheetGrabber()
-            SheetTitleRow(title: Copy.Conversation.followUps) {
-                Button(Copy.Common.done) { dismiss() }
-                    .font(AppFont.headline)
-                    .foregroundStyle(Tokens.tint)
-                    .buttonStyle(.plain)
-            }
-
-            if loaded, followUps.isEmpty {
-                Text(Copy.Empty.followUpsAllDone)
-                    .font(AppFont.subBody)
-                    .foregroundStyle(Tokens.tertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 32)
-            } else if !followUps.isEmpty {
-                ListCard(rowVerticalPadding: 11) {
-                    ForEach(followUps, id: \.id) { followUp in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Button {
-                                Haptics.checkedOff()
-                                toggle(followUp)
+        NavigationStack {
+            Group {
+                if loaded && items.isEmpty {
+                    Text(Copy.FollowUps.conversationEmpty)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Tokens.ground)
+                } else {
+                    List {
+                        ForEach(items) { item in
+                            NavigationLink {
+                                FollowUpDetailScreen(id: item.id)
                             } label: {
-                                Image(systemName: followUp.done
-                                    ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 20, weight: .light))
-                                    .foregroundStyle(
-                                        followUp.done ? Tokens.tint : Tokens.chevron)
-                                    .hitTarget()
+                                FollowUpRow(item: item, now: now, showsChevron: false) {
+                                    Haptics.checkedOff()
+                                    toggle(item)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .padding(.vertical, -10)
-                            .accessibilityLabel(followUp.text)
-                            .accessibilityValue(followUp.done
-                                ? Copy.A11y.followUpDone : Copy.A11y.followUpNotDone)
-                            .accessibilityHint(Copy.A11y.followUpHint)
-                            Text(followUp.text)
-                                .font(AppFont.subBody)
-                                .foregroundStyle(Tokens.label)
-                                .strikethrough(followUp.done, color: Tokens.meta)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityHidden(true)
-                            Spacer(minLength: 0)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    delete(item)
+                                } label: {
+                                    Label(Copy.FollowUps.delete, systemImage: "trash")
+                                }
+                            }
+                            .listRowBackground(Tokens.surface)
                         }
                     }
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
+                    .background(Tokens.ground)
+                    .animation(
+                        Motion.animation(.snappy(duration: 0.25)),
+                        value: items.map { "\($0.id)\($0.done)" }.joined())
                 }
             }
-            Spacer(minLength: 0)
+            .navigationTitle(Copy.Conversation.followUps)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(Copy.Common.done) { dismiss() }
+                }
+            }
         }
-        .padding(.horizontal, Tokens.screenMargin)
-        .background(Tokens.ground)
-        .presentationDetents([.height(430)])
-        .presentationDragIndicator(.hidden)
+        .presentationDetents([.medium, .large])
         .task { await reload() }
     }
 
     private func reload() async {
-        let display = try? await AskLibraryDataSources.current.conversations.display(
-            id: conversationId)
-        followUps = display?.followUps ?? []
+        now = Date()
+        let all = (try? await source.items(scope: .open)) ?? []
+        let completed = (try? await source.items(scope: .completed)) ?? []
+        let archived = (try? await source.items(scope: .archived)) ?? []
+        // The conversation's own screen shows everything it produced, including what has been
+        // ticked or filed away: on this screen "where did the other one go?" is the question,
+        // not "what is left to do today".
+        items = (all + completed + archived)
+            .filter { $0.sourceConversationId == conversationId }
         loaded = true
     }
 
-    private func toggle(_ followUp: FollowUp) {
+    private func toggle(_ item: FollowUpItem) {
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].done.toggle()
+        }
         Task {
-            try? await AskLibraryDataSources.current.conversations.toggleFollowUp(
-                id: followUp.id)
+            try? await source.setDone(id: item.id, done: !item.done)
+            await reload()
+        }
+    }
+
+    private func delete(_ item: FollowUpItem) {
+        Haptics.destructiveConfirmed()
+        items.removeAll { $0.id == item.id }
+        Task {
+            try? await source.delete(id: item.id)
             await reload()
         }
     }

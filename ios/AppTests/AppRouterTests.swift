@@ -83,13 +83,43 @@ struct AppRouterTests {
         #expect(router.todayPath == [.live])
     }
 
-    @Test func askOpensAsASheetAndLeavesTheTabAlone() {
+    /// Ask is a tab, not a sheet. The link selects it and leaves the request for the screen to
+    /// pick up, because the screen outlives any one link now: a second "ask about this
+    /// conversation" has to re-scope a view model that is already on screen.
+    @Test func askSelectsItsTabAndLeavesTheRequestToBeConsumed() {
         let router = AppRouter()
         router.selectedTab = .settings
         router.navigate(to: .ask(scope: "today", query: "what did we decide"))
 
-        #expect(router.selectedTab == .settings)
-        #expect(router.askSheet == .ask(scope: "today", query: "what did we decide"))
+        #expect(router.selectedTab == .ask)
+        #expect(router.askPath.isEmpty)
+        #expect(router.consumePendingAsk() == .ask(scope: "today", query: "what did we decide"))
+        #expect(router.consumePendingAsk() == nil)
+    }
+
+    @Test func followUpsOpenInTheirOwnTab() {
+        let router = AppRouter()
+        router.selectedTab = .today
+        router.navigate(to: .followUps(scope: "archived"))
+        #expect(router.selectedTab == .followUps)
+        #expect(router.followUpsPath.isEmpty)
+        #expect(router.consumePendingFollowUpScope() == "archived")
+        #expect(router.consumePendingFollowUpScope() == nil)
+
+        router.navigate(to: .followUp(id: "fu-1"))
+        #expect(router.selectedTab == .followUps)
+        #expect(router.followUpsPath == [.followUp(id: "fu-1")])
+    }
+
+    /// The widget links straight to an item, so the round trip has to survive the URL.
+    @Test func aFollowUpLinkRoundTrips() throws {
+        let route = Route.followUp(id: "conv-1-action-9f2")
+        #expect(route.url.absoluteString == "companion://followup/conv-1-action-9f2")
+        #expect(Route.parse(route.url) == route)
+        #expect(Route.parse(URL(string: "companion://followups?scope=completed")!)
+            == .followUps(scope: "completed"))
+        #expect(Route.parse(URL(string: "companion://followups")!) == .followUps(scope: nil))
+        #expect(Route.parse(URL(string: "companion://followup")!) == nil)
     }
 
     @Test func settingsPushesOnlyTheNamedPage() {

@@ -417,6 +417,97 @@ protocol PeopleDataSource: AnyObject {
     func deletePerson(id: String) async throws
 }
 
+// MARK: - Follow-ups
+
+/// Which slice of the list a screen is asking for. The names are the ones on screen: what is
+/// still open, what has been ticked off, and what the app filed away because nobody touched it.
+enum FollowUpListScope: String, CaseIterable, Equatable, Identifiable {
+    case open
+    case completed
+    case archived
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .open: return Copy.FollowUps.scopeOpen
+        case .completed: return Copy.FollowUps.scopeCompleted
+        case .archived: return Copy.FollowUps.scopeArchived
+        }
+    }
+}
+
+/// One follow-up as the screens render it.
+///
+/// Everything here beyond `text` and `done` exists because the previous model had neither: a
+/// row was an id, a string and a flag, so nothing on screen could say where an item came from,
+/// when it mattered, or why it had been suggested at all — and the only honest answer to "what
+/// is this?" was to go and read the transcript yourself.
+struct FollowUpItem: Equatable, Identifiable {
+    let id: String
+    var text: String
+    var done: Bool
+    var dueAtMs: Int64?
+    var priority: FollowUpPriority
+    /// The words in the recording that created it. Nil for one the person wrote themselves.
+    var quote: String?
+    /// What goes wrong if it never happens, from the pass that proposed it.
+    var why: String?
+    var origin: FollowUpOrigin
+    var createdAtMs: Int64
+    var completedAtMs: Int64?
+    var archivedAtMs: Int64?
+    var snoozedUntilMs: Int64?
+    var sourceConversationId: String?
+    /// The conversation's own title, so a row can say where it came from without a second load.
+    var sourceConversationTitle: String?
+
+    var isArchived: Bool { archivedAtMs != nil }
+
+    func isSnoozed(at now: Date) -> Bool {
+        guard let snoozedUntilMs else { return false }
+        return Double(snoozedUntilMs) / 1000 > now.timeIntervalSince1970
+    }
+
+    var dueDate: Date? {
+        dueAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    var snoozedUntil: Date? {
+        snoozedUntilMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    var created: Date { Date(timeIntervalSince1970: Double(createdAtMs) / 1000) }
+}
+
+@MainActor
+protocol FollowUpsDataSource: AnyObject {
+    func items(scope: FollowUpListScope) async throws -> [FollowUpItem]
+    func item(id: String) async throws -> FollowUpItem?
+    /// Emits after any change to the table, so every screen showing follow-ups reloads.
+    /// Named apart from `LibraryDataSource.updates()` because one type answers both, and the
+    /// two watch different things: that one tracks conversations, this one the follow-up rows.
+    func followUpUpdates() -> AsyncStream<Void>
+
+    /// A follow-up the person typed. Returns its id so the caller can open it.
+    @discardableResult
+    func add(text: String, dueAtMs: Int64?) async throws -> String
+    func setDone(id: String, done: Bool) async throws
+    func setText(id: String, text: String) async throws
+    func setDue(id: String, dueAtMs: Int64?) async throws
+    func setPriority(id: String, priority: FollowUpPriority) async throws
+    func snooze(id: String, untilMs: Int64?) async throws
+    func setArchived(id: String, archived: Bool) async throws
+    func delete(id: String) async throws
+
+    /// Where "play the moment this came from" goes: the conversation, cued to the words.
+    func source(of id: String) async -> CitationTarget?
+
+    /// True when the app is set up to propose follow-ups at all. The empty state says which
+    /// kind of empty it is looking at rather than implying nothing was worth remembering.
+    var automaticProposalsEnabled: Bool { get }
+}
+
 // MARK: - The holder
 
 @MainActor
@@ -428,6 +519,7 @@ struct AskLibraryDataSources {
     var notes: any NotesDataSource
     var tagEditor: any TagEditorDataSource
     var people: any PeopleDataSource
+    var followUps: any FollowUpsDataSource
 
     /// Defaults to the mock world; the runtime swaps DB-backed sources in at launch.
     static var current: AskLibraryDataSources = .mocks()

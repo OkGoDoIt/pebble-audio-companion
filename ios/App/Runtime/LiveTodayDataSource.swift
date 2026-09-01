@@ -49,6 +49,7 @@ final class LiveTodayDataSource {
             coverage: nil,
             recap: nil,
             followUps: [],
+            openFollowUpCount: 0,
             conversations: []
         )
     }
@@ -141,7 +142,11 @@ final class LiveTodayDataSource {
 
         let sections = (try? await composition.runtime.library.library()) ?? []
         let todaySection = sections.first { $0.dateKey == dateKey }
-        let followUps = (try? await composition.followUps.list()) ?? []
+        let openFollowUps =
+            (try? await composition.followUps.list(scope: .open, nowMs: composition.clock.nowMs))
+            ?? []
+        let followUps = await Self.followUpItems(
+            Array(openFollowUps.prefix(Self.followUpsShown)), composition: composition)
         let recap = try? await composition.recapStore.load(dateKey: dateKey)
 
         // Live first: the rolling line the live row shows comes out of the live transcript this
@@ -165,7 +170,8 @@ final class LiveTodayDataSource {
             recap: Self.recap(
                 recap, aiModelName: composition.settings.aiModel, rows: todaySection?.rows ?? []
             ),
-            followUps: Self.followUpDisplays(followUps),
+            followUps: followUps,
+            openFollowUpCount: openFollowUps.count,
             conversations: (todaySection?.rows ?? []).map {
                 Self.conversationRow(
                     $0,
@@ -524,15 +530,37 @@ final class LiveTodayDataSource {
         )
     }
 
-    /// Open first, then the most recently completed — the card is a to-do list, not a log.
-    static func followUpDisplays(_ items: [FollowUp]) -> [FollowUpDisplay] {
-        items
-            .sorted { a, b in
-                if a.done != b.done { return !a.done }
-                return a.createdAtMs > b.createdAtMs
-            }
-            .prefix(20)
-            .map { FollowUpDisplay(id: $0.id, text: $0.text, done: $0.done) }
+    /// How many follow-ups Today can show. Three: enough to be a reminder that the list has
+    /// something on it, few enough that the card cannot become the list.
+    static let followUpsShown = 3
+
+    /// Maps store rows to the shared display model, resolving each distinct source
+    /// conversation's title once so a row can say where it came from.
+    static func followUpItems(
+        _ rows: [FollowUp], composition: AppComposition
+    ) async -> [FollowUpItem] {
+        var titles: [String: String] = [:]
+        for conversationId in Set(rows.compactMap(\.sourceConversationId)) {
+            let detail = try? await composition.runtime.library.conversation(id: conversationId)
+            if let title = detail?.row.title { titles[conversationId] = title }
+        }
+        return rows.map { row in
+            FollowUpItem(
+                id: row.id,
+                text: row.text,
+                done: row.done,
+                dueAtMs: row.dueAtMs,
+                priority: row.priority,
+                quote: row.quote,
+                why: row.why,
+                origin: row.origin,
+                createdAtMs: row.createdAtMs,
+                completedAtMs: row.completedAtMs,
+                archivedAtMs: row.archivedAtMs,
+                snoozedUntilMs: row.snoozedUntilMs,
+                sourceConversationId: row.sourceConversationId,
+                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] })
+        }
     }
 
     /// One Today row. `liveSnippet` is the rolling line for the conversation being recorded
@@ -663,7 +691,8 @@ extension LiveTodayDataSource: TodayDataSource {
 
     func setFollowUpDone(id: String, done: Bool) {
         Task { [composition] in
-            try? await composition.followUps.setDone(id: id, done)
+            try? await composition.followUps.setDone(
+                id: id, done, nowMs: composition.clock.nowMs)
             await self.refresh()
         }
     }

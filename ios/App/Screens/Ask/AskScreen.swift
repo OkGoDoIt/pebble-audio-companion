@@ -1,19 +1,20 @@
 import SwiftUI
 import AppDB
 
-/// The Ask sheet (mockup 2.8 + plan 6.6). Presented from Today's title pill, the Search
-/// hand-off row, and the Conversation bottom bar — always context-scoped, scope always
-/// visible (anti-B5). Initial state: composer + Recent (Q18). Citations tap through to the
-/// cited conversation.
+/// The Ask tab (mockup 2.8 + plan 6.6) — always context-scoped, scope always visible
+/// (anti-B5). Initial state: composer + Recent (Q18). Citations tap through to the cited
+/// conversation.
 ///
 /// Ask is a CONVERSATION: every turn stays on screen and every follow-up is answered with the
 /// earlier turns as context, so "so what's the plan?" means what it means in a chat. Recent
 /// lists whole conversations, and reopening one restores all of it.
-struct AskSheetView: View {
-    let route: Route
-
+///
+/// It was a 620 pt sheet behind a pill on Today. A sheet is a thing you dismiss, and it took
+/// the whole conversation with it: no back, no history you could return to mid-thought, and a
+/// citation tap had to close the answer you were reading in order to show you its source.
+/// A tab keeps the thread, and a citation now pushes the recording on top of it.
+struct AskScreen: View {
     @Environment(AppRouter.self) private var router
-    @Environment(\.dismiss) private var dismiss
     @State private var model = AskViewModel()
 
     /// Scroll target that keeps the newest turn in view as the conversation grows.
@@ -23,21 +24,11 @@ struct AskSheetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SheetGrabber()
-
-            SheetTitleRow(title: Copy.Ask.title) {
-                HStack(spacing: 8) {
-                    if model.isInThread {
-                        Button(Copy.Ask.newConversation) { model.startNewConversation() }
-                            .font(AppFont.chip)
-                            .foregroundStyle(Tokens.tint)
-                            .buttonStyle(.plain)
-                            .frame(minHeight: 44)
-                            .accessibilityHint(Copy.A11y.newConversationHint)
-                    }
-                    ScopeMenu(scope: $model.scope)
-                }
+            HStack {
+                Spacer(minLength: 0)
+                ScopeMenu(scope: $model.scope)
             }
+            .padding(.top, 2)
 
             content
 
@@ -48,11 +39,39 @@ struct AskSheetView: View {
             }
         }
         .padding(.horizontal, Tokens.screenMargin)
-        .padding(.bottom, 16)
+        .padding(.bottom, 8)
         .background(Tokens.ground)
-        .presentationDetents([.height(620)])
-        .presentationDragIndicator(.hidden)
-        .task { await model.prepare(route: route) }
+        .navigationTitle(Copy.Ask.title)
+        .toolbar {
+            if model.isInThread {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(Copy.Ask.newConversation) { model.startNewConversation() }
+                        .accessibilityHint(Copy.A11y.newConversationHint)
+                }
+            }
+        }
+        .navigationDestination(for: Route.self) { route in
+            destination(for: route)
+        }
+        .task { await model.prepare(route: router.consumePendingAsk()) }
+        // A second "Ask about this conversation" while the tab is already open has to re-scope
+        // and re-ask. Nothing re-reads a route on a screen that never went away.
+        .onChange(of: router.pendingAsk) { _, pending in
+            guard pending != nil else { return }
+            model.accept(route: router.consumePendingAsk())
+        }
+    }
+
+    @ViewBuilder
+    private func destination(for route: Route) -> some View {
+        switch route {
+        case .conversation(let id, let atMs, let focus):
+            ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
+        case .note(let id):
+            SavedNotesScreen(noteId: id)
+        default:
+            Color.clear.background(Tokens.ground)
+        }
     }
 
     // MARK: - States
@@ -348,9 +367,10 @@ struct AskSheetView: View {
                 let target = await AskLibraryDataSources.current.ask.citationTarget(
                     for: citation)
             else { return }
-            dismiss()
-            router.navigate(
-                to: .conversation(
+            // Pushed, not navigated: the answer you were reading is still there when you come
+            // back, which is the whole reason Ask stopped being a sheet.
+            router.askPath.append(
+                .conversation(
                     id: target.conversationId,
                     atMs: target.mediaOffsetMs,
                     focus: target.focus))
@@ -491,20 +511,24 @@ final class AskViewModel {
 
     private var prepared = false
 
-    func prepare(route: Route) async {
+    func prepare(route: Route?) async {
         guard !prepared else { return }
         prepared = true
-        var handOffQuery: String?
-        if case .ask(let scopeKey, let query) = route {
-            scope = AskScope.parse(scopeKey) { id in
-                AskLibraryDataSources.current.ask.conversationTitle(citedId: id)
-            }
-            handOffQuery = query?.trimmingCharacters(in: .whitespaces)
-        }
         await reloadRecent()
-        if let query = handOffQuery, !query.isEmpty {
-            send(query)
+        accept(route: route)
+    }
+
+    /// Applies an incoming `.ask` link: re-scope, and ask straight away when it carried a
+    /// question. A link that arrives mid-thread starts a fresh conversation rather than
+    /// appending to whatever was on screen — "ask about this recording" is a new subject.
+    func accept(route: Route?) {
+        guard case .ask(let scopeKey, let query)? = route else { return }
+        let question = query?.trimmingCharacters(in: .whitespaces) ?? ""
+        if isInThread { startNewConversation() }
+        scope = AskScope.parse(scopeKey) { id in
+            AskLibraryDataSources.current.ask.conversationTitle(citedId: id)
         }
+        if !question.isEmpty { send(question) }
     }
 
     func reloadRecent() async {
@@ -589,10 +613,10 @@ final class AskViewModel {
     }
 }
 
-#Preview("Ask sheet") {
-    Color.black.sheet(isPresented: .constant(true)) {
-        AskSheetView(route: .ask(scope: nil, query: nil))
-            .environment(AppRouter())
-            .tint(Tokens.tint)
+#Preview("Ask") {
+    NavigationStack {
+        AskScreen()
     }
+    .environment(AppRouter())
+    .tint(Tokens.tint)
 }

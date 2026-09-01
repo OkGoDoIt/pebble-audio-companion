@@ -8,8 +8,12 @@ final class TodayViewModel {
     private let dataSource: any TodayDataSource
 
     private(set) var snapshot: TodaySnapshot
-    /// "See all N" disclosure on the follow-ups card.
-    var showAllFollowUps = false
+    /// Ticks the person has just made, applied over whatever the last snapshot carried, so the
+    /// checkmark fills on the tap rather than after a database write and a full recomputation
+    /// of the whole screen. Cleared as soon as the store agrees.
+    private var optimisticDone: [String: Bool] = [:]
+    /// Refreshed with every snapshot, so "Due today" stops being true at midnight.
+    private(set) var now = Date()
 
     init(dataSource: (any TodayDataSource)? = nil) {
         let source = dataSource ?? AppDataSources.current.today
@@ -19,6 +23,13 @@ final class TodayViewModel {
 
     func observe() async {
         for await value in dataSource.todayUpdates() {
+            for item in value.followUps where optimisticDone[item.id] == item.done {
+                optimisticDone[item.id] = nil
+            }
+            // An item that has left the open list entirely has landed — stop guessing about it.
+            let present = Set(value.followUps.map(\.id))
+            optimisticDone = optimisticDone.filter { present.contains($0.key) }
+            now = Date()
             snapshot = value
         }
     }
@@ -49,13 +60,20 @@ final class TodayViewModel {
         return snapshot.recovering ? Copy.Empty.todayRecovering : Copy.Empty.todayFirstRun
     }
 
-    var visibleFollowUps: [FollowUpDisplay] {
-        showAllFollowUps ? snapshot.followUps : Array(snapshot.followUps.prefix(2))
+    /// The three the card shows, with any tick the person has just made already applied.
+    /// A ticked one stays on screen — struck through — until the next snapshot removes it, so
+    /// the row does not vanish out from under the finger that tapped it.
+    var visibleFollowUps: [FollowUpItem] {
+        snapshot.followUps.map { item in
+            guard let optimistic = optimisticDone[item.id] else { return item }
+            var copy = item
+            copy.done = optimistic
+            return copy
+        }
     }
 
-    var followUpsAllDone: Bool {
-        !snapshot.followUps.isEmpty && snapshot.followUps.allSatisfy(\.done)
-    }
+    /// What "See all N" counts: everything open, including what the card had no room for.
+    var openFollowUpCount: Int { snapshot.openFollowUpCount }
 
     // MARK: Actions
 
@@ -63,8 +81,10 @@ final class TodayViewModel {
 
     func perform(_ action: StatusAction) { dataSource.perform(action) }
 
-    func toggleFollowUp(_ item: FollowUpDisplay) {
-        dataSource.setFollowUpDone(id: item.id, done: !item.done)
+    func toggleFollowUp(_ item: FollowUpItem) {
+        let next = !(optimisticDone[item.id] ?? item.done)
+        optimisticDone[item.id] = next
+        dataSource.setFollowUpDone(id: item.id, done: next)
     }
 }
 

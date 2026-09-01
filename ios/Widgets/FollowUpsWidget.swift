@@ -72,8 +72,7 @@ struct FollowUpsWidgetView: View {
         }
     }
 
-    /// One tappable row. A follow-up whose source conversation is gone still lists — it is a
-    /// real open item — it just opens Today instead of a conversation that no longer exists.
+    /// One tappable row.
     private func row(_ item: CoverageSnapshot.FollowUp) -> some View {
         Link(destination: destination(for: item)) {
             HStack(alignment: .top, spacing: 6) {
@@ -91,11 +90,11 @@ struct FollowUpsWidgetView: View {
         }
     }
 
+    /// The item itself, not the recording behind it: the widget is a to-do list, and the
+    /// thing you want when you tap one is the follow-up — where it came from is one more tap
+    /// from there.
     private func destination(for item: CoverageSnapshot.FollowUp) -> URL {
-        guard let conversationId = item.conversationId?.nonBlank else {
-            return Route.today(date: nil).url
-        }
-        return Route.conversation(id: conversationId, atMs: nil).url
+        Route.followUp(id: item.id).url
     }
 }
 

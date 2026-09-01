@@ -16,7 +16,7 @@ extension AskLibraryDataSources {
         let world = MockWorld.shared
         return AskLibraryDataSources(
             library: world, search: world, conversations: world, ask: world,
-            notes: world, tagEditor: world, people: world
+            notes: world, tagEditor: world, people: world, followUps: MockFollowUps(world: world)
         )
     }
 }
@@ -320,6 +320,10 @@ final class MockWorld {
     private func bump() {
         for continuation in updateContinuations.values { continuation.yield() }
     }
+
+    /// The same signal, reachable from `MockFollowUps` — which lives beside this class rather
+    /// than inside it, so it cannot use a private method.
+    func notifyChanged() { bump() }
 
     private func index(of id: String) -> Int? { conversations.firstIndex { $0.id == id } }
 
@@ -1043,5 +1047,152 @@ extension MockWorld: PeopleDataSource {
     private static func unresolvedName(for label: String) -> String {
         let digits = label.filter(\.isNumber)
         return digits.isEmpty ? label : "Speaker \(digits)"
+    }
+}
+
+
+// MARK: - FollowUpsDataSource
+
+/// Mirrors `LiveFollowUps`: its own object over the same sample data, for the same reason.
+@MainActor
+final class MockFollowUps {
+    private let world: MockWorld
+
+    init(world: MockWorld) { self.world = world }
+
+    fileprivate var followUps: [FollowUp] {
+        get { world.followUps }
+        set { world.followUps = newValue }
+    }
+
+    fileprivate var conversations: [MockWorld.MockConversation] { world.conversations }
+
+    fileprivate func changed() { world.notifyChanged() }
+}
+
+extension MockFollowUps: FollowUpsDataSource {
+    func items(scope: FollowUpListScope) async throws -> [FollowUpItem] {
+        let now = Date().timeIntervalSince1970 * 1000
+        let matching = followUps.filter { row in
+            switch scope {
+            case .open:
+                return !row.done && row.archivedAtMs == nil
+                    && (row.snoozedUntilMs.map { Double($0) <= now } ?? true)
+            case .completed:
+                return row.done && row.archivedAtMs == nil
+            case .archived:
+                return row.archivedAtMs != nil
+            }
+        }
+        return matching.map(mockItem(_:)).sorted { a, b in
+            switch (a.dueAtMs, b.dueAtMs) {
+            case let (lhs?, rhs?) where lhs != rhs: return lhs < rhs
+            case (nil, _?): return false
+            case (_?, nil): return true
+            default: break
+            }
+            if a.priority != b.priority { return a.priority.rawValue > b.priority.rawValue }
+            return a.createdAtMs > b.createdAtMs
+        }
+    }
+
+    func item(id: String) async throws -> FollowUpItem? {
+        followUps.first { $0.id == id }.map(mockItem(_:))
+    }
+
+    private func mockItem(_ row: FollowUp) -> FollowUpItem {
+        FollowUpItem(
+            id: row.id,
+            text: row.text,
+            done: row.done,
+            dueAtMs: row.dueAtMs,
+            priority: row.priority,
+            quote: row.quote,
+            why: row.why,
+            origin: row.origin,
+            createdAtMs: row.createdAtMs,
+            completedAtMs: row.completedAtMs,
+            archivedAtMs: row.archivedAtMs,
+            snoozedUntilMs: row.snoozedUntilMs,
+            sourceConversationId: row.sourceConversationId,
+            sourceConversationTitle: row.sourceConversationId.flatMap { id in
+                conversations.first { $0.id == id }?.title
+            })
+    }
+
+    @discardableResult
+    func add(text: String, dueAtMs: Int64?) async throws -> String {
+        let id = UUID().uuidString.lowercased()
+        followUps.append(
+            FollowUp(
+                id: id, text: text, done: false, sourceConversationId: nil,
+                sourceSegmentId: nil, createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
+                dueAtMs: dueAtMs, origin: .user))
+        changed()
+        return id
+    }
+
+    func setDone(id: String, done: Bool) async throws {
+        mutate(id) {
+            $0.done = done
+            $0.completedAtMs = done ? Int64(Date().timeIntervalSince1970 * 1000) : nil
+            $0.archivedAtMs = nil
+        }
+    }
+
+    func setText(id: String, text: String) async throws {
+        mutate(id) {
+            $0.text = text
+            $0.editedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        }
+    }
+
+    func setDue(id: String, dueAtMs: Int64?) async throws {
+        mutate(id) { $0.dueAtMs = dueAtMs }
+    }
+
+    func setPriority(id: String, priority: FollowUpPriority) async throws {
+        mutate(id) { $0.priority = priority }
+    }
+
+    func snooze(id: String, untilMs: Int64?) async throws {
+        mutate(id) {
+            $0.snoozedUntilMs = untilMs
+            $0.archivedAtMs = nil
+        }
+    }
+
+    func setArchived(id: String, archived: Bool) async throws {
+        mutate(id) {
+            $0.archivedAtMs = archived ? Int64(Date().timeIntervalSince1970 * 1000) : nil
+        }
+    }
+
+    func delete(id: String) async throws {
+        followUps.removeAll { $0.id == id }
+        changed()
+    }
+
+    func source(of id: String) async -> CitationTarget? {
+        guard let row = followUps.first(where: { $0.id == id }),
+            let conversationId = row.sourceConversationId,
+            let conversation = conversations.first(where: { $0.id == conversationId })
+        else { return nil }
+        return CitationTarget(
+            conversationId: conversationId,
+            conversationTitle: conversation.title,
+            focus: TranscriptFocus(segmentId: row.sourceSegmentId ?? conversationId),
+            mediaOffsetMs: row.sourceStartMs,
+            startedAt: conversation.start)
+    }
+
+    func followUpUpdates() -> AsyncStream<Void> { world.updates() }
+
+    var automaticProposalsEnabled: Bool { true }
+
+    private func mutate(_ id: String, _ change: (inout FollowUp) -> Void) {
+        guard let index = followUps.firstIndex(where: { $0.id == id }) else { return }
+        change(&followUps[index])
+        changed()
     }
 }

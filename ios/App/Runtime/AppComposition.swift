@@ -473,11 +473,10 @@ final class AppComposition {
                 nowMs: nowMs,
                 timeZone: { .current },
                 contextOf: { conversationId in
-                    guard let annotation = try? await annotations.load(conversationId) else {
-                        return nil
-                    }
+                    guard let annotation = try? await annotations.load(conversationId)
+                    else { return nil }
                     return FollowUpConversationContext(
-                        title: annotation?.title, summary: annotation?.summary)
+                        title: annotation.title, summary: annotation.summary)
                 }
             ),
             curator: FollowUpCurator(
@@ -487,7 +486,7 @@ final class AppComposition {
                 nowMs: nowMs,
                 timeZone: { .current },
                 titleOf: { conversationId in
-                    (try? await annotations.load(conversationId))??.title
+                    (try? await annotations.load(conversationId))?.title
                 }
             ),
             annotations: annotations,
@@ -641,7 +640,7 @@ final class AppComposition {
             // capture is not actually running.
             liveContextOf: { isRunning in
                 var context = CoverageLiveContext()
-                let open = (try? await followUps.list(done: false)) ?? []
+                let open = (try? await followUps.list(scope: .open, nowMs: clock.nowMs)) ?? []
                 context.openFollowUpCount = open.count
                 context.followUps = open.prefix(3).map {
                     CoverageSnapshot.FollowUpRef(

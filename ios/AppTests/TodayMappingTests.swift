@@ -82,20 +82,42 @@ struct TodayMappingTests {
 
     // MARK: - Follow-ups
 
-    /// Open first, then the most recently completed — the card is a to-do list, not a log.
-    @Test func followUpsPutOpenItemsFirst() {
-        func item(_ id: String, _ text: String, done: Bool, at ms: Int64) -> FollowUp {
-            FollowUp(
-                id: id, text: text, done: done, sourceConversationId: nil, sourceSegmentId: nil,
-                createdAtMs: ms)
+    /// Today shows the three that matter and says how many there are altogether. The old card
+    /// counted done items in its "See all N" and capped the whole thing at 20, so a person with
+    /// 40 open follow-ups was told there were 20 — and a ticked one still took up a row.
+    @Test func todayShowsThreeFollowUpsAndCountsTheRest() {
+        func item(_ id: String, dueInDays: Int?) -> FollowUpItem {
+            FollowUpItem(
+                id: id, text: id, done: false,
+                dueAtMs: dueInDays.map { Int64(Date().timeIntervalSince1970 + Double($0) * 86_400) * 1000 },
+                priority: .normal, quote: nil, why: nil, origin: .ai,
+                createdAtMs: 1_000, completedAtMs: nil, archivedAtMs: nil,
+                snoozedUntilMs: nil, sourceConversationId: nil, sourceConversationTitle: nil)
         }
-        let displays = LiveTodayDataSource.followUpDisplays([
-            item("done-new", "a", done: true, at: 300),
-            item("open-old", "b", done: false, at: 100),
-            item("open-new", "c", done: false, at: 200),
-        ])
-        #expect(displays.map { $0.id } == ["open-new", "open-old", "done-new"])
-        #expect(displays.map { $0.text } == ["c", "b", "a"])
+        let model = TodayViewModel(
+            dataSource: FixedTodaySource(
+                recovering: false,
+                followUps: [item("a", dueInDays: 0), item("b", dueInDays: 2), item("c", dueInDays: nil)],
+                openFollowUpCount: 9))
+        #expect(model.visibleFollowUps.count == 3)
+        #expect(model.openFollowUpCount == 9)
+    }
+
+    /// The tick has to land on the row before the database has answered, or it reads exactly
+    /// the way it used to: as nothing happening.
+    @Test func tickingAFollowUpFillsTheCircleImmediately() {
+        let item = FollowUpItem(
+            id: "fu", text: "Take Theo at 7:00", done: false, dueAtMs: nil, priority: .normal,
+            quote: nil, why: nil, origin: .ai, createdAtMs: 1_000, completedAtMs: nil,
+            archivedAtMs: nil, snoozedUntilMs: nil, sourceConversationId: nil,
+            sourceConversationTitle: nil)
+        let source = FixedTodaySource(
+            recovering: false, followUps: [item], openFollowUpCount: 1)
+        let model = TodayViewModel(dataSource: source)
+        #expect(model.visibleFollowUps.first?.done == false)
+        model.toggleFollowUp(item)
+        #expect(model.visibleFollowUps.first?.done == true)
+        #expect(source.lastSetDone?.done == true)
     }
 
     // MARK: - The empty state during startup recovery
@@ -137,13 +159,18 @@ struct TodayMappingTests {
 @MainActor
 private final class FixedTodaySource: TodayDataSource {
     private let value: TodaySnapshot
+    private(set) var lastSetDone: (id: String, done: Bool)?
 
-    init(recovering: Bool, conversations: [ConversationRowDisplay] = []) {
+    init(
+        recovering: Bool, conversations: [ConversationRowDisplay] = [],
+        followUps: [FollowUpItem] = [], openFollowUpCount: Int = 0
+    ) {
         value = TodaySnapshot(
             status: StatusModel(
                 family: .notRecording, headline: StatusCopy.notRecording,
                 detail: StatusCopy.notRecordingLine, dot: .neutral, action: .start),
-            liveMinute: [], coverage: nil, recap: nil, followUps: [],
+            liveMinute: [], coverage: nil, recap: nil, followUps: followUps,
+            openFollowUpCount: openFollowUpCount,
             conversations: conversations, recovering: recovering)
     }
 
@@ -153,5 +180,5 @@ private final class FixedTodaySource: TodayDataSource {
     }
     func requestPause() {}
     func perform(_ action: StatusAction) {}
-    func setFollowUpDone(id: String, done: Bool) {}
+    func setFollowUpDone(id: String, done: Bool) { lastSetDone = (id, done) }
 }

@@ -103,7 +103,7 @@ struct SearchStateView: View {
 
     private var askHandOffRow: some View {
         Button {
-            router.askSheet = .ask(scope: model.scope.routeKey, query: model.trimmedQuery)
+            router.navigate(to: .ask(scope: model.scope.routeKey, query: model.trimmedQuery))
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "sparkles")
@@ -192,28 +192,31 @@ struct SearchStateView: View {
         }
     }
 
+    /// A search hit opens the follow-up rather than only ticking it. Search is where you go
+    /// when you half-remember something; "what was that about?" is the question, and only the
+    /// follow-up's own screen answers it.
     private func followUpRow(_ followUp: FollowUp) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                Task {
-                    Haptics.checkedOff()
-                    try? await AskLibraryDataSources.current.conversations
-                        .toggleFollowUp(id: followUp.id)
-                    await model.search()
-                }
-            } label: {
+        Button {
+            router.push(.followUp(id: followUp.id))
+        } label: {
+            HStack(spacing: 12) {
                 Image(systemName: followUp.done ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 20, weight: .light))
                     .foregroundStyle(followUp.done ? Tokens.tint : Tokens.chevron)
-                    .hitTarget()
+                    .accessibilityHidden(true)
+                highlighted(followUp.text)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(followUp.done ? Tokens.meta : Tokens.label)
+                    .strikethrough(followUp.done, color: Tokens.meta)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Tokens.chevron)
+                    .accessibilityHidden(true)
             }
-            .buttonStyle(.plain)
-
-            highlighted(followUp.text)
-                .font(AppFont.subBody)
-                .foregroundStyle(Tokens.label)
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private func sectionHeader(_ label: String, total: Int) -> some View {
