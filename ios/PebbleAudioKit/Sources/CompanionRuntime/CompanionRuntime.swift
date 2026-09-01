@@ -90,7 +90,11 @@ public actor CompanionRuntime {
     private let log: RuntimeLog
 
     private var loopTask: Task<Void, Never>?
+    private var supervisorTask: Task<Void, Never>?
     private var stageObserver: (@Sendable (PipelineStage) -> Void)?
+    /// Which parts of the processing pass are actually working. Written by the pass, read by
+    /// Diagnostics and by the supervisor that acts on it.
+    private let health: PipelineHealthMonitor
     /// Retention with its own pacing, built from the environment's manager + cascade so no caller
     /// has to re-derive "enforce, then cascade over everything it evicted" a fourth time.
     private let retention: RetentionService
@@ -106,6 +110,8 @@ public actor CompanionRuntime {
         self.log = environment.log
         self.foreground = environment.foreground
         self.stageObserver = onStage
+        self.health = PipelineHealthMonitor(
+            nowMs: { [clock = environment.clock] in clock.nowMs }, log: environment.log)
         self.retention = RetentionService(
             enforce: { limit in try await environment.retention.enforce(limit: limit) },
             cascadeDeleted: { _ = await environment.cascade.deleteSegment($0) },
@@ -140,6 +146,10 @@ public actor CompanionRuntime {
     public nonisolated var diagnostics: StateSubject<RuntimeDiagnostics> {
         environment.diagnostics.snapshot
     }
+    /// Per-stage health of the processing pass: what ran, what threw, what is backed off, and
+    /// whether the loop is still turning. The Diagnostics screen renders it; the status layer
+    /// asks it whether transcription is quietly broken.
+    public nonisolated var pipelineHealth: PipelineHealthMonitor { health }
     public nonisolated var library: LibraryStore { environment.library }
     public nonisolated var captureIntent: CaptureIntent { environment.receiver.captureIntent }
     public nonisolated var isForeground: Bool { foreground.value }
@@ -187,15 +197,63 @@ public actor CompanionRuntime {
         await environment.recap.start()
 
         guard loopTask == nil else { return }
-        let pass = PipelinePass(steps: makeSteps(), clock: clock, onStage: stageObserver ?? { _ in })
-        let loop = PipelineLoop(pass: pass, wake: wake, clock: clock, log: log)
-        loopTask = Task { await loop.run() }
+        startLoop()
+        startSupervisor()
         await refreshSnapshot(.manual)
+    }
+
+    private func startLoop() {
+        let pass = PipelinePass(
+            steps: makeSteps(), clock: clock, health: health, onStage: stageObserver ?? { _ in })
+        let loop = PipelineLoop(pass: pass, wake: wake, clock: clock, health: health, log: log)
+        loopTask = Task { await loop.run() }
+    }
+
+    private func startSupervisor() {
+        guard supervisorTask == nil else { return }
+        let environment = self.environment
+        let supervisor = PipelineSupervisor(
+            health: health,
+            clock: clock,
+            recoveries: [
+                // A drain that keeps throwing is not a per-task failure — the tasks have their
+                // own attempts and backoff. It is the queue itself being stuck: a task left
+                // Running by a process that died mid-transcription, or an upload the transport
+                // no longer knows about. Both are exactly what the START-UP recovery repairs,
+                // and there was no way to reach it again without relaunching the app.
+                PipelineRecovery(stage: .drainQueue) {
+                    await environment.transcription.recoverStuckWork()
+                }
+            ],
+            restartLoop: { [weak self] in await self?.restartLoop() },
+            log: log
+        )
+        supervisorTask = Task { await supervisor.run() }
+    }
+
+    /// Replaces a wedged loop. The old task is cancelled and given a moment to unwind; if it is
+    /// stuck somewhere that ignores cancellation we start the new one anyway, because a
+    /// duplicate pass is recoverable (the drain holds its own mutex, every other stage is
+    /// re-entrant by construction) and a dead pipeline is not.
+    private func restartLoop() async {
+        guard let previous = loopTask else { return }
+        previous.cancel()
+        loopTask = nil
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await previous.value }
+            group.addTask { [clock] in try? await clock.sleep(ms: 2_000) }
+            await group.next()
+            group.cancelAll()
+        }
+        startLoop()
+        wake.signal()
     }
 
     public func stop() async {
         loopTask?.cancel()
         loopTask = nil
+        supervisorTask?.cancel()
+        supervisorTask = nil
         await environment.recap.stop()
         await environment.live.stop()
         await environment.transcription.stopUploader()
