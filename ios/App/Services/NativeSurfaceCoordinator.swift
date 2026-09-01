@@ -43,12 +43,16 @@ final class NativeSurfaceCoordinator {
         await AppComposition.shared?.runtime.applyExternalCaptureIntent(intent)
     }
 
-    /// Installs the cross-process listeners. Safe to call once per app launch.
-    func start(navigate: @escaping (Route) -> Void) {
+    /// Installs the cross-process listeners. Safe to call repeatedly; installs once.
+    ///
+    /// SEPARATE from `start(navigate:)` on purpose. This half must run on EVERY launch,
+    /// including the ones with no scene at all — Core Bluetooth state restoration, a
+    /// BGProcessingTask, a Siri or Shortcuts invocation. `start(navigate:)` is reached only from
+    /// `RootView`'s `.task`, which never runs in those launches, so a Control Center or widget
+    /// toggle timed out against a process that was fully awake and had simply never installed
+    /// the listener. The composition root calls this one; the scene still calls `start`.
+    func startCrossProcessListeners() {
         guard darwinObserver == nil else { return }
-        self.navigate = navigate
-        LossNotificationRouter.shared.install(handler: navigate)
-
         darwinObserver = CaptureIntentBridge.observeDarwinNotifications {
             // Darwin callbacks arrive on an arbitrary thread; settings are main-actor state.
             Task { @MainActor [weak self] in self?.applyPendingCaptureRequest() }
@@ -56,6 +60,15 @@ final class NativeSurfaceCoordinator {
         // A request may have been posted while the app was dead.
         applyPendingCaptureRequest()
         publishAppliedCaptureIntent()
+    }
+
+    /// The scene half: navigation. Deliberately NOT gated on `darwinObserver`, or a launch that
+    /// already installed the listeners would silently drop the router and leave Spotlight and
+    /// loss-notification taps going nowhere.
+    func start(navigate: @escaping (Route) -> Void) {
+        self.navigate = navigate
+        LossNotificationRouter.shared.install(handler: navigate)
+        startCrossProcessListeners()
     }
 
     /// Called by the runtime wiring once the shared database is open, so Spotlight donation

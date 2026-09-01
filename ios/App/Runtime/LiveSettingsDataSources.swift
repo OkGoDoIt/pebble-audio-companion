@@ -645,7 +645,11 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         summary: Copy.Settings.Diagnostics.pipelineStarting)
 
     /// Counters and gap metadata only — never audio or transcript text.
-    var detailedLogLines: [String] { AppRuntimeLog.shared.recent }
+    ///
+    /// Stored, not computed. A computed property reading `AppRuntimeLog` registers no dependency
+    /// with `@Observable`, so this screen froze on whatever the ring held when it was pushed —
+    /// during a live reproduction, which is the only time anyone opens it.
+    private(set) var detailedLogLines: [String] = AppRuntimeLog.shared.recent
 
     private(set) var supportReportText = ""
 
@@ -663,6 +667,16 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         // change when something else happened to trigger a refresh.
         Task { [weak self] in
             for await _ in runtime.watchInfo.stream() { await self?.refresh() }
+        }
+        // The log ring is not part of the runtime's diagnostics, and most of what writes to it
+        // (the BLE link, the receiver session, the queue, background tasks) moves none of the
+        // streams above. It needs its own subscription or the screen never redraws for it.
+        Task { [weak self] in
+            for await _ in AppRuntimeLog.shared.generations() {
+                await MainActor.run { self?.detailedLogLines = AppRuntimeLog.shared.recent }
+                // Coalesce a burst of writes into one redraw.
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
         }
     }
 

@@ -796,6 +796,10 @@ final class AppComposition {
         }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces
+        // Every launch, scene or not. A restoration relaunch, a BGProcessingTask, or a Siri
+        // invocation never reaches `RootView`'s `.task`, so without this a capture request left
+        // in the App Group by Control Center or a widget sat unread in a process that was awake.
+        nativeSurfaces.startCrossProcessListeners()
 
         // A settings change that could unblock work wakes the pipeline immediately.
         let runtime = self.runtime
@@ -1041,6 +1045,8 @@ final class AppRuntimeLog: @unchecked Sendable {
     private static let capacity = 400
     private let lock = NSLock()
     private var lines: [String] = []
+    private var subscribers: [UUID: AsyncStream<Int>.Continuation] = [:]
+    private var generation = 0
 
     private static let stamp: DateFormatter = {
         let formatter = DateFormatter()
@@ -1050,10 +1056,14 @@ final class AppRuntimeLog: @unchecked Sendable {
 
     func record(_ message: String) {
         let line = "\(Self.stamp.string(from: Date()))  \(message)"
-        lock.withLock {
-            lines.append(line)
-            if lines.count > Self.capacity { lines.removeFirst(lines.count - Self.capacity) }
-        }
+        lock.lock()
+        lines.append(line)
+        if lines.count > Self.capacity { lines.removeFirst(lines.count - Self.capacity) }
+        generation += 1
+        let now = generation
+        let continuations = Array(subscribers.values)
+        lock.unlock()
+        for continuation in continuations { continuation.yield(now) }
         #if DEBUG
             print("[companion] \(line)")
         #endif
@@ -1061,4 +1071,27 @@ final class AppRuntimeLog: @unchecked Sendable {
 
     /// Newest first, for the log sheet.
     var recent: [String] { lock.withLock { lines.reversed() } }
+
+    /// One element per write, conflated to the newest.
+    ///
+    /// Detailed Logs used to read `recent` from a computed property on an `@Observable` class —
+    /// which registers no dependency on anything, so the screen froze on whatever the ring held
+    /// at push time. During a live reproduction, which is the only time this screen matters, it
+    /// silently showed history while the rows above it updated around it.
+    func generations() -> AsyncStream<Int> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let id = UUID()
+            lock.lock()
+            subscribers[id] = continuation
+            let snapshot = generation
+            lock.unlock()
+            continuation.yield(snapshot)
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self.subscribers.removeValue(forKey: id)
+                self.lock.unlock()
+            }
+        }
+    }
 }
