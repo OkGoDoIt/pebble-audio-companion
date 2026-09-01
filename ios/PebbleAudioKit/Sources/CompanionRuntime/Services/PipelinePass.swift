@@ -137,23 +137,60 @@ public enum PipelinePacing {
 }
 
 /// Runs one pass and reports how long to sleep before the next one.
+///
+/// **Stages are isolated.** The pass used to be one `try` chain, so the first stage to throw
+/// abandoned every stage behind it — a storage error while enqueueing closed segments stopped
+/// the live preview, the conversation grouping, enrichment and follow-ups as well, on every
+/// pass, indefinitely, with a single line in the detailed log as the only trace. Each stage now
+/// runs inside its own failure boundary, reports the outcome to `PipelineHealthMonitor`, and
+/// the pass carries on. Cancellation is the one thing that still stops everything, because it
+/// means the loop itself is going away.
 public struct PipelinePass: Sendable {
     private let steps: PipelineSteps
     private let clock: RuntimeClock
     private let onStage: @Sendable (PipelineStage) -> Void
+    private let health: PipelineHealthMonitor?
 
     public init(
         steps: PipelineSteps,
         clock: RuntimeClock,
+        health: PipelineHealthMonitor? = nil,
         onStage: @escaping @Sendable (PipelineStage) -> Void = { _ in }
     ) {
         self.steps = steps
         self.clock = clock
+        self.health = health
         self.onStage = onStage
+    }
+
+    /// Runs one stage inside its failure boundary.
+    ///
+    /// Returns `fallback` when the stage is skipped (inside its backoff) or when it threw, so
+    /// every call site reads as the plain value it wanted. The stage is still announced through
+    /// `onStage` in both cases: the ORDER of the pass is a fixed contract, and a stage that is
+    /// unwell must not silently vanish from the sequence tests assert on.
+    private func stage<Value>(
+        _ stage: PipelineStage,
+        fallback: Value,
+        _ body: () async throws -> Value
+    ) async throws -> Value {
+        onStage(stage)
+        if let health, !health.shouldRun(stage) { return fallback }
+        do {
+            let value = try await body()
+            health?.succeeded(stage)
+            return value
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            health?.failed(stage, error)
+            return fallback
+        }
     }
 
     /// Executes the pass in order and returns the fallback sleep in ms.
     public func run() async throws -> Int64 {
+        health?.passStarted()
         // 1. Background early-return. Receive-only: defer local STT, live preview, AI enrichment
         //    and WAV export, and release the local model so a ~10 s Bluetooth wake stays cheap and
         //    the app is not a jetsam target. Pending segments stay queued.
@@ -166,24 +203,24 @@ public struct PipelinePass: Sendable {
             // records, and a widget that freezes the moment the app leaves the foreground is
             // exactly the widget Roger called useless.
             await steps.refreshCoverageSnapshot()
+            // A deferring pass is still a completed pass: the loop is turning, and the watchdog
+            // must not mistake a backgrounded app for a wedged one.
+            health?.passCompleted()
             return PipelinePacing.backgroundMs
         }
 
         var processed = false
 
         // 2. Segments parked while no provider was usable become eligible the moment one is.
-        onStage(.reconsiderDisabled)
-        if try await steps.reconsiderDisabled() {
+        if try await stage(.reconsiderDisabled, fallback: false, steps.reconsiderDisabled) {
             await steps.onDiagnosticsDirty()
         }
 
         // 3. Anything closed since the last pass joins the queue.
-        onStage(.enqueueClosedSegments)
-        try await steps.enqueueClosedSegments()
+        try await stage(.enqueueClosedSegments, fallback: (), steps.enqueueClosedSegments)
 
         // 4. Drain, under the processing mutex owned by TranscriptionService.
-        onStage(.drainQueue)
-        if try await steps.drainQueue() {
+        if try await stage(.drainQueue, fallback: false, steps.drainQueue) {
             processed = true
             await steps.onDiagnosticsDirty()
         }
@@ -193,8 +230,7 @@ public struct PipelinePass: Sendable {
         //    queue work, before the regroup — so a sweep's deletions are reflected by the same
         //    pass that made them, instead of leaving the Library listing rows whose audio,
         //    transcript and follow-ups are already gone.
-        onStage(.retention)
-        if await steps.enforceRetentionIfDue() {
+        if try await stage(.retention, fallback: false, steps.enforceRetentionIfDue) {
             processed = true
             await steps.onDiagnosticsDirty()
         }
@@ -205,16 +241,14 @@ public struct PipelinePass: Sendable {
         //    shows the open one as live. It used to be the first line of `enrich`, which meant
         //    a long AI backfill froze the user's entire view of reality while recording
         //    continued.
-        onStage(.regroup)
-        try await steps.regroup()
+        try await stage(.regroup, fallback: (), steps.regroup)
 
         // 7/8. Titles + summaries, then search/Spotlight donation of exactly what changed.
         //      BOUNDED per pass: the backlog drains over many passes rather than holding this
         //      one open for minutes.
-        onStage(.enrich)
-        let enriched = try await steps.enrich()
-        onStage(.donate)
-        if !enriched.isEmpty {
+        let enriched = try await stage(.enrich, fallback: [], steps.enrich)
+        try await stage(.donate, fallback: ()) {
+            guard !enriched.isEmpty else { return }
             processed = true
             await steps.donate(enriched)
             await steps.onDiagnosticsDirty()
@@ -222,34 +256,29 @@ public struct PipelinePass: Sendable {
 
         // 9. Follow-up extraction over finished conversations (plan Part 4.5) — after enrich,
         //    on the same durable transcripts, and bounded the same way.
-        onStage(.followUps)
-        if try await steps.extractFollowUps() {
+        if try await stage(.followUps, fallback: false, steps.extractFollowUps) {
             processed = true
             await steps.onDiagnosticsDirty()
         }
 
         // 10. Daily recap (its own debounce decides whether anything actually runs).
-        onStage(.recap)
-        await steps.refreshRecap()
+        try await stage(.recap, fallback: (), steps.refreshRecap)
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.
-        onStage(.liveLocal)
-        if try await steps.liveLocalPass() { processed = true }
+        if try await stage(.liveLocal, fallback: false, steps.liveLocalPass) { processed = true }
 
         // 12. Cloud live previews are pruned once the durable transcript supersedes them.
-        onStage(.liveCloudPrune)
-        await steps.liveCloudPrune()
+        try await stage(.liveCloudPrune, fallback: (), steps.liveCloudPrune)
 
         // 13. Mirror closed segments to WAV when the user asked for it.
-        onStage(.wavExport)
-        try await steps.exportWavIfEnabled()
+        try await stage(.wavExport, fallback: (), steps.exportWavIfEnabled)
 
         // 14. Shrink the foreground footprint between bursts: release the resident model once it
         //     has been idle. It reloads lazily on the next segment, which is also how a
         //     selected-model change takes effect.
-        onStage(.idleModelRelease)
-        if !processed {
+        try await stage(.idleModelRelease, fallback: ()) {
+            guard !processed else { return }
             await steps.releaseModelIfIdle()
         }
 
@@ -258,6 +287,7 @@ public struct PipelinePass: Sendable {
         //     to learn any of it.
         await steps.refreshCoverageSnapshot()
 
+        health?.passCompleted()
         return try await sleepMs(processed: processed)
     }
 
@@ -271,17 +301,31 @@ public struct PipelinePass: Sendable {
 }
 
 /// The loop that runs `PipelinePass` forever, sleeping on the conflated wake channel between
-/// passes. A thrown pass backs off instead of spinning; cancellation ends the loop.
+/// passes. Cancellation ends the loop.
+///
+/// A thrown pass still backs off rather than spinning, but with per-stage isolation this is now
+/// a backstop rather than the normal shape of failure: a stage that throws is contained,
+/// recorded and retried on its own schedule, and the rest of the pass runs. Reaching the catch
+/// below means something outside every stage boundary failed, which is worth counting
+/// separately (`abandonedPasses`).
 public struct PipelineLoop: Sendable {
     private let pass: PipelinePass
     private let wake: WakeChannel
     private let clock: RuntimeClock
+    private let health: PipelineHealthMonitor?
     private let log: RuntimeLog
 
-    public init(pass: PipelinePass, wake: WakeChannel, clock: RuntimeClock, log: RuntimeLog = .silent) {
+    public init(
+        pass: PipelinePass,
+        wake: WakeChannel,
+        clock: RuntimeClock,
+        health: PipelineHealthMonitor? = nil,
+        log: RuntimeLog = .silent
+    ) {
         self.pass = pass
         self.wake = wake
         self.clock = clock
+        self.health = health
         self.log = log
     }
 
@@ -293,7 +337,11 @@ public struct PipelineLoop: Sendable {
             } catch is CancellationError {
                 return
             } catch {
-                log.failure("pipeline pass", error)
+                if let health {
+                    health.passAbandoned(error)
+                } else {
+                    log.failure("pipeline pass", error)
+                }
             }
             if Task.isCancelled { return }
             await wake.wait(timeoutMs: sleepMs, clock: clock)

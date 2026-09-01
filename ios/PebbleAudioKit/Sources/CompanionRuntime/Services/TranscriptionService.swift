@@ -155,6 +155,22 @@ public actor TranscriptionService {
         await uploader?.reconcile()
     }
 
+    /// Un-stick the queue mid-session: tasks left `Running` by work that died, and uploads the
+    /// transport no longer knows about, go back where they can be picked up again.
+    ///
+    /// This is exactly `recoverOnStart` + the uploader reconcile — repairs that existed but
+    /// could only be reached by relaunching the app. `PipelineSupervisor` calls it when the
+    /// drain stage has failed enough times that waiting longer has stopped being a plan; a
+    /// drain that is merely idle never gets here, and a drain that is genuinely in flight is
+    /// skipped outright, so no task is reset out from under work that is still doing it. (A
+    /// drain WEDGED holding that mutex is the loop watchdog's problem, not this one's:
+    /// cancelling the loop unwinds the task and releases it.)
+    public func recoverStuckWork() async {
+        guard !draining else { return }
+        do { try queue.recoverOnStart() } catch { log.failure("queue recovery", error) }
+        await uploader?.reconcile()
+    }
+
     // --- user actions ----------------------------------------------------------------------------
 
     /// User-requested re-transcribe: forces the task back to Pending (clearing prior attempts and

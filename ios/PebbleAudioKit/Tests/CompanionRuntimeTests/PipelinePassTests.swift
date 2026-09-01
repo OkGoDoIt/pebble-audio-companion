@@ -272,18 +272,21 @@ import Testing
         #expect(done.flag)
     }
 
-    @Test func loopBacksOffAfterAThrownPassInsteadOfSpinning() async throws {
+    /// The loop-level backstop. With per-stage isolation a throwing STAGE no longer reaches
+    /// here (`PipelineHealthTests` covers that); what still can is a failure outside every
+    /// stage boundary — here the retry-schedule read that decides how long to sleep.
+    @Test func loopBacksOffAfterAnAbandonedPassInsteadOfSpinning() async throws {
         let clock = TestClock()
         let calls = CallRecorder()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
         var steps = PipelineSteps()
-        steps.reconsiderDisabled = {
-            calls.record("pass")
-            throw TestFailure()
-        }
+        steps.regroup = { calls.record("pass") }
+        steps.nextRetryAtMs = { throw TestFailure() }
         let loop = PipelineLoop(
-            pass: PipelinePass(steps: steps, clock: clock),
+            pass: PipelinePass(steps: steps, clock: clock, health: health),
             wake: WakeChannel(),
-            clock: clock
+            clock: clock,
+            health: health
         )
         let task = Task { await loop.run() }
         await TestClock.settle()
@@ -294,6 +297,35 @@ import Testing
         #expect(calls.calls.count == 1)
         await clock.advance(by: 1_000)
         #expect(calls.calls.count >= 2)
+        #expect(health.health.abandonedPasses >= 1)
+        task.cancel()
+    }
+
+    /// And the shape that used to end the same way but must not: one stage failing is now
+    /// contained, so the loop keeps its normal cadence and every other stage keeps running.
+    @Test func aFailingStageDoesNotStopTheLoop() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+        var steps = PipelineSteps()
+        steps.reconsiderDisabled = { throw TestFailure() }
+        steps.regroup = { calls.record("regroup") }
+        let loop = PipelineLoop(
+            pass: PipelinePass(steps: steps, clock: clock, health: health),
+            wake: WakeChannel(),
+            clock: clock,
+            health: health
+        )
+        let task = Task { await loop.run() }
+        await TestClock.settle()
+        #expect(calls.calls.count == 1)
+
+        // Idle cadence, not failure backoff: the pass itself is fine.
+        await clock.advance(by: PipelinePacing.idleMs)
+        await TestClock.settle()
+        #expect(calls.calls.count >= 2)
+        #expect(health.health.abandonedPasses == 0)
+        #expect(health.health.failingStages == [.reconsiderDisabled])
         task.cancel()
     }
 }
