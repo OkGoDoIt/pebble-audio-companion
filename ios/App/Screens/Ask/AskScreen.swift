@@ -351,9 +351,13 @@ final class AskHomeViewModel {
     var draft = ""
     var confirmClear = false
 
-    var hasContent: Bool { AskLibraryDataSources.current.ask.hasContent }
+    /// Cached: the live check walks the spool directory, and reading it per render made every
+    /// keystroke in the composer pay for a disk scan. Starts true so a library with content
+    /// (the common case) never flashes the empty state while the first check runs.
+    private(set) var hasContent = true
 
     func reloadRecent() async {
+        hasContent = await AskLibraryDataSources.current.ask.hasContent()
         recent = (try? await AskLibraryDataSources.current.ask.recentThreads()) ?? []
     }
 

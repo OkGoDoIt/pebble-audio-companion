@@ -701,7 +701,10 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         orphanedFrames = composition.runtime.orphanedFrameCount.value
         watchLink = Self.linkFault(composition)
         watchSend = Self.sendHealth(composition.runtime.watchInfo.value)
-        let metas = composition.files.listSegments()
+        // Off-main: this refreshes on the diagnostics tick while the screen is open, and
+        // `listSegments()` decodes every sidecar in the spool.
+        let files = composition.files
+        let metas = await Task.detached(priority: .userInitiated) { files.listSegments() }.value
         recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
         failedItems = Self.failures(
             (try? composition.queue.all()) ?? [], segments: metas

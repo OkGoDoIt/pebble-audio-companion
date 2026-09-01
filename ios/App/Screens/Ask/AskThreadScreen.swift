@@ -209,12 +209,14 @@ struct AskThreadScreen: View {
         var number: Int { citation.number }
     }
 
+    /// Titles come from the view model's cache, resolved once per new turn: looking them up
+    /// live decoded a transcript per citation on every render — every keystroke in the
+    /// composer paid for it.
     private func sources(_ entry: AskEntry) -> [Source] {
         entry.citations.map { citation in
             Source(
                 citation: citation,
-                title: AskLibraryDataSources.current.ask
-                    .conversationTitle(citedId: citation.segmentId) ?? "Conversation")
+                title: model.citationTitles[citation.segmentId] ?? "Conversation")
         }
     }
 
@@ -262,6 +264,10 @@ struct AskThreadScreen: View {
 final class AskThreadViewModel {
     /// The open conversation, oldest turn first.
     private(set) var turns: [AskEntry] = []
+    /// Conversation title per cited segment id, resolved off-main once per new turn. `sources`
+    /// reads only this — resolving titles inside the render pass decoded transcripts on every
+    /// body evaluation.
+    private(set) var citationTitles: [String: String] = [:]
     /// The question waiting on an answer, and the one whose answer failed. Only one at a time.
     private(set) var pendingQuestion: String?
     private(set) var failedQuestion: String?
@@ -292,6 +298,7 @@ final class AskThreadViewModel {
             threadId = id
             let threads = (try? await AskLibraryDataSources.current.ask.recentThreads()) ?? []
             turns = threads.first { $0.id == id }?.turns ?? []
+            await resolveCitationTitles()
         }
         if let question, !question.isEmpty { send(question, scope: scope) }
     }
@@ -316,6 +323,7 @@ final class AskThreadViewModel {
                 // The first answer of a new conversation is what mints its thread id.
                 threadId = entry.threadId
                 turns.append(entry)
+                await resolveCitationTitles()
                 pendingQuestion = nil
             } catch {
                 pendingQuestion = nil
@@ -333,6 +341,15 @@ final class AskThreadViewModel {
     private var openThread: AskThread? {
         guard let threadId, !turns.isEmpty else { return nil }
         return AskThread(id: threadId, turns: turns)
+    }
+
+    /// Fills the title cache for every citation on screen; ids already resolved are kept.
+    private func resolveCitationTitles() async {
+        let ids = turns.flatMap { $0.citations.map(\.segmentId) }
+            .filter { citationTitles[$0] == nil }
+        guard !ids.isEmpty else { return }
+        let resolved = await AskLibraryDataSources.current.ask.citationTitles(for: ids)
+        citationTitles.merge(resolved) { _, new in new }
     }
 
     func toggleSources(_ entry: AskEntry) {

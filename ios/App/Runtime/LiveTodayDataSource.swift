@@ -67,7 +67,18 @@ final class LiveTodayDataSource {
             })
         tasks.append(
             Task { [weak self] in
-                for await _ in composition.runtime.diagnostics.stream() {
+                // `lastRefreshedAtMs` changes on every diagnostics refresh — the pipeline runs
+                // one per pass, every 1–5 s while recording — so comparing raw values would
+                // rebuild the whole Today model on a timer that never stops. Only a change in
+                // what the snapshot SAYS is worth a rebuild.
+                var previous: RuntimeDiagnostics?
+                for await value in composition.runtime.diagnostics.stream() {
+                    var normalized = value
+                    normalized.lastRefreshedAtMs = 0
+                    var previousNormalized = previous
+                    previousNormalized?.lastRefreshedAtMs = 0
+                    previous = value
+                    if normalized == previousNormalized { continue }
                     self?.scheduleRefresh()
                 }
             })
@@ -96,8 +107,12 @@ final class LiveTodayDataSource {
                     // `publish()` yields `todaySnapshotValue`, so assigning a private property
                     // and publishing left the waveform on screen frozen until the next full
                     // refresh — up to ten seconds behind the audio it was drawing.
+                    //
+                    // Today only: this ticks at 4 Hz while recording, and yielding the live
+                    // snapshot too made the Live screen re-diff its whole transcript four
+                    // times a second for a waveform it does not draw.
                     todaySnapshotValue.liveMinute = liveMinuteSlots()
-                    publish()
+                    publishToday()
                 }
             })
         // Coverage, the recap card and the elapsed-time lines are wall-clock derived, so they
@@ -119,10 +134,24 @@ final class LiveTodayDataSource {
 
     // MARK: - Rebuild
 
+    /// Set when a trigger arrives while a refresh is already running, so the newest state is
+    /// picked up by one follow-up pass instead of being silently dropped.
+    private var refreshAgain = false
+
     private func scheduleRefresh() {
-        guard refreshTask == nil else { return }
+        guard refreshTask == nil else {
+            refreshAgain = true
+            return
+        }
         refreshTask = Task { [weak self] in
-            await self?.refresh()
+            repeat {
+                self?.refreshAgain = false
+                // A short settle: DB-write bursts (transcription landing, regrouping) tick the
+                // observations several times back to back, and one rebuild that sees the final
+                // state beats five that each redraw an intermediate one.
+                try? await Task.sleep(for: .milliseconds(150))
+                await self?.refresh()
+            } while self?.refreshAgain == true
             self?.refreshTask = nil
         }
     }
@@ -229,15 +258,23 @@ final class LiveTodayDataSource {
         var openMeta: SegmentMeta?
         var memberIds: Set<String> = []
 
+        // One off-main pass for the members' sidecars and durable transcripts. This refresh
+        // runs on every pipeline tick while recording, and decoding a long conversation's
+        // word-timing JSON inline here was the recurring main-thread stall that made the whole
+        // app feel laggy while a recording was live.
+        let allMemberIds = (detail?.members ?? []).map(\.segmentId)
+        let metas = await LiveWorld.loadMetas(allMemberIds, files: composition.files)
+        let durables = await LiveWorld.loadTranscripts(allMemberIds, store: composition.transcripts)
+
         for member in detail?.members ?? [] {
             // The open segment's meta places the transcript in time and carries the gaps the
             // watch has already reported, so quiet/missing show up while recording rather
             // than only at the end.
-            guard let meta = composition.files.readMeta(member.segmentId) else { continue }
+            guard let meta = metas[member.segmentId] else { continue }
             if zone == nil { zone = TranscriptItems.timeZone(meta) }
             let isOpen = member.segmentId == openSegmentId
             if isOpen { openMeta = meta }
-            let durable = composition.transcripts.load(member.segmentId)
+            let durable = durables[member.segmentId]
             memberIds.insert(member.segmentId)
             // A finished transcript covers its whole segment, so every bar of it is transcribed.
             if durable != nil { transcribedThrough[member.segmentId] = .max }
@@ -356,8 +393,12 @@ final class LiveTodayDataSource {
     }
 
     private func publish() {
-        for continuation in todayContinuations.values { continuation.yield(todaySnapshotValue) }
+        publishToday()
         for continuation in liveContinuations.values { continuation.yield(liveSnapshotValue) }
+    }
+
+    private func publishToday() {
+        for continuation in todayContinuations.values { continuation.yield(todaySnapshotValue) }
     }
 
     /// The live row, placed on a time axis ending NOW rather than right-aligned on whatever

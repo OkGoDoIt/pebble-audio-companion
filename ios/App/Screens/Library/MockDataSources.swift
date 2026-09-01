@@ -63,7 +63,7 @@ final class MockWorld {
     private var deleted: [(index: Int, conversation: MockConversation)] = []
     private var updateContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
-    let hasContent = true
+    func hasContent() async -> Bool { true }
 
     private init() {
         let cal = Calendar.current
@@ -818,6 +818,14 @@ extension MockWorld: AskDataSource {
 
     func conversationTitle(citedId: String) -> String? {
         index(of: MockWorld.conversation(ofMember: citedId)).map { conversations[$0].title }
+    }
+
+    func citationTitles(for citedIds: [String]) async -> [String: String] {
+        var titles: [String: String] = [:]
+        for id in citedIds {
+            if let title = conversationTitle(citedId: id) { titles[id] = title }
+        }
+        return titles
     }
 
     /// The artboard conversations each stand in for a two-member recording, so a mock citation

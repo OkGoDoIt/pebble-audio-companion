@@ -359,8 +359,10 @@ protocol ConversationDataSource: AnyObject {
 
 @MainActor
 protocol AskDataSource: AnyObject {
-    /// False until the first recording exists ("Nothing to ask about yet…").
-    var hasContent: Bool { get }
+    /// False until the first recording exists ("Nothing to ask about yet…"). Async so the live
+    /// implementation can look at the spool off the main thread; callers cache the answer —
+    /// this must never be read per render.
+    func hasContent() async -> Bool
     /// Recent Ask conversations, newest first, each with all of its turns.
     func recentThreads() async throws -> [AskThread]
     /// Answers `question` as the next turn of `thread` (nil starts a new conversation): the
@@ -369,6 +371,10 @@ protocol AskDataSource: AnyObject {
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?
+    /// Titles for many citations at once, resolved off the main thread. The thread screen
+    /// caches the result — the sync variant decodes a transcript per call, which must never
+    /// happen per render.
+    func citationTitles(for citedIds: [String]) async -> [String: String]
     /// The conversation, moment and scrubber position a citation names. Nil once the cited
     /// segment is gone (retention), which is when a chip must not navigate at all.
     func citationTarget(for citation: AskCitation) async -> CitationTarget?

@@ -66,6 +66,35 @@ final class LiveWorld {
         let detail = try? await composition.runtime.library.conversation(id: conversationId)
         return detail?.row.title
     }
+
+    /// Batch-decodes transcripts off the main actor. Every screen-facing path in this file runs
+    /// on the main actor, and `FileTranscriptStore.load` is a synchronous read + JSON decode of
+    /// word-level timing arrays — per-member, that is exactly the work that made scrolling and
+    /// typing stutter whenever anything walked a conversation.
+    static func loadTranscripts(
+        _ segmentIds: [String], store: FileTranscriptStore
+    ) async -> [String: SegmentTranscript] {
+        await Task.detached(priority: .userInitiated) {
+            var loaded: [String: SegmentTranscript] = [:]
+            for id in segmentIds {
+                if let transcript = store.load(id) { loaded[id] = transcript }
+            }
+            return loaded
+        }.value
+    }
+
+    /// Same hop for the sidecar metas of a conversation's members.
+    static func loadMetas(
+        _ segmentIds: [String], files: SegmentFileReader
+    ) async -> [String: SegmentMeta] {
+        await Task.detached(priority: .userInitiated) {
+            var loaded: [String: SegmentMeta] = [:]
+            for id in segmentIds {
+                if let meta = files.readMeta(id) { loaded[id] = meta }
+            }
+            return loaded
+        }.value
+    }
 }
 
 // MARK: - LibraryDataSource
@@ -129,9 +158,11 @@ extension LiveWorld: SearchDataSource {
         // a conversation from today that ranked 41st across the library simply did not appear,
         // and that gets steadily worse as the library grows. Scoped, the 40 are 40 conversations
         // from inside the window, so the pill reports what is actually there.
+        // Off-main: the synchronous variant runs the whole FTS query on the caller's thread,
+        // and this is called from the main actor on (debounced) keystrokes.
         let index = composition.index
         let hits =
-            (try? index.search(
+            (try? await index.searchOffMain(
                 trimmed,
                 limit: 40,
                 kinds: [.conversation],
@@ -282,9 +313,16 @@ extension LiveWorld: ConversationDataSource {
         var transcribedAtMs: Int64?
         var zone: TimeZone?
 
+        // One off-main pass for every member's sidecar and transcript: an hour-long conversation
+        // is megabytes of word-timing JSON, and this used to decode all of it on the main actor
+        // on every DB tick the open conversation observed.
+        let memberIds = detail.members.map(\.segmentId)
+        let metas = await Self.loadMetas(memberIds, files: composition.files)
+        let storedTranscripts = await Self.loadTranscripts(memberIds, store: composition.transcripts)
+
         for member in detail.members {
-            guard let meta = composition.files.readMeta(member.segmentId) else { continue }
-            let stored = composition.transcripts.load(member.segmentId)
+            guard let meta = metas[member.segmentId] else { continue }
+            let stored = storedTranscripts[member.segmentId]
             if let stored {
                 provider = stored.providerId
                 transcribedAtMs = max(transcribedAtMs ?? 0, stored.createdAtMs)
@@ -515,7 +553,13 @@ extension LiveWorld: ConversationDataSource {
 // MARK: - AskDataSource
 
 extension LiveWorld: AskDataSource {
-    var hasContent: Bool { !composition.files.listSegments().isEmpty }
+    /// Off the main actor: `listSegments()` decodes every sidecar in the spool, and this used to
+    /// run as a computed property on every render of the Ask screen — every keystroke in the
+    /// composer paid a full directory scan on the main thread.
+    func hasContent() async -> Bool {
+        let files = composition.files
+        return await Task.detached(priority: .userInitiated) { files.hasAnySegment() }.value
+    }
 
     func recentThreads() async throws -> [AskThread] {
         try await composition.runtime.library.recentAskThreads()
@@ -526,27 +570,29 @@ extension LiveWorld: AskDataSource {
         let nowMs = composition.clock.nowMs
         let priorTurns = thread?.turns ?? []
         let threadId = thread?.id
-        let metas = segmentsInAskScope(
-            composition.files.listSegments(), scope: kitScope, nowMs: nowMs
-        )
+        // The spool scan and every transcript decode stay off the main actor: an Everything-scoped
+        // question reads the whole archive, and doing that inline froze the UI for the entire
+        // load right as the question was sent.
+        let files = composition.files
+        let allMetas = await Task.detached(priority: .userInitiated) { files.listSegments() }.value
+        let metas = segmentsInAskScope(allMetas, scope: kitScope, nowMs: nowMs)
         // A conversation-scoped question narrows to that conversation's members.
         let scoped: [SegmentMeta]
         if case .conversation(let id, _) = scope {
             let ids = Set(await members(of: id))
-            scoped = composition.files.listSegments().filter { ids.contains($0.segmentId) }
+            scoped = allMetas.filter { ids.contains($0.segmentId) }
         } else {
             scoped = metas
         }
 
+        // Kept so the stretch cutter below does not decode every one of these a second time.
+        let loaded = await Self.loadTranscripts(
+            scoped.map(\.segmentId), store: composition.transcripts)
         var excerpts: [TranscriptExcerpt] = []
         var gapSummaries: [String: String?] = [:]
-        // Kept so the stretch cutter below does not decode every one of these a second time.
-        var loaded: [String: SegmentTranscript] = [:]
         for meta in scoped {
-            guard let transcript = composition.transcripts.load(meta.segmentId),
-                !transcript.text.isEmpty
+            guard let transcript = loaded[meta.segmentId], !transcript.text.isEmpty
             else { continue }
-            loaded[meta.segmentId] = transcript
             let startMs = Int64(meta.startTimeMs)
             let endMs = startMs + segmentDurationMs(meta)
             excerpts.append(
@@ -586,7 +632,8 @@ extension LiveWorld: AskDataSource {
         let stretches = citableStretches(
             of: ordered.compactMap { excerpt in
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
-            })
+            },
+            metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }))
         let plan = AskCorpusPlanner.plan(
             stretches: stretches,
             budget: budget,
@@ -780,36 +827,50 @@ extension LiveWorld: AskDataSource {
         return segmentTitle(meta, transcriptText: composition.transcripts.load(citedId)?.text)
     }
 
+    /// The batch form, with every meta read and transcript decode off the main actor.
+    func citationTitles(for citedIds: [String]) async -> [String: String] {
+        let ids = Array(Set(citedIds))
+        let files = composition.files
+        let store = composition.transcripts
+        return await Task.detached(priority: .userInitiated) {
+            var titles: [String: String] = [:]
+            for id in ids {
+                guard let meta = files.readMeta(id) else { continue }
+                titles[id] = segmentTitle(meta, transcriptText: store.load(id)?.text)
+            }
+            return titles
+        }.value
+    }
+
     /// A conversation's transcripts cut into citable stretches, in recording order and
     /// numbered once. Provider spans give the boundaries, so every stretch starts where
     /// someone started speaking.
-    func citableStretches(of segmentIds: [String]) -> [CitableExcerpt] {
-        CitableExcerpts.numbered(
-            CitableExcerpts.coalesced(
-                segmentIds.flatMap { segmentId in
-                    composition.transcripts.load(segmentId).map {
-                        drafts(of: segmentId, transcript: $0)
-                    } ?? []
-                }))
+    func citableStretches(of segmentIds: [String]) async -> [CitableExcerpt] {
+        let transcripts = await Self.loadTranscripts(segmentIds, store: composition.transcripts)
+        let metas = await Self.loadMetas(segmentIds, files: composition.files)
+        return citableStretches(
+            of: segmentIds.compactMap { id in transcripts[id].map { (id, $0) } }, metas: metas)
     }
 
-    /// The same, for a caller that has already read these transcripts. Ask reads every
+    /// The same, for a caller that has already read these transcripts and metas. Ask reads every
     /// transcript in scope to build its excerpts and would otherwise decode all of them a
     /// second time here — which, on an "Everything" question over a few hundred recordings, is
     /// tens of megabytes of JSON parsed twice for one question.
-    func citableStretches(of transcripts: [(segmentId: String, transcript: SegmentTranscript)])
-        -> [CitableExcerpt]
-    {
+    func citableStretches(
+        of transcripts: [(segmentId: String, transcript: SegmentTranscript)],
+        metas: [String: SegmentMeta]
+    ) -> [CitableExcerpt] {
         CitableExcerpts.numbered(
             CitableExcerpts.coalesced(
-                transcripts.flatMap { drafts(of: $0.segmentId, transcript: $0.transcript) }))
+                transcripts.flatMap {
+                    drafts(of: $0.segmentId, transcript: $0.transcript, meta: metas[$0.segmentId])
+                }))
     }
 
-    private func drafts(of segmentId: String, transcript: SegmentTranscript)
+    private func drafts(of segmentId: String, transcript: SegmentTranscript, meta: SegmentMeta?)
         -> [CitableExcerptDraft]
     {
-        guard !transcript.text.isEmpty, let meta = composition.files.readMeta(segmentId)
-        else { return [] }
+        guard !transcript.text.isEmpty, let meta else { return [] }
         let startMs = Int64(meta.startTimeMs)
         return CitableExcerpts.split(
             segmentId: segmentId,
@@ -834,8 +895,9 @@ extension LiveWorld: AskDataSource {
 
         var mediaBeforeMemberMs: Int64 = 0
         var mediaOffsetMs: Int64?
+        let metas = await Self.loadMetas(detail.members.map(\.segmentId), files: composition.files)
         for member in detail.members {
-            guard let meta = composition.files.readMeta(member.segmentId) else { continue }
+            guard let meta = metas[member.segmentId] else { continue }
             let mediaMs = mediaDurationMs(meta)
             if member.segmentId == citedId {
                 // Where the cited STRETCH starts on the scrubber, not where its recording
@@ -851,7 +913,7 @@ extension LiveWorld: AskDataSource {
             }
             mediaBeforeMemberMs += mediaMs
         }
-        let meta = composition.files.readMeta(citedId)
+        let meta = metas[citedId]
         let startedAtMs = citation.startMs ?? meta.map { Int64($0.startTimeMs) }
         return CitationTarget(
             conversationId: conversationId,
@@ -929,14 +991,20 @@ extension LiveWorld: NotesDataSource {
         // recordings. That is what makes a chip land on the lines the point came from and the
         // player start there; numbering by member sent every citation to the top of a
         // twenty-minute segment.
-        let stretches = prompt.citesSources ? citableStretches(of: segmentIds) : []
+        let stretches = prompt.citesSources ? await citableStretches(of: segmentIds) : []
+        // Off-main for the same reason as `ask()`: a fallback over a long conversation decodes
+        // every member transcript, and "Generate note" should not freeze the screen doing it.
+        let fallbackTranscripts = stretches.isEmpty
+            ? await Self.loadTranscripts(segmentIds, store: composition.transcripts) : [:]
+        let fallbackMetas = stretches.isEmpty
+            ? await Self.loadMetas(segmentIds, files: composition.files) : [:]
         let excerpts =
             stretches.isEmpty
             ? segmentIds.compactMap { segmentId -> TranscriptExcerpt? in
-                guard let transcript = composition.transcripts.load(segmentId),
+                guard let transcript = fallbackTranscripts[segmentId],
                     !transcript.text.isEmpty
                 else { return nil }
-                let meta = composition.files.readMeta(segmentId)
+                let meta = fallbackMetas[segmentId]
                 return TranscriptExcerpt(
                     segmentId: segmentId,
                     text: transcript.text,
