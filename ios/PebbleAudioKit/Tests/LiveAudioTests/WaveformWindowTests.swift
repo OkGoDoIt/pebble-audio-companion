@@ -113,6 +113,40 @@ import Testing
         #expect(row.compactMap { $0 }.count == 1)
     }
 
+    /// Audio we HOLD outranks audio we merely infer: a slot carrying a quarter-second of measured
+    /// quiet reads as quiet, not as the fainter tick that means "live link, sent nothing".
+    @Test func measuredQuietOutranksSilenceTheWatchSkipped() {
+        let now: Int64 = 300_000
+        let inOneSlot: Int64 = now - 800
+        let row = slots(
+            [
+                bar(inOneSlot, amplitude: 0, state: .suppressedSilence),
+                bar(inOneSlot + 250, amplitude: 0, state: .silence),
+                bar(inOneSlot + 500, amplitude: 0, state: .suppressedSilence),
+            ],
+            nowMs: now
+        )
+        let drawn = row.compactMap { $0 }
+        #expect(drawn.count == 1)
+        #expect(drawn[0].state == .silence)
+    }
+
+    /// The row's contract, stated directly: the left edge is one window ago and the right edge is
+    /// now, whatever is or is not in between.
+    @Test func theRowSpansExactlyTheWindowEndingAtNow() {
+        let now: Int64 = 900_000
+        // One bar per slot across the whole window, oldest first.
+        let slotMs = windowMs / Int64(slotCount)
+        let everySlot = (0..<slotCount).map { bar(now - Int64($0) * slotMs) }
+        let full = slots(everySlot, nowMs: now)
+        #expect(full.allSatisfy { $0 != nil }, "a bar in every slot fills the row end to end")
+
+        // The two edges, exactly: one millisecond older than the window is off the row.
+        #expect(slots([bar(now - windowMs + 1)], nowMs: now).first! != nil)
+        #expect(slots([bar(now - windowMs)], nowMs: now).allSatisfy { $0 == nil })
+        #expect(slots([bar(now)], nowMs: now).last! != nil)
+    }
+
     @Test func anEmptyWindowDrawsNothing() {
         #expect(slots([], nowMs: 1_000).allSatisfy { $0 == nil })
         #expect(slots([], nowMs: 1_000).count == slotCount)

@@ -109,6 +109,14 @@ public actor LiveAudioMonitor {
     private var idleTickTask: Task<Void, Never>?
     private var wakeups: AsyncStream<Void>.Continuation?
 
+    /// Whether the phone currently believes the watch is capturing — the same claim the status
+    /// card makes. While it holds, seconds with no audio in them are the silence the watch
+    /// deliberately skipped, so they are drawn (faintly) rather than left blank.
+    private var streamLive = false
+    /// How far the live-silence fill has been laid down. nil = nothing filled yet, so the fill
+    /// starts at NOW and never invents a past nobody was watching.
+    private var silenceFillCursorMs: Int64?
+
     /// Latest published bars, oldest first (the Kotlin `StateFlow.value`).
     public private(set) var bars: [WaveformBar] = []
     private var barsContinuations: [UUID: AsyncStream<[WaveformBar]>.Continuation] = [:]
@@ -130,11 +138,20 @@ public actor LiveAudioMonitor {
     }
 
     /// Called from the receive path; cheap (no decode).
+    ///
+    /// A notification carries audio the watch had ALREADY captured, so the batch is laid out
+    /// backwards from its arrival: the last frame is "now" and the earlier ones sit behind it.
+    /// Laying it forwards instead dated audio into the future, which pushed `trimBuckets`'
+    /// edge past now and quietly shortened the window — and during a catch-up drain (the watch
+    /// clears a spool at up to ~8x real time) it dated a whole minute of audio minutes ahead,
+    /// collapsing it all into the newest slot. Backwards is also the convention gaps already
+    /// follow, so a gap and the frames around it land on one consistent axis.
     public func onFrames(segmentId: String?, frames: [SegmentFrame], receivedAtMs: Int64) {
+        let last = frames.count - 1
         for (index, frame) in frames.enumerated() {
             pending.append(
                 Entry(
-                    timeMs: receivedAtMs + Int64(index) * frameDurationMs,
+                    timeMs: receivedAtMs - Int64(last - index) * frameDurationMs,
                     segmentId: segmentId,
                     payload: frame.payload,
                     gapDurationMs: 0,
@@ -206,13 +223,31 @@ public actor LiveAudioMonitor {
         wakeups?.yield(())
     }
 
+    /// Tells the monitor whether the stream is believed live (caller passes the same verdict the
+    /// status card draws, so the row and the headline can never disagree).
+    ///
+    /// THIS IS WHAT MAKES THE ROW ADVANCE IN A QUIET ROOM. The watch stops sending entirely while
+    /// it suppresses voice-activity silence and only reports the skipped span when speech resumes
+    /// — minutes or hours later. Until then the receive path delivers nothing, so without this the
+    /// waveform simply stopped growing and the person watching saw a frozen picture. While the
+    /// stream is live, every bar-width with no audio in it is laid down as `suppressedSilence`:
+    /// known-quiet, drawn as a faint tick, and upgraded to a gap if the watch later reports that
+    /// the span was actually lost.
+    public func setStreamLive(_ live: Bool) {
+        guard live != streamLive else { return }
+        streamLive = live
+        // Restart the cursor at NOW on both edges: going live must not backfill the stretch
+        // before we believed anything, and going dark must not resume where it left off.
+        silenceFillCursorMs = nil
+        wakeups?.yield(())
+    }
+
     public func processPending() async {
         let batch = drainPendingBatch()
         if batch.isEmpty {
-            // Trim before publishing even with nothing new: this is the pass that runs on the
-            // idle tick, and ageing the window is the whole reason that tick exists.
-            trimBuckets()
-            publishBars()
+            // Extend, trim and publish even with nothing new: this is the pass that runs on the
+            // idle tick, and moving the window's two edges is the whole reason that tick exists.
+            settleAndPublish()
             return
         }
 
@@ -256,9 +291,34 @@ public actor LiveAudioMonitor {
                 }
             }
         }
+        settleAndPublish()
+        if !pending.isEmpty { wakeups?.yield(()) }
+    }
+
+    /// One pass over the window's edges: fill the live trailing silence, drop what has aged out,
+    /// publish. Every path that changes the buckets ends here so the row always spans the same
+    /// `windowMs` ending at NOW.
+    private func settleAndPublish() {
+        extendLiveSilence()
         trimBuckets()
         publishBars()
-        if !pending.isEmpty { wakeups?.yield(()) }
+    }
+
+    /// Lays `suppressedSilence` over every bar-width from the fill cursor up to NOW that no audio
+    /// has landed in. Buckets, not display-time synthesis: a span we believed was quiet stays
+    /// drawn as quiet after the link drops, and a gap record arriving later for the same span
+    /// still overrides it (`hasGap` outranks `suppressed` in `publishBars`).
+    private func extendLiveSilence() {
+        guard streamLive else { return }
+        let now = nowMs()
+        // Clamped to the window: a long stretch off-screen backfills one window at most, never a
+        // whole afternoon of ticks nobody could have seen.
+        var t = max(silenceFillCursorMs ?? now, now - windowMs)
+        while t <= now {
+            bucket(timeMs: t, segmentId: nil).suppressed = true
+            t += barMs
+        }
+        silenceFillCursorMs = now
     }
 
     private func drainPendingBatch() -> [Entry] {

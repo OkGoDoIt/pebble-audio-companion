@@ -196,4 +196,151 @@ private func frames(_ count: Int, loud: Bool) -> [SegmentFrame] {
         // Amplitude is zero (no decode) so bars read as silence, but presence is visible.
         #expect(await !monitor.bars.isEmpty)
     }
+
+    // MARK: - The time axis
+
+    /// A notification carries audio the watch already captured, so a batch belongs BEHIND its
+    /// arrival, not in front of it. Dating it forwards put audio in the future, which is where
+    /// the window's trim edge then went too — quietly shortening the minute the row can show.
+    @Test func aBatchIsLaidDownBehindItsArrivalNotAheadOfIt() async {
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { 100_000 })
+        // 50 frames = one second of audio, delivered in one notification at 100_000.
+        await monitor.onFrames(
+            segmentId: "seg-1", frames: frames(50, loud: true), receivedAtMs: 100_000)
+
+        await monitor.processPending()
+
+        let bars = await monitor.bars
+        #expect(!bars.isEmpty)
+        #expect(bars.allSatisfy { $0.timeMs <= 100_000 }, "captured audio is never in the future")
+        #expect(bars.first!.timeMs >= 99_000, "one second of audio spans one second")
+        #expect(bars.last!.timeMs >= 99_750, "the newest frame is the present")
+    }
+
+    /// The spool-drain case, which is what actually cost the row its minute: the watch clears a
+    /// backlog at many times real time, so minutes of audio arrive inside a few seconds. Dated
+    /// forwards, all of it landed ahead of now and dragged the trim edge with it, throwing away
+    /// the real history behind it.
+    @Test func aCatchUpBurstDoesNotPushTheWindowIntoTheFuture() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.onFrames(
+            segmentId: "seg-1", frames: frames(13, loud: true), receivedAtMs: 70_000)
+        await monitor.processPending()
+
+        // A 30-second backlog arrives in one burst.
+        await monitor.onFrames(
+            segmentId: "seg-1", frames: frames(1_500, loud: true), receivedAtMs: 100_000)
+        // 1500 frames at 500 entries a pass; a few extra passes cost nothing.
+        for _ in 0..<8 { await monitor.processPending() }
+
+        let bars = await monitor.bars
+        #expect(bars.allSatisfy { $0.timeMs <= 100_000 }, "a burst must not be dated forwards")
+        #expect(
+            bars.contains { $0.timeMs < 71_000 },
+            "audio from before the burst is still inside the window, not trimmed by a future edge")
+    }
+
+    // MARK: - Advancing through silence the watch skipped
+
+    /// The defect the person watching sees: in a quiet room the watch sends NOTHING — it reports
+    /// the skipped span only when speech resumes, which can be hours — so the row stopped growing
+    /// and looked frozen. While the stream is live, every empty bar-width is laid down as the
+    /// silence it is.
+    @Test func aLiveStreamAdvancesThroughSilenceItIsNotBeingSent() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.setStreamLive(true)
+        await monitor.onFrames(
+            segmentId: "seg-1", frames: frames(13, loud: true), receivedAtMs: 100_000)
+        await monitor.processPending()
+
+        // Ten seconds of a quiet room: not one byte arrives.
+        clock.nowMs = 110_000
+        await monitor.processPending()
+
+        let bars = await monitor.bars
+        #expect(bars.last!.timeMs >= 109_750, "the row reaches NOW, not the last thing heard")
+        let filled = bars.filter { $0.timeMs > 100_000 }
+        #expect(filled.count >= 39, "ten seconds at 250 ms a bar")
+        #expect(filled.allSatisfy { $0.state == .suppressedSilence })
+        #expect(bars.contains { $0.state == .recorded }, "the speech before it is untouched")
+    }
+
+    /// Nothing may be invented about a stretch nobody was watching: the fill starts where the
+    /// belief starts. This is what keeps "I just opened the app" blank rather than confidently
+    /// quiet.
+    @Test func theFillNeverBackdatesSilenceBeforeTheStreamWasBelievedLive() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+
+        await monitor.processPending()
+        #expect(await monitor.bars.isEmpty, "no belief, no bars")
+
+        await monitor.setStreamLive(true)
+        clock.nowMs = 105_000
+        await monitor.processPending()
+
+        let bars = await monitor.bars
+        #expect(!bars.isEmpty)
+        #expect(
+            bars.allSatisfy { $0.timeMs >= 100_000 },
+            "the fill starts when the stream was first believed live, not one window earlier")
+    }
+
+    /// Losing the stream stops the fill — but never erases what was already believed. The seconds
+    /// drawn as quiet while the link was up stay quiet; they were an honest reading at the time.
+    @Test func losingTheStreamStopsTheFillAndKeepsWhatWasAlreadyDrawn() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.setStreamLive(true)
+        clock.nowMs = 105_000
+        await monitor.processPending()
+        let whileLive = await monitor.bars.count
+        #expect(whileLive > 0)
+
+        await monitor.setStreamLive(false)
+        clock.nowMs = 115_000
+        await monitor.processPending()
+
+        let bars = await monitor.bars
+        #expect(bars.count == whileLive, "no new ticks, and none taken back")
+        #expect(bars.allSatisfy { $0.timeMs <= 105_000 })
+    }
+
+    /// A live fill is a belief, and the watch's own gap record overrules it. Loss reported after
+    /// the fact must repaint those seconds amber — never be smoothed into calm quiet.
+    @Test func aGapReportedLaterOverridesSilenceAlreadyFilledIn() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.setStreamLive(true)
+        clock.nowMs = 103_000
+        await monitor.processPending()
+        #expect(await monitor.bars.allSatisfy { $0.state == .suppressedSilence })
+
+        // The watch resurfaces and says those three seconds were lost, not skipped.
+        await monitor.onGap(receivedAtMs: 103_000, approxDurationMs: 3_000, silence: false)
+        await monitor.processPending()
+
+        let gapBars = await monitor.bars.filter { $0.state == .gap }
+        #expect(gapBars.count >= 11, "three seconds of loss, at 250 ms a bar")
+        #expect(gapBars.allSatisfy { (100_000...103_000).contains($0.timeMs) })
+    }
+
+    /// The fill is bounded by the window, so a long stretch off-screen backfills one minute at
+    /// most rather than an afternoon of ticks nobody could have seen.
+    @Test func aLongStretchOffScreenBackfillsAtMostOneWindow() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.setStreamLive(true)
+        await monitor.processPending()
+
+        clock.nowMs = 100_000 + 3_600_000  // an hour later
+        await monitor.processPending()
+
+        let bars = await monitor.bars
+        #expect(!bars.isEmpty)
+        #expect(bars.count <= Int(monitor.windowMs / 250) + 2)
+        #expect(bars.allSatisfy { $0.timeMs >= clock.nowMs - monitor.windowMs })
+    }
 }

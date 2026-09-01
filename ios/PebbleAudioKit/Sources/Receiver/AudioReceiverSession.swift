@@ -331,7 +331,17 @@ public actor AudioReceiverSession {
     /// a room that stays silent for an hour keeps the card on "Recording" the whole time — with
     /// evidence refreshed every cycle rather than with a latch nobody checked. It fires only when
     /// the watch says otherwise, or stops answering.
+    ///
+    /// AND WHEN IT STOPS ANSWERING, THIS ACTS. A watch that answers nothing on a link the
+    /// platform still calls connected is a stale link, and the only cure is a fresh one. The
+    /// keepalive's `resync` cannot cover this case: its idle test is on OUTBOUND control, and
+    /// while we believe a stream is open we keep checkpointing (the spool stall-breaker sends
+    /// one every 2 s of silence), so `lastOutboundControlMs` never goes stale and the ping that
+    /// would have noticed is never sent. That is the shape of a long blackout — the phone
+    /// talking steadily to a watch that has not said a word for eleven minutes, with the status
+    /// card the only thing that knew, and nothing anywhere trying to fix it.
     private func runStreamVerify() async {
+        var unanswered = 0
         while true {
             do {
                 try await clock.sleep(ms: config.streamVerifyIntervalMs)
@@ -339,12 +349,30 @@ public actor AudioReceiverSession {
                 return // cancelled with the connection
             }
             if Task.isCancelled { return }
-            guard authorized, stream != nil else { continue }
+            guard authorized, stream != nil else {
+                unanswered = 0
+                continue
+            }
             let lastAudio = streamEvidence.value.lastAudioAtMs ?? 0
-            guard clock.nowMs - lastAudio >= Self.verifyAfterSilenceMs else { continue }
+            guard clock.nowMs - lastAudio >= Self.verifyAfterSilenceMs else {
+                // Audio is arriving; the link is manifestly fine.
+                unanswered = 0
+                continue
+            }
             let lastReport = streamEvidence.value.lastWatchReportAtMs ?? 0
             guard clock.nowMs - lastReport >= config.streamVerifyIntervalMs else { continue }
-            await verifyWatchState()
+            if await verifyWatchState() {
+                unanswered = 0
+                continue
+            }
+            unanswered += 1
+            guard unanswered >= Self.verifyMaxFailures else { continue }
+            // Same escalation the keepalive uses, for the same reason and with the same
+            // consequences: drop this connection and build a fresh one, keeping the intent to
+            // stay connected. The watch re-delivers from its spool, so nothing it captured
+            // meanwhile is lost to the reconnect itself.
+            link.resync()
+            return
         }
     }
 
@@ -1099,4 +1127,9 @@ public actor AudioReceiverSession {
     /// A verify that never returns is a verify that never happened — a stale link the platform
     /// still calls connected can leave a GATT read outstanding indefinitely.
     static let verifyReadTimeoutMs: Int64 = 5_000
+
+    /// Unanswered verifies before the link is presumed stale and rebuilt. Three, at the 20 s
+    /// verify cadence: a minute of a watch saying nothing to a direct question, which no
+    /// ordinary quiet, roaming or momentary radio trouble survives.
+    static let verifyMaxFailures = 3
 }
