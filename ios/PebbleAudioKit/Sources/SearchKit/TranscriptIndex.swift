@@ -175,14 +175,49 @@ public final class TranscriptIndex: TranscriptIndexing {
         within ids: Set<String>? = nil,
         mode: MatchMode = .all
     ) throws -> [IndexHit] {
-        guard let match = Self.ftsQuery(query, mode: mode) else { return [] }
-        if let ids, ids.isEmpty { return [] }
-        if let kinds, kinds.isEmpty { return [] }
+        guard let statement = Self.searchStatement(query, limit: limit, kinds: kinds, within: ids, mode: mode)
+        else { return [] }
+        return try database.reader.read { db in
+            try Self.fetchHits(db, statement: statement)
+        }
+    }
+
+    /// The same search on GRDB's own reader queue. UI callers (the Search screen's per-keystroke
+    /// query runs on the main actor) must use this: the synchronous variant blocks the calling
+    /// thread for the whole FTS query, which on a large library is a visible main-thread stall.
+    public func searchOffMain(
+        _ query: String,
+        limit: Int,
+        kinds: Set<IndexKind>? = nil,
+        within ids: Set<String>? = nil,
+        mode: MatchMode = .all
+    ) async throws -> [IndexHit] {
+        guard let statement = Self.searchStatement(query, limit: limit, kinds: kinds, within: ids, mode: mode)
+        else { return [] }
+        return try await database.reader.read { db in
+            try Self.fetchHits(db, statement: statement)
+        }
+    }
+
+    private struct SearchStatement: Sendable {
+        let sql: String
+        let arguments: [String]
+        let limit: Int
+    }
+
+    private static func searchStatement(
+        _ query: String,
+        limit: Int,
+        kinds: Set<IndexKind>?,
+        within ids: Set<String>?,
+        mode: MatchMode
+    ) -> SearchStatement? {
+        guard let match = ftsQuery(query, mode: mode) else { return nil }
+        if let ids, ids.isEmpty { return nil }
+        if let kinds, kinds.isEmpty { return nil }
 
         var conditions = ["search_fts MATCH ?"]
-        var arguments: [any DatabaseValueConvertible] = [
-            Self.matchStart, Self.matchEnd, match,
-        ]
+        var arguments: [String] = [matchStart, matchEnd, match]
         if let kinds {
             let sorted = kinds.map(\.rawValue).sorted()
             conditions.append(
@@ -191,25 +226,28 @@ public final class TranscriptIndex: TranscriptIndexing {
         }
         if let ids {
             conditions.append("entityId IN (SELECT value FROM json_each(?))")
-            arguments.append(Self.jsonArray(ids))
+            arguments.append(jsonArray(ids))
         }
-        arguments.append(limit)
+        return SearchStatement(
+            sql: """
+                SELECT entityId, kind, title,
+                       snippet(search_fts, -1, ?, ?, '…', 12) AS snip,
+                       bm25(search_fts) AS rank
+                FROM search_fts
+                WHERE \(conditions.joined(separator: " AND "))
+                ORDER BY bm25(search_fts)
+                LIMIT ?
+                """,
+            arguments: arguments,
+            limit: limit
+        )
+    }
 
-        let rows = try database.reader.read { db in
-            try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT entityId, kind, title,
-                           snippet(search_fts, -1, ?, ?, '…', 12) AS snip,
-                           bm25(search_fts) AS rank
-                    FROM search_fts
-                    WHERE \(conditions.joined(separator: " AND "))
-                    ORDER BY bm25(search_fts)
-                    LIMIT ?
-                    """,
-                arguments: StatementArguments(arguments)
-            )
-        }
+    private static func fetchHits(_ db: Database, statement: SearchStatement) throws -> [IndexHit] {
+        var arguments: [any DatabaseValueConvertible] = statement.arguments
+        arguments.append(statement.limit)
+        let rows = try Row.fetchAll(
+            db, sql: statement.sql, arguments: StatementArguments(arguments))
         return rows.compactMap { row in
             let kindRaw: String = row["kind"] ?? ""
             guard let kind = IndexKind(rawValue: kindRaw) else { return nil }

@@ -35,6 +35,16 @@ public struct SegmentFileReader: Sendable {
         return try? JSONDecoder().decode(SegmentMeta.self, from: data)
     }
 
+    /// Whether the spool holds any segment at all. A directory listing with no sidecar decode:
+    /// callers asking "is there anything here?" must not pay `listSegments()`'s cost of parsing
+    /// every meta file to hear "yes".
+    public func hasAnySegment() -> Bool {
+        let entries =
+            (try? FileManager.default.contentsOfDirectory(
+                at: segmentsDir, includingPropertiesForKeys: nil)) ?? []
+        return entries.contains { $0.lastPathComponent.hasSuffix(SegmentStore.metaSuffix) }
+    }
+
     public func listSegments() -> [SegmentMeta] {
         let entries =
             (try? FileManager.default.contentsOfDirectory(
