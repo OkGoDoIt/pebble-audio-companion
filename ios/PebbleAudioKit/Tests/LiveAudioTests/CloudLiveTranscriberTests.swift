@@ -332,4 +332,85 @@ private func opened(_ segmentId: String) -> LiveAudioEvent {
         tapJob.cancel()
         await tapJob.value
     }
+
+    @Test func aConnectedButWordlessSocketDoesNotClaimTheSegment() async throws {
+        // Soniox answers a connected socket with token-less frames while nobody is speaking.
+        // Those used to claim the segment on arrival: an empty preview was published and
+        // `LiveAudioService` stood the chunk-based fallback down, so a session that never
+        // produced words left the Recording-now screen on its "Listening — words appear here"
+        // line for the whole recording, with the path that would have filled it held back.
+        let tap = LiveAudioTap()
+        let provider = FakeStreamingProvider()
+        let outcomes = Box<[CloudLiveOutcome]>([])
+        let transcriber = CloudLiveTranscriber(
+            tap: tap,
+            provider: provider,
+            enabled: { true },
+            nowMs: { 123_000 },
+            onOutcome: { outcome in outcomes.mutate { $0.append(outcome) } },
+            decodePcm: { _, encoded in passthrough(encoded) }
+        )
+        let tapJob = await transcriber.start()
+
+        tap.emit(opened("seg-1"))
+        #expect(await waitUntil { provider.updates.subscriberCount == 1 })
+        tap.emit(.framesAppended(segmentId: "seg-1", frames: cloudFrames(3, firstSequence: 10)))
+        #expect(await waitUntil { await transcriber.streamedFrameCountForTesting() == 3 })
+
+        #expect(provider.updates.send(StreamingTranscriptUpdate(finalText: "")))
+        #expect(provider.updates.send(StreamingTranscriptUpdate(finalText: "   ")))
+        // The socket answering AT ALL is what cloud health hears, and it is the ordering point
+        // that proves both wordless updates were consumed before the assertions below.
+        #expect(await waitUntil { outcomes.value.count == 1 })
+        #expect(outcomes.value == [.ok()])
+        // Nothing to show, and — the part that mattered — nothing claimed.
+        #expect(await transcriber.previews["seg-1"] == nil)
+        #expect(await transcriber.deliveringSegmentId() == nil)
+
+        // The first real words take the segment over as they always did.
+        #expect(provider.updates.send(StreamingTranscriptUpdate(finalText: "first words")))
+        #expect(await waitUntil { await transcriber.previews["seg-1"]?.text == "first words" })
+        #expect(await transcriber.deliveringSegmentId() == "seg-1")
+
+        tap.emit(.segmentClosed(segmentId: "seg-1"))
+        #expect(await waitUntil { await transcriber.activeSegmentIdForTesting() == nil })
+        tapJob.cancel()
+        await tapJob.value
+    }
+
+    @Test func aSocketThatGoesQuietHandsTheSegmentBack() async throws {
+        // The other half: a session that delivered once and then went quiet held its claim for
+        // as long as the socket stayed open, so the chunk path never resumed and the preview
+        // froze mid-sentence. Delivery is evidence only while it is fresh.
+        let clock = ClockBox(123_000)
+        let tap = LiveAudioTap()
+        let provider = FakeStreamingProvider()
+        let transcriber = CloudLiveTranscriber(
+            tap: tap,
+            provider: provider,
+            enabled: { true },
+            nowMs: { clock.now },
+            decodePcm: { _, encoded in passthrough(encoded) }
+        )
+        let tapJob = await transcriber.start()
+
+        tap.emit(opened("seg-1"))
+        #expect(await waitUntil { provider.updates.subscriberCount == 1 })
+        #expect(provider.updates.send(StreamingTranscriptUpdate(finalText: "some words")))
+        #expect(await waitUntil { await transcriber.previews["seg-1"] != nil })
+        #expect(await transcriber.deliveringSegmentId() == "seg-1")
+
+        clock.now += CloudLiveTranscriber.deliveryStaleMs + 1
+        #expect(await transcriber.deliveringSegmentId() == nil)
+        // The preview itself stays on screen — the words were said. Only the CLAIM expires.
+        #expect(await transcriber.previews["seg-1"]?.text == "some words")
+
+        #expect(provider.updates.send(StreamingTranscriptUpdate(finalText: "some words again")))
+        #expect(await waitUntil { await transcriber.deliveringSegmentId() == "seg-1" })
+
+        tap.emit(.segmentClosed(segmentId: "seg-1"))
+        #expect(await waitUntil { await transcriber.activeSegmentIdForTesting() == nil })
+        tapJob.cancel()
+        await tapJob.value
+    }
 }

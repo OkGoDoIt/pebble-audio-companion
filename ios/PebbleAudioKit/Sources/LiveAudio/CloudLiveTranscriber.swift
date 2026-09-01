@@ -73,8 +73,12 @@ public actor CloudLiveTranscriber {
     private var streamedFrameCount = 0
     private var lastSampleIndexExclusive: UInt64 = 0
     /// The segment this transcriber is actually carrying text for right now (a session that has
-    /// delivered at least one update). See `deliveringSegmentId`.
+    /// delivered at least one update WITH WORDS IN IT). See `deliveringSegmentId`.
     private var deliveringSegment: String?
+    /// When that session last produced words. A socket can stay connected and say nothing for
+    /// as long as the provider likes; `deliveringSegmentId` uses this so a mute session stops
+    /// counting as delivery instead of silencing the chunk path for the rest of the recording.
+    private var lastDeliveryAtMs: Int64 = 0
     /// After a session gives up on a segment, the earliest time a new session may be opened for
     /// THAT segment. Without it, the next frame batch would immediately restart the whole
     /// reconnect cycle — a hot loop of failing sockets for the rest of the recording.
@@ -130,11 +134,28 @@ public actor CloudLiveTranscriber {
 
     /// The segment whose live text is currently coming off the realtime socket, or nil.
     ///
-    /// "Delivering" means a session is running AND it has produced at least one update — a
-    /// socket that is merely connecting must not silence the chunk-based fallback, or the first
-    /// seconds of a segment would be a hole in the preview. The runtime uses this to keep the
-    /// two live paths from transcribing (and billing for) the same audio.
-    public func deliveringSegmentId() -> String? { deliveringSegment }
+    /// "Delivering" means a session is running AND it recently produced an update carrying
+    /// WORDS — a socket that is merely connected must not silence the chunk-based fallback, or
+    /// the preview has a hole in it for as long as the socket stays up. The runtime uses this to
+    /// keep the two live paths from transcribing (and billing for) the same audio.
+    ///
+    /// Both halves are load-bearing, and both were missing:
+    ///
+    /// - Soniox answers a connected socket with token-less frames while nobody is speaking, and
+    ///   every received frame yielded an update. So the first such frame — before a single word
+    ///   existed — claimed the segment, published an empty preview, and stood the chunk path
+    ///   down. A live screen that then never received words showed "Listening — words appear
+    ///   here as they are recognized" for the whole recording, with the on-device fallback that
+    ///   would have filled it deliberately held back.
+    /// - And a session that delivered once, then went quiet for minutes (a socket the provider
+    ///   keeps open but is no longer transcribing on) held that claim forever. Delivery is only
+    ///   evidence while it is fresh, so it expires: the chunk path takes the segment over, and
+    ///   the socket reclaims it the moment it produces words again.
+    public func deliveringSegmentId() -> String? {
+        guard let deliveringSegment else { return nil }
+        guard nowMs() - lastDeliveryAtMs <= Self.deliveryStaleMs else { return nil }
+        return deliveringSegment
+    }
 
     /// Lifecycle hook, deliberately a no-op: an in-flight live socket keeps streaming until its
     /// segment closes or the `enabled` gate stops the next session. Backgrounding is not a
@@ -241,7 +262,15 @@ public actor CloudLiveTranscriber {
                 onOutcome(.ok())
                 reportedOk = true
             }
+            // Words, or nothing happened here: an update with no text is proof the socket is
+            // up (which `onOutcome` above has already reported) and nothing at all about live
+            // transcription. Publishing it would replace a real preview with an empty one, and
+            // counting it as delivery would silence the chunk path on a session that has never
+            // transcribed a syllable.
+            guard !update.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
             deliveringSegment = event.segmentId
+            lastDeliveryAtMs = nowMs()
             previews[event.segmentId] = LiveTranscriptPreview(
                 segmentId: event.segmentId,
                 text: update.displayText,
@@ -261,6 +290,7 @@ public actor CloudLiveTranscriber {
         sessionTask = nil
         activeSegmentId = nil
         deliveringSegment = nil
+        lastDeliveryAtMs = 0
     }
 
     /// Gives up on a segment: release the session so the chunk-based path takes over, and hold
@@ -281,6 +311,7 @@ public actor CloudLiveTranscriber {
         sessionTask = nil
         activeSegmentId = nil
         deliveringSegment = nil
+        lastDeliveryAtMs = 0
     }
 
     /// Drops a segment's live preview once its durable transcript supersedes it.
@@ -309,6 +340,10 @@ public actor CloudLiveTranscriber {
     static let unavailableRetryDelayMs: Int64 = 30_000
     /// The reconnect budget is spent; the chunk path owns the segment until this elapses.
     static let gaveUpRetryDelayMs: Int64 = 60_000
+    /// How long a delivered update keeps the socket's claim on the open segment. Generous on
+    /// purpose: a quiet room costs nothing (no audio arrives, so the chunk path has nothing to
+    /// do either), and the socket reclaims the segment on its next words.
+    static let deliveryStaleMs: Int64 = 30_000
 }
 
 /// The realtime backend is not configured (no key, no consent). Distinct from a failure: nothing
