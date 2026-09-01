@@ -17,7 +17,8 @@ public enum WaveformWindow {
     ///
     /// Bars are merged rather than averaged when several land in one slot: loss outranks
     /// everything (it must never be smoothed away — the same rule the coverage strip follows),
-    /// then voice, then quiet, and the loudest bar carries the slot's height.
+    /// then voice, then measured quiet, then the silence the watch skipped; the loudest bar
+    /// carries the slot's height.
     public static func slots(
         bars: [WaveformBar],
         nowMs: Int64,
@@ -48,12 +49,18 @@ public enum WaveformWindow {
     }
 
     /// Display severity. Missing audio is the one thing a merge may never lose.
+    ///
+    /// Audio we HOLD outranks audio we merely infer, so a slot carrying a quarter-second of
+    /// measured quiet reads as quiet rather than as skipped silence. The two used to be ranked
+    /// the other way round, which was harmless only while both drew the same dot; now that
+    /// skipped silence is the fainter mark, ranking it above measured quiet would throw away the
+    /// stronger claim.
     private static func rank(_ state: WaveformBarState) -> Int {
         switch state {
         case .gap: return 3
         case .recorded: return 2
-        case .suppressedSilence: return 1
-        case .silence: return 0
+        case .silence: return 1
+        case .suppressedSilence: return 0
         }
     }
 }

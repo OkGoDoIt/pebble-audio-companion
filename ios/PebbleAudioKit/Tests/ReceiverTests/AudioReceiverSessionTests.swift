@@ -988,6 +988,67 @@ import WireProtocol
         )
     }
 
+    /// The blackout the keepalive cannot see. While we believe a stream is open the checkpoint
+    /// ticker keeps sending — every 2 s of silence, by design, because that is the watch's only
+    /// spool credit — so `lastOutboundControlMs` never goes stale and the keepalive's ping (and
+    /// therefore its resync) never fires. A watch that has stopped answering entirely then sat
+    /// behind a link the platform still called connected, with the status card the only thing
+    /// that knew and nothing anywhere trying to fix it. Roger's was eleven minutes.
+    @Test func aWatchThatStopsAnsweringVerifiesGetsTheLinkRebuilt() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        fx.link.pushData(data(0, 4))
+        await fx.settle()
+
+        // The watch goes silent — no audio, and now no answer to a direct question either. Our
+        // own control traffic keeps flowing (the checkpoint ticker), which is exactly why the
+        // keepalive stays quiet throughout.
+        fx.link.failInfoReads = true
+        for _ in 0..<3 {
+            await fx.clock.advance(by: 20_000)
+            await fx.settle()
+        }
+
+        #expect(
+            fx.link.resyncCount >= 1,
+            "a watch answering nothing for a minute is a stale link, not a quiet room"
+        )
+    }
+
+    /// ...and the mirror image, which must NOT resync: a quiet room. The watch answers every
+    /// verify with `streaming`, so the silence is voice-activity suppression and the link is
+    /// fine. Rebuilding it would interrupt a recording for nothing.
+    @Test func aQuietRoomNeverRebuildsTheLink() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        fx.link.pushData(data(0, 4))
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.streaming.rawValue
+        ).encode()
+        await fx.settle()
+
+        // A healthy watch answers everything we send it, including the idle keepalive pings the
+        // checkpoint ticker stops suppressing once there is nothing new to checkpoint. Stepped
+        // a second at a time so those ACKs land inside the ping's own wait, the way a real
+        // watch's would.
+        var acked = 0
+        for _ in 0..<130 {
+            await fx.clock.advance(by: 1_000)
+            await fx.settle()
+            let pings = fx.writes().compactMap { $0 as? ReceiverHealth }
+            for ping in pings.dropFirst(acked) {
+                fx.link.pushControl(Ack(requestToken: ping.requestToken, statusRaw: 0))
+            }
+            acked = pings.count
+            await fx.settle()
+        }
+
+        #expect(fx.link.resyncCount == 0, "suppressed silence is not a fault")
+        #expect(fx.session.streamEvidence.value.watchReportedStreaming)
+    }
+
     // MARK: - Evidence behind the `.streaming` latch
 
     /// Streaming, then silence — and the watch, asked, says it is still capturing. This is
