@@ -573,7 +573,8 @@ extension LiveWorld: AskDataSource {
         // as a sweep (`AskCorpusPlanner`), so an answer of "nothing was recorded about that"
         // is backed by having actually read the range.
         let ordered = excerpts.sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
-        let budget = AskBudget.forModel(id: composition.settings.aiModel)
+        let budget = AskBudget.forMode(
+            composition.settings.aiMode, modelId: composition.settings.aiModel)
         let stretches = citableStretches(of: ordered.map(\.segmentId))
         let plan = AskCorpusPlanner.plan(
             stretches: stretches,

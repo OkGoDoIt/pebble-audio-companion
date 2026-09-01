@@ -53,6 +53,25 @@ struct SettingsDiagnosticsScreen: View {
                     ),
                     showsChevron: false
                 )
+                // Whether the loop that does all of the above is turning at all. Everything
+                // else on this card is a count of work; this is the one row that says whether
+                // anything is picking that work up.
+                SettingsRow(
+                    title: Copy.Settings.Diagnostics.pipeline,
+                    value: diagnostics.pipeline.summary,
+                    showsChevron: false
+                )
+            }
+
+            // Absent while nothing is failing — like the watch-link and failed-transcription
+            // sections, this appears because there is something to say.
+            if !diagnostics.pipeline.failing.isEmpty {
+                SettingsSectionHeader(title: Copy.Settings.Diagnostics.pipelineFailures)
+                ListCard {
+                    ForEach(diagnostics.pipeline.failing) { stage in
+                        PipelineStageRow(stage: stage)
+                    }
+                }
             }
 
             // "Receiver: Connecting" above is true and useless when the watch has de-authorized
@@ -175,6 +194,44 @@ private struct FailedTranscriptionRow: View {
                 .foregroundStyle(Tokens.secondaryBody)
                 .fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// One step of the processing pass that keeps throwing: what it does, how long it has been
+/// failing and when it will be tried again, then the error itself.
+///
+/// The error text is NOT classified the way a transcription failure is — there is no fixed
+/// vocabulary for "the grouping threw", and inventing a reassuring sentence for an unknown
+/// fault would be worse than showing the fault. It is diagnostics-only, exactly like the
+/// detailed log two rows below it, and it is the line that tells whoever reads this screen
+/// what to actually go and fix.
+private struct PipelineStageRow: View {
+    let stage: DiagnosticStage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Text(stage.title)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                Spacer(minLength: 10)
+                Text(stage.detail)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            if let reason = stage.reason {
+                Text(reason)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)

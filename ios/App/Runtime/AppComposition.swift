@@ -182,8 +182,13 @@ final class AppComposition {
         self.index = index
         let donator = SpotlightDonator(index: index, spotlight: CoreSpotlightIndexer())
         self.donator = donator
+        // Ask's index lookup is a QUESTION, not a search-box query: `.any` so its content words
+        // recall on their own instead of every word having to appear in one transcript, and
+        // conversations only, because a note or a recap id can never resolve to a recording.
         askRetriever = AskRetriever { query, limit in
-            let hits = (try? index.search(query, limit: limit)) ?? []
+            let hits =
+                (try? index.search(
+                    query, limit: limit, kinds: [.conversation], mode: .any)) ?? []
             return hits.map { AskIndexHit(id: $0.id, score: Float($0.score)) }
         }
 
@@ -750,8 +755,18 @@ final class AppComposition {
     }
 
     private func install(nativeSurfaces: NativeSurfaceCoordinator) {
-        // Spotlight donation reuses this database connection rather than opening a second pool.
-        nativeSurfaces.attachDatabase(database)
+        // Spotlight donation reuses this database connection rather than opening a second pool,
+        // and reads each conversation's transcript so the index keeps the words that were
+        // actually said — the pass replaces the document, so donating without them erases them.
+        let queries = ConversationQueries(db: database)
+        let transcripts = self.transcripts
+        nativeSurfaces.attachDatabase(database) { conversationId in
+            guard let detail = try? await queries.detail(id: conversationId) else { return nil }
+            let text = detail.members
+                .compactMap { transcripts.load($0.segmentId)?.text }
+                .joined(separator: "\n")
+            return text.isEmpty ? nil : text
+        }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces
 

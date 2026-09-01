@@ -638,6 +638,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var enrichmentRunning = false
     private(set) var failedItems: [DiagnosticFailure] = []
     private(set) var recentSegments: [DiagnosticSegment] = []
+    private(set) var pipeline = DiagnosticPipeline(
+        summary: Copy.Settings.Diagnostics.pipelineStarting)
 
     /// Counters and gap metadata only — never audio or transcript text.
     var detailedLogLines: [String] { AppRuntimeLog.shared.recent }
@@ -683,11 +685,51 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         failedItems = Self.failures(
             (try? composition.queue.all()) ?? [], segments: metas
         )
+        pipeline = Self.pipeline(
+            composition.runtime.pipelineHealth.health, nowMs: composition.clock.nowMs)
         let report = await composition.runtime.supportReport()
         supportReportText = Self.report(
             report, segments: recentSegments, failures: failedItems, link: watchLink,
-            watchSend: watchSend
+            watchSend: watchSend, pipeline: pipeline
         )
+    }
+
+    /// Whether the processing pass is turning, and which of its steps are not.
+    ///
+    /// Healthy is ONE row. A screen that lists thirteen steps saying "fine" is a screen people
+    /// stop reading, and this one has to be worth reading on the day something is wrong.
+    static func pipeline(_ health: PipelineHealth, nowMs: Int64) -> DiagnosticPipeline {
+        let failing = health.failingStages.map { stage -> DiagnosticStage in
+            let entry = health[stage]
+            let nextIn = entry.nextAttemptAtMs
+                .map { max(0, $0 - nowMs) }
+                .flatMap { $0 > 0 ? Formatting.duration($0) : nil }
+            return DiagnosticStage(
+                id: stage.rawValue,
+                title: Copy.Settings.Diagnostics.stageTitle(stage.rawValue),
+                detail: Copy.Settings.Diagnostics.stageDetail(
+                    tries: entry.consecutiveFailures, nextIn: nextIn),
+                reason: entry.lastFailureSummary
+            )
+        }
+        var summary: String
+        if health.passIsStalled(nowMs: nowMs) {
+            // A pass that began and never ended. The supervisor is about to restart the loop;
+            // this is the window before it does.
+            summary = Copy.Settings.Diagnostics.pipelineStalled
+        } else if !failing.isEmpty {
+            summary = Copy.Settings.Diagnostics.pipelineFailing(failing.count)
+        } else if let completed = health.lastPassCompletedAtMs {
+            summary = Copy.Settings.Diagnostics.pipelineWorking(
+                Formatting.duration(max(0, nowMs - completed)))
+        } else {
+            summary = Copy.Settings.Diagnostics.pipelineStarting
+        }
+        if health.loopRestarts > 0 {
+            summary += " · " + Copy.Settings.Diagnostics.pipelineRestarts(health.loopRestarts)
+        }
+        return DiagnosticPipeline(
+            summary: summary, failing: failing, loopRestarts: health.loopRestarts)
     }
 
     /// The failed tasks, newest first, each classified into the app's own vocabulary.
@@ -802,7 +844,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         segments: [DiagnosticSegment],
         failures: [DiagnosticFailure],
         link: DiagnosticLinkFault?,
-        watchSend: WatchSendHealth
+        watchSend: WatchSendHealth,
+        pipeline: DiagnosticPipeline
     ) -> String {
         // The refusal, if there is one, sits directly under the receiver state it explains —
         // the sentence the user was shown, then the raw code, which is the one thing a reader
@@ -824,7 +867,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
             heldInBackground: report.diagnostics.transcriptionDeferredInBackground))
         \(SupportReportText.failures(failures))AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
         running: \(report.diagnostics.enrichmentRunning)
-        Low storage: \(report.diagnostics.lowStorage)
+        Processing: \(pipeline.summary)
+        \(SupportReportText.pipeline(pipeline))Low storage: \(report.diagnostics.lowStorage)
         Recent segments:
         \(segments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)

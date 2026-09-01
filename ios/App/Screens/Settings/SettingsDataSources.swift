@@ -472,6 +472,21 @@ enum SupportReportText {
         guard health != .unknown else { return "" }
         return Copy.Settings.Diagnostics.watchCouldNotSendReport(health.count) + "\n"
     }
+
+    /// The failing steps of the processing pass, with the raw error each one threw.
+    ///
+    /// Unlike a transcription failure there is no classified vocabulary to fall back on, and
+    /// this block only exists in the report and the Diagnostics screen — the two places whose
+    /// entire purpose is to carry the technical answer to whoever can act on it. Empty while
+    /// the pass is healthy.
+    static func pipeline(_ pipeline: DiagnosticPipeline) -> String {
+        guard !pipeline.failing.isEmpty else { return "" }
+        let lines = pipeline.failing.map { stage in
+            "  \(stage.title) — \(stage.detail)"
+                + (stage.reason.map { ": \($0)" } ?? "")
+        }
+        return "Processing steps failing:\n" + lines.joined(separator: "\n") + "\n"
+    }
 }
 
 /// One transcription task that is sitting in Failed, and WHY.
@@ -489,6 +504,33 @@ struct DiagnosticFailure: Identifiable, Equatable {
     let reason: String
     /// e.g. "3 tries · will retry" / "gave up after 8 tries".
     let attemptsLine: String
+}
+
+/// One step of the processing pass that is not working, in plain language.
+///
+/// Stages are only listed while they are FAILING. A healthy pipeline is a single summary row,
+/// because thirteen rows saying "fine" is how a screen teaches people to stop reading it.
+struct DiagnosticStage: Identifiable, Equatable {
+    /// The stage's raw name — the row key, never printed.
+    let id: String
+    /// What this step of the pass does, said the way a person would say it.
+    let title: String
+    /// e.g. "failing · 4 tries · next in 40 s".
+    let detail: String
+    /// The classified-ish reason. Diagnostics only, like the detailed log: this is the thrown
+    /// error described, and it may be developer prose.
+    let reason: String?
+}
+
+/// Whether the processing half of the app is turning at all, and what is wrong if not.
+struct DiagnosticPipeline: Equatable {
+    /// The value beside the "Processing" row, e.g. "working · last pass 2 s ago".
+    var summary: String
+    /// Only the stages that are failing, worst first.
+    var failing: [DiagnosticStage] = []
+    /// Times the watchdog has had to restart a wedged loop this session. Almost always 0; when
+    /// it is not, that is the single most important number on this screen.
+    var loopRestarts: Int = 0
 }
 
 /// What the watch says about audio it could not hand to this phone.
@@ -565,6 +607,11 @@ protocol DiagnosticsSource: AnyObject {
     /// The failed tasks with their reasons — the answer to "6 failed, but why?", which until
     /// now was persisted in `transcription_tasks.lastError` and shown nowhere.
     var failedItems: [DiagnosticFailure] { get }
+    /// Whether the processing pass is running, and which of its steps are failing. Before
+    /// this, a stage that threw every pass was invisible everywhere but the detailed log — and
+    /// since one failing stage used to abandon the whole pass, "invisible" meant the live
+    /// preview and the conversation grouping stopped too, with the app still saying Recording.
+    var pipeline: DiagnosticPipeline { get }
     /// Conversations transcribed but still owed an AI title/summary/tags, and whether a pass
     /// is running right now. The enrichment counterpart of the transcription queue.
     var enrichmentWaiting: Int { get }
@@ -590,6 +637,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var enrichmentWaiting = 0
     var enrichmentRunning = false
     var failedItems: [DiagnosticFailure] = []
+    var pipeline = DiagnosticPipeline(summary: Copy.Settings.Diagnostics.pipelineWorking("2 s"))
 
     func rebuildSearchIndex() async {
         indexRebuild = .running
@@ -622,7 +670,8 @@ final class MockDiagnosticsSource: DiagnosticsSource {
         \(SupportReportText.watchSend(watchSend))Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
             waiting: queueWaiting, failed: queueFailed,
             heldInBackground: transcriptionHeldInBackground))
-        \(SupportReportText.failures(failedItems))Recent segments:
+        \(SupportReportText.failures(failedItems))Processing: \(pipeline.summary)
+        \(SupportReportText.pipeline(pipeline))Recent segments:
         \(recentSegments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)
         """

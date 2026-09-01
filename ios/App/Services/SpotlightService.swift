@@ -21,15 +21,25 @@ final class SpotlightService {
     private let database: AppDatabase
     private let donator: SpotlightDonator
     private let defaults: UserDefaults
+    /// A conversation's full transcript, for the index body.
+    ///
+    /// This pass used to donate `title + summary` and nothing else. Because a donation REPLACES
+    /// the document (delete-then-insert), every foreground pass quietly overwrote the
+    /// transcript-bearing document that enrichment had written with a summary-only one — so the
+    /// searchable text of a conversation decayed to a sentence shortly after it was recorded.
+    /// Searching for a phrase somebody actually said then found nothing.
+    private let transcript: @Sendable (String) async -> String?
     /// One pass at a time; a re-entrant foreground (app switcher scrubbing) is a no-op.
     private var isDonating = false
 
     init(
         database: AppDatabase,
         donator: SpotlightDonator? = nil,
-        defaults: UserDefaults = SharedAppGroup.defaults
+        defaults: UserDefaults = SharedAppGroup.defaults,
+        transcript: @escaping @Sendable (String) async -> String? = { _ in nil }
     ) {
         self.database = database
+        self.transcript = transcript
         self.donator =
             donator
             ?? SpotlightDonator(
@@ -82,6 +92,7 @@ final class SpotlightService {
                     title: row.title,
                     summary: row.summary,
                     tags: row.tags,
+                    fullTranscript: await transcript(row.id),
                     startDateMs: row.startMs,
                     createdAtMs: row.startMs
                 )

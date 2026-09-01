@@ -795,6 +795,58 @@ enum Copy {
             static let receiverRecording = "Recording from Pebble"
             static let watchReports = "Watch reports"
             static let transcriptionQueue = "Transcription queue"
+
+            // ── Processing (the pass itself) ───────────────────────────────────────────
+            //
+            // Before these, a step of the pass that threw on every pass was visible nowhere
+            // but the detailed log — and since one failing step used to abandon the whole
+            // pass, that meant the live transcript and the conversation grouping stopped too,
+            // with every screen still saying Recording.
+            static let pipeline = "Processing"
+            /// e.g. "working · last pass 2 s ago".
+            static func pipelineWorking(_ ago: String) -> String { "working · last pass \(ago) ago" }
+            /// Nothing has run yet — a fresh launch, before the first pass completes.
+            static let pipelineStarting = "starting"
+            /// A pass began and never finished. The watchdog restarts the loop; this is what it
+            /// looks like in the window before that happens.
+            static let pipelineStalled = "not responding · restarting"
+            /// e.g. "1 step failing" / "3 steps failing".
+            static func pipelineFailing(_ count: Int) -> String {
+                count == 1 ? "1 step failing" : "\(count) steps failing"
+            }
+            /// e.g. "recovered 2 times" — the loop watchdog had to step in.
+            static func pipelineRestarts(_ count: Int) -> String {
+                count == 1 ? "recovered once" : "recovered \(count) times"
+            }
+            static let pipelineFailures = "Processing steps that are failing"
+            /// e.g. "4 tries · next in 40 sec" / "4 tries · retrying now". The duration is
+            /// formatted by the caller — `Copy` stays free of the kit's formatter.
+            static func stageDetail(tries: Int, nextIn: String?) -> String {
+                let attempts = tries == 1 ? "1 try" : "\(tries) tries"
+                guard let nextIn else { return "\(attempts) · retrying now" }
+                return "\(attempts) · next in \(nextIn)"
+            }
+
+            /// What each step of the pass does, said the way a person would say it. The stage
+            /// names themselves are kit vocabulary and never reach a screen.
+            static func stageTitle(_ id: String) -> String {
+                switch id {
+                case "reconsiderDisabled": return "Re-check parked recordings"
+                case "enqueueClosedSegments": return "Queue finished recordings"
+                case "drainQueue": return "Transcribe recordings"
+                case "retention": return "Delete old audio"
+                case "regroup": return "Group into conversations"
+                case "enrich": return "Titles and summaries"
+                case "donate": return "Search index"
+                case "followUps": return "Follow-ups"
+                case "recap": return "Daily recap"
+                case "liveLocal": return "Live transcript"
+                case "liveCloudPrune": return "Live transcript cleanup"
+                case "wavExport": return "WAV export"
+                case "idleModelRelease": return "Free the on-device model"
+                default: return "Processing step"
+                }
+            }
             /// e.g. "0 waiting · 0 failed" / "3 waiting · held in the background · 0 failed".
             ///
             /// `heldInBackground` is why nothing moved: local transcription and AI are deferred
