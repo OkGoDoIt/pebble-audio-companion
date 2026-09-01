@@ -134,7 +134,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// `wantConnected` stays false, so this cannot start dialling on its own and cannot prompt the
     /// watch (plan 4.2): only `connect()`/`resync()` express intent.
     public func prepareForRestoration() {
-        onMainQueue { [self] in
+        onDelegateQueue { [self] in
             guard centralManager == nil else { return }
             _ = makeCentralManager()
             log("prepared central for state restoration")
@@ -159,18 +159,23 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         logSink("link \(describe(connectionState.value)): \(message)")
     }
 
-    /// Runs `block` on the main (delegate) serial queue. All Core Bluetooth interaction and link
-    /// state mutation funnels through here so lifecycle calls from arbitrary threads are
-    /// serialized with the manager's delegate callbacks (delivered on this queue).
-    private func onMainQueue(_ block: @escaping @Sendable () -> Void) {
-        DispatchQueue.main.async(execute: block)
+    /// The adapter's own serial queue: Core Bluetooth delivers every delegate callback here, and
+    /// all link state mutation funnels through it. It used to be `DispatchQueue.main`, which put
+    /// every notification, connect dance and watchdog on the UI thread — free serialization, paid
+    /// for in scroll hitches whenever the watch was streaming.
+    private let delegateQueue = DispatchQueue(label: "audio-companion.gatt-link")
+
+    /// Runs `block` on the delegate serial queue, serializing lifecycle calls from arbitrary
+    /// threads with the manager's delegate callbacks (delivered on this queue).
+    private func onDelegateQueue(_ block: @escaping @Sendable () -> Void) {
+        delegateQueue.async(execute: block)
     }
 
     /// Joins the existing system link when possible:
     /// retrieveConnectedPeripherals(withServices:) -> connect(); otherwise a pending connect()
     /// on the stored peripheral identifier. Scanning is a foreground-only onboarding fallback.
     public func connect() {
-        onMainQueue { [self] in
+        onDelegateQueue { [self] in
             // Single CBCentralManager for the process; creating it here on the delegate queue
             // guarantees exactly one even when connect() races in from several places at launch.
             let manager = centralManager ?? makeCentralManager()
@@ -206,13 +211,13 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             options[CBCentralManagerOptionRestoreIdentifierKey] = restoreIdentifier
         }
         #endif
-        let manager = CBCentralManager(delegate: self, queue: .main, options: options)
+        let manager = CBCentralManager(delegate: self, queue: delegateQueue, options: options)
         centralManager = manager
         return manager
     }
 
     public func disconnect() {
-        onMainQueue { [self] in
+        onDelegateQueue { [self] in
             log("disconnect() requested")
             wantConnected = false
             awaitingUserRecovery = false
@@ -246,7 +251,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     }
 
     private func resync(clearingUserRecoveryLatch: Bool, _ reason: String) {
-        onMainQueue { [self] in
+        onDelegateQueue { [self] in
             log("\(reason) requested")
             if clearingUserRecoveryLatch {
                 // Explicit "Reconnect": honor it even if we had latched off automatic retries.
@@ -281,7 +286,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<[UInt8], Error>) in
-                self.onMainQueue { [self] in
+                self.onDelegateQueue { [self] in
                     if ticket.cancelled {
                         ticket.settled = true
                         continuation.resume(throwing: CancellationError())
@@ -308,7 +313,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
                 }
             }
         } onCancel: {
-            self.onMainQueue { [self] in
+            self.onDelegateQueue { [self] in
                 ticket.cancelled = true
                 guard let pending = pendingInfoRead, pending.ticket === ticket else { return }
                 pendingInfoRead = nil
@@ -323,7 +328,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, Error>) in
-                self.onMainQueue { [self] in
+                self.onDelegateQueue { [self] in
                     if ticket.cancelled {
                         ticket.settled = true
                         continuation.resume(throwing: CancellationError())
@@ -352,7 +357,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
                 }
             }
         } onCancel: {
-            self.onMainQueue { [self] in
+            self.onDelegateQueue { [self] in
                 ticket.cancelled = true
                 guard let pending = pendingControlWrite, pending.ticket === ticket else { return }
                 pendingControlWrite = nil
@@ -367,7 +372,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// error — and one such operation used to stop the session's keepalive (and with it the only
     /// escalation that would have rebuilt the link) for as long as the app lived.
     private func armOperationTimeout(_ ticket: OperationTicket) {
-        DispatchQueue.main.asyncAfter(
+        delegateQueue.asyncAfter(
             deadline: .now() + .milliseconds(Int(Self.operationTimeoutMs))
         ) { [weak self] in
             guard let self, !ticket.settled else { return }
@@ -547,7 +552,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         let delay = retryDelayMs
         retryDelayMs = min(retryDelayMs * 2, Self.retryMaxDelayMs)
         log("scheduling automatic reconnect in \(delay)ms")
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delay))) { [weak self] in
+        delegateQueue.asyncAfter(deadline: .now() + .milliseconds(Int(delay))) { [weak self] in
             guard let self else { return }
             guard generation == self.retryGeneration,
                   self.wantConnected,
@@ -578,10 +583,10 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
 
     /// Schedules a one-shot timeout for `generation`. The block re-checks that its generation is
     /// still current and we are still Connecting before acting; a completed/superseded attempt
-    /// makes it a no-op. Runs on the main (delegate) queue, so it is serialized with every Core
+    /// makes it a no-op. Runs on the delegate queue, so it is serialized with every Core
     /// Bluetooth callback.
     private func armWatchdog(_ generation: Int) {
-        DispatchQueue.main.asyncAfter(
+        delegateQueue.asyncAfter(
             deadline: .now() + .milliseconds(Int(Self.connectWatchdogMs))
         ) { [weak self] in
             guard let self else { return }
