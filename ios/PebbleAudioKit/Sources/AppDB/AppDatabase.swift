@@ -194,6 +194,16 @@ public struct AppDatabase: Sendable {
             }
             try db.execute(sql: "UPDATE ask_history SET threadId = id WHERE threadId IS NULL")
         }
+        // How much of the asked-for range an answer was actually built from. Null on rows
+        // written before this existed — those were produced by the retrieval that read twelve
+        // recordings regardless of scope, so their coverage is genuinely unknown and the UI
+        // says nothing rather than guessing.
+        migrator.registerMigration("v4-ask-history-coverage") { db in
+            try db.alter(table: "ask_history") { t in
+                t.add(column: "conversationsRead", .integer)
+                t.add(column: "conversationsInScope", .integer)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

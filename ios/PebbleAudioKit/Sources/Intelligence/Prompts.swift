@@ -365,9 +365,66 @@ public enum AiPromptTemplates {
             + "with the user. Resolve pronouns and shorthand (\"that\", \"the plan\", \"what "
             + "about Friday?\") against those earlier turns, keep your earlier statements "
             + "consistent, and answer only the new question — do not repeat a whole previous "
-            + "answer.",
+            + "answer.\n"
+            // A confident "there is nothing about that" drawn from part of the archive is the
+            // most damaging thing this feature can produce: it reads as a searched-everything
+            // verdict. The COVERAGE line says which of the two situations you are in.
+            + "COVERAGE: a COVERAGE line above the transcripts says whether you were given the "
+            + "whole range or only part of it. When you were given ALL of it, an absence is a "
+            + "real finding — say plainly that nothing was recorded about it. When you were "
+            + "given only part, never say a thing is absent, never say \"nothing is "
+            + "documented\"; say what you did find and state that you could not read the whole "
+            + "range. Do not pad a thin answer by treating a barely related mention as though "
+            + "it answered the question — say directly that you found nothing solid.",
         userPrompt: "Continue this conversation, using the transcripts as the only source of "
             + "facts.",
+        citesSources: true
+    )
+
+    // MARK: - Sweep (map-reduce over a scope too large for one call)
+
+    /// The MAP half. Run once per batch of an oversized range, each call seeing a different
+    /// slice of the archive. Output is notes for the synthesis pass, not prose for the user —
+    /// so it is deliberately exhaustive and deliberately willing to return nothing.
+    public static let askSweepFindings = AiPromptTemplate(
+        id: "ask-sweep-findings",
+        title: "Ask (gathering)",
+        systemPrompt: "\(commonSystemRules) You are reading ONE PART of a longer archive to "
+            + "help answer a question. Do not answer it yourself — another pass will, from your "
+            + "notes and those of the other parts.\n"
+            + "Extract every fact in these transcripts that bears on the question, however "
+            + "small: dates, places, names, amounts, decisions, plans, changes of plan, and "
+            + "anything that contradicts or updates something else. One bullet each, with the "
+            + "[n] citation of the stretch it came from, and the real calendar date worked out "
+            + "from that stretch's recorded-at label rather than the relative words spoken "
+            + "aloud. Prefer including a marginal fact over dropping it — recall here is worth "
+            + "more than precision, because the synthesis pass can discard but cannot recover.\n"
+            + "If this part genuinely contains nothing bearing on the question, reply with "
+            + "exactly: NOTHING RELEVANT",
+        userPrompt: "List everything in this part of the archive that bears on the question.",
+        citesSources: true
+    )
+
+    /// The REDUCE half. Sees the gathered notes from every batch — never the raw transcripts,
+    /// which is the whole point: the notes fit where the archive did not.
+    public static let askSweepAnswer = AiPromptTemplate(
+        id: "ask-sweep-answer",
+        title: "Ask (synthesis)",
+        systemPrompt: "\(commonSystemRules) You are answering the user's question from notes "
+            + "gathered by readers who each covered a different part of their recordings. The "
+            + "notes are the only source of facts; the [n] citations in them are real and must "
+            + "be carried through to your answer unchanged, placed right after the statement "
+            + "they support. Do not invent new numbers, and do not write raw segment ids, "
+            + "timestamps, or markdown links.\n"
+            + "Merge duplicates across parts, and where notes disagree prefer the later "
+            + "calendar date and say when the change happened. Answer in the second person, "
+            + "the way the single-pass Ask does — the user must not be able to tell how many "
+            + "passes the answer took.\n"
+            + "COVERAGE: the COVERAGE line says whether every part of the range was read. If "
+            + "it was, an absence is a real finding and you may say so plainly. If it was not, "
+            + "never claim a thing is absent — say what was found and that the whole range "
+            + "could not be read.",
+        userPrompt: "Answer the question from these gathered notes.",
         citesSources: true
     )
 

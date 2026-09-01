@@ -128,9 +128,10 @@ import WireProtocol
             askRetrievalQuery(question: "What's new?", priorTurns: []) == "What's new?")
     }
 
-    @Test func retrieveOrdersIndexHitsFirstThenStuffsRemainderUpToCap() async {
+    @Test func retrieveOrdersIndexHitsFirstThenPadsWithTheMostRECENT() async {
         let excerpts = (1...15).map {
-            TranscriptExcerpt(segmentId: "seg-\($0)", text: "text \($0)")
+            TranscriptExcerpt(
+                segmentId: "seg-\($0)", text: "text \($0)", startTimeMs: Int64($0) * 60_000)
         }
         let retriever = AskRetriever(search: { _, _ in
             [AskIndexHit(id: "seg-9", score: 2.0), AskIndexHit(id: "seg-3", score: 1.5)]
@@ -143,16 +144,68 @@ import WireProtocol
         #expect(chunks[0].segmentId == "seg-9")
         #expect(chunks[0].score == 2.0)
         #expect(chunks[1].segmentId == "seg-3")
-        // The remainder stuffs non-hit excerpts in source order up to the cap.
-        #expect(chunks[2].segmentId == "seg-1")
+        // The padding is the NEWEST of what is left, not the oldest. Taking `excerpts.prefix`
+        // — which arrive oldest-first — meant a question asked today was padded out with the
+        // very start of the archive.
+        #expect(chunks[2].segmentId == "seg-15")
+        #expect(chunks[3].segmentId == "seg-14")
+        #expect(!chunks.contains { $0.segmentId == "seg-1" })
         #expect(!chunks.dropFirst(2).contains { $0.segmentId == "seg-9" || $0.segmentId == "seg-3" })
     }
 
-    @Test func retrieveWithoutIndexStuffsExcerptsInOrder() async {
-        let excerpts = ["a", "b", "c"].map { TranscriptExcerpt(segmentId: "seg-\($0)", text: $0) }
+    @Test func retrieveWithoutIndexTakesTheMostRecentExcerpts() async {
+        let excerpts = (1...3).map {
+            TranscriptExcerpt(
+                segmentId: "seg-\($0)", text: "text", startTimeMs: Int64($0) * 60_000)
+        }
         let chunks = await AskRetriever().retrieve(query: "q", excerpts: excerpts)
-        #expect(chunks.map(\.segmentId) == ["seg-a", "seg-b", "seg-c"])
+        #expect(chunks.map(\.segmentId) == ["seg-3", "seg-2", "seg-1"])
         #expect(chunks.allSatisfy { $0.score == 0 })
+    }
+
+    /// The bug that made Ask answer every question in the app from the same twelve recordings.
+    ///
+    /// The search index keys documents on CONVERSATION ids (`conv-<firstMemberSegmentId>`,
+    /// donated by `SpotlightDonator`), while excerpts key on segment ids. The retriever compared
+    /// the two directly, so no hit could ever match an excerpt: every index hit was silently
+    /// dropped and the result fell through to "the first twelve excerpts in list order" —
+    /// oldest first, the same twelve every time, whatever was asked.
+    @Test func retrieveMapsConversationHitsOntoTheirMemberSegments() async {
+        let excerpts = (1...15).map {
+            TranscriptExcerpt(
+                segmentId: "seg-\($0)", text: "text \($0)", startTimeMs: Int64($0) * 60_000)
+        }
+        let retriever = AskRetriever(search: { _, _ in
+            [AskIndexHit(id: "conv-seg-4", score: 3.0)]
+        })
+
+        // Without the bridge the conversation id matches nothing, exactly as before the fix.
+        let unmapped = await retriever.retrieve(query: "q", excerpts: excerpts)
+        #expect(!unmapped.contains { $0.score > 0 })
+
+        // With it, the hit expands to every member of that conversation.
+        let mapped = await retriever.retrieve(
+            query: "q", excerpts: excerpts,
+            segmentIdsForHit: { $0 == "conv-seg-4" ? ["seg-4", "seg-5"] : [$0] })
+        #expect(mapped[0].segmentId == "seg-4")
+        #expect(mapped[0].score == 3.0)
+        #expect(mapped[1].segmentId == "seg-5")
+        #expect(mapped[1].score == 3.0)
+        // And a member is never also stuffed in again as padding.
+        #expect(mapped.filter { $0.segmentId == "seg-4" }.count == 1)
+    }
+
+    @Test func aHitNamingASegmentNoLongerOnDiskDoesNotShrinkTheResult() async {
+        let excerpts = (1...15).map {
+            TranscriptExcerpt(
+                segmentId: "seg-\($0)", text: "text \($0)", startTimeMs: Int64($0) * 60_000)
+        }
+        let retriever = AskRetriever(search: { _, _ in
+            [AskIndexHit(id: "conv-deleted", score: 9.0), AskIndexHit(id: "seg-2", score: 1.0)]
+        })
+        let chunks = await retriever.retrieve(query: "q", excerpts: excerpts)
+        #expect(chunks.count == 12)
+        #expect(chunks[0].segmentId == "seg-2")
     }
 
     /// Citation numbers key to SOURCE-SEGMENT order, not relevance order, so a model `[n]`

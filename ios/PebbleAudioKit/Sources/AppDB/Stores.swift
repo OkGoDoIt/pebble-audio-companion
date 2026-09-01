@@ -82,11 +82,16 @@ public struct AskEntry: Equatable, Sendable {
     public var answerText: String
     public var citations: [AskCitation]
     public var scopeDescription: String
+    /// Conversations the answer was built from, and how many the scope held. Nil together on
+    /// rows saved before coverage was recorded — unknown, so the UI stays silent about them.
+    public var conversationsRead: Int?
+    public var conversationsInScope: Int?
     public var createdAtMs: Int64
 
     public init(
         id: String, threadId: String? = nil, question: String, answerText: String,
-        citations: [AskCitation], scopeDescription: String, createdAtMs: Int64
+        citations: [AskCitation], scopeDescription: String,
+        conversationsRead: Int? = nil, conversationsInScope: Int? = nil, createdAtMs: Int64
     ) {
         self.id = id
         self.threadId = threadId ?? id
@@ -94,7 +99,17 @@ public struct AskEntry: Equatable, Sendable {
         self.answerText = answerText
         self.citations = citations
         self.scopeDescription = scopeDescription
+        self.conversationsRead = conversationsRead
+        self.conversationsInScope = conversationsInScope
         self.createdAtMs = createdAtMs
+    }
+
+    /// True when the answer was built from less than the whole range it was asked about — the
+    /// one case the answer card has to say something about, because a partial answer otherwise
+    /// reads exactly like a complete one.
+    public var isPartialCoverage: Bool {
+        guard let conversationsRead, let conversationsInScope else { return false }
+        return conversationsRead < conversationsInScope
     }
 }
 
@@ -497,19 +512,24 @@ public struct AskHistoryStore: Sendable {
         return AskEntry(
             id: row["id"], threadId: row["threadId"], question: row["question"],
             answerText: row["answerText"], citations: citations,
-            scopeDescription: row["scopeDescription"], createdAtMs: row["createdAtMs"])
+            scopeDescription: row["scopeDescription"],
+            conversationsRead: row["conversationsRead"],
+            conversationsInScope: row["conversationsInScope"],
+            createdAtMs: row["createdAtMs"])
     }
 
     @discardableResult
     public func save(
         question: String, answerText: String, citations: [AskCitation],
-        scopeDescription: String, threadId: String? = nil,
+        scopeDescription: String, conversationsRead: Int? = nil,
+        conversationsInScope: Int? = nil, threadId: String? = nil,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> AskEntry {
         let entry = AskEntry(
             id: UUID().uuidString.lowercased(), threadId: threadId, question: question,
             answerText: answerText, citations: citations,
-            scopeDescription: scopeDescription, createdAtMs: nowMs)
+            scopeDescription: scopeDescription, conversationsRead: conversationsRead,
+            conversationsInScope: conversationsInScope, createdAtMs: nowMs)
         let citationsJson = String(
             decoding: try JSONEncoder().encode(citations), as: UTF8.self)
         try await db.writer.write { db in
@@ -517,12 +537,12 @@ public struct AskHistoryStore: Sendable {
                 sql: """
                     INSERT INTO ask_history
                         (id, threadId, question, answerText, citations, scopeDescription,
-                         createdAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                         conversationsRead, conversationsInScope, createdAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     entry.id, entry.threadId, question, answerText, citationsJson,
-                    scopeDescription, nowMs,
+                    scopeDescription, conversationsRead, conversationsInScope, nowMs,
                 ]
             )
             // Trim to the newest maxEntries THREADS, keeping every turn of each.
