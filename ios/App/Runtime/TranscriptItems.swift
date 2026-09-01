@@ -78,19 +78,34 @@ enum TranscriptItems {
             case .pause(let pause):
                 let marker = TranscriptMarker(
                     id: itemId, text: pause.label, startedAt: wallDate(pause.startMs),
-                    segmentId: segmentId)
+                    segmentId: segmentId,
+                    reasons: pause.hasReasonBreakdown ? markerReasons(pause.reasons) : [])
                 if pause.missing {
-                    result.items.append(.missing(marker))
                     // Where the gap falls on the SCRUBBER: the member's media time scaled by
-                    // how far into its wall span the gap happened.
+                    // how far into its wall span the gap happened. Recorded even for the brief
+                    // interruptions that earn no transcript row below — the tick and the
+                    // recording's missing total are how those stay visible.
                     let intoMember = min(max(pause.startMs, 0), wallSpanMs)
                     result.missingMediaOffsets.append(result.mediaMs * intoMember / wallSpanMs)
+                    if pause.isShownInTranscript { result.items.append(.missing(marker)) }
                 } else {
                     result.items.append(.quiet(marker))
                 }
             }
         }
         return result
+    }
+
+    /// The opened form of a mixed interruption: each cause with the time it accounts for, and
+    /// how many separate interruptions it covers when that is more than one — twelve brief
+    /// dropouts and one long outage are different problems.
+    private static func markerReasons(_ reasons: [LossReason]) -> [TranscriptMarkerReason] {
+        reasons.map { reason in
+            let duration = Formatting.duration(reason.durationMs)
+            return TranscriptMarkerReason(
+                text: reason.text,
+                detail: reason.count > 1 ? "\(duration) · \(reason.count) times" : duration)
+        }
     }
 
     /// A transcript with no timings at all: the live preview before the provider has returned

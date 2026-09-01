@@ -49,9 +49,12 @@ struct TranscriptView: View {
         case .speech(_, let turns, _):
             speechBlock(turns)
         case .quiet(let marker, _):
-            markerRow(marker, color: Tokens.faint, rule: Tokens.hairline)
+            TranscriptMarkerRow(
+                marker: marker, color: Tokens.faint, rule: Tokens.hairline, timeZone: timeZone)
         case .missing(let marker, _):
-            markerRow(marker, color: Tokens.missing, rule: Tokens.missingHair)
+            TranscriptMarkerRow(
+                marker: marker, color: Tokens.missing, rule: Tokens.missingHair,
+                timeZone: timeZone)
         }
     }
 
@@ -232,42 +235,137 @@ struct TranscriptView: View {
         case .unresolved: return Tokens.meta
         }
     }
+}
 
-    /// A break in the transcript. Short markers ("quiet for 40 sec") sit between hairlines,
-    /// the artboard's look; long ones ("audio interrupted for 12 sec (watch buffer filled
-    /// while disconnected)") wrap under a single rule instead.
-    ///
-    /// The `.fixedSize()` this replaces made the long form as wide as its one unbroken line —
-    /// which is wider than the phone, and SwiftUI centers an oversized child, so the ENTIRE
-    /// screen (nav bar, header, player, bottom bar) shifted left and clipped on both edges.
-    /// Loss markers are exactly the content that must never be cut off.
-    private func markerRow(_ marker: TranscriptMarker, color: Color, rule: Color) -> some View {
+/// A break in the transcript. Short markers ("quiet for 40 sec") sit between hairlines, the
+/// artboard's look; long ones ("audio interrupted for 12 sec (watch buffer filled while
+/// disconnected)") wrap under a single rule instead.
+///
+/// An interruption with several causes ("… (3 reasons)") carries a chevron and opens onto the
+/// breakdown, so the row can answer "what actually happened?" without the closed transcript
+/// having to. Openness is this row's own state: it belongs to the one marker being diagnosed,
+/// and it should evaporate with the row rather than outlive it in a set kept by the card.
+///
+/// The `.fixedSize()` the marker line replaced made the long form as wide as its one unbroken
+/// line — which is wider than the phone, and SwiftUI centers an oversized child, so the ENTIRE
+/// screen (nav bar, header, player, bottom bar) shifted left and clipped on both edges. Loss
+/// markers are exactly the content that must never be cut off.
+struct TranscriptMarkerRow: View {
+    let marker: TranscriptMarker
+    let color: Color
+    let rule: Color
+    var timeZone: TimeZone = .current
+
+    @State private var isOpen: Bool
+
+    init(
+        marker: TranscriptMarker, color: Color, rule: Color, timeZone: TimeZone = .current,
+        isOpen: Bool = false
+    ) {
+        self.marker = marker
+        self.color = color
+        self.rule = rule
+        self.timeZone = timeZone
+        _isOpen = State(initialValue: isOpen)
+    }
+
+    /// Only a genuinely mixed interruption has anything behind the tap: a single cause is
+    /// already spelled out in the label, and a quiet row has none.
+    private var opens: Bool { !marker.reasons.isEmpty }
+
+    var body: some View {
+        if opens {
+            VStack(spacing: 8) {
+                Button {
+                    Haptics.checkedOff()
+                    withAnimation(.easeInOut(duration: 0.2)) { isOpen.toggle() }
+                } label: {
+                    markerLine(chevron: true)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityHint(
+                    isOpen
+                        ? Copy.Conversation.hideInterruptionReasons
+                        : Copy.Conversation.showInterruptionReasons)
+                if isOpen { reasonBreakdown }
+            }
+        } else {
+            markerLine(chevron: false)
+                .accessibilityElement()
+                .accessibilityLabel(accessibilityLabel)
+        }
+    }
+
+    /// The marker's own line: text between (or under) hairlines, plus the disclosure chevron
+    /// when there is a breakdown behind it.
+    private func markerLine(chevron: Bool) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
                 Rectangle().fill(rule).frame(height: 0.5)
-                markerText(marker.text, color: color)
+                markerText(chevron: chevron)
                     .fixedSize()
                 Rectangle().fill(rule).frame(height: 0.5)
             }
             VStack(spacing: 5) {
                 Rectangle().fill(rule).frame(height: 0.5)
-                markerText(marker.text, color: color)
+                markerText(chevron: chevron)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .accessibilityElement()
-        .accessibilityLabel(
-            marker.startedAt.map { Copy.A11y.transcriptMarker(
-                time: TranscriptStamp.text($0, in: timeZone), text: marker.text) }
-                ?? marker.text)
     }
 
-    private func markerText(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 12))
-            .foregroundStyle(color)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
+    private func markerText(chevron: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(marker.text)
+                .font(.system(size: 12))
+                .foregroundStyle(color)
+                .multilineTextAlignment(.center)
+            if chevron {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(color)
+                    .rotationEffect(.degrees(isOpen ? 180 : 0))
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// What the interruption was made of, largest cause first: the wording the rest of the app
+    /// uses for that cause, and how much of the gap it accounts for. Reading down it should be
+    /// obvious whether this was one long outage or a bad half-hour of many small ones.
+    private var reasonBreakdown: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(marker.reasons) { reason in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(reason.text)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Tokens.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Text(reason.detail)
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                }
+                .accessibilityElement()
+                .accessibilityLabel(
+                    Copy.A11y.transcriptMarkerReason(text: reason.text, detail: reason.detail))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.missingFill))
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private var accessibilityLabel: String {
+        marker.startedAt.map {
+            Copy.A11y.transcriptMarker(
+                time: TranscriptStamp.text($0, in: timeZone), text: marker.text)
+        } ?? marker.text
     }
 }
 

@@ -92,6 +92,60 @@ public func speakerColorIndex(_ speaker: String) -> Int {
 
 // MARK: - Timeline items
 
+/// One cause of an interruption row, with how much of the row it accounts for.
+///
+/// An interruption row is usually a run of gap records collapsed together, and those records
+/// need not share a cause: a disconnect that outlives the watch's buffer produces both a
+/// "connection was interrupted" and a "watch buffer filled while disconnected" record. The
+/// collapsed row says how long it was; this says what happened, which is the question a person
+/// actually has when they see 47 minutes missing.
+public struct LossReason: Equatable, Sendable, Identifiable {
+    /// Plain-language cause, from `StatusUI.gapDescription` — the one gap vocabulary.
+    public var text: String
+    /// Interrupted time attributable to this cause, clipped to the segment like the row is.
+    public var durationMs: Int64
+    /// Separate interruptions with this cause. Twelve two-second dropouts and one long silence
+    /// are different problems, and only the count tells them apart.
+    public var count: Int
+
+    public var id: String { text }
+
+    public init(text: String, durationMs: Int64, count: Int = 1) {
+        self.text = text
+        self.durationMs = durationMs
+        self.count = count
+    }
+}
+
+/// Merges reason lists (across the gaps of one cluster, or the clusters of one coalesced row),
+/// summing per cause and ordering biggest-first with first-seen breaking ties.
+func mergedLossReasons(_ lists: [[LossReason]]) -> [LossReason] {
+    var order: [String] = []
+    var totals: [String: LossReason] = [:]
+    for reason in lists.joined() {
+        if var existing = totals[reason.text] {
+            existing.durationMs += reason.durationMs
+            existing.count += reason.count
+            totals[reason.text] = existing
+        } else {
+            order.append(reason.text)
+            totals[reason.text] = reason
+        }
+    }
+    var ranked: [(rank: Int, reason: LossReason)] = []
+    for (rank, text) in order.enumerated() {
+        guard let reason = totals[text] else { continue }
+        ranked.append((rank, reason))
+    }
+    ranked.sort { left, right in
+        if left.reason.durationMs != right.reason.durationMs {
+            return left.reason.durationMs > right.reason.durationMs
+        }
+        return left.rank < right.rank
+    }
+    return ranked.map(\.reason)
+}
+
 public enum TranscriptTimelineItem: Equatable, Sendable {
     public struct Speech: Equatable, Sendable {
         public var startMs: Int64
@@ -124,9 +178,14 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
         public var startMs: Int64
         public var durationMs: Int64
         public var missing: Bool
-        public var reasons: [String]
+        /// What caused this interruption, largest cause first. One entry per distinct plain-
+        /// language reason, carrying how much of the row it accounts for and how many separate
+        /// interruptions it covers — that breakdown is the whole content of the expanded row.
+        public var reasons: [LossReason]
 
-        public init(startMs: Int64, durationMs: Int64, missing: Bool, reasons: [String] = []) {
+        public init(
+            startMs: Int64, durationMs: Int64, missing: Bool, reasons: [LossReason] = []
+        ) {
             self.startMs = startMs
             self.durationMs = durationMs
             self.missing = missing
@@ -145,11 +204,24 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
             return "quiet for \(Formatting.duration(durationMs))"
         }
 
+        /// True when the row has a breakdown worth opening. One reason is already spelled out
+        /// in `label`, so only a genuinely mixed interruption expands.
+        public var hasReasonBreakdown: Bool { missing && reasons.count > 1 }
+
+        /// A row this short is noise between two halves of one sentence, so the transcript
+        /// doesn't give it a line of its own. The loss itself is never dropped: it still marks
+        /// the scrubber and still counts in the recording's missing total.
+        public var isShownInTranscript: Bool {
+            !missing || durationMs >= minimumShownLossMs
+        }
+
+        /// Says how many causes there were rather than "several", so the count itself tells you
+        /// how much is behind the tap.
         private var reasonSummary: String? {
             switch reasons.count {
             case 0: return nil
-            case 1: return reasons[0]
-            default: return "several reasons"
+            case 1: return reasons[0].text
+            default: return "\(reasons.count) reasons"
             }
         }
     }
@@ -181,6 +253,11 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
         return nil
     }
 }
+
+/// Interruptions shorter than this get no row in the transcript (see
+/// `Pause.isShownInTranscript`). Ten seconds is about where a marker stops explaining a jump in
+/// the words and starts interrupting the reading of them.
+public let minimumShownLossMs: Int64 = 10_000
 
 let silenceBreakThresholdMs: Int64 = 5_000
 let quietPauseThresholdMs: Int64 = 30_000
@@ -243,7 +320,7 @@ public func transcriptTimelineItems(
         case .silenceBreak(let b): key = "break:\(b.startMs):\(b.durationMs)"
         case .pause(let p):
             key = "pause:\(p.startMs):\(p.durationMs):\(p.missing):"
-                + p.reasons.joined(separator: "|")
+                + p.reasons.map(\.text).joined(separator: "|")
         }
         return seen.insert(key).inserted
     }
@@ -273,13 +350,11 @@ private func coalesceTimelineQuiet(
             j += 1
         }
         if kind == .loss {
-            var reasons: [String] = []
-            for item in items[i..<j] {
-                guard case .pause(let pause) = item else { continue }
-                for reason in pause.reasons where !reasons.contains(reason) {
-                    reasons.append(reason)
-                }
-            }
+            let reasons = mergedLossReasons(
+                items[i..<j].compactMap { item in
+                    if case .pause(let pause) = item { return pause.reasons }
+                    return nil
+                })
             out.append(
                 .pause(
                     TranscriptTimelineItem.Pause(
@@ -442,13 +517,20 @@ private func collapsedTranscriptGaps(_ meta: SegmentMeta) -> [TranscriptTimeline
 
     func pauses(_ gaps: [GapMeta], missing: Bool) -> [TranscriptTimelineItem.Pause] {
         collapse(gaps).map { cluster in
-            var reasons: [String] = []
-            if missing {
-                for gap in cluster.gaps {
-                    let description = gapDescription(gap)
-                    if !reasons.contains(description) { reasons.append(description) }
-                }
-            }
+            // Each gap contributes its own clipped length to its cause, so the expanded row
+            // adds up to roughly the row's own duration (overlapping records can exceed it —
+            // the row's length stays the union, which is the honest number).
+            let reasons =
+                missing
+                ? mergedLossReasons(
+                    cluster.gaps.map { gap in
+                        let (start, end) = rangeOf(gap)
+                        return [
+                            LossReason(
+                                text: gapDescription(gap), durationMs: max(end - start, 0))
+                        ]
+                    })
+                : []
             return TranscriptTimelineItem.Pause(
                 startMs: cluster.startMs,
                 durationMs: max(cluster.endMs - cluster.startMs, 0),
