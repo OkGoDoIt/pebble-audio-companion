@@ -232,6 +232,19 @@ struct AskSheetView: View {
                 openCitation(entry: entry, number: number)
             }
 
+            // An answer drawn from part of the range says so, in the same calm register the
+            // rest of the app uses for missing audio. Complete answers say nothing — a note on
+            // every answer would be noise, and shortfall is the case that changes what the
+            // answer means.
+            if entry.isPartialCoverage,
+                let read = entry.conversationsRead, let inScope = entry.conversationsInScope
+            {
+                Text(Copy.Ask.partialCoverage(read: read, inScope: inScope))
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if !entry.citations.isEmpty {
                 Rectangle().fill(Tokens.hairline).frame(height: 0.5)
                 Button {

@@ -76,6 +76,11 @@ struct ConversationRowDisplay: Equatable, Identifiable {
     let meta: String
     /// Q6 calm live preview: 1-line italic rolling snippet. Live rows only.
     let snippet: String?
+    /// Why the live row has no words to quote — a quiet room, a watch we are not hearing,
+    /// transcription that was never set up. Live rows only, and never shown next to a snippet:
+    /// a row that is quoting words has already answered the question. NOT italic, because it is
+    /// the app speaking rather than the recording.
+    var statusLine: String? = nil
     let isLive: Bool
 }
 

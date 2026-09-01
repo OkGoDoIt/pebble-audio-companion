@@ -342,6 +342,14 @@ enum Copy {
         static func seeAll(_ count: Int) -> String { "See all \(count)" }
         static let conversationsSection = "Conversations"
 
+        // The live row's second line when there are no words to quote yet. Short: it sits under
+        // a title, beside a duration, on a row the eye passes over. The full sentence is on the
+        // Recording-now screen (`Copy.Live`), and the status card above carries the link story.
+        static let liveQuiet = "Quiet right now"
+        static let liveNotHearing = "No audio arriving from the watch"
+        static let liveTranscriptsOff = "Recording — transcription isn't set up"
+        static let liveTranscriptionDown = "Recording — live words aren't coming through"
+
         /// Coverage card head, e.g. "4 hr 12 min recorded".
         static func recorded(_ duration: String) -> String { "\(duration) recorded" }
         /// Coverage card trailing, e.g. "1 min missing".
@@ -414,6 +422,14 @@ enum Copy {
         }
         static let nothingToAskYet =
             "Nothing to ask about yet — recordings appear here after your first conversation."
+
+        /// Shown under an answer that was built from part of the range, never under a complete
+        /// one. Without it a partial answer looks exactly like a thorough one, and "I found
+        /// nothing" reads as a verdict on the whole range instead of on a slice of it.
+        static func partialCoverage(read: Int, inScope: Int) -> String {
+            "Read \(read) of \(inScope) conversations — this range was too large to read in "
+                + "full, so anything not mentioned may simply not have been reached."
+        }
 
         // Scope picker (6.6).
         static let scopeToday = "Today"
@@ -519,7 +535,23 @@ enum Copy {
             "Live transcript · \(source) · final transcript may differ"
         }
         /// The calm line before the first words arrive (one line, per the state-card rule).
+        /// TRUE ONLY while audio is actually arriving — see `LiveTranscriptStatus` for the
+        /// other four things this line used to be shown for.
         static let waiting = "Listening — words appear here as they are recognized."
+        /// The watch is capturing but suppressing silence. Calm: quiet is not loss (Q6).
+        static let quiet = "Quiet right now — the watch sends audio when it hears sound."
+        /// Nothing is reaching the phone. Says what happens to the audio meanwhile, because the
+        /// honest answer is reassuring: the watch holds it and re-sends it.
+        static let notHearing =
+            "No audio is arriving from the watch — what it records meanwhile is sent when the "
+            + "link is back."
+        /// Recording is safe without transcription, and that is the part to lead with.
+        static let transcriptsOff =
+            "Transcription isn't set up, so no words appear here. The audio is still recorded."
+        /// The live engine specifically. The final transcript is a different path and still runs.
+        static let transcriptionDown =
+            "Live words aren't coming through right now. The recording is safe and will be "
+            + "transcribed."
         static let pause = "Pause"
         static let stop = "Stop"
     }
