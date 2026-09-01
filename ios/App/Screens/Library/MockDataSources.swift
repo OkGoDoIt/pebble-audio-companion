@@ -1123,8 +1123,10 @@ extension MockFollowUps: FollowUpsDataSource {
         let matching = followUps.filter { row in
             switch scope {
             case .open:
+                // Snoozed rows are INCLUDED, exactly as `FollowUpStore` has it. A mock that
+                // hides them is a mock that cannot show the bug where they belonged to no list
+                // at all.
                 return !row.done && row.archivedAtMs == nil
-                    && (row.snoozedUntilMs.map { Double($0) <= now } ?? true)
             case .completed:
                 return row.done && row.archivedAtMs == nil
             case .archived:
@@ -1132,6 +1134,9 @@ extension MockFollowUps: FollowUpsDataSource {
             }
         }
         return matching.map(mockItem(_:)).sorted { a, b in
+            let aSnoozed = a.snoozedUntilMs.map { Double($0) > now } ?? false
+            let bSnoozed = b.snoozedUntilMs.map { Double($0) > now } ?? false
+            if aSnoozed != bSnoozed { return !aSnoozed }
             switch (a.dueAtMs, b.dueAtMs) {
             case let (lhs?, rhs?) where lhs != rhs: return lhs < rhs
             case (nil, _?): return false

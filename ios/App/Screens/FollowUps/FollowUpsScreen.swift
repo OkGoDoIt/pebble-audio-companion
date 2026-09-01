@@ -299,7 +299,10 @@ struct FollowUpRow: View {
                     .multilineTextAlignment(.leading)
                 if let meta = FollowUpFormatting.metaLine(item, now: now) {
                     HStack(spacing: 6) {
-                        if item.priority == .high && !item.done {
+                        // Not on something deferred: the person has already said "not now",
+                        // and a row in "Put off" that still shouts is the feature being
+                        // annoying about a decision they made.
+                        if item.priority == .high && !item.done && !item.isSnoozed(at: now) {
                             Image(systemName: "exclamationmark")
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(Tokens.attention)

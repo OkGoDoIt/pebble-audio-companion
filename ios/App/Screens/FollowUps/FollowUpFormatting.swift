@@ -89,9 +89,13 @@ enum FollowUpFormatting {
     }
 
     /// The detail screen's provenance line: "Heard Friday at 4:12 PM".
+    ///
+    /// `timeStyle`, not a "jmm" template: the template renders "10:21PM" with no space, which
+    /// reads as a typo in the middle of an otherwise plain sentence.
     static func heardAt(_ date: Date, now: Date) -> String {
         let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("jmm")
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
         return "\(day(date, now: now)) at \(formatter.string(from: date))"
     }
 
