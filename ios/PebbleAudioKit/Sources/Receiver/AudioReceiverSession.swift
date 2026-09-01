@@ -70,6 +70,9 @@ public struct ReceiverConfig: Sendable {
     public let keepaliveIntervalMs: Int64
     /// Force a link resync after this many consecutive unanswered keepalive pings.
     public let keepaliveMaxFailures: Int
+    /// How often to re-ask the watch what it is doing while a stream we believe is open has sent
+    /// no audio. See `AudioReceiverSession.runStreamVerify`.
+    public let streamVerifyIntervalMs: Int64
 
     public init(
         receiverId: [UInt8],
@@ -78,7 +81,8 @@ public struct ReceiverConfig: Sendable {
         checkpointAudioMs: Int64 = 2_000,
         checkpointMinIntervalMs: Int64 = 500,
         keepaliveIntervalMs: Int64 = 5_000,
-        keepaliveMaxFailures: Int = 2
+        keepaliveMaxFailures: Int = 2,
+        streamVerifyIntervalMs: Int64 = 20_000
     ) {
         precondition(
             receiverId.count == ProtocolConstants.receiverIdBytes,
@@ -91,6 +95,7 @@ public struct ReceiverConfig: Sendable {
         self.checkpointMinIntervalMs = checkpointMinIntervalMs
         self.keepaliveIntervalMs = keepaliveIntervalMs
         self.keepaliveMaxFailures = keepaliveMaxFailures
+        self.streamVerifyIntervalMs = streamVerifyIntervalMs
     }
 }
 
@@ -126,6 +131,10 @@ public actor AudioReceiverSession {
     nonisolated public let watchServiceState = StateSubject<Int?>(nil)
     nonisolated public let lastProtocolError = StateSubject<ErrorMessage?>(nil)
     nonisolated public let grantedProtoVersion = StateSubject<Int?>(nil)
+
+    /// What actually backs the `.streaming` latch right now (see `StreamEvidence`). Published
+    /// alongside `state` so the status layer can weigh the claim instead of repeating it.
+    nonisolated public let streamEvidence = StateSubject<StreamEvidence>(.none)
 
     public init(
         link: AudioGattLink,
@@ -270,11 +279,81 @@ public actor AudioReceiverSession {
         lastInboundMs = clock.nowMs
     }
 
+    // --- evidence for the `.streaming` latch ----------------------------------------------------
+
+    /// Records that audio for the open stream just arrived. The ONLY refresher of the audio half
+    /// of the evidence: control traffic (an ACK, an ERROR) proves the watch is talking to us, not
+    /// that it is capturing, and conflating the two is what made a starved link read as Recording.
+    private func noteAudioArrived() {
+        var evidence = streamEvidence.value
+        evidence.lastAudioAtMs = clock.nowMs
+        streamEvidence.value = evidence
+    }
+
+    /// Records the watch's own account of its service state, and stamps it. Both halves go
+    /// through here — the Info read and the STATE_CHANGED push — so `watchServiceState` and its
+    /// timestamp can never drift apart.
+    private func noteWatchReport(_ serviceStateRaw: Int) {
+        watchServiceState.value = serviceStateRaw
+        var evidence = streamEvidence.value
+        evidence.lastWatchReportAtMs = clock.nowMs
+        evidence.lastWatchReportRaw = serviceStateRaw
+        streamEvidence.value = evidence
+    }
+
+    /// Asks the watch what it thinks it is doing, right now.
+    ///
+    /// This is the whole mechanism: an Info read is the one thing that separates suppressed
+    /// silence (the watch answers `streaming`) from a stream that died (it answers `authorizedIdle`,
+    /// or does not answer at all). Bounded by a timeout, because a stale link the platform still
+    /// reports as connected can leave a GATT read outstanding forever, and a verify that never
+    /// returns is a verify that never happened.
+    ///
+    /// Returns true when the watch answered.
+    @discardableResult
+    public func verifyWatchState() async -> Bool {
+        let bytes = await withReceiverTimeout(clock: clock, ms: Self.verifyReadTimeoutMs) {
+            try? await self.link.readInfo()
+        }
+        guard let bytes, case .decoded(let message) = AudioCompanionProtocol.decodeInfo(bytes),
+            let snapshot = message as? InfoSnapshot
+        else { return false }
+        watchInfo.value = snapshot
+        noteWatchReport(Int(snapshot.serviceStateRaw))
+        return true
+    }
+
+    /// Per-connection re-verify. While we believe a stream is open but no audio has arrived for
+    /// `verifyAfterSilenceMs`, ask the watch directly, and keep asking on a cadence for as long as
+    /// the silence lasts.
+    ///
+    /// It cannot misfire on ordinary quiet: every answer of `streaming` re-stamps the evidence, so
+    /// a room that stays silent for an hour keeps the card on "Recording" the whole time — with
+    /// evidence refreshed every cycle rather than with a latch nobody checked. It fires only when
+    /// the watch says otherwise, or stops answering.
+    private func runStreamVerify() async {
+        while true {
+            do {
+                try await clock.sleep(ms: config.streamVerifyIntervalMs)
+            } catch {
+                return // cancelled with the connection
+            }
+            if Task.isCancelled { return }
+            guard authorized, stream != nil else { continue }
+            let lastAudio = streamEvidence.value.lastAudioAtMs ?? 0
+            guard clock.nowMs - lastAudio >= Self.verifyAfterSilenceMs else { continue }
+            let lastReport = streamEvidence.value.lastWatchReportAtMs ?? 0
+            guard clock.nowMs - lastReport >= config.streamVerifyIntervalMs else { continue }
+            await verifyWatchState()
+        }
+    }
+
     // Per-connection child tasks (the Kotlin connection coroutineScope's children).
     private var controlTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var checkpointTask: Task<Void, Never>?
     private var dataTask: Task<Void, Never>?
+    private var verifyTask: Task<Void, Never>?
     private var auxTasks: [Task<Void, Never>] = []
 
     /// Sends a RECEIVER_HEALTH ping and waits for the watch's ACK. Used as an idle keepalive: the
@@ -533,6 +612,7 @@ public actor AudioReceiverSession {
             if let task = keepaliveTask { tasks.append(task); keepaliveTask = nil }
             if let task = checkpointTask { tasks.append(task); checkpointTask = nil }
             if let task = dataTask { tasks.append(task); dataTask = nil }
+            if let task = verifyTask { tasks.append(task); verifyTask = nil }
             tasks.append(contentsOf: auxTasks)
             auxTasks = []
             if tasks.isEmpty { return }
@@ -548,7 +628,7 @@ public actor AudioReceiverSession {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
-                watchServiceState.value = Int(snapshot.serviceStateRaw)
+                noteWatchReport(Int(snapshot.serviceStateRaw))
             }
         default:
             break // diagnostics only; auth decides whether we can proceed
@@ -560,6 +640,7 @@ public actor AudioReceiverSession {
         controlTask = Task { await self.consumeControl(controlStream, abort: abort) }
         keepaliveTask = Task { await self.runKeepalive() }
         checkpointTask = Task { await self.runCheckpointTicker() }
+        verifyTask = Task { await self.runStreamVerify() }
 
         if captureIntent() != .off && watchInfo.value?.enabled == false {
             if !consumeEnableRequestPermission() {
@@ -660,7 +741,7 @@ public actor AudioReceiverSession {
             dataTask = nil
             state.value = .revoked(reasonRaw: Int(revoked.reasonRaw))
         case let changed as StateChanged:
-            watchServiceState.value = Int(changed.serviceStateRaw)
+            noteWatchReport(Int(changed.serviceStateRaw))
             // Safety net for a watch that pauses (policy) after we authorized: if the user
             // wants audio and we have no storage reason to hold the pause, resume. Fires only
             // for an ACTIVE intent (plan 6.1) and explicitly NOT for PausedPowerSave.
@@ -683,7 +764,7 @@ public actor AudioReceiverSession {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
-                watchServiceState.value = Int(snapshot.serviceStateRaw)
+                noteWatchReport(Int(snapshot.serviceStateRaw))
             }
         default:
             break // Keep the previous diagnostic snapshot; auth will report real failure.
@@ -756,10 +837,13 @@ public actor AudioReceiverSession {
                 }
             )
             stream = StreamContext(start: start, nowMs: clock.nowMs)
+            noteAudioArrived()
             state.value = .streaming(streamId: start.streamId)
         case let data as StreamData:
+            noteAudioArrived()
             try await handleStreamData(data)
         case let gap as StreamGap:
+            noteAudioArrived()
             try await handleStreamGap(gap)
         case let stop as StreamStop:
             guard let ctx = stream else { return }
@@ -771,6 +855,10 @@ public actor AudioReceiverSession {
                     finalSampleIndex: stop.finalSampleIndex
                 )
             )
+            // A clean stop retires the claim outright — there is no latch left to weigh, and
+            // leaving stale audio timestamps behind would vouch for the next stream's first
+            // seconds before any of its audio had arrived.
+            streamEvidence.value = .none
             state.value = .authorized
         default:
             break
@@ -977,6 +1065,9 @@ public actor AudioReceiverSession {
         ackWaiter?.complete(false)
         ackWaiter = nil
         grantedProtoVersion.value = nil
+        // Everything observed belonged to the connection that just ended. Carrying it across
+        // would let a reconnect inherit the old link's proof of life.
+        streamEvidence.value = .none
     }
 
     private enum ReceiverSessionError: Error {
@@ -996,4 +1087,16 @@ public actor AudioReceiverSession {
     /// anyway. Comfortably longer than an ordinary pause between batches, and far short of the
     /// watch's 15 s liveness timeout, so the spool is refreshed long before capture is at risk.
     private static let checkpointStallMs: Int64 = 2_000
+
+    /// How long an open stream may send no audio before the session starts asking the watch what
+    /// it is actually doing.
+    ///
+    /// Only a TRIGGER TO ASK, never a verdict: suppressed silence legitimately lasts far longer
+    /// than this, and the answer that comes back ("streaming") is what keeps the status honest
+    /// through it. Short enough that a stream which really did die is caught within the minute.
+    static let verifyAfterSilenceMs: Int64 = 20_000
+
+    /// A verify that never returns is a verify that never happened — a stale link the platform
+    /// still calls connected can leave a GATT read outstanding indefinitely.
+    static let verifyReadTimeoutMs: Int64 = 5_000
 }

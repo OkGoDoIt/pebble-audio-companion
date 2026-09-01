@@ -167,6 +167,9 @@ public actor ReceiverService {
 
     public nonisolated var state: StateSubject<ReceiverSessionState> { session.state }
     public nonisolated var watchServiceState: StateSubject<Int?> { session.watchServiceState }
+    /// What still backs the `.streaming` latch. Read by the status layer so "Recording" is a
+    /// weighed claim rather than a flag nobody rechecks — see `Receiver.StreamEvidence`.
+    public nonisolated var streamEvidence: StateSubject<StreamEvidence> { session.streamEvidence }
     public nonisolated var watchInfo: StateSubject<InfoSnapshot?> { session.watchInfo }
     /// The last `ERROR` the watch sent. Read by the status/diagnostics layer through
     /// `WatchLinkFault`: without it a de-authorized receiver loops connect → authorize → resync
@@ -229,6 +232,16 @@ public actor ReceiverService {
     /// User-facing "Reconnect": a fresh GATT session now, without changing the intent.
     public nonisolated func reconnect() {
         link.resync()
+    }
+
+    /// Asks the watch what it is doing, now, and refreshes the stream evidence with the answer.
+    ///
+    /// The session re-verifies on its own cadence during data silence; this is the prompt for the
+    /// one moment that cadence cannot cover — the app returning from a long suspension, where the
+    /// screen is about to be looked at and everything the phone knows is hours old.
+    @discardableResult
+    public func verifyWatchState() async -> Bool {
+        await session.verifyWatchState()
     }
 
     /// User-initiated Stop: pause the watch first (so its own Settings show Paused and it does

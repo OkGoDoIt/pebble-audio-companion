@@ -987,6 +987,164 @@ import WireProtocol
             "inbound audio must not mask a control channel that stopped reaching the watch"
         )
     }
+
+    // MARK: - Evidence behind the `.streaming` latch
+
+    /// Streaming, then silence — and the watch, asked, says it is still capturing. This is
+    /// voice-activity silence: the watch has stopped its drain timer and will send nothing at all
+    /// until audio resumes. The claim must survive it intact, refreshed by the answer rather than
+    /// held up by the latch.
+    @Test func suppressedSilenceKeepsTheClaimAliveByAskingTheWatch() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        // From here the watch is suppressing silence: its Info reports Streaming, and not one
+        // byte of audio arrives for ten minutes.
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.streaming.rawValue
+        ).encode()
+        let readsBefore = fx.link.infoReads
+        await fx.clock.advance(by: 10 * 60 * 1_000)
+
+        #expect(
+            fx.link.infoReads > readsBefore,
+            "data silence must make the session ask the watch, not guess")
+        #expect(fx.session.state.value == .streaming(streamId: streamId))
+        let verdict = fx.session.streamEvidence.value.verdict(nowMs: fx.clock.nowMs)
+        #expect(
+            verdict == .watchSaysStreaming,
+            "ten minutes of suppressed silence is quiet, and must never be demoted")
+        #expect(verdict.supportsRecording)
+    }
+
+    /// While audio is flowing there is nothing to ask about, and the watch is not disturbed.
+    @Test func aHealthyStreamIsNeverInterrogated() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        let readsAfterHandshake = fx.link.infoReads
+
+        // Two minutes of ordinary streaming, well past the silence trigger, one batch a second.
+        for batch in 0..<120 {
+            await fx.clock.advance(by: 1_000)
+            fx.link.pushData(data(UInt32(batch), 1))
+            await fx.settle()
+        }
+
+        #expect(fx.link.infoReads == readsAfterHandshake, "arriving audio is its own evidence")
+        #expect(
+            fx.session.streamEvidence.value.verdict(nowMs: fx.clock.nowMs) == .hearingAudio)
+    }
+
+    /// The watch's liveness watchdog tripped: it stopped capturing and dropped to AuthorizedIdle,
+    /// and the STATE_CHANGED that would have said so never reached us. Nothing in the session
+    /// state changes — the latch is exactly as it was — so only the re-verify can catch this.
+    @Test func aWatchThatStoppedWithoutSayingSoIsCaughtByTheReVerify() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.authorizedIdle.rawValue
+        ).encode()
+        await fx.clock.advance(by: 2 * 60 * 1_000)
+
+        // The latch is untouched: this is precisely why it cannot be trusted on its own.
+        #expect(fx.session.state.value == .streaming(streamId: streamId))
+        let verdict = fx.session.streamEvidence.value.verdict(nowMs: fx.clock.nowMs)
+        #expect(verdict == .watchSaysNotStreaming)
+        #expect(!verdict.supportsRecording)
+    }
+
+    /// The starved link. The watch answers control messages (so the keepalive's failure count
+    /// never trips) but has stopped answering Info and stopped sending audio. Nothing can be
+    /// confirmed, and the honest verdict is that nothing is confirmed.
+    @Test func aLinkThatStoppedAnsweringLeavesTheClaimUnverified() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        fx.link.failInfoReads = true
+        await fx.clock.advance(by: 5 * 60 * 1_000)
+
+        #expect(fx.link.infoReads > 1, "the session must have tried to ask")
+        let verdict = fx.session.streamEvidence.value.verdict(nowMs: fx.clock.nowMs)
+        #expect(verdict == .unverified)
+        #expect(!verdict.supportsRecording)
+    }
+
+    /// A clean STREAM_STOP retires the claim outright: no stale timestamps are left behind to
+    /// vouch for whatever stream opens next.
+    @Test func aCleanStopClearsTheEvidence() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        fx.link.pushData(data(0, 4))
+        await fx.settle()
+        #expect(fx.session.streamEvidence.value.lastAudioAtMs != nil)
+
+        fx.link.pushData(
+            StreamStop(
+                streamId: streamId, reasonRaw: 1, finalSequence: 3, finalSampleIndex: 1_280,
+                countersCrcOrZero: 0))
+        await fx.settle()
+
+        #expect(fx.session.state.value == .authorized)
+        #expect(fx.session.streamEvidence.value.lastAudioAtMs == nil)
+    }
+
+    /// A link drop takes the evidence with it — a reconnect must not inherit the previous
+    /// connection's proof of life.
+    @Test func aLinkDropClearsTheEvidence() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        fx.link.pushData(data(0, 4))
+        await fx.settle()
+        #expect(fx.session.streamEvidence.value.lastAudioAtMs != nil)
+
+        await fx.setLink(.disconnected)
+        #expect(fx.session.streamEvidence.value == .none)
+    }
+
+    /// The watch pushing its own state change is evidence too, and lands without an Info read.
+    @Test func aStateChangePushRefreshesTheEvidence() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.streaming.rawValue))
+        await fx.settle()
+
+        let evidence = fx.session.streamEvidence.value
+        #expect(evidence.lastWatchReportRaw == Int(ServiceState.streaming.rawValue))
+        #expect(evidence.lastWatchReportAtMs == fx.clock.nowMs)
+    }
+
+    /// The foreground probe: the app woke after a long suspension and asks directly, without
+    /// waiting for the session's own cadence to come round.
+    @Test func verifyWatchStateAsksTheWatchOnDemand() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.streaming.rawValue
+        ).encode()
+        let readsBefore = fx.link.infoReads
+
+        let answered = await fx.session.verifyWatchState()
+
+        #expect(answered)
+        #expect(fx.link.infoReads == readsBefore + 1)
+        #expect(
+            fx.session.streamEvidence.value.lastWatchReportRaw
+                == Int(ServiceState.streaming.rawValue))
+    }
 }
 
 /// One-shot arming flag for the enable-request permission (the Kotlin test's captured `var`).

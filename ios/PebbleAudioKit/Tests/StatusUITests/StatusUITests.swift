@@ -169,6 +169,152 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(named.detail == "Pebble Time 2 · connected")
     }
 
+    // MARK: - "Recording" as a weighed claim, not a latch
+    //
+    // `.streaming` is set by STREAM_START and cleared only by STREAM_STOP, a link drop or a
+    // revoke, so on its own it outlives the thing it describes. These pin what the card says once
+    // the latch is weighed against `StreamEvidence` — and, first and most importantly, what it
+    // must NOT do to ordinary quiet.
+
+    /// The one that guards against over-correcting. The watch suppresses voice-activity silence
+    /// by sending nothing at all, for as long as the room stays quiet — so a card that demoted on
+    /// frame age would call an ordinary silent hour a failure. It confirms it is capturing, and
+    /// the headline stays exactly where it was.
+    @Test func vadSilenceStaysRecordingAndIsNamedAsQuiet() {
+        let status = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            deviceName: "Pebble Time 2",
+            streamVerdict: .watchSaysStreaming
+        )
+        #expect(status.family == .recording)
+        #expect(status.headline == StatusCopy.recording)
+        #expect(status.dot == .active)
+        #expect(status.action == .stop)
+        // Calm and specific: quiet is a state of the audio, not a fault to be resolved.
+        #expect(status.detail == "Pebble Time 2 · quiet")
+        #expect(status.action != .findWatch)
+    }
+
+    /// The user's report: the card said "Recording" while no live conversation existed anywhere.
+    /// A link that is up but starved — the watch ACKing health while sending no audio — confirms
+    /// nothing, so the card must stop claiming.
+    @Test func aStarvedStreamStopsClaimingToRecord() {
+        let status = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            deviceName: "Pebble Time 2",
+            streamVerdict: .unverified
+        )
+        #expect(status.family != .recording)
+        #expect(status.headline == StatusCopy.notHearingAudio)
+        #expect(status.dot == .attention)
+        #expect(status.action == .findWatch)
+        // It must not swing to the opposite lie: we do not know that recording stopped.
+        let text = status.headline + " " + (status.detail ?? "")
+        #expect(!text.contains("stopped"))
+        #expect(!text.contains("Not recording"))
+    }
+
+    /// When the watch DOES say it stopped, say so plainly — no hedging a fact the watch reported.
+    @Test func theWatchSayingItStoppedIsSaidPlainly() {
+        let status = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            streamVerdict: .watchSaysNotStreaming
+        )
+        #expect(status.family == .needsAttention)
+        #expect(status.headline == StatusCopy.notHearingAudio)
+        #expect(status.detail == StatusCopy.notHearingAudioStoppedLine)
+        #expect(status.action == .findWatch)
+    }
+
+    /// Hearing audio is the ordinary case and reads exactly as it always did.
+    @Test func hearingAudioReadsAsPlainRecording() {
+        let status = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            deviceName: "Pebble Time 2",
+            streamVerdict: .hearingAudio
+        )
+        #expect(status.family == .recording)
+        #expect(status.detail == "Pebble Time 2 · connected")
+    }
+
+    /// The sub-line used to be the constant "Pebble · connected" for every install — a name we
+    /// had not been told and a connection nothing had checked. With no name known it now says
+    /// only what is true.
+    @Test func recordingWithoutADeviceNameNeverInventsOne() {
+        for name in [nil, "", "   "] as [String?] {
+            let status = statusModel(
+                state: .streaming(streamId: 9),
+                intent: .active,
+                deviceName: name,
+                streamVerdict: .hearingAudio
+            )
+            #expect(status.detail == StatusCopy.connectedUnnamed)
+            #expect(status.detail?.contains(StatusCopy.genericDeviceName) != true)
+        }
+        let quiet = statusModel(
+            state: .streaming(streamId: 9), intent: .active, streamVerdict: .watchSaysStreaming
+        )
+        #expect(quiet.detail == StatusCopy.connectedQuietUnnamed)
+    }
+
+    /// The watch's own paused/disabled/error reports still outrank everything: it is the more
+    /// specific answer, and the phone must match what the watch's own Settings screen shows.
+    @Test func watchReportedStatesStillOutrankTheStaleStreamBranch() {
+        let paused = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            watchServiceStateRaw: Int(ServiceState.pausedPolicy.rawValue),
+            streamVerdict: .unverified
+        )
+        #expect(paused.family == .paused)
+        #expect(paused.headline == StatusCopy.paused)
+
+        let error = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            watchServiceStateRaw: Int(ServiceState.error.rawValue),
+            streamVerdict: .unverified
+        )
+        #expect(error.headline == StatusCopy.watchNeedsAttention)
+    }
+
+    /// Storage pressure is a deliberate pause the phone asked for, and it outranks the evidence
+    /// question entirely — the card must not offer Find Watch for a full disk.
+    @Test func storagePausePrecedesTheEvidenceCheck() {
+        let status = statusModel(
+            state: .streaming(streamId: 9),
+            intent: .active,
+            storagePauseRequested: true,
+            streamVerdict: .unverified
+        )
+        #expect(status.family == .paused)
+        #expect(status.headline == StatusCopy.pausedStorageLow)
+    }
+
+    /// The stale-recording copy is held to the same rules as everything else on this card.
+    @Test func staleRecordingCopyStaysInTheAppsVocabulary() {
+        let banned = [
+            "GATT", "AUTH", "checkpoint", "spool", "sequence", "stream id", "NimBLE", "VAD",
+            "keepalive", "timeout", "latch",
+        ]
+        for verdict in [StreamVerdict.unverified, .watchSaysNotStreaming, .watchSaysStreaming] {
+            let status = statusModel(
+                state: .streaming(streamId: 9), intent: .active, streamVerdict: verdict
+            )
+            let text = status.headline + " " + (status.detail ?? "")
+            for word in banned {
+                #expect(!text.contains(word), "verdict \(verdict) copy mentions '\(word)': \(text)")
+            }
+            #expect(isNotBlank(status.headline))
+            // A card that stops claiming must always offer the way out of the state it reports.
+            if status.family != .recording { #expect(status.action != nil) }
+        }
+    }
+
     @Test func streamingUnderStoragePressureIsPaused() {
         let status = statusModel(
             state: .streaming(streamId: 9), intent: .active, storagePauseRequested: true

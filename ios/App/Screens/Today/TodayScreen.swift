@@ -174,7 +174,7 @@ struct TodayScreen: View {
                         .foregroundStyle(Tokens.meta)
                 }
                 if viewModel.showsLiveMinute {
-                    WaveformView(bars: viewModel.snapshot.liveMinute)
+                    WaveformView(slots: viewModel.snapshot.liveMinute)
                     WaveformLegend()
                 }
             }

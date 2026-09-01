@@ -289,14 +289,14 @@ struct ComponentGallery: View {
         section("Live-minute waveform") {
             Card {
                 VStack(alignment: .leading, spacing: 12) {
-                    WaveformView(bars: .sampleLiveMinute)
+                    WaveformView(slots: .sampleLiveMinute)
                     WaveformLegend()
                 }
             }
             Card {
                 VStack(alignment: .leading, spacing: 12) {
                     WaveformView(
-                        bars: (0..<40).map { WaveformBar(amplitude: 0, state: $0 % 9 == 4 ? .missing : .quiet) }
+                        slots: (0..<40).map { WaveformBar(amplitude: 0, state: $0 % 9 == 4 ? .missing : .quiet) }
                     )
                     WaveformLegend(showPaused: true)
                 }

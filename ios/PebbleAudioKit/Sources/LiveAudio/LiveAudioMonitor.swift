@@ -106,6 +106,7 @@ public actor LiveAudioMonitor {
     private var pending: [Entry] = []
     private var buckets: [Int64: BarAccum] = [:]
     private var activeTask: Task<Void, Never>?
+    private var idleTickTask: Task<Void, Never>?
     private var wakeups: AsyncStream<Void>.Continuation?
 
     /// Latest published bars, oldest first (the Kotlin `StateFlow.value`).
@@ -180,17 +181,37 @@ public actor LiveAudioMonitor {
                 }
             }
             continuation.yield(())
+            // Ageing is time-driven, not data-driven: without a tick the last pass before the
+            // audio stopped would be the last frame ever published, and the frozen window would
+            // keep drawing as if it were the present. Only runs while the waveform is on screen.
+            idleTickTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: LiveAudioMonitor.idleTickMs * 1_000_000)
+                    if Task.isCancelled { return }
+                    await self?.wake()
+                }
+            }
         } else {
             wakeups?.finish()
             wakeups = nil
             activeTask?.cancel()
             activeTask = nil
+            idleTickTask?.cancel()
+            idleTickTask = nil
         }
+    }
+
+    /// Asks the active pass to run again. No-op when the waveform is not on screen.
+    public func wake() {
+        wakeups?.yield(())
     }
 
     public func processPending() async {
         let batch = drainPendingBatch()
         if batch.isEmpty {
+            // Trim before publishing even with nothing new: this is the pass that runs on the
+            // idle tick, and ageing the window is the whole reason that tick exists.
+            trimBuckets()
             publishBars()
             return
         }
@@ -284,9 +305,21 @@ public actor LiveAudioMonitor {
         }
     }
 
+    /// Drops everything older than one window before NOW.
+    ///
+    /// This used to trim relative to the newest bucket, which meant the window moved only when
+    /// audio arrived: the moment the watch stopped sending, the last minute of bars froze in place
+    /// and kept drawing — a still, green, minute-old waveform sitting under the word "Recording"
+    /// for as long as the screen was open. Wall-clock now is the honest edge, so a stream that
+    /// stops drains instead of freezing.
+    ///
+    /// `max` with the newest bucket, not `nowMs()` alone, because received-at timestamps and the
+    /// injected clock are allowed to run slightly apart (and in tests deliberately do); audio we
+    /// have actually been given must never be trimmed for arriving "in the future".
     private func trimBuckets() {
-        guard let newest = buckets.values.map(\.timeMs).max() else { return }
-        buckets = buckets.filter { $0.value.timeMs >= newest - windowMs }
+        let newest = buckets.values.map(\.timeMs).max()
+        guard let edge = [nowMs(), newest].compactMap({ $0 }).max() else { return }
+        buckets = buckets.filter { $0.value.timeMs >= edge - windowMs }
     }
 
     private func publishBars() {
@@ -318,6 +351,10 @@ public actor LiveAudioMonitor {
     }
 
     // MARK: - Display mapping (Kotlin companion object)
+
+    /// How often the active monitor re-publishes with nothing new, so the window ages against
+    /// wall-clock now. One bar's worth: the drain is smooth and costs one trim + one publish.
+    static let idleTickMs: UInt64 = 250
 
     /// Below this RMS (16-bit full scale 32767) a bar renders as detected silence.
     public static let silenceRMS = 90.0

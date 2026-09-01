@@ -70,6 +70,23 @@ enum Copy {
         static let recording = "Recording"
         /// Today status card sub-line: "Pebble Time 2 · connected".
         static func connected(device: String) -> String { "\(device) · connected" }
+        /// Same line before the watch's advertised name has arrived. Says only what is known
+        /// rather than naming a device we cannot name (the card used to render the constant
+        /// "Pebble · connected" on every install, observed by nothing).
+        static let connectedUnnamed = "Connected"
+        /// Recording, with the watch confirming it is capturing and deliberately sending
+        /// nothing — voice-activity silence it suppressed. Calm, and visibly not loss.
+        static func connectedQuiet(device: String) -> String { "\(device) · quiet" }
+        static let connectedQuietUnnamed = "Quiet right now"
+
+        // attention dot · bordered [Find Watch] — the `.streaming` latch has outlived its
+        // evidence (see `Receiver.StreamEvidence`). Never says recording stopped: we do not
+        // always know that, and asserting it would be the same lie pointing the other way.
+        static let notHearingAudio = "Connected, not hearing audio"
+        static let notHearingAudioStoppedLine =
+            "Your Pebble says it is no longer recording. Find Watch starts it again."
+        static let notHearingAudioUnverifiedLine =
+            "Nothing has arrived for a while and your Pebble hasn’t confirmed it is still recording."
         /// The StatusStates artboard's family line.
         static func recordingLine(device: String) -> String {
             "\(device) · connected · live minute shown above"
@@ -431,6 +448,11 @@ enum Copy {
         static func missingMarker(_ duration: String) -> String {
             "\(duration) missing · Bluetooth hiccup"
         }
+        // An interruption with more than one cause reads "(3 reasons)" and opens on a tap.
+        // The row itself never spells the causes out — at three or four of them the transcript
+        // would be more apology than words — so the breakdown lives behind the tap.
+        static let showInterruptionReasons = "Shows what interrupted the audio"
+        static let hideInterruptionReasons = "Hides what interrupted the audio"
         /// In-card provenance, e.g. "Transcribed with Soniox · yesterday 9:54 PM".
         static func provenance(provider: String, when: String) -> String {
             "Transcribed with \(provider) · \(when)"
@@ -972,6 +994,11 @@ enum Copy {
         /// One inline marker row, e.g. "9:48 AM, quiet for 2 min".
         static func transcriptMarker(time: String?, text: String) -> String {
             [time, text].compactMap { $0 }.joined(separator: ", ")
+        }
+
+        /// One opened cause, e.g. "watch buffer filled while disconnected, 45 min · 3 times".
+        static func transcriptMarkerReason(text: String, detail: String) -> String {
+            "\(text), \(detail)"
         }
 
         /// Live-minute summary, e.g. "42 seconds recorded, 10 seconds quiet, 8 seconds missing".

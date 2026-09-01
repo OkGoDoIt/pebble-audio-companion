@@ -22,23 +22,31 @@ struct WaveformBar: Equatable {
 /// quiet renders as h4 stubs; missing renders as the amber h10 marker (per the artboard
 /// taxonomy — visually distinct from both voice and quiet, never silently hidden).
 struct WaveformView: View {
-    let bars: [WaveformBar]
+    /// One slot per `slotCount`, oldest first, already placed on a time axis ending at the moment
+    /// the snapshot was built (`WaveformWindow.slots`). A nil slot has no audio in it.
+    ///
+    /// The row used to take `bars.suffix(40)` and right-align it, which has no time axis at all:
+    /// whatever arrived last was painted against the right edge and called the present, so a
+    /// stream that stopped left a motionless minute of green bars sitting under "Recording".
+    let slots: [WaveformBar?]
 
     /// The window is a FIXED number of slots, always the most recent minute, filling from the
-    /// right. The live monitor emits one bar per decoded chunk inside its 60 s window, so the
-    /// count grows as audio arrives — laying those out at a fixed 3 pt each made the row wider
-    /// than the screen and dragged the whole Today layout sideways with it. Slots also keep the
-    /// bar spacing stable instead of stretching a handful of early bars across the full width.
+    /// right. Slots keep the bar spacing stable instead of stretching a handful of early bars
+    /// across the full width, and stop a growing bar count from dragging the Today layout
+    /// sideways.
     static let slotCount = 40
+
+    /// How much time the row covers, matching the live monitor's own window.
+    static let windowMs: Int64 = 60_000
 
     private let containerHeight: CGFloat = 32
     private let quietHeight: CGFloat = 4
     private let missingHeight: CGFloat = 10
 
-    /// Newest-last, padded at the FRONT so a partly-filled minute grows in from the right.
+    /// Padded/truncated to exactly `slotCount`, so a short array still draws a stable row.
     private var window: [WaveformBar?] {
-        let recent = bars.suffix(Self.slotCount)
-        return Array(repeating: nil, count: Self.slotCount - recent.count) + recent.map { $0 }
+        if slots.count >= Self.slotCount { return Array(slots.suffix(Self.slotCount)) }
+        return Array(repeating: nil, count: Self.slotCount - slots.count) + slots
     }
 
     var body: some View {
@@ -84,13 +92,17 @@ struct WaveformView: View {
         }
     }
 
-    /// "42 seconds recorded, 10 seconds quiet, 8 seconds missing" — the bars cover one
-    /// minute, so each bar represents 60/count seconds.
+    /// "42 seconds recorded, 10 seconds quiet, 8 seconds missing" — read off the SLOTS, which
+    /// are the row that is actually drawn. Each slot is one window divided by the slot count, so
+    /// the spoken summary shrinks as the window drains rather than describing bars nobody sees.
     private var accessibilitySummary: String {
-        guard !bars.isEmpty else { return Copy.A11y.waveformSummary(recordedSec: 0, quietSec: 0, missingSec: 0) }
-        let secondsPerBar = 60.0 / Double(bars.count)
+        let drawn = window.compactMap { $0 }
+        guard !drawn.isEmpty else {
+            return Copy.A11y.waveformSummary(recordedSec: 0, quietSec: 0, missingSec: 0)
+        }
+        let secondsPerSlot = Double(Self.windowMs) / 1000 / Double(Self.slotCount)
         func seconds(_ matching: (WaveformBar.State) -> Bool) -> Int {
-            Int((Double(bars.filter { matching($0.state) }.count) * secondsPerBar).rounded())
+            Int((Double(drawn.filter { matching($0.state) }.count) * secondsPerSlot).rounded())
         }
         return Copy.A11y.waveformSummary(
             recordedSec: seconds { $0 == .transcribed || $0 == .captured },
@@ -145,12 +157,12 @@ struct WaveformLegend: View {
 
 // MARK: - Sample data
 
-extension [WaveformBar] {
+extension [WaveformBar?] {
     /// The Today artboard's live minute: 14 transcribed, 5 quiet, 2 missing, 3 quiet,
     /// 16 captured (deterministic amplitudes).
-    static var sampleLiveMinute: [WaveformBar] {
+    static var sampleLiveMinute: [WaveformBar?] {
         func amp(_ i: Int) -> Double { 0.25 + 0.7 * abs(sin(Double(i) * 1.7 + 0.6)) }
-        var bars: [WaveformBar] = []
+        var bars: [WaveformBar?] = []
         bars += (0..<14).map { WaveformBar(amplitude: amp($0), state: .transcribed) }
         bars += (0..<5).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
         bars += (0..<2).map { _ in WaveformBar(amplitude: 0, state: .missing) }
@@ -175,7 +187,7 @@ extension [WaveformBar] {
                 }
                 Text(Copy.Status.connected(device: "Pebble Time 2"))
                     .font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                WaveformView(bars: .sampleLiveMinute)
+                WaveformView(slots: .sampleLiveMinute)
                 WaveformLegend()
             }
         }
@@ -183,7 +195,7 @@ extension [WaveformBar] {
             VStack(alignment: .leading, spacing: 12) {
                 Text("All quiet").font(AppFont.cardHead).foregroundStyle(Tokens.label)
                 WaveformView(
-                    bars: (0..<40).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
+                    slots: (0..<40).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
                 )
                 WaveformLegend(showPaused: true)
             }

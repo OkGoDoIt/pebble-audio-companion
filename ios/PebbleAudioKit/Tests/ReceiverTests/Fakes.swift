@@ -22,6 +22,8 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
     private var _failControlWrites = false
     private var _resyncCount = 0
     private var _infoBytes: [UInt8]
+    private var _infoReads = 0
+    private var _failInfoReads = false
 
     /// Notification channels report parks and wakes so `TestClock.settle()` knows when the
     /// session's consumer loops have finished with a message and asked for the next one.
@@ -53,9 +55,23 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
         set { lock.withLock { _infoBytes = newValue } }
     }
 
+    /// How many times the session has asked the watch what it is doing.
+    var infoReads: Int { lock.withLock { _infoReads } }
+
+    /// When set, Info reads throw — a link the platform still calls connected but which the watch
+    /// is no longer answering on.
+    var failInfoReads: Bool {
+        get { lock.withLock { _failInfoReads } }
+        set { lock.withLock { _failInfoReads = newValue } }
+    }
+
     func readInfo() async throws -> [UInt8] {
         scheduler.noteEvent()
-        return infoBytes
+        return try lock.withLock {
+            _infoReads += 1
+            if _failInfoReads { throw FakeLinkError.linkDead }
+            return _infoBytes
+        }
     }
 
     func writeControl(_ message: [UInt8]) async throws {

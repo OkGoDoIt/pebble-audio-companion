@@ -123,6 +123,14 @@ public actor CompanionRuntime {
     public nonisolated var watchServiceState: StateSubject<Int?> {
         environment.receiver.watchServiceState
     }
+    /// What still backs the `.streaming` latch (see `Receiver.StreamEvidence`). The status layer
+    /// weighs this instead of trusting the latch, so "Recording" is never asserted about a watch
+    /// that stopped sending without a clean stop.
+    public nonisolated var streamEvidence: StateSubject<StreamEvidence> {
+        environment.receiver.streamEvidence
+    }
+    /// The bound watch's advertised name, or nil until one has been seen.
+    public nonisolated var deviceName: StateSubject<String?> { environment.receiver.deviceName }
     /// The watch's last Info read (handshake, and again after an enable prompt). Diagnostics
     /// only — it carries the firmware version and the send-backpressure counter, which is how
     /// the app tells airtime loss apart from a spool that never freed.
@@ -210,9 +218,14 @@ public actor CompanionRuntime {
             await refreshSnapshot(.appBackgrounded)
         } else {
             await reconcilePendingTranscriptions()
-            // Foreground entry: the app is awake and cheap work is allowed again, so bring the
-            // widget's file up to date immediately rather than leaving it on whatever the last
-            // background write said.
+            // Foreground entry: everything the phone knows about the watch may be hours old, and
+            // the status card is about to be read. Ask the watch what it is doing BEFORE the
+            // snapshot is written, so neither the card nor the widget re-publishes a "Recording"
+            // that only a stale latch was holding up. Re-applying the capture intent (which is
+            // all the surface coordinator does here) never probed the link.
+            await environment.receiver.verifyWatchState()
+            // The app is awake and cheap work is allowed again, so bring the widget's file up to
+            // date immediately rather than leaving it on whatever the last background write said.
             await refreshSnapshot(.manual)
         }
         wake.signal()
