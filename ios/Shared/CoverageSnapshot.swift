@@ -99,11 +99,12 @@ struct CoverageSnapshot: Codable, Equatable, Sendable {
     /// for people, may be localized, and must never be pattern-matched).
     ///
     /// `recording` · `paused` · `reconnecting` · `connecting` · `bluetoothOff` ·
-    /// `notRecording` · `confirmOnWatch` · `transcriptsOff` · `needsAttention`.
+    /// `notRecording` · `confirmOnWatch` · `transcriptsOff` · `transcriptsFailing` ·
+    /// `needsAttention`.
     /// Empty means a v1 snapshot that predates the field.
     enum State: String, Codable, Sendable {
         case recording, paused, reconnecting, connecting, bluetoothOff
-        case notRecording, confirmOnWatch, transcriptsOff, needsAttention
+        case notRecording, confirmOnWatch, transcriptsOff, transcriptsFailing, needsAttention
         /// A v1 snapshot, or a family this widget build does not know.
         case unknown
 

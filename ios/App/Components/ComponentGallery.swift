@@ -75,6 +75,12 @@ struct ComponentGallery: View {
                 line: Copy.Status.transcriptsOffLine,
                 action: .init(title: Copy.Status.setUpTranscripts, style: .filled) {}
             )
+            StatusCard(
+                dotColor: Tokens.attention,
+                headline: Copy.Status.transcriptsFailing,
+                line: Copy.Status.transcriptsFailingLine,
+                action: .init(title: Copy.Status.seeDetails, style: .bordered) {}
+            )
         }
     }
 

@@ -321,3 +321,58 @@ private final class Counter: @unchecked Sendable {
     var count: Int { lock.withLock { _count } }
     func increment() { lock.withLock { _count += 1 } }
 }
+
+/// Which failing steps are allowed to reach the status card, and which are not.
+///
+/// The card speaks for the whole of "audio in, words out". A daily recap or a WAV export that
+/// keeps throwing is real, and it belongs in Diagnostics — putting it on Today would train
+/// someone to ignore the one place that has to stay trustworthy.
+@Suite struct TranscriptionHealthTests {
+
+    private func health(_ stage: PipelineStage, consecutiveFailures: Int) -> PipelineHealth {
+        PipelineHealth(stages: [stage: StageHealth(consecutiveFailures: consecutiveFailures)])
+    }
+
+    @Test func transcriptionStagesAreTheOnesThatProduceWords() {
+        #expect(PipelineHealth.transcriptionStages == [.enqueueClosedSegments, .drainQueue])
+    }
+
+    @Test func aQuietPipelineIsNotFailing() {
+        #expect(PipelineHealth().transcriptionIsPersistentlyFailing == false)
+    }
+
+    /// One blip is a blip. The card stays silent right up to the persistence threshold.
+    @Test func oneBlipDoesNotSpeak() {
+        for failures in 0..<PipelineHealth.persistentFailureThreshold {
+            #expect(
+                health(.drainQueue, consecutiveFailures: failures)
+                    .transcriptionIsPersistentlyFailing == false,
+                "\(failures) consecutive failures should not reach the card"
+            )
+        }
+    }
+
+    @Test func eitherTranscriptionStageIsEnough() {
+        for stage in PipelineHealth.transcriptionStages {
+            #expect(
+                health(stage, consecutiveFailures: PipelineHealth.persistentFailureThreshold)
+                    .transcriptionIsPersistentlyFailing,
+                "\(stage) failing persistently should reach the card"
+            )
+        }
+    }
+
+    /// Everything else — including the live transcript, which has its own honest line on the
+    /// live row and whose final transcript is a different path that is still running.
+    @Test func otherStagesStayInDiagnostics() {
+        let others = PipelineStage.allCases.filter {
+            !PipelineHealth.transcriptionStages.contains($0)
+        }
+        for stage in others {
+            #expect(
+                health(stage, consecutiveFailures: 99).transcriptionIsPersistentlyFailing == false,
+                "\(stage) must not reach the status card"
+            )
+        }
+    }
+}
