@@ -28,6 +28,19 @@ private struct LowSpeechDecoder: LiveFrameDecoder {
     }
 }
 
+/// A clock the test moves by hand, so "time passed and nothing arrived" is expressible at all.
+private final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _nowMs: Int64
+
+    init(nowMs: Int64) { _nowMs = nowMs }
+
+    var nowMs: Int64 {
+        get { lock.withLock { _nowMs } }
+        set { lock.withLock { _nowMs = newValue } }
+    }
+}
+
 private final class CountingDecoder: LiveFrameDecoder, @unchecked Sendable {
     private let lock = NSLock()
     private var _decodeCalls = 0
@@ -129,6 +142,30 @@ private func frames(_ count: Int, loud: Bool) -> [SegmentFrame] {
 
         let bars = await monitor.bars
         #expect(bars.allSatisfy { $0.timeMs >= 610_000 - monitor.windowMs })
+    }
+
+    /// The window has to age against wall-clock now, not against the newest thing in it.
+    ///
+    /// Trimming relative to the newest bucket meant the window only ever moved when audio
+    /// arrived: the moment the watch stopped sending, the last minute of bars froze in place and
+    /// stayed there — a still, green, minute-old waveform under a headline that said "Recording".
+    @Test func theWindowAgesAgainstNowEvenWhenNothingArrives() async {
+        let clock = MutableClock(nowMs: 100_000)
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { clock.nowMs })
+        await monitor.onFrames(
+            segmentId: "seg-1", frames: frames(13, loud: true), receivedAtMs: 100_000)
+        await monitor.processPending()
+        #expect(await !monitor.bars.isEmpty)
+
+        // Half a minute on with nothing new: the audio is still inside the window.
+        clock.nowMs = 130_000
+        await monitor.processPending()
+        #expect(await !monitor.bars.isEmpty)
+
+        // Two minutes on: it has aged out, and the row drains instead of freezing.
+        clock.nowMs = 220_000
+        await monitor.processPending()
+        #expect(await monitor.bars.isEmpty, "a stream that stopped must drain, not freeze")
     }
 
     @Test func framesAccumulateWhileInactiveAndDecodeInOneBatch() async {

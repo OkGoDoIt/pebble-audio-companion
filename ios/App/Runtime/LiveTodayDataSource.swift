@@ -29,7 +29,9 @@ final class LiveTodayDataSource {
 
     private var tasks: [Task<Void, Never>] = []
     private var refreshTask: Task<Void, Never>?
-    private var liveMinute: [WaveformBar] = []
+    /// The monitor's raw bars, kept in kit form so the row can be re-placed on the time axis at
+    /// every publish — a snapshot built ten seconds ago must not be redrawn as if it were now.
+    private var liveBars: [LiveAudio.WaveformBar] = []
 
     init(composition: AppComposition) {
         self.composition = composition
@@ -76,7 +78,12 @@ final class LiveTodayDataSource {
             Task { [weak self] in
                 for await bars in await composition.monitor.barsUpdates() {
                     guard let self else { return }
-                    liveMinute = bars.map(WaveformBar.init(kit:))
+                    liveBars = bars
+                    // The published snapshot has to carry the new row, not just the new field:
+                    // `publish()` yields `todaySnapshotValue`, so assigning a private property
+                    // and publishing left the waveform on screen frozen until the next full
+                    // refresh — up to ten seconds behind the audio it was drawing.
+                    todaySnapshotValue.liveMinute = liveMinuteSlots()
                     publish()
                 }
             })
@@ -133,7 +140,7 @@ final class LiveTodayDataSource {
 
         todaySnapshotValue = TodaySnapshot(
             status: Self.status(composition),
-            liveMinute: liveMinute,
+            liveMinute: liveMinuteSlots(),
             coverage: Self.coverage(
                 nowMs: nowMs, zone: zone, dateKey: dateKey, segments: segments, pauses: pauses
             ),
@@ -257,6 +264,19 @@ final class LiveTodayDataSource {
         for continuation in liveContinuations.values { continuation.yield(liveSnapshotValue) }
     }
 
+    /// The live row, placed on a time axis ending NOW rather than right-aligned on whatever
+    /// arrived last. Audio that stops therefore drains leftwards out of the window instead of
+    /// standing still against the right edge while the headline says "Recording".
+    private func liveMinuteSlots() -> [WaveformBar?] {
+        WaveformWindow.slots(
+            bars: liveBars,
+            nowMs: composition.clock.nowMs,
+            slotCount: WaveformView.slotCount,
+            windowMs: WaveformView.windowMs
+        )
+        .map { $0.map(WaveformBar.init(kit:)) }
+    }
+
     // MARK: - Mapping
 
     /// The status card. `transcriptsOff` wins until the user has actually chosen where
@@ -272,9 +292,19 @@ final class LiveTodayDataSource {
             intent: settings.captureIntent,
             storagePauseRequested: composition.runtime.diagnostics.value.pauseRequested,
             watchServiceStateRaw: composition.runtime.watchServiceState.value,
+            // The watch's own advertised name, so the sub-line names the device actually on the
+            // other end. Without it the card rendered the constant "Pebble · connected" — a
+            // sentence about a watch nobody had asked and a link nobody had checked.
+            deviceName: composition.runtime.deviceName.value,
             // What the watch said when it refused, if it did. Without this the connect →
             // authorize → resync loop of a de-authorized receiver reads as "Connecting…" forever.
-            linkFault: composition.watchLinkFault
+            linkFault: composition.watchLinkFault,
+            // What still backs `.streaming`. The latch alone survives a watch that stops sending
+            // without a clean stop, which is how the card came to say "Recording" with no live
+            // conversation anywhere.
+            streamVerdict: composition.runtime.streamEvidence.value.verdict(
+                nowMs: composition.clock.nowMs
+            )
         )
     }
 

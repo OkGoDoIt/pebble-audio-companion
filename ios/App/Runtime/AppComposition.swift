@@ -586,12 +586,19 @@ final class AppComposition {
                     state: receiver.state.value,
                     intent: settingsBox.captureIntent,
                     watchServiceStateRaw: receiver.watchServiceState.value,
+                    deviceName: receiver.deviceName.value,
                     linkFault: WatchLinkFault.classify(
                         state: receiver.state.value,
                         protocolError: receiver.lastProtocolError.value,
                         info: receiver.watchInfo.value,
                         watchServiceStateRaw: receiver.watchServiceState.value
-                    )
+                    ),
+                    // The widget's honesty problem is not staleness of the FILE — the pipeline
+                    // heartbeat keeps rewriting that for as long as the app lives, so the 30-minute
+                    // bound never trips while a starved link is claiming to record. It is staleness
+                    // of the DATA, and this is where that is settled: one status engine, weighed
+                    // the same way for the card and for every native surface downstream of it.
+                    streamVerdict: receiver.streamEvidence.value.verdict(nowMs: clock.nowMs)
                 )
             },
             pauseJournal: pauseJournal,

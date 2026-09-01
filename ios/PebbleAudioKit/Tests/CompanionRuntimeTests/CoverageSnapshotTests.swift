@@ -1,6 +1,7 @@
 import AppDB
 import CompanionRuntime
 import Foundation
+import Receiver
 import SegmentStore
 import StatusUI
 import Testing
@@ -201,6 +202,95 @@ import Testing
         if let bars = object["activity"] as? [[String: Any]], let first = bars.first {
             #expect(Set(first.keys) == ["kind", "level"])
         }
+    }
+
+    /// The widget inherits the CARD's honesty, not a second derivation of its own.
+    ///
+    /// Its 30-minute staleness bound cannot save it here: the pipeline heartbeat keeps rewriting
+    /// this file for as long as the app is alive, so the file is always fresh while the DATA is
+    /// not. The fix has to land where the status is decided — so a starved link must write a
+    /// snapshot that claims nothing, even though it was written this instant.
+    @Test func aStarvedStreamWritesASnapshotThatClaimsNothing() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.clock.advance(by: 1_756_512_000_000)
+        _ = try await Fixture.writeSegment(
+            into: fixture.store,
+            startTimeMs: UInt64(fixture.clock.nowMs - 10_000),
+            frames: 500,
+            receivedAtMs: fixture.clock.nowMs - 10_000
+        )
+        // The real status engine, on the real defect: `.streaming` still latched, nothing behind
+        // it. Built through `statusModel` rather than hand-rolled, so the widget and the card are
+        // provably reading the same verdict.
+        let starved = statusModel(
+            state: .streaming(streamId: 4),
+            intent: .active,
+            deviceName: "Pebble Time 2",
+            streamVerdict: .unverified
+        )
+        let service = CoverageSnapshotService(
+            store: fixture.store,
+            writer: fixture.snapshotWriter,
+            clock: fixture.clock,
+            statusOf: { starved },
+            pauseJournal: fixture.pauseJournal,
+            liveContextOf: { isRunning in
+                #expect(!isRunning, "no live lookup for a stream nothing can vouch for")
+                return CoverageLiveContext(
+                    conversationTitle: "Should not appear",
+                    latestLine: "Should not appear either"
+                )
+            }
+        )
+
+        let written = await service.refresh(.pipelinePass)
+
+        // The FILE is perfectly fresh — which is exactly why the widget's staleness bound can
+        // never catch this on its own, and why the fix has to be in the status.
+        #expect(written.generatedAtMs == fixture.clock.nowMs)
+        #expect(!written.isRecording)  // …and yet nothing is claimed
+        #expect(written.state != "recording")
+        #expect(written.currentStartedAtMs == nil, "no timer counting up for an unverified stream")
+        #expect(written.liveTitle == nil)
+        #expect(written.liveLine == nil)
+        // The widget renders the headline verbatim, so it inherits the card's words too.
+        #expect(written.headline == StatusCopy.notHearingAudio)
+    }
+
+    /// The other half of the same rule: suppressed silence must reach the widget as recording.
+    /// A watch that confirms it is capturing is capturing, however long it has been quiet.
+    @Test func suppressedSilenceStillWritesARecordingSnapshot() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.clock.advance(by: 1_756_512_000_000)
+        _ = try await Fixture.writeSegment(
+            into: fixture.store,
+            startTimeMs: UInt64(fixture.clock.nowMs - 10_000),
+            frames: 500,
+            receivedAtMs: fixture.clock.nowMs - 10_000
+        )
+        let quiet = statusModel(
+            state: .streaming(streamId: 4),
+            intent: .active,
+            deviceName: "Pebble Time 2",
+            streamVerdict: .watchSaysStreaming
+        )
+        let service = CoverageSnapshotService(
+            store: fixture.store,
+            writer: fixture.snapshotWriter,
+            clock: fixture.clock,
+            statusOf: { quiet },
+            pauseJournal: fixture.pauseJournal,
+            liveContextOf: { isRunning in
+                #expect(isRunning)
+                return CoverageLiveContext(conversationTitle: "Standup")
+            }
+        )
+
+        let written = await service.refresh(.pipelinePass)
+
+        #expect(written.isRecording)
+        #expect(written.state == "recording")
+        #expect(written.liveTitle == "Standup")
     }
 
     /// Honesty rule: nothing that says "right now" survives into a snapshot where capture is not

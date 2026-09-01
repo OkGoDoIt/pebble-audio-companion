@@ -84,9 +84,11 @@ struct ConversationRowDisplay: Equatable, Identifiable {
 /// Everything the Today screen renders, in one observable value.
 struct TodaySnapshot: Equatable {
     var status: StatusModel
-    /// The 40-bar live minute (four-state taxonomy). Rendered only while the recording
-    /// family is showing (plan 6.2: never shows paused; frozen/hidden otherwise).
-    var liveMinute: [WaveformBar]
+    /// The 40-slot live minute (four-state taxonomy), oldest slot first and ending at the moment
+    /// it was built. Rendered only while the recording family is showing (plan 6.2: never shows
+    /// paused; hidden otherwise). A nil slot is a slot with no audio in it — the row is a time
+    /// axis, so audio that stops drains leftwards instead of freezing against the right edge.
+    var liveMinute: [WaveformBar?]
     var coverage: CoverageDisplay?
     var recap: RecapDisplay?
     var followUps: [FollowUpDisplay]

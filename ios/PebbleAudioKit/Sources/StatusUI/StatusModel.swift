@@ -142,8 +142,28 @@ public enum StatusCopy {
     // Recording family (green · no card button; transport renders elsewhere).
     public static let recording = "Recording"
     public static func connected(device: String) -> String { "\(device) · connected" }
-    /// Detail fallback when no device name is known yet.
+    /// Placeholder name for a watch whose advertised name has not arrived (Settings rows).
     public static let genericDeviceName = "Pebble"
+    /// Status sub-line when no watch name is known yet. It says only what is known — a link is up
+    /// and audio is arriving over it — rather than naming a device we cannot name and asserting a
+    /// connection to it. The Today card used to render the constant "Pebble · connected" here for
+    /// every install, observed by nothing.
+    public static let connectedUnnamed = "Connected"
+
+    /// Recording, but the watch is deliberately sending nothing: voice-activity silence it
+    /// suppressed to save power. Named as the calm thing it is, in the legend's own word, so a
+    /// still waveform under a green dot reads as quiet rather than as something broken.
+    public static func connectedQuiet(device: String) -> String { "\(device) · quiet" }
+    public static let connectedQuietUnnamed = "Quiet right now"
+
+    // Stale-recording branch (attention · bordered [Find Watch]). The `.streaming` latch has run
+    // out of evidence — see `StreamEvidence`. It deliberately does NOT say recording stopped: we
+    // do not know that, and claiming it would be the same kind of lie in the other direction.
+    public static let notHearingAudio = "Connected, not hearing audio"
+    public static let notHearingAudioStoppedLine =
+        "Your Pebble says it is no longer recording. Find Watch starts it again."
+    public static let notHearingAudioUnverifiedLine =
+        "Nothing has arrived for a while and your Pebble hasn’t confirmed it is still recording."
 
     // Paused family (attention · filled [Resume]).
     public static let paused = "Paused"
@@ -293,13 +313,22 @@ public enum StatusCopy {
 /// loop is a legitimate `.connecting` — so "Connecting…" is true, useless, and permanent. A
 /// fault is only shown while the user actually wants audio: someone who switched capture off
 /// does not need to be told the watch refused.
+///
+/// `streamVerdict` is what still backs the `.streaming` LATCH (see `Receiver.StreamEvidence`).
+/// `.streaming` is set by STREAM_START and cleared only by STREAM_STOP, a link drop or a revoke,
+/// so on its own it is a claim about a microphone that nothing has checked since. The verdict is
+/// that check — and it is NOT a frame timeout: the watch sends nothing at all during
+/// voice-activity silence, so quiet is told apart from loss by the watch's own reported state,
+/// never by how long it has been since a frame. That is why ordinary silence cannot demote this
+/// card, and why a starved link (which keeps ACKing while sending no audio) can.
 public func statusModel(
     state: ReceiverSessionState,
     intent: CaptureIntent,
     storagePauseRequested: Bool = false,
     watchServiceStateRaw: Int? = nil,
     deviceName: String? = nil,
-    linkFault: WatchLinkFault? = nil
+    linkFault: WatchLinkFault? = nil,
+    streamVerdict: StreamVerdict = .unchecked
 ) -> StatusModel {
     switch state {
     case .streaming, .authorized:
@@ -319,7 +348,8 @@ public func statusModel(
         state,
         intent: intent,
         storagePauseRequested: storagePauseRequested,
-        deviceName: deviceName
+        deviceName: deviceName,
+        streamVerdict: streamVerdict
     )
 }
 
@@ -399,7 +429,8 @@ private func statusForSessionState(
     _ state: ReceiverSessionState,
     intent: CaptureIntent,
     storagePauseRequested: Bool,
-    deviceName: String?
+    deviceName: String?,
+    streamVerdict: StreamVerdict = .unchecked
 ) -> StatusModel {
     switch state {
     case .disconnected:
@@ -518,10 +549,26 @@ private func statusForSessionState(
                 action: nil
             )
         }
+        guard streamVerdict.supportsRecording else {
+            // The latch has outlived its evidence. Say what is actually known — nothing is
+            // arriving — and offer the one control that fixes both causes: a fresh connection
+            // makes the watch re-evaluate and resume streaming. Deliberately NOT "stopped":
+            // in the unverified branch we do not know that, and asserting it would be the same
+            // failure in the opposite direction.
+            return StatusModel(
+                family: .needsAttention,
+                headline: StatusCopy.notHearingAudio,
+                detail: streamVerdict == .watchSaysNotStreaming
+                    ? StatusCopy.notHearingAudioStoppedLine
+                    : StatusCopy.notHearingAudioUnverifiedLine,
+                dot: .attention,
+                action: .findWatch
+            )
+        }
         return StatusModel(
             family: .recording,
             headline: StatusCopy.recording,
-            detail: StatusCopy.connected(device: deviceName ?? StatusCopy.genericDeviceName),
+            detail: recordingDetail(deviceName: deviceName, isQuiet: streamVerdict.isQuiet),
             dot: .active,
             action: .stop
         )
@@ -535,6 +582,21 @@ private func statusForSessionState(
             action: .setUpAgain
         )
     }
+}
+
+/// The Recording family's sub-line. Says the device's real name when the link has published one,
+/// and nothing about a device when it has not — the old fallback rendered "Pebble · connected" on
+/// every unnamed install, which asserted both a name and a connection that nothing had observed.
+///
+/// `isQuiet` is the watch confirming it is capturing while sending nothing (voice-activity
+/// silence it suppressed). Naming that keeps the promise the taxonomy makes: quiet is calm and
+/// expected, and visibly different from loss.
+private func recordingDetail(deviceName: String?, isQuiet: Bool) -> String {
+    guard let name = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+    else {
+        return isQuiet ? StatusCopy.connectedQuietUnnamed : StatusCopy.connectedUnnamed
+    }
+    return isQuiet ? StatusCopy.connectedQuiet(device: name) : StatusCopy.connected(device: name)
 }
 
 /// Plain-language, actionable copy for a connection failure. The watch/BLE stack speaks in ATT
