@@ -646,3 +646,16 @@ private actor Counter {
     private(set) var value = 0
     func increment() { value += 1 }
 }
+
+/// The widget picks its layout off `state`, so every family needs a spelling of its own and no
+/// two families may share one.
+@Suite struct StatusFamilyWireSpellingTests {
+
+    @Test func transcriptsFailingHasItsOwnSpelling() {
+        #expect(StatusFamily.transcriptsFailing.snapshotValue == "transcriptsFailing")
+        #expect(
+            StatusFamily.transcriptsFailing.snapshotValue
+                != StatusFamily.transcriptsOff.snapshotValue
+        )
+    }
+}

@@ -45,6 +45,9 @@ public enum StatusFamily: Sendable, Equatable {
     case confirmOnWatch
     /// 6.7 first-run family: recording safe, transcription unconfigured.
     case transcriptsOff
+    /// Transcription IS set up and is persistently failing. Recording is unaffected, which is
+    /// why this family ranks below every capture state: it may never mask a capture problem.
+    case transcriptsFailing
     /// Denied / revoked / watch error / stale-link states that need user help.
     case needsAttention
 }
@@ -72,12 +75,16 @@ public enum StatusAction: Sendable, Equatable {
     case tryAgain
     case troubleshoot
     case setUpAgain
+    /// Opens Diagnostics, which names the step that is failing and its error. A helper, not a
+    /// fix: nothing on this card can make a failing transcription step succeed.
+    case openDiagnostics
 
     /// Filled = tapping it resolves the state; bordered = it helps.
     public var isFilled: Bool {
         switch self {
         case .start, .resume, .openSettings, .setUpTranscripts: return true
-        case .stop, .findWatch, .tryAgain, .troubleshoot, .setUpAgain: return false
+        case .stop, .findWatch, .tryAgain, .troubleshoot, .setUpAgain, .openDiagnostics:
+            return false
         }
     }
 
@@ -91,6 +98,7 @@ public enum StatusAction: Sendable, Equatable {
         case .openSettings: return StatusCopy.openSettings
         case .setUpTranscripts: return StatusCopy.setUpTranscripts
         case .tryAgain: return StatusCopy.tryAgain
+        case .openDiagnostics: return StatusCopy.seeDetails
         case .troubleshoot, .setUpAgain: return nil
         }
     }
@@ -127,6 +135,21 @@ public struct StatusModel: Sendable, Equatable {
         detail: StatusCopy.transcriptsOffLine,
         dot: .neutral,
         action: .setUpTranscripts
+    )
+
+    /// Transcription is configured and has been failing long enough that it will not fix itself
+    /// (`PipelineHealth.persistentFailureThreshold`). Like `transcriptsOff` this is not derived
+    /// from session state — it comes from the processing pass — so it is a constant too.
+    ///
+    /// It leads with the audio being safe, because it is: capture and storage do not depend on
+    /// transcription, and the recordings are transcribed whenever the step starts working again.
+    /// The dot is `.attention`, not `.problem`: nothing is being lost.
+    public static let transcriptsFailing = StatusModel(
+        family: .transcriptsFailing,
+        headline: StatusCopy.transcriptsFailing,
+        detail: StatusCopy.transcriptsFailingLine,
+        dot: .attention,
+        action: .openDiagnostics
     )
 }
 
@@ -201,6 +224,15 @@ public enum StatusCopy {
     public static let transcriptsOffLine =
         "Recording is safe on this phone. Choose where transcripts happen."
     public static let setUpTranscripts = "Set Up Transcripts"
+
+    // Transcripts-failing family (attention dot · bordered [See Details]). Deliberately says
+    // what is and is not affected, in that order: the audio is kept, the words are late, and
+    // they arrive when the step recovers. No step name, no error text — those are Diagnostics'
+    // job, which is what the button opens.
+    public static let transcriptsFailing = "Transcripts are behind"
+    public static let transcriptsFailingLine =
+        "Recording is safe. Transcribing keeps failing, and recent recordings are waiting for it."
+    public static let seeDetails = "See Details"
 
     // Approved strings reused from other artboards.
     public static let boundElsewhere = "Authorized to another phone"

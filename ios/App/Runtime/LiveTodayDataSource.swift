@@ -397,7 +397,7 @@ final class LiveTodayDataSource {
         if !settings.transcriptsConfigured, settings.captureIntent != .off {
             return .transcriptsOff
         }
-        return statusModel(
+        let capture = statusModel(
             state: composition.runtime.receiverState.value,
             intent: settings.captureIntent,
             storagePauseRequested: composition.runtime.diagnostics.value.pauseRequested,
@@ -416,6 +416,27 @@ final class LiveTodayDataSource {
                 nowMs: composition.clock.nowMs
             )
         )
+        return Self.applyingTranscriptionHealth(
+            to: capture,
+            transcriptionFailing: composition.runtime.pipelineHealth.health
+                .transcriptionIsPersistentlyFailing
+        )
+    }
+
+    /// The precedence rule for the transcripts-failing card: a capture problem ALWAYS wins.
+    ///
+    /// Only a card that is already saying the good thing — `.recording`, capture healthy and
+    /// audio arriving — may be replaced by "Transcripts are behind". Every other family is
+    /// about capture itself (paused, reconnecting, Bluetooth off, needs attention, …) and is
+    /// both more urgent and more actionable, so it stays. This mirrors `transcriptsOff`, which
+    /// is the same trade in the other direction: transcription may speak on this card, but
+    /// never over a capture state a person needs to act on.
+    static func applyingTranscriptionHealth(
+        to capture: StatusModel,
+        transcriptionFailing: Bool
+    ) -> StatusModel {
+        guard transcriptionFailing, capture.family == .recording else { return capture }
+        return .transcriptsFailing
     }
 
     private static func coverage(
@@ -631,6 +652,10 @@ extension LiveTodayDataSource: TodayDataSource {
             // Through the app's own URL scheme, so a status-card tap and a pasted deep link
             // take exactly the same navigation path.
             UIApplication.shared.open(Route.settings(.transcription).url)
+        case .openDiagnostics:
+            // Diagnostics is where the failing step is named, with its retry countdown and its
+            // raw error. The card itself never carries either.
+            UIApplication.shared.open(Route.settings(.diagnostics).url)
         case .tryAgain, .troubleshoot, .setUpAgain:
             UIApplication.shared.open(Route.settings(.watch).url)
         }

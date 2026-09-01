@@ -905,3 +905,59 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(watchLinkFaultTrace(protocolError: nil, info: nil) == nil)
     }
 }
+
+/// The transcripts-failing card (the last open item of the pipeline-health work): Today used to
+/// say nothing at all when transcription had been failing for hours. Recording really is
+/// unaffected, which is exactly why the card had stayed on "Recording" — and why the words on
+/// this card have to be careful about what is and is not wrong.
+@Suite("transcripts failing card")
+struct TranscriptsFailingCardTests {
+
+    @Test func leadsWithTheAudioBeingSafe() {
+        let model = StatusModel.transcriptsFailing
+        #expect(model.family == .transcriptsFailing)
+        let detail = model.detail ?? ""
+        // The first sentence is the reassurance, not the failure. A person reading only the
+        // first clause of this card must not conclude that recording has stopped.
+        #expect(detail.hasPrefix("Recording is safe."))
+    }
+
+    /// Nothing is being lost, so this is attention, not a problem — the same distinction the
+    /// rest of the card catalog draws.
+    @Test func usesAttentionRatherThanProblem() {
+        #expect(StatusModel.transcriptsFailing.dot == .attention)
+    }
+
+    /// One action, a helper, and it is bordered: nothing tappable here can make a failing step
+    /// succeed, and a filled button would promise that it can.
+    @Test func offersOneBorderedHelper() {
+        let action = StatusModel.transcriptsFailing.action
+        #expect(action == .openDiagnostics)
+        #expect(action?.isFilled == false)
+        #expect(action?.defaultLabel == StatusCopy.seeDetails)
+    }
+
+    /// Held to the card's vocabulary rules, plus the names of the machinery behind this state:
+    /// the pass, its stages and the error it caught are Diagnostics' business, not Today's.
+    @Test func staysInTheAppsVocabulary() {
+        let banned = [
+            "GATT", "AUTH", "checkpoint", "spool", "sequence", "stream id", "NimBLE", "VAD",
+            "keepalive", "timeout", "latch", "pipeline", "stage", "drainQueue", "enqueue",
+            "error", "Error",
+        ]
+        let model = StatusModel.transcriptsFailing
+        let text = model.headline + " " + (model.detail ?? "")
+        for word in banned {
+            #expect(!text.contains(word), "transcripts-failing copy mentions '\(word)': \(text)")
+        }
+        #expect(!model.headline.isEmpty)
+    }
+
+    /// It must be distinguishable from "never set up" — the two have opposite remedies, and
+    /// confusing them would send someone to re-configure something that is already configured.
+    @Test func isNotTheTranscriptsOffCard() {
+        #expect(StatusModel.transcriptsFailing.family != StatusModel.transcriptsOff.family)
+        #expect(StatusModel.transcriptsFailing.headline != StatusModel.transcriptsOff.headline)
+        #expect(StatusModel.transcriptsFailing.action != StatusModel.transcriptsOff.action)
+    }
+}

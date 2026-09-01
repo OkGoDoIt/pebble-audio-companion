@@ -117,6 +117,21 @@ public struct PipelineHealth: Sendable, Equatable {
         return completed < started && nowMs - started > stallMs
     }
 
+    /// The steps that turn recorded audio into words. Failing here means transcripts stop
+    /// appearing for finished recordings — the one processing failure that changes what a
+    /// person sees on Today, which is why it (and nothing else) may reach the status card.
+    ///
+    /// `liveLocal` is deliberately absent: the live transcript has its own honest line on the
+    /// live row (`LiveTranscriptStatus.liveTranscriptionDown`), and the final transcript of the
+    /// same audio is a different path that is still running.
+    public static let transcriptionStages: [PipelineStage] = [.enqueueClosedSegments, .drainQueue]
+
+    /// True when transcription has been failing long enough that it will not fix itself.
+    /// Recording is unaffected either way — this says nothing about capture.
+    public var transcriptionIsPersistentlyFailing: Bool {
+        PipelineHealth.transcriptionStages.contains { self[$0].isPersistentlyFailing }
+    }
+
     /// Consecutive failures before a stage's trouble is called persistent.
     public static let persistentFailureThreshold = 3
 

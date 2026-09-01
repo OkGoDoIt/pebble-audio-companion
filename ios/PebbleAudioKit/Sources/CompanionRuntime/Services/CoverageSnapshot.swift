@@ -202,6 +202,7 @@ extension StatusFamily {
         case .notRecording: return "notRecording"
         case .confirmOnWatch: return "confirmOnWatch"
         case .transcriptsOff: return "transcriptsOff"
+        case .transcriptsFailing: return "transcriptsFailing"
         case .needsAttention: return "needsAttention"
         }
     }

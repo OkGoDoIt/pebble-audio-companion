@@ -122,6 +122,17 @@ enum Copy {
         static let transcriptsOffLine = "Recording is safe on this phone. Choose where transcripts happen."
         static let setUpTranscripts = "Set Up Transcripts"
 
+        // attention dot · bordered [See Details] — transcription is configured and has been
+        // failing long enough not to fix itself. Only ever shown over a healthy Recording card,
+        // never over a capture state (see `LiveTodayDataSource.applyingTranscriptionHealth`).
+        // Duplicated from `StatusUI.StatusCopy`, like every other string in this enum: this
+        // file is compiled into the widget extension too, which does not link the kit.
+        static let transcriptsFailing = "Transcripts are behind"
+        static let transcriptsFailingLine =
+            "Recording is safe. Transcribing keeps failing, and recent recordings are waiting "
+            + "for it."
+        static let seeDetails = "See Details"
+
         static let live = "Live"
     }
 
