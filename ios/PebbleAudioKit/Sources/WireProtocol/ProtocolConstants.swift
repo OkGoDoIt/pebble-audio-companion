@@ -27,6 +27,10 @@ public enum ProtocolConstants {
     public static let infoFlagReceiverAuthorized: Int = 1 << 0
     public static let infoFlagEnabled: Int = 1 << 1
     public static let infoFlagConsentPending: Int = 1 << 2
+    /// bit3: `send_backpressure_events` carries a real count. Firmware that predates the field
+    /// leaves those bytes zero, which is indistinguishable from "the transport never refused a
+    /// notification" without this bit — so a zero is only meaningful when it is set.
+    public static let infoFlagBackpressureCounter: Int = 1 << 3
 
     // Info characteristic codec bitmap bits (Section 3).
     public static let codecBitmapSpeexWideband: Int = 1 << 0

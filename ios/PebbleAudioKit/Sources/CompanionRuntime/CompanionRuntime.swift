@@ -7,6 +7,7 @@ import SearchKit
 import SegmentStore
 import StatusUI
 import Transcription
+import WireProtocol
 
 // The composition root. The KMP original was a 55-parameter god object that owned the receiver,
 // the queue, the AI layer, the live audio, the UI's read model and the lifecycle at once. Here
@@ -121,6 +122,12 @@ public actor CompanionRuntime {
     }
     public nonisolated var watchServiceState: StateSubject<Int?> {
         environment.receiver.watchServiceState
+    }
+    /// The watch's last Info read (handshake, and again after an enable prompt). Diagnostics
+    /// only — it carries the firmware version and the send-backpressure counter, which is how
+    /// the app tells airtime loss apart from a spool that never freed.
+    public nonisolated var watchInfo: StateSubject<InfoSnapshot?> {
+        environment.receiver.watchInfo
     }
     public nonisolated var diagnostics: StateSubject<RuntimeDiagnostics> {
         environment.diagnostics.snapshot

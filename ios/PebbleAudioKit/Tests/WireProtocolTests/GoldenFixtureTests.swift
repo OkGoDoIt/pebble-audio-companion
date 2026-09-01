@@ -142,6 +142,9 @@ import Testing
                 "codec_bitmap": String(m.codecBitmap),
                 "flags": String(m.flags),
                 "fw_version_packed": String(m.fwVersionPacked),
+                // The raw word, because that is what the fixture pins. Whether it MEANS a count
+                // is flags bit3, covered by `backpressureCounterIsOnlyACountWhenTheFlagSaysSo`.
+                "send_backpressure_events": String(m.sendBackpressureEventsRaw),
             ]
         case let m as AuthRequest:
             return [

@@ -127,6 +127,9 @@ class GoldenFixtureTest {
             "codec_bitmap" to message.codecBitmap.toString(),
             "flags" to message.flags.toString(),
             "fw_version_packed" to message.fwVersionPacked.toString(),
+            // The raw word, because that is what the fixture pins. Whether it MEANS a count is
+            // flags bit3 (`InfoSnapshot.sendBackpressureEvents`).
+            "send_backpressure_events" to message.sendBackpressureEventsRaw.toString(),
         )
         is AuthRequest -> mapOf(
             "proto_version" to message.protoVersion.toString(),

@@ -30,7 +30,10 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
     public let reserved0: Int
     public let watchCapabilities: UInt32
     public let fwVersionPacked: UInt32
-    public let reserved1: UInt32
+    /// Wire bytes 16-19 (was `reserved1`): notifications the watch's transport refused since
+    /// service init. Raw because it is only a count when `flags` bit3 says so — read
+    /// `sendBackpressureEvents`, never this.
+    public let sendBackpressureEventsRaw: UInt32
 
     public init(
         infoVersion: Int,
@@ -42,7 +45,7 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         reserved0: Int = 0,
         watchCapabilities: UInt32 = 0,
         fwVersionPacked: UInt32 = 0,
-        reserved1: UInt32 = 0
+        sendBackpressureEventsRaw: UInt32 = 0
     ) {
         self.infoVersion = infoVersion
         self.protocolMin = protocolMin
@@ -53,13 +56,28 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         self.reserved0 = reserved0
         self.watchCapabilities = watchCapabilities
         self.fwVersionPacked = fwVersionPacked
-        self.reserved1 = reserved1
+        self.sendBackpressureEventsRaw = sendBackpressureEventsRaw
     }
 
     public var serviceState: ServiceState? { ServiceState(rawValue: serviceStateRaw) }
     public var receiverAuthorized: Bool { flags & ProtocolConstants.infoFlagReceiverAuthorized != 0 }
     public var enabled: Bool { flags & ProtocolConstants.infoFlagEnabled != 0 }
     public var consentPending: Bool { flags & ProtocolConstants.infoFlagConsentPending != 0 }
+    /// Whether this firmware reports the backpressure counter at all (`flags` bit3).
+    public var reportsSendBackpressure: Bool {
+        flags & ProtocolConstants.infoFlagBackpressureCounter != 0
+    }
+    /// Notifications the watch's transport refused since service init, or nil when this
+    /// firmware does not report it.
+    ///
+    /// The nil is the point. Firmware that predates the field leaves the word zero, and a zero
+    /// read as a count says "the radio never refused anything" — the opposite of "we cannot
+    /// tell". With the count, audio going missing while this climbs is airtime loss (the link
+    /// could not absorb the stream); audio going missing while it stays flat is credit
+    /// starvation (this phone stopped checkpointing, so the watch's spool never freed).
+    public var sendBackpressureEvents: UInt32? {
+        reportsSendBackpressure ? sendBackpressureEventsRaw : nil
+    }
 
     public func encode() -> [UInt8] {
         var w = WireWriter(initialCapacity: ProtocolConstants.infoSnapshotBytes)
@@ -72,7 +90,7 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         w.u16(reserved0)
         w.u32(watchCapabilities)
         w.u32(fwVersionPacked)
-        w.u32(reserved1)
+        w.u32(sendBackpressureEventsRaw)
         return w.toBytes()
     }
 }
