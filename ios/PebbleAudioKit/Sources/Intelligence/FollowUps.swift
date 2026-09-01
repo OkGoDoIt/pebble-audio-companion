@@ -322,10 +322,9 @@ public enum FollowUpQuoteLocator {
         guard needle.count >= 8 else { return nil }
         for part in parts {
             guard normalize(part.text).contains(needle) else { continue }
+            let offset = turnOffset(needle, in: part)
             return QuoteLocation(
-                segmentId: part.segmentId,
-                startMs: turnOffset(needle, in: part)?.start,
-                endMs: turnOffset(needle, in: part)?.end)
+                segmentId: part.segmentId, startMs: offset?.start, endMs: offset?.end)
         }
         // A quote can straddle a turn boundary and pick up a word the flat text renders
         // differently. Fall back to the longest run of it that does match, so a good item is
@@ -333,10 +332,9 @@ public enum FollowUpQuoteLocator {
         let shortened = String(needle.prefix(max(24, needle.count / 2)))
         guard shortened.count >= 12 else { return nil }
         for part in parts where normalize(part.text).contains(shortened) {
+            let offset = turnOffset(shortened, in: part)
             return QuoteLocation(
-                segmentId: part.segmentId,
-                startMs: turnOffset(shortened, in: part)?.start,
-                endMs: turnOffset(shortened, in: part)?.end)
+                segmentId: part.segmentId, startMs: offset?.start, endMs: offset?.end)
         }
         return nil
     }

@@ -20,7 +20,7 @@ enum LiveLibraryDataSources {
         return AskLibraryDataSources(
             library: world, search: world, conversations: world, ask: world,
             notes: world, tagEditor: world, people: world,
-            followUps: LiveFollowUps(composition: composition)
+            followUps: LiveFollowUps(composition: composition, world: world)
         )
     }
 }
@@ -1194,18 +1194,18 @@ extension AskScope {
 @MainActor
 final class LiveFollowUps {
     private let composition: AppComposition
+    /// The one `LiveWorld` the rest of the app uses — resolving a citation is its job, and
+    /// building a second one per tap would be a second copy of its pending-delete state.
+    private let world: LiveWorld
 
-    init(composition: AppComposition) {
+    init(composition: AppComposition, world: LiveWorld) {
         self.composition = composition
+        self.world = world
     }
 
     private func title(of conversationId: String) async -> String? {
         let detail = try? await composition.runtime.library.conversation(id: conversationId)
         return detail?.row.title
-    }
-
-    private func citationTarget(for citation: AskCitation) async -> CitationTarget? {
-        await LiveWorld(composition: composition).citationTarget(for: citation)
     }
 }
 
@@ -1244,7 +1244,10 @@ extension LiveFollowUps: FollowUpsDataSource {
                 archivedAtMs: row.archivedAtMs,
                 snoozedUntilMs: row.snoozedUntilMs,
                 sourceConversationId: row.sourceConversationId,
-                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] })
+                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] },
+                sourceSegmentId: row.sourceSegmentId,
+                sourceStartMs: row.sourceStartMs,
+                sourceEndMs: row.sourceEndMs)
         }
     }
 
@@ -1296,6 +1299,19 @@ extension LiveFollowUps: FollowUpsDataSource {
         removeFollowUpFromIndex(id: id)
     }
 
+    func restore(_ item: FollowUpItem) async throws {
+        try await composition.followUps.upsertExtracted(
+            FollowUp(
+                id: item.id, text: item.text, done: item.done,
+                sourceConversationId: item.sourceConversationId,
+                sourceSegmentId: item.sourceSegmentId, createdAtMs: item.createdAtMs,
+                quote: item.quote, why: item.why, dueAtMs: item.dueAtMs,
+                priority: item.priority, sourceStartMs: item.sourceStartMs,
+                sourceEndMs: item.sourceEndMs, completedAtMs: item.completedAtMs,
+                archivedAtMs: item.archivedAtMs, snoozedUntilMs: item.snoozedUntilMs,
+                origin: item.origin))
+    }
+
     /// The recording, cued to the words that created the item.
     ///
     /// The stored offsets are relative to the SEGMENT (that is what the transcriber reports),
@@ -1315,7 +1331,7 @@ extension LiveFollowUps: FollowUpsDataSource {
             endMs: row.sourceEndMs.flatMap { offset in
                 segmentStartMs.map { $0 + offset }
             })
-        return await citationTarget(for: citation)
+        return await world.citationTarget(for: citation)
     }
 
     /// Whether anything is set up to propose follow-ups at all — a local-only mode with no

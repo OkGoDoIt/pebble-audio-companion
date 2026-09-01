@@ -495,9 +495,12 @@ final class FollowUpsViewModel {
         }
     }
 
+    /// Puts the row back as it was — same id, same quote, same recording. Re-adding it as a
+    /// fresh hand-written item would look like undo and quietly lose where it came from.
     func undoDelete(_ item: FollowUpItem) {
+        hidden.remove(item.id)
         Task {
-            try? await source.add(text: item.text, dueAtMs: item.dueAtMs)
+            try? await source.restore(item)
             await reload()
         }
     }

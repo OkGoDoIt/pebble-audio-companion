@@ -559,7 +559,10 @@ final class LiveTodayDataSource {
                 archivedAtMs: row.archivedAtMs,
                 snoozedUntilMs: row.snoozedUntilMs,
                 sourceConversationId: row.sourceConversationId,
-                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] })
+                sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] },
+                sourceSegmentId: row.sourceSegmentId,
+                sourceStartMs: row.sourceStartMs,
+                sourceEndMs: row.sourceEndMs)
         }
     }
 

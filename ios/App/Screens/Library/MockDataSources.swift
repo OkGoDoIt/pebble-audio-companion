@@ -1164,7 +1164,10 @@ extension MockFollowUps: FollowUpsDataSource {
             sourceConversationId: row.sourceConversationId,
             sourceConversationTitle: row.sourceConversationId.flatMap { id in
                 conversations.first { $0.id == id }?.title
-            })
+            },
+            sourceSegmentId: row.sourceSegmentId,
+            sourceStartMs: row.sourceStartMs,
+            sourceEndMs: row.sourceEndMs)
     }
 
     @discardableResult
@@ -1217,6 +1220,21 @@ extension MockFollowUps: FollowUpsDataSource {
 
     func delete(id: String) async throws {
         followUps.removeAll { $0.id == id }
+        changed()
+    }
+
+    func restore(_ item: FollowUpItem) async throws {
+        followUps.removeAll { $0.id == item.id }
+        followUps.append(
+            FollowUp(
+                id: item.id, text: item.text, done: item.done,
+                sourceConversationId: item.sourceConversationId,
+                sourceSegmentId: item.sourceSegmentId, createdAtMs: item.createdAtMs,
+                quote: item.quote, why: item.why, dueAtMs: item.dueAtMs,
+                priority: item.priority, sourceStartMs: item.sourceStartMs,
+                sourceEndMs: item.sourceEndMs, completedAtMs: item.completedAtMs,
+                archivedAtMs: item.archivedAtMs, snoozedUntilMs: item.snoozedUntilMs,
+                origin: item.origin))
         changed()
     }
 

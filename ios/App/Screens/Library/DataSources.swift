@@ -461,6 +461,13 @@ struct FollowUpItem: Equatable, Identifiable {
     var sourceConversationId: String?
     /// The conversation's own title, so a row can say where it came from without a second load.
     var sourceConversationTitle: String?
+    /// The member recording the quote was spoken in, and where inside it. Carried on the
+    /// display model so an undone delete can put the row back exactly as it was, provenance
+    /// and all — re-adding it as a new hand-written item would quietly lose the recording it
+    /// came from.
+    var sourceSegmentId: String?
+    var sourceStartMs: Int64?
+    var sourceEndMs: Int64?
 
     var isArchived: Bool { archivedAtMs != nil }
 
@@ -499,6 +506,9 @@ protocol FollowUpsDataSource: AnyObject {
     func snooze(id: String, untilMs: Int64?) async throws
     func setArchived(id: String, archived: Bool) async throws
     func delete(id: String) async throws
+    /// Puts a deleted item back exactly as it was — same id, same quote, same recording. What
+    /// the undo snackbar calls.
+    func restore(_ item: FollowUpItem) async throws
 
     /// Where "play the moment this came from" goes: the conversation, cued to the words.
     func source(of id: String) async -> CitationTarget?
