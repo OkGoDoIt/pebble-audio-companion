@@ -60,9 +60,12 @@ final class NativeSurfaceCoordinator {
 
     /// Called by the runtime wiring once the shared database is open, so Spotlight donation
     /// reuses that connection instead of opening a second pool on the same file.
-    func attachDatabase(_ database: AppDatabase) {
+    func attachDatabase(
+        _ database: AppDatabase,
+        transcript: @escaping @Sendable (String) async -> String? = { _ in nil }
+    ) {
         guard spotlight == nil else { return }
-        spotlight = SpotlightService(database: database)
+        spotlight = SpotlightService(database: database, transcript: transcript)
     }
 
     /// Forgets the incremental donation watermark, so the next pass rebuilds from scratch
