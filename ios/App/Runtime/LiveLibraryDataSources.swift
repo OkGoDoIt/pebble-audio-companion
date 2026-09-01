@@ -535,10 +535,13 @@ extension LiveWorld: AskDataSource {
 
         var excerpts: [TranscriptExcerpt] = []
         var gapSummaries: [String: String?] = [:]
+        // Kept so the stretch cutter below does not decode every one of these a second time.
+        var loaded: [String: SegmentTranscript] = [:]
         for meta in scoped {
             guard let transcript = composition.transcripts.load(meta.segmentId),
                 !transcript.text.isEmpty
             else { continue }
+            loaded[meta.segmentId] = transcript
             let startMs = Int64(meta.startTimeMs)
             let endMs = startMs + segmentDurationMs(meta)
             excerpts.append(
@@ -575,7 +578,10 @@ extension LiveWorld: AskDataSource {
         let ordered = excerpts.sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
         let budget = AskBudget.forMode(
             composition.settings.aiMode, modelId: composition.settings.aiModel)
-        let stretches = citableStretches(of: ordered.map(\.segmentId))
+        let stretches = citableStretches(
+            of: ordered.compactMap { excerpt in
+                loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
+            })
         let plan = AskCorpusPlanner.plan(
             stretches: stretches,
             budget: budget,
@@ -720,13 +726,16 @@ extension LiveWorld: AskDataSource {
 
         // `conv-<id>` hits have to be resolved to member segments before they can match an
         // excerpt. Built up front so the retriever's expansion closure stays synchronous.
-        var members: [String: [String]] = [:]
+        var built: [String: [String]] = [:]
         for excerpt in excerpts {
             guard let conversationId = try? await composition.runtime.library
                 .conversationId(ofSegment: excerpt.segmentId)
             else { continue }
-            members[conversationId, default: []].append(excerpt.segmentId)
+            built[conversationId, default: []].append(excerpt.segmentId)
         }
+        // `let` so the expansion closure captures an immutable snapshot rather than a mutable
+        // dictionary it could race with.
+        let members = built
 
         let chunks = await composition.askRetriever.retrieve(
             query: askRetrievalQuery(question: question, priorTurns: priorTurns),
@@ -770,24 +779,41 @@ extension LiveWorld: AskDataSource {
     /// numbered once. Provider spans give the boundaries, so every stretch starts where
     /// someone started speaking.
     func citableStretches(of segmentIds: [String]) -> [CitableExcerpt] {
-        var drafts: [CitableExcerptDraft] = []
-        for segmentId in segmentIds {
-            guard let transcript = composition.transcripts.load(segmentId),
-                !transcript.text.isEmpty,
-                let meta = composition.files.readMeta(segmentId)
-            else { continue }
-            let startMs = Int64(meta.startTimeMs)
-            drafts.append(
-                contentsOf: CitableExcerpts.split(
-                    segmentId: segmentId,
-                    segmentStartMs: startMs,
-                    segmentEndMs: startMs + segmentDurationMs(meta),
-                    spans: transcript.segments.map {
-                        TranscriptSpan(text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
-                    },
-                    wholeText: transcript.text))
-        }
-        return CitableExcerpts.numbered(CitableExcerpts.coalesced(drafts))
+        CitableExcerpts.numbered(
+            CitableExcerpts.coalesced(
+                segmentIds.flatMap { segmentId in
+                    composition.transcripts.load(segmentId).map {
+                        drafts(of: segmentId, transcript: $0)
+                    } ?? []
+                }))
+    }
+
+    /// The same, for a caller that has already read these transcripts. Ask reads every
+    /// transcript in scope to build its excerpts and would otherwise decode all of them a
+    /// second time here — which, on an "Everything" question over a few hundred recordings, is
+    /// tens of megabytes of JSON parsed twice for one question.
+    func citableStretches(of transcripts: [(segmentId: String, transcript: SegmentTranscript)])
+        -> [CitableExcerpt]
+    {
+        CitableExcerpts.numbered(
+            CitableExcerpts.coalesced(
+                transcripts.flatMap { drafts(of: $0.segmentId, transcript: $0.transcript) }))
+    }
+
+    private func drafts(of segmentId: String, transcript: SegmentTranscript)
+        -> [CitableExcerptDraft]
+    {
+        guard !transcript.text.isEmpty, let meta = composition.files.readMeta(segmentId)
+        else { return [] }
+        let startMs = Int64(meta.startTimeMs)
+        return CitableExcerpts.split(
+            segmentId: segmentId,
+            segmentStartMs: startMs,
+            segmentEndMs: startMs + segmentDurationMs(meta),
+            spans: transcript.segments.map {
+                TranscriptSpan(text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
+            },
+            wholeText: transcript.text)
     }
 
     /// Resolve a citation all the way to something the UI can act on: which conversation holds
