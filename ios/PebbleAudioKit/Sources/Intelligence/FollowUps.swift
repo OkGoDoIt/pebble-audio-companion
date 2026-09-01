@@ -1,359 +1,369 @@
-import Foundation
-import GRDB
 import AppDB
+import Foundation
+import Transcription
 
-// Follow-up extraction (plan Part 4.5 "Follow-ups") — the port of `core/ai/ActionItemStore.kt`
-// with two deliberate changes from the KMP behavior:
-//  - persistence moves from `<root>/ai/action_items/*.action.json` files to the DB
-//    `follow_ups` table, so extracted items surface through the same store/observations the
-//    Today card uses;
-//  - the lenient text parser is a LAST RESORT that REJECTS lines with residual markdown/list
-//    structure instead of cleaning them (anti-B4: `**Owner:**` leaked into the UI and numbered
-//    fragments shipped as items). The strict JSON path — the `action_items` structured-output
-//    schema — is the only intended path for providers that support it.
+// The follow-up pipeline's data shapes: what a conversation is asked for, how its answer is
+// parsed, and how a quoted line is located back in the recording it came from.
+//
+// The design this replaces asked one cheap call per conversation for "action items" and wrote
+// whatever came back straight onto the person's list. On an always-on wearable microphone that
+// produced, from real recordings: a passing "I'll charge it tonight" said by a visitor about
+// their own phone, six sentences of product feedback dictated to a coding assistant that had
+// already done them, and an owner label reading "Roger" on every row because the schema made
+// the field required. The shape below exists to make each of those impossible:
+//
+//   • every item must carry a VERBATIM quote, and the quote is matched back against the
+//     transcript locally — an item whose words are not in the recording never lands;
+//   • every item must say what goes wrong if it is forgotten, which is the one question the
+//     junk cannot answer;
+//   • there is no owner field, because an item that needs one belongs to somebody else;
+//   • the segment and the millisecond offset are DERIVED from the quote, not asked for, so a
+//     model cannot strand a row by inventing an id.
 
-/// One extracted action item linked to its source segment. Vocabulary note: the UI calls these
-/// "Follow-ups" everywhere; "action item" survives only at this extraction seam.
-public struct ActionItem: Equatable, Sendable {
-    public var id: String
-    public var text: String
-    public var done: Bool
-    public var sourceSegmentId: String
-    /// The conversation the item was extracted from. Load-bearing, not decoration: the
-    /// conversation view's Follow-ups sheet reads `FollowUpStore.list(conversationId:)`, which
-    /// filters on this column — an item written with NULL here is invisible everywhere except
-    /// the global Today card.
-    public var sourceConversationId: String?
-    public var createdAtMs: Int64
+// MARK: - Extraction output
+
+/// One proposal from a single conversation, exactly as the model returns it.
+public struct ExtractedFollowUp: Equatable, Sendable, Codable {
+    public var task: String
+    public var quote: String
+    public var ifForgotten: String
+    /// `YYYY-MM-DD`, or empty when the transcript states no deadline.
+    public var dueDate: String
+    /// `high` | `medium` | `low`.
+    public var confidence: String
 
     public init(
-        id: String, text: String, done: Bool = false, sourceSegmentId: String,
-        sourceConversationId: String? = nil,
-        createdAtMs: Int64
+        task: String, quote: String = "", ifForgotten: String = "", dueDate: String = "",
+        confidence: String = "medium"
     ) {
-        self.id = id
-        self.text = text
-        self.done = done
-        self.sourceSegmentId = sourceSegmentId
-        self.sourceConversationId = sourceConversationId
-        self.createdAtMs = createdAtMs
-    }
-}
-
-/// Wire shape of the strict structured-output path. Empty string = unknown (the schema requires
-/// every key, so providers cannot omit fields to mean "unknown").
-public struct ExtractedActionItem: Equatable, Sendable, Codable {
-    public var task: String
-    public var owner: String
-    public var due: String
-    public var sourceSegmentId: String
-
-    public init(task: String, owner: String = "", due: String = "", sourceSegmentId: String = "") {
         self.task = task
-        self.owner = owner
-        self.due = due
-        self.sourceSegmentId = sourceSegmentId
+        self.quote = quote
+        self.ifForgotten = ifForgotten
+        self.dueDate = dueDate
+        self.confidence = confidence
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         task = try c.decode(String.self, forKey: .task)
-        owner = try c.decodeIfPresent(String.self, forKey: .owner) ?? ""
-        due = try c.decodeIfPresent(String.self, forKey: .due) ?? ""
-        sourceSegmentId = try c.decodeIfPresent(String.self, forKey: .sourceSegmentId) ?? ""
+        quote = try c.decodeIfPresent(String.self, forKey: .quote) ?? ""
+        ifForgotten = try c.decodeIfPresent(String.self, forKey: .ifForgotten) ?? ""
+        dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate) ?? ""
+        confidence = try c.decodeIfPresent(String.self, forKey: .confidence) ?? "medium"
     }
 }
 
-public struct ExtractedActionItems: Equatable, Sendable, Codable {
-    public var items: [ExtractedActionItem]
-
-    public init(items: [ExtractedActionItem]) {
-        self.items = items
-    }
+public struct ExtractedFollowUps: Equatable, Sendable, Codable {
+    public var items: [ExtractedFollowUp]
+    public init(items: [ExtractedFollowUp]) { self.items = items }
 }
 
-/// Parses action-item template output into structured items.
-public enum ActionItemParser {
-    /// Name of the structured-output JSON schema (`response_format`/`text.format` name).
-    public static let structuredOutputSchemaName = "action_items"
+/// Parses the extraction response.
+///
+/// There is deliberately no lenient prose fallback. The old parser had one, and it is where
+/// `**Owner:**` fragments and the line "Here are the action items I found:" reached the
+/// person's list. A response that is not the JSON we asked for is a failed call, and a failed
+/// call costs a retry — which is strictly better than shipping a fragment of a model's
+/// preamble as a thing somebody has to do.
+public enum FollowUpExtractionParser {
+    public static let schemaName = "follow_ups"
 
-    /// The strict `action_items` JSON schema for structured-output providers:
-    /// `additionalProperties: false`, every key required, empty string = unknown.
-    public static let structuredOutputSchemaJSON = """
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["items"],
-          "properties": {
-            "items": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["task", "owner", "due", "sourceSegmentId"],
-                "properties": {
-                  "task": {
-                    "type": "string",
-                    "description": "Concrete action or follow-up task. Empty only if omitted from items."
-                  },
-                  "owner": {
-                    "type": "string",
-                    "description": "Responsible person or team if stated, otherwise empty string."
-                  },
-                  "due": {
-                    "type": "string",
-                    "description": "Deadline if stated, otherwise empty string."
-                  },
-                  "sourceSegmentId": {
-                    "type": "string",
-                    "description": "Transcript segment id supporting the item, otherwise empty string."
-                  }
-                }
-              }
-            }
-          }
+    /// Model output → proposals, dropping anything that fails a check we can make locally.
+    public static func parse(raw: String) -> [ExtractedFollowUp]? {
+        guard let data = jsonObject(in: raw) else { return nil }
+        guard let parsed = try? JSONDecoder().decode(ExtractedFollowUps.self, from: data) else {
+            return nil
         }
-        """
-
-    public static func parse(
-        raw: String, sourceSegmentId: String, nowMs: Int64, idPrefix: String? = nil
-    ) -> [ActionItem] {
-        let prefix = idPrefix ?? sourceSegmentId
-        if let structured = parseStructured(
-            raw: raw, fallbackSourceSegmentId: sourceSegmentId, nowMs: nowMs, idPrefix: prefix)
-        {
-            return structured
-        }
-        if raw.range(of: "no action items", options: .caseInsensitive) != nil { return [] }
-        var seen = Set<String>()
-        var texts: [String] = []
-        for rawLine in raw.components(separatedBy: "\n") {
-            guard let line = acceptLenientLine(rawLine) else { continue }
-            let normalized = line.lowercased()
-            if normalized.hasPrefix("here are ") || normalized.hasPrefix("action items")
-                || normalized.hasPrefix("owner:") || normalized == "tasks" || normalized == "task"
-            {
-                continue
-            }
-            if seen.insert(line).inserted { texts.append(line) }
-        }
-        return texts.enumerated().map { index, text in
-            ActionItem(
-                id: "\(prefix)-action-\(index)", text: text, sourceSegmentId: sourceSegmentId,
-                createdAtMs: nowMs)
-        }
+        return parsed.items.compactMap(clean(_:))
     }
 
-    public static func parseStructured(
-        raw: String, fallbackSourceSegmentId: String, nowMs: Int64, idPrefix: String? = nil
-    ) -> [ActionItem]? {
-        let prefix = idPrefix ?? fallbackSourceSegmentId
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let parsed = try? JSONDecoder().decode(
-                ExtractedActionItems.self, from: Data(trimmed.utf8))
+    /// Trims, normalizes whitespace, and rejects an item that broke the contract.
+    static func clean(_ item: ExtractedFollowUp) -> ExtractedFollowUp? {
+        let task = tidy(item.task)
+        guard !task.isEmpty else { return nil }
+        // The three refusals, in the order they were earned by real output.
+        // A task carrying markdown or a field label is the model writing a document rather
+        // than an item; a task that is a bare topic has no verb to act on.
+        if task.contains("**") || task.contains("`") { return nil }
+        if task.range(of: #"(?i)\b(owner|due)\s*:"#, options: .regularExpression) != nil {
+            return nil
+        }
+        let quote = tidy(item.quote)
+        // No quote, no item. This is the single rule that removed most of the old noise.
+        guard quote.count >= 8 else { return nil }
+        let ifForgotten = tidy(item.ifForgotten)
+        guard !ifForgotten.isEmpty else { return nil }
+        return ExtractedFollowUp(
+            task: task,
+            quote: String(quote.prefix(240)),
+            ifForgotten: String(ifForgotten.prefix(200)),
+            dueDate: isoDate(item.dueDate) ?? "",
+            confidence: ["high", "medium", "low"].contains(item.confidence.lowercased())
+                ? item.confidence.lowercased() : "medium")
+    }
+
+    /// Only a real `YYYY-MM-DD` survives. Prose in a date slot ("maybe Thursday", "when she is
+    /// back") is the model telling us there is no date, and it must never become one.
+    static func isoDate(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 10,
+            trimmed.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil
         else { return nil }
-        return parsed.items.enumerated().compactMap { index, item in
-            let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
-            if task.isEmpty { return nil }
-            let owner = item.owner.trimmingCharacters(in: .whitespacesAndNewlines)
-            let due = item.due.trimmingCharacters(in: .whitespacesAndNewlines)
-            var text = task
-            if !owner.isEmpty { text += ". Owner: \(owner)" }
-            if !due.isEmpty { text += ". Due: \(due)" }
-            let source = item.sourceSegmentId.trimmingCharacters(in: .whitespacesAndNewlines)
-            return ActionItem(
-                id: "\(prefix)-action-\(index)",
-                text: text,
-                sourceSegmentId: source.isEmpty ? fallbackSourceSegmentId : source,
-                createdAtMs: nowMs)
-        }
+        return trimmed
     }
 
-    public static func displayText(_ items: [ActionItem]) -> String {
-        if items.isEmpty { return "No action items found." }
-        return items.map { "- [ ] \($0.text)" }.joined(separator: "\n")
+    static func tidy(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\u{201C}\u{201D}\""))
     }
 
-    // MARK: Lenient path (anti-B4)
-
-    /// Accept a lenient line only when, after stripping ONE expected checklist marker, no
-    /// markdown or list structure remains. The KMP parser cleaned `**bold**`/headings/numbered
-    /// markers away, which is exactly how `**Owner:**` fragments and numbered scraps reached
-    /// the UI (bug B4) — here those lines are rejected outright.
-    private static func acceptLenientLine(_ rawLine: String) -> String? {
-        var line = rawLine.trimmingCharacters(in: .whitespaces)
-        if line.isEmpty { return nil }
-        // Headings and numbered lists are off-template structure, not checklist items.
-        if line.hasPrefix("#") { return nil }
-        if line.range(of: #"^\d+[.)]\s"#, options: .regularExpression) != nil { return nil }
-        // Strip one leading checklist marker (the shape the template demands).
-        for marker in ["- [ ] ", "- [x] ", "- [X] ", "[ ] ", "[x] ", "[X] ", "- ", "* ", "+ "] {
-            if line.hasPrefix(marker) {
-                line = String(line.dropFirst(marker.count))
-                break
-            }
-        }
-        line = line.trimmingCharacters(in: .whitespaces)
-        if line.isEmpty { return nil }
-        // Residual structure after the marker ⇒ reject, never clean.
-        if containsResidualStructure(line) { return nil }
-        // Punctuation normalization only (not markdown cleaning): the canonical composition is
-        // "task. Owner: X. Due: Y".
-        line = line.replacingOccurrences(
-            of: #"\s+—\s+Owner:"#, with: ". Owner:",
-            options: [.regularExpression, .caseInsensitive])
-        line = line.replacingOccurrences(
-            of: #"\s+-\s+Owner:"#, with: ". Owner:",
-            options: [.regularExpression, .caseInsensitive])
-        line = line.replacingOccurrences(
-            of: #"\s+"#, with: " ", options: .regularExpression)
-        line = line.trimmingCharacters(in: .whitespaces)
-        return line.isEmpty ? nil : line
-    }
-
-    private static func containsResidualStructure(_ line: String) -> Bool {
-        if line.contains("**") || line.contains("__") || line.contains("`") { return true }
-        // A second list marker after the stripped one = nested list structure.
-        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ")
-            || line.hasPrefix("#")
-        {
-            return true
-        }
-        // Emphasis spans and markdown links.
-        if line.range(of: #"\*[^*\s][^*]*\*"#, options: .regularExpression) != nil { return true }
-        if line.range(of: #"\[[^\]]*]\([^)]*\)"#, options: .regularExpression) != nil {
-            return true
-        }
-        return false
+    /// Models occasionally wrap strict JSON in a fence or a sentence. Take the outermost
+    /// object rather than failing the whole call over decoration.
+    static func jsonObject(in raw: String) -> Data? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") { return Data(trimmed.utf8) }
+        guard let start = trimmed.firstIndex(of: "{"), let end = trimmed.lastIndex(of: "}"),
+            start < end
+        else { return nil }
+        return Data(trimmed[start...end].utf8)
     }
 }
 
-// MARK: - ActionItemStore (DB-backed, follow_ups table)
+// MARK: - Curation output
 
-/// Port of `FileActionItemStore`'s behavioral contract onto the `follow_ups` table, so
-/// extracted items land where FollowUpStore (and the Today card's observation) reads. Rows
-/// written here use the parser's deterministic `<prefix>-action-<i>` ids; user-added
-/// follow-ups keep their UUID ids, which is how `list()`/`deleteAll()` stay scoped to
-/// extracted items.
-public struct ActionItemStore: Sendable {
-    public let db: AppDatabase
-    private let nowMs: @Sendable () -> Int64
+/// What the curation pass decided about one candidate it was shown.
+public struct CurationDecision: Equatable, Sendable, Codable {
+    /// 1-based index into the candidate list the pass was given.
+    public var index: Int
+    /// `keep` | `drop` | `duplicate`
+    public var decision: String
+    /// One clause. Shown nowhere by default; it is what makes a dropped candidate auditable
+    /// in Diagnostics instead of a silent disappearance.
+    public var reason: String
+    /// Rewritten task text, or empty to keep what extraction wrote.
+    public var task: String
+    /// `high` | `normal` | `low`.
+    public var priority: String
+    /// `YYYY-MM-DD` or empty. May correct or clear what extraction produced.
+    public var dueDate: String
 
     public init(
-        db: AppDatabase,
-        nowMs: @escaping @Sendable () -> Int64 = {
-            Int64(Date().timeIntervalSince1970 * 1000)
-        }
+        index: Int, decision: String, reason: String = "", task: String = "",
+        priority: String = "normal", dueDate: String = ""
     ) {
-        self.db = db
-        self.nowMs = nowMs
+        self.index = index
+        self.decision = decision
+        self.reason = reason
+        self.task = task
+        self.priority = priority
+        self.dueDate = dueDate
     }
 
-    private static let extractedIdPattern = "%-action-%"
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decode(Int.self, forKey: .index)
+        decision = try c.decodeIfPresent(String.self, forKey: .decision) ?? "drop"
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
+        priority = try c.decodeIfPresent(String.self, forKey: .priority) ?? "normal"
+        dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate) ?? ""
+    }
+}
 
-    static func item(from row: Row) -> ActionItem {
-        ActionItem(
-            id: row["id"], text: row["text"], done: row["done"],
-            sourceSegmentId: row["sourceSegmentId"] ?? "",
-            sourceConversationId: row["sourceConversationId"],
-            createdAtMs: row["createdAtMs"])
+public struct CurationDecisions: Equatable, Sendable, Codable {
+    public var decisions: [CurationDecision]
+    public init(decisions: [CurationDecision]) { self.decisions = decisions }
+}
+
+public enum FollowUpCurationParser {
+    public static let schemaName = "follow_up_curation"
+
+    public static func parse(raw: String) -> [CurationDecision]? {
+        guard let data = FollowUpExtractionParser.jsonObject(in: raw),
+            let parsed = try? JSONDecoder().decode(CurationDecisions.self, from: data)
+        else { return nil }
+        return parsed.decisions
     }
 
-    /// Upserts by id (re-running extraction for a segment overwrites, never duplicates).
-    /// A zero `createdAtMs` is stamped with the store clock, matching the KMP store.
+    public static func priority(_ value: String) -> FollowUpPriority {
+        switch value.lowercased() {
+        case "high": return .high
+        case "low": return .low
+        default: return .normal
+        }
+    }
+}
+
+// MARK: - Rendering a conversation for the model
+
+/// One member recording of a conversation, with whatever the transcriber knew about who was
+/// speaking when.
+public struct FollowUpSourcePart: Equatable, Sendable {
+    public let segmentId: String
+    /// Wall-clock start of the recording.
+    public let startedAtMs: Int64
+    public let text: String
+    public let turns: [TranscriptSegment]
+
+    public init(
+        segmentId: String, startedAtMs: Int64, text: String, turns: [TranscriptSegment] = []
+    ) {
+        self.segmentId = segmentId
+        self.startedAtMs = startedAtMs
+        self.text = text
+        self.turns = turns
+    }
+}
+
+/// Where a quoted line was actually spoken.
+public struct QuoteLocation: Equatable, Sendable {
+    public let segmentId: String
+    /// Offsets inside that segment.
+    public let startMs: Int64?
+    public let endMs: Int64?
+}
+
+public enum FollowUpTranscriptRenderer {
+    /// Builds the body the model reads.
     ///
-    /// `done` is deliberately NOT part of the conflict update: `follow_ups` is an
-    /// AUTHORITATIVE table (plan Part 6.5) and `done` is user-authored, so a re-extraction
-    /// that produces the same item text must never un-tick it. The caller decides the initial
-    /// value for a genuinely new row.
-    @discardableResult
-    public func save(_ item: ActionItem) async throws -> ActionItem {
-        var stamped = item
-        if stamped.createdAtMs == 0 { stamped.createdAtMs = nowMs() }
-        let toWrite = stamped
-        try await db.writer.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO follow_ups
-                        (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        text = excluded.text,
-                        sourceConversationId = excluded.sourceConversationId,
-                        sourceSegmentId = excluded.sourceSegmentId
-                    """,
-                arguments: [
-                    toWrite.id, toWrite.text, toWrite.done, toWrite.sourceConversationId,
-                    toWrite.sourceSegmentId, toWrite.createdAtMs,
-                ]
-            )
+    /// Three things it does that the old flat rendering did not, each of which cost a real
+    /// false positive:
+    ///  • REAL LOCAL TIMES, so "tomorrow" spoken on a Sunday resolves to a Monday date instead
+    ///    of the model being handed `epoch ms 1788193751778` and guessing.
+    ///  • SPEAKER TURNS, so two adjacent sentences by two different people are not read as one
+    ///    person's promise. Flat text turned "I might try the soup" and someone else's
+    ///    "I can text you when it is ready" into a single commitment.
+    ///  • THE WHOLE CONVERSATION at once, so a loop that opens in one part and closes in
+    ///    another is visibly closed.
+    public static func render(
+        parts: [FollowUpSourcePart],
+        title: String?,
+        summary: String?,
+        recordedAt: Date,
+        timeZone: TimeZone,
+        maxChars: Int
+    ) -> String {
+        var out = "Recorded: \(dayLabel(recordedAt, timeZone))\n"
+        if let title, !title.isEmpty { out += "Conversation: \(title)\n" }
+        if let summary, !summary.isEmpty { out += "Summary so far: \(summary)\n" }
+        out += "\n"
+        for part in parts {
+            let started = Date(timeIntervalSince1970: Double(part.startedAtMs) / 1000)
+            out += "--- \(clockLabel(started, timeZone)) ---\n"
+            out += speakerLines(part) + "\n\n"
         }
-        return toWrite
+        let body = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard body.count > maxChars else { return body }
+        // Keep the END. A conversation's later parts are what close its open loops, and
+        // dropping them is what makes a finished errand look like an outstanding one.
+        return "[earlier part of this conversation omitted for length]\n"
+            + String(body.suffix(maxChars))
     }
 
-    @discardableResult
-    public func saveAll(_ items: [ActionItem]) async throws -> [ActionItem] {
-        var saved: [ActionItem] = []
-        for item in items { saved.append(try await save(item)) }
-        return saved
+    /// Speaker-turn text, collapsing consecutive turns by the same label. Falls back to the
+    /// flat transcript when the provider gave us no diarization.
+    static func speakerLines(_ part: FollowUpSourcePart) -> String {
+        guard !part.turns.isEmpty else { return part.text }
+        var lines: [String] = []
+        var current: String?
+        var buffer: [String] = []
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            let body = buffer.joined(separator: " ")
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if !body.isEmpty { lines.append("S\(current ?? "?"): \(body)") }
+            buffer = []
+        }
+        for turn in part.turns {
+            let speaker = turn.speaker ?? "?"
+            if speaker != current {
+                flush()
+                current = speaker
+            }
+            buffer.append(turn.text.trimmingCharacters(in: .whitespaces))
+        }
+        flush()
+        return lines.isEmpty ? part.text : lines.joined(separator: "\n")
     }
 
-    public func load(id: String) async throws -> ActionItem? {
-        try await db.reader.read { db in
-            try Row.fetchOne(
-                db, sql: "SELECT * FROM follow_ups WHERE id = ?", arguments: [id]
-            ).map(Self.item(from:))
-        }
+    static func dayLabel(_ date: Date, _ timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "EEEE, yyyy-MM-dd 'at' h:mm a"
+        return formatter.string(from: date)
     }
 
-    /// Extracted items only, newest first (KMP `list()` order).
-    public func list() async throws -> [ActionItem] {
-        try await db.reader.read { db in
-            try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT * FROM follow_ups WHERE id LIKE ?
-                    ORDER BY createdAtMs DESC, id
-                    """,
-                arguments: [Self.extractedIdPattern]
-            ).map(Self.item(from:))
+    static func clockLabel(_ date: Date, _ timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "EEE h:mm a"
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Grounding a quote back in the recording
+
+public enum FollowUpQuoteLocator {
+    /// Finds the recording a quoted line came from, and where inside it.
+    ///
+    /// This is why the extraction schema has no `segmentId` field. Asking a model which
+    /// segment its answer came from invites it to invent one, and an invented id strands the
+    /// row — the delete cascade removes follow-ups by segment, so a follow-up naming a segment
+    /// that does not exist outlives the recording it was drawn from. Matching the quote
+    /// locally cannot invent anything: either the words are in a transcript or the item is
+    /// not grounded and does not ship.
+    public static func locate(quote: String, in parts: [FollowUpSourcePart]) -> QuoteLocation? {
+        let needle = normalize(quote)
+        guard needle.count >= 8 else { return nil }
+        for part in parts {
+            guard normalize(part.text).contains(needle) else { continue }
+            return QuoteLocation(
+                segmentId: part.segmentId,
+                startMs: turnOffset(needle, in: part)?.start,
+                endMs: turnOffset(needle, in: part)?.end)
         }
+        // A quote can straddle a turn boundary and pick up a word the flat text renders
+        // differently. Fall back to the longest run of it that does match, so a good item is
+        // not lost to one character of punctuation.
+        let shortened = String(needle.prefix(max(24, needle.count / 2)))
+        guard shortened.count >= 12 else { return nil }
+        for part in parts where normalize(part.text).contains(shortened) {
+            return QuoteLocation(
+                segmentId: part.segmentId,
+                startMs: turnOffset(shortened, in: part)?.start,
+                endMs: turnOffset(shortened, in: part)?.end)
+        }
+        return nil
     }
 
-    @discardableResult
-    public func setDone(id: String, _ done: Bool) async throws -> ActionItem? {
-        try await db.writer.write { db in
-            try db.execute(
-                sql: "UPDATE follow_ups SET done = ? WHERE id = ?", arguments: [done, id])
-            return try Row.fetchOne(
-                db, sql: "SELECT * FROM follow_ups WHERE id = ?", arguments: [id]
-            ).map(Self.item(from:))
+    /// Offsets of the first diarized turn whose words overlap the quote — good enough to open
+    /// the player a few seconds early, which is what someone reading the item actually wants.
+    static func turnOffset(_ needle: String, in part: FollowUpSourcePart) -> (
+        start: Int64, end: Int64
+    )? {
+        guard !part.turns.isEmpty else { return nil }
+        let head = String(needle.prefix(28))
+        for turn in part.turns where normalize(turn.text).contains(head) || head.contains(normalize(turn.text)) {
+            guard !normalize(turn.text).isEmpty else { continue }
+            return (turn.startMs, turn.endMs)
         }
+        return nil
     }
 
-    public func delete(id: String) async throws {
-        try await db.writer.write { db in
-            try db.execute(sql: "DELETE FROM follow_ups WHERE id = ?", arguments: [id])
+    /// Lowercased, punctuation-free, single-spaced: enough that "I'll take Theo at 7:00." and
+    /// "I'll take Theo at 7:00" are the same words, without pretending a paraphrase is a quote.
+    static func normalize(_ text: String) -> String {
+        let stripped = text.lowercased().map { character -> Character in
+            if character.isLetter || character.isNumber { return character }
+            return " "
         }
-    }
-
-    /// Deletes every segment's extracted items. Only rows with parser-shaped ids are removed;
-    /// user-added follow-ups (UUID ids) are untouched.
-    public func deleteAll() async throws {
-        try await db.writer.write { db in
-            try db.execute(
-                sql: "DELETE FROM follow_ups WHERE id LIKE ?",
-                arguments: [Self.extractedIdPattern])
-        }
-    }
-
-    /// Deletes the extracted items sourced from one segment (the segment delete cascade).
-    public func deleteForSegment(segmentId: String) async throws {
-        try await db.writer.write { db in
-            try db.execute(
-                sql: "DELETE FROM follow_ups WHERE id LIKE ? AND sourceSegmentId = ?",
-                arguments: [Self.extractedIdPattern, segmentId])
-        }
+        return String(stripped)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
     }
 }

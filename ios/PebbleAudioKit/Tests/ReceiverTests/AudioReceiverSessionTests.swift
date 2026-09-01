@@ -1016,6 +1016,92 @@ import WireProtocol
         )
     }
 
+    /// THE REPORTED DEADLOCK. The app is authorized, the watch says it is Recording, and no
+    /// STREAM_START ever arrives — so the app holds no stream, drops every frame the watch sends,
+    /// never checkpoints (so the watch's spool overflows and the audio is really lost), and says
+    /// "Authorized and ready. Waiting for the watch to start streaming." indefinitely.
+    ///
+    /// Nothing used to notice. The other verify arm requires an open stream; the keepalive is
+    /// satisfied because a watch in this state answers every ping. Only a person toggling
+    /// Background Audio on the watch ended it.
+    @Test func aWatchRecordingIntoAVoidGetsTheLinkRebuilt() async {
+        let fx = await startSession()
+        await authorize(fx)
+        // The watch's own answer is the discriminator, and it says it is capturing.
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.streaming.rawValue
+        ).encode()
+        await fx.settle()
+        #expect(fx.session.state.value == .authorized)
+
+        for _ in 0..<3 {
+            await fx.clock.advance(by: 20_000)
+            await fx.settle()
+        }
+
+        #expect(
+            fx.link.resyncCount >= 1,
+            "a watch that is recording while we hold no stream must force a fresh session"
+        )
+    }
+
+    /// The mirror image, which must NOT resync: the watch is authorized and simply not capturing.
+    /// That is the ordinary idle link — paused, Background Audio off, or between recordings — and
+    /// rebuilding it every forty seconds would be a permanent reconnect loop.
+    @Test func anIdleWatchWithNoStreamIsNotAFault() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo(
+            serviceStateRaw: ServiceState.authorizedIdle.rawValue
+        ).encode()
+        await fx.settle()
+
+        // A healthy idle watch answers the keepalive, so only the no-stream arm is under test.
+        var acked = 0
+        for _ in 0..<130 {
+            await fx.clock.advance(by: 1_000)
+            await fx.settle()
+            let pings = fx.writes().compactMap { $0 as? ReceiverHealth }
+            for ping in pings.dropFirst(acked) {
+                fx.link.pushControl(Ack(requestToken: ping.requestToken, statusRaw: 0))
+            }
+            acked = pings.count
+            await fx.settle()
+        }
+
+        #expect(fx.link.resyncCount == 0, "an idle watch is not a fault")
+        #expect(fx.session.state.value == .authorized)
+    }
+
+    /// Audio arriving for a stream we never learned about is the loudest possible proof of the
+    /// deadlock: the watch is spending battery encoding and sending, and every frame goes on the
+    /// floor. It must be counted as loss, must NOT refresh the recording evidence, and must force
+    /// a fresh session even if the watch's Info read never resolves.
+    @Test func audioWithNoStreamToAttachItIsCountedAndForcesARebuild() async {
+        let fx = await startSession()
+        await authorize(fx)
+        // The watch says nothing at all when asked; the orphaned audio has to carry the case.
+        fx.link.failInfoReads = true
+
+        fx.link.pushData(data(0, 4))
+        await fx.settle()
+        #expect(fx.session.orphanedFrameCount.value == 4)
+        #expect(
+            fx.session.streamEvidence.value.lastAudioAtMs == nil,
+            "audio we threw away is not evidence that recording is working"
+        )
+        #expect(fx.sink.events.isEmpty, "nothing may be stored without a stream")
+
+        for _ in 0..<3 {
+            await fx.clock.advance(by: 20_000)
+            await fx.settle()
+            fx.link.pushData(data(4, 2))
+            await fx.settle()
+        }
+
+        #expect(fx.link.resyncCount >= 1, "audio with nowhere to go must rebuild the link")
+    }
+
     /// ...and the mirror image, which must NOT resync: a quiet room. The watch answers every
     /// verify with `streaming`, so the silence is voice-activity suppression and the link is
     /// fine. Rebuilding it would interrupt a recording for nothing.

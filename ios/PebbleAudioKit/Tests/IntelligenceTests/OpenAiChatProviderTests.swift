@@ -53,7 +53,7 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
 @Suite struct OpenAiChatProviderTests {
 
     private func request(
-        prompt: AiPromptTemplate = AiPromptTemplates.actionItems
+        prompt: AiPromptTemplate = AiPromptTemplates.followUpExtraction
     ) -> AiRunRequest {
         AiRunRequest(
             requestId: "ai-1",
@@ -140,9 +140,55 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
         #expect(compactBody.contains("\"text\""))
         #expect(compactBody.contains("\"format\""))
         #expect(compactBody.contains("\"type\":\"json_schema\""))
-        #expect(compactBody.contains("\"name\":\"action_items\""))
+        #expect(compactBody.contains("\"name\":\"follow_ups\""))
         #expect(compactBody.contains("\"strict\":true"))
-        #expect(compactBody.contains("\"sourceSegmentId\""))
+        #expect(compactBody.contains("\"ifForgotten\""))
+        // No owner field, and no segment id for the model to invent: the segment is found by
+        // matching the quote against the transcripts we already hold.
+        #expect(!compactBody.contains("\"owner\""))
+        #expect(!compactBody.contains("\"sourceSegmentId\""))
+    }
+
+    /// One job may ask for a stronger model and more thinking than the person's global
+    /// setting. Follow-up extraction does; nothing else in the app does.
+    @Test func aRequestMayNameItsOwnModelAndEffort() async throws {
+        let transport = RecordingTransport { _ in
+            HttpTransportResponse(
+                status: 200,
+                text: #"{"output_text": "{\"items\":[]}", "model": "gpt-5.6-terra"}"#)
+        }
+        let provider = OpenAiChatAiProvider(
+            transport: transport, apiKey: { "test-key" }, remoteConsent: { true },
+            model: { "gpt-5.6-luna" })
+
+        let result = try await provider.run(
+            AiRunRequest(
+                requestId: "ai-2",
+                prompt: AiPromptTemplates.followUpExtraction,
+                transcripts: [TranscriptExcerpt(segmentId: "seg-1", text: "Words.")],
+                metadata: [
+                    AiRunRequest.modelKey: "gpt-5.6-terra",
+                    AiRunRequest.reasoningEffortKey: "medium",
+                ]))
+
+        let compactBody = bodyText(transport.last).filter { !$0.isWhitespace }
+        #expect(compactBody.contains("\"model\":\"gpt-5.6-terra\""))
+        #expect(compactBody.contains("\"effort\":\"medium\""))
+        #expect(result.modelUsed == "gpt-5.6-terra")
+    }
+
+    @Test func withoutAnOverrideTheGlobalModelAndEffortAreUsed() async throws {
+        let transport = RecordingTransport { _ in
+            HttpTransportResponse(
+                status: 200, text: #"{"output_text": "Plain summary"}"#)
+        }
+        let provider = OpenAiChatAiProvider(
+            transport: transport, apiKey: { "test-key" }, remoteConsent: { true },
+            model: { "gpt-5.6-luna" })
+        _ = try await provider.run(request(prompt: AiPromptTemplates.dailySummary))
+        let compactBody = bodyText(transport.last).filter { !$0.isWhitespace }
+        #expect(compactBody.contains("\"model\":\"gpt-5.6-luna\""))
+        #expect(compactBody.contains("\"effort\":\"low\""))
     }
 
     @Test func nonActionTemplatesDoNotRequestJsonSchema() async throws {

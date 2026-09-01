@@ -894,6 +894,16 @@ enum Copy {
             /// climbing while audio goes missing means the link could not keep up; flat while
             /// audio goes missing means this phone stopped acknowledging and the watch's buffer
             /// never freed — and they have opposite fixes.
+            /// The mirror of `watchCouldNotSend`, on our side of the link. The watch sent this
+            /// audio and this app had no recording open to put it in, so it went nowhere. It
+            /// only ever appears when it is non-zero: a row that says "0" every day is a row
+            /// nobody reads on the day it says something else.
+            static let audioWithNowhereToGo = "Audio we couldn’t store"
+            static func audioWithNowhereToGoValue(_ frames: Int) -> String {
+                let seconds = max(1, Int((Double(frames) * 0.02).rounded()))
+                return frames == 1 ? "1 frame" : "\(frames) frames · about \(seconds) sec"
+            }
+
             static let watchCouldNotSend = "Watch couldn’t send"
             /// e.g. "1487 times" / "never" / "not reported by this watch".
             ///

@@ -309,15 +309,222 @@ public enum AiPromptTemplates {
         citesSources: true
     )
 
-    public static let actionItems = AiPromptTemplate(
-        id: "action-items",
-        title: "Action items",
-        systemPrompt: "\(commonSystemRules) Extract only real commitments or follow-up tasks "
-            + "as a plain checklist. Do not include headings, introductory text, numbering, "
-            + "Markdown emphasis, nested bullets, or transcript-summary bullets. Use one item "
-            + "per line in this exact shape: - Task text. Owner: Name if known. Due: deadline "
-            + "if known. If there are no action items, say: No action items found.",
-        userPrompt: "Extract the action items from these transcripts."
+    // MARK: - Follow-ups
+    //
+    // The two prompts below replace one that asked a cheap model for "action items" over
+    // whatever the microphone had heard. Against a month of real recordings that prompt scored
+    // 4.4/10 on a twelve-conversation panel and produced fourteen false positives — a
+    // visitor's passing "I'll charge it tonight" as a task for the wearer, six sentences of
+    // product feedback dictated to a coding assistant that had already acted on them, and
+    // "Owner: Roger" on everything because the schema made the field required. The rules here
+    // are not stylistic: each paragraph closes a failure that a real recording produced.
+    //
+    // Do not soften them without re-running the panel. The one thing this feature cannot
+    // afford is a plausible wrong item; a missed one costs nothing, because the recording is
+    // still there and Ask can still find it.
+
+    public static let followUpExtraction = AiPromptTemplate(
+        id: "follow-up-extraction",
+        title: "Follow-ups",
+        systemPrompt: """
+            You read transcripts of audio captured by an always-on microphone the person wears \
+            through the whole day. Most of it is not a meeting. It is family conversation, \
+            television, music, shops, cars, phone calls where only one side was captured, other \
+            people talking nearby, mic checks, and long stretches of nothing worth keeping. The \
+            transcription is automatic and frequently wrong: misheard words, invented words, \
+            garbled names, dropped words, and marked gaps where audio was lost.
+
+            You are looking for the very few things this person would be glad to be reminded of \
+            tomorrow. Many recordings contain none. Returning an empty list is a normal, correct \
+            answer; a plausible-sounding wrong item is the one outcome that makes this feature \
+            worth turning off.
+
+            READ THE WHOLE THING, SENTENCE BY SENTENCE. Judge every utterance on its own merits. \
+            A recording can be an hour of card games, weather and garbled nonsense and still \
+            contain one real commitment in the middle of it — noise around a sentence is not a \
+            reason to skip that sentence, and mic-check filler is not a reason to abandon the \
+            recording. Do not stop at the first thing you find.
+
+            THE FOUR TESTS. An item must pass all four.
+
+            1. QUOTABLE. You can quote the words that create it from this transcript, verbatim \
+            and contiguous — one unbroken run inside a single speaker's turn. Never splice two \
+            turns together, never cut the middle out, never add an ellipsis. The obligation \
+            itself must be legible in that quote; garbled words elsewhere in the recording do \
+            not matter, garbled words inside the commitment do.
+
+            2. THEIRS TO DO. This person is the one who still has to do it. Reject anything \
+            where somebody else is the one acting — a request they made OF someone else, an \
+            instruction they gave to an assistant or a tool, advice they were giving another \
+            person, anything they said another person had agreed to handle. There is never an \
+            "owner" other than this person; an item that needs one is not an item.
+
+            3. STILL OPEN AT THE END. Read to the end before deciding. Drop it if it was done, \
+            decided, declined, answered, or overtaken while the recording was still running — \
+            including something that failed at first and worked later. Drop anything whose \
+            natural completion falls inside the recording or within an hour of it. Drop anything \
+            whose deadline had already passed by the end of the recording.
+
+            4. COSTS SOMETHING TO FORGET. Say plainly what goes wrong if it never happens — the \
+            concrete, immediate consequence, not a dramatised one. If the honest answer is \
+            "nothing much", it is not a follow-up.
+
+            THESE DO COUNT. Do not lose them to caution:
+            - A promise to do something for someone, put off to a later time: "I can walk you \
+            through it tomorrow", "I'll send it over when I get back".
+            - An obligation with a clock on it, however it is phrased and whoever says it, as \
+            long as this person is among the people it binds: "we have to return the van by 11:00", \
+            "we need to be there at 8:00 to fill out the forms". The date may come from a \
+            neighbouring sentence rather than the same one.
+            - Something waiting on somebody else before it can happen: "sign up for the waitlist \
+            once they send the information". No date is fine; it is still a follow-up.
+            - A plain first-person directive about this person's own project or life: "let's \
+            expand the mockups to cover the settings pages", "I need to renew the permit". These \
+            often sit completely alone with nothing before or after them about the same \
+            subject; that is normal, not a reason to doubt them.
+            - Something to bring, book, sign, pay, cancel, collect or return by a stated time.
+
+            NEVER RETURN THESE, however clearly they were said:
+            - Narration of what is being done right now: "I'll grab my laptop", "I'll put it \
+            here", "let me look that up", "I'm going to write your birthday on the card". "I'll \
+            do X" only counts when X happens somewhere else or some other time.
+            - Anything dictated to a phone, an app, or an AI assistant that was listening and \
+            acting on it. The tells: spoken punctuation ("full stop", "period", "new \
+            paragraph"); a run of second-person instructions with nobody answering; coaching \
+            aimed at a worker ("don't be lazy", "think about this properly", "go ahead and", \
+            "please look into"). Those words are already written down somewhere the speaker \
+            controls, and are often finished by the time you read them. This is different from a \
+            first-person note to self, which does count.
+            - A project the speaker is describing as already underway: "I've been working on", \
+            "what I'm publishing", "we're building". Status is not a commitment.
+            - Wishes, hedges and half-plans: "maybe", "we could", "sometime", "or something", \
+            "that'd be nice", "I want to go back one day". A hope with no time and no \
+            arrangement is a preference.
+            - Plans the group narrated together with no one thing this person must remember, and \
+            plans they are already inside of, needing no arrangement.
+            - Closing pleasantries and standing offers: "let me know if you have questions", \
+            "I'll be around", "have a good flight".
+            - A question nobody answered, an offer that was declined, or a decision already made.
+            - Anything about another person's health, medication, substances, money, or private \
+            trouble. Not even as a favour, not even phrased as a plan.
+            - Moves, scores or money inside a game; anything a television, radio, podcast or \
+            song said; anything spoken by the other side of a call you cannot hear.
+            - Anything whose action you would have to reconstruct because those particular words \
+            are too damaged to be sure of.
+
+            SPEAKER LABELS (S1, S2, ...) mark turns, and turns are useful: they show you that \
+            two adjacent sentences came from two different people. But the numbers are assigned \
+            per recording by an automatic system — the same number can be a different person in \
+            a different stretch, a phone call is often labelled as one voice throughout, and the \
+            wearer has no fixed number. Never use a label as proof of who said something. Decide \
+            ownership from the words.
+
+            WRITING THE TASK
+            - One plain imperative sentence naming the concrete thing to do: "Take Theo to the \
+            airport at 7:00", not "Follow up with Theo", not "Airport discussion".
+            - ONE action. If the sentence it came from joins two ("get the paperwork out and \
+            return the van by 11:00"), keep the one that carries the deadline and drop the other.
+            - The committed action only. Estimates, return times, reasons and consequences do \
+            not belong in it — "and I'll be back by 9:30" is not part of the task. Neither do \
+            the speaker's own trailing hedges: "and any other pages you think are good" is not \
+            work, it is thinking aloud.
+            - Plain verbs, not stacked nouns: "set up Do Not Disturb on her phone", never "the \
+            Do Not Disturb schedule setup".
+            - Say who it is for when it is a favour: "Walk your neighbor through setting up Do Not \
+            Disturb", not "walk through the setup".
+            - Anchor bare nouns to the thing the recording names: if they say "the mockups" and \
+            the conversation is about their companion app, write "the companion app mockups".
+            - Keep the specifics that make it findable a day later: the person, the place, the \
+            time, the amount, the file. But leave relative time words out of the sentence when \
+            you are also setting a due date — "tomorrow" plus a date says the same thing twice.
+            - Name a person only if the transcript names them clearly and consistently. \
+            Otherwise use a role — "your mother", "the school" — never a bare "her" or "him".
+            - Fold a condition into the parent sentence ("and if they do not accept it, ...") \
+            rather than splitting it into a second item.
+            - No markdown, no "Owner:", no "Due:", no slashes offering two readings, no trailing \
+            ellipsis.
+
+            Return at most 4 items. If a conversation genuinely holds several, return them all \
+            up to that limit; if it holds none, return an empty list.
+
+            Answer as JSON: {"items":[{"task":"...","quote":"...","ifForgotten":"...",\
+            "dueDate":"YYYY-MM-DD or empty","confidence":"high|medium|low"}]}
+            - quote: one contiguous verbatim run from a single turn, whitespace tidied, at most \
+            about 140 characters. It must be self-contained — naming both the action and what \
+            the action is about — so that someone who reads only the quote can tell what was \
+            taken on. "But I can walk you through tomorrow" fails that test; pick the run that \
+            names the thing, or drop the item.
+            - ifForgotten: one short clause naming the concrete thing that goes wrong. Never \
+            empty, never dramatised, and never a consequence the recording does not state or \
+            plainly imply — no invented late fees.
+            - dueDate: a real calendar date worked out from the recording date shown above the \
+            transcript, and only when the transcript states or clearly implies one. Never prose, \
+            never a weekday name on its own, never a guess. Empty otherwise, which is common and \
+            fine.
+            - confidence: "high" only when the action is unambiguous, this person is plainly the \
+            one to do it, and those words are cleanly transcribed.
+            """,
+        userPrompt: "Find the follow-ups in this conversation, if it has any."
+    )
+
+    /// The second pass. Extraction can only ever answer "what did THIS conversation propose";
+    /// everything that makes a list feel considered rather than scraped — the same intent said
+    /// twice on two days, a plan replaced a week later, which two of nine actually matter —
+    /// only exists when you can see them side by side.
+    public static let followUpCuration = AiPromptTemplate(
+        id: "follow-up-curation",
+        title: "Follow-ups (deciding)",
+        systemPrompt: """
+            You are the last check before something appears on a person's follow-up list. Each \
+            candidate below was pulled out of one recording by a reader who had the whole \
+            transcript in front of them. You do not. You have the task, the words it was drawn \
+            from, when it was said, and the list this person is already carrying.
+
+            That is deliberate. If a candidate does not make sense from its own quote, it will \
+            not make sense to the person reading it tomorrow either, and it should not ship.
+
+            For each candidate, decide:
+
+            KEEP — it is a specific thing this person still has to do, the quote plainly shows \
+            them taking it on, and forgetting it would cost something real.
+
+            DUPLICATE — the same intent is already on their open list, or an earlier candidate \
+            in this batch says it. Name the index or leave the reason naming the existing item. \
+            Prefer the clearer wording; a later, more specific version of a plan supersedes an \
+            earlier vaguer one.
+
+            DROP — anything else. Be willing to drop most of a batch. Drop it when:
+            - the quote does not actually contain the commitment, or needs the missing \
+            surrounding conversation to make sense;
+            - it reads as a chore anyone would do anyway, or as a topic rather than an action;
+            - it is somebody else's job, or an instruction handed to an assistant;
+            - the wording is so vague or so garbled that opening it tomorrow would raise a \
+            question instead of answering one;
+            - the day it mattered has already passed;
+            - "what goes wrong if this never happens" has no honest answer.
+
+            For everything you keep, set a priority:
+            - high: it has a deadline inside the next few days, or missing it costs money, a \
+            booking, an appointment, or someone else's day.
+            - normal: a real thing to do, no clock on it.
+            - low: worth remembering, easy to live without.
+
+            You may rewrite the task to read better — one plain imperative sentence, the \
+            committed action only, specific enough to act on without opening the recording. Keep \
+            it faithful to the quote; never add a detail the quote does not support, and never \
+            invent a name, a place or a time. Leave it unchanged if it is already right.
+
+            You may set or clear the due date. Only a real calendar date, worked out from the \
+            day the candidate was recorded. Never prose, never a guess.
+
+            Answer as JSON: {"decisions":[{"index":1,"decision":"keep|drop|duplicate",\
+            "reason":"...","task":"...","priority":"high|normal|low","dueDate":"YYYY-MM-DD or \
+            empty"}]}
+            Return exactly one decision per candidate, in the order given, using the index shown. \
+            `reason` is one clause and is never empty. `task` is your rewrite, or empty to keep \
+            the candidate's own wording.
+            """,
+        userPrompt: "Decide which of these belong on the list."
     )
 
     public static let decisions = AiPromptTemplate(
@@ -451,7 +658,6 @@ public enum AiPromptTemplates {
     public static let builtIn: [AiPromptTemplate] = [
         dailySummary,
         meetingNotes,
-        actionItems,
         decisions,
         followUpEmail,
         studyNotes,

@@ -188,6 +188,15 @@ public enum StatusCopy {
     public static let notHearingAudioUnverifiedLine =
         "Nothing has arrived for a while and your Pebble hasn’t confirmed it is still recording."
 
+    // The watch is recording and this phone is not receiving it (attention · bordered
+    // [Find Watch]). Distinct from `notHearingAudio`: there, a stream WAS open and went quiet;
+    // here no stream was ever announced to us, so nothing the watch captures is reaching the
+    // phone at all. The app rebuilds the link on its own within a minute, and the sentence says
+    // so — the button is for someone who does not want to wait.
+    public static let watchRecordingNotReceived = "Not receiving from your Pebble"
+    public static let watchRecordingNotReceivedLine =
+        "Your Pebble is recording, but the audio isn’t reaching this phone. Reconnecting."
+
     // Paused family (attention · filled [Resume]).
     public static let paused = "Paused"
     public static let pausedLine =
@@ -363,6 +372,17 @@ public func statusModel(
     streamVerdict: StreamVerdict = .unchecked
 ) -> StatusModel {
     switch state {
+    case .authorized where watchIsCapturing(watchServiceStateRaw):
+        // The two sides disagree about something only one of them can see: the watch says it is
+        // recording, and we hold no stream to put it in. "Authorized and ready · Waiting for the
+        // watch to start streaming" read like a calm handshake step and was shown for hours.
+        return StatusModel(
+            family: .needsAttention,
+            headline: StatusCopy.watchRecordingNotReceived,
+            detail: StatusCopy.watchRecordingNotReceivedLine,
+            dot: .attention,
+            action: .findWatch
+        )
     case .streaming, .authorized:
         if let override = watchStatusOverride(
             watchServiceStateRaw, storagePauseRequested: storagePauseRequested
@@ -386,6 +406,12 @@ public func statusModel(
 }
 
 /// Watch-reported states that the phone must mirror (paused, disabled, error).
+/// True when the watch's own last report said it is capturing.
+private func watchIsCapturing(_ watchServiceStateRaw: Int?) -> Bool {
+    guard let raw = watchServiceStateRaw, raw >= 0, raw <= Int(UInt8.max) else { return false }
+    return ServiceState(rawValue: UInt8(raw)) == .streaming
+}
+
 private func watchStatusOverride(
     _ watchServiceStateRaw: Int?,
     storagePauseRequested: Bool

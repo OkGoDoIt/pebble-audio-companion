@@ -534,8 +534,14 @@ final class RuntimeFixture: @unchecked Sendable {
                 annotations: annotations, router: nil, nowMs: { clock.nowMs }
             ),
             followUps: FollowUpWorker(
-                items: ActionItemStore(db: database, nowMs: { clock.nowMs }),
+                candidates: FollowUpCandidateStore(db: database),
                 state: try FollowUpExtractionStore(db: database),
+                router: nil,
+                nowMs: { clock.nowMs }
+            ),
+            curator: FollowUpCurator(
+                candidates: FollowUpCandidateStore(db: database),
+                followUps: followUps,
                 router: nil,
                 nowMs: { clock.nowMs }
             ),
@@ -572,6 +578,7 @@ final class RuntimeFixture: @unchecked Sendable {
             annotations: annotations,
             aiOutputs: aiOutputs,
             followUps: followUps,
+            candidates: FollowUpCandidateStore(db: database),
             recaps: recap,
             enrichment: enrichment,
             index: index,

@@ -34,17 +34,76 @@ public struct ConversationTag: Equatable, Sendable {
     }
 }
 
-public struct FollowUp: Equatable, Sendable {
+/// How much a follow-up wants to be looked at. Set by the curation pass, overridable by the
+/// person — never inferred from age, which is what `archivedAtMs` is for.
+public enum FollowUpPriority: Int, Equatable, Sendable, CaseIterable, Codable {
+    case low = 0
+    case normal = 1
+    case high = 2
+}
+
+/// Who put the item on the list. Replaces the old "does the id contain `-action-`" test: that
+/// was a guess about a string, this is a fact about a row — and it is what stops a
+/// re-extraction from touching something the person typed themselves.
+public enum FollowUpOrigin: String, Equatable, Sendable, Codable {
+    case ai
+    case user
+}
+
+/// Which slice of the list a query wants. `open` is what the app shows by default: not done,
+/// not archived, and not snoozed past the given clock.
+public enum FollowUpScope: Equatable, Sendable {
+    case open
+    case completed
+    case archived
+    case all
+}
+
+public struct FollowUp: Equatable, Sendable, Identifiable {
     public var id: String
     public var text: String
     public var done: Bool
     public var sourceConversationId: String?
     public var sourceSegmentId: String?
     public var createdAtMs: Int64
+    /// The words in the recording that created this item, verbatim. The single most useful
+    /// thing the detail screen can show: it is the difference between "the app decided this"
+    /// and "you said this, here it is".
+    public var quote: String?
+    /// What goes wrong if it never happens, in the extractor's own words. This is the
+    /// gate that killed most of the old false positives — an item nobody can name a cost for
+    /// is not a follow-up — and it doubles as the honest line the detail screen shows.
+    public var why: String?
+    /// Resolved deadline, start of that day in the capture time zone. Nil is the common case.
+    public var dueAtMs: Int64?
+    public var priority: FollowUpPriority
+    /// Offsets INSIDE `sourceSegmentId` where the quote was spoken, so the detail screen can
+    /// open the recording at the moment rather than at the top.
+    public var sourceStartMs: Int64?
+    public var sourceEndMs: Int64?
+    public var completedAtMs: Int64?
+    /// Set when the item left the working list — by the age rule or by hand. Archived is not
+    /// deleted: nothing the person may have acted on disappears without them saying so.
+    public var archivedAtMs: Int64?
+    public var snoozedUntilMs: Int64?
+    /// Set the moment the person edits the text. Extraction never overwrites an edited row.
+    public var editedAtMs: Int64?
+    public var origin: FollowUpOrigin
 
     public init(
         id: String, text: String, done: Bool, sourceConversationId: String?,
-        sourceSegmentId: String?, createdAtMs: Int64
+        sourceSegmentId: String?, createdAtMs: Int64,
+        quote: String? = nil,
+        why: String? = nil,
+        dueAtMs: Int64? = nil,
+        priority: FollowUpPriority = .normal,
+        sourceStartMs: Int64? = nil,
+        sourceEndMs: Int64? = nil,
+        completedAtMs: Int64? = nil,
+        archivedAtMs: Int64? = nil,
+        snoozedUntilMs: Int64? = nil,
+        editedAtMs: Int64? = nil,
+        origin: FollowUpOrigin = .ai
     ) {
         self.id = id
         self.text = text
@@ -52,6 +111,30 @@ public struct FollowUp: Equatable, Sendable {
         self.sourceConversationId = sourceConversationId
         self.sourceSegmentId = sourceSegmentId
         self.createdAtMs = createdAtMs
+        self.quote = quote
+        self.why = why
+        self.dueAtMs = dueAtMs
+        self.priority = priority
+        self.sourceStartMs = sourceStartMs
+        self.sourceEndMs = sourceEndMs
+        self.completedAtMs = completedAtMs
+        self.archivedAtMs = archivedAtMs
+        self.snoozedUntilMs = snoozedUntilMs
+        self.editedAtMs = editedAtMs
+        self.origin = origin
+    }
+
+    public var isArchived: Bool { archivedAtMs != nil }
+
+    /// Snoozed past `nowMs` — still open, deliberately out of sight until then.
+    public func isSnoozed(at nowMs: Int64) -> Bool {
+        guard let snoozedUntilMs else { return false }
+        return snoozedUntilMs > nowMs
+    }
+
+    /// On the working list right now: not done, not archived, not snoozed.
+    public func isActive(at nowMs: Int64) -> Bool {
+        !done && !isArchived && !isSnoozed(at: nowMs)
     }
 }
 
@@ -389,75 +472,228 @@ public struct FollowUpStore: Sendable {
         FollowUp(
             id: row["id"], text: row["text"], done: row["done"],
             sourceConversationId: row["sourceConversationId"],
-            sourceSegmentId: row["sourceSegmentId"], createdAtMs: row["createdAtMs"])
+            sourceSegmentId: row["sourceSegmentId"], createdAtMs: row["createdAtMs"],
+            quote: row["quote"],
+            why: row["why"],
+            dueAtMs: row["dueAtMs"],
+            priority: FollowUpPriority(rawValue: row["priority"] ?? 1) ?? .normal,
+            sourceStartMs: row["sourceStartMs"],
+            sourceEndMs: row["sourceEndMs"],
+            completedAtMs: row["completedAtMs"],
+            archivedAtMs: row["archivedAtMs"],
+            snoozedUntilMs: row["snoozedUntilMs"],
+            editedAtMs: row["editedAtMs"],
+            origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai)
     }
 
+    /// Every column, in one place, so `add` and `upsert` cannot drift apart.
+    private static let insertSQL = """
+        INSERT INTO follow_ups
+            (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs,
+             quote, why, dueAtMs, priority, sourceStartMs, sourceEndMs,
+             completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+    private static func arguments(_ item: FollowUp) -> StatementArguments {
+        [
+            item.id, item.text, item.done, item.sourceConversationId, item.sourceSegmentId,
+            item.createdAtMs, item.quote, item.why, item.dueAtMs, item.priority.rawValue,
+            item.sourceStartMs, item.sourceEndMs, item.completedAtMs, item.archivedAtMs,
+            item.snoozedUntilMs, item.editedAtMs, item.origin.rawValue,
+        ]
+    }
+
+    /// A follow-up the person wrote themselves. `origin: .user` is load-bearing — it is what
+    /// keeps curation and the age rule off it.
     @discardableResult
     public func add(
         text: String, conversationId: String? = nil, segmentId: String? = nil,
+        dueAtMs: Int64? = nil, priority: FollowUpPriority = .normal,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> FollowUp {
         let item = FollowUp(
             id: UUID().uuidString.lowercased(), text: text, done: false,
-            sourceConversationId: conversationId, sourceSegmentId: segmentId, createdAtMs: nowMs)
+            sourceConversationId: conversationId, sourceSegmentId: segmentId, createdAtMs: nowMs,
+            dueAtMs: dueAtMs, priority: priority, origin: .user)
         try await db.writer.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO follow_ups
-                        (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                arguments: [item.id, item.text, item.done, conversationId, segmentId, nowMs]
-            )
+            try db.execute(sql: Self.insertSQL, arguments: Self.arguments(item))
         }
         return item
     }
 
-    /// Open first then done, newest first within each; `done: nil` lists everything.
-    public func list(done: Bool? = nil) async throws -> [FollowUp] {
-        try await db.reader.read { db in
-            let rows: [Row]
-            if let done {
-                rows = try Row.fetchAll(
-                    db,
-                    sql: "SELECT * FROM follow_ups WHERE done = ? ORDER BY createdAtMs DESC, id",
-                    arguments: [done])
-            } else {
-                rows = try Row.fetchAll(
-                    db, sql: "SELECT * FROM follow_ups ORDER BY done ASC, createdAtMs DESC, id")
-            }
-            return rows.map(Self.followUp(from:))
+    /// Writes an item the curation pass decided to keep.
+    ///
+    /// The conflict clause is deliberately narrow. `done`, `completedAtMs`, `archivedAtMs`,
+    /// `snoozedUntilMs` and an edited `text` are the person's answer to the item, and a second
+    /// pass over the same conversation must never overwrite an answer: re-running extraction
+    /// cannot un-tick, un-archive, un-snooze, or un-edit anything.
+    public func upsertExtracted(_ item: FollowUp) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: Self.insertSQL + """
+                    \nON CONFLICT(id) DO UPDATE SET
+                        text = CASE WHEN follow_ups.editedAtMs IS NULL
+                                    THEN excluded.text ELSE follow_ups.text END,
+                        quote = excluded.quote,
+                        why = excluded.why,
+                        dueAtMs = excluded.dueAtMs,
+                        priority = excluded.priority,
+                        sourceConversationId = excluded.sourceConversationId,
+                        sourceSegmentId = excluded.sourceSegmentId,
+                        sourceStartMs = excluded.sourceStartMs,
+                        sourceEndMs = excluded.sourceEndMs
+                    """,
+                arguments: Self.arguments(item))
         }
     }
 
+    public func load(id: String) async throws -> FollowUp? {
+        try await db.reader.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM follow_ups WHERE id = ?", arguments: [id])
+                .map(Self.followUp(from:))
+        }
+    }
+
+    /// `open` excludes done, archived and still-snoozed rows; `completed` is done-and-not-
+    /// archived; `archived` is everything that left the working list; `all` is the table.
+    ///
+    /// Ordering matches how each slice is read: open by due date then priority then newest,
+    /// completed and archived newest-first.
+    public func list(
+        scope: FollowUpScope = .open,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> [FollowUp] {
+        try await db.reader.read { db in
+            let sql: String
+            let arguments: StatementArguments
+            switch scope {
+            case .open:
+                sql = """
+                    SELECT * FROM follow_ups
+                    WHERE done = 0 AND archivedAtMs IS NULL
+                      AND (snoozedUntilMs IS NULL OR snoozedUntilMs <= ?)
+                    ORDER BY (dueAtMs IS NULL), dueAtMs, priority DESC, createdAtMs DESC, id
+                    """
+                arguments = [nowMs]
+            case .completed:
+                sql = """
+                    SELECT * FROM follow_ups
+                    WHERE done = 1 AND archivedAtMs IS NULL
+                    ORDER BY COALESCE(completedAtMs, createdAtMs) DESC, id
+                    """
+                arguments = []
+            case .archived:
+                sql = """
+                    SELECT * FROM follow_ups WHERE archivedAtMs IS NOT NULL
+                    ORDER BY archivedAtMs DESC, id
+                    """
+                arguments = []
+            case .all:
+                sql = "SELECT * FROM follow_ups ORDER BY done ASC, createdAtMs DESC, id"
+                arguments = []
+            }
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.followUp(from:))
+        }
+    }
+
+    /// Snoozed items included: on a conversation's own screen, hiding one of its follow-ups
+    /// because it was put off until Thursday would just look like the app lost it.
     public func list(conversationId: String) async throws -> [FollowUp] {
         try await db.reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
                     SELECT * FROM follow_ups WHERE sourceConversationId = ?
-                    ORDER BY done ASC, createdAtMs DESC, id
+                    ORDER BY done ASC, archivedAtMs IS NOT NULL, createdAtMs DESC, id
                     """,
                 arguments: [conversationId]
             ).map(Self.followUp(from:))
         }
     }
 
-    /// Flips done state; returns the new value.
+    /// Flips done state; returns the new value. Ticking stamps the completion time, un-ticking
+    /// clears it, and either way the item comes back out of the archive — you cannot act on
+    /// something the app has filed away.
     @discardableResult
-    public func toggle(id: String) async throws -> Bool {
+    public func toggle(
+        id: String, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Bool {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET done = NOT done WHERE id = ?", arguments: [id])
+                sql: """
+                    UPDATE follow_ups
+                    SET done = NOT done,
+                        completedAtMs = CASE WHEN done = 0 THEN ? ELSE NULL END,
+                        archivedAtMs = NULL
+                    WHERE id = ?
+                    """,
+                arguments: [nowMs, id])
             return try Bool.fetchOne(
                 db, sql: "SELECT done FROM follow_ups WHERE id = ?", arguments: [id]) ?? false
         }
     }
 
-    public func setDone(id: String, _ done: Bool) async throws {
+    public func setDone(
+        id: String, _ done: Bool, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET done = ? WHERE id = ?", arguments: [done, id])
+                sql: """
+                    UPDATE follow_ups
+                    SET done = ?, completedAtMs = ?, archivedAtMs = NULL
+                    WHERE id = ?
+                    """,
+                arguments: [done, done ? nowMs : nil, id])
+        }
+    }
+
+    /// A hand-edit. Stamping `editedAtMs` is what makes the edit survive re-extraction.
+    public func setText(
+        id: String, _ text: String, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "UPDATE follow_ups SET text = ?, editedAtMs = ? WHERE id = ?",
+                arguments: [text, nowMs, id])
+        }
+    }
+
+    public func setDue(id: String, _ dueAtMs: Int64?) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "UPDATE follow_ups SET dueAtMs = ? WHERE id = ?", arguments: [dueAtMs, id])
+        }
+    }
+
+    public func setPriority(id: String, _ priority: FollowUpPriority) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "UPDATE follow_ups SET priority = ? WHERE id = ?",
+                arguments: [priority.rawValue, id])
+        }
+    }
+
+    /// Put off until `untilMs` (nil clears it). Snoozing also un-archives, so "not now" and
+    /// "not ever" stay different answers.
+    public func snooze(id: String, until untilMs: Int64?) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups SET snoozedUntilMs = ?, archivedAtMs = NULL WHERE id = ?
+                    """,
+                arguments: [untilMs, id])
+        }
+    }
+
+    public func setArchived(
+        id: String, _ archived: Bool,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "UPDATE follow_ups SET archivedAtMs = ? WHERE id = ?",
+                arguments: [archived ? nowMs : nil, id])
         }
     }
 
@@ -467,19 +703,58 @@ public struct FollowUpStore: Sendable {
         }
     }
 
-    /// "See all N" — count of open follow-ups.
-    public func openCount() async throws -> Int {
-        try await db.reader.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM follow_ups WHERE done = 0") ?? 0
+    /// The age rule, run by the pipeline: an open item the AI proposed, that nobody has
+    /// touched, that has no deadline of its own, and that is older than `olderThanMs`, leaves
+    /// the working list.
+    ///
+    /// It is archived, never deleted, and it is still one tap from coming back. Hand-written
+    /// items, edited items, snoozed items and anything with a due date are all left alone —
+    /// those are all evidence that a person, not a clock, is in charge of this row.
+    /// Returns how many were filed away.
+    @discardableResult
+    public func archiveStale(
+        olderThanMs: Int64, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Int {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups SET archivedAtMs = ?
+                    WHERE done = 0 AND archivedAtMs IS NULL AND origin = 'ai'
+                      AND editedAtMs IS NULL AND snoozedUntilMs IS NULL AND dueAtMs IS NULL
+                      AND createdAtMs < ?
+                    """,
+                arguments: [nowMs, nowMs - olderThanMs])
+            return db.changesCount
         }
     }
 
-    /// Open follow-ups plus the open count, for the Today card.
-    public func observeOpen(limit: Int = 50) -> AsyncValueObservation<[FollowUp]> {
+    /// Count of items on the working list — what "See all N" and the widget say.
+    public func openCount(
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Int {
+        try await db.reader.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*) FROM follow_ups
+                    WHERE done = 0 AND archivedAtMs IS NULL
+                      AND (snoozedUntilMs IS NULL OR snoozedUntilMs <= ?)
+                    """,
+                arguments: [nowMs]) ?? 0
+        }
+    }
+
+    /// Change signal for the working list. Tracks the whole table on purpose: an item being
+    /// archived or snoozed leaves the set, and the screen has to hear about that too.
+    public func observeOpen(limit: Int = 200) -> AsyncValueObservation<[FollowUp]> {
         ValueObservation.tracking { db in
             try Row.fetchAll(
                 db,
-                sql: "SELECT * FROM follow_ups WHERE done = 0 ORDER BY createdAtMs DESC, id LIMIT ?",
+                sql: """
+                    SELECT * FROM follow_ups
+                    ORDER BY done ASC, archivedAtMs IS NOT NULL, createdAtMs DESC, id
+                    LIMIT ?
+                    """,
                 arguments: [limit]
             ).map(Self.followUp(from:))
         }.values(in: db.reader)

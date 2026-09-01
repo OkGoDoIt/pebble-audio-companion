@@ -116,6 +116,42 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(streaming.family == .recording)
     }
 
+    /// The reported deadlock, in copy. Authorized with no stream while the watch says it is
+    /// recording is not a handshake step — it is the state where nothing the watch captures
+    /// reaches the phone. The card has to say so, and must not read as calm progress.
+    @Test func aWatchRecordingWeAreNotReceivingIsNamedAsAFault() {
+        let stuck = statusModel(
+            state: .authorized,
+            intent: .active,
+            watchServiceStateRaw: Int(ServiceState.streaming.rawValue)
+        )
+        #expect(stuck.family == .needsAttention)
+        #expect(stuck.dot == .attention)
+        #expect(stuck.headline == StatusCopy.watchRecordingNotReceived)
+        #expect(stuck.detail == StatusCopy.watchRecordingNotReceivedLine)
+        #expect(stuck.action == .findWatch)
+        #expect(stuck.headline != StatusCopy.authorizedIdle)
+
+        // The ordinary case is untouched: an authorized watch that is simply not capturing is
+        // still the calm "ready" card, not a fault.
+        let idle = statusModel(
+            state: .authorized,
+            intent: .active,
+            watchServiceStateRaw: Int(ServiceState.authorizedIdle.rawValue)
+        )
+        #expect(idle.family == .connecting)
+        #expect(idle.headline == StatusCopy.authorizedIdle)
+
+        // And a stream we ARE receiving still reads as Recording, not as this fault.
+        let streaming = statusModel(
+            state: .streaming(streamId: 7),
+            intent: .active,
+            watchServiceStateRaw: Int(ServiceState.streaming.rawValue),
+            streamVerdict: .hearingAudio
+        )
+        #expect(streaming.family == .recording)
+    }
+
     @Test func watchServiceStateLabelsCoverAllStates() {
         for raw in 0...8 {
             #expect(isNotBlank(watchServiceStateLabel(raw)))

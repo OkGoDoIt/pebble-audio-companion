@@ -18,6 +18,8 @@ public actor EnrichmentService {
     /// `FollowUps.swift` sat dead was a subsystem nothing was obliged to construct, and a
     /// required parameter is the only version of this the compiler enforces.
     private let followUps: FollowUpWorker
+    /// The second follow-up pass. Extraction proposes, this decides — see `FollowUpCurator`.
+    private let curator: FollowUpCurator
     private let annotations: AnnotationStore
     private let store: SegmentStore
     private let pauseJournal: PauseJournal?
@@ -37,6 +39,7 @@ public actor EnrichmentService {
     public init(
         worker: EnrichmentWorker,
         followUps: FollowUpWorker,
+        curator: FollowUpCurator,
         annotations: AnnotationStore,
         store: SegmentStore,
         database: AppDatabase,
@@ -49,6 +52,7 @@ public actor EnrichmentService {
     ) {
         self.worker = worker
         self.followUps = followUps
+        self.curator = curator
         self.annotations = annotations
         self.store = store
         self.database = database
@@ -118,20 +122,33 @@ public actor EnrichmentService {
     /// True while `followUpPass` is inside the worker.
     public private(set) var isExtractingFollowUps = false
 
-    /// Extracts follow-ups from finished conversations (plan Part 4.5). Runs after `enrich`
-    /// because it wants the same durable, complete transcripts the final annotation pass wants,
-    /// and reuses the grouping that pass just rebuilt rather than regrouping again.
+    /// One follow-up pass: propose, decide, then file away what has gone quiet.
     ///
-    /// Returns true when it wrote at least one new follow-up, so the pipeline treats the pass as
-    /// having done work and comes back promptly for the rest of the backlog.
+    /// Runs after `enrich` because both want the same durable, complete transcripts and the
+    /// grouping that pass just rebuilt. Returns true when anything changed, so the pipeline
+    /// treats the pass as having done work and comes back promptly for the rest of the backlog.
+    ///
+    /// The three steps are separate on purpose. Extraction is the expensive one and is capped
+    /// per pass; curation is one call over whatever has accumulated; the age rule is arithmetic
+    /// and runs even when there is no AI configured at all, because a person who turned remote
+    /// processing off should still stop seeing a three-week-old proposal at the top of a list.
     @discardableResult
     public func followUpPass() async throws -> Bool {
         isExtractingFollowUps = true
         defer { isExtractingFollowUps = false }
+
+        var changed = false
+        if try await curator.archiveStale() > 0 { changed = true }
+
         let inputs = await enrichmentInputs()
-        guard !inputs.isEmpty else { return false }
-        let written = try await followUps.extract(inputs, transcriptOf: transcriptOf)
-        guard !written.isEmpty else { return false }
+        if !inputs.isEmpty {
+            let proposed = try await followUps.extract(inputs, transcriptOf: transcriptOf)
+            if proposed > 0 { changed = true }
+        }
+
+        let written = try await curator.curate()
+        guard !written.isEmpty else { return changed }
+
         // Make them findable too. `donateFollowUp` had no production caller before this — the
         // search index knew about the `followup` kind and nothing ever wrote one.
         if let donator {

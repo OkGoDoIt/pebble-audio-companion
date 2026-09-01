@@ -47,7 +47,7 @@ public struct LibraryStore: Sendable {
 
     public func allTags() async throws -> [TagWithCount] { try await tags.listTags() }
 
-    public func openFollowUps() async throws -> [FollowUp] { try await followUps.list(done: false) }
+    public func openFollowUps() async throws -> [FollowUp] { try await followUps.list(scope: .open) }
 
     public func notes(conversationId: String) async throws -> [Note] {
         try await notes.list(conversationId: conversationId)
@@ -110,7 +110,7 @@ public struct LibraryStore: Sendable {
         }
     }
 
-    public func observeOpenFollowUps(limit: Int = 50) -> AsyncStream<[FollowUp]> {
+    public func observeOpenFollowUps(limit: Int = 200) -> AsyncStream<[FollowUp]> {
         let observation = followUps.observeOpen(limit: limit)
         return AsyncStream { continuation in
             let task = Task {

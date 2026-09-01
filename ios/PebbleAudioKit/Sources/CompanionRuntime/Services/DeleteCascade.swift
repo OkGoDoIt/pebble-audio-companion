@@ -16,6 +16,7 @@ public actor DeleteCascade {
     private let annotations: AnnotationStore
     private let aiOutputs: AiOutputStore
     private let followUps: FollowUpStore
+    private let candidates: FollowUpCandidateStore
     private let recaps: RecapService
     private let enrichment: EnrichmentService
     private let index: (any TranscriptIndexing)?
@@ -29,6 +30,7 @@ public actor DeleteCascade {
         annotations: AnnotationStore,
         aiOutputs: AiOutputStore,
         followUps: FollowUpStore,
+        candidates: FollowUpCandidateStore,
         recaps: RecapService,
         enrichment: EnrichmentService,
         index: (any TranscriptIndexing)? = nil,
@@ -41,6 +43,7 @@ public actor DeleteCascade {
         self.annotations = annotations
         self.aiOutputs = aiOutputs
         self.followUps = followUps
+        self.candidates = candidates
         self.recaps = recaps
         self.enrichment = enrichment
         self.index = index
@@ -80,12 +83,16 @@ public actor DeleteCascade {
             log.failure("ai output cascade", error)
         }
 
-        // Follow-ups extracted from this segment.
+        // Follow-ups drawn from this segment, and the candidates behind them. A follow-up
+        // outlives its recording only if nothing can find it — which is exactly what happened
+        // when the extractor was free to name a segment that did not exist.
         do {
-            for followUp in try await followUps.list() where followUp.sourceSegmentId == segmentId {
+            for followUp in try await followUps.list(scope: .all)
+            where followUp.sourceSegmentId == segmentId {
                 try await followUps.delete(id: followUp.id)
                 await removeFromIndex(id: followUp.id, kind: .followUp)
             }
+            try await candidates.deleteForSegment(segmentId: segmentId)
         } catch {
             log.failure("follow-up cascade", error)
         }

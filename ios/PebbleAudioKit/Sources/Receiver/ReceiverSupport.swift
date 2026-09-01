@@ -9,6 +9,29 @@ import Foundation
 // - `OneShot` is a CompletableDeferred: complete-once, awaitable, cancellation-aware.
 // - `ByteChannel` is a Channel<ByteArray>.receiveAsFlow(): buffered, each element to one receiver.
 
+/// Where the receiver stack narrates itself.
+///
+/// The link and the session are the two places in this app whose state a person cannot infer from
+/// the screen, and until now neither reached the on-phone Detailed Logs — the link wrote to NSLog
+/// (invisible without a cable) and the session wrote nothing at all. A user staring at "waiting
+/// for the watch" therefore had no way to find out what the link had been doing, which is why the
+/// Detailed Logs screen read "Nothing logged yet" during the exact failure it exists for.
+///
+/// Counters and state transitions only. Never audio, never transcript text (product rule B20).
+public struct ReceiverLog: Sendable {
+    public let write: @Sendable (String) -> Void
+
+    public init(write: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.write = write
+    }
+
+    public static let silent = ReceiverLog()
+
+    public func callAsFunction(_ message: @autoclosure () -> String) {
+        write(message())
+    }
+}
+
 /// Injected time source. Production uses `SystemClock`; tests use a manual/virtual clock so no
 /// test ever waits on real time.
 public protocol ReceiverClock: Sendable {

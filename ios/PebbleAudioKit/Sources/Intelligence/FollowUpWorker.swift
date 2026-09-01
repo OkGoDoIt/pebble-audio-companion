@@ -4,24 +4,26 @@ import GRDB
 import SegmentStore
 import Transcription
 
-// The half of plan Part 4.5 "Follow-ups" that was missing: something that actually CALLS the
-// extractor. `FollowUps.swift` (the schema, the strict/lenient parser, `ActionItemStore`) was
-// ported whole and then referenced by nothing, so every conversation honestly reported "All
-// caught up." — nothing had ever written a follow-up. This worker is the seam that closes it,
-// shaped after `EnrichmentWorker`: the same conversation input, the same "is this worth a
-// provider call yet" planning, the same bounded-attempts posture.
+// Pass one of two: read ONE finished conversation and propose what it might contain.
 //
-// Cost shape (deliberate, see the plan's 55-items-vs-331-annotations note): extraction is its
-// OWN provider call, made at most once per conversation per transcript revision, and only for
-// a CLOSED, fully transcribed conversation. It is not merged into the annotation call because
-// the annotation runs repeatedly while a conversation is still live, and follow-ups extracted
-// from half-heard partial text would be wrong far more often than they would be cheap.
+// Nothing this worker writes reaches the person. It writes CANDIDATES, and `FollowUpCurator`
+// decides. The split exists because the two jobs need different things in front of them: this
+// one needs the whole transcript (so a loop that opens at 2pm and closes at 4pm is visibly
+// closed), and curation needs every conversation's proposals at once (so the same errand said
+// on Tuesday and again on Thursday is one item, and nine proposals from one sitting become
+// two).
+//
+// Cost shape: at most one provider call per conversation per transcript revision, only for a
+// closed and fully transcribed conversation, and only for one recorded inside
+// `freshnessWindowMs`. The last of those is a product rule as much as a budget one — this list
+// is about what is live in someone's life now, and a commitment from six weeks ago that
+// nobody has thought about since is not.
 
 /// Durable bookkeeping for follow-up extraction, one row per conversation.
 ///
-/// This is what makes "this conversation legitimately has no follow-ups" a settled, free
-/// answer instead of a provider call repeated on every pass forever. DERIVED state: dropping
-/// the table only costs a re-extraction.
+/// This is what makes "this conversation legitimately has nothing" a settled, free answer
+/// instead of a provider call repeated on every pass forever. DERIVED state: dropping the
+/// table only costs a re-extraction.
 public struct FollowUpExtractionState: Equatable, Sendable {
     public var conversationId: String
     /// Combined transcript length the last attempt ran over. A different length means the
@@ -148,68 +150,100 @@ public struct FollowUpExtractionStore: Sendable {
     }
 }
 
-/// Extracts follow-ups from finished conversations and persists them through
-/// `ActionItemStore` into `follow_ups`.
+/// What the worker knows about a conversation beyond its member segments.
+public struct FollowUpConversationContext: Sendable, Equatable {
+    public let title: String?
+    public let summary: String?
+
+    public init(title: String?, summary: String?) {
+        self.title = title
+        self.summary = summary
+    }
+}
+
+/// Reads finished conversations and proposes follow-up candidates.
 public final class FollowUpWorker: @unchecked Sendable {
     /// Failed attempts per transcript revision before the conversation is left alone.
     public static let maxAttempts = 2
 
-    /// Conversations considered per pass. Roger's migrated library arrives as ~178 conversations
-    /// with transcripts and no follow-ups; without a cap the first foreground pass would fire
-    /// 178 provider calls back to back. Newest-first ordering means a conversation that just
-    /// finished is never stuck behind the backlog.
-    public static let maxPerPass = 5
+    /// Conversations actually sent to the provider per pass. Newest-first ordering means a
+    /// conversation that just finished is never stuck behind a migrated backlog.
+    public static let maxPerPass = 3
 
     /// Below this much combined text there is nothing an extraction could honestly find, so the
     /// conversation settles at zero items without costing a call.
-    public static let minChars = 120
+    public static let minChars = 200
 
-    private let items: ActionItemStore
+    /// How far back extraction reaches. A conversation older than this settles at zero without
+    /// a call: a commitment nobody has thought about in a month is not a follow-up, it is
+    /// history, and history is what Ask and the Library are for.
+    public static let freshnessWindowMs: Int64 = 30 * 24 * 60 * 60 * 1000
+
+    /// Transcript characters sent in one call. Well inside every catalogue model's window; the
+    /// cap exists so a four-hour conversation cannot quietly become the most expensive call the
+    /// app makes.
+    public static let maxTranscriptChars = 120_000
+
+    /// Extraction runs on a stronger model than the user's global choice, and with more
+    /// thinking. It is one call per conversation, it decides what appears on a list the person
+    /// is meant to trust, and the cheap model's failure mode here is exactly the one that makes
+    /// the feature worth turning off: reading ambient chatter as commitments.
+    public static let modelId = "gpt-5.6-terra"
+    public static let reasoningEffort = "medium"
+
+    private let candidates: FollowUpCandidateStore
     private let state: FollowUpExtractionStore
     private let router: AiModeRouter?
     private let nowMs: @Sendable () -> Int64
+    private let timeZone: @Sendable () -> TimeZone
+    private let contextOf: @Sendable (String) async -> FollowUpConversationContext?
 
     public init(
-        items: ActionItemStore,
+        candidates: FollowUpCandidateStore,
         state: FollowUpExtractionStore,
         router: AiModeRouter?,
-        nowMs: @escaping @Sendable () -> Int64
+        nowMs: @escaping @Sendable () -> Int64,
+        timeZone: @escaping @Sendable () -> TimeZone = { .current },
+        contextOf: @escaping @Sendable (String) async -> FollowUpConversationContext? =
+            { _ in nil }
     ) {
-        self.items = items
+        self.candidates = candidates
         self.state = state
         self.router = router
         self.nowMs = nowMs
+        self.timeZone = timeZone
+        self.contextOf = contextOf
     }
 
     /// Drops the extraction bookkeeping for a conversation that no longer exists, so the
     /// derived table does not accumulate a row per deleted conversation forever.
     public func forgetExtraction(conversationId: String) async {
         try? await state.delete(conversationId)
+        try? await candidates.deleteForConversation(conversationId: conversationId)
     }
 
-    /// Runs one bounded extraction pass. Returns the items newly written this pass (so the
-    /// caller can donate exactly those to the search index).
+    /// Runs one bounded extraction pass. Returns the number of candidates newly proposed.
+    @discardableResult
     public func extract(
         _ conversations: [EnrichmentConversation],
         transcriptOf: (String) -> SegmentTranscript?
-    ) async throws -> [ActionItem] {
-        guard let activeRouter = router else { return [] }
-        guard await activeRouter.isAvailable() else { return [] }
+    ) async throws -> Int {
+        guard let activeRouter = router else { return 0 }
+        guard await activeRouter.isAvailable() else { return 0 }
 
-        // Newest first: a conversation that closed a minute ago must not wait behind a
-        // migrated backlog. Same ordering rule the annotation backlog uses.
         let ordered = conversations.sorted(by: EnrichmentWorker.newestFirst)
         let settledStates = try await state.all()
+        let now = nowMs()
 
-        var written: [ActionItem] = []
+        var proposed = 0
         var calls = 0
         for conversation in ordered {
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
-            guard let excerpts = excerptsIfDue(conversation, transcriptOf: transcriptOf) else {
+            guard let parts = partsIfDue(conversation, transcriptOf: transcriptOf) else {
                 continue
             }
-            let combined = combinedLength(excerpts)
+            let combined = parts.map(\.text).joined(separator: "\n\n").count
             let existing = settledStates[conversation.conversationId]
             // A different transcript length is a different question: start the budget over.
             let fresh = existing.map { $0.sourceCharCount != combined } ?? true
@@ -218,53 +252,52 @@ public final class FollowUpWorker: @unchecked Sendable {
                 if existing.attempts >= Self.maxAttempts { continue }
             }
 
-            // Too little text to be worth a call — settle it for free rather than asking
-            // every pass for the rest of time.
-            if combined < Self.minChars {
+            // Too little text, or too long ago — settle for free rather than asking every pass
+            // for the rest of time.
+            let startedAtMs = parts.first?.startedAtMs ?? 0
+            let tooOld = now - startedAtMs > Self.freshnessWindowMs
+            if combined < Self.minChars || tooOld {
                 try await state.save(
                     FollowUpExtractionState(
                         conversationId: conversation.conversationId,
                         sourceCharCount: combined, settled: true, itemCount: 0,
                         attempts: fresh ? 0 : (existing?.attempts ?? 0),
-                        updatedAtMs: nowMs()))
+                        updatedAtMs: now))
                 continue
             }
 
             calls += 1
             let attempts = (fresh ? 0 : (existing?.attempts ?? 0)) + 1
-            written.append(
-                contentsOf: try await run(
-                    activeRouter, conversation, excerpts: excerpts, combined: combined,
-                    attempts: attempts))
+            proposed += try await run(
+                activeRouter, conversation, parts: parts, combined: combined, attempts: attempts)
         }
-        return written
+        return proposed
     }
 
     // MARK: - Planning
 
-    /// The member excerpts to extract from, or nil when the conversation is not a candidate.
+    /// The member recordings to read, or nil when the conversation is not a candidate.
     /// Same gate as `EnrichmentWorker`'s final pass: closed, non-empty, every member terminal.
-    private func excerptsIfDue(
+    private func partsIfDue(
         _ conversation: EnrichmentConversation,
         transcriptOf: (String) -> SegmentTranscript?
-    ) -> [TranscriptExcerpt]? {
+    ) -> [FollowUpSourcePart]? {
         guard !conversation.isOpen, !conversation.members.isEmpty,
             conversation.members.allSatisfy({ !$0.isOpen && $0.isFullyTranscribed })
         else { return nil }
-        let excerpts: [TranscriptExcerpt] = conversation.members.compactMap { member in
+        let parts: [FollowUpSourcePart] = conversation.members.compactMap { member in
             guard member.transcriptionState == .complete,
-                let text = transcriptOf(member.segmentId)?.text
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                !text.isEmpty
+                let transcript = transcriptOf(member.segmentId)
             else { return nil }
-            return TranscriptExcerpt(
-                segmentId: member.segmentId, text: text, startTimeMs: Int64(member.startTimeMs))
+            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return FollowUpSourcePart(
+                segmentId: member.segmentId,
+                startedAtMs: Int64(member.startTimeMs),
+                text: text,
+                turns: transcript.segments)
         }
-        return excerpts.isEmpty ? nil : excerpts
-    }
-
-    private func combinedLength(_ excerpts: [TranscriptExcerpt]) -> Int {
-        excerpts.map(\.text).joined(separator: "\n\n").count
+        return parts.isEmpty ? nil : parts
     }
 
     // MARK: - Running
@@ -272,37 +305,46 @@ public final class FollowUpWorker: @unchecked Sendable {
     private func run(
         _ router: AiModeRouter,
         _ conversation: EnrichmentConversation,
-        excerpts: [TranscriptExcerpt],
+        parts: [FollowUpSourcePart],
         combined: Int,
         attempts: Int
-    ) async throws -> [ActionItem] {
+    ) async throws -> Int {
         let now = nowMs()
+        let zone = timeZone()
+        let context = await contextOf(conversation.conversationId)
+        let body = FollowUpTranscriptRenderer.render(
+            parts: parts,
+            title: context?.title,
+            summary: context?.summary,
+            recordedAt: Date(
+                timeIntervalSince1970: Double(parts[0].startedAtMs) / 1000),
+            timeZone: zone,
+            maxChars: Self.maxTranscriptChars)
         do {
-            // `AiPromptTemplates.actionItems` is what the providers key their STRICT
-            // `action_items` json_schema off (OpenAiChatAiProvider.responseTextConfig), so this
-            // template id is the structured-output path. The parser's lenient branch stays the
-            // last resort for text-only providers, and it REJECTS residual markdown rather than
-            // cleaning it (anti-goal B4).
             let result = try await router.run(
                 AiRunRequest(
                     requestId: "followups-\(conversation.conversationId)-\(attempts)",
-                    prompt: AiPromptTemplates.actionItems,
-                    transcripts: excerpts))
-            let parsed = ActionItemParser.parse(
-                raw: result.text,
-                sourceSegmentId: excerpts[0].segmentId,
-                nowMs: now,
-                idPrefix: conversation.conversationId)
-            let saved = try await persist(
-                parsed, conversation: conversation,
-                memberIds: Set(conversation.members.map(\.segmentId)),
-                fallbackSegmentId: excerpts[0].segmentId, now: now)
+                    prompt: AiPromptTemplates.followUpExtraction,
+                    transcripts: [
+                        TranscriptExcerpt(
+                            segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
+                    ],
+                    metadata: [
+                        AiRunRequest.modelKey: Self.modelId,
+                        AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
+                    ]))
+            guard let parsed = FollowUpExtractionParser.parse(raw: result.text) else {
+                throw AiError.providerFailed(
+                    "Follow-up extraction did not return the agreed JSON", underlying: nil)
+            }
+            let written = try await persist(
+                parsed, conversation: conversation, parts: parts, timeZone: zone, now: now)
             try await state.save(
                 FollowUpExtractionState(
                     conversationId: conversation.conversationId,
-                    sourceCharCount: combined, settled: true, itemCount: parsed.count,
+                    sourceCharCount: combined, settled: true, itemCount: written,
                     attempts: attempts, updatedAtMs: now))
-            return saved
+            return written
         } catch let error where error is CancellationError {
             throw error
         } catch {
@@ -312,53 +354,70 @@ public final class FollowUpWorker: @unchecked Sendable {
                     sourceCharCount: combined, settled: false, itemCount: 0,
                     attempts: attempts, lastError: Self.errorMessage(error),
                     updatedAtMs: now))
-            return []
+            return 0
         }
     }
 
-    /// Writes the parsed items, re-keyed by CONTENT so a re-extraction of the same conversation
-    /// lands on the same rows. Two consequences, both deliberate:
-    ///  - the same task text can never appear twice for one conversation, however many passes
-    ///    run over it;
-    ///  - a row the user already ticked keeps `done` (the store's upsert leaves the column
-    ///    alone, and a genuinely new row is written open).
+    /// Writes the proposals that are actually grounded.
     ///
-    /// Items from a previous extraction that this one no longer produces are LEFT IN PLACE.
-    /// `follow_ups` is authoritative user-facing state; quietly deleting something the user may
-    /// already have acted on is worse than carrying one stale item.
+    /// The quote is matched back against the member transcripts here, and an item whose words
+    /// are not in the recording is DROPPED rather than written with a guess. This is the check
+    /// that a schema cannot make and a prompt can only ask for: it turns "quote the words" from
+    /// an instruction into a fact about every row that ships.
     private func persist(
-        _ parsed: [ActionItem],
+        _ items: [ExtractedFollowUp],
         conversation: EnrichmentConversation,
-        memberIds: Set<String>,
-        fallbackSegmentId: String,
+        parts: [FollowUpSourcePart],
+        timeZone: TimeZone,
         now: Int64
-    ) async throws -> [ActionItem] {
-        var saved: [ActionItem] = []
+    ) async throws -> Int {
+        var written = 0
         var seen = Set<String>()
-        for item in parsed {
-            var row = item
-            row.id = Self.itemId(conversationId: conversation.conversationId, text: item.text)
-            guard seen.insert(row.id).inserted else { continue }
-            row.sourceConversationId = conversation.conversationId
-            // The structured schema lets the model name a source segment, and a model that
-            // invents one would strand the row: `DeleteCascade` removes follow-ups by
-            // `sourceSegmentId`, so an id that belongs to no member survives its own recording.
-            if !memberIds.contains(row.sourceSegmentId) {
-                row.sourceSegmentId = fallbackSegmentId
+        for item in items {
+            guard let location = FollowUpQuoteLocator.locate(quote: item.quote, in: parts) else {
+                continue
             }
-            row.createdAtMs = now
-            let existed = try await items.load(id: row.id) != nil
-            try await items.save(row)
-            if !existed { saved.append(row) }
+            let id = Self.candidateId(
+                conversationId: conversation.conversationId, text: item.task)
+            guard seen.insert(id).inserted else { continue }
+            try await candidates.save(
+                FollowUpCandidate(
+                    id: id,
+                    conversationId: conversation.conversationId,
+                    segmentId: location.segmentId,
+                    task: item.task,
+                    quote: item.quote,
+                    why: item.ifForgotten,
+                    confidence: FollowUpConfidence(rawValue: item.confidence) ?? .medium,
+                    dueAtMs: Self.dueAtMs(item.dueDate, timeZone: timeZone),
+                    startMs: location.startMs,
+                    endMs: location.endMs,
+                    createdAtMs: now))
+            written += 1
         }
-        return saved
+        return written
     }
 
-    /// `<conversationId>-action-<contentHash>`: still matches `ActionItemStore`'s
-    /// `%-action-%` "extracted, not user-added" pattern, but stable under re-extraction in a
-    /// way the parser's positional index is not — a re-run that drops one item must not slide
-    /// every later item onto a neighbour's row (and its `done` flag).
-    static func itemId(conversationId: String, text: String) -> String {
+    /// Start of the named day in the capture time zone. A due date is a day, not an instant —
+    /// "Friday" means all of Friday, and stamping noon or midnight-UTC is how an item shows as
+    /// overdue on the morning it is actually due.
+    static func dueAtMs(_ isoDate: String, timeZone: TimeZone) -> Int64? {
+        guard !isoDate.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: isoDate) else { return nil }
+        return Int64(date.timeIntervalSince1970 * 1000)
+    }
+
+    /// `<conversationId>-action-<contentHash>`. Content-addressed so a re-extraction of the
+    /// same conversation lands on the same candidate rather than proposing a duplicate — and
+    /// so a candidate curation already decided about is not re-judged forever.
+    ///
+    /// The `-action-` infix is kept deliberately: rows the old extractor wrote carry it, and
+    /// the v5 migration keys their `origin` off it.
+    static func candidateId(conversationId: String, text: String) -> String {
         "\(conversationId)-action-\(fnv1a(normalize(text)))"
     }
 
@@ -369,7 +428,7 @@ public final class FollowUpWorker: @unchecked Sendable {
     }
 
     /// FNV-1a. Swift's own `hashValue` is seeded per process, so it cannot key a durable row.
-    private static func fnv1a(_ text: String) -> String {
+    static func fnv1a(_ text: String) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in Array(text.utf8) {
             hash ^= UInt64(byte)
@@ -378,7 +437,7 @@ public final class FollowUpWorker: @unchecked Sendable {
         return String(hash, radix: 16)
     }
 
-    private static func errorMessage(_ error: Error) -> String {
+    static func errorMessage(_ error: Error) -> String {
         if let aiError = error as? AiError {
             switch aiError {
             case .providerUnavailable(let providerId):

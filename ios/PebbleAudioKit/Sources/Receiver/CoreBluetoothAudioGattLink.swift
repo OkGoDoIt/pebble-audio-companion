@@ -43,9 +43,39 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     private var infoCharacteristic: CBCharacteristic?
     private var controlCharacteristic: CBCharacteristic?
     private var dataCharacteristic: CBCharacteristic?
-    private var pendingInfoRead: CheckedContinuation<[UInt8], Error>?
-    private var pendingControlWrite: CheckedContinuation<Void, Error>?
+    private var pendingInfoRead: PendingOperation<[UInt8]>?
+    private var pendingControlWrite: PendingOperation<Void>?
     private var pendingNotifyCharacteristics: [CBCharacteristic] = []
+
+    /// One in-flight GATT operation, and the bookkeeping that makes it ALWAYS terminate.
+    ///
+    /// LOAD-BEARING, and the second permanent wedge in this file. `readInfo`/`writeControl` park a
+    /// `CheckedContinuation` and hand the work to Core Bluetooth, which answers on a delegate
+    /// callback — and on an unexpected disconnect that callback simply never comes. Nothing
+    /// resumed the continuation (`resetCharacteristics()` cleared the characteristics and left the
+    /// waiter parked), and `withCheckedThrowingContinuation` is not cancellation-aware, so
+    /// cancelling the session could not free it either.
+    ///
+    /// The consequences were not "one operation fails". `connectionHandshake` awaits `readInfo`,
+    /// so `runConnection` never returned; `run()` then blocked forever on `await handler?.value`
+    /// and the whole session loop stopped observing the link. `withReceiverTimeout` could not save
+    /// `verifyWatchState` either — a task group awaits its children before returning, and the
+    /// child ignoring cancellation meant the group never returned. And every later call hit the
+    /// `pendingInfoRead == nil` guard and threw `operationInFlight` for the life of the process.
+    /// That is the failure the user has to kill the app to escape.
+    ///
+    /// The ticket is read and written only on the delegate queue, so the operation body, the
+    /// cancellation handler, the delegate callback and the timeout can arrive in any order without
+    /// resuming the same continuation twice or losing a cancel that arrived first.
+    private final class OperationTicket: @unchecked Sendable {
+        var cancelled = false
+        var settled = false
+    }
+
+    private struct PendingOperation<Value> {
+        let ticket: OperationTicket
+        let continuation: CheckedContinuation<Value, Error>
+    }
 
     /// Monotonic id for the in-flight connect/handshake attempt. Every transition into
     /// `.connecting` bumps it; a scheduled watchdog only fires if it is still the current
@@ -111,15 +141,22 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         }
     }
 
-    /// NSLog so the live device log shows every Core Bluetooth transition with a stable,
-    /// greppable tag. This is the only place the adapter logs; it stays out of the data hot path
-    /// (notifications are not logged per-frame).
+    /// Where the adapter narrates itself, in addition to NSLog.
+    ///
+    /// NSLog alone needs a cable and Xcode, which is no use to the person actually holding the
+    /// phone in the failure. Set this from the composition root so the same transitions land in
+    /// Settings > Diagnostics > Detailed Logs, where they can be read and shared from the device.
+    public var logSink: ReceiverLog = .silent
+
+    /// Every Core Bluetooth transition, with a stable, greppable tag. This is the only place the
+    /// adapter logs; it stays out of the data hot path (notifications are not logged per-frame).
     private func log(_ message: String) {
         NSLog(
             "%@ state=%@ gen=%d attempt=%d %@",
             Self.logTag, String(describing: connectionState.value), connectGeneration,
             connectAttempts, message
         )
+        logSink("link \(describe(connectionState.value)): \(message)")
     }
 
     /// Runs `block` on the main (delegate) serial queue. All Core Bluetooth interaction and link
@@ -224,44 +261,123 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     }
 
     public func readInfo() async throws -> [UInt8] {
-        try await withCheckedThrowingContinuation { continuation in
+        let ticket = OperationTicket()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<[UInt8], Error>) in
+                self.onMainQueue { [self] in
+                    if ticket.cancelled {
+                        ticket.settled = true
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    guard let localPeripheral = peripheral else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.notConnected)
+                        return
+                    }
+                    guard let characteristic = infoCharacteristic else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.characteristicNotReady)
+                        return
+                    }
+                    guard pendingInfoRead == nil else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.operationInFlight)
+                        return
+                    }
+                    pendingInfoRead = PendingOperation(ticket: ticket, continuation: continuation)
+                    armOperationTimeout(ticket)
+                    localPeripheral.readValue(for: characteristic)
+                }
+            }
+        } onCancel: {
             self.onMainQueue { [self] in
-                guard let localPeripheral = peripheral else {
-                    continuation.resume(throwing: LinkOperationError.notConnected)
-                    return
-                }
-                guard let characteristic = infoCharacteristic else {
-                    continuation.resume(throwing: LinkOperationError.characteristicNotReady)
-                    return
-                }
-                guard pendingInfoRead == nil else {
-                    continuation.resume(throwing: LinkOperationError.operationInFlight)
-                    return
-                }
-                pendingInfoRead = continuation
-                localPeripheral.readValue(for: characteristic)
+                ticket.cancelled = true
+                guard let pending = pendingInfoRead, pending.ticket === ticket else { return }
+                pendingInfoRead = nil
+                ticket.settled = true
+                pending.continuation.resume(throwing: CancellationError())
             }
         }
     }
 
     public func writeControl(_ message: [UInt8]) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.onMainQueue { [self] in
-                guard let localPeripheral = peripheral else {
-                    continuation.resume(throwing: LinkOperationError.notConnected)
-                    return
+        let ticket = OperationTicket()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                self.onMainQueue { [self] in
+                    if ticket.cancelled {
+                        ticket.settled = true
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    guard let localPeripheral = peripheral else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.notConnected)
+                        return
+                    }
+                    guard let characteristic = controlCharacteristic else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.characteristicNotReady)
+                        return
+                    }
+                    guard pendingControlWrite == nil else {
+                        ticket.settled = true
+                        continuation.resume(throwing: LinkOperationError.operationInFlight)
+                        return
+                    }
+                    pendingControlWrite = PendingOperation(ticket: ticket, continuation: continuation)
+                    armOperationTimeout(ticket)
+                    localPeripheral.writeValue(
+                        Data(message), for: characteristic, type: .withResponse
+                    )
                 }
-                guard let characteristic = controlCharacteristic else {
-                    continuation.resume(throwing: LinkOperationError.characteristicNotReady)
-                    return
-                }
-                guard pendingControlWrite == nil else {
-                    continuation.resume(throwing: LinkOperationError.operationInFlight)
-                    return
-                }
-                pendingControlWrite = continuation
-                localPeripheral.writeValue(Data(message), for: characteristic, type: .withResponse)
             }
+        } onCancel: {
+            self.onMainQueue { [self] in
+                ticket.cancelled = true
+                guard let pending = pendingControlWrite, pending.ticket === ticket else { return }
+                pendingControlWrite = nil
+                ticket.settled = true
+                pending.continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// A GATT read or write that Core Bluetooth never answers must still end. A half-dead link the
+    /// platform still reports as connected produces exactly that — no callback, no disconnect, no
+    /// error — and one such operation used to stop the session's keepalive (and with it the only
+    /// escalation that would have rebuilt the link) for as long as the app lived.
+    private func armOperationTimeout(_ ticket: OperationTicket) {
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(Int(Self.operationTimeoutMs))
+        ) { [weak self] in
+            guard let self, !ticket.settled else { return }
+            self.failPendingOperations(matching: ticket, "the watch did not answer in time")
+        }
+    }
+
+    /// Frees whichever parked GATT operations `ticket` selects (nil = all of them), resuming their
+    /// waiters with an error instead of leaving them parked forever.
+    ///
+    /// Called from every path that invalidates the connection — an unexpected disconnect, the
+    /// connect watchdog, a terminal failure, a user disconnect — so "the link went away" always
+    /// reaches the code awaiting on it.
+    private func failPendingOperations(
+        matching ticket: OperationTicket? = nil,
+        _ reason: String
+    ) {
+        if let pending = pendingInfoRead, ticket == nil || pending.ticket === ticket {
+            pendingInfoRead = nil
+            pending.ticket.settled = true
+            pending.continuation.resume(throwing: LinkOperationError.failed(reason))
+        }
+        if let pending = pendingControlWrite, ticket == nil || pending.ticket === ticket {
+            pendingControlWrite = nil
+            pending.ticket.settled = true
+            pending.continuation.resume(throwing: LinkOperationError.failed(reason))
         }
     }
 
@@ -513,10 +629,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     private func failAndReset(_ failure: ConnectFailure) {
         connectGeneration += 1 // invalidate any pending watchdog
         let message = failure.detail ?? "connection failed"
-        pendingInfoRead?.resume(throwing: LinkOperationError.failed(message))
-        pendingInfoRead = nil
-        pendingControlWrite?.resume(throwing: LinkOperationError.failed(message))
-        pendingControlWrite = nil
+        failPendingOperations(message)
         centralManager?.stopScan()
         resetCharacteristics()
         // A stale-cache / re-pair failure won't clear by retrying the same handles, so latch off
@@ -551,11 +664,21 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         return ConnectFailure(kind: kind, detail: nsError?.localizedDescription)
     }
 
-    private func resetCharacteristics() {
+    /// Invalidates everything bound to the current GATT session.
+    ///
+    /// Freeing the parked operations belongs HERE, not only in `failAndReset`: the unexpected-drop
+    /// path in `didDisconnectPeripheral` reconnects without ever going through `failAndReset`, and
+    /// it was leaving `readInfo`/`writeControl` waiters parked on a connection that no longer
+    /// exists. Every caller of this function has, by definition, just made those operations
+    /// unanswerable.
+    private func resetCharacteristics(
+        reason: String = "the connection to the watch went away"
+    ) {
         infoCharacteristic = nil
         controlCharacteristic = nil
         dataCharacteristic = nil
         pendingNotifyCharacteristics.removeAll()
+        failPendingOperations(reason)
     }
 
     private enum LinkOperationError: Error {
@@ -579,6 +702,10 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
 
     /// Consecutive stalls before we stop retrying and surface an actionable error.
     private static let connectMaxAttempts = 3
+
+    /// Hard bound on a single GATT read or write. Core Bluetooth gives none: a half-dead link it
+    /// still calls connected can leave an operation outstanding for the life of the process.
+    private static let operationTimeoutMs: Int64 = 10_000
 
     /// First automatic-retry delay after a recoverable failure; doubles up to `retryMaxDelayMs`.
     private static let retryBaseDelayMs: Int64 = 2_000
@@ -839,12 +966,15 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         let value: [UInt8] = characteristic.value.map { Array($0) } ?? []
         switch characteristic.uuid {
         case AudioCompanionGattIds.infoCharacteristicUUID:
-            guard let continuation = pendingInfoRead else { return }
+            guard let pending = pendingInfoRead else { return }
             pendingInfoRead = nil
+            pending.ticket.settled = true
             if let error {
-                continuation.resume(throwing: LinkOperationError.failed(error.localizedDescription))
+                pending.continuation.resume(
+                    throwing: LinkOperationError.failed(error.localizedDescription)
+                )
             } else {
-                continuation.resume(returning: value)
+                pending.continuation.resume(returning: value)
             }
         case AudioCompanionGattIds.controlCharacteristicUUID:
             if error == nil { controlChannel.send(value) }
@@ -861,12 +991,15 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         error: Error?
     ) {
         guard characteristic.uuid == AudioCompanionGattIds.controlCharacteristicUUID else { return }
-        guard let continuation = pendingControlWrite else { return }
+        guard let pending = pendingControlWrite else { return }
         pendingControlWrite = nil
+        pending.ticket.settled = true
         if let error {
-            continuation.resume(throwing: LinkOperationError.failed(error.localizedDescription))
+            pending.continuation.resume(
+                throwing: LinkOperationError.failed(error.localizedDescription)
+            )
         } else {
-            continuation.resume(returning: ())
+            pending.continuation.resume(returning: ())
         }
     }
 }
@@ -874,6 +1007,15 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
 private extension CBPeripheral {
     var isLikelyPebble: Bool {
         name?.range(of: "Pebble", options: .caseInsensitive) != nil
+    }
+}
+
+/// Short, stable words for a link state — for the log, never for the screen.
+private func describe(_ state: LinkState) -> String {
+    switch state {
+    case .disconnected: return "disconnected"
+    case .connecting: return "connecting"
+    case .ready: return "ready"
     }
 }
 #endif

@@ -96,7 +96,8 @@ public actor ReceiverService {
         lossEvaluator: LossEventEvaluator? = nil,
         onStoreEvent: @escaping @Sendable () -> Void = {},
         onCoverageTrigger: @escaping @Sendable (CoverageSnapshotTrigger) async -> Void = { _ in },
-        log: RuntimeLog = .silent
+        log: RuntimeLog = .silent,
+        sessionLog: ReceiverLog = .silent
     ) {
         let intent = IntentBox()
         intent.set(initialIntent)
@@ -159,7 +160,8 @@ public actor ReceiverService {
             config: config,
             clock: clock,
             captureIntent: { intent.value },
-            consumeEnableRequestPermission: { armed.consume() }
+            consumeEnableRequestPermission: { armed.consume() },
+            log: sessionLog
         )
     }
 
@@ -171,6 +173,9 @@ public actor ReceiverService {
     /// weighed claim rather than a flag nobody rechecks — see `Receiver.StreamEvidence`.
     public nonisolated var streamEvidence: StateSubject<StreamEvidence> { session.streamEvidence }
     public nonisolated var watchInfo: StateSubject<InfoSnapshot?> { session.watchInfo }
+    /// Frames the watch sent that this app had no stream to put them in. Non-zero means the two
+    /// sides disagreed about whether a stream existed, and that audio was lost on this side.
+    public nonisolated var orphanedFrameCount: StateSubject<Int> { session.orphanedFrameCount }
     /// The last `ERROR` the watch sent. Read by the status/diagnostics layer through
     /// `WatchLinkFault`: without it a de-authorized receiver loops connect → authorize → resync
     /// forever behind the word "Connecting…", with nothing anywhere to say why.

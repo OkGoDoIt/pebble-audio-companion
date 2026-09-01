@@ -43,6 +43,7 @@ final class AppComposition {
 
     let tags: TagStore
     let followUps: FollowUpStore
+    let followUpCandidates: FollowUpCandidateStore
     let askHistory: AskHistoryStore
     let notes: NotesStore
     let people: PeopleStore
@@ -163,6 +164,8 @@ final class AppComposition {
         tags = TagStore(db: database)
         let followUps = FollowUpStore(db: database)
         self.followUps = followUps
+        let followUpCandidates = FollowUpCandidateStore(db: database)
+        self.followUpCandidates = followUpCandidates
         askHistory = AskHistoryStore(db: database)
         notes = NotesStore(db: database)
         people = PeopleStore(db: database)
@@ -459,14 +462,33 @@ final class AppComposition {
             worker: EnrichmentWorker(
                 annotations: annotations, router: aiRouter, nowMs: nowMs
             ),
-            // Follow-up extraction (plan Part 4.5). `FollowUps.swift` was ported whole and then
-            // never called by anything, which is why every conversation truthfully reported
-            // "All caught up." — nothing had ever written a follow-up.
+            // Follow-ups are two passes over one store of candidates: extraction proposes from
+            // a single conversation, curation decides across all of them. Both are handed the
+            // conversation's own title and summary so the model reads a recording the way the
+            // Library shows it rather than as an anonymous wall of speech.
             followUps: FollowUpWorker(
-                items: ActionItemStore(db: database, nowMs: nowMs),
+                candidates: followUpCandidates,
                 state: try FollowUpExtractionStore(db: database),
                 router: aiRouter,
-                nowMs: nowMs
+                nowMs: nowMs,
+                timeZone: { .current },
+                contextOf: { conversationId in
+                    guard let annotation = try? await annotations.load(conversationId) else {
+                        return nil
+                    }
+                    return FollowUpConversationContext(
+                        title: annotation?.title, summary: annotation?.summary)
+                }
+            ),
+            curator: FollowUpCurator(
+                candidates: followUpCandidates,
+                followUps: followUps,
+                router: aiRouter,
+                nowMs: nowMs,
+                timeZone: { .current },
+                titleOf: { conversationId in
+                    (try? await annotations.load(conversationId))??.title
+                }
             ),
             annotations: annotations,
             store: store,
@@ -532,6 +554,10 @@ final class AppComposition {
         // relaunch found no manager, got no restored peripheral, and the whole restoration path
         // never ran once in production.
         let gattLink = CoreBluetoothAudioGattLink()
+        // Every Core Bluetooth transition now also lands in Detailed Logs. Without this the one
+        // screen a person can read on the phone said "Nothing logged yet" during the exact
+        // failure it exists for, because the adapter only ever wrote to NSLog.
+        gattLink.logSink = AppRuntimeLog.receiverLog
         gattLink.prepareForRestoration()
 
         let receiver = ReceiverService(
@@ -551,7 +577,8 @@ final class AppComposition {
             lossEvaluator: lossEvaluator,
             onStoreEvent: { wake.signal() },
             onCoverageTrigger: { await coverageTriggers.fire($0) },
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            sessionLog: AppRuntimeLog.receiverLog
         )
         self.receiver = receiver
 
@@ -561,6 +588,7 @@ final class AppComposition {
             annotations: annotations,
             aiOutputs: aiOutputs,
             followUps: followUps,
+            candidates: followUpCandidates,
             recaps: recap,
             enrichment: enrichment,
             index: index,
@@ -1007,8 +1035,11 @@ struct LocalModelLifecycle: LocalTranscriptionLifecycle {
 final class AppRuntimeLog: @unchecked Sendable {
     static let shared = AppRuntimeLog()
     static let runtimeLog = RuntimeLog { shared.record($0) }
+    /// The same ring, for the receiver stack (which cannot see `RuntimeLog` — it sits below
+    /// CompanionRuntime in the module graph).
+    static let receiverLog = ReceiverLog { shared.record($0) }
 
-    private static let capacity = 200
+    private static let capacity = 400
     private let lock = NSLock()
     private var lines: [String] = []
 

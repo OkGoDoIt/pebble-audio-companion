@@ -140,6 +140,9 @@ public actor CompanionRuntime {
     /// The watch's last Info read (handshake, and again after an enable prompt). Diagnostics
     /// only — it carries the firmware version and the send-backpressure counter, which is how
     /// the app tells airtime loss apart from a spool that never freed.
+    public nonisolated var orphanedFrameCount: StateSubject<Int> {
+        environment.receiver.orphanedFrameCount
+    }
     public nonisolated var watchInfo: StateSubject<InfoSnapshot?> {
         environment.receiver.watchInfo
     }

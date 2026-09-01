@@ -76,6 +76,12 @@ public struct AiPromptTemplate: Sendable, Equatable, Codable {
 }
 
 public struct AiRunRequest: Sendable {
+    /// `metadata` key naming a model for THIS call, overriding the user's global choice. Read
+    /// by the remote provider only; the on-device provider has one model and ignores it.
+    public static let modelKey = "model"
+    /// `metadata` key naming the reasoning effort for THIS call.
+    public static let reasoningEffortKey = "reasoningEffort"
+
     public let requestId: String
     public let prompt: AiPromptTemplate
     public let transcripts: [TranscriptExcerpt]

@@ -112,8 +112,14 @@ private final class FakeLocalProvider: TranscriptionProvider, @unchecked Sendabl
                 nowMs: { clock.nowMs }
             ),
             followUps: FollowUpWorker(
-                items: ActionItemStore(db: fixture.database, nowMs: { clock.nowMs }),
+                candidates: FollowUpCandidateStore(db: fixture.database),
                 state: try FollowUpExtractionStore(db: fixture.database),
+                router: nil,
+                nowMs: { clock.nowMs }
+            ),
+            curator: FollowUpCurator(
+                candidates: FollowUpCandidateStore(db: fixture.database),
+                followUps: FollowUpStore(db: fixture.database),
                 router: nil,
                 nowMs: { clock.nowMs }
             ),

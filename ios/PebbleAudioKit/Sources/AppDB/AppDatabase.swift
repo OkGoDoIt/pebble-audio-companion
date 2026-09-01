@@ -204,6 +204,78 @@ public struct AppDatabase: Sendable {
                 t.add(column: "conversationsInScope", .integer)
             }
         }
+        // Follow-ups grow up (session 105). The v1 table held a text blob and a done flag,
+        // which is why the feature could not say where an item came from, when it was due, or
+        // whether anyone still cared. Every column here is additive and nullable-or-defaulted,
+        // so an existing AUTHORITATIVE table keeps every row and every tick.
+        //
+        // `origin` replaces the old "does the id contain -action-" sniffing. That test was a
+        // guess about a string; this is a fact about a row, and it is what lets the UI say
+        // "you added this" and lets re-extraction leave hand-written items alone.
+        migrator.registerMigration("v5-follow-up-detail") { db in
+            try db.alter(table: "follow_ups") { t in
+                t.add(column: "quote", .text)
+                t.add(column: "why", .text)
+                t.add(column: "dueAtMs", .integer)
+                t.add(column: "priority", .integer).notNull().defaults(to: 1)
+                t.add(column: "sourceStartMs", .integer)
+                t.add(column: "sourceEndMs", .integer)
+                t.add(column: "completedAtMs", .integer)
+                t.add(column: "archivedAtMs", .integer)
+                t.add(column: "snoozedUntilMs", .integer)
+                t.add(column: "editedAtMs", .integer)
+                t.add(column: "origin", .text).notNull().defaults(to: "ai")
+            }
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups SET origin =
+                        CASE WHEN id LIKE '%-action-%' THEN 'ai' ELSE 'user' END
+                    """)
+            // A ticked row written before this has no completion time. Its creation time is
+            // the only honest stand-in, and leaving it NULL would drop every already-done
+            // item out of the Completed section entirely.
+            try db.execute(
+                sql: "UPDATE follow_ups SET completedAtMs = createdAtMs WHERE done = 1")
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS follow_ups_open
+                        ON follow_ups(done, archivedAtMs, createdAtMs)
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS follow_ups_conversation
+                        ON follow_ups(sourceConversationId)
+                    """)
+        }
+        // Extraction now proposes; a second pass decides. Candidates land here first so a
+        // conversation's raw proposals can be weighed against every other conversation's —
+        // which is the only place duplicates, supersessions and "this one matters more" are
+        // visible at all. DERIVED: dropping the table costs a re-extraction, never a row the
+        // user has seen.
+        migrator.registerMigration("v6-follow-up-candidates") { db in
+            try db.create(table: "follow_up_candidates") { t in
+                t.column("id", .text).primaryKey()
+                t.column("conversationId", .text).notNull()
+                t.column("segmentId", .text)
+                t.column("task", .text).notNull()
+                t.column("quote", .text)
+                t.column("why", .text)
+                t.column("confidence", .text)
+                t.column("dueAtMs", .integer)
+                t.column("startMs", .integer)
+                t.column("endMs", .integer)
+                t.column("createdAtMs", .integer).notNull()
+                /// pending | kept | dropped | merged
+                t.column("state", .text).notNull().defaults(to: "pending")
+                t.column("decidedAtMs", .integer)
+                t.column("reason", .text)
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS follow_up_candidates_state
+                        ON follow_up_candidates(state, createdAtMs)
+                    """)
+        }
         try migrator.migrate(writer)
     }
 }

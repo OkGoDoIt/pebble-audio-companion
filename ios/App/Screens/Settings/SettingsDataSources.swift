@@ -593,6 +593,9 @@ protocol DiagnosticsSource: AnyObject {
     /// Audio the watch could not hand over, as the watch counts it. `.unknown` while no watch
     /// has been read — the row is absent rather than guessing on the watch's behalf.
     var watchSend: WatchSendHealth { get }
+    /// Frames the watch sent while this app held no stream to put them in. Zero is the only
+    /// healthy value; anything else is audio the watch captured that never reached storage.
+    var orphanedFrames: Int { get }
     /// Rebuild-index progress, and a way to start one. The index is derived data, so this
     /// throws nothing away that cannot be written again from the database.
     var indexRebuild: IndexRebuildState { get }
@@ -630,6 +633,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var watchLink: DiagnosticLinkFault?
     /// The artboard case: a watch that reports the counter and has had a handful of refusals.
     var watchSend: WatchSendHealth = .refusals(3)
+    var orphanedFrames = 0
     var indexRebuild: IndexRebuildState = .idle
     var queueWaiting = 0
     var queueFailed = 0

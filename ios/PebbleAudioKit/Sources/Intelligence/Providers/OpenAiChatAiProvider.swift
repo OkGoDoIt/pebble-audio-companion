@@ -70,15 +70,25 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
             throw AiError.providerUnavailable(providerId: id)
         }
 
+        let requestedModel = request.metadata[AiRunRequest.modelKey]
+        let ceiling =
+            requestedModel.map { AiModels.byId($0).contextTokens * AskBudget.charsPerToken }
+            ?? maxInputChars()
         let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: maxInputChars())
+            request, maxInputChars: ceiling)
         let instructions = buildInstructions(request.prompt.systemPrompt)
 
+        // A caller may name a stronger model and more thinking for one specific job. Follow-up
+        // extraction and curation do: they are one call per conversation, they decide what a
+        // person sees on a list they trust, and the cheapest model reads ambient chatter as
+        // commitments. Everything else keeps the single user-chosen model.
         var payload: [String: Any] = [
-            "model": model(),
+            "model": request.metadata[AiRunRequest.modelKey] ?? model(),
             "instructions": instructions,
             "input": userContent,
-            "reasoning": ["effort": reasoningEffort],
+            "reasoning": [
+                "effort": request.metadata[AiRunRequest.reasoningEffortKey] ?? reasoningEffort
+            ],
         ]
         if let textConfig = responseTextConfig(for: request.prompt) {
             payload["text"] = textConfig
@@ -107,7 +117,7 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         }
         return AiProviderResult(
             text: text,
-            modelUsed: parsed.model ?? model(),
+            modelUsed: parsed.model ?? requestedModel ?? model(),
             inputTokens: parsed.usage?.inputTokens,
             outputTokens: parsed.usage?.outputTokens
         )
@@ -135,8 +145,16 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
 
     private func responseTextConfig(for prompt: AiPromptTemplate) -> [String: Any]? {
         switch prompt.id {
-        case AiPromptTemplates.actionItems.id:
-            return ["format": jsonSchemaFormat(name: "action_items", schema: actionItemsSchema())]
+        case AiPromptTemplates.followUpExtraction.id:
+            return [
+                "format": jsonSchemaFormat(
+                    name: FollowUpExtractionParser.schemaName, schema: followUpsSchema())
+            ]
+        case AiPromptTemplates.followUpCuration.id:
+            return [
+                "format": jsonSchemaFormat(
+                    name: FollowUpCurationParser.schemaName, schema: followUpCurationSchema())
+            ]
         case SegmentAnnotationPrompt.templateId, SegmentAnnotationPrompt.liveTemplateId:
             return [
                 "format": jsonSchemaFormat(
@@ -172,7 +190,10 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         ]
     }
 
-    private func actionItemsSchema() -> [String: Any] {
+    /// Extraction. Note what is NOT here: no `owner` (an item that needs one belongs to
+    /// somebody else) and no `sourceSegmentId` (the segment is found by matching the quote
+    /// against the transcripts, so a model cannot strand a row by inventing an id).
+    private func followUpsSchema() -> [String: Any] {
         [
             "type": "object",
             "additionalProperties": false,
@@ -183,18 +204,70 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
                     "items": [
                         "type": "object",
                         "additionalProperties": false,
-                        "required": ["task", "owner", "due", "sourceSegmentId"],
+                        "required": ["task", "quote", "ifForgotten", "dueDate", "confidence"],
                         "properties": [
                             "task": schemaString(
-                                "Concrete action or follow-up task. Empty only if omitted from items."),
-                            "owner": schemaString(
-                                "Responsible person or team if stated, otherwise empty string."),
-                            "due": schemaString("Deadline if stated, otherwise empty string."),
-                            "sourceSegmentId": schemaString(
-                                "Transcript segment id supporting the item, otherwise empty string."),
+                                "One plain imperative sentence naming the concrete thing to do."),
+                            "quote": schemaString(
+                                "One contiguous verbatim run from a single speaker turn that "
+                                    + "contains the commitment."),
+                            "ifForgotten": schemaString(
+                                "One short clause naming what concretely goes wrong if this "
+                                    + "never happens."),
+                            "dueDate": schemaString(
+                                "Real calendar date as YYYY-MM-DD, or empty string when the "
+                                    + "transcript states none."),
+                            "confidence": [
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description":
+                                    "How certain the action is unambiguous, owned by this "
+                                    + "person, and cleanly transcribed.",
+                            ],
                         ],
                     ],
-                ],
+                ]
+            ],
+        ]
+    }
+
+    private func followUpCurationSchema() -> [String: Any] {
+        [
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decisions"],
+            "properties": [
+                "decisions": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                            "index", "decision", "reason", "task", "priority", "dueDate",
+                        ],
+                        "properties": [
+                            "index": [
+                                "type": "integer",
+                                "description": "1-based index of the candidate being decided.",
+                            ],
+                            "decision": [
+                                "type": "string",
+                                "enum": ["keep", "drop", "duplicate"],
+                                "description": "What to do with this candidate.",
+                            ],
+                            "reason": schemaString("One clause explaining the decision."),
+                            "task": schemaString(
+                                "Rewritten task text, or empty string to keep the original."),
+                            "priority": [
+                                "type": "string",
+                                "enum": ["high", "normal", "low"],
+                                "description": "How much this wants to be looked at.",
+                            ],
+                            "dueDate": schemaString(
+                                "Real calendar date as YYYY-MM-DD, or empty string for none."),
+                        ],
+                    ],
+                ]
             ],
         ]
     }

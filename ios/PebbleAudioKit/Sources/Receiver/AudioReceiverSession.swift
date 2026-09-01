@@ -115,6 +115,7 @@ public actor AudioReceiverSession {
     private let resumeStore: ReceiverResumeStore
     private let config: ReceiverConfig
     private let clock: ReceiverClock
+    private let log: ReceiverLog
 
     /// The user's current capture intent. Drives the declarative reconcile after every
     /// (re)authorization, so restart is reliable regardless of what state the watch happened to
@@ -144,7 +145,8 @@ public actor AudioReceiverSession {
         config: ReceiverConfig,
         clock: ReceiverClock,
         captureIntent: @escaping @Sendable () -> CaptureIntent = { .active },
-        consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil
+        consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil,
+        log: ReceiverLog = .silent
     ) {
         self.link = link
         self.sink = sink
@@ -152,6 +154,7 @@ public actor AudioReceiverSession {
         self.resumeStore = resumeStore
         self.config = config
         self.clock = clock
+        self.log = log
         self.captureIntent = captureIntent
         self.consumeEnableRequestPermission =
             consumeEnableRequestPermission ?? { captureIntent() != .off }
@@ -275,11 +278,38 @@ public actor AudioReceiverSession {
     /// Wall time of the last inbound control/data notification; drives the keepalive idle check.
     private var lastInboundMs: Int64 = 0
 
+    /// Wall time of the last STREAM_DATA / STREAM_GAP that arrived with no stream to attach it to
+    /// — either no open stream at all, or one whose id we do not recognise.
+    ///
+    /// This is PROOF POSITIVE of the worst state this link can be in: the watch is spending its
+    /// battery encoding and sending audio, and this app is dropping every frame on the floor for
+    /// want of a STREAM_START it never received. Nothing else in the session notices it. The
+    /// frames are not checkpointed (there is no stream to checkpoint), so the watch's spool is
+    /// never trimmed and the audio is genuinely lost to overflow while both sides report health.
+    private var lastOrphanDataAtMs: Int64 = 0
+
+    /// Total frames dropped for want of a stream context, for diagnostics and the support report.
+    nonisolated public let orphanedFrameCount = StateSubject<Int>(0)
+
+    private func noteOrphanData(_ frames: Int) {
+        lastOrphanDataAtMs = clock.nowMs
+        orphanedFrameCount.value = orphanedFrameCount.value + max(frames, 1)
+    }
+
     private func noteInbound() {
         lastInboundMs = clock.nowMs
     }
 
     // --- evidence for the `.streaming` latch ----------------------------------------------------
+
+    /// Publishes a session state and narrates the transition. Every state assignment goes
+    /// through here so Detailed Logs carries the sequence a person needs to explain what the app
+    /// was doing while they were not looking at it.
+    private func setState(_ newState: ReceiverSessionState) {
+        guard state.value != newState else { return }
+        log("session \(describe(state.value)) -> \(describe(newState))")
+        state.value = newState
+    }
 
     /// Records that audio for the open stream just arrived. The ONLY refresher of the audio half
     /// of the evidence: control traffic (an ACK, an ERROR) proves the watch is talking to us, not
@@ -342,6 +372,7 @@ public actor AudioReceiverSession {
     /// card the only thing that knew, and nothing anywhere trying to fix it.
     private func runStreamVerify() async {
         var unanswered = 0
+        var missingStream = 0
         while true {
             do {
                 try await clock.sleep(ms: config.streamVerifyIntervalMs)
@@ -349,10 +380,17 @@ public actor AudioReceiverSession {
                 return // cancelled with the connection
             }
             if Task.isCancelled { return }
-            guard authorized, stream != nil else {
+            guard authorized else {
                 unanswered = 0
+                missingStream = 0
                 continue
             }
+            guard stream != nil else {
+                unanswered = 0
+                if await checkForAStreamWeShouldHave(strikes: &missingStream) { return }
+                continue
+            }
+            missingStream = 0
             let lastAudio = streamEvidence.value.lastAudioAtMs ?? 0
             guard clock.nowMs - lastAudio >= Self.verifyAfterSilenceMs else {
                 // Audio is arriving; the link is manifestly fine.
@@ -371,9 +409,50 @@ public actor AudioReceiverSession {
             // consequences: drop this connection and build a fresh one, keeping the intent to
             // stay connected. The watch re-delivers from its spool, so nothing it captured
             // meanwhile is lost to the reconnect itself.
+            log("rebuilding the link: \(unanswered) verifies unanswered during a believed-open stream")
             link.resync()
             return
         }
+    }
+
+    /// Authorized, with NO open stream — and whether that is fine or is the worst state this app
+    /// can be in depends entirely on what the watch is doing.
+    ///
+    /// Ordinarily it is fine: the watch is idle, paused, or has Background Audio off, so there is
+    /// no stream to have and nothing to fix. It is a FAULT when the watch is capturing anyway,
+    /// because then it is streaming audio at a receiver that cannot attach a single frame of it.
+    ///
+    /// NOTHING ELSE IN THE SESSION COVERS THIS. `runStreamVerify`'s other arm requires an open
+    /// stream by definition. The keepalive is satisfied — a watch in this state answers every
+    /// RECEIVER_HEALTH ping perfectly well, and answering is all the keepalive asks for. And the
+    /// status card said "Authorized and ready. Waiting for the watch to start streaming.", which
+    /// reads like a calm, transient handshake step rather than the indefinite deadlock it was.
+    /// The user's report is the shape of it exactly: the watch says Streaming, the app says it is
+    /// waiting for the watch, and it stays that way until a human intervenes.
+    ///
+    /// The cure is a fresh receiver session, because the watch re-announces STREAM_START on
+    /// authorization. Returns true when it forced one.
+    private func checkForAStreamWeShouldHave(strikes: inout Int) async -> Bool {
+        let heardOrphanAudio = lastOrphanDataAtMs > 0
+            && clock.nowMs - lastOrphanDataAtMs <= Self.orphanDataMaxAgeMs
+        // Ask rather than trust. The last report may be minutes old, and the answer is the whole
+        // discriminator between a watch that is idle and a watch that is recording into a void.
+        _ = await verifyWatchState()
+        let watchIsCapturing = streamEvidence.value.watchReportedStreaming
+        guard heardOrphanAudio || watchIsCapturing else {
+            strikes = 0
+            return false
+        }
+        strikes += 1
+        log(
+            "watch is capturing but this app has no stream"
+                + " (strike \(strikes)/\(Self.missingStreamMaxStrikes)"
+                + (heardOrphanAudio ? ", audio arriving with nowhere to put it" : "") + ")"
+        )
+        guard strikes >= Self.missingStreamMaxStrikes else { return false }
+        log("rebuilding the link: the watch is recording and we are not receiving it")
+        link.resync()
+        return true
     }
 
     // Per-connection child tasks (the Kotlin connection coroutineScope's children).
@@ -436,6 +515,7 @@ public actor AudioReceiverSession {
             } else {
                 failures += 1
                 if failures >= config.keepaliveMaxFailures {
+                    log("rebuilding the link: \(failures) keepalive pings unanswered")
                     link.resync()
                     return
                 }
@@ -589,7 +669,7 @@ public actor AudioReceiverSession {
         // Session torn down (runtime stop / revoke / task cancelled): the published state must
         // not keep claiming the last live state. onLinkDown runs regardless of cancellation.
         await onLinkDown()
-        state.value = .disconnected
+        setState(.disconnected)
         watchServiceState.value = nil
     }
 
@@ -598,14 +678,14 @@ public actor AudioReceiverSession {
         case .disconnected:
             await onLinkDown()
             if let failure = link.lastFailure.value {
-                state.value = .connectionFailed(kind: failure.kind, detail: failure.detail)
+                setState(.connectionFailed(kind: failure.kind, detail: failure.detail))
             } else {
-                state.value = .disconnected
+                setState(.disconnected)
             }
             watchServiceState.value = nil
         case .connecting:
             await onLinkDown()
-            state.value = .connecting
+            setState(.connecting)
         case .ready:
             await runConnection()
         }
@@ -650,7 +730,7 @@ public actor AudioReceiverSession {
     }
 
     private func connectionHandshake(abort: OneShot<Bool>) async throws {
-        state.value = .authorizing
+        setState(.authorizing)
 
         switch AudioCompanionProtocol.decodeInfo(try await link.readInfo()) {
         case .decoded(let message):
@@ -672,10 +752,10 @@ public actor AudioReceiverSession {
 
         if captureIntent() != .off && watchInfo.value?.enabled == false {
             if !consumeEnableRequestPermission() {
-                state.value = .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+                setState(.denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue)))
                 return
             }
-            state.value = .pendingEnable
+            setState(.pendingEnable)
             let enabled = await sendControlAwaitAck(
                 requireAuthorized: false,
                 ackWaitMs: Self.enableRequestAckWaitMs
@@ -683,11 +763,11 @@ public actor AudioReceiverSession {
                 EnableRequest(requestToken: token).encode()
             }
             if !enabled {
-                state.value = .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+                setState(.denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue)))
                 return
             }
             await refreshInfoSnapshot()
-            state.value = .authorizing
+            setState(.authorizing)
         }
 
         guard let token = takeToken() else {
@@ -737,7 +817,7 @@ public actor AudioReceiverSession {
                 // matters now that the error is read: a stale ERROR from an earlier connection
                 // would otherwise keep explaining a link that is working.
                 lastProtocolError.value = nil
-                state.value = .authorized
+                setState(.authorized)
                 if dataTask == nil {
                     let dataStream = link.dataNotifications
                     dataTask = Task { await self.consumeData(dataStream, abort: abort) }
@@ -750,11 +830,11 @@ public actor AudioReceiverSession {
             case .some(.pendingUserConsent):
                 // Token stays in flight: the watch pushes a second AUTH_RESULT with the same
                 // token once the consent prompt resolves.
-                state.value = .pendingConsent
+                setState(.pendingConsent)
             default:
                 inFlightToken = nil
                 authorized = false
-                state.value = .denied(statusRaw: Int(result.statusRaw))
+                setState(.denied(statusRaw: Int(result.statusRaw)))
             }
         case let ack as Ack:
             if ack.requestToken == inFlightToken {
@@ -767,7 +847,7 @@ public actor AudioReceiverSession {
             authorized = false
             dataTask?.cancel()
             dataTask = nil
-            state.value = .revoked(reasonRaw: Int(revoked.reasonRaw))
+            setState(.revoked(reasonRaw: Int(revoked.reasonRaw)))
         case let changed as StateChanged:
             noteWatchReport(Int(changed.serviceStateRaw))
             // Safety net for a watch that pauses (policy) after we authorized: if the user
@@ -866,11 +946,22 @@ public actor AudioReceiverSession {
             )
             stream = StreamContext(start: start, nowMs: clock.nowMs)
             noteAudioArrived()
-            state.value = .streaming(streamId: start.streamId)
+            setState(.streaming(streamId: start.streamId))
         case let data as StreamData:
+            guard let ctx = stream, ctx.streamId == data.streamId else {
+                // Audio for a stream we cannot attach. Deliberately NOT counted as
+                // `noteAudioArrived`: nothing was stored, so treating it as evidence of a healthy
+                // recording is precisely the lie that let this state persist for hours.
+                noteOrphanData(data.frameCount)
+                return
+            }
             noteAudioArrived()
             try await handleStreamData(data)
         case let gap as StreamGap:
+            guard let ctx = stream, ctx.streamId == gap.streamId else {
+                noteOrphanData(1)
+                return
+            }
             noteAudioArrived()
             try await handleStreamGap(gap)
         case let stop as StreamStop:
@@ -887,7 +978,7 @@ public actor AudioReceiverSession {
             // leaving stale audio timestamps behind would vouch for the next stream's first
             // seconds before any of its audio had arrived.
             streamEvidence.value = .none
-            state.value = .authorized
+            setState(.authorized)
         default:
             break
         }
@@ -1132,4 +1223,31 @@ public actor AudioReceiverSession {
     /// verify cadence: a minute of a watch saying nothing to a direct question, which no
     /// ordinary quiet, roaming or momentary radio trouble survives.
     static let verifyMaxFailures = 3
+
+    /// How recently audio must have arrived with nowhere to put it for that to still count as
+    /// evidence. Two verify cycles, so one batch that raced a STREAM_STOP ages out on its own
+    /// instead of being read as a fault.
+    static let orphanDataMaxAgeMs: Int64 = 40_000
+
+    /// Consecutive confirmations, at the verify cadence, that the watch is capturing while this
+    /// app holds no stream, before the link is rebuilt. Two — about forty seconds — so the
+    /// ordinary sub-second gap between one stream ending and the next beginning can never be
+    /// mistaken for the deadlock, while the deadlock itself never outlives a minute.
+    static let missingStreamMaxStrikes = 2
+}
+
+/// Short, stable words for a session state — for the log, never for the screen.
+private func describe(_ state: ReceiverSessionState) -> String {
+    switch state {
+    case .disconnected: return "disconnected"
+    case .connecting: return "connecting"
+    case .connectionFailed(let kind, _): return "connectionFailed(\(kind))"
+    case .authorizing: return "authorizing"
+    case .pendingConsent: return "pendingConsent"
+    case .pendingEnable: return "pendingEnable"
+    case .denied(let raw): return "denied(\(raw))"
+    case .authorized: return "authorized"
+    case .streaming(let id): return "streaming(\(id))"
+    case .revoked(let raw): return "revoked(\(raw))"
+    }
 }

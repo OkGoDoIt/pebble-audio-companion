@@ -56,7 +56,7 @@ import Testing
         #expect(try await store.toggle(id: item.id) == true)
         #expect(try await store.openCount() == 0)
         #expect(try await store.toggle(id: item.id) == false)
-        let open = try await store.list(done: false)
+        let open = try await store.list(scope: .open, nowMs: 1_000)
         #expect(open.map(\.id) == [item.id])
         #expect(open[0].sourceConversationId == "c1")
     }

@@ -622,6 +622,9 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var watchLink: DiagnosticLinkFault?
     /// Audio the watch could not hand over, from the watch's own counter (Info `flags` bit3).
     private(set) var watchSend: WatchSendHealth = .unknown
+    /// Frames the watch sent us while we held no stream to put them in. Always a fault: it is
+    /// audio the watch spent battery capturing that this app then had nowhere to store.
+    private(set) var orphanedFrames = 0
     private(set) var indexRebuild: IndexRebuildState = .idle
     private(set) var queueWaiting = 0
     private(set) var queueFailed = 0
@@ -677,7 +680,11 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         enrichmentWaiting = diagnostics.conversationsAwaitingEnrichment
         enrichmentRunning = diagnostics.enrichmentRunning
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
-        receiverStatus = Self.receiverLine(composition.runtime.receiverState.value)
+        receiverStatus = Self.receiverLine(
+            composition.runtime.receiverState.value,
+            watchServiceStateRaw: composition.runtime.watchServiceState.value
+        )
+        orphanedFrames = composition.runtime.orphanedFrameCount.value
         watchLink = Self.linkFault(composition)
         watchSend = Self.sendHealth(composition.runtime.watchInfo.value)
         let metas = composition.files.listSegments()
@@ -809,9 +816,19 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     }
 
     /// Plain language only — no protocol vocabulary on this row.
-    private static func receiverLine(_ state: ReceiverSessionState) -> String {
+    ///
+    /// The watch's own report is part of the answer, not a separate row to be read alongside it.
+    /// This screen used to show "Connected, waiting for audio" next to "Watch reports: Recording"
+    /// and leave the reader to notice that those two cannot both be fine.
+    private static func receiverLine(
+        _ state: ReceiverSessionState, watchServiceStateRaw: Int?
+    ) -> String {
+        let watchIsRecording = watchServiceStateRaw
+            .flatMap { $0 >= 0 && $0 <= Int(UInt8.max) ? ServiceState(rawValue: UInt8($0)) : nil }
+            == .streaming
         switch state {
         case .streaming: return Copy.Settings.Diagnostics.receiverRecording
+        case .authorized where watchIsRecording: return "Not receiving — the watch is recording"
         case .authorized: return "Connected, waiting for audio"
         case .authorizing, .connecting: return "Connecting"
         case .pendingConsent, .pendingEnable: return "Waiting for the watch"
