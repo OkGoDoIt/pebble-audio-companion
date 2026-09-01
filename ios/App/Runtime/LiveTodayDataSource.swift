@@ -142,9 +142,14 @@ final class LiveTodayDataSource {
 
         let sections = (try? await composition.runtime.library.library()) ?? []
         let todaySection = sections.first { $0.dateKey == dateKey }
+        // `.open` INCLUDES snoozed rows — the Follow-ups list wants them, sectioned under "Put
+        // off". Today does not: something deliberately deferred is by definition not on today's
+        // list, and a row that came back the moment you put it off read as the snooze failing.
+        // Filtering here rather than at the query keeps `openFollowUpCount` honest too — it was
+        // counting deferred items into "See all N".
         let openFollowUps =
-            (try? await composition.followUps.list(scope: .open, nowMs: composition.clock.nowMs))
-            ?? []
+            ((try? await composition.followUps.list(scope: .open, nowMs: nowMs)) ?? [])
+            .filter { ($0.snoozedUntilMs ?? 0) <= nowMs }
         let followUps = await Self.followUpItems(
             Array(openFollowUps.prefix(Self.followUpsShown)), composition: composition)
         let recap = try? await composition.recapStore.load(dateKey: dateKey)

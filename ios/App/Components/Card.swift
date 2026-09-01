@@ -22,6 +22,10 @@ struct Card<Content: View>: View {
 /// never after the last row (the divider rule is enforced here, not by callers).
 struct ListCard<Content: View>: View {
     var rowVerticalPadding: CGFloat = 12
+    /// The inset the card puts around each row. A `SwipeRow` passes `0` for both paddings and
+    /// takes them on inside its own content instead: its action buttons have to reach the
+    /// card's edges, and a row inset by the card can only ever slide within the inset.
+    var rowHorizontalPadding: CGFloat = 16
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -31,13 +35,16 @@ struct ListCard<Content: View>: View {
                     subviews[index]
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, rowVerticalPadding)
+                        .padding(.horizontal, rowHorizontalPadding)
                     if index < subviews.count - 1 {
+                        // Inset by the card's own 16 whatever the rows do, so the hairline
+                        // still starts where the text does.
                         Rectangle().fill(Tokens.hairline).frame(height: 0.5)
+                            .padding(.horizontal, 16)
                     }
                 }
             }
         }
-        .padding(.horizontal, 16)
         .background(Tokens.surface)
         .clipShape(RoundedRectangle(cornerRadius: Tokens.cardRadius))
     }

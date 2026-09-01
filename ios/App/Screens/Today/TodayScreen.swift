@@ -7,6 +7,9 @@ struct TodayScreen: View {
     @Environment(AppRouter.self) private var router
     @State private var viewModel = TodayViewModel()
     @State private var poppedSpan: CoverageSpanDisplay?
+    /// Which follow-up row is showing its swipe actions — at most one at a time, card-wide.
+    @State private var openSwipeRow: String?
+    @State private var snackbar: SnackbarItem?
 
     var body: some View {
         ScrollView {
@@ -37,6 +40,7 @@ struct TodayScreen: View {
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
         }
+        .snackbar(item: $snackbar)
         .task { await viewModel.observe() }
     }
 
@@ -275,28 +279,117 @@ struct TodayScreen: View {
                 }
                 .padding(.top, 4)
 
-                ListCard(rowVerticalPadding: 10) {
+                // The rows draw their own inset: a `SwipeRow`'s buttons have to reach the
+                // card's edges, and a row the card has inset can only slide within that inset.
+                ListCard(rowVerticalPadding: 0, rowHorizontalPadding: 0) {
                     ForEach(viewModel.visibleFollowUps) { item in
                         followUpRow(item)
                     }
                 }
+                .animation(
+                    Motion.animation(.snappy(duration: 0.25)),
+                    value: viewModel.visibleFollowUps.map { "\($0.id)\($0.done)" }.joined())
             }
         }
     }
 
+    /// Tick, put off, delete — by swipe, by long press, and by VoiceOver action, exactly as on
+    /// the Follow-ups tab. Two rows that look identical must not behave differently depending on
+    /// which of them happens to live inside a `List`.
     private func followUpRow(_ item: FollowUpItem) -> some View {
-        Button {
-            router.todayPath.append(.followUp(id: item.id))
-        } label: {
-            FollowUpRow(item: item, now: viewModel.now) {
-                Haptics.checkedOff()
-                withAnimation(Motion.animation(.snappy(duration: 0.25))) {
-                    viewModel.toggleFollowUp(item)
+        SwipeRow(
+            rowID: item.id,
+            leading: [
+                SwipeAction(
+                    id: "done", title: item.done ? Copy.FollowUps.markNotDone : Copy.FollowUps.markDone,
+                    systemImage: item.done ? "arrow.uturn.backward" : "checkmark",
+                    tint: Tokens.good
+                ) { toggle(item) }
+            ],
+            trailing: trailingActions(item),
+            openRow: $openSwipeRow
+        ) {
+            Button {
+                router.todayPath.append(.followUp(id: item.id))
+            } label: {
+                FollowUpRow(item: item, now: viewModel.now) { toggle(item) }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Copy.A11y.followUpOpenHint)
+        }
+        // Swipe is never the only path to an action: the same three live in a long-press menu,
+        // where they are discoverable without guessing.
+        .contextMenu {
+            Button {
+                toggle(item)
+            } label: {
+                Label(
+                    item.done ? Copy.FollowUps.markNotDone : Copy.FollowUps.markDone,
+                    systemImage: item.done ? "arrow.uturn.backward" : "checkmark.circle")
+            }
+            if !item.done {
+                Menu {
+                    Button(Copy.FollowUps.snoozeTomorrow) { snooze(item, until: viewModel.tomorrow) }
+                    Button(Copy.FollowUps.snoozeNextWeek) { snooze(item, until: viewModel.nextWeek) }
+                } label: {
+                    Label(Copy.FollowUps.snooze, systemImage: "clock.badge")
                 }
             }
+            Divider()
+            Button(role: .destructive) {
+                delete(item)
+            } label: {
+                Label(Copy.FollowUps.delete, systemImage: "trash")
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityHint(Copy.A11y.followUpOpenHint)
+    }
+
+    /// Delete first, so it is the edge-most button and the one a full swipe commits to — the
+    /// order `swipeActions` gives the same row on the Follow-ups tab.
+    private func trailingActions(_ item: FollowUpItem) -> [SwipeAction] {
+        var actions = [
+            SwipeAction(
+                id: "delete", title: Copy.FollowUps.delete, systemImage: "trash",
+                tint: Tokens.destructive, isDestructive: true
+            ) { delete(item) }
+        ]
+        if !item.done {
+            actions.append(
+                SwipeAction(
+                    id: "snooze", title: Copy.FollowUps.snooze, systemImage: "clock.badge",
+                    tint: Tokens.attention
+                ) { snooze(item, until: viewModel.tomorrow) })
+        }
+        return actions
+    }
+
+    private func toggle(_ item: FollowUpItem) {
+        Haptics.checkedOff()
+        viewModel.toggleFollowUp(item)
+    }
+
+    /// Destructive, so it is undoable. The snackbar is the app's standing undo affordance and
+    /// the only thing between a mis-swipe and a lost commitment.
+    private func delete(_ item: FollowUpItem) {
+        viewModel.deleteFollowUp(item)
+        snackbar = SnackbarItem(
+            message: Copy.FollowUps.deleted, actionTitle: Copy.Common.undo
+        ) {
+            viewModel.undoDeleteFollowUp(item)
+        }
+    }
+
+    /// Undoable like the delete: putting something off is a decision, and a mis-swipe is easy.
+    private func snooze(_ item: FollowUpItem, until date: Date) {
+        viewModel.snoozeFollowUp(item, until: date)
+        snackbar = SnackbarItem(
+            message: Copy.FollowUps.putOff(FollowUpFormatting.day(date, now: viewModel.now)),
+            actionTitle: Copy.Common.undo
+        ) {
+            viewModel.snoozeFollowUp(item, until: nil)
+        }
     }
 
     // MARK: Conversations (live row w/ rolling snippet + Live badge; finished rows)
