@@ -97,6 +97,32 @@ struct AppRouterTests {
         #expect(router.consumePendingAsk() == nil)
     }
 
+    /// One Ask conversation is a pushed child screen, so it is a route: back and the edge
+    /// swipe are the system's, and history rows and new questions both go through it.
+    @Test func anAskConversationIsPushedOntoTheAskTab() {
+        let router = AppRouter()
+        router.selectedTab = .today
+        router.navigate(to: .askThread(id: "thread-7", question: nil))
+
+        #expect(router.selectedTab == .ask)
+        #expect(router.askPath == [.askThread(id: "thread-7", question: nil)])
+        #expect(router.pendingAsk == nil)
+    }
+
+    /// Both halves of the route survive the URL — the id that names a saved conversation, and
+    /// the question a brand-new one opens with.
+    @Test func theAskConversationRouteRoundTripsThroughItsURL() throws {
+        for route in [
+            Route.askThread(id: "thread-7", question: nil),
+            Route.askThread(id: nil, question: "what did we decide"),
+        ] {
+            #expect(Route.parse(route.url) == route)
+        }
+        // A link naming neither is not a conversation, and must not open an empty one.
+        let empty = try #require(URL(string: "companion://askthread"))
+        #expect(Route.parse(empty) == nil)
+    }
+
     @Test func followUpsOpenInTheirOwnTab() {
         let router = AppRouter()
         router.selectedTab = .today

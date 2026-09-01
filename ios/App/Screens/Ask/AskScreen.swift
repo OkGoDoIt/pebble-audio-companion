@@ -1,26 +1,17 @@
 import SwiftUI
 import AppDB
 
-/// The Ask tab (mockup 2.8 + plan 6.6) — always context-scoped, scope always visible
-/// (anti-B5). Initial state: composer + Recent (Q18). Citations tap through to the cited
-/// conversation.
+/// The Ask tab's ROOT (mockup 2.8 + plan 6.6) — always context-scoped, scope always visible
+/// (anti-B5). It is a list of past conversations plus a composer, and nothing else.
 ///
-/// Ask is a CONVERSATION: every turn stays on screen and every follow-up is answered with the
-/// earlier turns as context, so "so what's the plan?" means what it means in a chat. Recent
-/// lists whole conversations, and reopening one restores all of it.
-///
-/// It was a 620 pt sheet behind a pill on Today. A sheet is a thing you dismiss, and it took
-/// the whole conversation with it: no back, no history you could return to mid-thought, and a
-/// citation tap had to close the answer you were reading in order to show you its source.
-/// A tab keeps the thread, and a citation now pushes the recording on top of it.
+/// A conversation is a child screen (`AskThreadScreen`), pushed onto the tab's stack: opening
+/// one from Recent and starting a new one both push, so both come back with the system back
+/// button or an edge swipe. Before this, the root swapped its own body between "Recent" and
+/// "a thread" and offered a bespoke "New" button as the only way back — a screen you left by
+/// pressing a word in the corner, with the swipe doing nothing and the back chevron absent.
 struct AskScreen: View {
     @Environment(AppRouter.self) private var router
-    @State private var model = AskViewModel()
-
-    /// Scroll target that keeps the newest turn in view as the conversation grows.
-    /// Anchor for the turn being asked, so a question in flight scrolls to the same place its
-    /// answer will occupy.
-    private let pendingAnchor = "ask-thread-pending"
+    @State private var model = AskHomeViewModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -29,7 +20,10 @@ struct AskScreen: View {
             Spacer(minLength: 0)
 
             if model.hasContent {
-                composer
+                AskComposer(
+                    text: $model.draft,
+                    placeholder: Copy.Ask.title,
+                    send: ask)
             }
         }
         .padding(.horizontal, Tokens.screenMargin)
@@ -37,13 +31,6 @@ struct AskScreen: View {
         .background(Tokens.ground)
         .navigationTitle(Copy.Ask.title)
         .toolbar {
-            if model.isInThread {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(Copy.Ask.newConversation) { model.startNewConversation() }
-                        .accessibilityHint(Copy.A11y.newConversationHint)
-                }
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 // Chromeless: the toolbar draws its own capsule on iOS 26, and the pill
                 // ScopeMenu paints for Search would sit inside it as a second one.
@@ -53,18 +40,32 @@ struct AskScreen: View {
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
         }
-        .task { await model.prepare(route: router.consumePendingAsk()) }
+        .task {
+            await model.reloadRecent()
+            open(pending: router.consumePendingAsk())
+        }
         // A second "Ask about this conversation" while the tab is already open has to re-scope
         // and re-ask. Nothing re-reads a route on a screen that never went away.
         .onChange(of: router.pendingAsk) { _, pending in
             guard pending != nil else { return }
-            model.accept(route: router.consumePendingAsk())
+            open(pending: router.consumePendingAsk())
+        }
+        // Recent is only correct while it is on screen: a conversation had somewhere else
+        // gains turns, and a brand-new one does not exist here until it has been answered.
+        .onChange(of: router.askPath.isEmpty) { _, isEmpty in
+            guard isEmpty else { return }
+            Task { await model.reloadRecent() }
         }
     }
 
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
+        case .askThread(let id, let question):
+            // The scope travels as a binding rather than in the route: a follow-up asked in
+            // the thread is scoped the way the tab is scoped, and changing it there is the
+            // same change coming back.
+            AskThreadScreen(threadId: id, openingQuestion: question, scope: $model.scope)
         case .conversation(let id, let atMs, let focus):
             ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
         case .note(let id):
@@ -72,6 +73,30 @@ struct AskScreen: View {
         default:
             Color.clear.background(Tokens.ground)
         }
+    }
+
+    // MARK: - Asking
+
+    /// A new question opens its own screen and is asked there, so the thread you were reading
+    /// (if you came back from one) is not the thing that answers it.
+    private func ask() {
+        let question = model.draft.trimmingCharacters(in: .whitespaces)
+        guard !question.isEmpty else { return }
+        model.draft = ""
+        Haptics.sent()
+        router.askPath.append(.askThread(id: nil, question: question))
+    }
+
+    /// Applies an incoming `.ask` link: re-scope, and open a conversation straight away when
+    /// it carried a question. A link that carries only a scope leaves you on Recent with the
+    /// composer ready, rather than in an empty thread.
+    private func open(pending route: Route?) {
+        guard case .ask(let scopeKey, let query)? = route else { return }
+        model.scope = AskScope.parse(scopeKey) { id in
+            AskLibraryDataSources.current.ask.conversationTitle(citedId: id)
+        }
+        let question = query?.trimmingCharacters(in: .whitespaces) ?? ""
+        router.askPath = question.isEmpty ? [] : [.askThread(id: nil, question: question)]
     }
 
     // MARK: - States
@@ -84,91 +109,9 @@ struct AskScreen: View {
                 .foregroundStyle(Tokens.tertiary)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 60)
-        } else if model.isInThread {
-            threadView
         } else {
             recentList
         }
-    }
-
-    // MARK: - The conversation
-
-    private var threadView: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(model.turns, id: \.id) { turn in
-                        answeredTurn(turn).id(turn.id)
-                    }
-
-                    if let question = model.pendingQuestion {
-                        VStack(alignment: .leading, spacing: 10) {
-                            questionText(question)
-                            Card {
-                                HStack {
-                                    Spacer()
-                                    ProgressView()
-                                    Spacer()
-                                }
-                                .padding(.vertical, 24)
-                            }
-                        }
-                        .accessibilityLabel(Copy.A11y.askThinking(question))
-                        .id(pendingAnchor)
-                    } else if let question = model.failedQuestion {
-                        VStack(alignment: .leading, spacing: 10) {
-                            questionText(question)
-                            Card {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text(Copy.Ask.didNotGoThrough)
-                                        .font(AppFont.subBody)
-                                        .foregroundStyle(Tokens.tertiary)
-                                    Button(Copy.Common.retry) { model.retry() }
-                                        .buttonStyle(.smallBordered)
-                                }
-                            }
-                        }
-                        .id(pendingAnchor)
-                    }
-
-                    // Room below the last turn so its question can actually reach the top of the
-                    // scroll view — without it, a short final answer cannot scroll far enough and
-                    // lands mid-screen.
-                    Color.clear.frame(height: 400)
-                }
-            }
-            .onChange(of: model.threadProgress) { _, _ in
-                // To the TOP of the newest turn, not the bottom of the thread. An answer can run
-                // to several screens, and landing at its end means reading it backwards: the
-                // first thing you want to see is the question you asked and the sentence that
-                // answers it.
-                withAnimation(Motion.animation(.snappy(duration: 0.25))) {
-                    proxy.scrollTo(newestAnchor, anchor: .top)
-                }
-            }
-        }
-    }
-
-    /// The turn the thread should be showing: the one in flight, else the newest answered one.
-    private var newestAnchor: String {
-        model.pendingQuestion != nil || model.failedQuestion != nil
-            ? pendingAnchor
-            : (model.turns.last?.id ?? pendingAnchor)
-    }
-
-    private func answeredTurn(_ entry: AskEntry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            questionText(entry.question)
-            Card { answerBody(entry) }
-        }
-    }
-
-    private func questionText(_ question: String) -> some View {
-        Text(question)
-            .font(AppFont.headline)
-            .foregroundStyle(Tokens.label)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Recent (Q18)
@@ -209,44 +152,59 @@ struct AskScreen: View {
     }
 
     /// A row is a whole past conversation: the question it opened with, and how far it got.
+    /// It pushes — hence the chevron, which is the only honest promise about what a tap does.
     private func recentRow(_ thread: AskThread) -> some View {
         Button {
-            model.reopen(thread)
+            router.askPath.append(.askThread(id: thread.id, question: nil))
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(thread.openingQuestion)
-                        .font(AppFont.rowTitle)
-                        .foregroundStyle(Tokens.label)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Text(TimeFmt.relative(
-                        Date(timeIntervalSince1970: Double(thread.updatedAtMs) / 1000)))
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.faint)
-                }
-                HStack(spacing: 6) {
-                    if thread.turns.count > 1 {
-                        Text(Copy.Ask.followUpCount(thread.turns.count - 1))
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(thread.openingQuestion)
+                            .font(AppFont.rowTitle)
+                            .foregroundStyle(Tokens.label)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text(TimeFmt.relative(
+                            Date(timeIntervalSince1970: Double(thread.updatedAtMs) / 1000)))
                             .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
+                            .foregroundStyle(Tokens.faint)
                     }
-                    Text(answerPreview(thread.lastTurn?.answerText ?? ""))
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.tertiary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if thread.turns.count > 1 {
+                            Text(Copy.Ask.followUpCount(thread.turns.count - 1))
+                                .font(AppFont.footnote)
+                                .foregroundStyle(Tokens.meta)
+                        }
+                        Text(AskAnswerPreview.line(thread.lastTurn?.answerText ?? ""))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.tertiary)
+                            .lineLimit(1)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Tokens.chevron)
+                    .padding(.top, 3)
+                    .accessibilityHidden(true)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityHint(Copy.A11y.openAskThreadHint)
     }
+}
 
-    private func answerPreview(_ text: String) -> String {
+// MARK: - Recent row preview text
+
+enum AskAnswerPreview {
+    /// One-line history row: drop citations, list/heading markers and emphasis so the preview
+    /// reads as a sentence rather than as Markdown source.
+    static func line(_ text: String) -> String {
         let withoutCitations = text.replacingOccurrences(
             of: " ?\\[\\d+\\]", with: "", options: .regularExpression)
-        // One-line history row: drop list/heading markers and emphasis so the preview reads
-        // as a sentence rather than as Markdown source.
         let firstLine =
             withoutCitations
             .split(separator: "\n")
@@ -257,159 +215,50 @@ struct AskScreen: View {
             options: .regularExpression)
         return InlineMarkdown.plainText(unmarked)
     }
+}
 
-    // MARK: - Answer
+// MARK: - Composer (shared by the root and the open conversation)
 
-    /// Sources expand per turn, so opening one answer's moments does not fold another's.
-    @ViewBuilder
-    private func answerBody(_ entry: AskEntry) -> some View {
-        let showSources = model.expandedSources.contains(entry.id)
-        VStack(alignment: .leading, spacing: 10) {
-            MarkdownText(entry.answerText, lineSpacing: 7) { number in
-                openCitation(entry: entry, number: number)
-            }
+/// The ask field. Dismisses the keyboard on send: on the root the answer is arriving on a
+/// screen that is about to be pushed over it, and in a thread the point of sending is to read
+/// what comes back.
+struct AskComposer: View {
+    @Binding var text: String
+    var placeholder: String
+    var isSending: Bool = false
+    var send: () -> Void
 
-            // An answer drawn from part of the range says so, in the same calm register the
-            // rest of the app uses for missing audio. Complete answers say nothing — a note on
-            // every answer would be noise, and shortfall is the case that changes what the
-            // answer means.
-            if entry.isPartialCoverage,
-                let read = entry.conversationsRead, let inScope = entry.conversationsInScope
-            {
-                Text(Copy.Ask.partialCoverage(read: read, inScope: inScope))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !entry.citations.isEmpty {
-                Rectangle().fill(Tokens.hairline).frame(height: 0.5)
-                Button {
-                    withAnimation(Motion.animation(.snappy(duration: 0.2))) {
-                        model.toggleSources(entry)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(momentsLabel(entry))
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Tokens.chevron)
-                            .rotationEffect(.degrees(showSources ? 90 : 0))
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if showSources {
-                    ForEach(sources(entry), id: \.number) { source in
-                        Button {
-                            open(citation: source.citation)
-                        } label: {
-                            HStack(spacing: 8) {
-                                CitationChip(number: source.number)
-                                Text(source.title)
-                                    .font(AppFont.footnote)
-                                    .foregroundStyle(Tokens.tint)
-                                Spacer(minLength: 0)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    private struct Source {
-        let citation: AskCitation
-        let title: String
-
-        var number: Int { citation.number }
-    }
-
-    private func sources(_ entry: AskEntry) -> [Source] {
-        entry.citations.map { citation in
-            Source(
-                citation: citation,
-                title: AskLibraryDataSources.current.ask
-                    .conversationTitle(citedId: citation.segmentId) ?? "Conversation")
-        }
-    }
-
-    private func momentsLabel(_ entry: AskEntry) -> String {
-        let titles = sources(entry).map(\.title)
-        var unique: [String] = []
-        for title in titles where !unique.contains(title) { unique.append(title) }
-        return Copy.Ask.moments(unique)
-    }
-
-    /// Only the number the answer actually recorded: a chip the entry has no citation for
-    /// opens nothing, rather than the first moment in the list, which it does not name.
-    private func openCitation(entry: AskEntry, number: Int) {
-        guard let citation = entry.citations.first(where: { $0.number == number })
-        else { return }
-        open(citation: citation)
-    }
-
-    /// A citation names a stretch of a SEGMENT, and `conversation/<segmentId>` is not a
-    /// conversation id — which is why every chip used to land on "Conversation not found".
-    /// Resolve it to the conversation holding it, cue the scrubber to where the cited stretch
-    /// begins, and mark those lines on arrival.
-    private func open(citation: AskCitation) {
-        Task { @MainActor in
-            guard
-                let target = await AskLibraryDataSources.current.ask.citationTarget(
-                    for: citation)
-            else { return }
-            // Pushed, not navigated: the answer you were reading is still there when you come
-            // back, which is the whole reason Ask stopped being a sheet.
-            router.askPath.append(
-                .conversation(
-                    id: target.conversationId,
-                    atMs: target.mediaOffsetMs,
-                    focus: target.focus))
-        }
-    }
-
-    // MARK: - Composer
+    @FocusState private var focused: Bool
 
     private var canSend: Bool {
-        !model.draft.trimmingCharacters(in: .whitespaces).isEmpty && !model.isSending
+        !text.trimmingCharacters(in: .whitespaces).isEmpty && !isSending
     }
 
-    private var composer: some View {
+    var body: some View {
         HStack(spacing: 10) {
-            TextField(
-                model.isFollowUp ? Copy.Ask.followUpPlaceholder : Copy.Ask.title,
-                text: $model.draft
-            )
-            .font(AppFont.callout)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 11)
-            .frame(minHeight: 44)
-            .background(
-                Capsule().fill(Tokens.surface)
-                    .overlay(Capsule().strokeBorder(Tokens.barHairline, lineWidth: 0.5))
-            )
-            .submitLabel(.send)
-            .onSubmit {
-                Haptics.sent()
-                model.sendDraft()
-            }
+            TextField(placeholder, text: $text)
+                .font(AppFont.callout)
+                .focused($focused)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                .frame(minHeight: 44)
+                .background(
+                    Capsule().fill(Tokens.surface)
+                        .overlay(Capsule().strokeBorder(Tokens.barHairline, lineWidth: 0.5))
+                )
+                .submitLabel(.send)
+                .onSubmit(submit)
 
-            CircleSendButton {
-                Haptics.sent()
-                model.sendDraft()
-            }
+            CircleSendButton(action: submit)
                 .disabled(!canSend)
                 .opacity(canSend ? 1 : 0.4)
         }
+    }
+
+    private func submit() {
+        guard canSend else { return }
+        focused = false
+        send()
     }
 }
 
@@ -491,140 +340,21 @@ struct ScopeMenu: View {
 
 // MARK: - View model
 
+/// The root's state only: the scope every question inherits, the history list, and the draft.
+/// A conversation's own state belongs to the screen showing it, so leaving one disposes of it
+/// and reopening it reads it back from history.
 @MainActor
 @Observable
-final class AskViewModel {
-    /// The open conversation, oldest turn first. Empty means the sheet is showing Recent.
-    private(set) var turns: [AskEntry] = []
-    /// The question waiting on an answer, and the one whose answer failed. Only one at a time.
-    private(set) var pendingQuestion: String?
-    private(set) var failedQuestion: String?
-    /// Thread the next answer joins. Nil until the first answer of a new conversation lands,
-    /// which is what mints it.
-    private var threadId: String?
-
+final class AskHomeViewModel {
     var scope: AskScope = .lastDays(2)
     var recent: [AskThread] = []
     var draft = ""
-    var expandedSources: Set<String> = []
     var confirmClear = false
 
     var hasContent: Bool { AskLibraryDataSources.current.ask.hasContent }
-    /// True once a conversation is open — including while its first answer is still coming.
-    var isInThread: Bool {
-        !turns.isEmpty || pendingQuestion != nil || failedQuestion != nil
-    }
-    /// Anything after the first question is a follow-up, so the composer says so.
-    var isFollowUp: Bool { isInThread }
-    /// Changes on every turn added, sent, or failed — the cue to scroll to the newest one.
-    var threadProgress: String {
-        "\(turns.count)|\(pendingQuestion ?? "")|\(failedQuestion ?? "")"
-    }
-
-    private var prepared = false
-    /// Bumped whenever the open conversation is replaced. An answer that lands carrying an old
-    /// generation is discarded: it used to be appended into whichever conversation happened to
-    /// be on screen, stamping the new thread with the old thread's id and clearing a spinner
-    /// that belonged to a different question.
-    private var generation = 0
-
-    func prepare(route: Route?) async {
-        guard !prepared else { return }
-        prepared = true
-        await reloadRecent()
-        accept(route: route)
-    }
-
-    /// Applies an incoming `.ask` link: re-scope, and ask straight away when it carried a
-    /// question. A link that arrives mid-thread starts a fresh conversation rather than
-    /// appending to whatever was on screen — "ask about this recording" is a new subject.
-    func accept(route: Route?) {
-        guard case .ask(let scopeKey, let query)? = route else { return }
-        let question = query?.trimmingCharacters(in: .whitespaces) ?? ""
-        if isInThread { startNewConversation() }
-        scope = AskScope.parse(scopeKey) { id in
-            AskLibraryDataSources.current.ask.conversationTitle(citedId: id)
-        }
-        if !question.isEmpty { send(question) }
-    }
 
     func reloadRecent() async {
         recent = (try? await AskLibraryDataSources.current.ask.recentThreads()) ?? []
-    }
-
-    /// True while an answer is on its way — a second question sent now would race the first
-    /// into the same thread and land out of order.
-    var isSending: Bool { pendingQuestion != nil }
-
-    func sendDraft() {
-        let question = draft.trimmingCharacters(in: .whitespaces)
-        guard !question.isEmpty, !isSending else { return }
-        draft = ""
-        send(question)
-    }
-
-    /// Asks the next turn of the open conversation. The turns already on screen go with it,
-    /// so a follow-up is answered in context instead of as a fresh question.
-    func send(_ question: String) {
-        pendingQuestion = question
-        failedQuestion = nil
-        let thread = openThread
-        let asked = generation
-        Task {
-            do {
-                let entry = try await AskLibraryDataSources.current.ask.ask(
-                    question: question, thread: thread, scope: scope)
-                guard asked == generation else { return }
-                // The first answer of a new conversation is what mints its thread id.
-                threadId = entry.threadId
-                turns.append(entry)
-                pendingQuestion = nil
-                await reloadRecent()
-            } catch {
-                guard asked == generation else { return }
-                pendingQuestion = nil
-                failedQuestion = question
-            }
-        }
-    }
-
-    func retry() {
-        guard let question = failedQuestion else { return }
-        send(question)
-    }
-
-    /// The conversation as the data source needs it: nil until it has a turn to build on.
-    private var openThread: AskThread? {
-        guard let threadId, !turns.isEmpty else { return nil }
-        return AskThread(id: threadId, turns: turns)
-    }
-
-    func reopen(_ thread: AskThread) {
-        generation += 1
-        expandedSources = []
-        failedQuestion = nil
-        pendingQuestion = nil
-        threadId = thread.id
-        turns = thread.turns
-    }
-
-    /// Back to Recent, ready for an unrelated question. The conversation is already saved.
-    func startNewConversation() {
-        generation += 1
-        expandedSources = []
-        failedQuestion = nil
-        pendingQuestion = nil
-        threadId = nil
-        turns = []
-        draft = ""
-    }
-
-    func toggleSources(_ entry: AskEntry) {
-        if expandedSources.contains(entry.id) {
-            expandedSources.remove(entry.id)
-        } else {
-            expandedSources.insert(entry.id)
-        }
     }
 
     func clearHistory() {

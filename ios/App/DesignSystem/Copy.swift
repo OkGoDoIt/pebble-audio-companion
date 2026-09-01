@@ -528,8 +528,6 @@ enum Copy {
         static let followUpPlaceholder = "Ask a follow-up"
         static let recentSection = "Recent"
         static let clearHistory = "Clear history"
-        /// Leaves the open conversation (already saved) and starts an unrelated one.
-        static let newConversation = "New"
         static let didNotGoThrough = "That didn’t go through."
         /// Recent row, e.g. "1 follow-up" / "3 follow-ups".
         static func followUpCount(_ count: Int) -> String {
@@ -1209,7 +1207,7 @@ enum Copy {
         static func tag(_ name: String) -> String { "Tag: \(name)" }
         static func scope(_ label: String) -> String { "Search scope: \(label)" }
         static let scopeHint = "Double tap to change how far back Ask looks"
-        static let newConversationHint = "Double tap to start a new Ask conversation"
+        static let openAskThreadHint = "Double tap to reopen this conversation"
         /// The waiting turn reads as an answer on its way, not as a stalled screen.
         static func askThinking(_ question: String) -> String {
             "\(question). Answering…"

@@ -65,6 +65,9 @@ final class AppRouter {
             selectedTab = .ask
             askPath = []
             pendingAsk = route
+        case .askThread:
+            selectedTab = .ask
+            askPath = [route]
         case .followUps(let scope):
             selectedTab = .followUps
             followUpsPath = []

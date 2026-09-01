@@ -34,6 +34,9 @@ enum Route: Equatable, Hashable, Identifiable {
     case library(tag: String?)
     case search(query: String?)
     case ask(scope: String?, query: String?)
+    /// One Ask conversation, on its own pushed screen. `id` names a conversation already in
+    /// history; nil with a `question` starts a new one and asks it on arrival.
+    case askThread(id: String?, question: String?)
     /// The follow-ups list. `scope` names which slice to show — see `FollowUpListScope`.
     case followUps(scope: String?)
     /// One follow-up, opened on its own screen.
@@ -74,6 +77,11 @@ enum Route: Equatable, Hashable, Identifiable {
             return .search(query: query["q"])
         case "ask":
             return .ask(scope: query["scope"], query: query["q"])
+        case "askthread":
+            let id = pathParts.first
+            let q = query["q"]
+            guard id != nil || q != nil else { return nil }
+            return .askThread(id: id, question: q)
         case "followups":
             return .followUps(scope: query["scope"])
         case "followup":
@@ -127,6 +135,10 @@ enum Route: Equatable, Hashable, Identifiable {
             if let scope { items.append(.init(name: "scope", value: scope)) }
             if let q { items.append(.init(name: "q", value: q)) }
             if !items.isEmpty { components.queryItems = items }
+        case .askThread(let id, let question):
+            components.host = "askthread"
+            if let id { components.path = "/\(id)" }
+            if let question { components.queryItems = [.init(name: "q", value: question)] }
         case .followUps(let scope):
             components.host = "followups"
             if let scope { components.queryItems = [.init(name: "scope", value: scope)] }
