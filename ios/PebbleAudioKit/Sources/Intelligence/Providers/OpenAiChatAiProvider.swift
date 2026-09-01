@@ -14,7 +14,12 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
     public static let defaultEndpointUrl = "https://api.openai.com/v1/responses"
     public static let defaultModel = AiModels.defaultModelId
     public static let defaultReasoningEffort = "low"
-    public static let defaultMaxInputChars = 240_000
+    /// Last-resort ceiling for a model whose window we do not know. Real ceilings come from
+    /// the catalog via `maxInputChars` below — a fixed 240_000 here silently cut a
+    /// million-token model's input to a tenth of what it could hold, chronologically from the
+    /// START, so the newest transcripts were the ones dropped.
+    public static let defaultMaxInputChars =
+        AiModels.conservativeContextTokens * AskBudget.charsPerToken
 
     public let id = "openai-chat"
 
@@ -23,7 +28,10 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
     private let remoteConsent: @Sendable () -> Bool
     private let model: @Sendable () -> String
     private let endpointUrl: String
-    private let maxInputChars: Int
+    /// Resolved per call from the selected model, so this backstop always sits ABOVE what
+    /// `AskBudget` planned to send and truncation stays a genuine last resort rather than an
+    /// invisible second budget that contradicts the coverage the prompt claims.
+    private let maxInputChars: @Sendable () -> Int
     private let grounding: @Sendable () -> String?
     private let reasoningEffort: String
 
@@ -33,7 +41,7 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         remoteConsent: @escaping @Sendable () -> Bool,
         model: @escaping @Sendable () -> String = { OpenAiChatAiProvider.defaultModel },
         endpointUrl: String = OpenAiChatAiProvider.defaultEndpointUrl,
-        maxInputChars: Int = OpenAiChatAiProvider.defaultMaxInputChars,
+        maxInputChars: (@Sendable () -> Int)? = nil,
         grounding: @escaping @Sendable () -> String? = { nil },
         reasoningEffort: String = OpenAiChatAiProvider.defaultReasoningEffort
     ) {
@@ -42,7 +50,8 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         self.remoteConsent = remoteConsent
         self.model = model
         self.endpointUrl = endpointUrl
-        self.maxInputChars = maxInputChars
+        self.maxInputChars =
+            maxInputChars ?? { AiModels.byId(model()).contextTokens * AskBudget.charsPerToken }
         self.grounding = grounding
         self.reasoningEffort = reasoningEffort
     }
@@ -62,7 +71,7 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         }
 
         let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: maxInputChars)
+            request, maxInputChars: maxInputChars())
         let instructions = buildInstructions(request.prompt.systemPrompt)
 
         var payload: [String: Any] = [

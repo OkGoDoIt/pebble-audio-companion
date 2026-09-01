@@ -248,7 +248,7 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
             transport: transport,
             apiKey: { "test-key" },
             remoteConsent: { true },
-            maxInputChars: 500
+            maxInputChars: { 500 }
         )
 
         let bigRequest = AiRunRequest(

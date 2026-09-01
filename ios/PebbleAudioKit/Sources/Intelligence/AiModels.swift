@@ -10,17 +10,31 @@ public struct AiModelSpec: Equatable, Sendable {
     public let displayName: String
     public let description: String
     public let recommended: Bool
+    /// Input context window, in tokens. Ask reads as much of the archive as this allows in one
+    /// pass and sweeps the remainder in batches, so a wrong number here is the difference
+    /// between a complete answer and a silently partial one. Keep it at or below the model's
+    /// real limit — `AskBudget` reserves headroom on top.
+    public let contextTokens: Int
 
-    public init(id: String, displayName: String, description: String, recommended: Bool = false) {
+    public init(
+        id: String, displayName: String, description: String, recommended: Bool = false,
+        contextTokens: Int = AiModels.conservativeContextTokens
+    ) {
         self.id = id
         self.displayName = displayName
         self.description = description
         self.recommended = recommended
+        self.contextTokens = contextTokens
     }
 }
 
 public enum AiModels {
     public static let defaultModelId = "gpt-5.6-luna"
+
+    /// Assumed window for a model we have no catalog entry for. Deliberately small: reading
+    /// less of the archive than we could is a slower answer, reading more than the model can
+    /// hold is a failed one.
+    public static let conservativeContextTokens = 128_000
 
     public static let all: [AiModelSpec] = [
         AiModelSpec(
@@ -28,19 +42,22 @@ public enum AiModels {
             displayName: "GPT-5.6 Luna",
             description: "Fast and inexpensive, with a million-token context for long days of "
                 + "transcript. Recommended for automatic titles and summaries.",
-            recommended: true
+            recommended: true,
+            contextTokens: 1_000_000
         ),
         AiModelSpec(
             id: "gpt-5.6-terra",
             displayName: "GPT-5.6 Terra",
             description: "Balances intelligence and cost. Stronger on long, noisy, or "
-                + "many-speaker transcripts; roughly ten times Luna's price."
+                + "many-speaker transcripts; roughly ten times Luna's price.",
+            contextTokens: 400_000
         ),
         AiModelSpec(
             id: "gpt-5.6-sol",
             displayName: "GPT-5.6 Sol",
             description: "Frontier model for demanding questions across a whole archive. Best "
-                + "answers, highest cost."
+                + "answers, highest cost.",
+            contextTokens: 400_000
         ),
     ]
 

@@ -65,35 +65,63 @@ public struct AskRetriever: Sendable {
         query: String,
         excerpts: [TranscriptExcerpt],
         gapSummaries: [String: String?] = [:],
-        maxChunks: Int = 12
+        maxChunks: Int = 12,
+        segmentIdsForHit: (@Sendable (String) -> [String])? = nil
     ) async -> [RetrievedChunk] {
-        let hits = await search?(query, maxChunks) ?? []
-        let hitIds = Set(hits.map(\.id))
-        let fromIndex = hits.compactMap { hit -> RetrievedChunk? in
-            guard let excerpt = excerpts.first(where: { $0.segmentId == hit.id }) else {
-                return nil
-            }
-            return RetrievedChunk(
+        // Ask for more hits than chunks: one index document is a CONVERSATION, which expands to
+        // however many member segments it has, and hits that no longer resolve to a live
+        // transcript drop out here rather than shrinking the result.
+        let hits = await search?(query, maxChunks * 2) ?? []
+        let byId = Dictionary(
+            excerpts.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first })
+
+        func chunk(_ excerpt: TranscriptExcerpt, score: Float = 0) -> RetrievedChunk {
+            RetrievedChunk(
                 segmentId: excerpt.segmentId,
                 text: excerpt.text,
                 startTimeMs: excerpt.startTimeMs,
                 endTimeMs: excerpt.endTimeMs,
                 timeLabel: excerpt.timeLabel,
                 gapSummary: gapSummaries[excerpt.segmentId] ?? nil,
-                score: hit.score)
+                score: score)
         }
-        let remainder = excerpts
-            .filter { !hitIds.contains($0.segmentId) }
-            .prefix(max(0, maxChunks - fromIndex.count))
-            .map { excerpt in
-                RetrievedChunk(
-                    segmentId: excerpt.segmentId,
-                    text: excerpt.text,
-                    startTimeMs: excerpt.startTimeMs,
-                    endTimeMs: excerpt.endTimeMs,
-                    timeLabel: excerpt.timeLabel,
-                    gapSummary: gapSummaries[excerpt.segmentId] ?? nil)
+
+        // The index and the spool key on DIFFERENT id namespaces — a search hit is
+        // `conv-<firstMemberSegmentId>`, an excerpt is `<segmentId>`. Comparing them directly
+        // (as this did) can never match, so EVERY hit was silently discarded and retrieval
+        // degraded to "the first N excerpts in list order" — which, `listSegments()` being
+        // oldest-first, meant every question in the app was answered from the twelve oldest
+        // recordings in the library. `segmentIdsForHit` is the bridge; the default is identity,
+        // for callers whose index already keys on segment ids.
+        let expand = segmentIdsForHit ?? { [$0] }
+        var taken = Set<String>()
+        var fromIndex: [RetrievedChunk] = []
+        for hit in hits {
+            for segmentId in expand(hit.id) {
+                guard fromIndex.count < maxChunks else { break }
+                guard let excerpt = byId[segmentId], taken.insert(segmentId).inserted else {
+                    continue
+                }
+                fromIndex.append(chunk(excerpt, score: hit.score))
             }
+        }
+
+        // Whatever the index did not account for, filled NEWEST first. The old code took
+        // `excerpts.prefix(...)`, and excerpts arrive oldest-first: the padding was the start of
+        // the archive rather than the part of it the user is most likely asking about.
+        let remainder = excerpts
+            .enumerated()
+            .filter { !taken.contains($0.element.segmentId) }
+            // Newest first, and deterministically so: excerpts arrive oldest-first, and Swift's
+            // sort is not stable, so untimed excerpts would otherwise come back in an arbitrary
+            // order that changes between runs.
+            .sorted { lhs, rhs in
+                let l = lhs.element.startTimeMs ?? 0
+                let r = rhs.element.startTimeMs ?? 0
+                return l == r ? lhs.offset > rhs.offset : l > r
+            }
+            .prefix(max(0, maxChunks - fromIndex.count))
+            .map { chunk($0.element) }
         return Array((fromIndex + remainder).prefix(maxChunks))
     }
 
@@ -477,6 +505,7 @@ public func saveAskAnswer(
     answerText: String,
     citations: [AskCitation],
     scope: AskScope,
+    coverage: AskCoverage? = nil,
     history: AskHistoryStore,
     threadId: String? = nil,
     nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
@@ -485,7 +514,17 @@ public func saveAskAnswer(
         question: question,
         answerText: answerText,
         citations: citations,
-        scopeDescription: scope.displayName,
+        scopeDescription: askScopeDescription(scope, coverage: coverage),
+        conversationsRead: coverage?.conversationsRead,
+        conversationsInScope: coverage?.conversationsInScope,
         threadId: threadId,
         nowMs: nowMs)
+}
+
+/// The stored scope line: the picker's own words, plus how much of that range the answer was
+/// actually built from. Reopening a thread months later should say what it was allowed to read,
+/// not just what was asked for.
+public func askScopeDescription(_ scope: AskScope, coverage: AskCoverage?) -> String {
+    guard let coverage, coverage.conversationsInScope > 0 else { return scope.displayName }
+    return "\(scope.displayName) · \(coverage.scopeSuffix)"
 }

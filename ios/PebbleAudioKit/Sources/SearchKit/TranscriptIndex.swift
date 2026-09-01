@@ -172,9 +172,10 @@ public final class TranscriptIndex: TranscriptIndexing {
         _ query: String,
         limit: Int,
         kinds: Set<IndexKind>? = nil,
-        within ids: Set<String>? = nil
+        within ids: Set<String>? = nil,
+        mode: MatchMode = .all
     ) throws -> [IndexHit] {
-        guard let match = Self.ftsQuery(query) else { return [] }
+        guard let match = Self.ftsQuery(query, mode: mode) else { return [] }
         if let ids, ids.isEmpty { return [] }
         if let kinds, kinds.isEmpty { return [] }
 
@@ -280,16 +281,53 @@ public final class TranscriptIndex: TranscriptIndexing {
             .joined(separator: "\n")
     }
 
+    /// How the terms of a query combine.
+    public enum MatchMode: Sendable {
+        /// Every term must appear. What a Search box should do: the user typed two words
+        /// because they want the row with both.
+        case all
+        /// Any term may appear, ranked by bm25 — so a document matching more of the rare terms
+        /// still sorts first, but one good term is enough to be recalled at all.
+        ///
+        /// This is what asking a QUESTION needs. "Do I have travel plans for the rest of the
+        /// year?" ANDed is a demand for one conversation containing every one of those words,
+        /// which essentially no transcript satisfies; the query silently matched nothing and
+        /// Ask fell back to whatever happened to be first in the library.
+        case any
+    }
+
+    /// Words carrying no retrieval signal. Stripped from multi-term queries: they are in
+    /// virtually every transcript, so under `.all` they veto real matches and under `.any` they
+    /// dominate the ranking with noise. Kept when they are ALL the user typed, so searching for
+    /// "the" still searches for "the".
+    static let stopWords: Set<String> = [
+        "a", "about", "am", "an", "and", "any", "are", "as", "at", "be", "been", "being",
+        "but", "by", "can", "could", "did", "do", "does", "for", "from", "had", "has", "have",
+        "he", "her", "him", "his", "i", "if", "in", "into", "is", "it", "its", "just", "me",
+        "my", "of", "on", "or", "our", "she", "should", "so", "than", "that", "the", "their",
+        "them", "then", "there", "these", "they", "this", "those", "to", "up", "us", "was",
+        "we", "were", "what", "when", "where", "which", "who", "whom", "why", "will", "with",
+        "would", "you", "your",
+    ]
+
     /// Turns free user text into a safe FTS5 MATCH expression: each token becomes a quoted
-    /// prefix phrase (`"budg"*`), joined by implicit AND. Nil when no searchable tokens remain.
-    static func ftsQuery(_ query: String) -> String? {
+    /// prefix phrase (`"budg"*`), joined by AND or OR per `mode`. Nil when no searchable tokens
+    /// remain.
+    static func ftsQuery(_ query: String, mode: MatchMode = .all) -> String? {
         let tokens = query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return nil }
-        return tokens
-            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
-            .joined(separator: " ")
+        // A single term is the whole query — never strip it to nothing.
+        let content = tokens.count == 1
+            ? tokens
+            : tokens.filter { !stopWords.contains($0.lowercased()) }
+        let usable = content.isEmpty ? tokens : content
+        let phrases = usable.map {
+            "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*"
+        }
+        return phrases.joined(separator: mode == .all ? " " : " OR ")
     }
 
     /// Strips the snippet markers, returning plain text plus the match ranges (character offsets).

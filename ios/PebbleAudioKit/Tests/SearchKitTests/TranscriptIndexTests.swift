@@ -108,6 +108,86 @@ import Testing
         #expect(TranscriptIndex.jsonArray(["a", "b"]) == #"["a","b"]"#)
     }
 
+    // MARK: - Query construction
+
+    /// A natural-language QUESTION is not a search box query. Every token used to be ANDed
+    /// together, so "do I have any travel plans for the rest of this year?" demanded a single
+    /// transcript containing all seventeen of those words — which nothing satisfies. The query
+    /// matched nothing, silently, and Ask's retrieval fell through to whatever happened to be
+    /// first in the library.
+    @Test func aQuestionsFunctionWordsDoNotVetoItsContentWords() throws {
+        let index = try makeIndex()
+        try index.upsert([
+            IndexItem(
+                id: "conv-1", kind: .conversation, title: "Conversation",
+                fullText: "the travel dates moved, so we book the flights to Lisbon next week",
+                contentCreationDateMs: 1)
+        ])
+        let question = "do I have any travel plans for the rest of this year?"
+
+        // ANDing every word demands "plans", "rest" and "year" as well — so the transcript that
+        // plainly answers the question is not returned at all.
+        #expect(try index.search(question, limit: 5, mode: .all).isEmpty)
+        // Recall mode finds it on the content words it does share.
+        #expect(try index.search(question, limit: 5, mode: .any).count == 1)
+    }
+
+    /// The limit that keyword retrieval cannot be argued out of, recorded so nobody mistakes
+    /// `.any` for a solution to it: a conversation about a trip that never says "travel" is
+    /// invisible to a question that only says "travel". This is precisely why `AskCorpusPlanner`
+    /// reads the whole scope when it fits and sweeps it when it does not, and why keyword
+    /// relevance is confined to choosing what to sacrifice past the sweep ceiling.
+    @Test func recallModeStillCannotBridgeADifferentVocabulary() throws {
+        let index = try makeIndex()
+        try index.upsert([
+            IndexItem(
+                id: "conv-1", kind: .conversation, title: "Conversation",
+                fullText: "we should book the flights to Lisbon before the visa expires",
+                contentCreationDateMs: 1)
+        ])
+        #expect(
+            try index.search("any travel plans this year?", limit: 5, mode: .any).isEmpty)
+    }
+
+    @Test func stopWordsAreStrippedFromAMultiTermQuery() {
+        #expect(TranscriptIndex.ftsQuery("the flights to Lisbon") == "\"flights\"* \"Lisbon\"*")
+        #expect(
+            TranscriptIndex.ftsQuery("the flights to Lisbon", mode: .any)
+                == "\"flights\"* OR \"Lisbon\"*")
+    }
+
+    /// Stripping is for narrowing a query, never for emptying it: a search for a single common
+    /// word still searches for that word.
+    @Test func aQueryThatIsNothingButStopWordsStillSearchesForThem() {
+        #expect(TranscriptIndex.ftsQuery("the") == "\"the\"*")
+        #expect(TranscriptIndex.ftsQuery("what about that") == "\"what\"* \"about\"* \"that\"*")
+        #expect(TranscriptIndex.ftsQuery("   ") == nil)
+    }
+
+    @Test func quotesInAQueryCannotBreakOutOfTheMatchExpression() {
+        #expect(TranscriptIndex.ftsQuery("say \"hello\"") == "\"say\"* \"hello\"*")
+        let index = try? makeIndex()
+        #expect((try? index?.search("OR AND \"x\" *", limit: 5)) != nil)
+    }
+
+    /// Ranking still has to mean something under `.any`: matching more of the query must beat
+    /// matching less of it.
+    @Test func recallModeStillRanksTheBestMatchFirst() throws {
+        let index = try makeIndex()
+        try index.upsert([
+            IndexItem(
+                id: "conv-weak", kind: .conversation, title: "Conversation",
+                fullText: "the flights were delayed again", contentCreationDateMs: 1),
+            IndexItem(
+                id: "conv-strong", kind: .conversation, title: "Conversation",
+                fullText: "flights booked to Lisbon, visa sorted, hotel confirmed",
+                contentCreationDateMs: 2),
+        ])
+        let hits = try index.search("Lisbon flights hotel", limit: 5, mode: .any)
+        #expect(hits.count == 2)
+        #expect(hits.first?.id == "conv-strong")
+    }
+
     @Test func excludedItemsAreNotReturned() throws {
         let index = try makeIndex()
         try index.upsert([
