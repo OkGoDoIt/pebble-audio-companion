@@ -156,7 +156,7 @@ extension TranscriptionTask {
 /// be classified by matching English text. Recording the numeric code alongside makes the row
 /// self-describing forever; the localized wording is kept after it because that is the sentence
 /// a support report reader recognises.
-func storedFailureMessage(_ error: Error) -> String {
+public func storedFailureMessage(_ error: Error) -> String {
     if let urlError = error as? URLError {
         return "\(TranscriptionFailureKind.networkMarker) (\(urlError.code.rawValue)): "
             + urlError.localizedDescription

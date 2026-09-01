@@ -65,16 +65,20 @@ extension ConnectivityProbing {
                 return .ok(detail: "\(service) connected")
             case 401, 403:
                 return .failed(message: "\(service) rejected the API key.")
+            case 429:
+                return .failed(message: "\(service) was busy, or the account is out of credit.")
             default:
-                return .failed(
-                    message: "\(service) check failed (\(response.status)): \(response.text.prefix(160))"
-                )
+                // The response body is NOT spliced in. This string is rendered verbatim on the
+                // Transcription & AI row, and a provider's body is arbitrary text that on a 4xx
+                // is typically the request URL — the raw provider prose B20 forbids on a screen.
+                // The status is enough for the reader; the body belongs in a log, not here.
+                return .failed(message: "\(service) had trouble on its side (\(response.status)).")
             }
         } catch {
-            let reason = (error as NSError).localizedDescription
-            return .failed(
-                message: "Could not reach \(service): \(reason.isEmpty ? "network error" : reason)"
-            )
+            // Likewise `localizedDescription`: system prose, in the phone's language, about a
+            // request the reader never made. "It could not be reached" is the whole actionable
+            // fact.
+            return .failed(message: "Could not reach \(service). Check your connection.")
         }
     }
 }
