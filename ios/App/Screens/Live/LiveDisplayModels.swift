@@ -6,6 +6,57 @@ import Foundation
 // `TranscriptItem`s the Conversation screen does, because a live conversation is that
 // conversation — it just happens to be appending at the bottom.
 
+/// What is true about the live transcript right now, when it is not simply arriving.
+///
+/// The screen used to render ONE calm line — "Listening — words appear here as they are
+/// recognized" — for every reason a transcript can be empty at once: audio arriving and not yet
+/// recognised, a watch sending nothing at all, transcription never set up, a live engine that
+/// has stopped working. Roger watched that line for nineteen minutes while no audio had reached
+/// the phone for eleven of them, and the app's only claim was "Live". Each of these says which.
+enum LiveTranscriptStatus: Equatable {
+    /// Audio is arriving; nothing has been recognised yet. The original, and now the only case
+    /// the calm line describes.
+    case listening
+    /// The watch is capturing and deliberately sending nothing — voice-activity silence. Calm,
+    /// and never to be confused with loss (Q6).
+    case quiet
+    /// Nothing is reaching the phone. The watch keeps what it captures and re-sends it.
+    case notHearingWatch
+    /// Transcription was never set up, so no words will appear here for any recording.
+    case transcriptsOff
+    /// Audio is arriving and the live engine is not producing text — a cloud socket that keeps
+    /// failing, or an on-device pass that keeps throwing.
+    case liveTranscriptionDown
+
+    /// The one line the card shows.
+    var line: String {
+        switch self {
+        case .listening: return Copy.Live.waiting
+        case .quiet: return Copy.Live.quiet
+        case .notHearingWatch: return Copy.Live.notHearing
+        case .transcriptsOff: return Copy.Live.transcriptsOff
+        case .liveTranscriptionDown: return Copy.Live.transcriptionDown
+        }
+    }
+
+    /// True while nothing is wrong — the transcript is simply young. Everything else is worth
+    /// saying even once words are on screen, because it explains why they stopped.
+    var isUneventful: Bool { self == .listening }
+
+    /// The Today row's version: the same answer, short enough for one line under a title, and
+    /// nil while the honest thing to say is "nothing yet" — Today has the status card directly
+    /// above it for that, and two calm sentences saying the same nothing is noise.
+    var rowLine: String? {
+        switch self {
+        case .listening: return nil
+        case .quiet: return Copy.Today.liveQuiet
+        case .notHearingWatch: return Copy.Today.liveNotHearing
+        case .transcriptsOff: return Copy.Today.liveTranscriptsOff
+        case .liveTranscriptionDown: return Copy.Today.liveTranscriptionDown
+        }
+    }
+}
+
 struct LiveSnapshot: Equatable {
     /// e.g. "Started 12:04 PM · 48 min so far".
     var startedLine: String
@@ -19,6 +70,8 @@ struct LiveSnapshot: Equatable {
     var timeZone: TimeZone = .current
     /// In-card provenance footnote; names the engine actually producing this text.
     var provenance: String = Copy.Live.provenance()
+    /// Why there is nothing new to show — see `LiveTranscriptStatus`.
+    var status: LiveTranscriptStatus = .listening
 }
 
 /// The live read + transport surface; mirrors `TodayDataSource`'s seam.

@@ -296,7 +296,10 @@ struct ComponentGallery: View {
             Card {
                 VStack(alignment: .leading, spacing: 12) {
                     WaveformView(
-                        slots: (0..<40).map { WaveformBar(amplitude: 0, state: $0 % 9 == 4 ? .missing : .quiet) }
+                        slots: (0..<WaveformView.slotCount).map {
+                            if $0 % 17 == 4 { return WaveformBar(amplitude: 0, state: .missing) }
+                            return WaveformBar(amplitude: 0, state: $0 < 40 ? .quiet : .skipped)
+                        }
                     )
                     WaveformLegend(showPaused: true)
                 }

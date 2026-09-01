@@ -48,6 +48,9 @@ enum Tokens {
     static let faint = Color(light: 0xB0B0B6, dark: 0x7C7C80)
     static let chevron = Color(light: 0xC7C7CC, dark: 0x48484A)
     static let quiet = Color(light: 0xD1D1D6, dark: 0x48484A)
+    /// Quiet the watch skipped sending rather than quiet we decoded: the same hue, dimmer, so
+    /// the live row can advance through a silent minute without claiming to have heard it.
+    static let quietSkipped = Tokens.quiet.adaptiveOpacity(light: 0.5, dark: 0.55)
     static let hairline = Color(lightRGBA: (60, 60, 67, 0.18), darkRGBA: (84, 84, 88, 0.40))
     static let cardBorder = Color(lightRGBA: (60, 60, 67, 0.22), darkRGBA: (84, 84, 88, 0.48))
     static let barHairline = Color(lightRGBA: (60, 60, 67, 0.29), darkRGBA: (84, 84, 88, 0.55))

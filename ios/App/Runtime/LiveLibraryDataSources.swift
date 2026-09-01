@@ -562,61 +562,193 @@ extension LiveWorld: AskDataSource {
                 answer: "There is nothing recorded in that window to answer from.",
                 citations: [],
                 scope: kitScope,
+                coverage: nil,
                 threadId: threadId,
                 nowMs: nowMs
             )
         }
 
-        let chunks = await composition.askRetriever.retrieve(
-            query: askRetrievalQuery(question: question, priorTurns: priorTurns),
-            excerpts: excerpts, gapSummaries: gapSummaries
-        )
-        // Retrieval picks SEGMENTS; the model cites STRETCHES of them, in recording order, so
-        // a `[n]` in the answer names the moment it drew on rather than the whole recording.
-        let retrieved = chunks
-            .sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
-            .map(\.segmentId)
-        let stretches = citableStretches(of: retrieved)
-        let whenLabels = Dictionary(
-            chunks.map { ($0.segmentId, $0.timeLabel) }, uniquingKeysWith: { first, _ in first })
-        let formatted = composition.askRetriever.formatForPrompt(
+        // Read the whole scope, in the order it happened. Retrieval used to choose twelve
+        // segments here; it now only decides what to SACRIFICE if the scope will not fit even
+        // as a sweep (`AskCorpusPlanner`), so an answer of "nothing was recorded about that"
+        // is backed by having actually read the range.
+        let ordered = excerpts.sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
+        let budget = AskBudget.forModel(id: composition.settings.aiModel)
+        let stretches = citableStretches(of: ordered.map(\.segmentId))
+        let plan = AskCorpusPlanner.plan(
             stretches: stretches,
-            whenLabel: { whenLabels[$0.segmentId] ?? nil },
-            gapSummary: { gapSummaries[$0] ?? nil }
-        )
-        var content = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
-        if let thread = askThreadContext(priorTurns) { content += "\n\n\(thread)" }
-        content += "\n\nQUESTION: \(question)\n\nTRANSCRIPTS:\n\(formatted)"
-        let result = try await composition.aiRouter.run(
-            AiRunRequest(
-                requestId: UUID().uuidString.lowercased(),
-                prompt: AiPromptTemplates.ask,
-                transcripts: [TranscriptExcerpt(segmentId: "ask", text: content)]
-            )
-        )
+            budget: budget,
+            relevance: await relevanceScores(
+                question: question, priorTurns: priorTurns, excerpts: ordered,
+                gapSummaries: gapSummaries, budget: budget))
+
+        let whenLabels = Dictionary(
+            ordered.map { ($0.segmentId, $0.timeLabel) }, uniquingKeysWith: { first, _ in first })
+        func render(_ batch: [CitableExcerpt]) -> String {
+            composition.askRetriever.formatForPrompt(
+                stretches: batch,
+                whenLabel: { whenLabels[$0.segmentId] ?? nil },
+                gapSummary: { gapSummaries[$0] ?? nil })
+        }
+
+        let header = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
+        let threadContext = askThreadContext(priorTurns)
+        let answer: String
+        if plan.isSinglePass {
+            var content = header + "\n" + plan.coverage.promptLine
+            if let threadContext { content += "\n\n\(threadContext)" }
+            content += "\n\nQUESTION: \(question)\n\nTRANSCRIPTS:\n"
+                + render(plan.batches.first ?? [])
+            answer = try await run(prompt: AiPromptTemplates.ask, content: content)
+        } else {
+            answer = try await sweep(
+                plan: plan, question: question, header: header,
+                threadContext: threadContext, render: render)
+        }
+
         // The answer card shows the model's text verbatim, so a chip reading "2" has to be
         // the segment the prompt called [2]. Renumbering by first appearance (what
         // `parseGroundedAnswer` does, for its own re-rendered lines) sent chips to the wrong
         // moment whenever an answer's first citation was not [1].
         return try await save(
             question: question,
-            answer: result.text,
-            citations: renderedAnswerCitations(result.text, sources: stretches),
+            answer: answer,
+            citations: renderedAnswerCitations(answer, sources: plan.stretches),
             scope: kitScope,
+            coverage: plan.coverage,
             threadId: threadId,
             nowMs: nowMs
         )
     }
 
+    private func run(prompt: AiPromptTemplate, content: String) async throws -> String {
+        try await composition.aiRouter.run(
+            AiRunRequest(
+                requestId: UUID().uuidString.lowercased(),
+                prompt: prompt,
+                transcripts: [TranscriptExcerpt(segmentId: "ask", text: content)]
+            )
+        ).text
+    }
+
+    /// Map-reduce for a range too large to hand a model in one call: read every batch for facts
+    /// bearing on the question, then answer from the gathered notes. Slower and dearer than one
+    /// call, and the only way an archive-wide question stays *complete* once the archive
+    /// outgrows the context window.
+    private func sweep(
+        plan: AskCorpusPlan,
+        question: String,
+        header: String,
+        threadContext: String?,
+        render: @escaping ([CitableExcerpt]) -> String
+    ) async throws -> String {
+        let total = plan.batches.count
+        // Bounded concurrency: the batches are independent, but firing a dozen large uploads at
+        // once is how a phone on a train gets them all timed out at the same moment.
+        var notes = [String?](repeating: nil, count: total)
+        try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            var next = 0
+            func addTask(_ index: Int) {
+                let batch = plan.batches[index]
+                group.addTask {
+                    var content = header
+                    content += "\n\nQUESTION: \(question)"
+                    content += "\n\nThis is part \(index + 1) of \(total) of the range."
+                    content += "\n\nTRANSCRIPTS:\n" + render(batch)
+                    let text = try await self.run(
+                        prompt: AiPromptTemplates.askSweepFindings, content: content)
+                    return (index, text)
+                }
+            }
+            while next < min(Self.sweepConcurrency, total) {
+                addTask(next)
+                next += 1
+            }
+            while let (index, text) = try await group.next() {
+                notes[index] = text
+                if next < total {
+                    addTask(next)
+                    next += 1
+                }
+            }
+        }
+
+        let gathered = notes.enumerated().compactMap { index, text -> String? in
+            guard let text else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A part with nothing to say contributes nothing but its absence of findings —
+            // which is information the synthesis pass does not need spelled out.
+            guard !trimmed.isEmpty, !trimmed.uppercased().hasPrefix("NOTHING RELEVANT") else {
+                return nil
+            }
+            return "PART \(index + 1) OF \(total):\n\(trimmed)"
+        }
+        guard !gathered.isEmpty else {
+            return plan.coverage.isComplete
+                ? "I read every conversation in that range and found nothing about that."
+                : "I could not find anything about that in the part of the range I was able to "
+                    + "read."
+        }
+
+        var content = header + "\n" + plan.coverage.promptLine
+        if let threadContext { content += "\n\n\(threadContext)" }
+        content += "\n\nQUESTION: \(question)\n\nGATHERED NOTES:\n"
+            + gathered.joined(separator: "\n\n")
+        return try await run(prompt: AiPromptTemplates.askSweepAnswer, content: content)
+    }
+
+    /// Model calls a sweep keeps in flight at once.
+    private static let sweepConcurrency = 3
+
+    /// Keyword relevance per segment, used ONLY to choose which batches survive when a range is
+    /// too large even to sweep. The index keys on conversation ids (`conv-<firstMember>`), so
+    /// hits are expanded to their member segments before they can match an excerpt — comparing
+    /// the two namespaces directly is what silently disabled retrieval entirely.
+    private func relevanceScores(
+        question: String,
+        priorTurns: [AskEntry],
+        excerpts: [TranscriptExcerpt],
+        gapSummaries: [String: String?],
+        budget: AskBudget
+    ) async -> (String) -> Double {
+        // The scoring only matters when the scope overflows the sweep ceiling; skip both the
+        // membership walk and the index round-trip entirely when it plainly does not — which
+        // is every ordinary library.
+        let totalChars = excerpts.reduce(0) { $0 + $1.text.count }
+        guard totalChars > budget.transcriptChars * budget.maxBatches else { return { _ in 0 } }
+
+        // `conv-<id>` hits have to be resolved to member segments before they can match an
+        // excerpt. Built up front so the retriever's expansion closure stays synchronous.
+        var members: [String: [String]] = [:]
+        for excerpt in excerpts {
+            guard let conversationId = try? await composition.runtime.library
+                .conversationId(ofSegment: excerpt.segmentId)
+            else { continue }
+            members[conversationId, default: []].append(excerpt.segmentId)
+        }
+
+        let chunks = await composition.askRetriever.retrieve(
+            query: askRetrievalQuery(question: question, priorTurns: priorTurns),
+            excerpts: excerpts,
+            gapSummaries: gapSummaries,
+            maxChunks: excerpts.count,
+            segmentIdsForHit: { members[$0] ?? [$0] })
+        let scores = Dictionary(
+            chunks.map { ($0.segmentId, Double($0.score)) },
+            uniquingKeysWith: { first, _ in first })
+        return { scores[$0] ?? 0 }
+    }
+
     private func save(
         question: String, answer: String, citations: [AskCitation],
-        scope: Intelligence.AskScope, threadId: String?, nowMs: Int64
+        scope: Intelligence.AskScope, coverage: AskCoverage?, threadId: String?, nowMs: Int64
     ) async throws -> AskEntry {
         try await saveAskAnswer(
             question: question,
             answerText: answer,
             citations: citations,
             scope: scope,
+            coverage: coverage,
             history: composition.askHistory,
             threadId: threadId,
             nowMs: nowMs

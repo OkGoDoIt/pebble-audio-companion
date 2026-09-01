@@ -69,20 +69,28 @@ struct LiveConversationScreen: View {
     private var transcriptCard: some View {
         if viewModel.snapshot.items.isEmpty {
             Card {
-                // One calm line until the transcriber produces anything — the recording is
-                // fine, there is simply nothing to show yet.
-                Text(Copy.Live.waiting)
+                // ONE line, and it says which of the reasons is true. This used to be the
+                // fixed "Listening…" sentence whatever was happening — including a phone that
+                // had heard nothing from the watch for eleven minutes.
+                Text(viewModel.snapshot.status.line)
                     .font(AppFont.callout)
                     .foregroundStyle(Tokens.meta)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            TranscriptView(
-                transcript: viewModel.snapshot.items,
-                provenance: viewModel.snapshot.provenance,
-                timeZone: viewModel.snapshot.timeZone
-            )
+            VStack(alignment: .leading, spacing: Tokens.blockGap) {
+                // Words already on screen do not make a stalled link uninteresting: this is
+                // what explains a transcript that has stopped growing.
+                if !viewModel.snapshot.status.isUneventful {
+                    LiveStatusNote(text: viewModel.snapshot.status.line)
+                }
+                TranscriptView(
+                    transcript: viewModel.snapshot.items,
+                    provenance: viewModel.snapshot.provenance,
+                    timeZone: viewModel.snapshot.timeZone
+                )
+            }
         }
     }
 

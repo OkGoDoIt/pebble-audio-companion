@@ -390,6 +390,13 @@ struct TodayScreen: View {
                             .italic()
                             .foregroundStyle(Tokens.tertiary)
                             .lineLimit(1)
+                    } else if let statusLine = row.statusLine {
+                        // Not italic and not quoted: this is the app saying why there is
+                        // nothing to quote, not the recording saying something.
+                        Text(statusLine)
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.tertiary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)

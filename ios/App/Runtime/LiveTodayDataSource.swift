@@ -32,6 +32,14 @@ final class LiveTodayDataSource {
     /// The monitor's raw bars, kept in kit form so the row can be re-placed on the time axis at
     /// every publish — a snapshot built ten seconds ago must not be redrawn as if it were now.
     private var liveBars: [LiveAudio.WaveformBar] = []
+    /// How far transcription has got, per segment, as an exclusive stream sample index
+    /// (`UInt64.max` once a durable transcript exists). This is what turns a live bar from
+    /// captured to transcribed — without it the row had no path to the transcribed colour at
+    /// all and stayed lilac no matter how well live transcription was keeping up.
+    private var transcribedThrough: [String: UInt64] = [:]
+    /// Wall clock of the last transcription-boundary poll, so the 4 Hz waveform tick re-reads the
+    /// live previews about once a second instead of on every frame.
+    private var lastBoundaryPollMs: Int64 = 0
 
     init(composition: AppComposition) {
         self.composition = composition
@@ -79,6 +87,10 @@ final class LiveTodayDataSource {
                 for await bars in await composition.monitor.barsUpdates() {
                     guard let self else { return }
                     liveBars = bars
+                    // The boundary moves on the transcribers' own schedule (~5 s), not on
+                    // `refresh()`'s ten-second tick, so poll it here — cheap, throttled, and on
+                    // the one path that already runs whenever the row is redrawn.
+                    await pollTranscribedBoundary()
                     // The published snapshot has to carry the new row, not just the new field:
                     // `publish()` yields `todaySnapshotValue`, so assigning a private property
                     // and publishing left the waveform on screen frozen until the next full
@@ -138,8 +150,14 @@ final class LiveTodayDataSource {
         await refreshLive(openSegmentId: openSegmentId, rows: todaySection?.rows ?? [])
         let liveLine = Self.liveSnippet(liveSnapshotValue)
 
+        let status = Self.status(composition)
+        // The row's live-silence fill is gated on exactly the claim the card makes, so a quiet
+        // minute can never be drawn as quiet under a headline that says we are not hearing the
+        // watch — and the fill stops the moment "Recording" does.
+        await composition.monitor.setStreamLive(status.family == .recording)
+
         todaySnapshotValue = TodaySnapshot(
-            status: Self.status(composition),
+            status: status,
             liveMinute: liveMinuteSlots(),
             coverage: Self.coverage(
                 nowMs: nowMs, zone: zone, dateKey: dateKey, segments: segments, pauses: pauses
@@ -149,7 +167,13 @@ final class LiveTodayDataSource {
             ),
             followUps: Self.followUpDisplays(followUps),
             conversations: (todaySection?.rows ?? []).map {
-                Self.conversationRow($0, liveSnippet: liveLine)
+                Self.conversationRow(
+                    $0,
+                    liveSnippet: liveLine,
+                    // Only when there are no words to quote: a row already showing what is
+                    // being said has answered the question the status line asks.
+                    liveStatusLine: liveLine == nil ? liveSnapshotValue.status.rowLine : nil
+                )
             },
             recovering: composition.startup.isRecovering
         )
@@ -166,7 +190,9 @@ final class LiveTodayDataSource {
     /// still being written.
     private func refreshLive(openSegmentId: String?, rows: [ConversationListRow]) async {
         guard let live = rows.first(where: \.isLive) else {
-            liveSnapshotValue = LiveSnapshot(startedLine: "", isLive: false, items: [])
+            liveSnapshotValue = LiveSnapshot(
+                startedLine: "", isLive: false, items: [], status: liveStatus())
+            pruneTranscribedThrough(keeping: [])
             return
         }
         let nowMs = composition.clock.nowMs
@@ -190,6 +216,7 @@ final class LiveTodayDataSource {
         var items: [TranscriptItem] = []
         var zone: TimeZone?
         var openMeta: SegmentMeta?
+        var memberIds: Set<String> = []
 
         for member in detail?.members ?? [] {
             // The open segment's meta places the transcript in time and carries the gaps the
@@ -200,6 +227,9 @@ final class LiveTodayDataSource {
             let isOpen = member.segmentId == openSegmentId
             if isOpen { openMeta = meta }
             let durable = composition.transcripts.load(member.segmentId)
+            memberIds.insert(member.segmentId)
+            // A finished transcript covers its whole segment, so every bar of it is transcribed.
+            if durable != nil { transcribedThrough[member.segmentId] = .max }
             // Durable text wins wherever it exists — it is the same text this conversation
             // will keep. The preview only covers the segment still being recorded.
             let segments: [SearchKit.TranscriptSegment]
@@ -247,6 +277,8 @@ final class LiveTodayDataSource {
             items.append(contentsOf: memberItems)
         }
 
+        pruneTranscribedThrough(keeping: memberIds)
+
         liveSnapshotValue = LiveSnapshot(
             startedLine: Copy.Live.startedLine(
                 time: TimeFmt.time(started),
@@ -255,8 +287,61 @@ final class LiveTodayDataSource {
             isLive: live.isLive,
             items: items,
             timeZone: zone ?? .current,
-            provenance: Self.liveProvenance(preview)
+            provenance: Self.liveProvenance(preview),
+            status: liveStatus()
         )
+    }
+
+    /// Why the live transcript has nothing new — the four honest answers behind what used to be
+    /// one calm line for all of them (see `LiveTranscriptStatus`).
+    ///
+    /// The order is worst-first in terms of what a person can act on: a transcription that was
+    /// never set up will never produce a word, so it outranks a missing link, which outranks a
+    /// quiet room, which outranks an engine that is failing on audio we do have.
+    private func liveStatus() -> LiveTranscriptStatus {
+        Self.liveStatus(
+            transcriptsConfigured: composition.settings.transcriptsConfigured,
+            // The same evidence the status card weighs, so the two surfaces can never disagree
+            // about whether this phone is hearing the watch.
+            verdict: composition.runtime.streamEvidence.value.verdict(
+                nowMs: composition.clock.nowMs),
+            mode: composition.settings.transcriptionMode,
+            cloudStatus: composition.cloudHealth.state.status,
+            liveLocalFailing: composition.runtime.pipelineHealth.health[.liveLocal]
+                .isPersistentlyFailing
+        )
+    }
+
+    /// Pure, so the four answers can be tested without a composition root.
+    ///
+    /// Order is worst-first in terms of what a person can act on: transcription that was never
+    /// set up will never produce a word, so it outranks a missing link, which outranks a quiet
+    /// room, which outranks an engine failing on audio we do have.
+    static func liveStatus(
+        transcriptsConfigured: Bool,
+        verdict: StreamVerdict,
+        mode: TranscriptionMode,
+        cloudStatus: CloudHealthStatus,
+        liveLocalFailing: Bool
+    ) -> LiveTranscriptStatus {
+        if !transcriptsConfigured { return .transcriptsOff }
+
+        switch verdict {
+        case .unverified, .watchSaysNotStreaming: return .notHearingWatch
+        case .watchSaysStreaming: return .quiet
+        case .hearingAudio, .unchecked: break
+        }
+
+        // Audio IS arriving, so anything missing now is the live engine's own trouble. The two
+        // live paths report through different channels — the realtime socket through cloud
+        // health, the chunk path through the pipeline's stage health — and either one working
+        // is enough to say nothing is wrong, because the screen shows whichever produced words.
+        // Hence `remoteOnly` for the cloud half: in a `-first` mode the other path is a real
+        // fallback, and calling live transcription down while it is quietly working would be
+        // its own kind of lie.
+        let cloudLiveDown = mode == .remoteOnly && cloudStatus == .failed
+        if cloudLiveDown || liveLocalFailing { return .liveTranscriptionDown }
+        return .listening
     }
 
     private func publish() {
@@ -268,13 +353,38 @@ final class LiveTodayDataSource {
     /// arrived last. Audio that stops therefore drains leftwards out of the window instead of
     /// standing still against the right edge while the headline says "Recording".
     private func liveMinuteSlots() -> [WaveformBar?] {
-        WaveformWindow.slots(
+        let transcribed = transcribedThrough
+        return WaveformWindow.slots(
             bars: liveBars,
             nowMs: composition.clock.nowMs,
             slotCount: WaveformView.slotCount,
             windowMs: WaveformView.windowMs
         )
-        .map { $0.map(WaveformBar.init(kit:)) }
+        .map { slot in slot.map { WaveformBar(kit: $0, transcribedThrough: transcribed) } }
+    }
+
+    /// Re-reads how far the live transcribers have consumed the open segment. Throttled to ~1 s:
+    /// the waveform ticks at 4 Hz and the previews advance far more slowly than that.
+    private func pollTranscribedBoundary() async {
+        let nowMs = composition.clock.nowMs
+        guard nowMs - lastBoundaryPollMs >= 1_000 else { return }
+        lastBoundaryPollMs = nowMs
+        guard let openSegmentId = composition.openSegment.value else { return }
+        let merged = LiveTranscriptPreview.merged(
+            cloud: await composition.cloudLive.previews[openSegmentId],
+            local: await composition.localLive.previewFor(openSegmentId)
+        )
+        guard let merged else { return }
+        // Monotonic: a preview that briefly loses its tail (a socket dying mid-segment, a prune)
+        // must not repaint seconds that were already shown as transcribed.
+        let previous = transcribedThrough[openSegmentId] ?? 0
+        transcribedThrough[openSegmentId] = max(previous, merged.lastSampleIndexExclusive)
+    }
+
+    /// Bounded to the segments the live row can actually be drawing, so a long day's worth of
+    /// boundaries never accumulates behind a screen that only shows one minute.
+    private func pruneTranscribedThrough(keeping ids: Set<String>) {
+        transcribedThrough = transcribedThrough.filter { ids.contains($0.key) }
     }
 
     // MARK: - Mapping
@@ -411,7 +521,7 @@ final class LiveTodayDataSource {
     /// line, so the calm rolling preview existed in every artboard and in no build: the live
     /// row on a real phone showed a title and a duration and nothing of what was being said.
     static func conversationRow(
-        _ row: ConversationListRow, liveSnippet: String? = nil
+        _ row: ConversationListRow, liveSnippet: String? = nil, liveStatusLine: String? = nil
     ) -> ConversationRowDisplay {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
         var meta = "\(TimeFmt.time(start)) · \(Formatting.duration(row.durationMs))"
@@ -421,6 +531,7 @@ final class LiveTodayDataSource {
             title: row.title ?? (row.isLive ? "Recording now" : "Conversation"),
             meta: meta,
             snippet: row.isLive ? liveSnippet : nil,
+            statusLine: row.isLive ? liveStatusLine : nil,
             isLive: row.isLive
         )
     }
@@ -585,17 +696,35 @@ extension LiveTodayDataSource: LiveDataSource {
 // MARK: - Kit → display
 
 extension WaveformBar {
-    /// The four-state audio taxonomy, mapped from the kit's live monitor.
-    init(kit bar: LiveAudio.WaveformBar) {
-        // The kit reports what the AUDIO is; the strip's fourth state (transcribed) is a
-        // display distinction the live monitor does not track, so captured is the honest floor.
+    /// The audio taxonomy, mapped from the kit's live monitor.
+    ///
+    /// `transcribedThrough` is how far transcription has consumed each segment, as an exclusive
+    /// stream sample index. The kit reports what the AUDIO is and leaves transcription to the
+    /// display — but this mapping used to answer `.captured` unconditionally, so the transcribed
+    /// colour was unreachable from live data and the row stayed lilac however well live
+    /// transcription was doing. Every bar carries the highest sample index in its bucket, which
+    /// is exactly what the live preview's `lastSampleIndexExclusive` compares against.
+    init(kit bar: LiveAudio.WaveformBar, transcribedThrough: [String: UInt64]) {
         let state: WaveformBar.State
         switch bar.state {
-        case .recorded: state = .captured
-        case .silence, .suppressedSilence: state = .quiet
+        case .recorded:
+            state = Self.isTranscribed(bar, transcribedThrough) ? .transcribed : .captured
+        case .silence: state = .quiet
+        // No audio, but a live link that chose not to send it: quiet, drawn fainter than quiet
+        // we decoded, and never confused with the blank of a slot we know nothing about.
+        case .suppressedSilence: state = .skipped
         case .gap: state = .missing
         }
         self.init(amplitude: Double(bar.amplitude), state: state)
+    }
+
+    private static func isTranscribed(
+        _ bar: LiveAudio.WaveformBar, _ transcribedThrough: [String: UInt64]
+    ) -> Bool {
+        guard let segmentId = bar.segmentId, let through = transcribedThrough[segmentId],
+            let sample = bar.maxSampleIndex
+        else { return false }
+        return sample < through
     }
 }
 

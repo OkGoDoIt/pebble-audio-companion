@@ -7,7 +7,11 @@ struct WaveformBar: Equatable {
     enum State: Equatable {
         case transcribed  // Tokens.tint, amplitude-scaled
         case captured     // Tokens.captured, amplitude-scaled (awaiting transcription)
-        case quiet        // Tokens.quiet, fixed stub height (known silence)
+        case quiet        // Tokens.quiet, fixed stub height (silence we measured)
+        /// Silence the watch skipped sending. Still Quiet in the taxonomy — the same legend item
+        /// — but drawn fainter and shorter, because it is quiet we INFER from a live link that
+        /// sent nothing rather than quiet we decoded. Never amber: nothing was lost.
+        case skipped
         case missing      // Tokens.missing, fixed marker height (no data — never hidden)
     }
 
@@ -17,10 +21,11 @@ struct WaveformBar: Equatable {
 
 // MARK: - Waveform
 
-/// The live-minute waveform: h32 container, 40 bars w3 r1.5, space-between.
+/// The live-minute waveform: h32 container, 80 bars w2, space-between.
 /// Four-state audio taxonomy: transcribed/captured amplitude-scaled full-height bars;
-/// quiet renders as h4 stubs; missing renders as the amber h10 marker (per the artboard
-/// taxonomy — visually distinct from both voice and quiet, never silently hidden).
+/// quiet renders as h4 stubs (h2 and fainter for silence the watch skipped); missing renders
+/// as the amber h10 marker (per the artboard taxonomy — visually distinct from both voice and
+/// quiet, never silently hidden).
 struct WaveformView: View {
     /// One slot per `slotCount`, oldest first, already placed on a time axis ending at the moment
     /// the snapshot was built (`WaveformWindow.slots`). A nil slot has no audio in it.
@@ -34,13 +39,20 @@ struct WaveformView: View {
     /// right. Slots keep the bar spacing stable instead of stretching a handful of early bars
     /// across the full width, and stop a growing bar count from dragging the Today layout
     /// sideways.
-    static let slotCount = 40
+    ///
+    /// 80 slots = 750 ms each. At 40 the row was 1.5 s per bar: fat, widely spaced lozenges that
+    /// read as a toy rather than an instrument, and coarse enough to swallow a short word whole.
+    /// Still three of the monitor's 250 ms bars per slot, so the row is a downsample of the
+    /// audio and never an interpolation of it.
+    static let slotCount = 80
 
     /// How much time the row covers, matching the live monitor's own window.
     static let windowMs: Int64 = 60_000
 
     private let containerHeight: CGFloat = 32
+    private let barWidth: CGFloat = 2
     private let quietHeight: CGFloat = 4
+    private let skippedHeight: CGFloat = 2
     private let missingHeight: CGFloat = 10
 
     /// Padded/truncated to exactly `slotCount`, so a short array still draws a stable row.
@@ -55,11 +67,14 @@ struct WaveformView: View {
                 // Each slot flexes, so the row fits any width and never overflows its card.
                 Group {
                     if let bar = window[index] {
-                        RoundedRectangle(cornerRadius: 1.5)
+                        RoundedRectangle(cornerRadius: 1)
                             .fill(color(for: bar.state))
-                            .frame(width: 3, height: height(for: bar))
+                            .frame(width: barWidth, height: height(for: bar))
                     } else {
-                        Color.clear.frame(width: 3, height: 1)
+                        // A slot we know nothing about — before the app opened, or before the
+                        // link came up — is genuinely blank, and must stay distinguishable from
+                        // the faint tick that means "live, and quiet".
+                        Color.clear.frame(width: barWidth, height: 1)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -68,7 +83,7 @@ struct WaveformView: View {
         .frame(height: containerHeight, alignment: .bottom)
         .frame(maxWidth: .infinity)
         .clipped()
-        // One element, never 40 — VoiceOver gets the spoken summary, not the bars (U10).
+        // One element, never 80 — VoiceOver gets the spoken summary, not the bars (U10).
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Copy.A11y.waveformLabel)
         .accessibilityValue(accessibilitySummary)
@@ -79,6 +94,7 @@ struct WaveformView: View {
         case .transcribed: Tokens.tint
         case .captured: Tokens.captured
         case .quiet: Tokens.quiet
+        case .skipped: Tokens.quietSkipped
         case .missing: Tokens.missing
         }
     }
@@ -86,6 +102,7 @@ struct WaveformView: View {
     private func height(for bar: WaveformBar) -> CGFloat {
         switch bar.state {
         case .quiet: quietHeight
+        case .skipped: skippedHeight
         case .missing: missingHeight
         case .transcribed, .captured:
             8 + CGFloat(min(max(bar.amplitude, 0), 1)) * (containerHeight - 8)
@@ -106,7 +123,9 @@ struct WaveformView: View {
         }
         return Copy.A11y.waveformSummary(
             recordedSec: seconds { $0 == .transcribed || $0 == .captured },
-            quietSec: seconds { $0 == .quiet },
+            // Skipped silence is quiet, spoken as quiet: the visual distinction is about how
+            // confident the drawing is, not about a fifth thing having happened.
+            quietSec: seconds { $0 == .quiet || $0 == .skipped },
             missingSec: seconds { $0 == .missing }
         )
     }
@@ -158,16 +177,18 @@ struct WaveformLegend: View {
 // MARK: - Sample data
 
 extension [WaveformBar?] {
-    /// The Today artboard's live minute: 14 transcribed, 5 quiet, 2 missing, 3 quiet,
-    /// 16 captured (deterministic amplitudes).
+    /// The Today artboard's live minute, at the row's resolution: a stretch nobody was watching,
+    /// then transcribed speech, measured quiet, loss, silence the watch skipped, and the newest
+    /// seconds still awaiting transcription (deterministic amplitudes).
     static var sampleLiveMinute: [WaveformBar?] {
         func amp(_ i: Int) -> Double { 0.25 + 0.7 * abs(sin(Double(i) * 1.7 + 0.6)) }
         var bars: [WaveformBar?] = []
-        bars += (0..<14).map { WaveformBar(amplitude: amp($0), state: .transcribed) }
+        bars += (0..<6).map { _ in nil }
+        bars += (0..<26).map { WaveformBar(amplitude: amp($0), state: .transcribed) }
         bars += (0..<5).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
-        bars += (0..<2).map { _ in WaveformBar(amplitude: 0, state: .missing) }
-        bars += (0..<3).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
-        bars += (14..<30).map { WaveformBar(amplitude: amp($0), state: .captured) }
+        bars += (0..<4).map { _ in WaveformBar(amplitude: 0, state: .missing) }
+        bars += (0..<8).map { _ in WaveformBar(amplitude: 0, state: .skipped) }
+        bars += (26..<57).map { WaveformBar(amplitude: amp($0), state: .captured) }
         return bars
     }
 }
@@ -195,7 +216,10 @@ extension [WaveformBar?] {
             VStack(alignment: .leading, spacing: 12) {
                 Text("All quiet").font(AppFont.cardHead).foregroundStyle(Tokens.label)
                 WaveformView(
-                    slots: (0..<40).map { _ in WaveformBar(amplitude: 0, state: .quiet) }
+                    slots: (0..<WaveformView.slotCount).map {
+                        // Measured quiet, then the fainter tick for silence the watch skipped.
+                        WaveformBar(amplitude: 0, state: $0 < 40 ? .quiet : .skipped)
+                    }
                 )
                 WaveformLegend(showPaused: true)
             }
