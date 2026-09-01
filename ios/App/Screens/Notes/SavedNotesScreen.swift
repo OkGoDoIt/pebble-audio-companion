@@ -247,7 +247,7 @@ final class SavedNotesViewModel {
         if labels.isEmpty {
             return note.momentsLabel.isEmpty ? nil : note.momentsLabel
         }
-        return Copy.Ask.moments(labels.count, labels.joined(separator: ", "))
+        return Copy.Ask.moments(labels, naming: 3)
     }
 
     func copyNote() {

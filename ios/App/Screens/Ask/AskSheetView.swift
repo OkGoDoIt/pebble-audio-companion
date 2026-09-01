@@ -17,7 +17,9 @@ struct AskSheetView: View {
     @State private var model = AskViewModel()
 
     /// Scroll target that keeps the newest turn in view as the conversation grows.
-    private let bottomAnchor = "ask-thread-bottom"
+    /// Anchor for the turn being asked, so a question in flight scrolls to the same place its
+    /// answer will occupy.
+    private let pendingAnchor = "ask-thread-pending"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -77,7 +79,7 @@ struct AskSheetView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ForEach(model.turns, id: \.id) { turn in
-                        answeredTurn(turn)
+                        answeredTurn(turn).id(turn.id)
                     }
 
                     if let question = model.pendingQuestion {
@@ -93,6 +95,7 @@ struct AskSheetView: View {
                             }
                         }
                         .accessibilityLabel(Copy.A11y.askThinking(question))
+                        .id(pendingAnchor)
                     } else if let question = model.failedQuestion {
                         VStack(alignment: .leading, spacing: 10) {
                             questionText(question)
@@ -106,17 +109,32 @@ struct AskSheetView: View {
                                 }
                             }
                         }
+                        .id(pendingAnchor)
                     }
 
-                    Color.clear.frame(height: 1).id(bottomAnchor)
+                    // Room below the last turn so its question can actually reach the top of the
+                    // scroll view — without it, a short final answer cannot scroll far enough and
+                    // lands mid-screen.
+                    Color.clear.frame(height: 400)
                 }
             }
             .onChange(of: model.threadProgress) { _, _ in
+                // To the TOP of the newest turn, not the bottom of the thread. An answer can run
+                // to several screens, and landing at its end means reading it backwards: the
+                // first thing you want to see is the question you asked and the sentence that
+                // answers it.
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) {
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    proxy.scrollTo(newestAnchor, anchor: .top)
                 }
             }
         }
+    }
+
+    /// The turn the thread should be showing: the one in flight, else the newest answered one.
+    private var newestAnchor: String {
+        model.pendingQuestion != nil || model.failedQuestion != nil
+            ? pendingAnchor
+            : (model.turns.last?.id ?? pendingAnchor)
     }
 
     private func answeredTurn(_ entry: AskEntry) -> some View {
@@ -256,6 +274,8 @@ struct AskSheetView: View {
                         Text(momentsLabel(entry))
                             .font(AppFont.footnote)
                             .foregroundStyle(Tokens.meta)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
@@ -307,7 +327,7 @@ struct AskSheetView: View {
         let titles = sources(entry).map(\.title)
         var unique: [String] = []
         for title in titles where !unique.contains(title) { unique.append(title) }
-        return Copy.Ask.moments(unique.count, unique.joined(separator: ", "))
+        return Copy.Ask.moments(unique)
     }
 
     /// Only the number the answer actually recorded: a chip the entry has no citation for

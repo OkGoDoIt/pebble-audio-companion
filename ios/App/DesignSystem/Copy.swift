@@ -431,6 +431,21 @@ enum Copy {
         static func moments(_ count: Int, _ list: String) -> String {
             count == 1 ? "1 moment · \(list)" : "\(count) moments · \(list)"
         }
+
+        /// The same, naming only the first few. An answer drawn from a whole archive can cite
+        /// dozens of conversations, and each title is a fragment of what was said — spelling
+        /// every one of them out turned a one-line footer into a screen of text. The count is
+        /// the useful part; the full list is one tap away in the expanded sources.
+        static func moments(_ titles: [String], naming limit: Int = 2) -> String {
+            guard !titles.isEmpty else { return "" }
+            let named = titles.prefix(limit)
+            let rest = titles.count - named.count
+            let list =
+                rest > 0
+                ? named.joined(separator: ", ") + ", and \(rest) more"
+                : named.joined(separator: ", ")
+            return moments(titles.count, list)
+        }
         static let nothingToAskYet =
             "Nothing to ask about yet — recordings appear here after your first conversation."
 

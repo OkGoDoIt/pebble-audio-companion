@@ -1079,7 +1079,7 @@ extension LiveWorld: NotesDataSource {
             .compactMap(startedAt)
             .sorted()
         guard !times.isEmpty else { return "" }
-        return Copy.Ask.moments(times.count, times.map(TimeFmt.time).joined(separator: ", "))
+        return Copy.Ask.moments(times.map(TimeFmt.time), naming: 3)
     }
 }
 

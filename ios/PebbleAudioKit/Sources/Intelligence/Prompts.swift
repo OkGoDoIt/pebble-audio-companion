@@ -269,6 +269,24 @@ public enum AiPromptTemplates {
         + "annotated gaps where audio was missing. Never invent content for gaps; mention "
         + "missing audio only when it matters for the answer. Be concise and factual."
 
+    /// How an Ask answer is written. Shared by the single-pass and sweep-synthesis templates so
+    /// the two paths are indistinguishable to the reader.
+    ///
+    /// Plain prose, not a document. The answer card renders inline Markdown only, so a model
+    /// reaching for a table emits `|---|---|---|` as literal text on the screen — but the real
+    /// reason is that this is a question asked out loud about your own day, and the useful shape
+    /// of that answer is a couple of sentences, not a report with headings.
+    static let plainAnswerRules =
+        "FORMAT: write plain prose. No Markdown at all — no tables, headings, bullet or "
+        + "numbered lists, bold, italics, or code fences. The bracketed [n] citations are the "
+        + "sole exception and are still required. Lead with the direct answer in the first "
+        + "sentence instead of working up to it; do not restate the question, do not add a "
+        + "closing summary, and do not offer further help. Keep it to one short paragraph where "
+        + "that is enough, and never more than about three.\n"
+        + "The user's own instructions override this: if they ask for a list, a table, a "
+        + "particular format, or explicitly want more detail or length, give them exactly that "
+        + "instead."
+
     public static let dailySummary = AiPromptTemplate(
         id: "daily-summary",
         title: "Daily summary",
@@ -375,7 +393,8 @@ public enum AiPromptTemplates {
             + "given only part, never say a thing is absent, never say \"nothing is "
             + "documented\"; say what you did find and state that you could not read the whole "
             + "range. Do not pad a thin answer by treating a barely related mention as though "
-            + "it answered the question — say directly that you found nothing solid.",
+            + "it answered the question — say directly that you found nothing solid.\n"
+            + plainAnswerRules,
         userPrompt: "Continue this conversation, using the transcripts as the only source of "
             + "facts.",
         citesSources: true
@@ -423,7 +442,8 @@ public enum AiPromptTemplates {
             + "COVERAGE: the COVERAGE line says whether every part of the range was read. If "
             + "it was, an absence is a real finding and you may say so plainly. If it was not, "
             + "never claim a thing is absent — say what was found and that the whole range "
-            + "could not be read.",
+            + "could not be read.\n"
+            + plainAnswerRules,
         userPrompt: "Answer the question from these gathered notes.",
         citesSources: true
     )

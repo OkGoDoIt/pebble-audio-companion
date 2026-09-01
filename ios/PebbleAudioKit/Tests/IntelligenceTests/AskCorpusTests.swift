@@ -215,3 +215,28 @@ struct AskCorpusPlannerTests {
         #expect(!plan.coverage.isComplete)
     }
 }
+
+@Suite("Ask answer shape")
+struct AskAnswerShapeTests {
+    /// The answer card renders inline Markdown only, so a model reaching for a table emits
+    /// `|---|---|---|` as literal text on the screen. The deeper reason is that this is a
+    /// question asked about your own day: the useful answer is a couple of sentences, not a
+    /// report with headings.
+    @Test func bothAskTemplatesForbidMarkdownAndAskForShortProse() {
+        for template in [AiPromptTemplates.ask, AiPromptTemplates.askSweepAnswer] {
+            let rules = template.systemPrompt
+            #expect(rules.contains("No Markdown at all"))
+            #expect(rules.contains("tables"))
+            #expect(rules.contains("never more than about three"))
+            // The [n] citations survive the ban — they are what the chips map back through.
+            #expect(rules.contains("[n] citations are the sole exception"))
+            // And the user can still ask for a list or a longer answer and get one.
+            #expect(rules.contains("The user's own instructions override this"))
+        }
+    }
+
+    /// The gathering pass feeds the synthesis pass, not the reader, so it keeps its bullets.
+    @Test func theSweepGatheringPassIsNotHeldToTheProseRules() {
+        #expect(!AiPromptTemplates.askSweepFindings.systemPrompt.contains("No Markdown at all"))
+    }
+}

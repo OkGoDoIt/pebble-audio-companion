@@ -212,6 +212,20 @@ struct DataSourceContractTests {
         if let early, let late { #expect(early.lowerBound < late.lowerBound) }
     }
 
+    /// An Ask answer drawn from a whole archive can cite dozens of conversations. Spelling every
+    /// one of them out turned the one-line footer under the answer into a screen of transcript
+    /// fragments; the count is the useful part, and the full list is one tap away.
+    @Test func theMomentsFooterNamesAFewAndCountsTheRest() {
+        let many = (1...30).map { "Conversation \($0)" }
+        let label = Copy.Ask.moments(many, naming: 2)
+        #expect(label == "30 moments · Conversation 1, Conversation 2, and 28 more")
+        // Short lists are still named in full — no "and 0 more".
+        #expect(Copy.Ask.moments(["Coffee with Dana", "Evening at home"], naming: 2)
+            == "2 moments · Coffee with Dana, Evening at home")
+        #expect(Copy.Ask.moments(["Coffee with Dana"]) == "1 moment · Coffee with Dana")
+        #expect(Copy.Ask.moments([]).isEmpty)
+    }
+
     /// Retention can take the segment a citation names. A moment we can no longer place is not
     /// one to invent a time for.
     @Test func momentsAreEmptyWhenNothingCanBePlaced() {
