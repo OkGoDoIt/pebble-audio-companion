@@ -257,7 +257,7 @@ final class AppComposition {
         let router = TranscriptionModeRouter(
             local: localBatch,
             remote: batchCloud,
-            onRemoteOutcome: cloudOutcomeSink(cloudHealth),
+            onRemoteOutcome: classifiedCloudOutcomeSink(cloudHealth),
             mode: { settingsBox.transcriptionMode }
         )
         let processor = TranscriptionProcessor(
@@ -371,6 +371,8 @@ final class AppComposition {
         // connects is invisible: the screen quietly shows the on-device fallback and nothing
         // anywhere says the cloud was even tried.
         let liveCloudOutcome = cloudOutcomeSink(cloudHealth)
+        // `CloudHealth.message` is rendered verbatim on the Transcription & AI row, so the words
+        // are chosen HERE and nowhere deeper.
         let cloudLive = CloudLiveTranscriber(
             tap: liveTap,
             provider: streamingCloud,
@@ -379,11 +381,14 @@ final class AppComposition {
             onOutcome: { outcome in
                 switch outcome {
                 case .ok(let detail): liveCloudOutcome(.ok(detail: detail))
-                case .failed(let message): liveCloudOutcome(.failed(message: message))
+                case .failed(let kind): liveCloudOutcome(.failed(message: kind.reason))
                 }
             },
             logFailure: { label, error in
                 AppRuntimeLog.shared.record("\(label): \(error)")
+            },
+            logNote: { note in
+                AppRuntimeLog.shared.record(note)
             }
         )
         self.cloudLive = cloudLive
@@ -890,6 +895,30 @@ final class AppComposition {
             result.append(byte)
         }
         return result
+    }
+}
+
+// MARK: - Cloud health wording
+
+/// `cloudOutcomeSink`, with the failure re-worded before it can reach a screen.
+///
+/// `CloudHealth.message` is rendered verbatim on the Transcription & AI row, but the router
+/// fills it with `transcriptionErrorMessage(error)` — developer prose with up to 240 bytes of
+/// the provider's own response body spliced in, which for a 4xx is the request URL. That is the
+/// text B20 exists to keep off screens. `TranscriptionFailureKind` already knows how to read
+/// exactly this prose, and the app already owns a sentence per kind, so the classification
+/// happens here, at the boundary where the kit's log line becomes the user's row.
+func classifiedCloudOutcomeSink(
+    _ monitor: CloudHealthMonitor?
+) -> @Sendable (CloudConnectivityResult) -> Void {
+    let sink = cloudOutcomeSink(monitor)
+    return { result in
+        switch result {
+        case .failed(let message):
+            sink(.failed(message: TranscriptionFailureKind.classify(message).reason))
+        case .ok, .notConfigured:
+            sink(result)
+        }
     }
 }
 
