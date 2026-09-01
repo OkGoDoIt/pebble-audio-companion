@@ -37,6 +37,26 @@ private final class FakeStreamingProvider: StreamingTranscriptionProvider, @unch
 }
 
 /// Fails its first `failuresBeforeSuccess` streams (simulating transient Soniox socket errors).
+/// A provider whose socket is taken away underneath it, the way iOS does when it suspends the
+/// app and the way a Wi-Fi↔cellular handover does at any time.
+private final class DroppedSocketProvider: StreamingTranscriptionProvider, @unchecked Sendable {
+    let id = "dropped-cloud"
+    private let lock = NSLock()
+    private var _streamStarts = 0
+    var streamStarts: Int { lock.withLock { _streamStarts } }
+
+    func isAvailable() async -> Bool { true }
+
+    func transcribeStream(
+        pcm: AsyncThrowingStream<Data, Error>, sampleRateHz: Int
+    ) -> AsyncThrowingStream<StreamingTranscriptUpdate, Error> {
+        lock.withLock { _streamStarts += 1 }
+        return AsyncThrowingStream { continuation in
+            continuation.finish(throwing: WebSocketDroppedError(code: 53))
+        }
+    }
+}
+
 private final class FlakyStreamingProvider: StreamingTranscriptionProvider, @unchecked Sendable {
     let id = "flaky-cloud"
     private let failuresBeforeSuccess: Int
@@ -203,6 +223,77 @@ private func opened(_ segmentId: String) -> LiveAudioEvent {
 
         tap.emit(.segmentClosed(segmentId: "seg-1"))
         #expect(await waitUntil { await transcriber.activeSegmentIdForTesting() == nil })
+        tapJob.cancel()
+        await tapJob.value
+    }
+
+    @Test func interruptedConnectionReconnectsQuietlyWithoutBlamingTheProvider() async throws {
+        // Roger's log showed `NSPOSIXErrorDomain Code=53 "Software caused connection abort"`
+        // recorded as a live-transcription FAILURE while iOS had the app suspended. Losing a
+        // WebSocket to suspension is what suspension IS — it is not evidence that Soniox is
+        // unwell, and three of them must not raise "Cloud transcription isn't working" at
+        // someone who merely put their phone in a pocket.
+        let tap = LiveAudioTap()
+        let provider = DroppedSocketProvider()
+        let outcomes = Box<[CloudLiveOutcome]>([])
+        let notes = Box<[String]>([])
+        let failureLogs = Box<[String]>([])
+        let transcriber = CloudLiveTranscriber(
+            tap: tap,
+            provider: provider,
+            enabled: { true },
+            nowMs: { 123_000 },
+            onOutcome: { outcome in outcomes.mutate { $0.append(outcome) } },
+            maxReconnects: 4,
+            reconnectBackoffMs: { _ in 0 },
+            logFailure: { label, _ in failureLogs.mutate { $0.append(label) } },
+            logNote: { note in notes.mutate { $0.append(note) } },
+            decodePcm: { _, encoded in passthrough(encoded) }
+        )
+        let tapJob = await transcriber.start()
+
+        tap.emit(opened("seg-1"))
+        #expect(await waitUntil { provider.streamStarts == 5 })
+
+        // It still reconnects, on the same bounded budget as any other reconnect...
+        #expect(provider.streamStarts == 5)  // initial attempt + 4 reconnects
+        // ...but cloud health hears nothing, because nothing was learned about the cloud.
+        #expect(outcomes.value.isEmpty)
+        // ...and the log records an event, not a defect.
+        #expect(failureLogs.value.isEmpty)
+        #expect(notes.value.count == 5)
+        #expect(notes.value.allSatisfy { $0.contains("interrupted") })
+
+        tap.emit(.segmentClosed(segmentId: "seg-1"))
+        #expect(await waitUntil { await transcriber.activeSegmentIdForTesting() == nil })
+        tapJob.cancel()
+        await tapJob.value
+    }
+
+    @Test func providerFailureIsClassifiedNotQuotedVerbatim() async throws {
+        // The other half of the same rule: a real provider fault DOES reach cloud health, but
+        // as a case the app has a sentence for — never as the provider's own prose (B20).
+        let tap = LiveAudioTap()
+        let provider = FlakyStreamingProvider(failuresBeforeSuccess: Int.max)
+        let outcomes = Box<[CloudLiveOutcome]>([])
+        let transcriber = CloudLiveTranscriber(
+            tap: tap,
+            provider: provider,
+            enabled: { true },
+            nowMs: { 123_000 },
+            onOutcome: { outcome in outcomes.mutate { $0.append(outcome) } },
+            maxReconnects: 0,
+            reconnectBackoffMs: { _ in 0 },
+            logFailure: { _, _ in },
+            decodePcm: { _, encoded in passthrough(encoded) }
+        )
+        let tapJob = await transcriber.start()
+
+        tap.emit(opened("seg-1"))
+        #expect(await waitUntil { outcomes.value.count == 1 })
+        #expect(outcomes.value == [.failed(kind: .timedOut)])
+
+        tap.emit(.segmentClosed(segmentId: "seg-1"))
         tapJob.cancel()
         await tapJob.value
     }

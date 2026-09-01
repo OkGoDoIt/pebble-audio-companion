@@ -17,6 +17,24 @@ public struct WebSocketClosedError: Error, Sendable {
     public init() {}
 }
 
+/// Thrown by `receive` when a connection we already had was torn down underneath us, rather than
+/// closed by either side's protocol: iOS suspending the app, a Wi-Fi↔cellular handover, the phone
+/// going out of range. `URLSessionWebSocketTask` surfaces these as bare POSIX errors — most often
+/// `NSPOSIXErrorDomain` 53, "Software caused connection abort" — with no close code at all.
+///
+/// It is a distinct type because it carries NO information about the provider's health. Reported
+/// as a cloud failure it would let a pocketed phone raise "Cloud transcription isn't working";
+/// logged as an error it would make an ordinary backgrounding look like a defect. Callers should
+/// reconnect and say nothing.
+public struct WebSocketDroppedError: Error, Sendable {
+    /// The underlying POSIX/URL error code, for the detailed log only.
+    public let code: Int
+
+    public init(code: Int) {
+        self.code = code
+    }
+}
+
 /// One live socket. `receive` throws when the socket closes or fails.
 public protocol WebSocketConnection: Sendable {
     func send(text: String) async throws
@@ -75,10 +93,34 @@ final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Senda
         } catch where task.closeCode != .invalid {
             // The socket was closed (the peer or `close()` ended it) — not a mid-stream failure.
             throw WebSocketClosedError()
+        } catch let error as NSError where Self.isConnectionAbort(error) {
+            throw WebSocketDroppedError(code: error.code)
         }
     }
 
     func close() {
         task.cancel(with: .normalClosure, reason: nil)
+    }
+
+    /// True when the error means "the connection we had went away", as opposed to "the provider
+    /// answered badly" or "there is no network here".
+    ///
+    /// Deliberately narrow. `notConnectedToInternet`, `cannotConnectToHost` and `timedOut` are
+    /// left out on purpose: those say the network itself is unusable, which IS worth reporting,
+    /// and the failure vocabulary already has `noConnection` for them.
+    static func isConnectionAbort(_ error: NSError) -> Bool {
+        switch error.domain {
+        case NSPOSIXErrorDomain:
+            // EPIPE, ECONNABORTED, ECONNRESET, ENOTCONN. 53 is the one iOS raises when it tears
+            // a socket down under a suspending app.
+            return [32, 53, 54, 57].contains(error.code)
+        case NSURLErrorDomain:
+            return [
+                URLError.networkConnectionLost.rawValue,
+                URLError.cancelled.rawValue,
+            ].contains(error.code)
+        default:
+            return false
+        }
     }
 }

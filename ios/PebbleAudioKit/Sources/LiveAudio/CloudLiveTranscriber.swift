@@ -13,8 +13,16 @@ import Transcription
 public enum CloudLiveOutcome: Sendable, Equatable {
     /// Reachable and the credentials were accepted.
     case ok(detail: String? = nil)
-    /// Reachable but rejected, or unreachable. `message` is user-facing.
-    case failed(message: String)
+
+    /// Reachable but rejected, or unreachable.
+    ///
+    /// Carries a `TranscriptionFailureKind` and NOT a message. This case reaches a screen (the
+    /// cloud row in Transcription & AI), and what used to travel here was `String(describing:)`
+    /// of whatever was thrown — so a suspended app put `Error Domain=NSPOSIXErrorDomain Code=53
+    /// "Software caused connection abort"` in front of the user, and a Soniox fault put the
+    /// provider's own prose there. Both are anti-goal B20. The kit classifies; the app says the
+    /// words (`TranscriptionFailureKind+Copy.swift`), exactly as the durable path already does.
+    case failed(kind: TranscriptionFailureKind)
 }
 
 /// Real-time cloud transcription of the currently-open segment (plan: "real-time streaming of
@@ -23,11 +31,15 @@ public enum CloudLiveOutcome: Sendable, Equatable {
 /// `LiveTranscriptPreview` — the same preview surface the local chunk-based transcriber uses, so
 /// the UI need not care which produced it.
 ///
-/// Foreground-only semantics come from the injected `enabled` gate: the runtime composes
-/// consent + API key + (on iOS) foregroundedness into it, and a session is only (re)started
-/// while the gate allows it. `setForeground` remains the lifecycle hook the runtime calls; it
-/// never tears down an in-flight session (matching the KMP behavior pinned by
-/// `backgroundingDoesNotStopCloudStreamingProgress`).
+/// The injected `enabled` gate is consent + a configured cloud provider — deliberately NOT
+/// foregroundedness. Backgrounding does not stop a live session and `setForeground` is a no-op:
+/// while the process is awake receiving BLE frames the socket keeps working, and stopping it on
+/// background entry (as this once did) left the transcript frozen for a user who was still
+/// recording. Pinned by `backgroundingDoesNotStopCloudStreamingProgress`.
+///
+/// What *cannot* be survived is iOS actually suspending the process, which takes the socket with
+/// it. That arrives as a `WebSocketDroppedError` and is treated as an interruption to reconnect
+/// through, not as a fault — see the catch in `runSessionLoop`.
 public actor CloudLiveTranscriber {
     private let tap: LiveAudioTap
     private let provider: StreamingTranscriptionProvider
@@ -44,6 +56,10 @@ public actor CloudLiveTranscriber {
     /// Backoff before reconnect attempt N (1-based). Exponential, capped, by default.
     private let reconnectBackoffMs: @Sendable (Int) -> Int64
     private let logFailure: @Sendable (String, Error) -> Void
+    /// Records an expected, uneventful thing that happened — a connection the OS took away and
+    /// we reopened. Separate from `logFailure` so the detailed log can distinguish "this went
+    /// wrong" from "this is what backgrounding looks like".
+    private let logNote: @Sendable (String) -> Void
     private let decodePcm:
         @Sendable (LiveAudioEvent.SegmentOpened, AsyncStream<Data>) -> AsyncThrowingStream<Data, Error>
 
@@ -79,6 +95,7 @@ public actor CloudLiveTranscriber {
         logFailure: @escaping @Sendable (String, Error) -> Void = { label, error in
             print("audio-companion: \(label) failed: \(error)")
         },
+        logNote: @escaping @Sendable (String) -> Void = { _ in },
         decodePcm: @escaping @Sendable (LiveAudioEvent.SegmentOpened, AsyncStream<Data>)
             -> AsyncThrowingStream<Data, Error> = { event, encoded in
                 SpeexFrameDecoder(
@@ -96,6 +113,7 @@ public actor CloudLiveTranscriber {
         self.maxReconnects = maxReconnects
         self.reconnectBackoffMs = reconnectBackoffMs
         self.logFailure = logFailure
+        self.logNote = logNote
         self.decodePcm = decodePcm
     }
 
@@ -118,9 +136,9 @@ public actor CloudLiveTranscriber {
     /// two live paths from transcribing (and billing for) the same audio.
     public func deliveringSegmentId() -> String? { deliveringSegment }
 
-    /// Lifecycle hook; the `enabled` gate decides policy, so this is deliberately a no-op
-    /// (an in-flight live socket keeps streaming until its segment closes or the gate stops
-    /// the next session).
+    /// Lifecycle hook, deliberately a no-op: an in-flight live socket keeps streaming until its
+    /// segment closes or the `enabled` gate stops the next session. Backgrounding is not a
+    /// reason to stop transcribing audio the phone is still receiving.
     public func setForeground(_ value: Bool) {}
 
     private func handle(_ event: LiveAudioEvent) {
@@ -179,8 +197,20 @@ public actor CloudLiveTranscriber {
                 gaveUp(on: event.segmentId, after: Self.unavailableRetryDelayMs)
                 return
             } catch {
-                onOutcome(.failed(message: failureMessage(error)))
-                logFailure("cloud live transcription", error)
+                if let dropped = error as? WebSocketDroppedError {
+                    // The connection we had was taken away: iOS suspending the app, a
+                    // Wi-Fi↔cellular handover, the watch's phone leaving the room. None of that
+                    // is evidence about Soniox, so it must not reach cloud health — otherwise
+                    // pocketing the phone three times raises "Cloud transcription isn't
+                    // working" — and none of it is a defect, so it is a note and not an error.
+                    // We simply reopen, on the same bounded budget as any other reconnect.
+                    logNote(
+                        "cloud live transcription: connection interrupted (\(dropped.code)), reconnecting"
+                    )
+                } else {
+                    onOutcome(.failed(kind: Self.failureKind(error)))
+                    logFailure("cloud live transcription", error)
+                }
                 attempt += 1
                 // Reconnect only while this segment is still the active one and the user still
                 // wants live cloud transcription; otherwise give up (the banner, if the failure
@@ -258,9 +288,13 @@ public actor CloudLiveTranscriber {
         previews = previews.filter { $0.key == activeSegmentId || !hasDurableTranscript($0.key) }
     }
 
-    private func failureMessage(_ error: Error) -> String {
-        let text = String(describing: error)
-        return text.isEmpty ? "Live cloud transcription failed." : text
+    /// What a live-socket failure means, in the one vocabulary every surface reports through.
+    ///
+    /// Routed via `storedFailureMessage` so a live failure classifies identically to the same
+    /// failure on the durable path — a 401 from the socket and a 401 from the batch upload say
+    /// the same sentence, because they go through the same matcher.
+    static func failureKind(_ error: Error) -> TranscriptionFailureKind {
+        TranscriptionFailureKind.classify(storedFailureMessage(error))
     }
 
     // Test-only visibility into the receive-side counters (mirrors what the KMP tests observed
