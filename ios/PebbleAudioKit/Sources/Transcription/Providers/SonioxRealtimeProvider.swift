@@ -6,7 +6,10 @@ import Foundation
 /// (`wss://stt-rt.soniox.com/transcribe-websocket`). Sends a config frame, streams raw s16le mono
 /// audio as binary frames, and folds the incoming token stream (finalized vs. partial, with
 /// per-token speakers) into `StreamingTranscriptUpdate`s. End of audio is signalled with an empty
-/// text frame. Foreground-only: a live socket cannot survive iOS suspension.
+/// text frame, and a keepalive holds the socket open through the silences the watch's
+/// voice-activity gate produces (see `keepaliveMessage`). A live socket still cannot survive iOS
+/// suspending the process; that loss surfaces as `WebSocketDroppedError` for the caller to
+/// reconnect through.
 public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
     public static let defaultUrl = "wss://stt-rt.soniox.com/transcribe-websocket"
     public static let defaultModel = "stt-rt-v5"
@@ -15,6 +18,21 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
     /// It is "s16le", NOT "pcm_s16le" — the wrong value makes the server reject the stream and
     /// the live socket fail.
     public static let rawPcmFormat = "s16le"
+
+    /// Soniox closes a realtime socket that has received neither audio nor a keepalive for more
+    /// than 20 seconds, answering `{"error_code": 408, "error_message": "Request timeout."}`.
+    ///
+    /// That is a problem for THIS product specifically: our audio is voice-activity gated, so a
+    /// quiet room sends nothing at all, and a recording routinely contains stretches of minutes
+    /// with no frames. Without a keepalive the socket does not survive an ordinary pause in the
+    /// conversation — the timeout is not a network fault, it is the protocol working as designed
+    /// against a source that is legitimately silent.
+    public static let keepaliveMessage = #"{"type":"keepalive"}"#
+
+    /// How often the keepalive ticker checks in. Soniox suggests 5–10 s against its 20 s
+    /// deadline; at 5 s the worst case (audio arriving just after a tick) still leaves ~10 s of
+    /// margin, so a single dropped or delayed frame cannot cost us the socket.
+    public static let keepaliveIntervalMs: UInt64 = 5_000
 
     public let id = "soniox-realtime"
 
@@ -27,6 +45,7 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
     private let contextTerms: @Sendable () -> [String]
     private let model: @Sendable () -> String
     private let url: String
+    private let keepaliveIntervalMs: UInt64
 
     public init(
         connector: any WebSocketConnector = URLSessionWebSocketConnector(),
@@ -37,7 +56,8 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
         contextText: @escaping @Sendable () -> String? = { nil },
         contextTerms: @escaping @Sendable () -> [String] = { [] },
         model: @escaping @Sendable () -> String = { SonioxRealtimeProvider.defaultModel },
-        url: String = SonioxRealtimeProvider.defaultUrl
+        url: String = SonioxRealtimeProvider.defaultUrl,
+        keepaliveIntervalMs: UInt64 = SonioxRealtimeProvider.keepaliveIntervalMs
     ) {
         self.connector = connector
         self.apiKey = apiKey
@@ -48,6 +68,7 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
         self.contextTerms = contextTerms
         self.model = model
         self.url = url
+        self.keepaliveIntervalMs = keepaliveIntervalMs
     }
 
     public func isAvailable() async -> Bool {
@@ -62,6 +83,7 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
             let session = Task {
                 var connection: (any WebSocketConnection)?
                 var sender: Task<Void, Never>?
+                var keepalive: Task<Void, Never>?
                 do {
                     guard self.cloudConsent(), let key = self.apiKey()?.nonBlank else {
                         throw TranscriptionError.providerUnavailable(providerId: self.id)
@@ -74,14 +96,30 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
                     try await socket.send(text: self.configJson(key: key, sampleRateHz: sampleRateHz))
 
                     // Stream audio in the background; signal end-of-audio with an empty text frame.
+                    let activity = SonioxSendActivity()
                     sender = Task {
                         do {
                             for try await chunk in pcm where !chunk.isEmpty {
                                 try await socket.send(data: chunk)
+                                activity.noteAudioSent()
                             }
+                            activity.noteEndOfAudio()
                             try await socket.send(text: "")
                         } catch {
                             // A send failure surfaces through the receive loop when the socket dies.
+                            activity.noteEndOfAudio()
+                        }
+                    }
+
+                    // Hold the socket open across silences the watch did not send us. Only fires
+                    // when a whole tick passed with no audio, so a talking user costs nothing
+                    // extra, and stops at end-of-audio so it never races the final flush.
+                    let tickMs = self.keepaliveIntervalMs
+                    keepalive = Task {
+                        while !Task.isCancelled {
+                            try? await Task.sleep(nanoseconds: tickMs * 1_000_000)
+                            if Task.isCancelled || !activity.shouldSendKeepalive() { continue }
+                            try? await socket.send(text: Self.keepaliveMessage)
                         }
                     }
 
@@ -93,7 +131,7 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
                         let message = try decoder.decode(RtMessage.self, from: Data(frame.utf8))
                         if let errorMessage = message.errorMessage {
                             throw TranscriptionError.transcriptionFailed(
-                                "Soniox realtime error: \(errorMessage)"
+                                Self.realtimeErrorText(code: message.errorCode, text: errorMessage)
                             )
                         }
                         let finished = message.finished ?? false
@@ -102,10 +140,12 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
                         )
                         if finished { break receiveLoop }
                     }
+                    keepalive?.cancel()
                     sender?.cancel()
                     connection?.close()
                     continuation.finish()
                 } catch {
+                    keepalive?.cancel()
                     sender?.cancel()
                     connection?.close()
                     if error is CancellationError || error is WebSocketClosedError {
@@ -144,15 +184,86 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Renders a server-reported realtime error so the shared failure vocabulary can read it.
+    ///
+    /// Soniox sends an HTTP-shaped `error_code` beside its prose (408 request timeout, 401 bad
+    /// key, 402 out of credit, 429 throttled, 413 stream too long). Putting it in parentheses is
+    /// not cosmetic: `TranscriptionFailureKind.httpStatus(in:)` looks for exactly that shape, so
+    /// "(408)" is what turns "Request timeout." into `.timedOut` — and therefore into the app's
+    /// own sentence — instead of the generic `.providerTrouble` the bare prose would land on.
+    static func realtimeErrorText(code: Int?, text: String) -> String {
+        guard let code, (100...599).contains(code) else {
+            return "Soniox realtime error: \(text)"
+        }
+        return "Soniox realtime error (\(code)): \(text)"
+    }
+
+    /// Test hook: decode one server frame and render its error exactly as the receive loop does.
+    static func errorTextForTesting(json: String) throws -> String {
+        let message = try JSONDecoder().decode(RtMessage.self, from: Data(json.utf8))
+        return realtimeErrorText(code: message.errorCode, text: message.errorMessage ?? "")
+    }
+
     private struct RtMessage: Decodable {
         var tokens: [SonioxRtToken]?
         var finished: Bool?
+        var errorCode: Int?
         var errorMessage: String?
 
         enum CodingKeys: String, CodingKey {
             case tokens
             case finished
+            case errorCode = "error_code"
             case errorMessage = "error_message"
+        }
+
+        /// Hand-written and forgiving on purpose. The one message we most need to read is the
+        /// error frame, and a synthesized decoder throws away the whole frame — error prose
+        /// included — if any single field arrives in an unexpected shape (`error_code` as a
+        /// string, say). Then the user gets a `DecodingError` in place of the real reason.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.tokens = try? container.decodeIfPresent([SonioxRtToken].self, forKey: .tokens)
+            self.finished = try? container.decodeIfPresent(Bool.self, forKey: .finished)
+            self.errorMessage = try? container.decodeIfPresent(String.self, forKey: .errorMessage)
+            if let code = try? container.decodeIfPresent(Int.self, forKey: .errorCode) {
+                self.errorCode = code
+            } else {
+                self.errorCode = (try? container.decodeIfPresent(String.self, forKey: .errorCode))
+                    .flatMap { $0 }.flatMap(Int.init)
+            }
+        }
+    }
+}
+
+/// Tracks what the sender has put on the wire, so the keepalive ticker fires only during a real
+/// silence and never after end-of-audio.
+///
+/// Starts as "audio seen" so the first tick after connecting is skipped: the config frame has
+/// just gone out, and the stream has not had a chance to be quiet yet.
+final class SonioxSendActivity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var audioSinceLastTick = true
+    private var endOfAudioSent = false
+
+    func noteAudioSent() {
+        lock.withLock { audioSinceLastTick = true }
+    }
+
+    func noteEndOfAudio() {
+        lock.withLock { endOfAudioSent = true }
+    }
+
+    /// True when a whole tick passed with no audio and the stream is still expecting more.
+    /// Consumes the flag, so consecutive silent ticks each send one keepalive.
+    func shouldSendKeepalive() -> Bool {
+        lock.withLock {
+            if endOfAudioSent { return false }
+            if audioSinceLastTick {
+                audioSinceLastTick = false
+                return false
+            }
+            return true
         }
     }
 }
