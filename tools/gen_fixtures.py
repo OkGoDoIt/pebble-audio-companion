@@ -102,7 +102,9 @@ def error_msg(code, detail) -> bytes:
     return struct.pack("<BBI", MSG_ERROR, code, detail)
 
 
-def info(state, codec_bitmap, flags, fw_version_packed) -> bytes:
+def info(state, codec_bitmap, flags, fw_version_packed, send_backpressure_events=0) -> bytes:
+    # send_backpressure_events occupies what was reserved1 (same 20 bytes, same info_version).
+    # It is only a count when flags bit3 is set; older firmware leaves it zero.
     return struct.pack(
         "<BBBBBBHIII",
         1,  # info_version
@@ -114,7 +116,7 @@ def info(state, codec_bitmap, flags, fw_version_packed) -> bytes:
         0,  # reserved0
         0,  # watch_capabilities
         fw_version_packed,
-        0,  # reserved1
+        send_backpressure_events,
     )
 
 
@@ -231,6 +233,27 @@ def build_fixtures():
         "parse",
         {"service_state": 0, "flags": 0},
         "Info read while the feature pref is off and no receiver is bound",
+    )
+    add(
+        "info_backpressure",
+        info(
+            state=3,
+            codec_bitmap=0x01,
+            flags=0b1011,
+            fw_version_packed=(4 << 24) | (9 << 16) | 2,
+            send_backpressure_events=1487,
+        ),
+        "info",
+        "parse",
+        {
+            "info_version": 1, "protocol_min": 1, "protocol_max": 1,
+            "service_state": 3, "codec_bitmap": 1, "flags": 11,
+            "fw_version_packed": (4 << 24) | (9 << 16) | 2,
+            "send_backpressure_events": 1487,
+        },
+        "Info read while streaming from firmware that reports send backpressure: flags bit3 set, "
+        "1487 refused notifications in what used to be reserved1. Same 20 bytes as info_streaming, "
+        "whose cleared bit3 means 'not reported' rather than 'never happened'",
     )
     add(
         "info_truncated",

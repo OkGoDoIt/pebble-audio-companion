@@ -86,4 +86,70 @@ import Testing
         let roundTripped = try #require(message as? Checkpoint)
         #expect(roundTripped == cp)
     }
+
+    // MARK: - Info: send_backpressure_events (spec Section 3, wire bytes 16-19)
+
+    /// The whole reason the field carries a flag bit: firmware that predates it leaves the word
+    /// zero, and a zero read as a count is a confident, wrong "the radio never refused anything".
+    /// Same 20 bytes, same info_version — only bit3 separates the two readings.
+    @Test func backpressureCounterIsOnlyACountWhenTheFlagSaysSo() throws {
+        let reporting = try #require(
+            decodeInfo(flags: 0b1011, backpressureWord: 1487) as? InfoSnapshot
+        )
+        #expect(reporting.reportsSendBackpressure)
+        #expect(reporting.sendBackpressureEvents == 1487)
+
+        // Older firmware: bit3 clear, the word zero. "Not available", never "zero backpressure".
+        let older = try #require(decodeInfo(flags: 0b011, backpressureWord: 0) as? InfoSnapshot)
+        #expect(!older.reportsSendBackpressure)
+        #expect(older.sendBackpressureEvents == nil)
+        #expect(older.sendBackpressureEventsRaw == 0)
+        // The bits it shares with the reporting snapshot still decode identically.
+        #expect(older.receiverAuthorized && older.enabled && !older.consentPending)
+
+        // A firmware that reports it and has never been refused: a REAL zero, and distinct.
+        let calm = try #require(decodeInfo(flags: 0b1011, backpressureWord: 0) as? InfoSnapshot)
+        #expect(calm.sendBackpressureEvents == 0)
+        #expect(calm.sendBackpressureEvents != older.sendBackpressureEvents)
+    }
+
+    /// Byte-exact re-encode of a snapshot carrying a non-zero counter: the field took over
+    /// `reserved1` in place, so the 20-byte layout must survive a decode/encode round trip.
+    @Test func backpressureCounterReEncodesByteExact() throws {
+        let bytes = infoBytes(flags: 0b1011, backpressureWord: 0xFFFF_FFFF)
+        let decoded = AudioCompanionProtocol.decodeInfo(bytes)
+        guard case .decoded(let message) = decoded else {
+            Issue.record("expected Decoded, got \(decoded)")
+            return
+        }
+        let info = try #require(message as? InfoSnapshot)
+        #expect(info.sendBackpressureEvents == 0xFFFF_FFFF)
+        let encoded = info.encode()
+        #expect(encoded.count == ProtocolConstants.infoSnapshotBytes)
+        #expect(encoded == bytes)
+        // Little-endian, at offsets 16..19 and nowhere else.
+        #expect(Array(encoded[16..<20]) == [0xFF, 0xFF, 0xFF, 0xFF])
+    }
+
+    private func infoBytes(flags: Int, backpressureWord: UInt32) -> [UInt8] {
+        InfoSnapshot(
+            infoVersion: 1,
+            protocolMin: 1,
+            protocolMax: 1,
+            serviceStateRaw: 3,
+            codecBitmap: 1,
+            flags: flags,
+            fwVersionPacked: (4 << 24) | (9 << 16) | 2,
+            sendBackpressureEventsRaw: backpressureWord
+        ).encode()
+    }
+
+    private func decodeInfo(flags: Int, backpressureWord: UInt32) -> AudioCompanionMessage? {
+        guard
+            case .decoded(let message) = AudioCompanionProtocol.decodeInfo(
+                infoBytes(flags: flags, backpressureWord: backpressureWord)
+            )
+        else { return nil }
+        return message
+    }
 }

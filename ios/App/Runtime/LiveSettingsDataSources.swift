@@ -10,6 +10,7 @@ import SegmentStore
 import StatusUI
 import Transcription
 import UIKit
+import WireProtocol
 
 // The real Settings sources. Every value here is measured, not decorated: storage is the actual
 // spool on disk, diagnostics are the runtime's own counters, and the local-model row reflects
@@ -619,6 +620,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     /// What the watch said when it refused this phone. Nil while it has not — the row is absent
     /// rather than reassuring, the same way the failed-transcription section is.
     private(set) var watchLink: DiagnosticLinkFault?
+    /// Audio the watch could not hand over, from the watch's own counter (Info `flags` bit3).
+    private(set) var watchSend: WatchSendHealth = .unknown
     private(set) var indexRebuild: IndexRebuildState = .idle
     private(set) var queueWaiting = 0
     private(set) var queueFailed = 0
@@ -650,6 +653,12 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         Task { [weak self] in
             for await _ in runtime.receiverState.stream() { await self?.refresh() }
         }
+        // The Info snapshot is re-read on every handshake (and after an enable prompt), which is
+        // when the watch's send-refusal counter moves for us. Without this the row would only
+        // change when something else happened to trigger a refresh.
+        Task { [weak self] in
+            for await _ in runtime.watchInfo.stream() { await self?.refresh() }
+        }
     }
 
     private func refresh() async {
@@ -668,6 +677,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         watchReports = watchServiceStateLabel(composition.runtime.watchServiceState.value)
         receiverStatus = Self.receiverLine(composition.runtime.receiverState.value)
         watchLink = Self.linkFault(composition)
+        watchSend = Self.sendHealth(composition.runtime.watchInfo.value)
         let metas = composition.files.listSegments()
         recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
         failedItems = Self.failures(
@@ -675,7 +685,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         )
         let report = await composition.runtime.supportReport()
         supportReportText = Self.report(
-            report, segments: recentSegments, failures: failedItems, link: watchLink
+            report, segments: recentSegments, failures: failedItems, link: watchLink,
+            watchSend: watchSend
         )
     }
 
@@ -728,6 +739,18 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         )
     }
 
+    /// What the watch's own counter says about audio it could not hand over.
+    ///
+    /// The three cases are deliberately distinct: no snapshot at all (no watch read yet), a
+    /// firmware that does not report the counter (`flags` bit3 clear — its zero means nothing),
+    /// and a real count. `InfoSnapshot.sendBackpressureEvents` is nil for the middle case, which
+    /// is the whole reason the firmware spends a flag bit on it.
+    private static func sendHealth(_ info: InfoSnapshot?) -> WatchSendHealth {
+        guard let info else { return .unknown }
+        guard let count = info.sendBackpressureEvents else { return .notReported }
+        return .refusals(count)
+    }
+
     /// Rebuilds the search index from the database. Foreground and awaited — it is a deliberate
     /// recovery action, and the row reports what it did rather than finishing invisibly.
     func rebuildSearchIndex() async {
@@ -778,7 +801,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         _ report: SupportReport,
         segments: [DiagnosticSegment],
         failures: [DiagnosticFailure],
-        link: DiagnosticLinkFault?
+        link: DiagnosticLinkFault?,
+        watchSend: WatchSendHealth
     ) -> String {
         // The refusal, if there is one, sits directly under the receiver state it explains —
         // the sentence the user was shown, then the raw code, which is the one thing a reader
@@ -793,7 +817,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         Generated: \(Date(timeIntervalSince1970: Double(report.generatedAtMs) / 1000))
         Receiver: \(report.receiverState)
         \(watchLink)Capture intent: \(report.captureIntent)
-        Segments stored: \(report.diagnostics.segmentCount)
+        \(SupportReportText.watchSend(watchSend))Segments stored: \(report.diagnostics.segmentCount)
         Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
             waiting: report.diagnostics.queuedTranscriptionTasks,
             failed: report.diagnostics.failedTranscriptionTasks,

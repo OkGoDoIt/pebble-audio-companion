@@ -22,6 +22,20 @@ struct SettingsDiagnosticsScreen: View {
                     value: diagnostics.watchReports,
                     showsChevron: false
                 )
+                // The watch's own count of audio it could not hand over. Absent until a watch
+                // has actually been read — and when the watch's firmware is older than the
+                // counter it says "not reported by this watch", which is NOT "never": the
+                // field is zero on that firmware, and reading it as a count would answer the
+                // "was it the link or was it us?" question confidently and wrongly.
+                if diagnostics.watchSend != .unknown {
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.watchCouldNotSend,
+                        value: Copy.Settings.Diagnostics.watchCouldNotSendValue(
+                            diagnostics.watchSend.count
+                        ),
+                        showsChevron: false
+                    )
+                }
                 SettingsRow(
                     title: Copy.Settings.Diagnostics.transcriptionQueue,
                     value: Copy.Settings.Diagnostics.queueValue(

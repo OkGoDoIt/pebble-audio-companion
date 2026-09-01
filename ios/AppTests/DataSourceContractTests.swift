@@ -120,6 +120,65 @@ struct DataSourceContractTests {
                 == "0 waiting · 0 failed")
     }
 
+    // MARK: - Audio the watch could not send
+
+    /// The distinction the firmware spends a flag bit on: a watch that does not report the
+    /// counter must not be shown as a watch that never had a problem. Same zero on the wire,
+    /// opposite meanings, and the two failure modes they arbitrate have opposite fixes.
+    @Test func aWatchThatCannotReportRefusalsIsNotAWatchWithNone() {
+        let notReported = Copy.Settings.Diagnostics.watchCouldNotSendValue(nil)
+        let none = Copy.Settings.Diagnostics.watchCouldNotSendValue(0)
+        #expect(notReported == "not reported by this watch")
+        #expect(none == "never")
+        #expect(notReported != none)
+        #expect(Copy.Settings.Diagnostics.watchCouldNotSendValue(1) == "once")
+        #expect(Copy.Settings.Diagnostics.watchCouldNotSendValue(1487) == "1487 times")
+    }
+
+    /// `.notReported` carries no count, so the copy takes the "cannot say" branch; a real
+    /// count — zero included — carries one.
+    @Test func theHealthCaseDecidesWhichSentenceIsShown() {
+        #expect(WatchSendHealth.notReported.count == nil)
+        #expect(WatchSendHealth.unknown.count == nil)
+        #expect(WatchSendHealth.refusals(0).count == 0)
+        #expect(WatchSendHealth.refusals(12).count == 12)
+    }
+
+    /// No watch has been read: the report says nothing about one rather than reporting an
+    /// absence as a finding.
+    @Test func anUnreadWatchAddsNoLineToTheReport() {
+        #expect(SupportReportText.watchSend(.unknown).isEmpty)
+        #expect(SupportReportText.watchSend(.notReported).contains("not reported by this watch"))
+        #expect(SupportReportText.watchSend(.refusals(9)).contains("9 times"))
+    }
+
+    /// The support report is where a person diagnoses the loss, so the counter travels with it
+    /// AND says how to read it — a bare number cannot distinguish the two causes on its own.
+    @Test func theSupportReportSaysHowToReadTheCounter() {
+        let source = MockDiagnosticsSource()
+        source.watchSend = .refusals(1487)
+        let text = source.supportReportText
+        #expect(text.contains("Watch couldn’t send: 1487 times"))
+        #expect(text.contains("the link couldn’t keep up"))
+        #expect(text.contains("stopped acknowledging"))
+    }
+
+    /// Diagnostics is the one place technical detail is allowed, and even there the protocol's
+    /// own word for this is not the app's word for it.
+    @Test func theRowNeverSaysBackpressure() {
+        let words = [
+            Copy.Settings.Diagnostics.watchCouldNotSend,
+            Copy.Settings.Diagnostics.watchCouldNotSendValue(nil),
+            Copy.Settings.Diagnostics.watchCouldNotSendValue(4),
+            Copy.Settings.Diagnostics.watchCouldNotSendReport(4),
+            Copy.Settings.Diagnostics.watchCouldNotSendReport(nil),
+        ]
+        for word in words {
+            #expect(!word.lowercased().contains("backpressure"), "\(word)")
+            #expect(!word.lowercased().contains("notification"), "\(word)")
+        }
+    }
+
     /// The support report is what gets sent when something is wrong, so the reason travels
     /// with it rather than only living on screen.
     @Test func theSupportReportCarriesTheQueueLine() {

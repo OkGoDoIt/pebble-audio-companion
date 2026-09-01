@@ -464,6 +464,14 @@ enum SupportReportText {
         let lines = items.map { "  \($0.title) — \($0.reason) [\($0.attemptsLine)]" }
         return "Failed transcriptions:\n" + lines.joined(separator: "\n") + "\n"
     }
+
+    /// The watch's send-refusal line, newline-terminated so it drops into the report as a block.
+    /// Empty while no watch has been read — a report from a phone that never saw a watch should
+    /// not carry a row about one.
+    static func watchSend(_ health: WatchSendHealth) -> String {
+        guard health != .unknown else { return "" }
+        return Copy.Settings.Diagnostics.watchCouldNotSendReport(health.count) + "\n"
+    }
 }
 
 /// One transcription task that is sitting in Failed, and WHY.
@@ -481,6 +489,32 @@ struct DiagnosticFailure: Identifiable, Equatable {
     let reason: String
     /// e.g. "3 tries · will retry" / "gave up after 8 tries".
     let attemptsLine: String
+}
+
+/// What the watch says about audio it could not hand to this phone.
+///
+/// The watch counts every notification its radio refused, and the count is the only thing that
+/// separates two losses that look identical from here: audio missing while it CLIMBS is the link
+/// failing to keep up; audio missing while it stays FLAT is this phone having stopped
+/// acknowledging, so the watch's buffer never freed. Opposite fixes, so the app must not guess.
+///
+/// `notReported` is a third state on purpose. Firmware older than the counter leaves the field
+/// zero, and showing that as "never" would be a confident wrong answer (spec Section 3, `flags`
+/// bit3).
+enum WatchSendHealth: Equatable {
+    /// No Info snapshot yet — no watch has been read, so the row is absent entirely.
+    case unknown
+    /// This firmware predates the counter: it cannot say, and says so.
+    case notReported
+    /// Times the watch's transport refused a send since the watch started. 0 is a real zero.
+    case refusals(UInt32)
+
+    /// The count when there is one, nil when this watch does not report it. Feeds
+    /// `Copy.Settings.Diagnostics.watchCouldNotSendValue`, which words both cases.
+    var count: UInt32? {
+        if case .refusals(let n) = self { return n }
+        return nil
+    }
 }
 
 /// The watch's own refusal, in the app's words — nil when the watch has not refused anything.
@@ -514,6 +548,9 @@ protocol DiagnosticsSource: AnyObject {
     /// Why the watch is turning this phone away, when it is. Nil is the calm case: the row
     /// simply is not there.
     var watchLink: DiagnosticLinkFault? { get }
+    /// Audio the watch could not hand over, as the watch counts it. `.unknown` while no watch
+    /// has been read — the row is absent rather than guessing on the watch's behalf.
+    var watchSend: WatchSendHealth { get }
     /// Rebuild-index progress, and a way to start one. The index is derived data, so this
     /// throws nothing away that cannot be written again from the database.
     var indexRebuild: IndexRebuildState { get }
@@ -544,6 +581,8 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var receiverStatus = Copy.Settings.Diagnostics.receiverRecording
     var watchReports = Copy.Status.recording
     var watchLink: DiagnosticLinkFault?
+    /// The artboard case: a watch that reports the counter and has had a handful of refusals.
+    var watchSend: WatchSendHealth = .refusals(3)
     var indexRebuild: IndexRebuildState = .idle
     var queueWaiting = 0
     var queueFailed = 0
@@ -580,7 +619,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
         Audio Companion support report
         Receiver: \(receiverStatus)
         Watch reports: \(watchReports)
-        Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
+        \(SupportReportText.watchSend(watchSend))Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
             waiting: queueWaiting, failed: queueFailed,
             heldInBackground: transcriptionHeldInBackground))
         \(SupportReportText.failures(failedItems))Recent segments:

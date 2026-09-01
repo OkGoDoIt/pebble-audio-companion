@@ -31,6 +31,13 @@ object ProtocolConstants {
     const val INFO_FLAG_ENABLED: Int = 1 shl 1
     const val INFO_FLAG_CONSENT_PENDING: Int = 1 shl 2
 
+    /**
+     * bit3: `send_backpressure_events` carries a real count. Firmware that predates the field
+     * leaves those bytes zero, which is indistinguishable from "the transport never refused a
+     * notification" without this bit — so a zero is only meaningful when it is set.
+     */
+    const val INFO_FLAG_BACKPRESSURE_COUNTER: Int = 1 shl 3
+
     // Info characteristic codec bitmap bits (Section 3).
     const val CODEC_BITMAP_SPEEX_WIDEBAND: Int = 1 shl 0
 

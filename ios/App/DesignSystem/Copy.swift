@@ -754,6 +754,39 @@ enum Copy {
                 if waiting > 0, heldInBackground { line += " · held in the background" }
                 return line + " · \(failed) failed"
             }
+            /// Audio the watch tried to hand over and the link would not take, counted by the
+            /// watch itself. Named for the event, not the mechanism: the wire calls it
+            /// backpressure, and that word never reaches a screen.
+            ///
+            /// It is the one thing that separates two failures that look identical from here —
+            /// climbing while audio goes missing means the link could not keep up; flat while
+            /// audio goes missing means this phone stopped acknowledging and the watch's buffer
+            /// never freed — and they have opposite fixes.
+            static let watchCouldNotSend = "Watch couldn’t send"
+            /// e.g. "1487 times" / "never" / "not reported by this watch".
+            ///
+            /// The last case is NOT "never": firmware older than this counter leaves the field
+            /// zero, so reading it as a count would answer the question confidently and wrongly.
+            static func watchCouldNotSendValue(_ count: UInt32?) -> String {
+                guard let count else { return "not reported by this watch" }
+                switch count {
+                case 0: return "never"
+                case 1: return "once"
+                default: return "\(count) times"
+                }
+            }
+            /// The support-report line: the number plus how to read it, because the person
+            /// reading a pasted report is exactly the person who has to act on it.
+            static func watchCouldNotSendReport(_ count: UInt32?) -> String {
+                guard let count else {
+                    return "Watch couldn’t send: not reported by this watch "
+                        + "(firmware older than the counter — not the same as never)"
+                }
+                return "Watch couldn’t send: \(count) times since the watch started "
+                    + "(with audio missing: climbing = the link couldn’t keep up, "
+                    + "flat = this phone stopped acknowledging)"
+            }
+
             static let aiEnrichment = "AI titles & summaries"
             /// e.g. "writing 12 more" / "12 waiting" / "all caught up". Background work, so
             /// it reports a backlog, never a progress bar.

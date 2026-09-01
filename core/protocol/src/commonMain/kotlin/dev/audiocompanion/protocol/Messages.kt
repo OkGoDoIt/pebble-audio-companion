@@ -33,12 +33,30 @@ data class InfoSnapshot(
     val reserved0: Int = 0,
     val watchCapabilities: UInt = 0u,
     val fwVersionPacked: UInt = 0u,
-    val reserved1: UInt = 0u,
+    /**
+     * Wire bytes 16-19 (was `reserved1`): notifications the watch's transport refused since
+     * service init. Raw because it is only a count when `flags` bit3 says so — read
+     * [sendBackpressureEvents], never this.
+     */
+    val sendBackpressureEventsRaw: UInt = 0u,
 ) : AudioCompanionMessage {
     val serviceState: ServiceState? get() = ServiceState.fromRaw(serviceStateRaw)
     val receiverAuthorized: Boolean get() = flags and ProtocolConstants.INFO_FLAG_RECEIVER_AUTHORIZED != 0
     val enabled: Boolean get() = flags and ProtocolConstants.INFO_FLAG_ENABLED != 0
     val consentPending: Boolean get() = flags and ProtocolConstants.INFO_FLAG_CONSENT_PENDING != 0
+
+    /** Whether this firmware reports the backpressure counter at all (`flags` bit3). */
+    val reportsSendBackpressure: Boolean
+        get() = flags and ProtocolConstants.INFO_FLAG_BACKPRESSURE_COUNTER != 0
+
+    /**
+     * Notifications the watch's transport refused since service init, or null when this firmware
+     * does not report it. The null is the point: firmware that predates the field leaves the word
+     * zero, and a zero read as a count says "the radio never refused anything" — the opposite of
+     * "we cannot tell".
+     */
+    val sendBackpressureEvents: UInt?
+        get() = if (reportsSendBackpressure) sendBackpressureEventsRaw else null
 
     override fun encode(): ByteArray = WireWriter(ProtocolConstants.INFO_SNAPSHOT_BYTES)
         .u8(infoVersion)
@@ -50,7 +68,7 @@ data class InfoSnapshot(
         .u16(reserved0)
         .u32(watchCapabilities)
         .u32(fwVersionPacked)
-        .u32(reserved1)
+        .u32(sendBackpressureEventsRaw)
         .toByteArray()
 }
 

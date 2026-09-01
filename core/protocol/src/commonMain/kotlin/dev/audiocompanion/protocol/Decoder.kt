@@ -36,7 +36,7 @@ object AudioCompanionProtocol {
                 reserved0 = r.u16(),
                 watchCapabilities = r.u32(),
                 fwVersionPacked = r.u32(),
-                reserved1 = r.u32(),
+                sendBackpressureEventsRaw = r.u32(),
             )
         )
     }
