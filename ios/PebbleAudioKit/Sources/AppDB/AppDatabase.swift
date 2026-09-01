@@ -295,6 +295,37 @@ public struct AppDatabase: Sendable {
                     """)
             try db.execute(sql: "DROP TABLE IF EXISTS follow_up_extractions")
         }
+        // Two things the first cut of this feature could not express, both found by review.
+        //
+        // `touchedAtMs` is the age rule's memory of the person. Un-archiving wrote only
+        // `archivedAtMs = NULL`, which left the row in exactly the state `archiveStale` looks
+        // for — so Restore was a no-op: the item came back and the next pipeline pass, thirty
+        // seconds later, filed it away again. Any deliberate act on a row now stamps this, and
+        // a clock never touches a row a person has.
+        //
+        // `attempts` gives curation the budget extraction already had. Without it a batch the
+        // provider could not answer stayed pending, and `pending(limit:)` is deterministic, so
+        // the identical twelve candidates were re-sent every five minutes forever.
+        // `recordedAtMs` is when the CONVERSATION happened, which is not when extraction ran —
+        // curation was being told a Friday commitment was recorded on Monday and dating it
+        // from there.
+        migrator.registerMigration("v8-follow-up-bookkeeping") { db in
+            try db.alter(table: "follow_ups") { t in
+                t.add(column: "touchedAtMs", .integer)
+            }
+            try db.alter(table: "follow_up_candidates") { t in
+                t.add(column: "attempts", .integer).notNull().defaults(to: 0)
+                t.add(column: "recordedAtMs", .integer)
+            }
+            // Rows that reached the list before this existed have been seen and acted on by
+            // whoever kept them; treat a hand-written or edited one as touched so the age rule
+            // cannot claim it retroactively.
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups SET touchedAtMs = COALESCE(editedAtMs, createdAtMs)
+                    WHERE origin = 'user' OR editedAtMs IS NOT NULL
+                    """)
+        }
         try migrator.migrate(writer)
     }
 }

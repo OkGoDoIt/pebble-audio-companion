@@ -135,6 +135,30 @@ import Testing
         }
     }
 
+    /// v8 columns. `touchedAtMs` is what makes Restore mean something; the backfill has to
+    /// claim the rows a person plainly owns so the age rule cannot take them retroactively.
+    @Test func theBookkeepingColumnsArriveAndAreBackfilled() async throws {
+        try await withUpgradedDatabase(rows: 3) { db in
+            let store = FollowUpStore(db: db)
+            let hand = try await store.list(scope: .open, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
+            #expect(hand.count == 1)
+            #expect(hand.first?.touchedAtMs != nil, "a hand-written row counts as touched")
+
+            let extracted = try await store.list(scope: .archived)
+            #expect(extracted.allSatisfy { $0.touchedAtMs == nil })
+
+            let candidates = FollowUpCandidateStore(db: db)
+            try await candidates.save(
+                FollowUpCandidate(
+                    id: "c1", conversationId: "conv-1", task: "t", quote: "q", why: "w",
+                    createdAtMs: 1, recordedAtMs: 2))
+            #expect(try await candidates.pending(limit: 5).first?.recordedAtMs == 2)
+            #expect(try await candidates.pending(limit: 5).first?.attempts == 0)
+            try await candidates.recordAttempt(ids: ["c1"])
+            #expect(try await candidates.pending(limit: 5, maxAttempts: 1).isEmpty)
+        }
+    }
+
     @Test func theCandidateTableIsReadyToWrite() async throws {
         try await withUpgradedDatabase(rows: 3) { db in
             let candidates = FollowUpCandidateStore(db: db)

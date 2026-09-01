@@ -102,11 +102,10 @@ public final class SpotlightDonator: Sendable {
             let dateKey = entityId.hasPrefix("day-") ? String(entityId.dropFirst(4)) : entityId
             return "companion://today?date=\(dateKey)"
         case .followUp:
-            // Follow-ups have no route of their own; they open their source conversation.
-            if let source = sourceConversationId {
-                return "companion://conversation/\(source)"
-            }
-            return "companion://today"
+            // The follow-up's own screen. It used to open the source conversation — or Today,
+            // which shows three of them — so a Spotlight hit landed on a transcript, or on a
+            // list that might not even contain the item that was searched for.
+            return "companion://followup/\(entityId)"
         }
     }
 

@@ -31,6 +31,16 @@ struct FollowUpsScreen: View {
             }
             .snackbar(item: $snackbar)
             .task { await model.start(scope: router.consumePendingFollowUpScope()) }
+            // A link that arrives while this screen is already up never re-runs `.task`, so
+            // without this it did nothing now and silently flipped the filter minutes later,
+            // on some unrelated tab switch.
+            .onChange(of: router.pendingFollowUpScope) { _, pending in
+                guard pending != nil,
+                    let scope = FollowUpListScope(
+                        rawValue: router.consumePendingFollowUpScope() ?? "")
+                else { return }
+                model.scope = scope
+            }
     }
 
     // MARK: Content
@@ -108,7 +118,7 @@ struct FollowUpsScreen: View {
             .tint(Tokens.destructive)
             if !item.done && !item.isArchived {
                 Button {
-                    model.snooze(item, until: model.tomorrow)
+                    snooze(item, until: model.tomorrow)
                 } label: {
                     Label(Copy.FollowUps.snooze, systemImage: "clock.badge")
                 }
@@ -136,14 +146,12 @@ struct FollowUpsScreen: View {
                     item.done ? Copy.FollowUps.markNotDone : Copy.FollowUps.markDone,
                     systemImage: item.done ? "arrow.uturn.backward" : "checkmark.circle")
             }
-            if !item.done {
+            // Not offered on a filed-away row: snoozing un-archives, which would move it out
+            // of the only list showing it.
+            if !item.done && !item.isArchived {
                 Menu {
-                    Button(Copy.FollowUps.snoozeTomorrow) {
-                        model.snooze(item, until: model.tomorrow)
-                    }
-                    Button(Copy.FollowUps.snoozeNextWeek) {
-                        model.snooze(item, until: model.nextWeek)
-                    }
+                    Button(Copy.FollowUps.snoozeTomorrow) { snooze(item, until: model.tomorrow) }
+                    Button(Copy.FollowUps.snoozeNextWeek) { snooze(item, until: model.nextWeek) }
                 } label: {
                     Label(Copy.FollowUps.snooze, systemImage: "clock.badge")
                 }
@@ -151,6 +159,7 @@ struct FollowUpsScreen: View {
             if item.isArchived {
                 Button {
                     model.setArchived(item, archived: false)
+                    snackbar = SnackbarItem(message: Copy.FollowUps.restored)
                 } label: {
                     Label(Copy.FollowUps.restore, systemImage: "tray.and.arrow.up")
                 }
@@ -180,6 +189,18 @@ struct FollowUpsScreen: View {
             message: Copy.FollowUps.deleted, actionTitle: Copy.Common.undo
         ) {
             model.undoDelete(item)
+        }
+    }
+
+    /// Undoable like the other two: putting something off is a decision, and a mis-swipe on a
+    /// list is easy.
+    private func snooze(_ item: FollowUpItem, until date: Date) {
+        model.snooze(item, until: date)
+        snackbar = SnackbarItem(
+            message: Copy.FollowUps.putOff(FollowUpFormatting.day(date, now: model.now)),
+            actionTitle: Copy.Common.undo
+        ) {
+            model.snooze(item, until: nil)
         }
     }
 
@@ -234,6 +255,10 @@ struct FollowUpsScreen: View {
             FollowUpDetailScreen(id: id)
         case .conversation(let id, let atMs, let focus):
             ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
+        case .note(let id):
+            // Reachable from here: a follow-up opens its recording, and a recording's Notes
+            // pill pushes onto whichever stack the person is in — this one.
+            SavedNotesScreen(noteId: id)
         default:
             Color.clear.background(Tokens.ground)
         }
@@ -319,6 +344,10 @@ final class FollowUpsViewModel {
     var scope: FollowUpListScope = .open {
         didSet { if scope != oldValue { Task { await reload() } } }
     }
+    /// Bumped on every load. A reload that finishes after a newer one started is discarded, so
+    /// switching Open → Completed → Filed away quickly cannot leave one slice's rows sitting
+    /// under another slice's filter.
+    private var loadGeneration = 0
     var showingAdd = false
     private(set) var items: [FollowUpItem] = []
     private(set) var loaded = false
@@ -343,12 +372,20 @@ final class FollowUpsViewModel {
     }
 
     func reload() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         now = Date()
         let loadedItems = (try? await source.items(scope: scope)) ?? []
-        // Anything the DB now agrees with is no longer an optimistic guess.
-        for item in loadedItems where optimisticDone[item.id] == item.done {
-            optimisticDone[item.id] = nil
+        // Anything the DB now agrees with is no longer an optimistic guess — and neither is
+        // anything that has left this slice entirely. Keeping an override for a row that is no
+        // longer here is how a ticked item came back later still rendering as done, with its
+        // checkbox writing the value it already had.
+        let present = Set(loadedItems.map(\.id))
+        optimisticDone = optimisticDone.filter { id, done in
+            guard present.contains(id) else { return false }
+            return loadedItems.first { $0.id == id }?.done != done
         }
+        guard generation == loadGeneration else { return }
         hidden = hidden.filter { id in loadedItems.contains { $0.id == id } }
         items = loadedItems
         loaded = true
@@ -391,7 +428,12 @@ final class FollowUpsViewModel {
         var soon: [FollowUpItem] = []
         var later: [FollowUpItem] = []
         var anytime: [FollowUpItem] = []
+        // Snoozed items get their own section at the bottom rather than vanishing. They used
+        // to belong to no slice at all — put something off and it left every list in the app,
+        // with the only control for undoing that on a screen you could no longer reach.
+        var putOff: [FollowUpItem] = []
         for item in rows {
+            if item.isSnoozed(at: now) { putOff.append(item); continue }
             guard let due = item.dueDate else { anytime.append(item); continue }
             if due < startOfToday {
                 overdue.append(item)
@@ -409,6 +451,7 @@ final class FollowUpsViewModel {
             Section(id: "soon", title: Copy.FollowUps.sectionSoon, items: soon),
             Section(id: "later", title: Copy.FollowUps.sectionLater, items: later),
             Section(id: "anytime", title: Copy.FollowUps.sectionAnytime, items: anytime),
+            Section(id: "snoozed", title: Copy.FollowUps.sectionSnoozed, items: putOff),
         ].filter { !$0.items.isEmpty }
     }
 
@@ -469,10 +512,10 @@ final class FollowUpsViewModel {
         }
     }
 
-    func snooze(_ item: FollowUpItem, until date: Date) {
+    func snooze(_ item: FollowUpItem, until date: Date?) {
         Task {
             try? await source.snooze(
-                id: item.id, untilMs: Int64(date.timeIntervalSince1970 * 1000))
+                id: item.id, untilMs: date.map { Int64($0.timeIntervalSince1970 * 1000) })
             await reload()
         }
     }

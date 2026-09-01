@@ -36,8 +36,8 @@ struct SearchIndexRebuilder {
         //    the index it was meant to refill empty.
         composition.nativeSurfaces?.resetSpotlightWatermark()
 
-        // 3. Conversations (with transcripts) and their follow-ups. Live conversations are
-        //    still growing; they land when they end, exactly as the incremental pass has it.
+        // 3. Conversations (with transcripts). Live conversations are still growing; they land
+        //    when they end, exactly as the incremental pass has it.
         let rows = try await composition.runtime.library.library()
             .flatMap(\.rows)
             .filter { !$0.isLive }
@@ -56,7 +56,19 @@ struct SearchIndexRebuilder {
             }
         }
 
-        // 5. Day recaps, whose only other writer is the recap generator — without this they
+        // 5. Follow-ups. The only other writer is the curation pass, which donates a row once,
+        //    when it first decides to keep it — so without this step every follow-up the person
+        //    already had disappeared from search permanently while the rebuild reported success.
+        for followUp in try await composition.followUps.list(scope: .all) {
+            try? await donator.donateFollowUp(
+                id: followUp.id,
+                text: followUp.text,
+                sourceConversationId: followUp.sourceConversationId,
+                createdAtMs: followUp.createdAtMs
+            )
+        }
+
+        // 6. Day recaps, whose only other writer is the recap generator — without this they
         //    would stay missing until each day happened to be regenerated.
         for recap in try await composition.recapStore.list() {
             try? await donator.donateRecap(

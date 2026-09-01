@@ -522,6 +522,11 @@ final class AskViewModel {
     }
 
     private var prepared = false
+    /// Bumped whenever the open conversation is replaced. An answer that lands carrying an old
+    /// generation is discarded: it used to be appended into whichever conversation happened to
+    /// be on screen, stamping the new thread with the old thread's id and clearing a spinner
+    /// that belonged to a different question.
+    private var generation = 0
 
     func prepare(route: Route?) async {
         guard !prepared else { return }
@@ -564,16 +569,19 @@ final class AskViewModel {
         pendingQuestion = question
         failedQuestion = nil
         let thread = openThread
+        let asked = generation
         Task {
             do {
                 let entry = try await AskLibraryDataSources.current.ask.ask(
                     question: question, thread: thread, scope: scope)
+                guard asked == generation else { return }
                 // The first answer of a new conversation is what mints its thread id.
                 threadId = entry.threadId
                 turns.append(entry)
                 pendingQuestion = nil
                 await reloadRecent()
             } catch {
+                guard asked == generation else { return }
                 pendingQuestion = nil
                 failedQuestion = question
             }
@@ -592,6 +600,7 @@ final class AskViewModel {
     }
 
     func reopen(_ thread: AskThread) {
+        generation += 1
         expandedSources = []
         failedQuestion = nil
         pendingQuestion = nil
@@ -601,6 +610,7 @@ final class AskViewModel {
 
     /// Back to Recent, ready for an unrelated question. The conversation is already saved.
     func startNewConversation() {
+        generation += 1
         expandedSources = []
         failedQuestion = nil
         pendingQuestion = nil

@@ -234,6 +234,24 @@ import Transcription
                 == nil)
     }
 
+    /// A one-word backchannel used to claim the quote and send the player to the wrong speaker
+    /// a minute early: "and" is a substring of "h-and", and the loop took the first match.
+    @Test func aBackchannelTurnCannotClaimTheQuote() {
+        let part = FollowUpSourcePart(
+            segmentId: "seg-c", startedAtMs: 0,
+            text: "And? Can you hand me the folder tomorrow morning?",
+            turns: [
+                TranscriptSegment(text: "And?", startMs: 0, endMs: 800, speaker: "1"),
+                TranscriptSegment(
+                    text: "Can you hand me the folder tomorrow morning?", startMs: 61_000,
+                    endMs: 65_000, speaker: "2"),
+            ])
+        let hit = FollowUpQuoteLocator.locate(
+            quote: "Can you hand me the folder tomorrow morning?", in: [part])
+        #expect(hit?.startMs == 61_000)
+        #expect(hit?.endMs == 65_000)
+    }
+
     @Test func refusesAQuoteTooShortToMeanAnything() {
         #expect(FollowUpQuoteLocator.locate(quote: "yes", in: parts) == nil)
     }

@@ -155,4 +155,21 @@ private struct NanoBoom: LocalizedError {
         #expect(result.modeUsed == .localOnly)
         #expect(result.providerId == "fake-on-device")
     }
+
+    /// Some answers are only meaningful in a strict schema this provider cannot enforce.
+    /// Refusing is honest: the mode router's fallback would otherwise hand a follow-up
+    /// extraction to a model that truncates the conversation to 12k characters, caps the reply
+    /// at 256 tokens and enforces no shape at all — and the unparseable result would look
+    /// exactly like the conversation having no follow-ups.
+    @Test func refusesACallThatRequiresASchemaItCannotEnforce() async {
+        let provider = OnDeviceAiProvider(model: FakeOnDeviceModel(response: "{}"))
+        await #expect(throws: AiError.self) {
+            try await provider.run(
+                AiRunRequest(
+                    requestId: "r",
+                    prompt: AiPromptTemplates.followUpExtraction,
+                    transcripts: [TranscriptExcerpt(segmentId: "s", text: "Words.")],
+                    metadata: [AiRunRequest.requiresStructuredOutputKey: "1"]))
+        }
+    }
 }

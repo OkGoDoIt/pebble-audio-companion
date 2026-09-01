@@ -348,6 +348,55 @@ private struct ScriptedFailure: LocalizedError {
         #expect(Set(settled.keys) == ["conv-19", "conv-18", "conv-17"])
     }
 
+    /// Two passes during a revoked key or a flight used to cost those conversations their
+    /// follow-ups for the life of the database — the budget only reset when the transcript's
+    /// length changed, and nothing else re-enabled them.
+    @Test func aConversationComesBackAfterTheProviderRecovers() async throws {
+        let provider = ScriptedAiProvider(
+            response: "", error: ScriptedFailure(message: "no key"))
+        let worker = worker(provider)
+        for _ in 0..<4 {
+            _ = try await worker.extract(
+                [conversation("conv-1", members: [meta("seg-1")])],
+                transcriptOf: { self.transcript($0) })
+        }
+        #expect(provider.runCount == FollowUpWorker.maxAttempts)
+
+        clock.advance(byMs: FollowUpWorker.retryAfterMs + 1_000)
+        provider.error = nil
+        provider.response = Self.twoItems
+        _ = try await worker.extract(
+            [conversation("conv-1", members: [meta("seg-1")])],
+            transcriptOf: { self.transcript($0) })
+
+        #expect(provider.runCount == FollowUpWorker.maxAttempts + 1)
+        #expect(try await candidates.list(conversationId: "conv-1").count == 2)
+    }
+
+    /// The answer is only meaningful in the schema the prompt names, so the request says so —
+    /// otherwise the mode router quietly hands it to a model that enforces none.
+    @Test func theCallDemandsTheSchemaItNeeds() async throws {
+        let provider = ScriptedAiProvider(response: #"{"items":[]}"#)
+        _ = try await worker(provider).extract(
+            [conversation("conv-1", members: [meta("seg-1")])],
+            transcriptOf: { self.transcript($0) })
+        #expect(
+            provider.requests.first?.metadata[AiRunRequest.requiresStructuredOutputKey] == "1")
+    }
+
+    /// Curation resolves "tomorrow" against the day the conversation happened, so the
+    /// candidate has to carry it.
+    @Test func aCandidateRemembersWhenTheConversationHappened() async throws {
+        let provider = ScriptedAiProvider(response: Self.twoItems)
+        let started: UInt64 = 1_788_100_000_000
+        _ = try await worker(provider).extract(
+            [conversation("conv-1", members: [meta("seg-1", startTimeMs: started)])],
+            transcriptOf: { self.transcript($0) })
+        let rows = try await candidates.list(conversationId: "conv-1")
+        #expect(rows.allSatisfy { $0.recordedAtMs == Int64(started) })
+        #expect(rows.allSatisfy { $0.recordedAtMs != $0.createdAtMs })
+    }
+
     @Test func withoutARouterNothingIsWrittenAndNothingIsSettled() async throws {
         _ = try await worker(nil).extract(
             [conversation("conv-1", members: [meta("seg-1")])],

@@ -483,25 +483,55 @@ public enum AiPromptTemplates {
             That is deliberate. If a candidate does not make sense from its own quote, it will \
             not make sense to the person reading it tomorrow either, and it should not ship.
 
+            Work in this order: settle the duplicates first, then judge what is left. Otherwise \
+            two readings of one commitment get judged separately and both can be lost.
+
             For each candidate, decide:
 
             KEEP — it is a specific thing this person still has to do, the quote plainly shows \
             them taking it on, and forgetting it would cost something real.
 
-            DUPLICATE — the same intent is already on their open list, or an earlier candidate \
-            in this batch says it. Name the index or leave the reason naming the existing item. \
-            Prefer the clearer wording; a later, more specific version of a plan supersedes an \
-            earlier vaguer one.
+            DUPLICATE — the same intent is already on their open list, or another candidate in \
+            this batch says it. Name the one it duplicates in the reason. Prefer the clearer \
+            wording; a later, more specific version of a plan supersedes an earlier vaguer one.
 
             DROP — anything else. Be willing to drop most of a batch. Drop it when:
             - the quote does not actually contain the commitment, or needs the missing \
             surrounding conversation to make sense;
             - it reads as a chore anyone would do anyway, or as a topic rather than an action;
-            - it is somebody else's job, or an instruction handed to an assistant;
+            - somebody else is the one who has to act, or it is an instruction being carried \
+            out by whoever it was said to;
             - the wording is so vague or so garbled that opening it tomorrow would raise a \
             question instead of answering one;
-            - the day it mattered has already passed;
             - "what goes wrong if this never happens" has no honest answer.
+
+            Say the actual disqualifier in the reason — "this is the neighbour's own errand", \
+            "narration of something being done as they spoke", "an instruction the listener was \
+            already carrying out" — never a generic one. Do not claim it was said to an \
+            assistant unless the quote or the conversation's name shows one was there.
+
+            WORK OUT THE DATE FIRST, before deciding anything. Recordings are read days after \
+            they were made, so "tomorrow" inside a quote is usually already behind us. Take the \
+            day the conversation was RECORDED — it is given with each candidate — and resolve \
+            the relative words in the quote against it. That result wins over any date the \
+            extractor proposed. "Cannot be worked out" is only true when the recording day \
+            itself is missing.
+
+            Then use the resolved date:
+            - Still to come: keep it, with that date.
+            - Already past, and the thing was a one-off tied to that moment — a lift to a 7:00 \
+            flight, an 11:00 checkout, a meeting: it is OVER. Drop it. Clearing the date and \
+            keeping it would put a finished errand back on the list looking undated and live.
+            - Already past, but the thing itself still stands — a form to hand in, a call to \
+            make, a sign-up waiting on somebody: look for what it is really tied to. The "if \
+            forgotten" line often names the event, and another candidate in the batch may pin \
+            that event to a real day; use it. If there is nothing to re-anchor to, keep it with \
+            NO date.
+            For a duplicate pair, resolve the date across both copies first — the survivor \
+            inherits the more specific one — then judge the merged commitment once.
+
+            WAITING ON SOMEBODY ELSE IS STILL THEIRS. "She's sending me the information so I can \
+            sign up" is this person's sign-up, not the other person's errand. Keep it, undated.
 
             For everything you keep, set a priority:
             - high: it has a deadline inside the next few days, or missing it costs money, a \
@@ -512,10 +542,18 @@ public enum AiPromptTemplates {
             You may rewrite the task to read better — one plain imperative sentence, the \
             committed action only, specific enough to act on without opening the recording. Keep \
             it faithful to the quote; never add a detail the quote does not support, and never \
-            invent a name, a place or a time. Leave it unchanged if it is already right.
+            invent a name, a place or a time. Never add a subject, a place or a step that \
+            appears in neither the quote nor the candidate's own words — if the quote says only \
+            that they were sent information to sign up, do not decide who is being signed up. \
+            Keep the identifying detail the candidate already has — whose school, which form — \
+            and keep its concrete verb where the words support it: "get the blue form \
+            stamped", never "get the blue form handled". Leave it unchanged if it is already \
+            right. Never leave a relative time word in the text: "tomorrow", "tonight" and "this \
+            morning" mean nothing on a list read days later, and they contradict the due date \
+            sitting beside them. Name the day or say nothing.
 
-            You may set or clear the due date. Only a real calendar date, worked out from the \
-            day the candidate was recorded. Never prose, never a guess.
+            You may set or clear the due date. Only a real calendar date. Never prose, never a \
+            guess, and never a date that has already gone by.
 
             Answer as JSON: {"decisions":[{"index":1,"decision":"keep|drop|duplicate",\
             "reason":"...","task":"...","priority":"high|normal|low","dueDate":"YYYY-MM-DD or \

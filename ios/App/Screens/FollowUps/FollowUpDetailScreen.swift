@@ -10,6 +10,11 @@ import SwiftUI
 /// and one tap plays it.
 struct FollowUpDetailScreen: View {
     let id: String
+    /// How to show the recording this came from. Nil means "push onto the tab I am in", which
+    /// is right for a navigation stack and wrong inside the conversation sheet — that sheet has
+    /// its own `NavigationStack` with no path binding, so a `router.push` there landed nowhere
+    /// visible and quietly stacked a screen behind the modal.
+    var openRecording: ((CitationTarget) -> Void)?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
@@ -68,7 +73,10 @@ struct FollowUpDetailScreen: View {
                 dismiss()
             }
         }
-        .task { await model.start(id: id) }
+        // Keyed to `id`: a second `companion://followup/<other>` replaces the path element and
+        // SwiftUI reuses this view, so a bare `.task` would leave the model showing — and every
+        // control writing to — the previous follow-up.
+        .task(id: id) { await model.start(id: id) }
     }
 
     // MARK: Headline
@@ -224,6 +232,10 @@ struct FollowUpDetailScreen: View {
 
     private func open() {
         guard let target = model.source else { return }
+        if let openRecording {
+            openRecording(target)
+            return
+        }
         router.push(
             .conversation(
                 id: target.conversationId, atMs: target.mediaOffsetMs, focus: target.focus))
@@ -250,12 +262,14 @@ struct FollowUpDetailScreen: View {
         }
     }
 
+    /// Reached from a stale widget row or Spotlight document. "All caught up." was the old
+    /// answer, which says "you finished everything" rather than "that one is gone".
     private var missing: some View {
-        Text(Copy.Empty.followUpsAllDone)
-            .font(AppFont.subBody)
-            .foregroundStyle(Tokens.tertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 40)
+        ContentUnavailableView {
+            Label(Copy.FollowUps.missingTitle, systemImage: "questionmark.circle")
+        } description: {
+            Text(Copy.FollowUps.missingBody)
+        }
     }
 }
 

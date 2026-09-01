@@ -88,6 +88,10 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
     public var snoozedUntilMs: Int64?
     /// Set the moment the person edits the text. Extraction never overwrites an edited row.
     public var editedAtMs: Int64?
+    /// The last time the person did something deliberate to this row — restored it, un-ticked
+    /// it, dated it, re-worded it, put it off. The age rule's memory of them: a clock may file
+    /// away something nobody has looked at, never something somebody has answered.
+    public var touchedAtMs: Int64?
     public var origin: FollowUpOrigin
 
     public init(
@@ -103,6 +107,7 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         archivedAtMs: Int64? = nil,
         snoozedUntilMs: Int64? = nil,
         editedAtMs: Int64? = nil,
+        touchedAtMs: Int64? = nil,
         origin: FollowUpOrigin = .ai
     ) {
         self.id = id
@@ -121,6 +126,7 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         self.archivedAtMs = archivedAtMs
         self.snoozedUntilMs = snoozedUntilMs
         self.editedAtMs = editedAtMs
+        self.touchedAtMs = touchedAtMs
         self.origin = origin
     }
 
@@ -483,6 +489,7 @@ public struct FollowUpStore: Sendable {
             archivedAtMs: row["archivedAtMs"],
             snoozedUntilMs: row["snoozedUntilMs"],
             editedAtMs: row["editedAtMs"],
+            touchedAtMs: row["touchedAtMs"],
             origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai)
     }
 
@@ -491,8 +498,8 @@ public struct FollowUpStore: Sendable {
         INSERT INTO follow_ups
             (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs,
              quote, why, dueAtMs, priority, sourceStartMs, sourceEndMs,
-             completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, origin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, touchedAtMs, origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     private static func arguments(_ item: FollowUp) -> StatementArguments {
@@ -500,7 +507,7 @@ public struct FollowUpStore: Sendable {
             item.id, item.text, item.done, item.sourceConversationId, item.sourceSegmentId,
             item.createdAtMs, item.quote, item.why, item.dueAtMs, item.priority.rawValue,
             item.sourceStartMs, item.sourceEndMs, item.completedAtMs, item.archivedAtMs,
-            item.snoozedUntilMs, item.editedAtMs, item.origin.rawValue,
+            item.snoozedUntilMs, item.editedAtMs, item.touchedAtMs, item.origin.rawValue,
         ]
     }
 
@@ -569,11 +576,17 @@ public struct FollowUpStore: Sendable {
             let arguments: StatementArguments
             switch scope {
             case .open:
+                // Snoozed rows are INCLUDED. They used to be excluded here and matched no
+                // other scope either, so putting something off removed it from every list in
+                // the app until the snooze expired — with the only control for undoing that on
+                // the screen you could no longer reach. The list sections them under "Put off"
+                // instead; `openCount` is the thing that leaves them out, because Today should
+                // not show what you deliberately deferred.
                 sql = """
                     SELECT * FROM follow_ups
                     WHERE done = 0 AND archivedAtMs IS NULL
-                      AND (snoozedUntilMs IS NULL OR snoozedUntilMs <= ?)
-                    ORDER BY (dueAtMs IS NULL), dueAtMs, priority DESC, createdAtMs DESC, id
+                    ORDER BY (snoozedUntilMs IS NOT NULL AND snoozedUntilMs > ?),
+                             (dueAtMs IS NULL), dueAtMs, priority DESC, createdAtMs DESC, id
                     """
                 arguments = [nowMs]
             case .completed:
@@ -625,10 +638,10 @@ public struct FollowUpStore: Sendable {
                     UPDATE follow_ups
                     SET done = NOT done,
                         completedAtMs = CASE WHEN done = 0 THEN ? ELSE NULL END,
-                        archivedAtMs = NULL
+                        archivedAtMs = NULL, touchedAtMs = ?
                     WHERE id = ?
                     """,
-                arguments: [nowMs, id])
+                arguments: [nowMs, nowMs, id])
             return try Bool.fetchOne(
                 db, sql: "SELECT done FROM follow_ups WHERE id = ?", arguments: [id]) ?? false
         }
@@ -641,10 +654,10 @@ public struct FollowUpStore: Sendable {
             try db.execute(
                 sql: """
                     UPDATE follow_ups
-                    SET done = ?, completedAtMs = ?, archivedAtMs = NULL
+                    SET done = ?, completedAtMs = ?, archivedAtMs = NULL, touchedAtMs = ?
                     WHERE id = ?
                     """,
-                arguments: [done, done ? nowMs : nil, id])
+                arguments: [done, done ? nowMs : nil, nowMs, id])
         }
     }
 
@@ -654,35 +667,49 @@ public struct FollowUpStore: Sendable {
     ) async throws {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET text = ?, editedAtMs = ? WHERE id = ?",
-                arguments: [text, nowMs, id])
+                sql: """
+                    UPDATE follow_ups SET text = ?, editedAtMs = ?, touchedAtMs = ?
+                    WHERE id = ?
+                    """,
+                arguments: [text, nowMs, nowMs, id])
         }
     }
 
-    public func setDue(id: String, _ dueAtMs: Int64?) async throws {
+    public func setDue(
+        id: String, _ dueAtMs: Int64?, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET dueAtMs = ? WHERE id = ?", arguments: [dueAtMs, id])
+                sql: "UPDATE follow_ups SET dueAtMs = ?, touchedAtMs = ? WHERE id = ?",
+                arguments: [dueAtMs, nowMs, id])
         }
     }
 
-    public func setPriority(id: String, _ priority: FollowUpPriority) async throws {
+    public func setPriority(
+        id: String, _ priority: FollowUpPriority,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET priority = ? WHERE id = ?",
-                arguments: [priority.rawValue, id])
+                sql: "UPDATE follow_ups SET priority = ?, touchedAtMs = ? WHERE id = ?",
+                arguments: [priority.rawValue, nowMs, id])
         }
     }
 
     /// Put off until `untilMs` (nil clears it). Snoozing also un-archives, so "not now" and
     /// "not ever" stay different answers.
-    public func snooze(id: String, until untilMs: Int64?) async throws {
+    public func snooze(
+        id: String, until untilMs: Int64?,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
         try await db.writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE follow_ups SET snoozedUntilMs = ?, archivedAtMs = NULL WHERE id = ?
+                    UPDATE follow_ups
+                    SET snoozedUntilMs = ?, archivedAtMs = NULL, touchedAtMs = ?
+                    WHERE id = ?
                     """,
-                arguments: [untilMs, id])
+                arguments: [untilMs, nowMs, id])
         }
     }
 
@@ -692,8 +719,8 @@ public struct FollowUpStore: Sendable {
     ) async throws {
         try await db.writer.write { db in
             try db.execute(
-                sql: "UPDATE follow_ups SET archivedAtMs = ? WHERE id = ?",
-                arguments: [archived ? nowMs : nil, id])
+                sql: "UPDATE follow_ups SET archivedAtMs = ?, touchedAtMs = ? WHERE id = ?",
+                arguments: [archived ? nowMs : nil, nowMs, id])
         }
     }
 
@@ -720,7 +747,8 @@ public struct FollowUpStore: Sendable {
                 sql: """
                     UPDATE follow_ups SET archivedAtMs = ?
                     WHERE done = 0 AND archivedAtMs IS NULL AND origin = 'ai'
-                      AND editedAtMs IS NULL AND snoozedUntilMs IS NULL AND dueAtMs IS NULL
+                      AND touchedAtMs IS NULL AND editedAtMs IS NULL
+                      AND snoozedUntilMs IS NULL AND dueAtMs IS NULL
                       AND createdAtMs < ?
                     """,
                 arguments: [nowMs, nowMs - olderThanMs])

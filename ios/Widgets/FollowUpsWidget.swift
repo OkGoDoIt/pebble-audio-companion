@@ -2,8 +2,9 @@ import SwiftUI
 import WidgetKit
 
 // Open follow-ups. The only other thing in this app that is worth a Home Screen slot: unlike
-// coverage, a follow-up is something the user can act on, and tapping one lands in the
-// conversation it came from rather than dumping them at the app's front door.
+// coverage, a follow-up is something the user can act on. Tapping one opens that follow-up;
+// tapping anywhere else opens the list — never Today, which shows three of them and another
+// "See all N", so the count you tapped took two more taps to reach.
 
 struct FollowUpsWidget: Widget {
     var body: some WidgetConfiguration {
@@ -49,13 +50,18 @@ struct FollowUpsWidgetView: View {
             // Only ever say there are more when there provably are: the snapshot carries the
             // full open count alongside the handful it shipped.
             if total > items.prefix(visible).count {
-                Text(Copy.Today.seeAll(total))
-                    .font(AppFont.micro)
-                    .foregroundStyle(Tokens.tint)
+                // A Link, not a label: it looks like the way to the rest and now is one. The
+                // whole widget also opens the list rather than Today, which shows three of them
+                // and another "See all N".
+                Link(destination: Route.followUps(scope: nil).url) {
+                    Text(Copy.Today.seeAll(total))
+                        .font(AppFont.micro)
+                        .foregroundStyle(Tokens.tint)
+                }
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)
-        .widgetURL(Route.today(date: nil).url)
+        .widgetURL(Route.followUps(scope: nil).url)
     }
 
     private var header: some View {

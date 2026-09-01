@@ -55,7 +55,15 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
     public var startMs: Int64?
     public var endMs: Int64?
     public var createdAtMs: Int64
+    /// When the CONVERSATION happened. Not the same as `createdAtMs`, which is when extraction
+    /// got round to reading it — days later for a backlog. Curation resolves "tomorrow" against
+    /// this, and was previously told a Friday commitment had been recorded on Monday.
+    public var recordedAtMs: Int64?
     public var state: FollowUpCandidateState
+    /// Curation attempts that ended without a decision for this candidate. Without a budget a
+    /// batch the provider could not answer stayed pending forever, and `pending(limit:)` is
+    /// deterministic, so the identical twelve were re-sent on every pass.
+    public var attempts: Int
     public var decidedAtMs: Int64?
     /// Why curation decided what it decided — the one thing that makes a dropped candidate
     /// auditable instead of a silent disappearance.
@@ -73,7 +81,9 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         startMs: Int64? = nil,
         endMs: Int64? = nil,
         createdAtMs: Int64,
+        recordedAtMs: Int64? = nil,
         state: FollowUpCandidateState = .pending,
+        attempts: Int = 0,
         decidedAtMs: Int64? = nil,
         reason: String? = nil
     ) {
@@ -88,7 +98,9 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         self.startMs = startMs
         self.endMs = endMs
         self.createdAtMs = createdAtMs
+        self.recordedAtMs = recordedAtMs
         self.state = state
+        self.attempts = attempts
         self.decidedAtMs = decidedAtMs
         self.reason = reason
     }
@@ -111,7 +123,9 @@ public struct FollowUpCandidateStore: Sendable {
             startMs: row["startMs"],
             endMs: row["endMs"],
             createdAtMs: row["createdAtMs"],
+            recordedAtMs: row["recordedAtMs"],
             state: FollowUpCandidateState(rawValue: row["state"] ?? "pending") ?? .pending,
+            attempts: row["attempts"] ?? 0,
             decidedAtMs: row["decidedAtMs"],
             reason: row["reason"])
     }
@@ -125,36 +139,42 @@ public struct FollowUpCandidateStore: Sendable {
                 sql: """
                     INSERT INTO follow_up_candidates
                         (id, conversationId, segmentId, task, quote, why, confidence,
-                         dueAtMs, startMs, endMs, createdAtMs, state, decidedAtMs, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         dueAtMs, startMs, endMs, createdAtMs, recordedAtMs, state, attempts,
+                         decidedAtMs, reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task = excluded.task, quote = excluded.quote, why = excluded.why,
                         confidence = excluded.confidence, dueAtMs = excluded.dueAtMs,
-                        segmentId = excluded.segmentId,
+                        segmentId = excluded.segmentId, recordedAtMs = excluded.recordedAtMs,
                         startMs = excluded.startMs, endMs = excluded.endMs
                     """,
                 arguments: [
                     candidate.id, candidate.conversationId, candidate.segmentId, candidate.task,
                     candidate.quote, candidate.why, candidate.confidence.rawValue,
                     candidate.dueAtMs, candidate.startMs, candidate.endMs, candidate.createdAtMs,
-                    candidate.state.rawValue, candidate.decidedAtMs, candidate.reason,
+                    candidate.recordedAtMs, candidate.state.rawValue, candidate.attempts,
+                    candidate.decidedAtMs, candidate.reason,
                 ])
         }
     }
 
-    /// The curation queue: undecided candidates, best-grounded and newest first, bounded.
-    public func pending(limit: Int) async throws -> [FollowUpCandidate] {
+    /// The curation queue: undecided candidates, best-grounded and newest first, bounded, and
+    /// skipping any that curation has already failed on `maxAttempts` times.
+    public func pending(limit: Int, maxAttempts: Int = Int.max) async throws
+        -> [FollowUpCandidate]
+    {
         try await db.reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT * FROM follow_up_candidates WHERE state = 'pending'
+                    SELECT * FROM follow_up_candidates
+                    WHERE state = 'pending' AND attempts < ?
                     ORDER BY
                         CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                         createdAtMs DESC, id
                     LIMIT ?
                     """,
-                arguments: [limit]
+                arguments: [maxAttempts, limit]
             ).map(Self.candidate(from:))
         }
     }
@@ -163,6 +183,20 @@ public struct FollowUpCandidateStore: Sendable {
         try await db.reader.read { db in
             try Int.fetchOne(
                 db, sql: "SELECT COUNT(*) FROM follow_up_candidates WHERE state = 'pending'") ?? 0
+        }
+    }
+
+    /// Records that a curation call was made for these candidates and did not decide them.
+    public func recordAttempt(ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        try await db.writer.write { db in
+            let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+            try db.execute(
+                sql: """
+                    UPDATE follow_up_candidates SET attempts = attempts + 1
+                    WHERE id IN (\(placeholders))
+                    """,
+                arguments: StatementArguments(ids))
         }
     }
 

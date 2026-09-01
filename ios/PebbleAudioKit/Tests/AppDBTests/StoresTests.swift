@@ -61,6 +61,57 @@ import Testing
         #expect(open[0].sourceConversationId == "c1")
     }
 
+    /// Putting something off must not make it disappear. It used to belong to no scope at all:
+    /// excluded from Open, not done, not archived — and the only control for un-snoozing lived
+    /// on a screen you could no longer reach.
+    @Test func aSnoozedFollowUpIsStillOnTheOpenList() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = FollowUpStore(db: db)
+        let now: Int64 = 1_788_000_000_000
+        let item = try await store.add(text: "Call the plumber", nowMs: now)
+        try await store.snooze(id: item.id, until: now + 86_400_000, nowMs: now)
+
+        let open = try await store.list(scope: .open, nowMs: now)
+        #expect(open.map(\.id) == [item.id])
+        #expect(open.first?.isSnoozed(at: now) == true)
+        // The count Today and the widget use leaves it out: a deferred thing is not something
+        // to put in front of somebody this morning.
+        #expect(try await store.openCount(nowMs: now) == 0)
+        #expect(try await store.list(scope: .archived).isEmpty)
+    }
+
+    /// Snoozed rows sort last within Open, so the "Put off" section lands at the bottom.
+    @Test func snoozedRowsSortBehindEverythingElse() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = FollowUpStore(db: db)
+        let now: Int64 = 1_788_000_000_000
+        let deferred = try await store.add(text: "Later", nowMs: now)
+        try await store.snooze(id: deferred.id, until: now + 86_400_000, nowMs: now)
+        let live = try await store.add(text: "Now", nowMs: now)
+        #expect(try await store.list(scope: .open, nowMs: now).map(\.id) == [live.id, deferred.id])
+    }
+
+    /// The age rule's memory of the person: anything they have answered is theirs, not a
+    /// clock's. Restore used to leave no trace, so the next pass filed the row away again.
+    @Test func anythingThePersonTouchesIsOffTheAgeRule() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = FollowUpStore(db: db)
+        let now: Int64 = 1_788_000_000_000
+        let old = now - 30 * 86_400_000
+        for id in ["a", "b"] {
+            try await store.upsertExtracted(
+                FollowUp(
+                    id: id, text: id, done: false, sourceConversationId: nil,
+                    sourceSegmentId: nil, createdAtMs: old))
+        }
+        try await store.setArchived(id: "a", true, nowMs: now)
+        try await store.setArchived(id: "a", false, nowMs: now)
+
+        #expect(try await store.archiveStale(olderThanMs: 14 * 86_400_000, nowMs: now) == 1)
+        #expect(try await store.load(id: "a")?.archivedAtMs == nil, "restored stays restored")
+        #expect(try await store.load(id: "b")?.archivedAtMs != nil, "untouched still ages out")
+    }
+
     @Test func askHistoryTrimsToFiveNewest() async throws {
         let db = try AppDatabase.inMemory()
         let store = AskHistoryStore(db: db)

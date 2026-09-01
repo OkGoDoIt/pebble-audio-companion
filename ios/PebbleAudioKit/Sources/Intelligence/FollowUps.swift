@@ -339,19 +339,38 @@ public enum FollowUpQuoteLocator {
         return nil
     }
 
-    /// Offsets of the first diarized turn whose words overlap the quote — good enough to open
-    /// the player a few seconds early, which is what someone reading the item actually wants.
+    /// Offsets of the diarized turn that best overlaps the quote — good enough to open the
+    /// player a few seconds early, which is what someone reading the item actually wants.
+    ///
+    /// "Best", not "first": the earlier version accepted any turn whose text was a substring of
+    /// the quote's opening, so a one-word backchannel — "And", "So", "No" — anywhere in the
+    /// recording claimed the quote and sent the player to the wrong speaker a minute early
+    /// ("and" is inside "h-and"). A turn now has to carry a real span of the quote to win, and
+    /// the longest overlap takes it.
     static func turnOffset(_ needle: String, in part: FollowUpSourcePart) -> (
         start: Int64, end: Int64
     )? {
         guard !part.turns.isEmpty else { return nil }
-        let head = String(needle.prefix(28))
-        for turn in part.turns where normalize(turn.text).contains(head) || head.contains(normalize(turn.text)) {
-            guard !normalize(turn.text).isEmpty else { continue }
-            return (turn.startMs, turn.endMs)
+        var best: (start: Int64, end: Int64, score: Int)?
+        for turn in part.turns {
+            let text = normalize(turn.text)
+            guard text.count >= minimumTurnMatchChars else { continue }
+            let score: Int
+            if needle.contains(text) {
+                score = text.count
+            } else if text.contains(String(needle.prefix(minimumTurnMatchChars))) {
+                score = minimumTurnMatchChars
+            } else {
+                continue
+            }
+            if score > (best?.score ?? 0) { best = (turn.startMs, turn.endMs, score) }
         }
-        return nil
+        return best.map { ($0.start, $0.end) }
     }
+
+    /// Short enough that a real sentence fragment matches, long enough that "and" or "okay"
+    /// cannot.
+    static let minimumTurnMatchChars = 12
 
     /// Lowercased, punctuation-free, single-spaced: enough that "I'll take Theo at 7:00." and
     /// "I'll take Theo at 7:00" are the same words, without pretending a paraphrase is a quote.

@@ -59,12 +59,14 @@ private final class FakeSpotlight: SpotlightIndexing, @unchecked Sendable {
                 ["action-1", "followup"],
             ]
         )
-        // Deep links follow the plan 6.8 routes; follow-ups open their source conversation.
+        // Deep links follow the plan 6.8 routes. A follow-up opens ITS OWN screen: it used to
+        // open the source conversation, so a Spotlight hit landed on a transcript rather than
+        // on the thing that was searched for.
         #expect(
             spotlight.donations.map { $0.deepLinkURL } == [
                 "companion://conversation/seg-1",
                 "companion://today?date=2026-06-26",
-                "companion://conversation/seg-1",
+                "companion://followup/action-1",
             ]
         )
         #expect(try index.search("q3").map { $0.id } == ["seg-1"])

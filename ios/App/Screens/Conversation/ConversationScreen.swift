@@ -547,7 +547,16 @@ struct FollowUpsSheet: View {
                     List {
                         ForEach(items) { item in
                             NavigationLink {
-                                FollowUpDetailScreen(id: item.id)
+                                FollowUpDetailScreen(id: item.id) { target in
+                                    // Out of the sheet first: pushing onto a tab stack from
+                                    // inside a modal shows nothing and leaves a screen waiting
+                                    // behind it.
+                                    dismiss()
+                                    router.navigate(
+                                        to: .conversation(
+                                            id: target.conversationId,
+                                            atMs: target.mediaOffsetMs, focus: target.focus))
+                                }
                             } label: {
                                 FollowUpRow(item: item, now: now, showsChevron: false) {
                                     Haptics.checkedOff()

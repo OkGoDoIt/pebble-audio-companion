@@ -263,7 +263,9 @@ public struct ConversationQueries: Sendable {
             db,
             sql: """
                 SELECT sourceConversationId AS conversationId, COUNT(*) AS total,
-                    SUM(CASE WHEN done = 0 THEN 1 ELSE 0 END) AS open
+                    SUM(
+                        CASE WHEN done = 0 AND archivedAtMs IS NULL THEN 1 ELSE 0 END
+                    ) AS open
                 FROM follow_ups WHERE sourceConversationId IS NOT NULL
                 GROUP BY sourceConversationId
                 """

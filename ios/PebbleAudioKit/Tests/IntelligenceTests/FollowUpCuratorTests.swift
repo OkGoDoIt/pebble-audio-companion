@@ -91,6 +91,41 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         #expect(try await followUps.list(scope: .open, nowMs: clock.now).count == 1)
     }
 
+    /// A "tomorrow" spoken inside a recording is routinely behind us by the time it is read.
+    /// The item may still be live, but the DATE must not reach the list — an item arriving
+    /// pre-filed under Overdue on its first day is a wrong item however right the task is.
+    @Test func aDueDateThatHasAlreadyGoneByIsCleared() async throws {
+        try await candidate("c1", task: "Take Theo to the airport")
+        let provider = ScriptedCurationProvider(
+            response: """
+                {"decisions":[{"index":1,"decision":"keep","reason":"still to do",
+                "task":"","priority":"normal","dueDate":"2026-08-20"}]}
+                """)
+        let written = try await curator(provider).curate()
+        #expect(written.first?.dueAtMs == nil)
+        #expect(written.first?.text == "Take Theo to the airport")
+    }
+
+    @Test func aDueDateOfTodayIsKept() async throws {
+        try await candidate("c1", task: "Take Theo to the airport")
+        let zone = TimeZone(identifier: "America/New_York")!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = formatter.string(
+            from: Date(timeIntervalSince1970: Double(clock.now) / 1000))
+        let provider = ScriptedCurationProvider(
+            response: """
+                {"decisions":[{"index":1,"decision":"keep","reason":"today","task":"",
+                "priority":"high","dueDate":"\(today)"}]}
+                """)
+        let written = try await curator(provider).curate()
+        #expect(written.first?.dueAtMs != nil)
+    }
+
     @Test func aDroppedCandidateNeverReachesTheList() async throws {
         try await candidate("c1", task: "the bins out")
         let provider = ScriptedCurationProvider(
@@ -201,6 +236,75 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         #expect(try await followUps.load(id: "dated")?.archivedAtMs == nil)
         #expect(try await followUps.load(id: "edited")?.archivedAtMs == nil)
         #expect(try await followUps.load(id: "snoozed")?.archivedAtMs == nil)
+    }
+
+    /// Restore used to be a no-op: un-archiving wrote only `archivedAtMs = NULL`, which left
+    /// the row in exactly the state the age rule looks for, so the next pass — thirty seconds
+    /// later — filed it away again while the person watched.
+    @Test func restoringSomethingKeepsItOffTheAgeRule() async throws {
+        let old = clock.now - FollowUpCurator.staleAfterMs - 1_000
+        try await followUps.upsertExtracted(
+            FollowUp(
+                id: "old", text: "Something from a fortnight ago", done: false,
+                sourceConversationId: "conv-1", sourceSegmentId: "seg-1", createdAtMs: old))
+        #expect(try await curator(nil).archiveStale() == 1)
+
+        try await followUps.setArchived(id: "old", false, nowMs: clock.now)
+        #expect(try await curator(nil).archiveStale() == 0, "a clock does not overrule a person")
+        #expect(try await followUps.load(id: "old")?.archivedAtMs == nil)
+    }
+
+    /// Same shape, the other way round: un-ticking an old item must not drop it into the
+    /// archive on the next pass.
+    @Test func unTickingSomethingOldKeepsItOffTheAgeRule() async throws {
+        let old = clock.now - FollowUpCurator.staleAfterMs - 1_000
+        try await followUps.upsertExtracted(
+            FollowUp(
+                id: "old", text: "Done a fortnight ago", done: false,
+                sourceConversationId: nil, sourceSegmentId: nil, createdAtMs: old))
+        try await followUps.setDone(id: "old", true, nowMs: clock.now)
+        try await followUps.setDone(id: "old", false, nowMs: clock.now)
+        #expect(try await curator(nil).archiveStale() == 0)
+    }
+
+    // MARK: Not spinning
+
+    /// A batch the provider cannot answer used to stay pending, and `pending(limit:)` is
+    /// deterministic — so the identical twelve candidates were re-sent every five minutes,
+    /// forever, on the expensive model.
+    @Test func aBatchThatKeepsFailingIsEventuallyLeftAlone() async throws {
+        try await candidate("c1", task: "something")
+        let provider = ScriptedCurationProvider(response: "I would keep the first one.")
+        let curator = curator(provider)
+        for _ in 0..<(FollowUpCurator.maxAttempts + 3) {
+            _ = try? await curator.curate()
+        }
+        #expect(provider.runCount == FollowUpCurator.maxAttempts)
+        #expect(try await candidates.pending(limit: 10).count == 1, "still visible, just not retried")
+    }
+
+    /// The date the model reasons about has to be the day of the CONVERSATION, not the day the
+    /// backlog got round to reading it.
+    @Test func thePromptDatesACandidateByWhenItWasSaid() async throws {
+        let recorded = clock.now - 5 * 24 * 60 * 60 * 1000
+        try await candidates.save(
+            FollowUpCandidate(
+                id: "c1", conversationId: "conv-1", segmentId: "seg-1",
+                task: "Take Theo at 7:00", quote: "I got to take Theo at 7:00.",
+                why: "Theo misses his ride", createdAtMs: clock.now, recordedAtMs: recorded))
+        let provider = ScriptedCurationProvider(
+            response: """
+                {"decisions":[{"index":1,"decision":"drop","reason":"over","task":"",
+                "priority":"normal","dueDate":""}]}
+                """)
+        _ = try await curator(provider).curate()
+        let body = provider.requests.first?.transcripts.first?.text ?? ""
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "America/New_York")!
+        formatter.dateFormat = "EEEE, yyyy-MM-dd"
+        let said = formatter.string(from: Date(timeIntervalSince1970: Double(recorded) / 1000))
+        #expect(body.contains("recorded: \(said)"))
     }
 
     // MARK: The person's answers are authoritative

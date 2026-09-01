@@ -81,6 +81,14 @@ public struct AiRunRequest: Sendable {
     public static let modelKey = "model"
     /// `metadata` key naming the reasoning effort for THIS call.
     public static let reasoningEffortKey = "reasoningEffort"
+    /// `metadata` key (value "1") marking a call whose answer MUST come back in the schema the
+    /// prompt names. A provider that cannot enforce one refuses rather than answering.
+    ///
+    /// Without this the mode router's ordinary fallback quietly hands a follow-up extraction to
+    /// the on-device model, which ignores the model override, truncates the conversation to
+    /// 12k characters, caps the answer at 256 tokens and enforces no schema at all — so the
+    /// reply cannot parse, and the failure looks like the conversation having no follow-ups.
+    public static let requiresStructuredOutputKey = "requiresStructuredOutput"
 
     public let requestId: String
     public let prompt: AiPromptTemplate

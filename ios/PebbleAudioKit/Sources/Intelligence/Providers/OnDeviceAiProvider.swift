@@ -76,6 +76,12 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
     }
 
     public func run(_ request: AiRunRequest) async throws -> AiProviderResult {
+        // Some calls are only meaningful in a strict JSON schema, and this provider has no way
+        // to enforce one. Refusing is honest: the caller records a failure it can retry, rather
+        // than a confident empty answer built from unparseable prose.
+        if request.metadata[AiRunRequest.requiresStructuredOutputKey] != nil {
+            throw AiError.providerUnavailable(providerId: id)
+        }
         guard let activeModel = model else {
             throw AiError.providerUnavailable(providerId: id)
         }

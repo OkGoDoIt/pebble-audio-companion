@@ -372,7 +372,6 @@ enum Copy {
 
         static let add = "New Follow-up"
         static let addPlaceholder = "What do you need to remember?"
-        static let edit = "Edit"
         static let editTitle = "Edit Follow-up"
         static let markDone = "Mark Done"
         static let markNotDone = "Mark Not Done"
@@ -381,7 +380,6 @@ enum Copy {
         static let notPutOff = "Not put off"
         static let snoozeTomorrow = "Tomorrow"
         static let snoozeNextWeek = "Next Week"
-        static let snoozePickDate = "Pick a Date…"
         static let unsnooze = "Stop Putting Off"
         static let fileAway = "File Away"
         static let restore = "Restore"
@@ -390,6 +388,7 @@ enum Copy {
         static let deleted = "Follow-up deleted."
         static let filedAway = "Filed away."
         static let restored = "Back on your list."
+        static func putOff(_ when: String) -> String { "Put off until \(when)." }
 
         static let due = "Due"
         static let noDue = "No date"
@@ -443,6 +442,10 @@ enum Copy {
             "Suggestions you never act on move here after two weeks, so the open list stays "
             + "about now."
         static let conversationEmpty = "Nothing to follow up on from this conversation."
+        static let missingTitle = "This follow-up is gone"
+        static let missingBody =
+            "It was completed and cleared, or deleted. A widget or a search result can be a few "
+            + "minutes behind."
     }
 
     // ─────────────────────────────────────────────────────────────────────────

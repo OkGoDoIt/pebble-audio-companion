@@ -36,6 +36,12 @@ public final class FollowUpCurator: @unchecked Sendable {
     public static let modelId = FollowUpWorker.modelId
     public static let reasoningEffort = "medium"
 
+    /// Curation calls a batch may cost before its candidates are given up on. Extraction has
+    /// had a budget from the start; without one here, a batch the provider could not answer
+    /// stayed pending and — because `pending(limit:)` is deterministic — the identical twelve
+    /// candidates were re-sent on every pass, forever, on the expensive model.
+    public static let maxAttempts = 3
+
     private let candidates: FollowUpCandidateStore
     private let followUps: FollowUpStore
     private let router: AiModeRouter?
@@ -71,7 +77,8 @@ public final class FollowUpCurator: @unchecked Sendable {
     @discardableResult
     public func curate() async throws -> [FollowUp] {
         guard let router else { return [] }
-        let batch = try await candidates.pending(limit: Self.batchSize)
+        let batch = try await candidates.pending(
+            limit: Self.batchSize, maxAttempts: Self.maxAttempts)
         guard !batch.isEmpty else { return [] }
         guard await router.isAvailable() else { return [] }
 
@@ -87,6 +94,9 @@ public final class FollowUpCurator: @unchecked Sendable {
             batch: batch, open: Array(open.prefix(Self.openContextLimit)), titles: titles,
             now: now)
 
+        // Every path out of the call spends one attempt from the batch's budget, including the
+        // throws: a batch that keeps failing has to stop costing a call every five minutes.
+        try await candidates.recordAttempt(ids: batch.map(\.id))
         let result = try await router.run(
             AiRunRequest(
                 requestId: "followup-curation-\(now)",
@@ -98,6 +108,7 @@ public final class FollowUpCurator: @unchecked Sendable {
                 metadata: [
                     AiRunRequest.modelKey: Self.modelId,
                     AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
+                    AiRunRequest.requiresStructuredOutputKey: "1",
                 ]))
         guard let decisions = FollowUpCurationParser.parse(raw: result.text) else {
             throw AiError.providerFailed(
@@ -148,11 +159,17 @@ public final class FollowUpCurator: @unchecked Sendable {
     ) -> FollowUp {
         let rewritten = FollowUpExtractionParser.tidy(decision.task)
         let text = rewritten.isEmpty ? candidate.task : rewritten
-        let due =
+        let proposed =
             FollowUpExtractionParser.isoDate(decision.dueDate)
             .flatMap { FollowUpWorker.dueAtMs($0, timeZone: zone) }
             ?? (decision.dueDate.trimmingCharacters(in: .whitespaces).isEmpty
                 ? candidate.dueAtMs : nil)
+        // A recording is read days after it was made, so a "tomorrow" spoken inside it is
+        // routinely already behind us. The item may still be perfectly live — the prompt is
+        // told to re-anchor rather than drop it — but a date that has gone by must never
+        // reach the list: it would arrive pre-filed under Overdue, shouting, on its first day.
+        // Belt and braces, because this is arithmetic and does not need a model to get right.
+        let due = proposed.flatMap { $0 < startOfToday(now, zone) ? nil : $0 }
         return FollowUp(
             id: candidate.id,
             text: text,
@@ -197,7 +214,10 @@ public final class FollowUpCurator: @unchecked Sendable {
             if let why = candidate.why, !why.isEmpty {
                 out += "   if forgotten: \(why)\n"
             }
-            let recorded = Date(timeIntervalSince1970: Double(candidate.createdAtMs) / 1000)
+            // The conversation's own day, not the day extraction happened to read it — the
+            // whole date section of the prompt resolves "tomorrow" against this line.
+            let recordedMs = candidate.recordedAtMs ?? candidate.createdAtMs
+            let recorded = Date(timeIntervalSince1970: Double(recordedMs) / 1000)
             out += "   recorded: \(dayLabel(recorded))"
             if let title = titles[candidate.conversationId], !title.isEmpty {
                 out += " during \"\(title)\""
@@ -210,6 +230,14 @@ public final class FollowUpCurator: @unchecked Sendable {
             out += "   how sure the reader was: \(candidate.confidence.rawValue)\n"
         }
         return out
+    }
+
+    /// Midnight today in the capture zone — the earliest instant a due date may still name.
+    func startOfToday(_ nowMs: Int64, _ zone: TimeZone) -> Int64 {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let now = Date(timeIntervalSince1970: Double(nowMs) / 1000)
+        return Int64(calendar.startOfDay(for: now).timeIntervalSince1970 * 1000)
     }
 
     private func dayLabel(_ date: Date) -> String {

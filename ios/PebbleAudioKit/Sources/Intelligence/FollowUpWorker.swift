@@ -166,6 +166,13 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// Failed attempts per transcript revision before the conversation is left alone.
     public static let maxAttempts = 2
 
+    /// How long a conversation that used up its attempts waits before being tried again.
+    ///
+    /// Without this, two passes during a revoked key, a flight, or a rate limit cost those
+    /// conversations their follow-ups for the life of the database: the budget only reset when
+    /// the transcript's length changed, and nothing else ever re-enabled them.
+    public static let retryAfterMs: Int64 = 6 * 60 * 60 * 1000
+
     /// Conversations actually sent to the provider per pass. Newest-first ordering means a
     /// conversation that just finished is never stuck behind a migrated backlog.
     public static let maxPerPass = 3
@@ -255,7 +262,13 @@ public final class FollowUpWorker: @unchecked Sendable {
             let fresh = existing.map { $0.sourceCharCount != combined } ?? true
             if let existing, !fresh {
                 if existing.settled { continue }
-                if existing.attempts >= Self.maxAttempts { continue }
+                // Out of attempts, but a provider outage is temporary and a conversation is
+                // not: come back to it after `retryAfterMs` rather than abandoning it forever.
+                if existing.attempts >= Self.maxAttempts,
+                    now - existing.updatedAtMs < Self.retryAfterMs
+                {
+                    continue
+                }
             }
 
             // Too little text, or too long ago — settle for free rather than asking every pass
@@ -273,7 +286,9 @@ public final class FollowUpWorker: @unchecked Sendable {
             }
 
             calls += 1
-            let attempts = (fresh ? 0 : (existing?.attempts ?? 0)) + 1
+            let exhausted = (existing?.attempts ?? 0) >= Self.maxAttempts
+            // A cooled-off retry starts the budget over; anything else keeps counting.
+            let attempts = (fresh || exhausted ? 0 : (existing?.attempts ?? 0)) + 1
             proposed += try await run(
                 activeRouter, conversation, parts: parts, combined: combined, attempts: attempts)
         }
@@ -338,6 +353,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                     metadata: [
                         AiRunRequest.modelKey: Self.modelId,
                         AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
+                        AiRunRequest.requiresStructuredOutputKey: "1",
                     ]))
             guard let parsed = FollowUpExtractionParser.parse(raw: result.text) else {
                 throw AiError.providerFailed(
@@ -398,7 +414,10 @@ public final class FollowUpWorker: @unchecked Sendable {
                     dueAtMs: Self.dueAtMs(item.dueDate, timeZone: timeZone),
                     startMs: location.startMs,
                     endMs: location.endMs,
-                    createdAtMs: now))
+                    createdAtMs: now,
+                    // When the CONVERSATION happened, which is what "tomorrow" inside it is
+                    // relative to. `createdAtMs` is when this pass got round to reading it.
+                    recordedAtMs: parts.first?.startedAtMs))
             written += 1
         }
         return written

@@ -151,7 +151,11 @@ extension LiveWorld: SearchDataSource {
 
         let dayOfConversation = Dictionary(
             rows.map { ($0.id, $0.dateKey) }, uniquingKeysWith: { first, _ in first })
-        let followUps = try await composition.followUps.list().filter { followUp in
+        // Everything, not just what is open: search is where you go for something you
+        // half-remember, and "did I already tick that off?" is exactly that question. A
+        // completed or filed-away follow-up that cannot be found is a follow-up that looks
+        // deleted.
+        let followUps = try await composition.followUps.list(scope: .all).filter { followUp in
             guard followUp.text.range(of: trimmed, options: .caseInsensitive) != nil else {
                 return false
             }
@@ -1266,6 +1270,10 @@ extension LiveFollowUps: FollowUpsDataSource {
     func add(text: String, dueAtMs: Int64?) async throws -> String {
         let item = try await composition.followUps.add(
             text: text, dueAtMs: dueAtMs, nowMs: composition.clock.nowMs)
+        // Findable from the moment it exists. Extraction donates what it writes; a follow-up
+        // somebody typed themselves is at least as worth finding.
+        try? await composition.donator.donateFollowUp(
+            id: item.id, text: item.text, createdAtMs: item.createdAtMs)
         return item.id
     }
 
@@ -1275,6 +1283,11 @@ extension LiveFollowUps: FollowUpsDataSource {
 
     func setText(id: String, text: String) async throws {
         try await composition.followUps.setText(id: id, text, nowMs: composition.clock.nowMs)
+        // Otherwise the old wording is what search keeps finding.
+        guard let row = try await composition.followUps.load(id: id) else { return }
+        try? await composition.donator.donateFollowUp(
+            id: row.id, text: row.text, sourceConversationId: row.sourceConversationId,
+            createdAtMs: row.createdAtMs)
     }
 
     func setDue(id: String, dueAtMs: Int64?) async throws {
@@ -1296,7 +1309,10 @@ extension LiveFollowUps: FollowUpsDataSource {
 
     func delete(id: String) async throws {
         try await composition.followUps.delete(id: id)
-        removeFollowUpFromIndex(id: id)
+        // Through the donator, not the raw index: `composition.index` is FTS only, so removing
+        // there left the Core Spotlight document behind and the deleted item kept turning up
+        // in system search.
+        try? await composition.donator.remove(id: id, kind: .followUp)
     }
 
     func restore(_ item: FollowUpItem) async throws {
