@@ -84,9 +84,11 @@ import Testing
         #expect(drawn[0].state == .gap, "a gap inside a slot must survive the merge")
     }
 
-    /// Voice outranks quiet, and the loudest bar carries the slot's height, so a slot holding one
-    /// word and five silent frames still shows the word.
-    @Test func voiceOutranksQuietAndTheLoudestBarSetsTheHeight() {
+    /// Voice outranks quiet, and the slot's height is the MEAN of the voice in it — not the
+    /// loudest quarter-second, which let one peak speak for the whole slot and made neighbouring
+    /// slots jump between peak and floor as speech crossed a boundary. The silence sharing the
+    /// slot is excluded, so a slot holding one word among silent frames still shows the word.
+    @Test func voiceOutranksQuietAndTheSlotDrawsTheMeanOfTheVoiceInIt() {
         let now: Int64 = 300_000
         let inOneSlot: Int64 = now - 800
         let row = slots(
@@ -101,7 +103,43 @@ import Testing
         let drawn = row.compactMap { $0 }
         #expect(drawn.count == 1)
         #expect(drawn[0].state == .recorded)
-        #expect(drawn[0].amplitude == 0.9)
+        #expect(abs(drawn[0].amplitude - 0.65) < 0.001, "mean of the recorded bars, not the peak")
+    }
+
+    /// THE FLICKER, directly. The monitor republishes at 4 Hz and a slot is several bars wide, so
+    /// most redraws advance the clock WITHIN a slot. Nothing has changed in the audio, so nothing
+    /// in the row may change: the grid is absolute, not re-cut around each new `now`.
+    ///
+    /// Anchoring it on `now` re-diced the same bars into different slots two redraws out of three
+    /// — a third of the row's heights and colours changed on a stationary picture.
+    @Test func redrawingWithinOneSlotDoesNotChangeTheRow() {
+        let now: Int64 = 600_000
+        let slotMs = windowMs / Int64(slotCount)
+        let audio = (0..<200).map {
+            bar(now - Int64($0) * 250, amplitude: Float(0.2 + 0.7 * abs(sin(Double($0)))))
+        }
+
+        let reference = slots(audio, nowMs: now)
+        // Every 250 ms tick up to (not into) the next slot must redraw identically.
+        for tick in stride(from: Int64(250), to: slotMs, by: 250) {
+            #expect(slots(audio, nowMs: now + tick) == reference, "redrew differently at +\(tick)ms")
+        }
+    }
+
+    /// And when the clock does cross a slot boundary, the row steps by exactly one slot: the same
+    /// audio, shifted left, with nothing re-diced. Marching, not shimmering.
+    @Test func crossingASlotBoundaryShiftsTheRowByExactlyOneSlot() {
+        let slotMs = windowMs / Int64(slotCount)
+        // Start on a boundary so `now + slotMs` lands on the next one.
+        let now: Int64 = 600_000
+        let audio = (0..<200).map {
+            bar(now - Int64($0) * 250, amplitude: Float(0.2 + 0.7 * abs(sin(Double($0)))))
+        }
+
+        let before = slots(audio, nowMs: now)
+        let after = slots(audio, nowMs: now + slotMs)
+        #expect(Array(after.dropLast()) == Array(before.dropFirst()))
+        #expect(after.last! == nil, "the newest slot is in the future and holds no audio yet")
     }
 
     /// A received-at stamp slightly ahead of the caller's clock belongs in the newest slot, not
@@ -131,8 +169,8 @@ import Testing
         #expect(drawn[0].state == .silence)
     }
 
-    /// The row's contract, stated directly: the left edge is one window ago and the right edge is
-    /// now, whatever is or is not in between.
+    /// The row's contract, stated directly: `slotCount` whole slots ending at the slot that
+    /// contains now, so the row covers one window and the boundaries stand still while it does.
     @Test func theRowSpansExactlyTheWindowEndingAtNow() {
         let now: Int64 = 900_000
         // One bar per slot across the whole window, oldest first.
@@ -141,9 +179,10 @@ import Testing
         let full = slots(everySlot, nowMs: now)
         #expect(full.allSatisfy { $0 != nil }, "a bar in every slot fills the row end to end")
 
-        // The two edges, exactly: one millisecond older than the window is off the row.
-        #expect(slots([bar(now - windowMs + 1)], nowMs: now).first! != nil)
-        #expect(slots([bar(now - windowMs)], nowMs: now).allSatisfy { $0 == nil })
+        // The two edges, exactly. The oldest slot on the row starts one window back; a bar one
+        // millisecond older than that belongs to the slot that has just left the row.
+        #expect(slots([bar(now - windowMs + slotMs)], nowMs: now).first! != nil)
+        #expect(slots([bar(now - windowMs + slotMs - 1)], nowMs: now).allSatisfy { $0 == nil })
         #expect(slots([bar(now)], nowMs: now).last! != nil)
     }
 
