@@ -79,6 +79,10 @@ public actor ReceiverService {
     private let intentBox: IntentBox
     private let enableRequestArmed: ArmedFlag
     private let onCoverageTrigger: @Sendable (CoverageSnapshotTrigger) async -> Void
+    /// Keeps the process out of iOS's suspended state while capture is on — see
+    /// `BackgroundResidency`. Optional so the host tests and command-line tools build without an
+    /// audio stack.
+    private let residency: BackgroundResidency?
 
     private var sessionTask: Task<Void, Never>?
 
@@ -94,6 +98,7 @@ public actor ReceiverService {
         liveAudioTap: LiveAudioTap? = nil,
         pauseJournal: PauseJournal? = nil,
         lossEvaluator: LossEventEvaluator? = nil,
+        residency: BackgroundResidency? = nil,
         onStoreEvent: @escaping @Sendable () -> Void = {},
         onCoverageTrigger: @escaping @Sendable (CoverageSnapshotTrigger) async -> Void = { _ in },
         log: RuntimeLog = .silent,
@@ -112,6 +117,7 @@ public actor ReceiverService {
         self.intentBox = intent
         self.enableRequestArmed = armed
         self.onCoverageTrigger = onCoverageTrigger
+        self.residency = residency
 
         // Sink chain, innermost first.
         let durable: any SegmentSink
@@ -204,10 +210,34 @@ public actor ReceiverService {
     /// link is up or in progress, and cannot prompt the watch: only `armWatchEnableRequest()` can
     /// do that (plan 4.2).
     public func start() {
+        // BEFORE dialling. Residency is what stops iOS suspending us between Core Bluetooth
+        // wakes, and a suspended app cannot answer the watch's 15 s liveness watchdog — the watch
+        // then stops its microphone. Taking it first means the very first reconnect of a launch is
+        // already protected.
+        syncResidency()
         link.connect()
         guard sessionTask == nil else { return }
         intentBox.running = true
         sessionTask = session.start()
+    }
+
+    /// Residency follows `.active` only. A paused or off watch is not streaming, so its liveness
+    /// watchdog is not armed and there is nothing to stay awake for — holding an audio session
+    /// through a pause would just spend battery.
+    private func syncResidency() {
+        residency?.setWanted(intentBox.value == .active)
+    }
+
+    /// What residency the process actually holds, for Diagnostics. `.failed` here is the difference
+    /// between "recording in the background" and "recording only while you are looking at it".
+    public nonisolated var residencyState: StateSubject<BackgroundResidency.State>? {
+        residency?.state
+    }
+
+    /// Re-asserts the audio session after segment playback reconfigured it. Called on foreground
+    /// entry, where any playback has ended.
+    public nonisolated func reassertResidencyAfterPlayback() {
+        residency?.reassertAfterForeignSessionUse()
     }
 
     /// Tears the session down without touching the user's intent or the watch's pause state.
@@ -300,6 +330,10 @@ public actor ReceiverService {
     ) async {
         let previous = intentBox.value
         intentBox.set(intent)
+        // Unconditional, and before the early return: a repeated `.active` must still find
+        // residency held, because the one way this can be wrong is silently — the app looks fine
+        // in the foreground and stops recording the moment it is backgrounded.
+        syncResidency()
         guard previous != intent else { return }
 
         switch intent {

@@ -56,8 +56,17 @@
 	</dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!--
+	  `audio` is what keeps this app RUNNING in the background, and it is load-bearing for the
+	  whole product. `bluetooth-central` alone only wakes a suspended app for ~10 s per Core
+	  Bluetooth event, which freezes every timer in the process — including the 5 s keepalive the
+	  watch's 15 s receiver-liveness watchdog requires. Miss that and the watch stops its
+	  microphone. An app holding an active AVAudioSession is not suspended at all. See
+	  PebbleAudioKit/Sources/CompanionRuntime/Services/BackgroundResidency.swift.
+	-->
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>bluetooth-central</string>
 		<string>processing</string>
 	</array>

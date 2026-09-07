@@ -410,6 +410,10 @@ final class RuntimeFixture: @unchecked Sendable {
     /// production path from the receiver's sink to the file on disk.
     let coverageTriggers: CoverageTriggerRelay
 
+    /// Real object, not a fake: on the host it has no audio stack to talk to, so it only moves its
+    /// published state. That is exactly the part the wiring tests need to assert.
+    let residency = BackgroundResidency()
+
     let receiver: ReceiverService
     let transcription: TranscriptionService
     /// The live-preview mirror, shared by `live` and `enrichment` exactly as in the app.
@@ -494,6 +498,7 @@ final class RuntimeFixture: @unchecked Sendable {
             initialIntent: settings.captureIntent,
             pauseJournal: pauseJournal,
             lossEvaluator: withLossNotifier ? evaluator : nil,
+            residency: residency,
             onCoverageTrigger: { await coverageRelay.fire($0) }
         )
         let uploadCoordinator: BackgroundCloudUploadCoordinator? =

@@ -71,6 +71,11 @@ public actor AppLifecycleCoordinator {
             await runtime.refreshSnapshot(.manual)
 
         case .didEnterBackground:
+            // The one moment residency has to be right. Playing a recording reconfigures the
+            // shared AVAudioSession (`.playback`/`.spokenAudio`, no `.mixWithOthers`) and never
+            // puts it back, so an app that played something and was then backgrounded would carry
+            // the wrong category into the period where it decides whether we get suspended.
+            runtime.environment.receiver.reassertResidencyAfterPlayback()
             await runtime.setForeground(false)
 
         case .memoryWarning:

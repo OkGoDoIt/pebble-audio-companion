@@ -64,6 +64,9 @@ final class AppComposition {
     /// (`lastProtocolError`, `watchInfo`) synchronously — `runtime.environment` is actor-isolated
     /// and the status card is derived on the main actor without an await.
     let receiver: ReceiverService
+    /// Held so Diagnostics can say whether the process is actually resident — the difference
+    /// between recording in the background and only recording while the app is on screen.
+    let residency: BackgroundResidency
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
@@ -559,6 +562,13 @@ final class AppComposition {
         gattLink.logSink = AppRuntimeLog.receiverLog
         gattLink.prepareForRestoration()
 
+        // The `audio` background mode's other half. Without it the app is suspended between Core
+        // Bluetooth wakes, its keepalive stops firing, and the watch's 15 s liveness watchdog
+        // stops the microphone — which is the whole of "it barely records anything unless I'm in
+        // the app". The receiver takes and releases it with the user's capture intent.
+        let residency = BackgroundResidency(log: AppRuntimeLog.runtimeLog)
+        self.residency = residency
+
         let receiver = ReceiverService(
             link: gattLink,
             store: store,
@@ -574,6 +584,7 @@ final class AppComposition {
             liveAudioTap: liveTap,
             pauseJournal: pauseJournal,
             lossEvaluator: lossEvaluator,
+            residency: residency,
             onStoreEvent: { wake.signal() },
             onCoverageTrigger: { await coverageTriggers.fire($0) },
             log: AppRuntimeLog.runtimeLog,
