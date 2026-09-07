@@ -96,6 +96,8 @@ final class AppComposition {
     private(set) weak var nativeSurfaces: NativeSurfaceCoordinator?
     private var didRegisterBackgroundTask = false
     private var todaySource: LiveTodayDataSource?
+    /// The flight recorder's liveness pulse — see `startHeartbeat`.
+    private var heartbeatTask: Task<Void, Never>?
 
     // MARK: - Bootstrap
 
@@ -136,6 +138,19 @@ final class AppComposition {
             at: containerRoot, withIntermediateDirectories: true
         )
         self.containerRoot = containerRoot
+
+        // FIRST, before the database or anything else that can fail: a composition that throws
+        // half way through used to leave no trace at all, and "the app records nothing and the
+        // diagnostics screen is empty" is indistinguishable from a dozen other faults.
+        let recorder = FlightRecorder(
+            directory: containerRoot.appendingPathComponent("diagnostics")
+        )
+        AppRuntimeLog.shared.attach(recorder: recorder)
+        recorder.recordLaunch(
+            cause: Self.launchCause(),
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+                as? String ?? "?"
+        )
 
         let database = try AppDatabase.open(at: AppDatabase.defaultDatabaseURL())
         self.database = database
@@ -840,6 +855,37 @@ final class AppComposition {
         let lifecycle = self.lifecycle
         Task { await lifecycle.handle(.didFinishLaunching) }
         today.start()
+        startHeartbeat()
+    }
+
+    /// A line a minute, for as long as the process is alive.
+    ///
+    /// Its VALUE IS ITS ABSENCE. Every timer in this app is a Swift or Dispatch timer, and a
+    /// suspended process runs none of them — so a gap between two heartbeats is a direct reading
+    /// of a window in which iOS had us suspended or dead. That window is the entire subject of the
+    /// reliability work, and until now nothing in the log measured it: a log that simply stops and
+    /// resumes an hour later is indistinguishable from a quiet hour.
+    ///
+    /// It carries the four facts that, together, name every failure this app has: what the link
+    /// thinks, what the session thinks, whether we are resident, and how long since audio last
+    /// arrived. "link ready, session authorized, residency held, audio 4h ago" is a completely
+    /// different bug from "link disconnected, residency failed".
+    private func startHeartbeat() {
+        let receiver = self.receiver
+        let residency = self.residency
+        let clock = self.clock
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                guard self != nil, !Task.isCancelled else { return }
+                let audioAge = receiver.streamEvidence.value.lastAudioAtMs
+                    .map { "\((clock.nowMs - $0) / 1000)s ago" } ?? "never"
+                AppRuntimeLog.shared.flightRecorder?.recordHeartbeat(
+                    "link=\(receiver.state.value) intent=\(receiver.captureIntent) "
+                        + "residency=\(residency.state.value.rawValue) audio=\(audioAge)"
+                )
+            }
+        }
     }
 
     /// `handleEventsForBackgroundURLSession` — routed from the app delegate.
@@ -869,6 +915,7 @@ final class AppComposition {
     /// lifecycle event still runs, for the rest of the transition and for the handled-events
     /// ledger the tests assert on.
     func handleRestorationRelaunch() {
+        AppRuntimeLog.shared.record("launch cause: Core Bluetooth state restoration")
         receiver.markLaunchedInBackground()
         Task { [lifecycle] in await lifecycle.handle(.restorationRelaunch) }
     }
@@ -891,16 +938,30 @@ final class AppComposition {
     }
 
     private func run(backgroundTask task: BGTask) {
+        // Logged on BOTH edges. A BGProcessing window is the only scheduled wake this app gets,
+        // and iOS grants it on opaque heuristics that punish apps the user rarely opens — so "did
+        // it ever run, and how often" is a question a support log has to answer, and until now
+        // only the FAILURE to submit was recorded.
+        AppRuntimeLog.shared.record("BGProcessing window opened")
         // Re-arm first: a window that ends without a follow-up request is the last one iOS ever
         // gives us.
         scheduleBackgroundProcessing()
+        // The link is not the processing task's business — but a link that went down while we
+        // were suspended has no timer left to bring it back, because a suspended process runs no
+        // timers at all. This window is awake, so it is the one scheduled chance to notice.
+        // `connect()` is idempotent and returns immediately when a link is up or in progress.
+        if receiver.captureIntent != .off {
+            receiver.dialLink()
+        }
         let lifecycle = self.lifecycle
         let work = Task {
             await lifecycle.handle(.backgroundProcessingStarted)
+            AppRuntimeLog.shared.record("BGProcessing window finished")
             task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
             Task {
+                AppRuntimeLog.shared.record("BGProcessing window expired")
                 // Expiration cancels OPTIONAL work only — never the receiver, never the intent.
                 await lifecycle.handle(.backgroundProcessingExpired)
                 work.cancel()
@@ -926,6 +987,22 @@ final class AppComposition {
     }
 
     // MARK: - Receiver identity
+
+    /// Why this process exists, as far as we can tell at composition time.
+    ///
+    /// `.background` here means iOS started us without a user — a Core Bluetooth event, a
+    /// BGProcessing window, a background URLSession completion, or a widget/Siri invocation. The
+    /// distinction matters more than any other line in the log: without it, four background
+    /// relaunches and one long-lived foreground session look identical, and they are opposite
+    /// diagnoses. The delegate refines this to "restoration" when it knows.
+    private static func launchCause() -> String {
+        switch UIApplication.shared.applicationState {
+        case .background: return "background"
+        case .active: return "foreground"
+        case .inactive: return "inactive"
+        @unknown default: return "unknown"
+        }
+    }
 
     /// The name the watch shows in its consent prompt.
     private static var receiverName: String {
@@ -1059,8 +1136,23 @@ final class AppRuntimeLog: @unchecked Sendable {
     private var subscribers: [UUID: AsyncStream<Int>.Continuation] = [:]
     private var generation = 0
 
+    /// The durable half. The in-memory ring above stays because the Detailed Logs screen wants a
+    /// cheap live tail, but it dies with the process — and every failure worth diagnosing here
+    /// ends with the process gone. `recorder` is what a person can actually send us afterwards.
+    ///
+    /// Attached by the composition root once it knows the container path, so a log line emitted
+    /// before that still lands in the ring rather than being dropped.
+    private var recorder: FlightRecorder?
+
+    func attach(recorder: FlightRecorder) {
+        lock.withLock { self.recorder = recorder }
+    }
+
+    var flightRecorder: FlightRecorder? { lock.withLock { recorder } }
+
     private static let stamp: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm:ss.SSS"
         return formatter
     }()
@@ -1073,7 +1165,9 @@ final class AppRuntimeLog: @unchecked Sendable {
         generation += 1
         let now = generation
         let continuations = Array(subscribers.values)
+        let recorder = self.recorder
         lock.unlock()
+        recorder?.record(message)
         for continuation in continuations { continuation.yield(now) }
         #if DEBUG
             print("[companion] \(line)")
@@ -1081,7 +1175,16 @@ final class AppRuntimeLog: @unchecked Sendable {
     }
 
     /// Newest first, for the log sheet.
-    var recent: [String] { lock.withLock { lines.reversed() } }
+    ///
+    /// Prefers the durable file so the screen shows the history that spans launches — the ring
+    /// only ever held this process, which is the wrong window for "it stopped overnight".
+    var recent: [String] {
+        if let recorder = flightRecorder {
+            let durable = recorder.recentLines()
+            if !durable.isEmpty { return durable }
+        }
+        return lock.withLock { lines.reversed() }
+    }
 
     /// One element per write, conflated to the newest.
     ///

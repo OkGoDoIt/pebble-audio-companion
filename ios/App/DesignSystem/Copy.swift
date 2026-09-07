@@ -1053,6 +1053,9 @@ enum Copy {
             static let segmentContinuedDetail = "reattached after a blip"
             static let segmentStopped = "stopped"
             static let supportReport = "Support Report"
+            /// The whole history, as a file. Named for what the person gets, not for the
+            /// mechanism: they are sending someone a log, not exporting a flight recorder.
+            static let shareLogFile = "Share Full Log File"
             static let detailedLogs = "Detailed Logs"
             /// Before anything has happened there is nothing to show — say so, calmly.
             static let noLogs = "Nothing logged yet."

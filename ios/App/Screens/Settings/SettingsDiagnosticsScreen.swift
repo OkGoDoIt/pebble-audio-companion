@@ -138,6 +138,23 @@ struct SettingsDiagnosticsScreen: View {
                 }
                 .buttonStyle(.plain)
 
+                // The support report is a snapshot of NOW; this is the history. Sharing it as a
+                // file rather than text is deliberate: it spans days and runs to megabytes, which
+                // is precisely why it is worth having and exactly what a share sheet cannot carry
+                // as a string.
+                if let log = AppRuntimeLog.shared.flightRecorder?.exportFile() {
+                    ShareLink(item: log) {
+                        HStack {
+                            Text(Copy.Settings.Diagnostics.shareLogFile)
+                                .font(AppFont.callout)
+                                .foregroundStyle(Tokens.tint)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 // Navigation, not an action: label colour + chevron, like every other pushed
                 // row in Settings. Tint text is reserved for things that DO something.
                 SettingsPushRow(title: Copy.Settings.Diagnostics.detailedLogs) {
