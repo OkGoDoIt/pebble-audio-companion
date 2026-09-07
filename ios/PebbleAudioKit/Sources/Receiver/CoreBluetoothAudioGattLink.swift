@@ -573,6 +573,48 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         connectionState.value = .connecting
         log("-> Connecting (\(reason))\(automatic ? " [automatic]" : "")")
         if !automatic { armWatchdog(connectGeneration) }
+        // ALWAYS, automatic or not. See `armConnectingFloor`.
+        armConnectingFloor(connectGeneration)
+    }
+
+    /// A floor under `.connecting`, so it can never be a terminal state.
+    ///
+    /// An automatic attempt deliberately gets no give-up watchdog — tearing down the pending
+    /// connect would destroy the only recovery that survives suspension. But "no watchdog" had
+    /// become "no timer of any kind", and `.connecting` is reached automatically by three of the
+    /// four re-dial paths (an unexpected drop, a scheduled retry, `willRestoreState`). None of
+    /// them goes through `failAndReset`, so `scheduleReconnect` never runs; the session treats
+    /// `.connecting` by tearing its per-connection children down and waiting; and `connect()`
+    /// returns early because the state is not `.disconnected`. The result was a link sitting in
+    /// `.connecting` with nothing scheduled anywhere — not even a foreground visit could break it
+    /// out — which is the same permanent park this file has already been fixed for twice.
+    ///
+    /// This is a FLOOR, not a deadline: it never fails the link and never counts an attempt. If
+    /// we are still on the same attempt when it fires, it re-issues the connect (Core Bluetooth
+    /// coalesces a duplicate `connect` for a peripheral it is already pending on, so this is
+    /// cheap) and re-arms. The interval is long enough to be invisible on a healthy connect and
+    /// short enough that a wedged one costs minutes, not a day.
+    private func armConnectingFloor(_ generation: Int) {
+        delegateQueue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(Self.connectingFloorMs))
+        ) { [weak self] in
+            guard let self,
+                generation == self.connectGeneration,
+                self.connectionState.value == .connecting,
+                self.wantConnected,
+                let manager = self.centralManager
+            else { return }
+            guard manager.state == .poweredOn else {
+                // Still waiting for the radio; `didUpdateState` owns that transition. Keep the
+                // floor alive so we do not leave `.connecting` uncovered.
+                self.armConnectingFloor(generation)
+                return
+            }
+            self.log("still connecting after \(Self.connectingFloorMs)ms; re-driving")
+            self.hasPendingConnect = false
+            self.connectWhenPoweredOn(manager)
+            self.armConnectingFloor(generation)
+        }
     }
 
     /// Reached the fully-subscribed, usable link. Cancels the watchdog and resets retry counters.
@@ -879,6 +921,11 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// `scheduleStaleCacheRetry` — long enough not to spin the radio on handles that cannot work,
     /// short enough that a firmware flash does not cost the user their whole day.
     private static let staleCacheRetryDelayMs: Int64 = 5 * 60_000
+
+    /// How long `.connecting` may go without progress before the floor re-drives it. Comfortably
+    /// longer than a healthy connect + discovery + subscribe (a few seconds), so it never fires in
+    /// normal use; short enough that a wedged automatic attempt costs a minute rather than a day.
+    private static let connectingFloorMs: Int64 = 90_000
 }
 
 extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {

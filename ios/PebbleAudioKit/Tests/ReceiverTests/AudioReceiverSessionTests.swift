@@ -304,6 +304,40 @@ import WireProtocol
         #expect(cp.persistedSampleIndex == 10 * 320)
     }
 
+    // A failed disk write used to park the receiver forever, with the UI still saying "Recording".
+    //
+    // Every durable write in SegmentStore throws — the file append, the fsync, the atomic sidecar
+    // write — and `SegmentStore.appendFrames` also throws deliberately for `noOpenSegment` and
+    // `streamMismatch`. That error propagated to `consumeData`'s catch, which completed the
+    // connection abort. `runConnection` then returned with `handshakeError == nil`, so it drained
+    // all six per-connection tasks and scheduled NOTHING: Core Bluetooth still called the link
+    // `.ready`, and `StateSubject` does not re-emit an equal value, so the session's `for await`
+    // waited on an element that could never arrive. Zero tasks, zero timers, forever, from one
+    // bad write.
+    @Test func aSinkFailureRebuildsTheLinkInsteadOfParkingTheSession() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        #expect(fx.session.state.value == .streaming(streamId: streamId))
+
+        let resyncsBefore = fx.link.resyncCount
+        fx.sink.failAppends = true
+        fx.link.pushData(data(0, 8))
+        await fx.settle()
+
+        // The session must not still be claiming it is recording into a store that just refused.
+        #expect(fx.session.state.value != .streaming(streamId: streamId))
+
+        // And the recovery has to actually run: back off, then ask the link for a fresh session.
+        await fx.clock.advance(by: 60_000)
+        await fx.settle()
+        #expect(
+            fx.link.resyncCount > resyncsBefore,
+            "a sink failure must rebuild the link, not leave it parked at .ready with no tasks"
+        )
+    }
+
     @Test func pendingConsentThenOk() async {
         let fx = await startSession()
         await fx.setLink(.ready)

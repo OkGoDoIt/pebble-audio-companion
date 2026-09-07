@@ -758,11 +758,12 @@ public actor AudioReceiverSession {
         let abort = OneShot<Bool>()
         connectionAbort = abort
         var handshakeError: Error?
+        var aborted: Bool?
         do {
             try await connectionHandshake(abort: abort)
             // Mirror Kotlin's coroutineScope: the connection stays alive (children running)
             // until the link state changes (we get cancelled) or a child aborts it.
-            _ = await abort.value()
+            aborted = await abort.value()
         } catch {
             handshakeError = error
         }
@@ -771,7 +772,45 @@ public actor AudioReceiverSession {
         await drainConnectionTasks()
         connectionAbort = nil
         await onLinkDown()
-        if let handshakeError { await recoverFromFailedHandshake(handshakeError) }
+        // BOTH exits recover, not just one.
+        //
+        // `runConnection` has two ways to end badly and only the handshake throw used to be
+        // handled. When a CHILD aborted the connection instead — which is what every sink failure
+        // does, and `SegmentStore` throws on any disk error as well as deliberately on
+        // `noOpenSegment`/`streamMismatch` — `abort.value()` returned normally, `handshakeError`
+        // was nil, and this function drained all six child tasks and returned having scheduled
+        // nothing at all. Core Bluetooth still called the link `.ready`, and `StateSubject` does
+        // not re-emit an equal value, so `run()`'s `for await` waited on an element that could
+        // never arrive: zero tasks, zero timers, forever, with the UI still saying "Recording".
+        // One failed write was enough.
+        if let handshakeError {
+            await recoverFromFailedHandshake(handshakeError)
+        } else if aborted == true {
+            await recoverFromFailedHandshake(
+                SessionError.connectionAborted(abortReason ?? "a connection child failed")
+            )
+        }
+        abortReason = nil
+    }
+
+    /// Why the current connection is being aborted. Read once by `runConnection` so the recovery
+    /// and the log line can name the real cause instead of "a child failed".
+    private var abortReason: String?
+
+    private func noteConnectionAbort(_ label: String, _ error: Error) {
+        let reason = "\(label): \(error)"
+        log("aborting the connection — \(reason)")
+        if abortReason == nil { abortReason = reason }
+    }
+
+    enum SessionError: Error, CustomStringConvertible {
+        case connectionAborted(String)
+
+        var description: String {
+            switch self {
+            case .connectionAborted(let reason): return reason
+            }
+        }
     }
 
     /// A handshake that threw used to be the quiet end of the session.
@@ -950,7 +989,11 @@ public actor AudioReceiverSession {
                     do {
                         try await handleControl(control, abort: abort)
                     } catch {
-                        abort.complete(true) // sink failure fails the connection (Kotlin scope)
+                        // Sink failure fails the connection (Kotlin scope). Recorded, not
+                        // swallowed: this catch is where a disk error on the receive path ends
+                        // up, and it used to leave no trace anywhere.
+                        noteConnectionAbort("control handling failed", error)
+                        abort.complete(true)
                         return
                     }
                 }
@@ -1076,7 +1119,8 @@ public actor AudioReceiverSession {
                     do {
                         try await handleData(data)
                     } catch {
-                        abort.complete(true) // sink failure fails the connection (Kotlin scope)
+                        noteConnectionAbort("storing audio failed", error)
+                        abort.complete(true)
                         return
                     }
                 }

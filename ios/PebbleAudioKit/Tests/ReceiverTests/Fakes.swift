@@ -142,6 +142,18 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
     var events: [SinkEvent] { lock.withLock { _events } }
     var isOpen: Bool { lock.withLock { _open } }
 
+    /// Makes the sink fail, so the "a disk write threw" path is reachable from a test.
+    ///
+    /// `SegmentStore` throws from every durable write — the file append, the fsync, the atomic
+    /// sidecar write, opening the log — as well as deliberately for `noOpenSegment` and
+    /// `streamMismatch`. Without a fake that can throw, none of the recovery below it had a test.
+    struct InducedFailure: Error {}
+    private var _failAppends = false
+    var failAppends: Bool {
+        get { lock.withLock { _failAppends } }
+        set { lock.withLock { _failAppends = newValue } }
+    }
+
     func openSegment(start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?) async throws {
         scheduler.noteEvent()
         lock.withLock {
@@ -152,6 +164,7 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
 
     func appendFrames(streamId: UInt32, frames: [SegmentFrame]) async throws -> [SegmentFrame] {
         scheduler.noteEvent()
+        if failAppends { throw InducedFailure() }
         lock.withLock { _events.append(.append(streamId: streamId, frames: frames)) }
         return frames
     }
