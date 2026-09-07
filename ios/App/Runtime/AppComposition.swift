@@ -127,7 +127,50 @@ final class AppComposition {
             // still launch and say something calm rather than crash on the splash screen. The
             // mock holders stay in place; the failure goes to the diagnostics log.
             AppRuntimeLog.shared.record("composition failed: \(error)")
+            scheduleBootstrapRetry(settings: settings, nativeSurfaces: nativeSurfaces)
             return nil
+        }
+    }
+
+    /// A failed graph must never become permanent.
+    ///
+    /// EVERYTHING that keeps the receiver alive lives on the success path: the lifecycle
+    /// observers, the BGTask registration, the cross-process listeners, and — worst — the
+    /// `CoreBluetoothAudioGattLink` itself, which is constructed inside `init` and is what calls
+    /// `prepareForRestoration()`. So a throw here left the process with no central manager at all,
+    /// meaning no state restoration and no radio for its entire life, with nothing anywhere that
+    /// would try again: `didBecomeActive` had no observer to fire, and `handleRestorationRelaunch`
+    /// reaches `AppComposition.shared?` and silently no-ops on nil. The app looked launched and
+    /// recorded nothing, forever, until it was killed and reopened.
+    ///
+    /// The most likely cause is also the most recoverable one: a background relaunch before the
+    /// device's first unlock, where the database file is not readable yet. So retry on the two
+    /// signals that say the reason may have passed — protected data becoming available, and the
+    /// user bringing the app forward. Registered on the notification centre, which needs no graph.
+    private static var bootstrapRetryTokens: [NSObjectProtocol] = []
+
+    private static func scheduleBootstrapRetry(
+        settings: AppSettings,
+        nativeSurfaces: NativeSurfaceCoordinator
+    ) {
+        guard bootstrapRetryTokens.isEmpty else { return }
+        let center = NotificationCenter.default
+        for name in [
+            UIApplication.protectedDataDidBecomeAvailableNotification,
+            UIApplication.didBecomeActiveNotification,
+        ] {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    guard shared == nil else { return }
+                    AppRuntimeLog.shared.record("retrying composition after \(name.rawValue)")
+                    _ = bootstrap(settings: settings, nativeSurfaces: nativeSurfaces)
+                    if shared != nil {
+                        bootstrapRetryTokens.forEach(center.removeObserver)
+                        bootstrapRetryTokens = []
+                    }
+                }
+            }
+            bootstrapRetryTokens.append(token)
         }
     }
 
