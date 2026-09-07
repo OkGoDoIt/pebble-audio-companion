@@ -1243,8 +1243,20 @@ public actor AudioReceiverSession {
                 ctx.contiguousNext = first
                 ctx.contiguousSampleIndex = message.firstSampleIndex
             } else {
-                // Silent discontinuity: synthesize a gap record. Contiguity does NOT advance;
-                // checkpoints keep reporting the last sequence before the hole.
+                // Silent discontinuity: synthesize a gap record, then account for it.
+                //
+                // Contiguity used to stop here permanently, and the consequence was on the WATCH.
+                // `highestContiguousSequencePersisted` is the watch's only instruction to free
+                // spool (`audio_companion_spool_trim_through`), so a frozen watermark means the
+                // spool never trims again. It saturates, starts evicting its head, and emits an
+                // overflow gap for every newly captured frame — the ratcheting-overflow pattern
+                // `runCheckpointTicker` documents, except with no way out for the rest of the
+                // stream. One dropped notification cost every recording after it.
+                //
+                // The gap record is DURABLE and permanent: those frames are known-lost and will
+                // never be re-sent, so `advanceAccountedPrefix()` can never step over them and
+                // there is nothing to wait for. Accounting for them is what the watch-reported
+                // branch above already does, for a hole that is no more recoverable than this one.
                 try await sink.recordGap(
                     streamId: ctx.streamId,
                     gap: GapRecord(
@@ -1254,6 +1266,8 @@ public actor AudioReceiverSession {
                         origin: .sequenceSkip
                     )
                 )
+                ctx.contiguousNext = first
+                ctx.contiguousSampleIndex = message.firstSampleIndex
             }
         }
 
@@ -1399,6 +1413,12 @@ public actor AudioReceiverSession {
         // Everything observed belonged to the connection that just ended. Carrying it across
         // would let a reconnect inherit the old link's proof of life.
         streamEvidence.value = .none
+        // Same reasoning, and it was missing: orphan activity is evidence too. `heardOrphanAudio`
+        // treats anything within `orphanDataMaxAgeMs` (40 s) as current, so a dead connection's
+        // orphans stayed "recent" well into the NEW one and could drive
+        // `checkForAStreamWeShouldHave` into another resync — a reconnect loop feeding itself.
+        lastOrphanDataAtMs = 0
+        orphanedFrameCount.value = 0
     }
 
     private enum ReceiverSessionError: Error {

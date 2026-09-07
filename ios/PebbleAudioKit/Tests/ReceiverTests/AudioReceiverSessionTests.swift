@@ -368,7 +368,19 @@ import WireProtocol
         #expect(fx.sink.events.isEmpty)
     }
 
-    @Test func skippedSequencesSynthesizeGap_andCheckpointStaysContiguous() async {
+    // A silent discontinuity is DURABLY accounted, so the checkpoint moves past it.
+    //
+    // Contiguity used to freeze here for the rest of the stream, and the damage was on the watch:
+    // `highestContiguousSequencePersisted` is its only instruction to free spool, so a frozen
+    // watermark meant the spool never trimmed again. It saturated, began evicting its head, and
+    // emitted an overflow gap for every newly captured frame. One dropped notification cost every
+    // recording after it.
+    //
+    // The checkpoint is still CONTIGUOUS rather than highest-seen — frames past an UNaccounted
+    // hole still wait (see `futureExplicitGapIsAccountedWhenEarlierFramesArriveLater`). The
+    // difference is that a `.sequenceSkip` gap record is permanent: those frames are known-lost
+    // and will never be re-sent, so there is nothing left to wait for.
+    @Test func aSilentDiscontinuityIsAccountedSoTheWatchCanKeepTrimming() async {
         let fx = await startSession()
         await authorize(fx)
         fx.link.pushData(streamStart())
@@ -386,15 +398,19 @@ import WireProtocol
         #expect(gap.firstMissingSampleIndex == 8 * 320)
         #expect(gap.origin == .sequenceSkip)
 
-        // Frames past the hole are persisted (durability first) but do not advance the checkpoint.
+        // Frames past the hole are persisted (durability first) AND the watermark advances over
+        // the recorded gap, so the watch is told it may free everything up to here.
         #expect(fx.sink.appends.count == 2)
         await fx.clock.advance(by: 600)
         fx.link.pushData(data(16, 1))
         await fx.settle()
         #expect(fx.checkpoints().count == 1)
         let cp = fx.checkpoints()[0]
-        #expect(cp.highestContiguousSequencePersisted == 7, "checkpoint must be contiguous, not highest-seen")
-        #expect(cp.persistedSampleIndex == 8 * 320)
+        #expect(
+            cp.highestContiguousSequencePersisted == 16,
+            "a durable sequence-skip gap must not freeze the watch's spool trim point"
+        )
+        #expect(cp.persistedSampleIndex == 17 * 320)
     }
 
     @Test func explicitGapPassThrough_advancesContiguity() async {

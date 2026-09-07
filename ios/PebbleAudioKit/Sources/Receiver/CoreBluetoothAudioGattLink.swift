@@ -911,6 +911,15 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         dataCharacteristic = nil
         pendingNotifyCharacteristics.removeAll()
         failPendingOperations(reason)
+        // The channels outlive the connection; their CONTENTS must not. A new GATT session takes a
+        // fresh stream over the same buffer, so anything left here is read by the next connection
+        // BEFORE its own STREAM_START — and then thrown away as orphan data, because the stream id
+        // no longer matches. That is real audio loss the watch has already been told it may trim,
+        // and the orphan counters it bumps can push the session into a needless resync. There is a
+        // backlog to lose exactly when it hurts most: a resync during a catch-up burst, when every
+        // batch is doing disk IO and the consumer is at its slowest.
+        controlChannel.drain()
+        dataChannel.drain()
     }
 
     /// Domain and CODE, then the localized string.

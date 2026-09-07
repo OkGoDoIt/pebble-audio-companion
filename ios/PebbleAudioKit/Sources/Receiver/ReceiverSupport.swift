@@ -233,6 +233,21 @@ public final class ByteChannel: @unchecked Sendable {
     public func stream() -> AsyncStream<[UInt8]> {
         AsyncStream { [self] in await receive() }
     }
+
+    /// Throws away everything still buffered.
+    ///
+    /// These channels live for the whole process, and a new GATT session takes a fresh `stream()`
+    /// over the SAME buffer — so without this the next connection reads the dead one's messages
+    /// first, ahead of its own STREAM_START. Every one of them is then dropped as orphan data (the
+    /// stream id no longer matches), which is real audio loss the watch has already been told it
+    /// may trim; the orphan counters it bumps can drive a spurious resync; and a replayed
+    /// AUTH_RESULT or ACK could satisfy the new connection's in-flight token.
+    ///
+    /// There is a backlog to lose precisely when it hurts most: a resync during a catch-up burst,
+    /// where every batch is doing disk IO and the consumer is at its slowest.
+    public func drain() {
+        lock.withLock { buffer.removeAll(keepingCapacity: true) }
+    }
 }
 
 /// `withTimeoutOrNull` port: races `operation` against a clock sleep; nil on timeout. The loser
