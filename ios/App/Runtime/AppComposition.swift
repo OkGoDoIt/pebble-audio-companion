@@ -70,6 +70,9 @@ final class AppComposition {
     /// Held so foreground entry can drop it: in the foreground nothing can suspend us, and a
     /// leaked background task is a 0x8badf00d kill.
     let backgroundActivity: BackgroundActivityAssertion
+    /// Held so the lifecycle observers can tell it whether anyone is watching — that decides
+    /// whether a connect attempt gets the give-up watchdog.
+    let gattLink: CoreBluetoothAudioGattLink
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
@@ -102,6 +105,7 @@ final class AppComposition {
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
     private var foregroundReleaseToken: NSObjectProtocol?
+    private var backgroundMarkToken: NSObjectProtocol?
 
     // MARK: - Bootstrap
 
@@ -575,6 +579,7 @@ final class AppComposition {
         // relaunch found no manager, got no restored peripheral, and the whole restoration path
         // never ran once in production.
         let gattLink = CoreBluetoothAudioGattLink()
+        self.gattLink = gattLink
         // Every Core Bluetooth transition now also lands in Detailed Logs. Without this the one
         // screen a person can read on the phone said "Nothing logged yet" during the exact
         // failure it exists for, because the adapter only ever wrote to NSLog.
@@ -873,9 +878,21 @@ final class AppComposition {
         // a leaked background task is a 0x8badf00d kill. Dropped on activation, and left to the
         // inbound-notification path to take again once we are backgrounded.
         let activity = self.backgroundActivity
+        let link = self.gattLink
         foregroundReleaseToken = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
-        ) { _ in activity.release() }
+        ) { _ in
+            activity.release()
+            // The link arms its give-up watchdog only when someone is watching — see
+            // `CoreBluetoothAudioGattLink.setForeground`.
+            link.setForeground(true)
+        }
+        backgroundMarkToken = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil
+        ) { _ in link.setForeground(false) }
+        // The launch itself: `.background` here means iOS started us headless, and the link must
+        // already know that before its first connect attempt.
+        gattLink.setForeground(UIApplication.shared.applicationState != .background)
     }
 
     /// A line a minute, for as long as the process is alive.

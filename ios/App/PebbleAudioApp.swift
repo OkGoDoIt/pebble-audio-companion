@@ -11,9 +11,28 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         MainActor.assumeIsolated {
             LossNotificationRouter.shared.prepare()
-            // Core Bluetooth restored us in the background: receive-only, applied before the
-            // receiver starts.
-            if options?[.bluetoothCentrals] != nil {
+            // Did iOS start us without a user? Receive-only is applied before the receiver starts.
+            //
+            // `.bluetoothCentrals` is the documented signal and still works, but it is deprecated
+            // as of iOS 26 (the compiler says so, and this app targets 26) — Apple's replacement
+            // guidance is to reinstantiate the central from its restore identifier at launch and
+            // let `willRestoreState` speak for itself, which is what this app already does. So the
+            // launch option is now one of THREE signals rather than the only one:
+            //
+            //   1. the launch option, while it still exists;
+            //   2. the application state, which covers every other headless start — a
+            //      BGProcessing window, a background URLSession completion, a widget or Siri
+            //      invocation — none of which set the option at all;
+            //   3. `willRestoreState` itself, which reports through the link (see
+            //      `AppComposition.handleRestorationRelaunch`).
+            //
+            // Getting this wrong is not cosmetic: the flag is what keeps a background wake from
+            // loading a transcription model and running the whole foreground pipeline on the
+            // tightest memory budget iOS ever gives us.
+            let launchedHeadless =
+                options?[.bluetoothCentrals] != nil
+                || application.applicationState == .background
+            if launchedHeadless {
                 AppComposition.shared?.handleRestorationRelaunch()
             }
         }

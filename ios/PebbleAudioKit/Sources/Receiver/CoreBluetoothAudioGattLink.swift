@@ -108,6 +108,21 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// Monotonic id for the scheduled-retry timer, cancelled the same way the watchdog is.
     private var retryGeneration = 0
 
+    /// See `setForeground`. Defaults to false: a link built during launch has nobody watching it
+    /// yet, and the safe default is the one that never tears down a pending connect.
+    private var isForeground = false
+
+    /// True between issuing a `connect()`/scan and Core Bluetooth answering it.
+    ///
+    /// The guard that keeps `centralManagerDidUpdateState` from stepping on state restoration.
+    /// `willRestoreState` runs first on a relaunch and issues the restored connect; `.poweredOn`
+    /// then arrived and re-entered `.connecting` for a SECOND attempt — re-arming the give-up
+    /// watchdog and potentially dialling a different peripheral, discarding the restored one. The
+    /// state alone could not tell the two cases apart, because a launch-time `connect()` before
+    /// the radio is up also sits at `.connecting` with nothing outstanding, and that one really
+    /// does need `.poweredOn` to drive it.
+    private var hasPendingConnect = false
+
     /// Current backoff delay; doubles per failure, reset on Ready and on any explicit user action.
     private var retryDelayMs: Int64 = CoreBluetoothAudioGattLink.retryBaseDelayMs
 
@@ -133,11 +148,39 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     ///
     /// `wantConnected` stays false, so this cannot start dialling on its own and cannot prompt the
     /// watch (plan 4.2): only `connect()`/`resync()` express intent.
+    ///
+    /// Synchronous, as belt-and-braces rather than as a bug fix. The `async` this replaces was
+    /// almost certainly fine — `delegateQueue` is a private serial queue with nothing else on it
+    /// at launch, so the block ran microseconds later, and Core Bluetooth does not push
+    /// `willRestoreState` at a single missable instant: it delivers it as the first delegate
+    /// callback to whichever manager is instantiated with the matching restore identifier, with no
+    /// documented deadline tied to `didFinishLaunchingWithOptions` returning. But this method's
+    /// whole reason to exist is an ordering guarantee, and `sync` is the version that states the
+    /// guarantee instead of relying on a queue happening to be idle. Safe here because it is
+    /// called once, from the composition root, before any delegate callback can exist.
     public func prepareForRestoration() {
-        onDelegateQueue { [self] in
+        delegateQueue.sync { [self] in
             guard centralManager == nil else { return }
             _ = makeCentralManager()
             log("prepared central for state restoration")
+        }
+    }
+
+    /// Whether a person is currently looking at the app.
+    ///
+    /// Drives ONE decision: whether a connect attempt gets the give-up watchdog. That watchdog
+    /// exists so a user staring at a spinner is not left there forever — it tears a stalled
+    /// attempt down and, after three, surfaces a failure. In the background it is actively
+    /// harmful: the thing it tears down is the outstanding pending connect, which is the ONLY
+    /// recovery mechanism that survives suspension (Core Bluetooth resolves it whenever the watch
+    /// returns, waking us through `bluetooth-central`). A relaunched-in-background app that armed
+    /// it therefore gave up on the one thing that was going to work, three stalls later, with
+    /// nobody there to see the failure it surfaced.
+    public func setForeground(_ value: Bool) {
+        onDelegateQueue { [self] in
+            guard isForeground != value else { return }
+            isForeground = value
+            log("foreground=\(value)")
         }
     }
 
@@ -229,6 +272,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             log("disconnect() requested")
             wantConnected = false
             awaitingUserRecovery = false
+            hasPendingConnect = false
             connectGeneration += 1 // invalidate any pending watchdog
             cancelScheduledRetry()
             guard let manager = centralManager else { return }
@@ -280,6 +324,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
                 // Not an intentional (user) disconnect: didDisconnect re-issues the connect
                 // because wantConnected stays true, so the link rebuilds itself.
                 intentionalDisconnect = false
+                hasPendingConnect = false
                 enterConnecting("resync (cancel + reconnect)")
                 manager.cancelPeripheralConnection(current)
             } else if manager.state == .poweredOn {
@@ -452,6 +497,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             connectPeripheral(manager, namedPebble)
         } else {
             log("connectWhenPoweredOn: no known peripheral; scanning")
+            hasPendingConnect = true
             manager.scanForPeripherals(
                 withServices: [
                     AudioCompanionGattIds.serviceUUID,
@@ -488,6 +534,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         peripheral = target
         target.delegate = self
         rememberPeripheral(target)
+        hasPendingConnect = true
         manager.connect(target, options: nil)
     }
 
@@ -513,7 +560,13 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     ///
     /// `automatic` marks an attempt nobody is watching (drop recovery, a scheduled retry). Those
     /// deliberately run WITHOUT the give-up watchdog — see `armWatchdog`.
-    private func enterConnecting(_ reason: String, automatic: Bool = false) {
+    private func enterConnecting(_ reason: String, automatic requested: Bool = false) {
+        // Backgrounded attempts are ALWAYS automatic, whatever the caller asked for. The give-up
+        // watchdog exists to spare a user an endless spinner; with nobody looking there is no
+        // spinner, and the only thing it can accomplish is tearing down the pending connect that
+        // is the sole recovery surviving suspension. That is how a background relaunch used to
+        // give up for good, three stalls after it started, with no one there to see it.
+        let automatic = requested || !isForeground
         lastFailure.value = nil
         connectGeneration += 1
         automaticConnect = automatic
@@ -636,6 +689,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             manager.cancelPeripheralConnection(current)
         }
         peripheral = nil
+        hasPendingConnect = false
         resetCharacteristics()
         if connectAttempts >= Self.connectMaxAttempts {
             log("giving up after \(connectAttempts) attempts")
@@ -657,6 +711,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
 
     private func failAndReset(_ failure: ConnectFailure) {
         connectGeneration += 1 // invalidate any pending watchdog
+        hasPendingConnect = false
         let message = failure.detail ?? "connection failed"
         failPendingOperations(message)
         centralManager?.stopScan()
@@ -838,13 +893,22 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         log("centralManagerDidUpdateState -> \(central.state.rawValue), wantConnected=\(wantConnected)")
         switch central.state {
         case .poweredOn:
-            if wantConnected && connectionState.value != .ready {
+            // `hasPendingConnect` is the guard that protects state restoration. On a relaunch
+            // `willRestoreState` runs FIRST and issues the restored connect; this callback then
+            // arrived and started a second attempt over the top of it, re-arming the give-up
+            // watchdog and possibly dialling a different peripheral than the one iOS handed back.
+            // A launch-time `connect()` that ran before the radio was up also sits at
+            // `.connecting`, and that one genuinely needs driving here — the pending flag is what
+            // tells the two apart.
+            if wantConnected && connectionState.value != .ready && !hasPendingConnect {
                 // A Bluetooth power-cycle is exactly the recovery signal a LinkRejected failure
                 // needs: CoreBluetooth re-discovers, so a stale-cache handshake now succeeds.
                 awaitingUserRecovery = false
                 connectAttempts = 0
                 enterConnecting("Bluetooth powered on")
                 connectWhenPoweredOn(central)
+            } else if hasPendingConnect {
+                log("Bluetooth powered on; leaving the outstanding connect alone")
             }
         // Surface an actionable reason instead of hanging in "Connecting". wantConnected is
         // kept set, so the link reconnects automatically once Bluetooth comes back.
@@ -893,6 +957,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         // A restoration relaunch is a background wake with nobody watching, so the connect is left
         // pending rather than watchdogged into a dead end.
         enterConnecting("restore", automatic: true)
+        hasPendingConnect = true
         central.connect(restored, options: nil)
     }
     #endif
@@ -912,10 +977,12 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         // yet, which is the usual case on the very first pairing — exactly when Settings most
         // needs to name the watch it just found.
         publishName(advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        hasPendingConnect = true
         central.connect(peripheral, options: nil)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        hasPendingConnect = false
         log("didConnectPeripheral \(peripheral.name ?? "?"); discovering services")
         // A successful connect clears any lingering watchdog-cancel flag (a cancelled *pending*
         // connect fires no disconnect callback to clear it), so a later real drop still
@@ -933,6 +1000,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
+        hasPendingConnect = false
         log("didFailToConnectPeripheral error=\(describeError(error))")
         failAndReset(classifyFailure(error, fallback: .watchUnreachable))
     }
@@ -942,6 +1010,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        hasPendingConnect = false
         log("didDisconnectPeripheral intentional=\(intentionalDisconnect) wantConnected=\(wantConnected) error=\(describeError(error))")
         resetCharacteristics()
         if intentionalDisconnect || !wantConnected {
@@ -976,6 +1045,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         // A backgrounded app then sat Disconnected with nothing left to try, which is how a drop
         // at 14:12 was still a drop at 17:58. The pending connect costs nothing while it waits.
         enterConnecting("unexpected drop, reconnecting", automatic: true)
+        hasPendingConnect = true
         central.connect(peripheral, options: nil)
     }
 }
