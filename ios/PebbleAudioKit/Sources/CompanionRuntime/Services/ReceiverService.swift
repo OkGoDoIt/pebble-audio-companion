@@ -221,6 +221,18 @@ public actor ReceiverService {
         sessionTask = session.start()
     }
 
+    /// Brings the radio up without starting the session.
+    ///
+    /// Split out of `start()` for launch ordering: the GATT dance (connect, discover services and
+    /// characteristics, subscribe, authorize) is seconds of round trips that depend on nothing on
+    /// disk, while the session cannot start until `SegmentStore.recover()` has run. Dialling first
+    /// overlaps the two. `connect()` is idempotent and never prompts the watch, so the later
+    /// `start()` finds the link already up or in progress and leaves it alone.
+    public nonisolated func dialLink() {
+        residency?.setWanted(intentBox.value == .active)
+        link.connect()
+    }
+
     /// Residency follows `.active` only. A paused or off watch is not streaming, so its liveness
     /// watchdog is not armed and there is nothing to stay awake for — holding an audio session
     /// through a pause would just spend battery.

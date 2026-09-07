@@ -54,7 +54,10 @@ public actor StartupSequencer {
     private let steps: StartupSteps
     private let onStep: @Sendable (StartupStep) -> Void
     private let log: RuntimeLog
+    /// The store-critical half has run: the receiver may open segments.
     private var recovered = false
+    /// The catch-up half has run.
+    private var remainderDone = false
 
     public init(
         steps: StartupSteps,
@@ -71,11 +74,28 @@ public actor StartupSequencer {
     /// Idempotent: the durable recovery runs once; repeat calls just refresh diagnostics, which
     /// is what makes it safe to call from every entry point (launch, foreground, BGProcessing).
     public func recoverIfNeeded() async {
-        if recovered {
-            onStep(.refreshDiagnostics)
-            await steps.refreshDiagnostics()
-            return
-        }
+        await recoverBeforeReceiving()
+        await recoverRemainder()
+    }
+
+    /// The ONLY part of recovery the receiver has to wait for, split out so it is the only part
+    /// that can delay the microphone.
+    ///
+    /// `SegmentStore.recover()` carries `precondition(current == nil)` — it must run before any
+    /// segment is opened — so the receiver genuinely cannot start until it and the legacy import
+    /// that feeds it are done. Nothing else in the order has that constraint: the transcription
+    /// queue, the retention sweep and the closed-segment enqueue are all catch-up work on audio
+    /// that is already durable.
+    ///
+    /// That distinction is load-bearing on a background launch. A Core Bluetooth relaunch gets
+    /// roughly ten seconds of runtime, and the whole order over a real container is far slower
+    /// than that (`recover()` alone parses and rewrites every sidecar on disk; the recovery test
+    /// over the user's own container takes ~16 s on a Mac). Running all of it before starting the
+    /// receiver meant a background wake could expire with the link restored, the watch streaming,
+    /// and nobody consuming — and because each wake is a fresh process, the next one started the
+    /// same sweep from the beginning and got no further.
+    public func recoverBeforeReceiving() async {
+        guard !recovered else { return }
         recovered = true
 
         onStep(.legacyImport)
@@ -87,6 +107,17 @@ public actor StartupSequencer {
 
         onStep(.storeRecover)
         do { try await steps.recoverStore() } catch { log.failure("store recover", error) }
+    }
+
+    /// Everything the receiver does not have to wait for. Safe to call repeatedly; the caller
+    /// runs it after the receiver is up.
+    public func recoverRemainder() async {
+        guard !remainderDone else {
+            onStep(.refreshDiagnostics)
+            await steps.refreshDiagnostics()
+            return
+        }
+        remainderDone = true
 
         onStep(.queueRecover)
         do { try await steps.recoverQueue() } catch { log.failure("queue recover", error) }

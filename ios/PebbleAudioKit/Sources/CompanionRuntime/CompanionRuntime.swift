@@ -168,17 +168,29 @@ public actor CompanionRuntime {
     /// Startup: run the recovery order (which runs the legacy import first), start the receiver
     /// when the user's intent says to, then start the processing loop.
     public func start() async {
-        // FIRST, before anything slow. Recovery on a real migrated container takes tens of
-        // seconds, and until this file exists every widget on the Home Screen shows its "no data
-        // yet" state — a fresh install therefore looked broken for the whole of that window, and
-        // an install whose recovery never finished looked broken forever. It is rewritten at the
-        // end of `start()` with the real receiver state; this first one only has to be honest.
+        // THE VERY FIRST THING, ahead of every disk read. Bringing the radio up is seconds of
+        // round trips — connect, discover, subscribe — and none of it needs the database, the
+        // store or the recovery sweep. Dialling here overlaps that latency with the disk work
+        // below instead of queueing behind it, which on a background launch is the difference
+        // between a link that is ready when the wake budget runs out and one that never started.
+        // It cannot prompt the watch: only an explicit enable request does that (plan 4.2).
+        if environment.settings.captureIntent != .off {
+            environment.receiver.dialLink()
+        }
+
+        // Recovery on a real migrated container takes tens of seconds, and until this file exists
+        // every widget on the Home Screen shows its "no data yet" state — a fresh install
+        // therefore looked broken for the whole of that window, and an install whose recovery
+        // never finished looked broken forever. It is rewritten at the end of `start()` with the
+        // real receiver state; this first one only has to be honest.
         await refreshSnapshot(.manual)
 
-        await environment.startup.recoverIfNeeded()
-        // The startup order already ran the identical sweep (`StartupStep.retentionEnforce`), so
-        // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
-        await retention.noteSweptElsewhere()
+        // Only the store-critical half. `SegmentStore.recover()` must run before any segment
+        // opens, so the receiver genuinely waits for it — but nothing else in the order has that
+        // constraint, and making the microphone wait for the retention sweep and the
+        // transcription catch-up is what let a ~10 s Core Bluetooth wake expire with a restored
+        // link and nobody consuming it.
+        await environment.startup.recoverBeforeReceiving()
 
         // Restoration relaunch: receive-only is applied BEFORE the receiver starts, so a
         // background wake never spins up transcription or AI.
@@ -196,6 +208,13 @@ public actor CompanionRuntime {
         if environment.settings.captureIntent != .off {
             await environment.receiver.start()
         }
+
+        // Everything past this point is catch-up on audio that is ALREADY durable, so it runs
+        // after the receive path is live rather than in front of it.
+        await environment.startup.recoverRemainder()
+        // The startup order already ran the identical sweep (`StartupStep.retentionEnforce`), so
+        // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
+        await retention.noteSweptElsewhere()
         await environment.transcription.startUploader()
         await environment.recap.start()
 

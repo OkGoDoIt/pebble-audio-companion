@@ -133,3 +133,82 @@ import Testing
         await fixture.runtime.stop()
     }
 }
+
+// The split that keeps a background wake from expiring before the microphone starts.
+//
+// A Core Bluetooth relaunch gets roughly ten seconds of runtime, and every one of them is a fresh
+// process that re-runs the whole once-per-process recovery order from the beginning. Over a real
+// container that order is far slower than the budget — the recovery test against the user's own
+// data takes ~16 s on a Mac — so putting all of it in front of `receiver.start()` meant the wake
+// could end with the link restored, the watch streaming, and nobody consuming a byte. The next
+// wake then started the same sweep over and got no further.
+//
+// Only `storeRecover` has a real ordering constraint (`SegmentStore.recover()` carries
+// `precondition(current == nil)`), plus the legacy import that feeds it. Everything after is
+// catch-up on audio that is already durable.
+@Suite struct StartupSequencerSplitTests {
+
+    @Test func onlyTheStoreCriticalStepsBlockTheReceiver() async throws {
+        let recorder = StepRecorder()
+        let sequencer = StartupSequencer(steps: StartupSteps(), onStep: { recorder.record($0) })
+
+        await sequencer.recoverBeforeReceiving()
+
+        #expect(
+            recorder.steps == [.legacyImport, .storeRecover],
+            "the receiver must not wait for the retention sweep or the transcription catch-up"
+        )
+    }
+
+    @Test func theTwoHalvesTogetherAreTheWholePlanOrder() async throws {
+        let recorder = StepRecorder()
+        let sequencer = StartupSequencer(steps: StartupSteps(), onStep: { recorder.record($0) })
+
+        await sequencer.recoverBeforeReceiving()
+        await sequencer.recoverRemainder()
+
+        #expect(
+            recorder.steps == [
+                .legacyImport,
+                .storeRecover,
+                .queueRecover,
+                .retentionEnforce,
+                .enqueueClosedSegments,
+                .refreshDiagnostics,
+            ]
+        )
+    }
+
+    @Test func eachHalfRunsOnce() async throws {
+        let calls = CallRecorder()
+        let sequencer = StartupSequencer(
+            steps: StartupSteps(
+                recoverStore: { calls.record("recover") },
+                recoverQueue: { calls.record("queue") },
+                refreshDiagnostics: { calls.record("diagnostics") }
+            )
+        )
+
+        await sequencer.recoverBeforeReceiving()
+        await sequencer.recoverRemainder()
+        // Foreground entry and BGProcessing both call the whole thing again.
+        await sequencer.recoverIfNeeded()
+
+        #expect(
+            calls.calls == ["recover", "queue", "diagnostics", "diagnostics"],
+            "the durable halves run once; repeat calls only refresh diagnostics"
+        )
+    }
+
+    @Test func recoverIfNeededStillRunsTheWholeOrderForCallersThatWantIt() async throws {
+        // Foreground entry and the BGProcessing window keep using the single call.
+        let recorder = StepRecorder()
+        let sequencer = StartupSequencer(steps: StartupSteps(), onStep: { recorder.record($0) })
+
+        await sequencer.recoverIfNeeded()
+
+        #expect(recorder.steps.first == .legacyImport)
+        #expect(recorder.steps.last == .refreshDiagnostics)
+        #expect(recorder.steps.count == 6)
+    }
+}
