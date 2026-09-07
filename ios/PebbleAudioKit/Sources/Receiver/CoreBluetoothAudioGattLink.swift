@@ -664,25 +664,90 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         log("-> Disconnected (\(failure.kind): \(message))")
         // The UI still gets its honest, actionable failure — and the app quietly keeps trying
         // instead of waiting for the user to notice hours later.
-        scheduleReconnect(after: failure.kind)
+        if awaitingUserRecovery {
+            scheduleStaleCacheRetry()
+        } else {
+            scheduleReconnect(after: failure.kind)
+        }
     }
 
-    /// Classifies a Core Bluetooth error by its error DOMAIN — never its localized message.
-    /// `CBATTErrorDomain` means the watch's ATT server refused the operation (write/read not
-    /// permitted, insufficient encryption/authentication) — the stale-GATT-cache signature;
-    /// `CBErrorDomain` covers link-level trouble.
+    /// The slow way out of a `.linkRejected` latch, for the case nobody is there to tap Reconnect.
+    ///
+    /// The latch is right about the short term: re-running the identical handshake against the
+    /// same stale handles can only re-fail, and doing it on every foreground burns the radio. It
+    /// was wrong about the long term. "Wait for a Bluetooth power-cycle or an explicit user
+    /// Reconnect" assumes a user who is looking at the app, and this app spends nearly all its
+    /// life in the background — so a firmware flash at breakfast meant no audio until the user
+    /// happened to open Settings and tap a button, with the status card the only clue.
+    ///
+    /// The cache does clear on its own: bluetoothd re-reads the database on a fresh ACL
+    /// connection, on a Service Changed indication, and whenever it restarts. So retry on a slow
+    /// cadence rather than never. Five minutes is far too long to be a hot loop and far shorter
+    /// than "until someone notices".
+    private func scheduleStaleCacheRetry() {
+        guard wantConnected else { return }
+        retryGeneration += 1
+        let generation = retryGeneration
+        log("scheduling a stale-cache retry in \(Self.staleCacheRetryDelayMs)ms")
+        delegateQueue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(Self.staleCacheRetryDelayMs))
+        ) { [weak self] in
+            guard let self,
+                generation == self.retryGeneration,
+                self.wantConnected,
+                self.connectionState.value == .disconnected,
+                let manager = self.centralManager,
+                manager.state == .poweredOn
+            else { return }
+            // Drop the latch for this one attempt. If the handles are still stale the handshake
+            // fails again, re-latches, and schedules the next one — a bounded, quiet retry rather
+            // than a dead end.
+            self.awaitingUserRecovery = false
+            self.connectAttempts = 0
+            self.enterConnecting("stale-cache retry", automatic: true)
+            self.connectWhenPoweredOn(manager)
+        }
+    }
+
+    /// Classifies a Core Bluetooth error by its error DOMAIN and CODE — never its localized
+    /// message. `CBErrorDomain` covers link-level trouble; `CBATTErrorDomain` means the watch's
+    /// ATT server refused the operation, and there the CODE matters.
+    ///
+    /// The domain alone is too blunt. `.linkRejected` latches off the fast automatic retries, so
+    /// treating every ATT error as one meant a single `.unlikelyError` or `.insufficientResources`
+    /// — both ordinary transients from a busy watch — stopped the app reconnecting until a human
+    /// power-cycled Bluetooth. Only the codes below actually describe a link whose cached handles
+    /// are wrong or whose security state will not permit us: retrying THOSE against the same cache
+    /// really can only re-fail. Everything else in the domain is a transient and gets the normal
+    /// backoff.
     private func classifyFailure(_ error: Error?, fallback: ConnectFailureKind) -> ConnectFailure {
         let nsError = error as NSError?
         let kind: ConnectFailureKind
         switch nsError?.domain {
         case CBATTErrorDomain:
-            kind = .linkRejected
+            kind = Self.isStaleCacheOrSecurity(CBATTError.Code(rawValue: nsError?.code ?? -1))
+                ? .linkRejected : .watchUnreachable
         case CBErrorDomain:
             kind = .watchUnreachable
         default:
             kind = fallback
         }
         return ConnectFailure(kind: kind, detail: nsError?.localizedDescription)
+    }
+
+    /// The ATT codes that mean "these handles are stale, or this link's security will not do",
+    /// i.e. the ones a plain retry cannot fix. The signature of a stale iOS GATT cache after a
+    /// firmware flash is `.writeNotPermitted` on the CCCD ("Writing is not permitted."), with
+    /// `.invalidHandle` / `.attributeNotFound` when the handle moved outright.
+    private static func isStaleCacheOrSecurity(_ code: CBATTError.Code?) -> Bool {
+        switch code {
+        case .invalidHandle, .readNotPermitted, .writeNotPermitted, .insufficientAuthentication,
+            .insufficientAuthorization, .insufficientEncryption, .insufficientEncryptionKeySize,
+            .attributeNotFound:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Invalidates everything bound to the current GATT session.
@@ -734,6 +799,11 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// Backoff ceiling. Two minutes keeps a watch that comes back into range while the app is
     /// awake picked up quickly, without a hot retry loop when it is genuinely gone.
     private static let retryMaxDelayMs: Int64 = 120_000
+
+    /// How long a `.linkRejected` latch holds before trying once more. See
+    /// `scheduleStaleCacheRetry` — long enough not to spin the radio on handles that cannot work,
+    /// short enough that a firmware flash does not cost the user their whole day.
+    private static let staleCacheRetryDelayMs: Int64 = 5 * 60_000
 }
 
 extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
@@ -895,6 +965,37 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
     /// name Settings shows without waiting for a relaunch.
     public func peripheralDidUpdateName(_ peripheral: CBPeripheral) {
         publishName(peripheral.name)
+    }
+
+    /// The watch's GATT database changed under us. THE signal this app was missing.
+    ///
+    /// iOS delivers this when the peer sends a Service Changed indication — a firmware flash, or a
+    /// watch reboot that rebuilt its attribute table. Every `CBService` and `CBCharacteristic`
+    /// object we hold for the invalidated services is now a dangling handle: reads and writes
+    /// against them fail with ATT errors, and notifications simply stop. Ignoring it left the link
+    /// sitting at `.ready`, fully "connected", silently receiving nothing — and the first write
+    /// afterwards came back `.writeNotPermitted`, which the app read as a stale cache and latched
+    /// off automatic recovery for. The watch reboot the user did not think twice about therefore
+    /// ended recording until they opened the app and tapped Reconnect.
+    ///
+    /// Rediscovery is the whole fix, and it is cheap: our handles are already gone, so this cannot
+    /// disturb a link that was working. The latch is cleared because a Service Changed indication
+    /// is proof the OS has fresh handles — the exact condition `.linkRejected` was waiting for.
+    public func peripheral(
+        _ peripheral: CBPeripheral,
+        didModifyServices invalidatedServices: [CBService]
+    ) {
+        let ours = invalidatedServices.contains { $0.uuid == AudioCompanionGattIds.serviceUUID }
+        log("didModifyServices invalidated=\(invalidatedServices.map { $0.uuid.uuidString }) ours=\(ours)")
+        guard ours || invalidatedServices.isEmpty else { return }
+        awaitingUserRecovery = false
+        resetCharacteristics(reason: "the watch's services changed")
+        guard peripheral === self.peripheral, wantConnected else { return }
+        // Re-run the handshake on the SAME connection: the ACL is fine, only the attribute table
+        // moved. `enterConnecting` re-arms the watchdog so a rediscovery that stalls is not a new
+        // way to sit at "Connecting" forever.
+        enterConnecting("services changed, rediscovering", automatic: automaticConnect)
+        peripheral.discoverServices([AudioCompanionGattIds.serviceUUID])
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
