@@ -248,10 +248,51 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             }
             connectAttempts = 0
             cancelScheduledRetry()
-            enterConnecting("connect()")
-            if manager.state == .poweredOn {
-                connectWhenPoweredOn(manager)
+            // Read the radio as a LEVEL, not only as an edge.
+            //
+            // The whole CBManagerState machine hangs off `centralManagerDidUpdateState`, and every
+            // branch of it is gated on `wantConnected`. But the manager is created by
+            // `prepareForRestoration()` with `wantConnected == false`, and Core Bluetooth delivers
+            // its one initial state within milliseconds of that — long before anything calls
+            // `connect()`. So if Bluetooth was off, or permission had been revoked, that single
+            // report was discarded, and the state is never re-delivered for an unchanged value.
+            // `connect()` then entered `.connecting`, cleared `lastFailure`, and dialled nothing,
+            // because the radio was not powered on. The user got a silent, permanent
+            // "Connecting…" with the actual, actionable reason thrown away — and it is the one
+            // case where the app has something genuinely useful to say.
+            guard manager.state == .poweredOn else {
+                applyPowerState(manager.state)
+                return
             }
+            enterConnecting("connect()")
+            connectWhenPoweredOn(manager)
+        }
+    }
+
+    /// Maps a non-`poweredOn` radio state onto an honest failure. Shared by the delegate callback
+    /// and by `connect()`, so a fault reported before we were listening reads the same as one
+    /// reported after.
+    private func applyPowerState(_ state: CBManagerState) {
+        switch state {
+        case .poweredOff:
+            failAndReset(.bluetoothOff, "Bluetooth is turned off")
+        case .unauthorized:
+            failAndReset(
+                .bluetoothUnauthorized,
+                "Bluetooth access is off for this app. Turn it on in Settings."
+            )
+        case .unsupported:
+            failAndReset(.bluetoothUnavailable, "Bluetooth is unavailable to this app right now.")
+        case .unknown, .resetting:
+            // Genuinely transient: Core Bluetooth is still starting, or briefly restarted its
+            // system service. `didUpdateState` owns the recovery, and the connecting floor keeps
+            // this from being a place to sit forever.
+            awaitingUserRecovery = false
+            enterConnecting("Bluetooth \(state == .resetting ? "resetting" : "starting up")")
+        case .poweredOn:
+            break
+        @unknown default:
+            break
         }
     }
 
@@ -957,36 +998,13 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
             } else if hasPendingConnect {
                 log("Bluetooth powered on; leaving the outstanding connect alone")
             }
-        // Surface an actionable reason instead of hanging in "Connecting". wantConnected is
-        // kept set, so the link reconnects automatically once Bluetooth comes back.
-        case .poweredOff:
-            if wantConnected {
-                failAndReset(.bluetoothOff, "Bluetooth is turned off")
-            }
-        case .unauthorized:
-            if wantConnected {
-                failAndReset(
-                    .bluetoothUnauthorized,
-                    "Bluetooth access is off for this app. Turn it on in Settings."
-                )
-            }
-        case .unsupported:
-            if wantConnected {
-                failAndReset(
-                    .bluetoothUnavailable,
-                    "Bluetooth is unavailable to this app right now."
-                )
-            }
-        case .unknown, .resetting:
-            if wantConnected {
-                // Core Bluetooth is still starting or briefly restarted its system service.
-                // Clear stale failures (and the retry latch) so the main status does not keep
-                // showing an old error.
-                awaitingUserRecovery = false
-                enterConnecting("Bluetooth resetting/unknown")
-            }
-        @unknown default:
-            break
+        // Surface an actionable reason instead of hanging in "Connecting". wantConnected is kept
+        // set, so the link reconnects automatically once Bluetooth comes back. Shared with
+        // `connect()`, which reads the same state as a LEVEL — see `applyPowerState`, and the
+        // reason it must: the manager is created before `wantConnected` is ever true, so the one
+        // initial report a powered-off radio produces used to be dropped on the floor here.
+        default:
+            if wantConnected { applyPowerState(central.state) }
         }
     }
 
