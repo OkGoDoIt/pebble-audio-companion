@@ -973,9 +973,10 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     private static let staleCacheRetryDelayMs: Int64 = 5 * 60_000
 
     /// How long `.connecting` may go without progress before the floor re-drives it. Comfortably
-    /// longer than a healthy connect + discovery + subscribe (a few seconds), so it never fires in
-    /// normal use; short enough that a wedged automatic attempt costs a minute rather than a day.
-    private static let connectingFloorMs: Int64 = 90_000
+    /// longer than a healthy connect + discovery + subscribe (milliseconds once driven), so it
+    /// never fires in normal use. Was 90 s, which a real launch showed is far too long to wait
+    /// when the floor is the thing that unwedges a pended connect.
+    private static let connectingFloorMs: Int64 = 30_000
 }
 
 extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
@@ -1031,8 +1032,28 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         // A restoration relaunch is a background wake with nobody watching, so the connect is left
         // pending rather than watchdogged into a dead end.
         enterConnecting("restore", automatic: true)
-        hasPendingConnect = true
-        central.connect(restored, options: nil)
+        // Do NOT dial a restored handle blindly. Two things went wrong when this was
+        // `central.connect(restored)`, and on a real phone they cost 90 seconds of dead air on
+        // every single launch:
+        //
+        // 1. `willRestoreState` is the FIRST delegate callback, so it usually arrives before
+        //    `centralManagerDidUpdateState` — the radio is typically still `.unknown` here. A
+        //    connect issued then simply pends.
+        // 2. It marked a connect outstanding, and `.poweredOn` (which arrived a millisecond later)
+        //    then declined to drive the link because it correctly refuses to step on an
+        //    in-flight restoration connect. So nothing re-evaluated it, and the link sat in
+        //    `.connecting` until the 90 s floor re-drove it — at which point
+        //    `retrieveConnectedPeripherals` found the watch already connected at the system level
+        //    and the handshake completed in two milliseconds.
+        //
+        // So dial only when the radio is actually up, and go through `connectWhenPoweredOn` so the
+        // preference order applies: a peripheral the system already holds a connection to beats a
+        // restored handle, which is exactly the difference between instant and never.
+        if central.state == .poweredOn {
+            connectWhenPoweredOn(central)
+        } else {
+            log("restore: radio not up yet (state=\(central.state.rawValue)); waiting for poweredOn")
+        }
     }
     #endif
 
