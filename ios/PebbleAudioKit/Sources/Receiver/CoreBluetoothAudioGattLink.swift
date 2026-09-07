@@ -148,6 +148,14 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// Settings > Diagnostics > Detailed Logs, where they can be read and shared from the device.
     public var logSink: ReceiverLog = .silent
 
+    /// Called on the delegate queue for every inbound notification, before it is handed on.
+    ///
+    /// The seam for the background-activity assertion, which lives above this module. It has to be
+    /// taken HERE, synchronously inside the Core Bluetooth callback: everything downstream is
+    /// asynchronous, and the whole risk is being suspended in the gap between this delegate
+    /// returning and the cooperative pool getting round to persisting the frame.
+    public var onInboundNotification: @Sendable () -> Void = {}
+
     /// Every Core Bluetooth transition, with a stable, greppable tag. This is the only place the
     /// adapter logs; it stays out of the data hot path (notifications are not logged per-frame).
     private func log(_ message: String) {
@@ -767,6 +775,18 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         failPendingOperations(reason)
     }
 
+    /// Domain and CODE, then the localized string.
+    ///
+    /// The code is the part that identifies the fault. `localizedDescription` alone gave us
+    /// "The connection has timed out unexpectedly." for `CBError.connectionTimeout`,
+    /// `.peripheralDisconnected` and `.connectionFailed` alike, and it is translated — so a log
+    /// from a non-English phone was unmatchable against anything. Every classification decision in
+    /// this file is already made on domain+code; the log should say the same thing.
+    private func describeError(_ error: Error?) -> String {
+        guard let error = error as NSError? else { return "none" }
+        return "\(error.domain)#\(error.code) (\(error.localizedDescription))"
+    }
+
     private enum LinkOperationError: Error {
         case notConnected
         case characteristicNotReady
@@ -913,7 +933,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
-        log("didFailToConnectPeripheral error=\(error?.localizedDescription ?? "nil")")
+        log("didFailToConnectPeripheral error=\(describeError(error))")
         failAndReset(classifyFailure(error, fallback: .watchUnreachable))
     }
 
@@ -922,7 +942,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
-        log("didDisconnectPeripheral intentional=\(intentionalDisconnect) wantConnected=\(wantConnected) error=\(error?.localizedDescription ?? "nil")")
+        log("didDisconnectPeripheral intentional=\(intentionalDisconnect) wantConnected=\(wantConnected) error=\(describeError(error))")
         resetCharacteristics()
         if intentionalDisconnect || !wantConnected {
             intentionalDisconnect = false
@@ -1000,7 +1020,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
-            log("didDiscoverServices error=\(error.localizedDescription)")
+            log("didDiscoverServices error=\(describeError(error))")
             failAndReset(classifyFailure(error, fallback: .unknown))
             return
         }
@@ -1029,7 +1049,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         error: Error?
     ) {
         if let error {
-            log("didDiscoverCharacteristics error=\(error.localizedDescription)")
+            log("didDiscoverCharacteristics error=\(describeError(error))")
             failAndReset(classifyFailure(error, fallback: .unknown))
             return
         }
@@ -1069,7 +1089,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
             // update, where the cached handle no longer points at a writable descriptor
             // ("Writing is not permitted."). Classify it as LinkRejected so the UI tells the
             // user to power-cycle Bluetooth instead of showing the raw Core Bluetooth string.
-            log("didUpdateNotificationState error=\(error.localizedDescription)")
+            log("didUpdateNotificationState error=\(describeError(error))")
             failAndReset(classifyFailure(error, fallback: .linkRejected))
             return
         }
@@ -1099,9 +1119,22 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
                 pending.continuation.resume(returning: value)
             }
         case AudioCompanionGattIds.controlCharacteristicUUID:
-            if error == nil { controlChannel.send(value) }
+            if error == nil {
+                onInboundNotification()
+                controlChannel.send(value)
+            } else {
+                // Previously dropped in silence. A run of these is the signature of a link the
+                // platform still calls connected while nothing gets through, and without a line
+                // in the log there was no way to tell that from an idle watch.
+                log("control notification error: \(describeError(error))")
+            }
         case AudioCompanionGattIds.dataCharacteristicUUID:
-            if error == nil { dataChannel.send(value) }
+            if error == nil {
+                onInboundNotification()
+                dataChannel.send(value)
+            } else {
+                log("data notification error: \(describeError(error))")
+            }
         default:
             break
         }

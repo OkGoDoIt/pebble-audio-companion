@@ -67,6 +67,9 @@ final class AppComposition {
     /// Held so Diagnostics can say whether the process is actually resident — the difference
     /// between recording in the background and only recording while the app is on screen.
     let residency: BackgroundResidency
+    /// Held so foreground entry can drop it: in the foreground nothing can suspend us, and a
+    /// leaked background task is a 0x8badf00d kill.
+    let backgroundActivity: BackgroundActivityAssertion
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
@@ -98,6 +101,7 @@ final class AppComposition {
     private var todaySource: LiveTodayDataSource?
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
+    private var foregroundReleaseToken: NSObjectProtocol?
 
     // MARK: - Bootstrap
 
@@ -584,6 +588,14 @@ final class AppComposition {
         let residency = BackgroundResidency(log: AppRuntimeLog.runtimeLog)
         self.residency = residency
 
+        // Second line of defence, for the windows residency cannot cover — a phone call has taken
+        // the audio session, or the audio stack refused to start. Taken synchronously inside the
+        // Core Bluetooth callback, because everything downstream of it is asynchronous and the
+        // risk is being suspended between the delegate returning and the frame reaching disk.
+        let activity = BackgroundActivityAssertion(log: AppRuntimeLog.runtimeLog)
+        self.backgroundActivity = activity
+        gattLink.onInboundNotification = { activity.renew() }
+
         let receiver = ReceiverService(
             link: gattLink,
             store: store,
@@ -856,6 +868,14 @@ final class AppComposition {
         Task { await lifecycle.handle(.didFinishLaunching) }
         today.start()
         startHeartbeat()
+
+        // Nothing can suspend us in the foreground, so the assertion is pure liability there —
+        // a leaked background task is a 0x8badf00d kill. Dropped on activation, and left to the
+        // inbound-notification path to take again once we are backgrounded.
+        let activity = self.backgroundActivity
+        foregroundReleaseToken = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
+        ) { _ in activity.release() }
     }
 
     /// A line a minute, for as long as the process is alive.
