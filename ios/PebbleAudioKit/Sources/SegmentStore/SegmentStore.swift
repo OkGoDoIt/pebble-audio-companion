@@ -681,7 +681,22 @@ public actor SegmentStore: SegmentSink {
     /// (open segments become interrupted), and orphan logs are swept to `quarantine/`.
     /// Call once on startup before opening new segments.
     public func recover() throws {
-        precondition(current == nil, "recover() must run before any segment is opened")
+        // Reconcile rather than trap.
+        //
+        // This was `precondition(current == nil, ...)`, which is a hard crash in release builds
+        // too. The intended order does hold — `CompanionRuntime.start()` awaits recovery before
+        // starting the receiver — but `AppLifecycleCoordinator` is a REENTRANT actor driven by two
+        // independently dispatched tasks: `.didFinishLaunching` from the composition root and
+        // `.didBecomeActive` from a notification observer. While the first is suspended inside
+        // `recoverStore()`, the second is free to run and calls `receiver.start()`, which can open
+        // a segment before this function has finished. The invariant was incidental, not enforced,
+        // and the penalty for losing the race was a launch crash.
+        //
+        // Closing the open segment as interrupted is exactly what recovery does for an
+        // open-at-crash segment anyway, so this costs nothing and removes the trap.
+        if current != nil {
+            try closeSegment(reason: .interrupted)
+        }
         guard fm.fileExists(atPath: segmentsDir.path) else { return }
         let entries = listDirectory(segmentsDir)
 

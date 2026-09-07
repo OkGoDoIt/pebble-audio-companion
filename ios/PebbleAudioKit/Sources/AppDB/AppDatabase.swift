@@ -34,6 +34,26 @@ public struct AppDatabase: Sendable {
     public static func open(at url: URL) throws -> AppDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
+        // NOT setting `observesSuspensionNotifications` is deliberate.
+        //
+        // 0xDEAD10CC: this database lives in the App Group container and is a `DatabasePool`, so
+        // it runs in WAL mode and holds POSIX file locks on the `.sqlite`, `-wal` and `-shm`
+        // files, and iOS kills — with that exception code — any app suspended while holding a lock
+        // on a file in a shared container. GRDB's mitigation is to suspend the database when the
+        // app backgrounds.
+        //
+        // That mitigation is wrong for THIS app. A suspended GRDB database throws
+        // SQLITE_INTERRUPT/SQLITE_ABORT from every write — its own documentation: "All database
+        // operations may throw ... except reads in WAL mode" — and this app's whole purpose is to
+        // keep writing while backgrounded. It now holds an audio session precisely so that iOS
+        // does NOT suspend it, so suspending the database on background entry would silently break
+        // the background recording that residency exists to enable.
+        //
+        // The exposure is correspondingly small: we are not suspended while capture is on. The
+        // real structural fix, if this ever bites, is to move `companion.sqlite` out of the App
+        // Group into the app's own container — the widget reads a separate snapshot file, not this
+        // database — which removes the shared-container lock rather than trading it for failed
+        // writes.
         let pool = try DatabasePool(path: url.path, configuration: config)
         let db = AppDatabase(writer: pool)
         try db.migrate()
