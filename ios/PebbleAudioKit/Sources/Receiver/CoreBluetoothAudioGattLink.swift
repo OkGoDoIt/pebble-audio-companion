@@ -123,6 +123,14 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// does need `.poweredOn` to drive it.
     private var hasPendingConnect = false
 
+    /// When the current `.connecting` attempt began, for `connect()`'s staleness check. Monotonic,
+    /// so it is not disturbed by the clock changing under a link that has been up for days.
+    private var connectingSinceMs: Int64 = 0
+
+    private func uptimeMs() -> Int64 {
+        Int64(ProcessInfo.processInfo.systemUptime * 1000)
+    }
+
     /// Current backoff delay; doubles per failure, reset on Ready and on any explicit user action.
     private var retryDelayMs: Int64 = CoreBluetoothAudioGattLink.retryBaseDelayMs
 
@@ -235,9 +243,26 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             // Idempotent: a live or in-progress link must not be bounced. connect() is called on
             // every app foreground/launch, so restarting it here would drop a working connection
             // (and lose audio) each time the app comes to the foreground.
-            if connectionState.value != .disconnected {
-                log("connect() ignored; already \(connectionState.value)")
+            if connectionState.value == .ready {
+                log("connect() ignored; already ready")
                 return
+            }
+            // `.connecting` is idempotent only while it is FRESH.
+            //
+            // Three paths deliberately leave an automatic connect pending with no give-up
+            // watchdog, because a pending connect is the one recovery that survives suspension.
+            // The cost was that `.connecting` then meant "someone is already on it" forever, so
+            // every foreground entry logged "already connecting" and did nothing — the user's
+            // instinctive gesture for a stuck link was a no-op. The connecting floor eventually
+            // re-drives it, but somebody who has opened the app should not wait for that.
+            if connectionState.value == .connecting {
+                let age = uptimeMs() - connectingSinceMs
+                guard age >= Self.connectingStaleMs else {
+                    log("connect() ignored; already connecting (\(age)ms)")
+                    return
+                }
+                log("connect() on a \(age)ms-old connecting state; re-driving")
+                hasPendingConnect = false
             }
             // A LinkRejected failure won't clear by re-running the identical (stale-cache)
             // handshake, so stay put until a Bluetooth power-cycle or explicit user Reconnect
@@ -609,6 +634,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         // give up for good, three stalls after it started, with no one there to see it.
         let automatic = requested || !isForeground
         lastFailure.value = nil
+        connectingSinceMs = uptimeMs()
         connectGeneration += 1
         automaticConnect = automatic
         connectionState.value = .connecting
@@ -977,6 +1003,11 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// never fires in normal use. Was 90 s, which a real launch showed is far too long to wait
     /// when the floor is the thing that unwedges a pended connect.
     private static let connectingFloorMs: Int64 = 30_000
+
+    /// How old a `.connecting` state must be before `connect()` will re-drive it rather than defer.
+    /// Long enough that the connect+discover+subscribe dance is never interrupted mid-flight, short
+    /// enough that opening the app is a real remedy.
+    private static let connectingStaleMs: Int64 = 5_000
 }
 
 extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {

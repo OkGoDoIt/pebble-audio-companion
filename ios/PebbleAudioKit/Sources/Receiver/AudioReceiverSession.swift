@@ -514,6 +514,8 @@ public actor AudioReceiverSession {
     }
 
     // Per-connection child tasks (the Kotlin connection coroutineScope's children).
+    /// The slow re-authorization after a retryable denial — see `scheduleDeniedRetry`.
+    private var reauthTask: Task<Void, Never>?
     private var controlTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var checkpointTask: Task<Void, Never>?
@@ -854,6 +856,7 @@ public actor AudioReceiverSession {
     private func drainConnectionTasks() async {
         while true {
             var tasks: [Task<Void, Never>] = []
+            if let task = reauthTask { tasks.append(task); reauthTask = nil }
             if let task = controlTask { tasks.append(task); controlTask = nil }
             if let task = keepaliveTask { tasks.append(task); keepaliveTask = nil }
             if let task = checkpointTask { tasks.append(task); checkpointTask = nil }
@@ -892,6 +895,7 @@ public actor AudioReceiverSession {
         if captureIntent() != .off && watchInfo.value?.enabled == false {
             if !consumeEnableRequestPermission() {
                 setState(.denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue)))
+                scheduleDeniedRetry(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
                 return
             }
             setState(.pendingEnable)
@@ -903,6 +907,7 @@ public actor AudioReceiverSession {
             }
             if !enabled {
                 setState(.denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue)))
+                scheduleDeniedRetry(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
                 return
             }
             await refreshInfoSnapshot()
@@ -1011,6 +1016,8 @@ public actor AudioReceiverSession {
             case .some(.ok):
                 inFlightToken = nil
                 authorized = true
+                reauthTask?.cancel()
+                reauthTask = nil
                 handshakeFailures = 0
                 grantedProtoVersion.value = result.grantedProtoVersion
                 // The watch accepted us, so whatever it last complained about is settled. This
@@ -1035,6 +1042,7 @@ public actor AudioReceiverSession {
                 inFlightToken = nil
                 authorized = false
                 setState(.denied(statusRaw: Int(result.statusRaw)))
+                scheduleDeniedRetry(statusRaw: Int(result.statusRaw))
             }
         case let ack as Ack:
             if ack.requestToken == inFlightToken {
@@ -1059,6 +1067,42 @@ public actor AudioReceiverSession {
         }
     }
 
+    /// A denial is a fact about right now, not a permanent one — so keep asking, slowly.
+    ///
+    /// `.denied` used to be a terminal park. Nothing throws on this path, so `runConnection` never
+    /// reaches its recovery and sits on an abort that will never complete; and with
+    /// `authorized == false` every remaining child is inert — the keepalive skips its ping, the
+    /// stream verify skips its Info read, the checkpoint ticker skips its flush. A live link, zero
+    /// timers, until the user does something.
+    ///
+    /// Only two denials may be retried automatically, and the distinction is important because
+    /// getting it wrong means buzzing someone's wrist every minute. Reading the firmware's
+    /// `prv_handle_auth_request_locked`: `DeniedDisabled` (Background Audio off on the watch) and
+    /// `DeniedMismatch` (a different receiver is bound) are pure refusals that send an answer and
+    /// nothing else. The `NoReceiver` case — which is what a `.revoked` session or a declined
+    /// consent becomes — raises the on-watch consent prompt instead. That one stays a user gesture.
+    private func scheduleDeniedRetry(statusRaw: Int) {
+        let retryable =
+            statusRaw == Int(AuthStatus.deniedDisabled.rawValue)
+            || statusRaw == Int(AuthStatus.deniedMismatch.rawValue)
+        guard retryable, reauthTask == nil else { return }
+        reauthTask = Task { await self.retryDeniedAuthorization() }
+    }
+
+    private func retryDeniedAuthorization() async {
+        var attempt = 0
+        while !Task.isCancelled {
+            let delay = min(
+                Self.deniedRetryBaseMs << UInt64(min(attempt, 4)), Self.deniedRetryMaxMs
+            )
+            attempt += 1
+            do { try await clock.sleep(ms: delay) } catch { return }
+            if Task.isCancelled || authorized { return }
+            log("re-authorizing after a denial (attempt \(attempt))")
+            await sendAuthRequest()
+        }
+    }
+
     /// Re-runs authorization on the CURRENT connection — no reconnect, no watch prompt. Used by
     /// the Background-Audio-enabled recovery in `reactToWatchReport`.
     private func sendAuthRequest() async {
@@ -1068,7 +1112,20 @@ public actor AudioReceiverSession {
         do {
             try await writeAuthRequest(token: token)
         } catch {
-            log("in-place re-authorization failed to write: \(error)")
+            // Do not just return. This `return` skipped the line below that arms
+            // `awaitAuthResult`, so there was no deadline, no re-send and no rebuild — and
+            // `reauthorizingAfterEnable` stays latched for the connection, so no later watch report
+            // could start a second attempt either. The session sat in `.authorizing` with
+            // `authorized == false`, which makes the keepalive, the stream verify and the
+            // checkpoint ticker all inert. A permanent park from one failed write.
+            //
+            // A link that cannot accept a control write is not a link worth keeping: this is the
+            // same class of evidence as `readInfo` failing, which the handshake path already
+            // treats as "rebuild".
+            log("in-place re-authorization failed to write; rebuilding the link: \(error)")
+            inFlightToken = nil
+            reauthorizingAfterEnable = false
+            link.resyncAutomatically()
             return
         }
         authRequestTask?.cancel()
@@ -1424,6 +1481,12 @@ public actor AudioReceiverSession {
     private enum ReceiverSessionError: Error {
         case internalInvariant
     }
+
+    /// First delay before re-asking a watch that refused us, then doubling. Slow on purpose: a
+    /// refusal usually needs a human (turning Background Audio back on, forgetting the other
+    /// receiver), so this is a safety net for when they do, not a way to hurry them.
+    private static let deniedRetryBaseMs: Int64 = 60_000
+    private static let deniedRetryMaxMs: Int64 = 15 * 60_000
 
     /// How long pause/resume waits for an in-flight checkpoint to release the token slot.
     private static let requestTokenWaitMs: Int64 = 2_000
