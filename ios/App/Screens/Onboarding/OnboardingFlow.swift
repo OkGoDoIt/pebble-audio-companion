@@ -21,7 +21,10 @@ struct OnboardingFlow: View {
                 OnboardingConfirmView(model: model)
                     .transition(Motion.transition(stepTransition))
             case .transcripts:
-                OnboardingTranscriptsView(model: model)
+                OnboardingProcessingView(model: model)
+                    .transition(Motion.transition(stepTransition))
+            case .processingDetail:
+                OnboardingProcessingDetailView(model: model)
                     .transition(Motion.transition(stepTransition))
             case .cloudKey:
                 OnboardingCloudKeyView(model: model)
@@ -292,48 +295,66 @@ private struct WatchFaceMock: View {
     }
 }
 
-// MARK: - Step 3 · Where should transcripts happen? (2.3 / Q14)
+// MARK: - Step 3 · Where should transcripts and notes be made? (2.3 / Q14)
 
-private struct OnboardingTranscriptsView: View {
+/// The one processing question, and the only screen most people see of it.
+///
+/// It asks about BOTH axes at once because they are one decision to the person answering: the
+/// old version asked only about transcripts and then quietly left AI on `.remoteFirst`, so the
+/// card marked "Private." uploaded every transcript. Each card here writes a coherent pair, and
+/// the sentence describing where data goes is not written here at all — it is
+/// `Copy.Privacy.stance`, derived from the very modes the selected card is about to apply, so
+/// this screen and Settings → Storage & Privacy cannot say different things.
+private struct OnboardingProcessingView: View {
     @Bindable var model: OnboardingViewModel
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
+            // Centred while it fits; scrolls once the consequence block under the selected card,
+            // or large type, takes the room (the same treatment the key screen uses).
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 14) {
+                        Text(Copy.OnboardingProcessing.title)
+                            .font(AppFont.screenTitle)
+                            .foregroundStyle(Tokens.label)
+                            .multilineTextAlignment(.center)
+                            .padding(.bottom, 8)
 
-            VStack(spacing: 14) {
-                Text(Copy.Onboarding.transcriptsTitle)
-                    .font(AppFont.screenTitle)
-                    .foregroundStyle(Tokens.label)
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 8)
+                        ForEach(ProcessingChoice.presets) { preset in
+                            card(preset)
+                        }
 
-                OptionCard(
-                    title: Copy.Onboarding.onPhoneTitle,
-                    subtitle: Copy.Onboarding.onPhoneBody,
-                    isSelected: model.choice == .onPhone
-                ) { model.choice = .onPhone }
+                        // Once a mix exists it becomes a real, selected card: the answer must be
+                        // visible on the screen that asks the question, and three unselected
+                        // cards with the stance hidden away would leave someone who set a mix
+                        // looking at a screen that shows no answer at all.
+                        if model.choice == .mixed {
+                            card(.mixed)
+                        }
 
-                OptionCard(
-                    title: Copy.Onboarding.inCloudTitle,
-                    subtitle: Copy.Onboarding.inCloudBody,
-                    isSelected: model.choice == .cloud
-                ) { model.choice = .cloud }
-
-                OptionCard(
-                    title: Copy.Onboarding.laterTitle,
-                    subtitle: Copy.Onboarding.laterBody,
-                    isSelected: model.choice == .later
-                ) { model.choice = .later }
+                        // The mix is reachable, but quietly: one plain tint button, not a fourth
+                        // card competing with the answer most people want.
+                        Button(Copy.OnboardingProcessing.setSeparately) {
+                            model.openProcessingDetail()
+                        }
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.tint)
+                        .padding(.vertical, 8)
+                        .padding(.top, 2)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                    .motionAware(.snappy(duration: 0.25), value: model.choice)
+                }
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .padding(.horizontal, 24)
-
-            Spacer()
 
             VStack(spacing: 12) {
                 Button(Copy.Onboarding.continueButton) {
-                    model.continueFromTranscripts(settings: settings)
+                    model.continueFromProcessing(settings: settings)
                 }
                 .buttonStyle(.primaryFilled)
 
@@ -346,18 +367,75 @@ private struct OnboardingTranscriptsView: View {
             .padding(.bottom, 24)
         }
     }
+
+    /// One preset, with its consequences directly underneath while it is the selected one.
+    ///
+    /// Inline rather than in a footer at the bottom of the screen: what a choice does is part of
+    /// the choice, and a person who taps "On this phone" should not have to look elsewhere to
+    /// learn that follow-ups will never be proposed.
+    @ViewBuilder
+    private func card(_ preset: ProcessingChoice) -> some View {
+        let isSelected = model.choice == preset
+        VStack(alignment: .leading, spacing: 10) {
+            OptionCard(
+                title: title(preset), subtitle: subtitle(preset), isSelected: isSelected
+            ) {
+                // The mix card is already the selection; tapping it means "let me change it".
+                if preset == .mixed {
+                    model.openProcessingDetail()
+                } else {
+                    model.choice = preset
+                }
+            }
+            if isSelected {
+                OnboardingConsequences(plan: model.plan, settings: settings)
+                    .padding(.horizontal, 4)
+                    .transition(Motion.transition(.opacity.combined(with: .move(edge: .top))))
+            }
+        }
+    }
+
+    private func title(_ preset: ProcessingChoice) -> String {
+        switch preset {
+        case .onPhone: return Copy.OnboardingProcessing.onPhoneTitle
+        case .cloud: return Copy.OnboardingProcessing.cloudTitle
+        case .later: return Copy.OnboardingProcessing.laterTitle
+        // Not one of the three presets — rendered only once a mix has been set.
+        case .mixed: return Copy.OnboardingProcessing.detailTitle
+        }
+    }
+
+    private func subtitle(_ preset: ProcessingChoice) -> String {
+        switch preset {
+        case .onPhone: return Copy.OnboardingProcessing.onPhoneBody
+        case .cloud: return Copy.OnboardingProcessing.cloudBody
+        case .later: return Copy.OnboardingProcessing.laterBody
+        case .mixed:
+            return Copy.OnboardingProcessing.mixedSummary(
+                transcripts: model.transcriptsPlace, ai: model.aiPlace)
+        }
+    }
 }
 
 // MARK: - Cloud key hand-off (6.7)
 
-/// One key screen between "In the cloud" and Today. BOTH providers are offered at once —
-/// Soniox transcribes, OpenAI transcribes and/or runs the AI, and using one for each is a
-/// normal setup, so a screen that only takes one key at a time hid half the product. Each row
-/// writes its own Keychain entry (B13, the same entries Settings → Transcription & AI reads);
-/// a saved key only ever renders masked. Back returns to the transcripts choice (B15).
+/// One key screen between a cloud choice and Today, showing exactly the providers that choice
+/// will use.
+///
+/// Soniox only transcribes; OpenAI transcribes and/or runs the AI, and using one for each is a
+/// normal setup — so when transcription is in the cloud, both rows are offered (a screen that
+/// took one key at a time hid half the product). When only the AI is in the cloud, only OpenAI
+/// is offered: asking for a transcription key that this configuration will never read was the
+/// other half of the same bug, one screen along. Each row writes its own Keychain entry (B13,
+/// the same entries Settings → Transcription & AI reads); a saved key only ever renders masked.
+/// Back returns to whichever screen sent us here (B15).
 private struct OnboardingCloudKeyView: View {
     let model: OnboardingViewModel
     @Environment(AppSettings.self) private var settings
+
+    /// What the chosen combination actually needs. Both flags cannot be false — the model only
+    /// enters this phase when `needsAnyKey`.
+    private var plan: ProcessingPlan { model.plan }
 
     @State private var sonioxKey = ""
     @State private var openAiKey = ""
@@ -378,8 +456,8 @@ private struct OnboardingCloudKeyView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            OnboardingBackBar(label: Copy.Onboarding.backToTranscripts) {
-                model.backToTranscripts()
+            OnboardingBackBar(label: model.cloudKeyBackLabel) {
+                model.backFromCloudKey()
             }
 
             // Centred while it fits; scrolls once the keyboard, a check result, or large type
@@ -387,27 +465,31 @@ private struct OnboardingCloudKeyView: View {
             GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 18) {
-                        Text(Copy.Onboarding.addProviderKey)
+                        Text(title)
                             .font(AppFont.screenTitle)
                             .foregroundStyle(Tokens.label)
                             .multilineTextAlignment(.center)
 
-                        Text(Copy.Onboarding.providerKeysLine)
+                        Text(line)
                             .font(AppFont.subBody)
                             .foregroundStyle(Tokens.tertiary)
                             .multilineTextAlignment(.center)
                             .lineSpacing(3)
                             .frame(maxWidth: 320)
 
-                        Card {
-                            keyRow(
-                                .soniox, role: Copy.Onboarding.sonioxRole,
-                                key: $sonioxKey, check: $sonioxCheck
-                            )
+                        // Soniox can only transcribe, so it appears only when transcription is
+                        // the thing going to the cloud.
+                        if plan.needsTranscriptionKey {
+                            Card {
+                                keyRow(
+                                    .soniox, role: Copy.Onboarding.sonioxRole,
+                                    key: $sonioxKey, check: $sonioxCheck
+                                )
+                            }
                         }
                         Card {
                             keyRow(
-                                .openAi, role: Copy.Onboarding.openAiRole,
+                                .openAi, role: openAiRole,
                                 key: $openAiKey, check: $openAiCheck
                             )
                         }
@@ -443,6 +525,33 @@ private struct OnboardingCloudKeyView: View {
             case .openAi: runCheck(.openAi, key: openAiKey, into: $openAiCheck)
             case nil: break
             }
+        }
+    }
+
+    // ─── What this combination is being asked for ────────────────────────────
+
+    private var title: String {
+        plan.needsTranscriptionKey
+            ? Copy.OnboardingProcessing.keysTitleBoth
+            : Copy.OnboardingProcessing.keysTitleAiOnly
+    }
+
+    /// Three genuinely different situations, so three sentences rather than one that has to be
+    /// vague enough to cover all of them.
+    private var line: String {
+        switch (plan.needsTranscriptionKey, plan.needsAiKey) {
+        case (true, true): return Copy.Onboarding.providerKeysLine
+        case (true, false): return Copy.OnboardingProcessing.keysLineTranscriptionOnly
+        default: return Copy.OnboardingProcessing.keysLineAiOnly
+        }
+    }
+
+    /// OpenAI can do both jobs, so its row says which of them this configuration will use it for.
+    private var openAiRole: String {
+        switch (plan.needsTranscriptionKey, plan.needsAiKey) {
+        case (true, true): return Copy.Onboarding.openAiRole
+        case (true, false): return Copy.OnboardingProcessing.openAiRoleTranscriptionOnly
+        default: return Copy.OnboardingProcessing.openAiRoleAiOnly
         }
     }
 
@@ -596,10 +705,14 @@ private struct OnboardingCloudKeyView: View {
 
         // Only one provider can transcribe at a time. If exactly one of them ends up with a key,
         // that is unambiguously the one to use; with both, the existing Settings choice stands.
-        let hasSoniox = settings.hasApiKey(for: .soniox)
-        let hasOpenAi = settings.hasApiKey(for: .openAi)
-        if hasSoniox != hasOpenAi {
-            settings.cloudTranscriptionProvider = hasSoniox ? .soniox : .openAi
+        // Skipped entirely when transcription is local: an OpenAI key added purely for the AI
+        // must not silently re-point a transcription setting this person never chose.
+        if plan.needsTranscriptionKey {
+            let hasSoniox = settings.hasApiKey(for: .soniox)
+            let hasOpenAi = settings.hasApiKey(for: .openAi)
+            if hasSoniox != hasOpenAi {
+                settings.cloudTranscriptionProvider = hasSoniox ? .soniox : .openAi
+            }
         }
         model.finish(settings: settings)
     }
@@ -622,7 +735,8 @@ extension CloudProvider {
 }
 
 /// Onboarding's back affordance: a chevron plus the name of the actual parent step (B15).
-private struct OnboardingBackBar: View {
+/// Module-internal because the two-axis processing screen uses it too.
+struct OnboardingBackBar: View {
     let label: String
     let action: () -> Void
 

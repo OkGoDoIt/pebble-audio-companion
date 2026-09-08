@@ -1431,9 +1431,16 @@ extension LiveFollowUps: FollowUpsDataSource {
     var automaticProposalsEnabled: Bool {
         switch composition.settings.aiMode {
         case .localOnly:
-            // The on-device model needs no key; whether Apple Intelligence is actually
-            // available on this device is the runtime's question, not this screen's.
-            return true
+            // False on EVERY device, not just one without Apple Intelligence. Follow-up
+            // detection and curation both tag their requests `requiresStructuredOutput`, and
+            // `OnDeviceAiProvider.run` throws `providerUnavailable` for anything carrying that
+            // tag before it even looks at the model; `.localOnly` has no fallback to catch it.
+            // So this can never produce a proposal, and the comment this replaces — "whether
+            // Apple Intelligence is available is the runtime's question" — was answering a
+            // question nothing was asking. The empty state has to say the app is not looking,
+            // rather than imply nothing in the week was worth remembering. Onboarding can now
+            // put someone here deliberately, which is what made it worth fixing.
+            return false
         case .remoteOnly, .remoteFirst, .localFirst:
             return composition.settings.hasApiKey(for: .openAi)
         }
