@@ -260,6 +260,11 @@ struct ConversationDisplay: Equatable {
     /// Q16: transcript stamps read in the zone the audio was RECORDED in, so a conversation
     /// keeps the times it actually happened at after you fly home.
     var timeZone: TimeZone = .current
+    /// Wall-clock extent of the recording. The player labels its scrubber with these rather than
+    /// with 0:00 and a duration: a recording is a thing that happened at a time of day, and the
+    /// transcript beside it is already stamped in clock time.
+    var startedAt: Date?
+    var endedAt: Date?
 
     var shareText: String {
         var lines = [title, metaLine]

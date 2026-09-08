@@ -371,6 +371,18 @@ struct ConversationScreen: View {
                 id: conversationId)
         }
         player.configure(playerDisplay, atMs: atMs, id: conversationId, engine: engine)
+        // The scrubber names clock times, so it needs the same media->wall mapping the transcript
+        // already carries on every turn, in the same recorded zone the stamps use (Q16).
+        player.wallTimeZone = display.timeZone
+        player.wallAnchors = display.transcript.compactMap { item in
+            guard case .turn(let turn) = item, let mediaMs = turn.mediaOffsetMs,
+                let startedAt = turn.startedAt
+            else { return nil }
+            return (mediaMs: mediaMs, wall: startedAt)
+        }
+        .sorted { $0.mediaMs < $1.mediaMs }
+        player.wallStart = display.startedAt
+        player.wallEnd = display.endedAt
     }
 
     // MARK: - Header

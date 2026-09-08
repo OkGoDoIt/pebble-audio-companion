@@ -20,13 +20,32 @@ struct PlayerCard: View {
 
             VStack(spacing: 6) {
                 scrubber
-                HStack {
-                    Text(TimeFmt.timecode(model.positionMs))
-                    Spacer()
-                    Text(TimeFmt.timecode(model.durationMs))
+                // Three values, and they are not the same KIND of value, so they are not drawn
+                // the same. The ends are the recording's fixed bounds — set once, never moving,
+                // so they recede. The middle is where the playhead actually is, in clock time:
+                // it is the only one that changes, it is the one being read, and it carries the
+                // label colour to say so.
+                //
+                // Wall clock rather than elapsed throughout. A recording is a thing that happened
+                // at a time of day, "0:00 … 24:00" makes you do arithmetic against the header to
+                // work out when you are, and the transcript beside it is already stamped in clock
+                // time. Falls back to elapsed only when there is nothing to derive a mapping from.
+                HStack(spacing: 8) {
+                    Text(leadingLabel)
+                        .foregroundStyle(Tokens.faint)
+                    Spacer(minLength: 4)
+                    Text(currentLabel)
+                        .foregroundStyle(Tokens.label)
+                        // The position ticks ten times a second; a proportional font would make
+                        // the row breathe as digits change width.
+                        .monospacedDigit()
+                        .accessibilityHidden(true)
+                    Spacer(minLength: 4)
+                    Text(trailingLabel)
+                        .foregroundStyle(Tokens.faint)
                 }
-                .font(AppFont.micro)
-                .foregroundStyle(Tokens.meta)
+                .font(AppFont.micro.monospacedDigit())
+                .lineLimit(1)
             }
 
             Button {
@@ -52,6 +71,32 @@ struct PlayerCard: View {
         .clipShape(RoundedRectangle(cornerRadius: Tokens.cardRadius))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Copy.Playback.dockedPlayer)
+    }
+
+    /// When the recording started. Elapsed's "0:00" is the fallback, and it is honest: with no
+    /// mapping there is no clock time to show.
+    private var leadingLabel: String {
+        guard let start = model.wallStart ?? model.wallDate(atMediaMs: 0) else {
+            return TimeFmt.timecode(0)
+        }
+        return TranscriptStamp.text(start, in: model.wallTimeZone)
+    }
+
+    /// Where the playhead is, as a time of day.
+    private var currentLabel: String {
+        guard let now = model.wallDate(atMediaMs: model.positionMs) else {
+            return TimeFmt.timecode(model.positionMs)
+        }
+        return TranscriptStamp.text(now, in: model.wallTimeZone)
+    }
+
+    /// When it ended. A live recording has no end yet and says so rather than naming the last
+    /// moment audio happened to arrive, which would look like it had stopped.
+    private var trailingLabel: String {
+        guard let end = model.wallEnd ?? model.wallDate(atMediaMs: model.durationMs) else {
+            return model.wallStart == nil ? TimeFmt.timecode(model.durationMs) : Copy.Playback.now
+        }
+        return TranscriptStamp.text(end, in: model.wallTimeZone)
     }
 
     private var scrubber: some View {
@@ -85,8 +130,7 @@ struct PlayerCard: View {
         .frame(height: 8)
         .accessibilityElement()
         .accessibilityLabel("Playback position")
-        .accessibilityValue(
-            "\(TimeFmt.timecode(model.positionMs)) of \(TimeFmt.timecode(model.durationMs))")
+        .accessibilityValue("\(currentLabel), between \(leadingLabel) and \(trailingLabel)")
         .accessibilityAdjustableAction { direction in
             let step = model.durationMs / 20
             switch direction {
@@ -143,6 +187,42 @@ final class PlayerModel {
     private var configuredId: String?
     private var observation: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
+    /// Media position -> wall clock, as (mediaMs, wall) anchors in ascending media order.
+    ///
+    /// The scrubber counts MEDIA time (stored audio, gaps excluded), so it cannot be added to the
+    /// conversation's start: on a recording with a 20-minute hole in it, every label after the
+    /// hole would be 20 minutes early. The transcript's turns already carry both clocks, so they
+    /// are the mapping — accurate at turn granularity, which is the granularity a person can see.
+    /// Empty is the honest fallback (no transcript, or no timings): the card shows elapsed
+    /// timecodes instead of inventing a wall time it cannot derive.
+    var wallAnchors: [(mediaMs: Int64, wall: Date)] = []
+    /// The zone the audio was RECORDED in (Q16) — the same one the transcript stamps use, so the
+    /// scrubber and the turn beside it never name the same moment differently.
+    var wallTimeZone: TimeZone = .current
+    /// Wall clock at the two ends of the recording — the fixed bounds the scrubber spans.
+    var wallStart: Date?
+    var wallEnd: Date?
+
+    /// Wall clock at a media position, interpolated between the two anchors around it.
+    func wallDate(atMediaMs mediaMs: Int64) -> Date? {
+        guard let first = wallAnchors.first else { return nil }
+        if mediaMs <= first.mediaMs { return first.wall }
+        var previous = first
+        for anchor in wallAnchors.dropFirst() {
+            if mediaMs <= anchor.mediaMs {
+                let span = anchor.mediaMs - previous.mediaMs
+                guard span > 0 else { return anchor.wall }
+                let fraction = Double(mediaMs - previous.mediaMs) / Double(span)
+                let seconds = anchor.wall.timeIntervalSince(previous.wall) * fraction
+                return previous.wall.addingTimeInterval(seconds)
+            }
+            previous = anchor
+        }
+        // Past the last turn: carry on at real time, which is right for the tail of a recording
+        // whose last words are not its last audio.
+        return previous.wall.addingTimeInterval(Double(mediaMs - previous.mediaMs) / 1000)
+    }
+
     /// Pending un-dock of a paused player. See `isEngaged`.
     private var engagementLapse: Task<Void, Never>?
 

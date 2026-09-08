@@ -143,6 +143,15 @@ final class TranscriptPlayhead {
     /// True while audio is actually moving. The highlight persists while paused (you paused to
     /// read it) but the transcript stops auto-scrolling and the player stops docking.
     private(set) var isPlaying = false
+    /// Whether this recording has been played at all yet.
+    ///
+    /// Without it, simply OPENING a conversation highlighted its first word: the player reports
+    /// position 0 as soon as it is configured, the playhead resolves that to word 0 of turn 1,
+    /// and the highlight is drawn on a recording nobody has pressed play on. It reads as a stuck
+    /// selection, and on a screen whose first job is reading, a mark you did not put there is
+    /// noise. Set on the first moving update and cleared by `clear()`, so a paused playhead
+    /// keeps its highlight and a fresh screen has none.
+    private(set) var hasStarted = false
 
     /// Nothing on screen announces whether this transcript has word timings. A recording that
     /// only has paragraph timings highlights paragraphs and says nothing about it; a label
@@ -156,6 +165,7 @@ final class TranscriptPlayhead {
 
     /// Point the playhead at a scrubber position. Cheap enough to call on every tick.
     func update(mediaMs: Int64, playing: Bool) {
+        if playing, !hasStarted { hasStarted = true }
         // Every field is assigned only on change. `@Observable` notifies on every WRITE, not on
         // every change, so writing the same values ten times a second would invalidate every
         // transcript row ten times a second — which is the cost this whole arrangement exists
@@ -170,6 +180,7 @@ final class TranscriptPlayhead {
         if turnId != nil { turnId = nil }
         if wordIndex != nil { wordIndex = nil }
         if isPlaying { isPlaying = false }
+        if hasStarted { hasStarted = false }
     }
 }
 

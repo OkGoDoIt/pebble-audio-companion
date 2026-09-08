@@ -438,7 +438,9 @@ final class MockWorld {
                 to: conversation.isLive ? Date() : conversation.end,
                 mediaDurationMs: conversation.player?.durationMs ?? 0),
             provenance: provenance,
-            followUps: followUps.filter { $0.sourceConversationId == conversation.id }
+            followUps: followUps.filter { $0.sourceConversationId == conversation.id },
+            startedAt: conversation.start,
+            endedAt: conversation.isLive ? nil : conversation.end
         )
     }
 

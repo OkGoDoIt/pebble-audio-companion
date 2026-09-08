@@ -379,7 +379,11 @@ extension LiveWorld: ConversationDataSource {
             transcript: transcript,
             provenance: Self.provenance(provider: provider, atMs: transcribedAtMs),
             followUps: followUps,
-            timeZone: zone ?? .current
+            timeZone: zone ?? .current,
+            startedAt: start,
+            // A live conversation has no end yet; the scrubber says "now" rather than naming the
+            // last moment audio happened to arrive.
+            endedAt: source.isLive ? nil : end
         )
     }
 

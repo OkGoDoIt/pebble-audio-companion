@@ -12,6 +12,10 @@ import Foundation
 
 extension Copy {
     enum Playback {
+        /// Right-hand scrubber label on a recording that has not ended yet. Naming the last
+        /// moment audio arrived would read as an end time it does not have.
+        static let now = "now"
+
         /// Floating control offered once the reader has scrolled away from the playhead.
         static let backToPlaying = "Back to playing"
         static let backToPlayingHint = "Scrolls back to the words being spoken"

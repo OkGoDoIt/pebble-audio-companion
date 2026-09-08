@@ -938,6 +938,15 @@ final class AppComposition {
             OnboardingDataSources.current = OnboardingDataSources(
                 pairing: LiveWatchPairingSource(composition: self)
             )
+        } else {
+            // The mock snapshot says "Recording · connected" while `AppSettings` is a fresh
+            // install saying off — so the review build drew a green "Recording" card with the
+            // switch beside it turned OFF. Nothing was broken in the app, but a screen that
+            // contradicts itself is worthless for reviewing exactly the surface it exists to
+            // review, and it looks precisely like the bug the shared capture control was
+            // written to prevent. The demo world states what its own data already claims.
+            settings.captureIntent = .active
+            settings.onboardingComplete = true
         }
 
         registerBackgroundTask()

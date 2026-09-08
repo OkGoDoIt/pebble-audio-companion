@@ -296,7 +296,12 @@ private struct TranscriptTurnText: View {
     @State private var size: CGSize = .zero
     @State private var cadence = TapCadence()
 
-    private var isActive: Bool { playhead?.turnId == turn.id }
+    /// `hasStarted` too: the playhead resolves position 0 the moment the player is configured,
+    /// so without it every conversation opened highlighted its own first word.
+    private var isActive: Bool {
+        guard let playhead, playhead.hasStarted else { return false }
+        return playhead.turnId == turn.id
+    }
 
     /// True while a DIFFERENT paragraph is the one being spoken. Nothing steps back when
     /// playback is idle or paused — the transcript is a reading surface first, and dimming it
