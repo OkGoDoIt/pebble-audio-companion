@@ -163,7 +163,9 @@ enum Copy {
         static let watchFaceAllow = "Allow"
         static let watchFaceDecline = "Decline"
 
-        static let transcriptsTitle = "Where should transcripts happen?"
+        // `transcriptsTitle` is gone: step 3 asks about transcripts AND AI now, because setting
+        // only the first is what let "On this phone — Private." ship while every transcript went
+        // to OpenAI. See `Copy+OnboardingProcessing.swift`.
         static let onPhoneTitle = "On this phone"
         // Approved deviation from the artboard's "700 MB model": the local engine is now
         // system-managed, so the size is not ours to promise (noted in the build report).
@@ -189,8 +191,8 @@ enum Copy {
         static let keyReplacePlaceholder = "Replace key"
         static let saveToKeychain = "Save to Keychain"
         static let skipForNow = "Skip for now"
-        /// Back affordance on the key screen — names the actual parent step (B15).
-        static let backToTranscripts = "Transcripts"
+        // `backToTranscripts` is gone with it — the key screen's back affordance now names
+        // whichever of the two step-3 screens pushed it.
 
         /// Failure branches (States · Onboarding artboard + the 6.7 Bluetooth-denied branch).
         /// All recoverable → bordered actions.
@@ -429,12 +431,9 @@ enum Copy {
         // "you ticked everything", "this conversation produced nothing", and "the feature has
         // never run", which made it meaningless.
         static let emptyOpenTitle = "Nothing to follow up on"
-        static let emptyOpenBody =
-            "Things you say you will do turn up here. Most conversations have none, and that is "
-            + "normal — you can add your own any time."
-        static let emptyOpenBodyNoAi =
-            "Nothing here yet. Follow-ups are suggested from your recordings once AI processing "
-            + "is set up, and you can always add your own."
+        // `emptyOpenBody` / `emptyOpenBodyNoAi` were removed with the manual "+": both ended
+        // "you can add your own any time", which stopped being true. Their replacements live in
+        // `Copy+FollowUpsExtra.swift` beside the filed-away section that took over this screen.
         static let emptyCompletedTitle = "Nothing completed yet"
         static let emptyCompletedBody = "Ticked-off follow-ups collect here."
         static let emptyArchivedTitle = "Nothing filed away"
@@ -727,7 +726,9 @@ enum Copy {
     enum Settings {
         enum Root {
             static let title = "Settings"
-            static let backgroundAudio = "Background audio"
+            // "Background audio" is gone: naming the mechanism made the app's on/off switch read
+            // as a second, different mode running somewhere else. It is "Record from your
+            // Pebble" now, in `Copy+Capture.swift`, alongside the shared capture vocabulary.
             /// Watch card sub-line when healthy.
             static let recordingConnected = "Recording · connected"
             static let transcriptionAI = "Transcription & AI"

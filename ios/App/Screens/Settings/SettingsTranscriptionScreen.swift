@@ -15,6 +15,24 @@ struct SettingsTranscriptionScreen: View {
     private var cloudHealth: CloudHealthSource { sources.cloudHealth }
     private var keyChecker: ApiKeyChecking { sources.apiKeys }
 
+    /// Choosing a mode here also ANSWERS the question onboarding's "Later" deferred.
+    ///
+    /// `transcriptsConfigured` had exactly one writer — onboarding — while Today's "Transcripts
+    /// are off" card sends people to this very screen to fix it. So anyone who picked "Later"
+    /// kept that card forever, however they configured transcription afterwards: the card's own
+    /// remedy could not clear it. Setting it from the mode's `didSet` would be wrong in the other
+    /// direction, because onboarding writes the mode before recording the deferral; this is the
+    /// narrower truth — a person standing on this screen picking a mode has decided.
+    private var transcriptionModeBinding: Binding<TranscriptionMode> {
+        Binding(
+            get: { settings.transcriptionMode },
+            set: { mode in
+                settings.transcriptionMode = mode
+                settings.transcriptsConfigured = true
+            }
+        )
+    }
+
     var body: some View {
         @Bindable var settings = settings
         SettingsScroll {
@@ -29,7 +47,7 @@ struct SettingsTranscriptionScreen: View {
                         options: TranscriptionMode.allCases.map {
                             .init(value: $0, label: $0.displayName)
                         },
-                        selection: $settings.transcriptionMode,
+                        selection: transcriptionModeBinding,
                         footer: Copy.Settings.TranscriptionAI.footer
                     )
                 }
