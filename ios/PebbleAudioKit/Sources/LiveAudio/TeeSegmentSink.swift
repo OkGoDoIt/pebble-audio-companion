@@ -42,6 +42,12 @@ public final class TeeSegmentSink: SegmentSink {
         if let segmentId { await emitSegmentOpened(segmentId) }
     }
 
+    /// Forwarded, not defaulted: the durable store is the thing that has to reach the disk before
+    /// the receiver checkpoints. See `SegmentStore.appendFrames`.
+    public func flush() async throws {
+        try await store.flush()
+    }
+
     public func appendFrames(streamId: UInt32, frames: [SegmentFrame]) async throws -> [SegmentFrame] {
         let receivingSegmentId = await store.openSegmentId
         // Only forward what the store actually persisted: a post-RESUME rewind re-sends frames

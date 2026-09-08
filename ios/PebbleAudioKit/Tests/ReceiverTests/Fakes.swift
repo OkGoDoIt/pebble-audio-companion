@@ -154,6 +154,23 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
         set { lock.withLock { _failAppends = newValue } }
     }
 
+    /// Appends are no longer fsynced one by one; the flush happens immediately before a CHECKPOINT,
+    /// because that is what authorizes the watch to free its spool. A flush that fails must
+    /// therefore stop the checkpoint.
+    private var _failFlush = false
+    var failFlush: Bool {
+        get { lock.withLock { _failFlush } }
+        set { lock.withLock { _failFlush = newValue } }
+    }
+    private var _flushes = 0
+    var flushes: Int { lock.withLock { _flushes } }
+
+    func flush() async throws {
+        scheduler.noteEvent()
+        if failFlush { throw InducedFailure() }
+        lock.withLock { _flushes += 1 }
+    }
+
     func openSegment(start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?) async throws {
         scheduler.noteEvent()
         lock.withLock {

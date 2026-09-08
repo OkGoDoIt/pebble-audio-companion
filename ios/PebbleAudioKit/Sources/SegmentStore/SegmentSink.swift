@@ -85,6 +85,19 @@ public protocol SegmentSink: Sendable {
 
     /// Closes the open segment. No-op when no segment is open.
     func closeSegment(reason: SegmentCloseReason) async throws
+
+    /// Forces everything appended so far to durable storage.
+    ///
+    /// Appends are deliberately NOT fsynced one by one — see `SegmentStore.appendFrames`. The
+    /// receiver calls this immediately before it sends a CHECKPOINT, because the checkpoint is
+    /// what authorizes the watch to free its spool, and the invariant is "checkpoint only what is
+    /// flushed". Everything not yet flushed is still held by the watch, so a crash costs nothing.
+    func flush() async throws
+}
+
+extension SegmentSink {
+    /// Fakes and in-memory sinks are durable by construction.
+    public func flush() async throws {}
 }
 
 /// Receiver-side flags and storage hints carried in CHECKPOINT; provided by SegmentStore.

@@ -1452,6 +1452,52 @@ import WireProtocol
         #expect(evidence.lastWatchReportAtMs == fx.clock.nowMs)
     }
 
+    // Appends are no longer fsynced one at a time — that was ~7 flash writes a second while the
+    // watch streams, and it bought a guarantee at a granularity nothing needed. The invariant is
+    // "checkpoint only what is flushed", and a CHECKPOINT is the ONLY thing that tells the watch it
+    // may free its spool, so the flush belongs immediately before it. These two pin that.
+
+    @Test func aCheckpointIsPrecededByAFlush() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        fx.link.pushData(data(0, 8))
+        await fx.settle()
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(8, 1))
+        await fx.settle()
+
+        #expect(!fx.checkpoints().isEmpty)
+        #expect(fx.sink.flushes > 0, "the watch is told to free audio only once it is on disk")
+    }
+
+    @Test func aFailedFlushSendsNoCheckpoint() async {
+        // The safety property. If the audio did not reach the disk we must not claim it — the
+        // watch keeps it and re-sends it on the next RESUME, which is exactly the fallback the
+        // whole spool exists to be.
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        fx.sink.failFlush = true
+
+        fx.link.pushData(data(0, 8))
+        await fx.settle()
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(8, 1))
+        await fx.settle()
+
+        #expect(fx.checkpoints().isEmpty, "never authorize the watch to drop audio we did not store")
+
+        // ...and it recovers: the next cadence checkpoints once the disk is working again.
+        fx.sink.failFlush = false
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(9, 1))
+        await fx.settle()
+        #expect(!fx.checkpoints().isEmpty)
+    }
+
     /// The watch's silence probe is answered off the notification itself, not off a timer.
     ///
     /// While suppressing silence the watch sends no audio and pushes a STATE_CHANGED every

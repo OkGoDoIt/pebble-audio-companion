@@ -1438,6 +1438,17 @@ public actor AudioReceiverSession {
         if !due { return }
         guard let token = takeToken() else { return } // a request is in flight; retry on the next append
         defer { ctx.lastCheckpointAtMs = clock.nowMs }
+        // THE durability point. Appends are no longer fsynced one by one (that was ~7 flash writes
+        // a second while streaming); the flush belongs here instead, because a CHECKPOINT is the
+        // only thing that tells the watch it may free its spool. Flush first, then claim. If the
+        // flush fails we must not claim anything: the watch keeps the audio and re-sends it.
+        do {
+            try await sink.flush()
+        } catch {
+            log("checkpoint skipped: flush failed (\(error))")
+            if inFlightToken == token { inFlightToken = nil }
+            return
+        }
         do {
             try await link.writeControl(
                 Checkpoint(

@@ -376,7 +376,17 @@ public actor SegmentStore: SegmentSink {
         }
         let bytes = writer.toData()
         try segment.handle.write(contentsOf: bytes)
-        try segment.handle.synchronize() // durability point: the session checkpoints only what is flushed
+        // Deliberately NOT fsynced here. This ran on every STREAM_DATA batch — about seven times a
+        // second while the watch is streaming — and an fsync is a real flash write that blocks the
+        // caller. It was the single most expensive thing on the receive path, and it was buying a
+        // guarantee nothing needed at that granularity.
+        //
+        // The invariant is "the session checkpoints only what is flushed", and the CHECKPOINT is
+        // the only thing that authorizes the watch to free its spool. So the flush belongs
+        // immediately before the checkpoint, not after every append: anything written but not yet
+        // flushed is still held on the watch, and a crash re-receives it on the next RESUME. The
+        // durability story is unchanged; only the number of flash writes is.
+        dirtyBytes += bytes.count
         segment.logBytes += Int64(bytes.count)
 
         let refilled: [SegmentFrame]
@@ -521,6 +531,10 @@ public actor SegmentStore: SegmentSink {
     private func closeSegmentInternal(_ reason: CloseReasonMeta) throws {
         guard let segment = current else { return }
         current = nil
+        // Appends are not fsynced individually, so a closing segment gets one final flush. Closes
+        // happen on rotation (15 min / 16 MB) and on teardown, so this costs nothing.
+        try? segment.handle.synchronize()
+        dirtyBytes = 0
         try segment.handle.close()
         segment.meta.closeReason = reason
         segment.meta.closedAtMs = nowMs()
@@ -680,6 +694,17 @@ public actor SegmentStore: SegmentSink {
     /// invalid framing are truncated at the first bad record, metas are reconciled with their log
     /// (open segments become interrupted), and orphan logs are swept to `quarantine/`.
     /// Call once on startup before opening new segments.
+    /// Bytes appended since the last fsync. Only ever read to decide whether a flush has work.
+    private var dirtyBytes = 0
+
+    /// Forces appended frames to durable storage. Called by the receiver just before it sends a
+    /// CHECKPOINT — see `appendFrames` for why that is the right place and the only place.
+    public func flush() throws {
+        guard dirtyBytes > 0, let segment = current else { return }
+        try segment.handle.synchronize()
+        dirtyBytes = 0
+    }
+
     public func recover() throws {
         // Reconcile rather than trap.
         //

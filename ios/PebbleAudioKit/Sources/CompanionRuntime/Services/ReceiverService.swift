@@ -58,6 +58,13 @@ final class LossObservingSink: SegmentSink, @unchecked Sendable {
         if let id = await openSegmentId() { await onGapPersisted(id, gap) }
     }
 
+    /// LOAD-BEARING forward. Without it this decorator would silently inherit the protocol's
+    /// no-op default, the store would never be flushed before a CHECKPOINT, and we would be
+    /// telling the watch to free audio that is only in the page cache.
+    func flush() async throws {
+        try await downstream.flush()
+    }
+
     func closeSegment(reason: SegmentCloseReason) async throws {
         // Capture the id BEFORE the close: afterwards there is no open segment to ask about.
         let closing = await openSegmentId()
