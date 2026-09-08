@@ -854,6 +854,67 @@ import WireProtocol
     //
     // The sweep is deliberately ASYMMETRIC, and the second half matters far more than the first:
     // reclaiming a few megabytes is worth nothing next to deleting somebody's audio.
+    // A sidecar is written BEFORE its log is created, so a crash between the two leaves a meta
+    // with no log — three were on the real device. They show in the Library as a recording with no
+    // audio, and they used to be enqueued for a transcription that could only fail.
+    @Test func recoverDropsASidecarThatDescribesNoAudio() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 2))
+        try await store.closeSegment(reason: .interrupted)
+        let realId = try #require(await store.listSegments().first?.segmentId)
+
+        // A phantom: sidecar present, log never created, no frames recorded.
+        let phantom = SegmentMeta(
+            segmentId: "seg-phantom",
+            streamId: streamId,
+            protocolVersion: 1,
+            codecIdRaw: 1,
+            channels: 1,
+            frameSamples: 320,
+            sampleRateHz: 16_000,
+            bitRateBps: 9_800,
+            frameDurationMs: 20,
+            startTimeMs: 1,
+            startMonotonicMs: 0,
+            receivedAtMs: 1
+        )
+        let phantomURL = segmentsDir(root).appendingPathComponent("seg-phantom.meta.json")
+        try JSONEncoder().encode(phantom).write(to: phantomURL)
+
+        let reopened = makeStore(root)
+        try await reopened.recover()
+
+        #expect(!FileManager.default.fileExists(atPath: phantomURL.path))
+        let ids = await reopened.listSegments().map(\.segmentId)
+        #expect(ids == [realId], "the real recording is untouched")
+    }
+
+    // ...but a sidecar whose log has GONE, and which claims frames, is real loss. Deleting the
+    // record would turn a visible gap into a silent one, which this product does not do.
+    @Test func recoverKeepsASidecarWhoseAudioIsMissing() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 3))
+        try await store.closeSegment(reason: .interrupted)
+        let id = try #require(await store.listSegments().first?.segmentId)
+
+        // The audio disappears from under it.
+        try FileManager.default.removeItem(
+            at: segmentsDir(root).appendingPathComponent("\(id).spxlog")
+        )
+
+        let reopened = makeStore(root)
+        try await reopened.recover()
+
+        #expect(
+            await reopened.listSegments().map(\.segmentId) == [id],
+            "a recording whose audio is gone stays on the record"
+        )
+    }
+
     @Test func quarantineSweepReclaimsEmptyLogs() async throws {
         let root = try tempRoot()
         let store = makeStore(root)

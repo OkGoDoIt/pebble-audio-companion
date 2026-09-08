@@ -752,10 +752,33 @@ public actor SegmentStore: SegmentSink {
             }
             try reconcileMeta(meta, records: parsed.records, logBytes: Int64(parsed.validBytes))
         }
+        try removePhantomSidecars(logs: Set(logs.map { $0.lastPathComponent }))
         try normalizeGapSidecars()
         // Build the authoritative index once, after all reconcile-writes, so subsequent reads
         // (diagnostics, UI, RESUME continuation) never touch disk.
         metaIndex = buildIndexFromDisk()
+    }
+
+    /// Drops sidecars that describe nothing at all.
+    ///
+    /// A meta is written BEFORE its log is created, so a crash between the two leaves a sidecar
+    /// with no log — and the real device had three. They are not harmless: they appear in
+    /// `listSegments`, so the Library shows a recording with no audio, and until the caller
+    /// filtered on `frameCount` they were enqueued for transcription, where the task could only
+    /// fail, exhaust its retries and sit in Diagnostics forever.
+    ///
+    /// Only the ones recording ZERO frames are removed, which is provably lossless — the sidecar
+    /// describes no audio, so there is nothing to lose. A sidecar that claims frames whose log has
+    /// gone is a genuine loss and is deliberately KEPT: the audio is already gone, and deleting
+    /// the record of it would turn a visible gap into a silent one, which this product does not do.
+    private func removePhantomSidecars(logs: Set<String>) throws {
+        for url in listDirectory(segmentsDir)
+        where url.lastPathComponent.hasSuffix(Self.metaSuffix) {
+            let segmentId = String(url.lastPathComponent.dropLast(Self.metaSuffix.count))
+            guard !logs.contains("\(segmentId)\(Self.logSuffix)") else { continue }
+            guard let meta = readMetaFromDisk(segmentId), meta.frameCount == 0 else { continue }
+            try removeIfExists(url)
+        }
     }
 
     private func normalizeGapSidecars() throws {

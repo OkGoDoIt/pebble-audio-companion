@@ -141,7 +141,13 @@ public actor TranscriptionService {
     /// Enqueues every closed, not-yet-transcribed segment. Safe to call repeatedly.
     public func enqueueClosedSegments() async throws {
         let ids = await store.listSegments()
-            .filter { !$0.isOpen && !$0.isFullyTranscribed }
+            // `frameCount > 0` is not fussiness: a segment with no audio cannot produce a
+            // transcript, so enqueuing one buys a task that fails, retries its whole ladder, and
+            // then sits in Diagnostics as a permanent failure — noise in exactly the list a person
+            // reads when something is actually wrong. Segments open and close with no frames
+            // routinely (a stream that starts and immediately drops), and three such phantoms were
+            // already on the real device.
+            .filter { !$0.isOpen && !$0.isFullyTranscribed && $0.frameCount > 0 }
             .map(\.segmentId)
         try processor.enqueueClosedSegments(ids)
     }
