@@ -183,8 +183,10 @@ private final class FakeUploadQueue: @unchecked Sendable {
 
 @Suite struct BackgroundUploadTests {
 
-    private struct Fixture {
+    fileprivate struct Fixture {
         let root: URL
+        /// Where the coordinator stages multipart bodies — see `OrphanedUploadBodyTests`.
+        var bodyDir: URL { root.appendingPathComponent("bodies", isDirectory: true) }
         let queue = FakeUploadQueue()
         let jobStore: CloudUploadJobStore
         let uploader = FakeUploader()
@@ -341,4 +343,68 @@ private final class Counter: @unchecked Sendable {
 
     var value: Int { lock.withLock { count } }
     func increment() { lock.withLock { count += 1 } }
+}
+
+// Staged multipart bodies are big — on a real device seven had accumulated to 160 MB, the oldest
+// over two months old, against 780 MB of actual audio. `cleanup` removes the body and then the job
+// record, so anything that drops the record another way, or a process death between the two
+// writes, leaves a file nothing will ever look at again. Retention cannot help: it sweeps the
+// segment store and has never known this directory exists.
+@Suite struct OrphanedUploadBodyTests {
+
+    private func bodyURL(_ fixture: BackgroundUploadTests.Fixture, _ segmentId: String) -> URL {
+        fixture.bodyDir.appendingPathComponent("\(segmentId).body")
+    }
+
+    @Test func reconcileDeletesBodiesNoJobRefersTo() async throws {
+        let fixture = try BackgroundUploadTests.Fixture(provider: .soniox)
+        try FileManager.default.createDirectory(
+            at: fixture.bodyDir, withIntermediateDirectories: true
+        )
+        let orphan = bodyURL(fixture, "seg-orphan")
+        try Data(repeating: 7, count: 4_096).write(to: orphan)
+        #expect(FileManager.default.fileExists(atPath: orphan.path))
+
+        await fixture.coordinator.reconcile()
+
+        #expect(
+            !FileManager.default.fileExists(atPath: orphan.path),
+            "a body with no job, not in flight and not Uploading is dead weight"
+        )
+    }
+
+    @Test func reconcileLeavesABodyItsJobStillNeeds() async throws {
+        let fixture = try BackgroundUploadTests.Fixture(provider: .soniox)
+        try FileManager.default.createDirectory(
+            at: fixture.bodyDir, withIntermediateDirectories: true
+        )
+        let live = bodyURL(fixture, "seg-live")
+        try Data(repeating: 7, count: 4_096).write(to: live)
+        fixture.jobStore.save(
+            CloudUploadJob(
+                jobId: "seg-live",
+                provider: .soniox,
+                phase: .uploading,
+                bodyFilePath: live.path,
+                createdAtMs: 1
+            )
+        )
+        // In flight as far as the transport is concerned — which is what makes the job live
+        // rather than garbage, and what the sweep has to respect.
+        await fixture.uploader.enqueue(
+            CloudUploadRequest(
+                jobId: "seg-live",
+                url: "https://example.invalid/upload",
+                headers: [:],
+                bodyFilePath: live.path
+            )
+        )
+
+        await fixture.coordinator.reconcile()
+
+        #expect(
+            FileManager.default.fileExists(atPath: live.path),
+            "the transport still needs this body; deleting it would fail the upload"
+        )
+    }
 }

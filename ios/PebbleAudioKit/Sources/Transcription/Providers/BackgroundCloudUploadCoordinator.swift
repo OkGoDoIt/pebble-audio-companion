@@ -166,6 +166,44 @@ public actor BackgroundCloudUploadCoordinator {
                 cleanup(job)
             }
         }
+        await sweepOrphanedBodies(inFlight: inFlight, graceMs: registrationGraceMs)
+    }
+
+    /// Deletes staged multipart bodies that no job record refers to any more.
+    ///
+    /// `cleanup` removes the body and then the job record, so anything that drops the record by
+    /// another route — or a process death between the two writes — leaves a body behind that
+    /// NOTHING will ever look at again. They are not small: on a real device this had accumulated
+    /// seven files totalling 160 MB, the oldest more than two months old, against 780 MB of actual
+    /// audio. Retention cannot help, because it sweeps the segment store and has never known this
+    /// directory exists.
+    ///
+    /// Keyed off the filename, which is `<segmentId>.body`, so a body is orphaned exactly when its
+    /// segment has no job, is not in flight, and is not marked `Uploading`. The modification-time
+    /// grace covers the window in `enqueueUpload` between writing the body and saving the job.
+    private func sweepOrphanedBodies(inFlight: Set<String>, graceMs: Int64) async {
+        let fm = FileManager.default
+        guard
+            let files = try? fm.contentsOfDirectory(
+                at: bodyDir, includingPropertiesForKeys: [.contentModificationDateKey]
+            )
+        else { return }
+        let known = Set(jobStore.all().map(\.jobId))
+        // Deliberately the REAL clock, not the injected `nowMs`: the value it is compared against
+        // is a filesystem modification date, which the filesystem stamps from the real clock. A
+        // cutoff derived from injected time would be comparing two different clocks, which is
+        // wrong in production the moment they diverge and silently untestable besides.
+        let cutoff = Date().addingTimeInterval(-Double(graceMs) / 1000)
+        for file in files where file.pathExtension == "body" {
+            let segmentId = file.deletingPathExtension().lastPathComponent
+            if known.contains(segmentId) || inFlight.contains(segmentId) { continue }
+            let modified =
+                (try? file.resourceValues(forKeys: [.contentModificationDateKey])
+                    .contentModificationDate) ?? .distantPast
+            guard modified <= cutoff else { continue }
+            if await queue.isUploading(segmentId) { continue }
+            try? fm.removeItem(at: file)
+        }
     }
 
     /// Hands eligible Pending cloud segments to the background uploader, up to the concurrency
