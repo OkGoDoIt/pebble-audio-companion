@@ -162,6 +162,17 @@ final class LiveTodayDataSource {
         let zone = TimeZone.current.identifier
         let dateKey = LogicalDay.dateKey(forMs: nowMs, timeZoneID: zone)
 
+        // An opt-in timed pause that has come due resumes HERE — on the runtime's own refresh
+        // tick, which runs every ten seconds and on every receiver/library event for as long as
+        // the process lives. Deliberately not in a view model: a pause the person set must end
+        // whether or not Today is on screen, and it must end correctly after a relaunch (the
+        // schedule is persisted, and this is the first thing that reads it). See
+        // `App/Services/CapturePauseSchedule.swift`.
+        CapturePauseResolver.resolveIfDue(settings: composition.settings, nowMs: nowMs) {
+            [weak self] intent in
+            self?.applyCaptureIntent(intent)
+        }
+
         let openSegmentId = await composition.store.openSegmentId
         composition.openSegment.set(openSegmentId)
 
@@ -186,7 +197,11 @@ final class LiveTodayDataSource {
         // Live first: the rolling line the live row shows comes out of the live transcript this
         // builds, so the Today snapshot below has something to put in `snippet` instead of the
         // hard-coded nil it used to carry.
-        await refreshLive(openSegmentId: openSegmentId, rows: todaySection?.rows ?? [])
+        // `pauses` goes in too: the live screen's timeline draws the conversation's own span
+        // with the same coverage computation this day strip uses, and a paused window has to
+        // render as paused there for the same reason it does here.
+        await refreshLive(
+            openSegmentId: openSegmentId, rows: todaySection?.rows ?? [], pauses: pauses)
         let liveLine = Self.liveSnippet(liveSnapshotValue)
 
         let status = Self.status(composition)
@@ -228,7 +243,9 @@ final class LiveTodayDataSource {
     /// are walked in order instead: durable transcripts for the ones already transcribed,
     /// the live preview for the segment still open, and the newest block marked as the tail
     /// still being written.
-    private func refreshLive(openSegmentId: String?, rows: [ConversationListRow]) async {
+    private func refreshLive(
+        openSegmentId: String?, rows: [ConversationListRow], pauses: [PauseInterval]
+    ) async {
         guard let live = rows.first(where: \.isLive) else {
             liveSnapshotValue = LiveSnapshot(
                 startedLine: "", isLive: false, items: [], status: liveStatus())
@@ -311,7 +328,12 @@ final class LiveTodayDataSource {
                     SearchKit.TranscriptWord(
                         text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
                 },
-                assignments: assignments
+                assignments: assignments,
+                // The two producers disagree about which clock they are on: a durable
+                // transcript is timed against the stored audio (the processor feeds the
+                // provider the decoded frame log, gaps absent), while the live preview offsets
+                // each chunk by `sampleOffsetMs`, which counts wall samples.
+                timebase: durable != nil ? .media : .wall
             )
             var memberItems = built.items
             // Only the newest block of the open, not-yet-durable segment is still growing.
@@ -328,6 +350,9 @@ final class LiveTodayDataSource {
         pruneTranscribedThrough(keeping: memberIds)
 
         liveSnapshotValue = LiveSnapshot(
+            // The SAME id the Library will show, which is what lets the live screen carry the
+            // conversation's own summary and its [Ask][Notes][Follow-ups].
+            conversationId: live.id,
             startedLine: Copy.Live.startedLine(
                 time: TimeFmt.time(started),
                 elapsed: Formatting.duration(max(0, nowMs - live.startMs))
@@ -336,7 +361,18 @@ final class LiveTodayDataSource {
             items: items,
             timeZone: zone ?? .current,
             provenance: Self.liveProvenance(preview),
-            status: liveStatus()
+            status: liveStatus(),
+            // Provisional while the conversation is open: `EnrichmentWorker`'s live pass writes
+            // one once there is enough text and rewrites it as the text grows. The screen says
+            // so; nil renders nothing rather than an empty card.
+            summary: live.summary,
+            timeline: LiveTimeline.display(
+                metas: (detail?.members ?? []).compactMap { metas[$0.segmentId] },
+                pauses: pauses,
+                startMs: live.startMs,
+                nowMs: nowMs,
+                timeZone: zone ?? .current
+            )
         )
     }
 
@@ -564,6 +600,9 @@ final class LiveTodayDataSource {
         return RecapDisplay(
             updatedText: Copy.Today.updatedAt(TimeFmt.time(updated)),
             digest: recap.text,
+            // `condensation(of:)` re-checks the stored fingerprint against THIS digest, so a
+            // short form left behind by a regenerated digest is never rendered over it.
+            condensed: RecapCondenser.condensation(of: recap),
             detail: RecapDetailDisplay(
                 id: RecapIndex.documentId(dateKey: recap.dateKey),
                 title: Copy.Today.recapTitle,
@@ -715,7 +754,12 @@ extension LiveTodayDataSource: TodayDataSource {
         case .resume:
             setIntent(.active, source: .statusCard)
         case .stop:
-            setIntent(.paused, source: .statusCard)
+            // `.off`, not `.paused`. This is the OFF position of the capture switch on Today,
+            // and the Settings switch has always written `.off` — two surfaces writing two
+            // different intents from what a person reads as one control is the confusion this
+            // round is fixing. `.paused` now means exactly one thing: the deliberate, temporary
+            // pause armed from the "Pause for…" menu. See `App/Components/CaptureToggle.swift`.
+            setIntent(.off, source: .statusCard)
         case .findWatch:
             Task { [composition] in
                 await composition.runtime.reconnect()

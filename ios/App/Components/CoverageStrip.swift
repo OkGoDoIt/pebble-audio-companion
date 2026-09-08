@@ -24,6 +24,11 @@ struct CoverageSpan: Equatable {
 struct CoverageStrip: View {
     let spans: [CoverageSpan]
     var showAxis: Bool = true
+    /// What VoiceOver calls this strip. Defaulted to the day, which is what it was built for —
+    /// the live conversation's own timeline reuses the same component over a different domain
+    /// and has to say so, or the screen announces "Day coverage" over one recording.
+    var accessibilityName: String = Copy.A11y.coverageLabel
+    var accessibilityHint: String = Copy.A11y.coverageHint
     var onSpanTap: ((CoverageSpan) -> Void)? = nil
 
     @ScaledMetric(relativeTo: .caption2) private var axisHeight: CGFloat = 12
@@ -70,10 +75,10 @@ struct CoverageStrip: View {
         .frame(height: 12)
         // One element carrying a spoken summary — never the individual spans (U10).
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Copy.A11y.coverageLabel)
+        .accessibilityLabel(accessibilityName)
         .accessibilityValue(accessibilitySummary)
         .accessibilityAddTraits(onSpanTap == nil ? [] : .isButton)
-        .accessibilityHint(onSpanTap == nil ? "" : Copy.A11y.coverageHint)
+        .accessibilityHint(onSpanTap == nil ? "" : accessibilityHint)
         .accessibilityAction {
             // VoiceOver can't tap a location, so activate explains the span that matters
             // most: loss first, then a pause, then whatever the day mostly was.

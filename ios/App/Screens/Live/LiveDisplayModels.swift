@@ -58,6 +58,14 @@ enum LiveTranscriptStatus: Equatable {
 }
 
 struct LiveSnapshot: Equatable {
+    /// The conversation this screen is watching being written. It is the SAME id the Library
+    /// will show once it ends, which is what lets the live screen offer the conversation's own
+    /// affordances — the AI summary, Ask, Notes, Follow-ups — instead of being a transcript
+    /// with two buttons under it. Empty when nothing is being recorded.
+    ///
+    /// `ConversationGrouper.adoptStableIds` keeps the id across the regroup that closes the
+    /// conversation, so anything opened from here is still valid after Pause or Stop.
+    var conversationId: String = ""
     /// e.g. "Started 12:04 PM · 48 min so far".
     var startedLine: String
     /// False once the conversation ended (paused/stopped) — the screen pops back.
@@ -72,6 +80,13 @@ struct LiveSnapshot: Equatable {
     var provenance: String = Copy.Live.provenance()
     /// Why there is nothing new to show — see `LiveTranscriptStatus`.
     var status: LiveTranscriptStatus = .listening
+    /// The AI summary as it stands. A live conversation genuinely has one: `EnrichmentWorker`
+    /// runs a PROVISIONAL pass on an open conversation once there are `liveMinChars` of text,
+    /// and rewrites it as the text grows. Nil until that first pass lands — and nil renders
+    /// nothing at all, never an empty card.
+    var summary: String?
+    /// The growing timeline at the top of the screen. Nil while there is nothing to draw.
+    var timeline: LiveTimelineDisplay?
 }
 
 /// The live read + transport surface; mirrors `TodayDataSource`'s seam.
@@ -81,9 +96,17 @@ protocol LiveDataSource: AnyObject {
     /// Yields the current snapshot immediately, then every change.
     func liveUpdates() -> AsyncStream<LiveSnapshot>
 
-    /// Q13: pause ends the conversation (watch mints a fresh stream id on resume).
+    // Both of these END THE CONVERSATION (Q13 — the watch mints a fresh stream id on resume,
+    // and `ConversationGrouper` splits on a pause interval or a user stop). The difference is
+    // only what happens to CAPTURE afterwards, which is exactly what the transport bar's two
+    // sublines have to say out loud: Roger reported not knowing what separates them.
+
+    /// Capture goes to `.paused`: the receiver stays up, the watch is asked to pause, and a
+    /// pause interval opens in the journal so the window draws as paused rather than missing.
+    /// Resume is one tap on Today's status card.
     func requestPause()
-    /// Explicit stop: ends the conversation and turns capture off.
+    /// Capture goes to `.off`: `ReceiverService` closes any open pause interval and tears the
+    /// receive path down. Nothing is captured again until an explicit Start.
     func requestStop()
 }
 
@@ -93,12 +116,17 @@ extension LiveSnapshot {
     /// The `-demo-data` live conversation: the artboard's turns and quiet marker, plus one
     /// reply and one loss marker so a review build exercises the two speaker colors, the
     /// clock stamps, and the missing-audio row.
+    ///
+    /// The id is the one `MockWorld` and `PreviewTodayData` both use for the live row, so the
+    /// screen's AI actions reach a conversation that exists in the mock world too — a demo
+    /// [Ask] that scoped to a conversation nobody had heard of would be its own kind of stub.
     static func demo(isLive: Bool, now: Date = .now) -> LiveSnapshot {
         let calendar = Calendar.current
         func at(_ hour: Int, _ minute: Int) -> Date {
             calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
         }
         return LiveSnapshot(
+            conversationId: "app-redesign",
             startedLine: Copy.Live.startedLine(time: "12:04 PM", elapsed: "48 min"),
             isLive: isLive,
             items: [
@@ -135,7 +163,45 @@ extension LiveSnapshot {
                         text: "so the suggestions row can stay under the field…",
                         startedAt: at(12, 51), isInProgress: true
                     )),
-            ]
+            ],
+            // A PROVISIONAL summary: the artboard has to show what the live enrichment pass
+            // actually produces, so the caption under it ("rewritten as this keeps going")
+            // has something to caption.
+            summary: "Working through the redesign: settings push from one root, and the tag "
+                + "editor is getting an inline rename.",
+            timeline: .demo
         )
     }
+}
+
+extension LiveTimelineDisplay {
+    /// The demo timeline over the artboard conversation's own span (12:04 PM → 12:52 PM, so
+    /// 2880 s wide): recorded, the 2-minute quiet at 12:33, and the 2-second loss at 12:49 —
+    /// the same three events the transcript above it names, so the strip and the words agree.
+    ///
+    /// The fractions are the real arithmetic, including a loss span that is 0.07% of the width:
+    /// `CoverageStrip` floors every span at one point, and a demo that widened the gap to make
+    /// it pretty would hide exactly the case the component has to survive.
+    static let demo = LiveTimelineDisplay(
+        headline: Copy.Today.recorded("45 min"),
+        missingText: Copy.Today.missing("2 sec"),
+        startLabel: "12:04 PM",
+        spans: [
+            CoverageSpanDisplay(
+                span: CoverageSpan(kind: .recorded, range: 0...0.604167),
+                popoverText: "recorded 12:04 PM–12:33 PM"),
+            CoverageSpanDisplay(
+                span: CoverageSpan(kind: .quiet, range: 0.604167...0.645833),
+                popoverText: Copy.Popover.quietSpan("12:33 PM–12:35 PM")),
+            CoverageSpanDisplay(
+                span: CoverageSpan(kind: .recorded, range: 0.645833...0.9375),
+                popoverText: "recorded 12:35 PM–12:49 PM"),
+            CoverageSpanDisplay(
+                span: CoverageSpan(kind: .missing, range: 0.9375...0.938194),
+                popoverText: Copy.Popover.missingSpan("2 sec")),
+            CoverageSpanDisplay(
+                span: CoverageSpan(kind: .recorded, range: 0.938194...1),
+                popoverText: "recorded 12:49 PM–12:52 PM"),
+        ]
+    )
 }
