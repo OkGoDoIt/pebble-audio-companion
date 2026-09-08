@@ -12,10 +12,11 @@ import SwiftUI
 /// id the Library shows afterwards (`ConversationGrouper.adoptStableIds` keeps it across the
 /// regroup that closes it), so nothing opened from here breaks when the recording ends.
 ///
-/// What is honestly different while it is still being written is said, once, where it matters:
-/// the summary is provisional and gets rewritten (`Copy.Live.summarySoFar`), and Ask/Notes read
-/// durable transcripts while follow-ups are only extracted from a finished conversation
-/// (`Copy.Live.aiHorizon`). Neither is hidden and neither is dressed up.
+/// The summary here is provisional (the enrichment worker rewrites it as the text grows), and
+/// Ask/Notes read durable transcripts while follow-ups are only extracted from a finished
+/// conversation. Both used to be said in captions on this screen; the headline "Recording now"
+/// and the Live badge already say that everything here is still being written, so the captions
+/// were removed rather than shortened.
 ///
 /// This is the Conversation screen's transcript card, not a parallel one: same speaker
 /// blocks, same clock stamps beside the names, same inline quiet/missing markers. What the
@@ -289,9 +290,15 @@ struct LiveConversationScreen: View {
                         query: nil))
             }
             ActionPill(title: Copy.Conversation.notes) { openNotes() }
-            ActionPill(title: Copy.Conversation.followUps) {
-                guard !conversationId.isEmpty else { return }
-                showFollowUps = true
+            // Not while it is live. `FollowUpWorker` requires `!conversation.isOpen` and every
+            // member closed and fully transcribed, so a live conversation cannot have produced a
+            // single follow-up and the sheet is guaranteed empty — a button whose only possible
+            // outcome is an empty list. It comes back with the finished conversation.
+            if !viewModel.snapshot.isLive {
+                ActionPill(title: Copy.Conversation.followUps) {
+                    guard !conversationId.isEmpty else { return }
+                    showFollowUps = true
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
