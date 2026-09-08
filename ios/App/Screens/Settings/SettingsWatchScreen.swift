@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Settings · Watch (artboard 2.10): device card w/ battery, firmware + watch-report rows,
-/// Find Watch (inline connect progress, NO capture side effects — anti-B3), destructive
-/// forget with confirmation.
+/// Settings · Watch (artboard 2.10): device card w/ battery, what the watch itself reports,
+/// Reconnect (inline progress, NO capture side effects — anti-B3), destructive forget with
+/// confirmation.
 struct SettingsWatchScreen: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
@@ -18,8 +18,13 @@ struct SettingsWatchScreen: View {
         SettingsScroll {
             deviceCard
             infoCard
+            SettingsFooter(text: Copy.Settings.Watch.reportsFooter)
             ListCard {
-                TintActionRow(title: Copy.Settings.Watch.findWatch, action: findWatch) {
+                TintActionRow(
+                    title: Copy.Settings.Watch.reconnect,
+                    subtitle: Copy.Settings.Watch.reconnectSub,
+                    action: findWatch
+                ) {
                     findAccessory
                 }
             }
@@ -28,16 +33,31 @@ struct SettingsWatchScreen: View {
                     confirmForget = true
                 }
             }
+            // Anchored to the card that raises it, not to the screen.
+            //
+            // A confirmation dialog takes its presentation source from the view the modifier is
+            // attached to. This one was attached to `SettingsScroll` — a ScrollView filling the
+            // whole screen — so the source rect was the entire screen and iOS 26 placed the panel
+            // against the top of it, floating far from the row that had just been tapped. On the
+            // one screen where a mis-tap forgets the watch, the confirmation has to read as
+            // belonging to the button that raised it.
+            //
+            // It also has words now: title, and a message that says what is lost (the
+            // authorization) and what is not (every recording).
+            .confirmationDialog(
+                Copy.Settings.Watch.forgetTitle,
+                isPresented: $confirmForget,
+                titleVisibility: .visible
+            ) {
+                Button(
+                    Copy.Settings.Watch.forgetConfirm, role: .destructive, action: forgetWatch
+                )
+            } message: {
+                Text(Copy.Settings.Watch.forgetMessage)
+            }
             SettingsFooter(text: Copy.Settings.Watch.footer)
         }
         .navigationTitle(Copy.Settings.Watch.title)
-        .confirmationDialog(
-            Copy.Settings.Watch.forgetWatch,
-            isPresented: $confirmForget,
-            titleVisibility: .hidden
-        ) {
-            Button("Forget This Watch", role: .destructive, action: forgetWatch)
-        }
     }
 
     // MARK: Cards
@@ -64,36 +84,39 @@ struct SettingsWatchScreen: View {
         }
     }
 
+    /// What the watch itself says about the audio service.
+    ///
+    /// The Firmware row is rendered ONLY when the watch has actually reported a version, which
+    /// today it never does: `InfoSnapshot.fwVersionPacked` exists in the wire layout
+    /// (`PROTOCOL.md` §3, offset 12) but `audio_companion_fill_info()` never assigns it, so the
+    /// designated initializer zero-fills those four bytes and the app correctly reads "unknown".
+    /// A row whose value is a permanent em-dash is worse than no row: it reads as a value the
+    /// app failed to fetch rather than one the firmware does not send. When a firmware build
+    /// starts filling the field the row appears on its own, with no change here.
     private var infoCard: some View {
         ListCard {
-            SettingsRow(
-                title: Copy.Settings.Watch.firmware,
-                value: watch.firmwareVersion.map(Copy.Settings.Watch.firmwareValue) ?? "—",
-                showsChevron: false
-            )
             SettingsRow(
                 title: Copy.Settings.Watch.watchReports,
                 value: watch.watchReports,
                 showsChevron: false
             )
+            if let firmwareVersion = watch.firmwareVersion {
+                SettingsRow(
+                    title: Copy.Settings.Watch.firmware,
+                    value: Copy.Settings.Watch.firmwareValue(firmwareVersion),
+                    showsChevron: false
+                )
+            }
         }
     }
 
-    private var statusLine: String {
-        switch settings.captureIntent {
-        case .active: return Copy.Settings.Root.recordingConnected
-        case .paused: return Copy.Status.paused
-        case .off: return Copy.Status.notRecording
-        }
-    }
+    /// Deferred to `CaptureStatus` rather than switching on `captureIntent` here, which is what
+    /// this used to do. The intent alone can no longer describe the state: a timed pause carries
+    /// the time it ends, and a local switch would have gone on saying a bare "Paused" while the
+    /// two surfaces that own the control said "Paused until 3:40 PM". One vocabulary, one answer.
+    private var statusLine: String { CaptureStatus(settings).line }
 
-    private var statusColor: Color {
-        switch settings.captureIntent {
-        case .active: return Tokens.good
-        case .paused: return Tokens.attention
-        case .off: return Tokens.meta
-        }
-    }
+    private var statusColor: Color { CaptureStatus(settings).color }
 
     @ViewBuilder
     private var findAccessory: some View {
@@ -104,7 +127,7 @@ struct SettingsWatchScreen: View {
             ProgressView()
                 .controlSize(.small)
         case .connected:
-            Text(Copy.Settings.TranscriptionAI.connectedAgo("just now"))
+            Text(Copy.Settings.Watch.reconnected)
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.good)
         case .notFound:
@@ -117,23 +140,39 @@ struct SettingsWatchScreen: View {
 
     // MARK: Actions
 
-    /// Attempts a connection and shows progress inline. Deliberately touches NOTHING about
-    /// capture intent (anti-B3: connecting never silently enables recording).
+    /// Rebuilds the link and shows progress inline. Deliberately touches NOTHING about capture
+    /// intent (anti-B3: connecting never silently enables recording).
+    ///
+    /// It polls instead of sleeping the full timeout: a rebuild that lands in a second used to
+    /// spin for six anyway, which reads as a stall on the one action a user takes *because*
+    /// something already feels stuck.
     private func findWatch() {
         guard findState != .connecting else { return }
         findState = .connecting
         watch.findWatch()
         Task {
-            // Give the link a moment, then report what actually happened rather than a
-            // decorative "connected".
-            try? await Task.sleep(for: .seconds(6))
-            findState = watch.isConnected ? .connected : .notFound
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            while ContinuousClock.now < deadline, !watch.isConnected {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            // Report what actually happened rather than a decorative "connected".
+            let outcome: FindState = watch.isConnected ? .connected : .notFound
+            findState = outcome
+            // And let it go again. The result described one attempt a moment ago; leaving
+            // "Connected" pinned under the row turns it into a claim about now, which it stops
+            // being the second the watch walks out of range.
+            try? await Task.sleep(for: .seconds(8))
+            if findState == outcome { findState = .idle }
         }
     }
 
     /// Forgetting the watch drops the binding: capture goes off and the app returns to
     /// pairing (the onboarding gate reopens).
     private func forgetWatch() {
+        // The same confirmation feedback every other destructive action in the app gives; this
+        // one is the most destructive on the screen (it also reopens the onboarding gate) and
+        // was the only one that gave none.
+        Haptics.destructiveConfirmed()
         // Drop the binding first: capture off alone would leave the watch still authorized
         // to this phone.
         watch.forget()

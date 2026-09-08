@@ -86,19 +86,27 @@ struct SettingsPushRow<Destination: View>: View {
     }
 }
 
-/// Link-style action row (16/tint text, e.g. "Find Watch", "Test Connection") with an
+/// Link-style action row (16/tint text, e.g. "Reconnect", "Test Connection") with an
 /// optional trailing accessory (inline progress / result — B10: never fire-and-forget).
+///
+/// `subtitle` is optional and off by default. An action row whose verb does not fully say what
+/// the tap does needs one line that does: "Find Watch" was read as "make my watch ring" when all
+/// it has ever done is rebuild the Bluetooth link, and a row cannot correct that impression from
+/// its title alone.
 struct TintActionRow<Accessory: View>: View {
     let title: String
+    var subtitle: String? = nil
     let action: () -> Void
     @ViewBuilder var accessory: Accessory
 
     init(
         title: String,
+        subtitle: String? = nil,
         action: @escaping () -> Void,
         @ViewBuilder accessory: () -> Accessory = { EmptyView() }
     ) {
         self.title = title
+        self.subtitle = subtitle
         self.action = action
         self.accessory = accessory()
     }
@@ -106,10 +114,19 @@ struct TintActionRow<Accessory: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Text(title)
-                    .font(AppFont.callout)
-                    .foregroundStyle(Tokens.tint)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.meta)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Spacer(minLength: 10)
                 accessory
             }

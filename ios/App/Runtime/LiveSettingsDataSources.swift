@@ -117,13 +117,25 @@ final class LiveWatchStatusSource: WatchStatusSource {
         return trimmed.isEmpty ? StatusCopy.genericDeviceName : trimmed
     }
 
-    /// The watch packs its firmware version as major/minor/patch bytes; battery is not part of
-    /// the audio-companion service, so it stays unknown until the watch reports one.
-    private static func firmwareLabel(_ packed: UInt32) -> String? {
+    /// The watch's firmware version, unpacked from the Info characteristic's `fw_version_packed`
+    /// word; battery is not part of the audio-companion service, so it stays unknown until the
+    /// watch reports one.
+    ///
+    /// The layout is the wire contract's, `(major << 24) | (minor << 16) | patch` — spec §3 offset
+    /// 12, and the shared fixture `info_streaming.json` (`67698690` == `0x04090002` == "fw 4.9.2",
+    /// which the firmware's own `test_audio_companion_protocol.c` builds as
+    /// `(4u << 24) | (9u << 16) | 2u`). This used to shift by 16/8/0, which read that same word
+    /// back as **v9.0.2**: major came out of the minor's byte and the patch's high byte was
+    /// dropped entirely. Nothing caught it because no shipped firmware fills the field at all
+    /// (see `SettingsWatchScreen.infoCard`), so the wrong answer has never been on screen — it
+    /// would simply have been wrong on the first day it was.
+    ///
+    /// `patch` is the low SIXTEEN bits, not a byte: the contract leaves bits 8–15 to it.
+    static func firmwareLabel(_ packed: UInt32) -> String? {
         guard packed != 0 else { return nil }
-        let major = (packed >> 16) & 0xFF
-        let minor = (packed >> 8) & 0xFF
-        let patch = packed & 0xFF
+        let major = (packed >> 24) & 0xFF
+        let minor = (packed >> 16) & 0xFF
+        let patch = packed & 0xFFFF
         return patch == 0 ? "v\(major).\(minor)" : "v\(major).\(minor).\(patch)"
     }
 }
