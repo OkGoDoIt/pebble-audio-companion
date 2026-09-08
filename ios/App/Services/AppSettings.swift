@@ -109,6 +109,23 @@ final class AppSettings {
         }
     }
 
+    /// An OPT-IN timed pause (`CapturePauseSchedule`). `.none` — and nothing scheduled — is the
+    /// default and stays the default: flipping the capture switch off writes `.off` with no
+    /// timer and no notification, exactly as it always did. A schedule exists only after
+    /// someone chose a duration from the "Pause for…" menu.
+    ///
+    /// Persisted in the App Group so a pause survives relaunch, and NOT mirrored into
+    /// `RuntimeSettingsSnapshot`: the runtime is told about a pause the only way it has ever
+    /// been told — by `captureIntent` — and a second channel for the same fact is a second
+    /// thing that can disagree.
+    var capturePause: CapturePauseSchedule {
+        didSet {
+            guard capturePause != oldValue else { return }
+            defaults.set(NSNumber(value: capturePause.resumeAtMs), forKey: Keys.pauseResumeAtMs)
+            defaults.set(NSNumber(value: capturePause.remindAtMs), forKey: Keys.pauseRemindAtMs)
+        }
+    }
+
     var transcriptionMode: TranscriptionMode {
         didSet {
             defaults.set(transcriptionMode.rawValue, forKey: Keys.transcriptionMode)
@@ -269,6 +286,7 @@ final class AppSettings {
         captureIntent =
             defaults.string(forKey: Keys.captureIntent)
             .flatMap(CaptureIntent.init(settingValue:)) ?? .off
+        capturePause = AppSettings.storedPauseSchedule(defaults)
         backgroundCatchUp =
             defaults.string(forKey: Keys.backgroundCatchUp).flatMap(BackgroundCatchUp.init)
             ?? .whileCharging
@@ -324,6 +342,7 @@ final class AppSettings {
         ) {
             captureIntent = stored
         }
+        capturePause = AppSettings.storedPauseSchedule(defaults)
         if let stored = defaults.string(forKey: Keys.transcriptionMode).flatMap(
             TranscriptionMode.init
         ) {
@@ -352,8 +371,21 @@ final class AppSettings {
         if defaults.bool(forKey: Keys.onboardingComplete) { onboardingComplete = true }
     }
 
+    /// Absent keys => 0 => nothing armed, which is what every install that has never used the
+    /// "Pause for…" menu reads back.
+    private static func storedPauseSchedule(_ defaults: UserDefaults) -> CapturePauseSchedule {
+        CapturePauseSchedule(
+            resumeAtMs: (defaults.object(forKey: Keys.pauseResumeAtMs) as? NSNumber)?.int64Value
+                ?? 0,
+            remindAtMs: (defaults.object(forKey: Keys.pauseRemindAtMs) as? NSNumber)?.int64Value
+                ?? 0
+        )
+    }
+
     private enum Keys {
         static let captureIntent = "capture_intent"
+        static let pauseResumeAtMs = "capture_pause_resume_at_ms"
+        static let pauseRemindAtMs = "capture_pause_remind_at_ms"
         static let transcriptionMode = "transcription_mode"
         static let backgroundCatchUp = "background_catch_up"
         static let localModel = "local_transcription_model"

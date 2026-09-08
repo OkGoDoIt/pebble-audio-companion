@@ -1,3 +1,4 @@
+import Receiver
 import SwiftUI
 import StatusUI
 
@@ -5,6 +6,10 @@ import StatusUI
 /// day coverage, recap, follow-ups, conversations. Ask is one tap from the title bar.
 struct TodayScreen: View {
     @Environment(AppRouter.self) private var router
+    /// The capture switch's truth: `captureIntent` plus the opt-in pause schedule. Observed
+    /// here so the card re-renders the moment either changes, whoever changed it — this screen,
+    /// Settings, Control Center, a widget button, or the timer coming due.
+    @Environment(AppSettings.self) private var settings
     @State private var viewModel = TodayViewModel()
     @State private var poppedSpan: CoverageSpanDisplay?
     /// Which follow-up row is showing its swipe actions — at most one at a time, card-wide.
@@ -55,7 +60,10 @@ struct TodayScreen: View {
             // The recap detail rides the `.note` route (digest id `day-<dateKey>`); every
             // other id is a saved note reached from a conversation opened in THIS stack.
             if id.hasPrefix(RecapDisplay.digestIdPrefix) {
-                RecapDetailView(detail: viewModel.snapshot.recap?.detail)
+                // The whole `RecapDisplay`, not just its detail: the pushed screen shows the
+                // FULL digest, and it also needs to know whether the card that pushed it was
+                // showing a shortened form so it can say so.
+                RecapDetailView(recap: viewModel.snapshot.recap)
             } else {
                 SavedNotesScreen(noteId: id)
             }
@@ -77,13 +85,32 @@ struct TodayScreen: View {
     // control that had to be explained rather than read. The Conversation screen keeps its own
     // Ask pill — that one carries a scope you cannot get to any other way.
 
-    // MARK: Status card (all families; recording composes the live minute + Pause link)
+    // MARK: Status card
+    //
+    // Two families draw their own card because they are the two where the thing to change is
+    // CAPTURE ITSELF, and both now carry the same switch (`CaptureToggle`) in the same place:
+    //
+    //   .recording  the switch, the connected sub-line, the live minute, the legend
+    //   .paused     the switch (on, amber), when the pause ends, and Resume now
+    //
+    // Every other family keeps the plain `StatusCard`: those cards are about a problem to
+    // resolve — Bluetooth off, out of range, a prompt waiting on the watch — and their one
+    // action is the resolution. A capture switch beside it would compete with the thing the
+    // person actually has to do, and capture intent is not what is wrong in any of them.
+    //
+    // The `.paused` family is checked against the INTENT, not just the family, because the kit
+    // also reports `.paused` for pauses this phone did not ask for — a microphone conflict, a
+    // flat watch battery, the watch's own power save, low storage. Those keep the approved card
+    // that names the cause: a "Resume now" button that cannot resume anything, next to a switch
+    // that is already on, would be the emptiest control on the screen.
 
     @ViewBuilder
     private var statusCard: some View {
         let status = viewModel.status
         if status.family == .recording {
             recordingCard(status)
+        } else if status.family == .paused, settings.captureIntent == .paused {
+            pausedCard(status)
         } else {
             StatusCard(
                 dotColor: status.dot.tokenColor,
@@ -108,8 +135,15 @@ struct TodayScreen: View {
         }
     }
 
-    /// The artboard's Recording card: dot · "Recording" · Pause link; connected sub-line;
-    /// 40-bar live minute; taxonomy legend.
+    /// The Recording card: dot · "Recording" · the capture switch; connected sub-line; 40-bar
+    /// live minute; taxonomy legend.
+    ///
+    /// The switch replaces the "Pause" text link the artboard drew here. Three reasons, in the
+    /// order they matter: a link that stops a microphone should look like a control and not
+    /// like prose; the same operation lived in Settings as a switch, so one of the two had to
+    /// give; and a link has one meaning, while the switch's off position now means the same
+    /// `.off` on both screens, leaving `.paused` free to mean the temporary thing the "Pause
+    /// for…" menu arms.
     private func recordingCard(_ status: StatusModel) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
@@ -118,19 +152,8 @@ struct TodayScreen: View {
                     Text(status.headline)
                         .font(AppFont.headline)
                         .foregroundStyle(Tokens.label)
-                    Spacer()
-                    Button(Copy.Today.pause) {
-                        Haptics.captureEnded()
-                        viewModel.pauseTapped()
-                    }
-                    .font(AppFont.pill)
-                    .foregroundStyle(Tokens.tint)
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 11)
-                    .padding(.leading, 12)
-                    .contentShape(Rectangle())
-                    .padding(.vertical, -11)
-                    .padding(.leading, -12)
+                    Spacer(minLength: 8)
+                    captureToggle
                 }
                 if let detail = status.detail {
                     Text(detail)
@@ -143,6 +166,53 @@ struct TodayScreen: View {
                 }
             }
         }
+    }
+
+    /// The Paused card. Same shape as Recording, because it is the same control in a different
+    /// state: the switch stays ON and amber (the setting is enabled, capture is suspended), the
+    /// line says how the pause ends, and Resume now is the one action.
+    ///
+    /// The line comes from `CaptureStatus`, not from the kit's status model, because only this
+    /// side knows about the opt-in timer — "Paused · recording resumes at 3:40 PM" is a
+    /// materially different sentence from "the watch is not capturing", and a person who set a
+    /// timer needs to see it honoured somewhere.
+    private func pausedCard(_ status: StatusModel) -> some View {
+        let capture = CaptureStatus(settings)
+        return Card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    StatusDot(color: Tokens.attention, size: .status)
+                    Text(status.headline)
+                        .font(AppFont.headline)
+                        .foregroundStyle(Tokens.label)
+                    Spacer(minLength: 8)
+                    captureToggle
+                }
+                Text(capture.schedule.isArmed ? capture.line : (status.detail ?? capture.line))
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(Copy.Capture.resumeNow) {
+                    Haptics.captureStarted()
+                    captureController.resumeNow()
+                }
+                .buttonStyle(.inCardFilled)
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    /// The one capture control, built from Today's transport. Long-press opens the opt-in
+    /// "Pause for…" menu; a snackbar reports a reminder iOS will not deliver, rather than
+    /// leaving someone relying on a nudge that is never coming.
+    private var captureToggle: some View {
+        CaptureToggle(controller: captureController) {
+            snackbar = SnackbarItem(message: Copy.Capture.reminderUnavailable)
+        }
+    }
+
+    private var captureController: CaptureController {
+        viewModel.captureController(settings: settings)
     }
 
     // MARK: Empty state (6.7) — first run, or startup recovery still reading the store
@@ -214,7 +284,19 @@ struct TodayScreen: View {
         }
     }
 
-    // MARK: Recap card (sparkle · "Today so far" · updated · digest → cited detail)
+    // MARK: Recap card (sparkle · "Today so far" · updated · chevron; digest → full detail)
+    //
+    // The card has always pushed the cited detail, and nothing on it said so — no chevron, no
+    // line, just a paragraph that happened to be tappable. That was survivable while the digest
+    // was two sentences. It stopped being survivable once the digest grew: on a full day the
+    // card became the tallest thing on Today, pushing coverage, follow-ups and conversations
+    // below the fold, and the way out of that was invisible.
+    //
+    // So: `cardText` is the CONDENSED digest when the second AI pass produced one
+    // (`RecapCondenser` — see `RecapDisplay.condensed`), the full digest otherwise, and the
+    // header row carries the chevron that says where the rest lives. The extra "Read the full
+    // recap" line appears only when there IS more, so it can never promise something the tap
+    // does not deliver.
 
     private func recapCard(_ recap: RecapDisplay) -> some View {
         Button {
@@ -229,22 +311,33 @@ struct TodayScreen: View {
                         Text(Copy.Today.recapTitle)
                             .font(AppFont.cardHead)
                             .foregroundStyle(Tokens.label)
-                        Spacer()
+                        Spacer(minLength: 8)
                         Text(recap.updatedText)
                             .font(.system(.caption))
                             .foregroundStyle(Tokens.faint)
+                            .layoutPriority(-1)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Tokens.chevron)
+                            .accessibilityHidden(true)
                     }
-                    Text(recap.digest)
+                    Text(recap.cardText)
                         .font(AppFont.subBody)
                         .foregroundStyle(Tokens.secondaryBody)
                         .lineSpacing(5)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
+                    if recap.isCondensed {
+                        Text(Copy.Recap.readFull)
+                            .font(AppFont.chip)
+                            .foregroundStyle(Tokens.tint)
+                    }
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: Tokens.cardRadius))
         }
         .buttonStyle(.plain)
+        .accessibilityHint(Copy.Recap.openHint)
     }
 
     // MARK: Follow-ups — the three that matter, and a way out to the rest
@@ -464,5 +557,6 @@ struct TodayScreen: View {
         TodayScreen()
     }
     .environment(router)
+    .environment(AppSettings())
     .tint(Tokens.tint)
 }

@@ -23,6 +23,12 @@ enum SharedCaptureIntent: String, Codable, Sendable, CaseIterable {
     /// consent gate that matters lives on the watch (first authorization still needs an
     /// on-watch confirmation, and the firmware fails closed without it). Dropping the request
     /// here bought no safety and cost the user a switch that lied.
+    ///
+    /// The off position is `.paused` HERE only because this helper predates the unified
+    /// control and nothing in the shipping app calls it — `ToggleCaptureIntent` posts its two
+    /// intents directly, and its off position is `.off`, matching the switch on Today and in
+    /// Settings (`App/Components/CaptureToggle.swift`). Anything new that wants a toggle should
+    /// post `.active`/`.off` explicitly rather than reach for this.
     var toggled: SharedCaptureIntent { self == .active ? .paused : .active }
 }
 

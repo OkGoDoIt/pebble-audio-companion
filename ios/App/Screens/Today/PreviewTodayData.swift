@@ -74,9 +74,22 @@ final class PreviewTodayData {
         momentsFooter: "2 moments · Coffee with Dana, App redesign session"
     )
 
+    /// The overrun case, so the artboards exercise the condensed card rather than only the
+    /// happy two-sentence day: `digest` is what a full day's digest actually looks like, and
+    /// `condensed` is the medium paragraph the second AI pass brings it back to. The card shows
+    /// the short form (the approved artboard text); the pushed detail shows all of it.
     private static let recap = RecapDisplay(
         updatedText: Copy.Today.updatedAt("12:40 PM"),
-        digest: "Quiet morning. Around noon you worked through the app redesign — simpler "
+        digest: "A quiet morning at home — mostly the radio and one short call about the "
+            + "delivery window. Coffee with Dana at 9:12; she takes the new firmware build and "
+            + "wants the studio walkthrough moved to Tuesday before the slot goes. Around noon "
+            + "you worked through the app redesign for the best part of an hour: simpler "
+            + "onboarding, conversations instead of segments, and a long stretch on how the "
+            + "status card should read when the watch is out of range. The decision at the end "
+            + "of that was to rebuild the app in Swift rather than keep patching the shared "
+            + "layer. Afterwards, a short exchange about the lease paperwork Owen is still "
+            + "waiting on.",
+        condensed: "Quiet morning. Around noon you worked through the app redesign — simpler "
             + "onboarding, conversations instead of segments. Decision: rebuild in Swift.",
         detail: recapDetail
     )
@@ -244,7 +257,11 @@ extension PreviewTodayData: TodayDataSource {
         case .start, .resume:
             phase = .recording
         case .stop:
-            phase = .paused
+            // The OFF position of the capture switch, on both Today and Settings. It used to
+            // land on `.paused` here, which is what let the two surfaces tell different stories
+            // about the same control; `.paused` is now only ever the opt-in timed pause
+            // (`requestPause`). See `App/Components/CaptureToggle.swift`.
+            phase = .stopped
         default:
             break
         }

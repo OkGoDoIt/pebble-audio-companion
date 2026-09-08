@@ -1,3 +1,4 @@
+import Receiver
 import SwiftUI
 import StatusUI
 
@@ -103,7 +104,30 @@ final class TodayViewModel {
 
     // MARK: Actions
 
-    func pauseTapped() { dataSource.requestPause() }
+    /// Today's half of the shared capture control.
+    ///
+    /// The transport is `TodayDataSource` rather than `CaptureControlling` on purpose: both are
+    /// the same `LiveTodayDataSource` object in a real build, reaching the same
+    /// `CompanionRuntime` calls, but going through the data source is what keeps
+    /// `PreviewTodayData` animating the approved artboards — a Today preview whose switch did
+    /// nothing would be a worse artboard than the text link it replaced.
+    ///
+    /// The mapping is the whole of Today's capture vocabulary, and it is deliberately the same
+    /// three intents Settings sends:
+    ///   `.active` → Start (arms the one on-watch enable prompt and dials the link, so a resume
+    ///               from a dropped link actually reconnects)
+    ///   `.off`    → Stop  (the switch's off position — the receiver stops)
+    ///   `.paused` → the opt-in timed pause, and nothing else
+    func captureController(settings: AppSettings) -> CaptureController {
+        CaptureController(settings: settings) { [weak self] intent in
+            guard let self else { return }
+            switch intent {
+            case .active: self.dataSource.perform(.start)
+            case .off: self.dataSource.perform(.stop)
+            case .paused: self.dataSource.requestPause()
+            }
+        }
+    }
 
     func perform(_ action: StatusAction) { dataSource.perform(action) }
 

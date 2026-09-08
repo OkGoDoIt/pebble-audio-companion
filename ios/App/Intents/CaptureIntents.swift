@@ -121,12 +121,18 @@ struct ResumeCaptureIntent: AppIntent, CaptureRequestingIntent {
 
 /// The Control Center / Shortcuts toggle. `SetValueIntent` is what `ControlWidgetToggle`
 /// requires: the control hands us the value it wants, we record it, the app applies it.
+///
+/// Its off position writes `.off`, not `.paused`. It is the same switch the app draws on Today
+/// and in Settings (`App/Components/CaptureToggle.swift`), and a system control that produced a
+/// different state from the in-app one is exactly the "is this the same thing?" confusion this
+/// round is fixing. `.paused` is now reserved for a DELIBERATE, temporary pause: the app's
+/// "Pause for…" menu, and `PauseCaptureIntent` below, which says "Pause" on the tin.
 struct ToggleCaptureIntent: SetValueIntent, CaptureRequestingIntent {
     static var title: LocalizedStringResource = "Toggle Capture"
-    static var description = IntentDescription("Pauses or resumes capture from your Pebble.")
+    static var description = IntentDescription("Turns capture from your Pebble on or off.")
     static var openAppWhenRun: Bool = false
 
-    /// True = capturing, false = paused.
+    /// True = capturing, false = off.
     @Parameter(title: "Capturing")
     var value: Bool
 
@@ -137,9 +143,9 @@ struct ToggleCaptureIntent: SetValueIntent, CaptureRequestingIntent {
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        switch await deliver(value ? .active : .paused) {
+        switch await deliver(value ? .active : .off) {
         case .applied, .opened:
-            return .result(dialog: value ? "Capture resumed." : "Capture paused.")
+            return .result(dialog: value ? "Capture on." : "Capture off.")
         case .unreachable:
             return .result(
                 dialog: "Pebble Audio is not running. This will apply when you open it."

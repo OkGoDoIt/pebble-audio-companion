@@ -14,6 +14,10 @@ struct SettingsScreen: View {
     /// revoked in iOS Settings while the app's own switch stays on).
     @State private var notificationsDenied = false
 
+    /// Set when a chosen "remind me" pause could not be scheduled because iOS notifications are
+    /// off. The pause still happened; only the reminder did not, and the row says which.
+    @State private var pauseReminderUnavailable = false
+
     var body: some View {
         SettingsScroll {
             titleRow
@@ -74,16 +78,48 @@ struct SettingsScreen: View {
             }
             .buttonStyle(.plain)
 
-            // The toggle keeps its intrinsic width, so at accessibility sizes the label
-            // has to move above it rather than be hyphenated into the leftover column.
-            Toggle(isOn: backgroundAudioBinding) {
-                Text(Copy.Settings.Root.backgroundAudio)
-                    .font(AppFont.callout)
-                    .foregroundStyle(Tokens.label)
+            // The capture switch — the SAME control Today's status card draws, from the same
+            // `CaptureController` policy, so the two surfaces cannot answer "is recording on?"
+            // differently. It used to be a bare `Toggle` labelled "Background audio", which is
+            // what made this read as a separate mode rather than as the app's on/off switch.
+            CaptureToggle(controller: captureController, layout: .row) {
+                pauseReminderUnavailable = true
+            }
+
+            // The visible door to the opt-in timed pause. The same options live behind a
+            // long-press on the switch above (where Focus keeps its), but a long-press nobody
+            // discovers is the same as no affordance at all, so exactly one surface shows them
+            // — here, one row, and only while there is something to pause.
+            if captureStatus.canPause {
+                Menu {
+                    CapturePauseMenuItems(controller: captureController) {
+                        pauseReminderUnavailable = true
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Text(Copy.Capture.pauseMenu)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.tint)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityHint(Copy.Capture.pauseMenuHint)
+            }
+
+            // Only while it is still true: the reminder failed, so `capturePause` was reset and
+            // the pause is a plain one. Any later state — a pause that DID arm a timer, a
+            // resume, a switch off — makes the sentence stale, and it disappears on its own
+            // rather than needing something to remember to clear it.
+            if pauseReminderUnavailable, captureStatus.isPaused,
+                !captureStatus.schedule.isArmed
+            {
+                Text(Copy.Capture.reminderUnavailable)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.switch)
-            .tint(Tokens.good)
 
             // Two-line toggle row, same shape as Storage's auto-export row.
             HStack(spacing: 12) {
@@ -134,41 +170,34 @@ struct SettingsScreen: View {
         notificationsDenied = status == .denied
     }
 
-    /// "Background audio" is the master switch: active↔off. A paused intent still reads as
-    /// ON (pause is the temporary form of on — plan 6.1); flipping OFF from paused turns
-    /// capture fully off, flipping ON resumes.
+    /// Settings' half of the shared capture control.
     ///
-    /// The write alone is only a preference. This switch used to do nothing else, which made it
-    /// lie in both directions: ON left the watch uncontacted while every surface said
-    /// "Recording", and OFF left the receiver running on a person who had just switched
-    /// recording off. `capture` is the runtime follow-through every other capture surface makes
-    /// (`aa2a934`, `8ecace0`) — intent first so the row flips at once, then the link.
-    private var backgroundAudioBinding: Binding<Bool> {
-        Binding(
-            get: { settings.captureIntent != .off },
-            set: { on in
-                let intent: CaptureIntent = on ? .active : .off
-                settings.captureIntent = intent
-                sources.capture.applyCaptureIntent(intent)
-            }
-        )
+    /// The policy — what on/off/pause each mean, what they write, what they clear — lives in
+    /// `CaptureController`; this only supplies the transport. `applyCaptureIntent` is the
+    /// runtime follow-through every capture surface makes (`aa2a934`, `8ecace0`): the write
+    /// alone is a preference, and a switch that wrote one used to lie in both directions — ON
+    /// left the watch uncontacted while every surface said "Recording", OFF left the receiver
+    /// running on someone who had just switched recording off.
+    private var captureController: CaptureController {
+        CaptureController(settings: settings) { intent in
+            sources.capture.applyCaptureIntent(intent)
+        }
     }
 
+    private var captureStatus: CaptureStatus { CaptureStatus(settings) }
+
+    /// The watch card's own line. Sourced from the same `CaptureStatus` as the switch below it,
+    /// so the two rows on this one screen can never disagree about whether the watch is
+    /// capturing — and so a timed pause names its end here too rather than only on Today.
     private var watchStatusLine: String {
         switch settings.captureIntent {
         case .active: return Copy.Settings.Root.recordingConnected
-        case .paused: return Copy.Status.paused
+        case .paused: return captureStatus.line
         case .off: return Copy.Status.notRecording
         }
     }
 
-    private var watchStatusColor: Color {
-        switch settings.captureIntent {
-        case .active: return Tokens.good
-        case .paused: return Tokens.attention
-        case .off: return Tokens.meta
-        }
-    }
+    private var watchStatusColor: Color { captureStatus.color }
 
     // MARK: Groups
 

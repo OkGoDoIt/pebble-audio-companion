@@ -28,8 +28,10 @@ public actor RecapService {
         await engine.stop()
     }
 
-    /// One pipeline-pass refresh. Never throws into the pass: a recap failure is a non-event for
-    /// the audio pipeline.
+    /// One pipeline-pass refresh: regenerate any day whose transcripts changed, then condense
+    /// any digest that came out longer than the Today card can carry (`RecapCondenser`). Never
+    /// throws into the pass: a recap failure is a non-event for the audio pipeline, and a
+    /// missing condensation just means the card shows the full digest.
     public func refresh() async {
         try? await engine?.refreshDigests()
     }

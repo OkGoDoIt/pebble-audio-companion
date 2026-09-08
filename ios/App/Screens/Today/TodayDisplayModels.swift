@@ -56,9 +56,22 @@ struct RecapDisplay: Equatable {
 
     /// e.g. "updated 12:40 PM".
     let updatedText: String
-    /// The 2–3 sentence digest body.
+    /// The digest body, WHOLE. This is what the pushed detail shows and what search holds; on a
+    /// full day it can run to a screenful, which is why the card shows `cardText` instead.
     let digest: String
+    /// A shorter second AI pass over `digest`, present only when the digest overran the card's
+    /// medium-paragraph budget AND the pass produced something meaningfully shorter
+    /// (`RecapCondenser`). Nil is the normal state and means "show the digest" — never a
+    /// spinner, never an empty card. Declared before `detail` so the memberwise initializer
+    /// reads `(updatedText:digest:condensed:detail:)` at both construction sites.
+    var condensed: String? = nil
     let detail: RecapDetailDisplay
+
+    /// What the Today card renders. Falls back to the full digest, always.
+    var cardText: String { condensed ?? digest }
+
+    /// True while the card is showing a shortened form, so it can say where the rest is.
+    var isCondensed: Bool { condensed != nil }
 }
 
 // MARK: - Follow-ups / conversations
