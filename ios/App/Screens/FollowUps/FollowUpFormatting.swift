@@ -41,6 +41,15 @@ enum FollowUpFormatting {
         return nil
     }
 
+    /// Just the day, for the filed-away summary at the foot of the open list. The section head
+    /// already says "Filed away", so the row says only WHEN — repeating the words on every line
+    /// of a five-line list would be the same noise `metaLine` exists to avoid. Nil when the row
+    /// is not filed away at all, so a caller cannot label one that isn't.
+    static func filedAwayDay(_ item: FollowUpItem, now: Date) -> String? {
+        guard let archivedAtMs = item.archivedAtMs else { return nil }
+        return day(Date(timeIntervalSince1970: Double(archivedAtMs) / 1000), now: now)
+    }
+
     static func dueMeta(_ due: Date, now: Date) -> Meta {
         let calendar = Calendar.current
         let startOfToday = calendar.startOfDay(for: now)

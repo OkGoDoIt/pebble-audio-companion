@@ -14,6 +14,7 @@ import SwiftUI
 /// would be grouping by an implementation detail of how the item was found.
 struct FollowUpsScreen: View {
     @Environment(AppRouter.self) private var router
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model = FollowUpsViewModel()
     @State private var snackbar: SnackbarItem?
 
@@ -23,11 +24,6 @@ struct FollowUpsScreen: View {
             .toolbar { toolbar }
             .navigationDestination(for: Route.self) { route in
                 destination(for: route)
-            }
-            .sheet(isPresented: $model.showingAdd) {
-                FollowUpEditorSheet(title: Copy.FollowUps.add, text: "", dueAt: nil) { text, due in
-                    model.add(text: text, dueAt: due)
-                }
             }
             .snackbar(item: $snackbar)
             .task { await model.start(scope: router.consumePendingFollowUpScope()) }
@@ -66,13 +62,7 @@ struct FollowUpsScreen: View {
                 }
             }
             if model.scope == .open && !model.isEmpty {
-                Section {
-                    EmptyView()
-                } footer: {
-                    Text(Copy.FollowUps.ageFooter)
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.meta)
-                }
+                filedAwayTail
             }
         }
         .listStyle(.insetGrouped)
@@ -86,12 +76,197 @@ struct FollowUpsScreen: View {
                 } description: {
                     Text(model.emptyBody)
                 } actions: {
-                    if model.scope == .open {
-                        Button(Copy.FollowUps.add) { model.showingAdd = true }
-                            .buttonStyle(.borderedProminent)
+                    // The old action here was "New Follow-up". With nothing to add by hand,
+                    // the useful thing to offer someone staring at an empty list is the one
+                    // place their missing items actually went — and only when some are there.
+                    if model.scope == .open && model.filedAwayCount > 0 {
+                        Button(Copy.FollowUps.openFiledAway(model.filedAwayCount)) {
+                            model.scope = .archived
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
+        }
+    }
+
+    // MARK: The tail of the open list — what the age rule took away
+    //
+    // Filed-away items used to leave the screen completely: the only trace was a footer
+    // sentence pointing at a filter three taps away, so a fortnight later the list was simply
+    // shorter and nothing said why. They are still not part of the working list — they are
+    // collapsed, unticked, one type size down, at the very bottom — but the count is always
+    // on screen, and opening it takes one tap.
+
+    @ViewBuilder
+    private var filedAwayTail: some View {
+        Section {
+            if model.filedAwayCount > 0 {
+                filedAwayDisclosure
+                if model.showsFiledAway {
+                    ForEach(model.filedAwayPreview) { item in
+                        filedAwayRow(item)
+                    }
+                    if model.hasMoreFiledAway {
+                        seeAllFiledAwayRow
+                    }
+                }
+            }
+        } footer: {
+            Text(Copy.FollowUps.ageFooter)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.meta)
+        }
+    }
+
+    private var filedAwayDisclosure: some View {
+        Button {
+            withAnimation(Motion.animation(.snappy(duration: 0.25))) {
+                model.showsFiledAway.toggle()
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Tokens.meta)
+                    .frame(width: 22)
+                Text(Copy.FollowUps.scopeArchived)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Text(Copy.FollowUps.filedAwayCount(model.filedAwayCount))
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+                    .monospacedDigit()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Tokens.chevron)
+                    .rotationEffect(.degrees(model.showsFiledAway ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // The bare digit is meaningless read aloud, and the rotated chevron says nothing at
+        // all — so the label carries the noun and the hint carries the direction.
+        .accessibilityLabel(Copy.FollowUps.filedAwayA11y(model.filedAwayCount))
+        .accessibilityHint(
+            model.showsFiledAway
+                ? Copy.FollowUps.filedAwayHideHint : Copy.FollowUps.filedAwayShowHint)
+        .listRowBackground(Tokens.surface)
+    }
+
+    /// Quieter than `FollowUpRow` on purpose, and not by dimming it: a filed-away item is no
+    /// longer a task, so it gets no checkbox to tick and no due date to be late for. What is
+    /// left is what it said and when it stopped being asked about — indented under the section
+    /// head, so it reads as a footnote to the list rather than a continuation of it.
+    private func filedAwayRow(_ item: FollowUpItem) -> some View {
+        Button {
+            router.followUpsPath.append(.followUp(id: item.id))
+        } label: {
+            filedAwayRowContent(item)
+                // 32 pt = the disclosure row's glyph plus its gap, so these line up under the
+                // words "Filed away" and read as belonging to it.
+                .padding(.leading, 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .leading) {
+            Button {
+                restore(item)
+            } label: {
+                Label(Copy.FollowUps.restore, systemImage: "tray.and.arrow.up")
+            }
+            .tint(Tokens.good)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                delete(item)
+            } label: {
+                Label(Copy.FollowUps.delete, systemImage: "trash")
+            }
+            .tint(Tokens.destructive)
+        }
+        .contextMenu {
+            Button {
+                restore(item)
+            } label: {
+                Label(Copy.FollowUps.restore, systemImage: "tray.and.arrow.up")
+            }
+            Divider()
+            Button(role: .destructive) {
+                delete(item)
+            } label: {
+                Label(Copy.FollowUps.delete, systemImage: "trash")
+            }
+        }
+        .listRowBackground(Tokens.surface)
+    }
+
+    /// Side by side at the everyday sizes, stacked at accessibility ones — the rule
+    /// `SettingsRow` already follows, because a title and a trailing value sharing one line at
+    /// AX5 is a hyphenated fragment beside a truncated date.
+    @ViewBuilder
+    private func filedAwayRowContent(_ item: FollowUpItem) -> some View {
+        let when = FollowUpFormatting.filedAwayDay(item, now: model.now)
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 3) {
+                filedAwayText(item)
+                if let when { filedAwayWhen(when) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                filedAwayText(item)
+                Spacer(minLength: 8)
+                if let when { filedAwayWhen(when).lineLimit(1) }
+            }
+        }
+    }
+
+    private func filedAwayText(_ item: FollowUpItem) -> some View {
+        Text(item.text)
+            .font(AppFont.subBody)
+            .foregroundStyle(Tokens.tertiary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func filedAwayWhen(_ when: String) -> some View {
+        Text(when)
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.faint)
+    }
+
+    /// The preview is capped, so a year of filed-away suggestions cannot push the list it sits
+    /// under off the screen. This is the honest way out: the whole slice, in the filter that
+    /// is named the same as the section above it.
+    private var seeAllFiledAwayRow: some View {
+        Button {
+            model.scope = .archived
+        } label: {
+            HStack(spacing: 10) {
+                Text(Copy.FollowUps.seeAllFiledAway(model.filedAwayCount))
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.tint)
+                Spacer(minLength: 8)
+            }
+            .padding(.leading, 32)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Tokens.surface)
+    }
+
+    /// Undoable like every other move on this screen: putting something back on the list is a
+    /// decision, and a mis-swipe on a row you were only reading is easy.
+    private func restore(_ item: FollowUpItem) {
+        model.setArchived(item, archived: false)
+        snackbar = SnackbarItem(
+            message: Copy.FollowUps.restored, actionTitle: Copy.Common.undo
+        ) {
+            model.setArchived(item, archived: true)
         }
     }
 
@@ -157,9 +332,10 @@ struct FollowUpsScreen: View {
                 }
             }
             if item.isArchived {
+                // Through the same helper the summary uses, so restoring is undoable wherever
+                // it is done — it was the one move on this screen that was not.
                 Button {
-                    model.setArchived(item, archived: false)
-                    snackbar = SnackbarItem(message: Copy.FollowUps.restored)
+                    restore(item)
                 } label: {
                     Label(Copy.FollowUps.restore, systemImage: "tray.and.arrow.up")
                 }
@@ -236,16 +412,11 @@ struct FollowUpsScreen: View {
             }
             .accessibilityLabel(Copy.A11y.followUpFilter(model.scope.title))
         }
-        // Two trailing items are separated by a spacer, never by drawing a shape: iOS 26
-        // supplies the capsule and would otherwise merge them into one control.
-        ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                model.showingAdd = true
-            } label: {
-                Label(Copy.FollowUps.add, systemImage: "plus")
-            }
-        }
+        // There is deliberately no "+" beside the filter. Nothing on this screen is a list you
+        // keep by hand: every row is something the app heard you say, and a blank editor next
+        // to them invited people to use it as a to-do app it is not — and then to wonder why
+        // their own items had no recording behind them. Writing one is still possible where it
+        // makes sense (Edit, on an item that already exists).
     }
 
     @ViewBuilder
@@ -351,8 +522,17 @@ final class FollowUpsViewModel {
     /// switching Open → Completed → Filed away quickly cannot leave one slice's rows sitting
     /// under another slice's filter.
     private var loadGeneration = 0
-    var showingAdd = false
     private(set) var items: [FollowUpItem] = []
+    /// The filed-away slice, loaded alongside the open list so the summary at its foot can be
+    /// honest about how many there are. Empty on the other two scopes, where the list itself is
+    /// already showing everything.
+    private(set) var filedAway: [FollowUpItem] = []
+    /// Collapsed to start with. The count is always visible; the rows are opt-in.
+    var showsFiledAway = false
+    /// How many filed-away rows the open list will show inline before handing over to the
+    /// filter. Enough to recognise what went, few enough that the list underneath stays the
+    /// point of the screen.
+    static let filedAwayPreviewLimit = 5
     private(set) var loaded = false
     /// Ticks the person has just made, applied over whatever the last load returned.
     ///
@@ -379,6 +559,12 @@ final class FollowUpsViewModel {
         let generation = loadGeneration
         now = Date()
         let loadedItems = (try? await source.items(scope: scope)) ?? []
+        // The filed-away slice rides along with the open list, because a count at the foot of
+        // that list has to be a count of what is there NOW — a number cached from whenever the
+        // filter was last opened is exactly the kind of quiet lie this section exists to end.
+        // Read on `.open` only: the other two scopes are already showing their own everything.
+        var loadedFiledAway: [FollowUpItem] = []
+        if scope == .open { loadedFiledAway = await filedAwaySlice() }
         // Anything the DB now agrees with is no longer an optimistic guess — and neither is
         // anything that has left this slice entirely. Keeping an override for a row that is no
         // longer here is how a ticked item came back later still rendering as done, with its
@@ -389,9 +575,23 @@ final class FollowUpsViewModel {
             return loadedItems.first { $0.id == id }?.done != done
         }
         guard generation == loadGeneration else { return }
-        hidden = hidden.filter { id in loadedItems.contains { $0.id == id } }
+        // A deleted row is held back until it is gone from BOTH lists: without the second half,
+        // deleting from the filed-away summary un-hid the row on the very next reload and it
+        // flickered back for as long as the write took.
+        hidden = hidden.filter { id in
+            loadedItems.contains { $0.id == id } || loadedFiledAway.contains { $0.id == id }
+        }
         items = loadedItems
+        filedAway = loadedFiledAway
         loaded = true
+    }
+
+    /// Newest first, sorted here rather than trusted from the source: the preview shows only
+    /// the first few, so "the first few" has to mean the ones that went most recently — which
+    /// is the ordering the store gives and the mock does not.
+    private func filedAwaySlice() async -> [FollowUpItem] {
+        let rows = (try? await source.items(scope: .archived)) ?? []
+        return rows.sorted { ($0.archivedAtMs ?? 0) > ($1.archivedAtMs ?? 0) }
     }
 
     // MARK: Derived
@@ -410,10 +610,30 @@ final class FollowUpsViewModel {
 
     var isEmpty: Bool { loaded && visible.isEmpty }
 
+    // MARK: Filed away
+    //
+    // `hidden` applies here too: a row deleted out of the summary leaves the count in the same
+    // frame it leaves the list, so the header cannot say "3" over two rows.
+
+    private var visibleFiledAway: [FollowUpItem] {
+        filedAway.filter { !hidden.contains($0.id) }
+    }
+
+    var filedAwayCount: Int { visibleFiledAway.count }
+
+    var filedAwayPreview: [FollowUpItem] {
+        Array(visibleFiledAway.prefix(Self.filedAwayPreviewLimit))
+    }
+
+    var hasMoreFiledAway: Bool { visibleFiledAway.count > Self.filedAwayPreviewLimit }
+
     /// Changes whenever the rendered set does, so the list animates its own insertions and
-    /// removals instead of snapping.
+    /// removals instead of snapping. The filed-away tail is part of that set: expanding it, and
+    /// restoring or deleting a row out of it, both change what is drawn.
     var animationKey: String {
         visible.map { "\($0.id)\($0.done)" }.joined()
+            + "|\(showsFiledAway)|\(filedAwayCount)|"
+            + filedAwayPreview.map(\.id).joined()
     }
 
     var sections: [Section] {
@@ -477,8 +697,12 @@ final class FollowUpsViewModel {
     var emptyBody: String {
         switch scope {
         case .open:
+            // Both of these used to end by offering to let you write your own. There is no
+            // longer anywhere to do that, and an empty state that suggests a control the screen
+            // does not have is worse than a shorter sentence.
             return source.automaticProposalsEnabled
-                ? Copy.FollowUps.emptyOpenBody : Copy.FollowUps.emptyOpenBodyNoAi
+                ? Copy.FollowUps.emptyOpenBodySuggested
+                : Copy.FollowUps.emptyOpenBodySuggestedNoAi
         case .completed: return Copy.FollowUps.emptyCompletedBody
         case .archived: return Copy.FollowUps.emptyArchivedBody
         }
@@ -501,16 +725,6 @@ final class FollowUpsViewModel {
         optimisticDone[item.id] = next
         Task {
             try? await source.setDone(id: item.id, done: next)
-            await reload()
-        }
-    }
-
-    func add(text: String, dueAt: Date?) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        Task {
-            try? await source.add(
-                text: trimmed, dueAtMs: dueAt.map { Int64($0.timeIntervalSince1970 * 1000) })
             await reload()
         }
     }

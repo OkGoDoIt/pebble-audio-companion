@@ -1,6 +1,10 @@
 import SwiftUI
 
-/// Write or reword a follow-up.
+/// Reword a follow-up, and set or clear its date.
+///
+/// Editing only. There is no longer a path that opens this empty: the "+" on the list is gone,
+/// because nothing on that screen is a list you keep by hand — every row is something the app
+/// heard you say. It is reached from Edit on a follow-up that already exists.
 ///
 /// System chrome rather than the app's custom sheet: this is a form with a Cancel and a Save,
 /// which is exactly the shape iOS already has a convention for, and the convention includes the
