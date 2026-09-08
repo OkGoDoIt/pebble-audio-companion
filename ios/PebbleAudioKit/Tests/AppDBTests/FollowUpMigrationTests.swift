@@ -32,6 +32,32 @@ import Testing
                         sourceSegmentId TEXT,
                         createdAtMs INTEGER NOT NULL
                     );
+                    -- v1 creates fifteen tables; this fixture only ever recreated the one this
+                    -- suite reads, while still CLAIMING v1..v4 in `grdb_migrations`. That held
+                    -- for as long as every later migration happened to touch `follow_ups` —
+                    -- and then broke the day two of them did not: `v9-recap-condensation`
+                    -- (`ALTER TABLE recaps`) and `v10-conversation-boundaries`
+                    -- (`ALTER TABLE conversations`) both failed with "no such table", in a
+                    -- suite that is about follow-ups and says nothing about either.
+                    --
+                    -- So the fixture, not the migrations, is what was wrong. These two are
+                    -- verbatim v1 (`AppDatabase.swift`); anything a future migration alters
+                    -- has to be added here the same way.
+                    CREATE TABLE conversations (
+                        id TEXT PRIMARY KEY,
+                        startMs INTEGER NOT NULL,
+                        endMs INTEGER,
+                        timezone TEXT NOT NULL,
+                        state TEXT NOT NULL
+                    );
+                    CREATE TABLE recaps (
+                        dateKey TEXT PRIMARY KEY,
+                        text TEXT NOT NULL,
+                        segmentIds TEXT NOT NULL,
+                        provider TEXT,
+                        model TEXT,
+                        updatedAtMs INTEGER NOT NULL
+                    );
                     """)
             for index in 0..<rows {
                 try db.execute(

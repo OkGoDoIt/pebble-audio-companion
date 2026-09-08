@@ -150,6 +150,19 @@ public struct ConversationQueries: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
+    /// Why a conversation starts where it does (see `ConversationBoundaries.swift`). Read on its
+    /// own rather than carried on every `ConversationListRow`, because it belongs under the
+    /// title of the ONE conversation being read — not on every row of a list, where it would be
+    /// noise. Nil for the oldest conversation and for anything grouped before the column
+    /// existed.
+    public func startReason(ofConversation id: String) async throws -> ConversationStartReason? {
+        try await db.reader.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT startReason FROM conversations WHERE id = ?", arguments: [id]
+            ).flatMap(ConversationStartReason.init(rawValue:))
+        }
+    }
+
     // --- aggregation --------------------------------------------------------------------------
 
     /// Plan Part 3: any Running/Uploading ⇒ transcribing; else any Pending ⇒ captured-waiting;

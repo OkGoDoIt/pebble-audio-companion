@@ -25,6 +25,10 @@ public actor EnrichmentService {
     private let pauseJournal: PauseJournal?
     private let database: AppDatabase
     private let transcriptOf: @Sendable (String) -> SegmentTranscript?
+    /// Turn timings only, for the boundary layer's whole-library sweep. Defaults to reading the
+    /// full transcript and throwing the words away; `FileTranscriptStore.loadSpeechTimings`
+    /// avoids decoding them at all and is what the app supplies.
+    private let speechTimingsOf: @Sendable (String) -> [Transcription.TranscriptSegment]?
     /// The open member's rolling live text. NOT defaulted: with the `{ _ in nil }` default nobody
     /// supplied, a LIVE conversation's open member always yielded nil, its combined length was 0,
     /// and it got no provisional title or summary until the segment closed — many minutes of an
@@ -33,6 +37,9 @@ public actor EnrichmentService {
     /// bridges the two without blocking on an actor from a sync context.
     private let liveTextOf: @Sendable (String) -> String?
     private let donator: SpotlightDonator?
+    /// The optional semantic boundary layer. Nil is a supported, tested configuration: the
+    /// grouping is then purely structural.
+    private let boundaryReviewer: BoundaryReviewer?
     private let clock: RuntimeClock
     private let log: RuntimeLog
 
@@ -47,6 +54,8 @@ public actor EnrichmentService {
         transcriptOf: @escaping @Sendable (String) -> SegmentTranscript?,
         liveTextOf: @escaping @Sendable (String) -> String?,
         donator: SpotlightDonator? = nil,
+        boundaryReviewer: BoundaryReviewer? = nil,
+        speechTimingsOf: (@Sendable (String) -> [Transcription.TranscriptSegment]?)? = nil,
         clock: RuntimeClock,
         log: RuntimeLog = .silent
     ) {
@@ -60,6 +69,8 @@ public actor EnrichmentService {
         self.transcriptOf = transcriptOf
         self.liveTextOf = liveTextOf
         self.donator = donator
+        self.boundaryReviewer = boundaryReviewer
+        self.speechTimingsOf = speechTimingsOf ?? { transcriptOf($0)?.segments }
         self.clock = clock
         self.log = log
     }
@@ -89,6 +100,19 @@ public actor EnrichmentService {
     public func enrichPass() async throws -> [String] {
         isEnriching = true
         defer { isEnriching = false }
+        // The boundary review rides in the AI stage rather than the grouping one on purpose:
+        // `regroupPass` is deliberately AI-free so the whole app's view of reality never waits
+        // on a provider. Verdicts written here are read by the NEXT regroup, so a confirmed
+        // boundary appears one pass later — which is also what keeps the AI from ever mutating
+        // the grouping directly. It is cheap: verdicts are cached, so this makes a call only
+        // when a genuinely new candidate has appeared.
+        do {
+            _ = try await boundaryReviewPass()
+        } catch let error where error is CancellationError {
+            throw error
+        } catch {
+            log.failure("boundary review", error)
+        }
         let inputs = await enrichmentInputs()
         guard !inputs.isEmpty else { return [] }
         return try await worker.enrich(
@@ -206,6 +230,13 @@ public actor EnrichmentService {
 
     /// Rebuilds `conversations` / `conversation_segments` from durable state, and caches the
     /// result so cascade lookups need no second query.
+    ///
+    /// The rebuild is handed SPEECH EVIDENCE as well as the metas: which members are settled
+    /// (closed, with a terminal transcript) and where speech actually was inside them. That is
+    /// what lets a conversation end at a long stretch of nothing said — the 5-minute chain
+    /// window cannot see it, because the watch counts through quiet and rotations abut. Members
+    /// that are still transcribing simply defer the decision to a later pass; grouping is
+    /// derived, so the answer improves as evidence lands instead of being guessed early.
     @discardableResult
     public func regroup() async throws -> [GroupedConversation] {
         let segments = await store.listSegments()
@@ -216,17 +247,75 @@ public actor EnrichmentService {
         } else {
             pauses = []
         }
-        let grouped = try await ConversationGrouper.rebuild(
+        let evidence = speechEvidence(for: segments)
+        let rebuilt = try await ConversationGrouper.rebuildDetailed(
             segments: segments,
             pauses: pauses,
             openSegmentId: openId,
+            evidence: evidence,
             db: database
         )
-        cachedGrouping = grouped
-        return grouped
+        cachedGrouping = rebuilt.conversations
+        cachedBoundaryCandidates = rebuilt.candidates
+        return rebuilt.conversations
+    }
+
+    /// One pass of the OPTIONAL semantic boundary review: asks the model about the joins the
+    /// last regroup could not settle, and caches the verdicts. Returns the number written.
+    ///
+    /// Nothing depends on it. With no reviewer configured — no AI, local-only with no model,
+    /// consent off — this returns 0 and the grouping is the structural one. The verdicts it
+    /// does write are picked up by the NEXT `regroup`, which is the only place a split is ever
+    /// made, so the AI never mutates the grouping directly.
+    @discardableResult
+    public func boundaryReviewPass() async throws -> Int {
+        guard let boundaryReviewer, !cachedBoundaryCandidates.isEmpty else { return 0 }
+        let read = transcriptOf
+        return try await boundaryReviewer.review(candidates: cachedBoundaryCandidates) {
+            BoundaryReviewer.context(for: $0, transcriptOf: read)
+        }
     }
 
     private var cachedGrouping: [GroupedConversation]?
+    /// Boundary candidates from the last regroup — the semantic layer's work list.
+    private var cachedBoundaryCandidates: [BoundaryCandidate] = []
+
+    /// Speech evidence, memoized on the only two things that can change it. Regroup runs on
+    /// every pipeline pass over the WHOLE library, and without this it would re-read every
+    /// transcript on disk each time — the megabytes-of-JSON shape that has already cost this app
+    /// one stall. After the first sweep only a segment whose transcription state or closed-ness
+    /// moved is read again, which is normally none of them.
+    private var evidenceCache: [String: (state: TranscriptionState, closed: Bool, evidence: SegmentSpeechEvidence)] = [:]
+
+    private func speechEvidence(for segments: [SegmentMeta]) -> [String: SegmentSpeechEvidence] {
+        var out: [String: SegmentSpeechEvidence] = [:]
+        out.reserveCapacity(segments.count)
+        for meta in segments {
+            let closed = meta.closeReason != nil
+            if let cached = evidenceCache[meta.segmentId], cached.state == meta.transcriptionState,
+                cached.closed == closed
+            {
+                out[meta.segmentId] = cached.evidence
+                continue
+            }
+            // Only a `.complete` member has timings worth reading: `.noSpeech` settles with no
+            // speech at all, and every other state is unsettled whatever the file says, so
+            // reading it would be work done to reach the same answer.
+            let timings: [SpeechSpan]? =
+                meta.transcriptionState == .complete
+                ? speechTimingsOf(meta.segmentId)?.map {
+                    SpeechSpan(startMs: $0.startMs, endMs: $0.endMs)
+                }
+                : nil
+            let evidence = SegmentSpeechEvidence.of(meta, transcriptSpeech: timings)
+            evidenceCache[meta.segmentId] = (meta.transcriptionState, closed, evidence)
+            out[meta.segmentId] = evidence
+        }
+        // Segments that no longer exist keep no cache entry.
+        let alive = Set(segments.map(\.segmentId))
+        evidenceCache = evidenceCache.filter { alive.contains($0.key) }
+        return out
+    }
 
     private func grouping() async -> [GroupedConversation] {
         if let cachedGrouping { return cachedGrouping }

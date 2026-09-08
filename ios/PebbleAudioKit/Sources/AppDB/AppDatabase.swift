@@ -346,6 +346,50 @@ public struct AppDatabase: Sendable {
                     WHERE origin = 'user' OR editedAtMs IS NOT NULL
                     """)
         }
+        // "Today so far" is a glance, and on a full day the digest stopped being one — it grew
+        // taller than the coverage strip, the follow-ups and the conversations put together.
+        // The digest itself is unchanged (the pushed recap detail and the search index still
+        // hold it whole); these two columns carry a SECOND AI pass that shortens it for the
+        // card. `shortOfHash` is the fingerprint of the digest the short form was made from, so
+        // the pass runs once per digest and a regenerated digest invalidates its own summary
+        // instead of keeping a stale one. Both nullable: no condensation is the normal state.
+        migrator.registerMigration("v9-recap-condensation") { db in
+            try db.alter(table: "recaps") { t in
+                t.add(column: "shortText", .text)
+                t.add(column: "shortOfHash", .text)
+            }
+        }
+        // Conversation boundaries (see `ConversationBoundaries.swift`).
+        //
+        // `boundary_overrides` is AUTHORITATIVE — it is the user saying "these two are one
+        // conversation" or "split here", and it must survive every regroup, every retention
+        // sweep and a derived-table rebuild. Keyed by the segment that FOLLOWS the join because
+        // segment ids are stable while conversation ids move whenever a split does.
+        //
+        // `boundary_reviews` is DERIVED: the optional semantic layer's verdict per candidate
+        // join, cached so one AI call is not repeated on every pass. Losing it costs one call.
+        //
+        // `conversations.startReason` records WHY a conversation starts where it does, so an
+        // automatic split can be explained rather than just happening.
+        migrator.registerMigration("v10-conversation-boundaries") { db in
+            try db.create(table: "boundary_overrides") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("decision", .text).notNull()  // split | join
+                t.column("createdAtMs", .integer).notNull()
+            }
+            try db.create(table: "boundary_reviews") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("isBoundary", .boolean).notNull()
+                t.column("quietMs", .integer).notNull()
+                t.column("reason", .text)
+                t.column("provider", .text)
+                t.column("model", .text)
+                t.column("createdAtMs", .integer).notNull()
+            }
+            try db.alter(table: "conversations") { t in
+                t.add(column: "startReason", .text)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

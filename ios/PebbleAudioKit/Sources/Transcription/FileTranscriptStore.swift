@@ -116,6 +116,21 @@ public final class FileTranscriptStore: Sendable {
         return try? JSONDecoder().decode(SegmentTranscript.self, from: data)
     }
 
+    /// Just the turn timings, for callers that need to know WHERE speech was and not what was
+    /// said — the conversation-boundary layer regroups over every segment in the library, and
+    /// `load` would decode the per-word timing array of each one to throw it away. On a full
+    /// library that is the megabytes-of-word-JSON shape that already cost this app a main-thread
+    /// stall once. Nil means "no transcript file", which is NOT the same as "no speech" and is
+    /// what the settling rule keys off.
+    public func loadSpeechTimings(_ segmentId: String) -> [TranscriptSegment]? {
+        struct TimingsOnly: Decodable { var segments: [TranscriptSegment]? }
+        let url = transcriptURL(segmentId)
+        guard let data = try? Data(contentsOf: url),
+            let decoded = try? JSONDecoder().decode(TimingsOnly.self, from: data)
+        else { return nil }
+        return decoded.segments ?? []
+    }
+
     public func list() -> [SegmentTranscript] {
         let entries =
             (try? FileManager.default.contentsOfDirectory(

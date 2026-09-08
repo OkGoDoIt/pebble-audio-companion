@@ -24,10 +24,14 @@ public struct GroupedConversation: Equatable, Sendable {
     public var isLive: Bool
     /// Ordered member segment ids.
     public var memberSegmentIds: [String]
+    /// Why this conversation starts where it does — nil for the very first one in a rebuild,
+    /// where nothing preceded it. Persisted so the UI can account for an automatic split
+    /// instead of leaving the user to guess.
+    public var startReason: ConversationStartReason?
 
     public init(
         id: String, startMs: Int64, endMs: Int64, timeZoneID: String, isLive: Bool,
-        memberSegmentIds: [String]
+        memberSegmentIds: [String], startReason: ConversationStartReason? = nil
     ) {
         self.id = id
         self.startMs = startMs
@@ -35,6 +39,7 @@ public struct GroupedConversation: Equatable, Sendable {
         self.timeZoneID = timeZoneID
         self.isLive = isLive
         self.memberSegmentIds = memberSegmentIds
+        self.startReason = startReason
     }
 }
 
@@ -119,34 +124,98 @@ public enum ConversationGrouper {
     /// `previous` (optional) keeps ids stable when retention deletes a conversation's first
     /// member: a fresh group adopts the id of the previous conversation that contained its
     /// first member, so annotations/tags keyed by conversation id survive the rebuild.
+    ///
+    /// The rules above are the STRUCTURAL layer, and on real data they never fire inside a
+    /// running capture: of the 555 joins inside Roger's 210 conversations, 370 abut to the
+    /// second and none exceeds 5 minutes, because the watch counts through quiet and the quiet
+    /// therefore lives inside the segments. `evidence` adds the layer that can see it — a
+    /// settled stretch of the record with nothing said in it, per `BoundaryPolicy`. Supplying
+    /// no evidence, or `policy: .structuralOnly`, is exactly the v1 behaviour.
+    ///
+    /// `overrides` are the user's own decisions and beat everything else, in both directions.
+    /// `semanticSplits` are segment ids the optional AI reviewer has ruled start a new
+    /// conversation; it can only act on joins this function already offered it as candidates.
     public static func group(
         segments: [SegmentMeta],
         pauses: [PauseInterval],
         openSegmentId: String?,
         fallbackTimeZoneID: String = TimeZone.current.identifier,
-        previous: [GroupedConversation]? = nil
+        previous: [GroupedConversation]? = nil,
+        evidence: [String: SegmentSpeechEvidence] = [:],
+        overrides: [String: BoundaryDecision] = [:],
+        policy: BoundaryPolicy = .default,
+        semanticSplits: Set<String> = []
     ) -> [GroupedConversation] {
+        groupWithCandidates(
+            segments: segments, pauses: pauses, openSegmentId: openSegmentId,
+            fallbackTimeZoneID: fallbackTimeZoneID, previous: previous, evidence: evidence,
+            overrides: overrides, policy: policy, semanticSplits: semanticSplits
+        ).conversations
+    }
+
+    /// `group`, plus the joins that looked like boundaries but were not certain enough to act
+    /// on alone. The candidates are the ONLY input the semantic layer ever gets: it can veto or
+    /// confirm a structurally-plausible boundary, never invent one in continuous speech.
+    ///
+    /// That restriction is not timidity, it is the shape of the data: a conversation is a set of
+    /// whole segments, and segment joins are 15-minute rotation artefacts. A cut driven purely
+    /// by a change of subject would have to be snapped to the nearest rotation, landing up to
+    /// 15 minutes — and usually mid-sentence — away from the change it claims to mark. Inside a
+    /// quiet stretch the exact position does not matter, which is why quiet is the only signal
+    /// safe to cut on.
+    public static func groupWithCandidates(
+        segments: [SegmentMeta],
+        pauses: [PauseInterval],
+        openSegmentId: String?,
+        fallbackTimeZoneID: String = TimeZone.current.identifier,
+        previous: [GroupedConversation]? = nil,
+        evidence: [String: SegmentSpeechEvidence] = [:],
+        overrides: [String: BoundaryDecision] = [:],
+        policy: BoundaryPolicy = .default,
+        semanticSplits: Set<String> = []
+    ) -> (conversations: [GroupedConversation], candidates: [BoundaryCandidate]) {
         let ordered = segments.sorted { a, b in
             if a.receivedAtMs != b.receivedAtMs { return a.receivedAtMs < b.receivedAtMs }
             return a.segmentId < b.segmentId
         }
+        let joined = Set(overrides.filter { $0.value == .join }.keys)
 
         var result: [GroupedConversation] = []
+        var candidates: [BoundaryCandidate] = []
         var members: [SegmentMeta] = []
+        /// Why the run currently being accumulated started.
+        var runReason: ConversationStartReason?
 
-        func flush() {
-            guard let first = members.first, let last = members.last else { return }
+        func emit(_ slice: ArraySlice<SegmentMeta>, reason: ConversationStartReason?) {
+            guard let first = slice.first, let last = slice.last else { return }
             result.append(
                 GroupedConversation(
                     id: "conv-\(first.segmentId)",
                     startMs: segmentStartMs(first),
-                    endMs: members.map(segmentEndMs).max() ?? segmentEndMs(last),
+                    endMs: slice.map(segmentEndMs).max() ?? segmentEndMs(last),
                     timeZoneID: first.recordedTimeZone ?? fallbackTimeZoneID,
                     isLive: openSegmentId != nil && last.segmentId == openSegmentId,
-                    memberSegmentIds: members.map(\.segmentId)
+                    memberSegmentIds: slice.map(\.segmentId),
+                    startReason: reason
                 )
             )
-            members = []
+        }
+
+        func flush() {
+            defer { members = [] }
+            guard !members.isEmpty else { return }
+            let found = ConversationBoundaryDetector.boundaries(
+                members: members, evidence: evidence, policy: policy,
+                semanticSplits: semanticSplits, blocked: joined)
+            candidates.append(contentsOf: found.candidates)
+            var start = 0
+            var reason = runReason
+            for cut in found.cuts where cut.index > start {
+                emit(members[start..<cut.index], reason: reason)
+                start = cut.index
+                reason = cut.reason
+            }
+            emit(members[start...], reason: reason)
         }
 
         for meta in ordered {
@@ -156,18 +225,34 @@ public enum ConversationGrouper {
                 let chains =
                     nextStart - prevEnd < chainWindowMs
                     || (prev.streamId == meta.streamId && nextStart <= prevEnd)
-                let splits =
-                    endsWithUserStop(prev)
-                    || pauseFalls(between: prevEnd, and: nextStart, pauses: pauses)
-                    || !chains
-                if splits { flush() }
+                var structural: ConversationStartReason?
+                if endsWithUserStop(prev) {
+                    structural = .userStop
+                } else if pauseFalls(between: prevEnd, and: nextStart, pauses: pauses) {
+                    structural = .pause
+                } else if !chains {
+                    structural = .gap
+                }
+                // The user's decision wins both ways. `join` is how a Stop stops being
+                // absolute: the app still splits (a Stop plainly means "end this"), and one tap
+                // puts it back — durably, because the override is authoritative and the rebuild
+                // reads it every time.
+                switch overrides[meta.segmentId] {
+                case .split: structural = .manual
+                case .join: structural = nil
+                case nil: break
+                }
+                if let structural {
+                    flush()
+                    runReason = structural
+                }
             }
             members.append(meta)
         }
         flush()
 
-        guard let previous, !previous.isEmpty else { return result }
-        return adoptStableIds(result, previous: previous)
+        guard let previous, !previous.isEmpty else { return (result, candidates) }
+        return (adoptStableIds(result, previous: previous), candidates)
     }
 
     /// Deterministic id adoption: in order, each fresh group takes the id of the previous
@@ -213,12 +298,12 @@ public enum ConversationGrouper {
         for convo in conversations {
             try db.execute(
                 sql: """
-                    INSERT INTO conversations (id, startMs, endMs, timezone, state)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, startMs, endMs, timezone, state, startReason)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     convo.id, convo.startMs, convo.endMs, convo.timeZoneID,
-                    convo.isLive ? "live" : "closed",
+                    convo.isLive ? "live" : "closed", convo.startReason?.rawValue,
                 ]
             )
             for (ordinal, segmentId) in convo.memberSegmentIds.enumerated() {
@@ -237,37 +322,101 @@ public enum ConversationGrouper {
     }
 
     /// Group + persist in one write. Reads the previous grouping from the DB first so ids stay
-    /// stable across retention deletions of first members.
+    /// stable across retention deletions of first members, and reads the user's boundary
+    /// overrides so a hand-made split or merge survives every rebuild.
+    ///
     @discardableResult
     public static func rebuild(
         segments: [SegmentMeta],
         pauses: [PauseInterval],
         openSegmentId: String?,
         fallbackTimeZoneID: String = TimeZone.current.identifier,
+        evidence: [String: SegmentSpeechEvidence] = [:],
+        policy: BoundaryPolicy = .default,
         db: AppDatabase
     ) async throws -> [GroupedConversation] {
+        try await rebuildDetailed(
+            segments: segments, pauses: pauses, openSegmentId: openSegmentId,
+            fallbackTimeZoneID: fallbackTimeZoneID, evidence: evidence, policy: policy, db: db
+        ).conversations
+    }
+
+    /// One rebuild's output: the grouping that was persisted, plus the joins that looked like
+    /// boundaries but were left alone because the quiet was in the ambiguous band. The
+    /// candidates are the semantic layer's whole work list; ignoring them is a supported way
+    /// to run, and is what happens when no AI is configured.
+    public struct RebuiltGrouping: Equatable, Sendable {
+        public var conversations: [GroupedConversation]
+        public var candidates: [BoundaryCandidate]
+
+        public init(conversations: [GroupedConversation], candidates: [BoundaryCandidate]) {
+            self.conversations = conversations
+            self.candidates = candidates
+        }
+    }
+
+    @discardableResult
+    public static func rebuildDetailed(
+        segments: [SegmentMeta],
+        pauses: [PauseInterval],
+        openSegmentId: String?,
+        fallbackTimeZoneID: String = TimeZone.current.identifier,
+        evidence: [String: SegmentSpeechEvidence] = [:],
+        policy: BoundaryPolicy = .default,
+        db: AppDatabase
+    ) async throws -> RebuiltGrouping {
         try await db.writer.write { d in
             let previous = try fetchAll(d)
-            let grouped = group(
+            let overrides = try BoundaryOverrideStore.fetchAll(d)
+            let reviews = try BoundaryReviewStore.fetchAll(d)
+            // A first pass with no semantic verdicts tells us which joins are candidates; the
+            // cached verdicts that match those candidates then feed a second, final pass. Both
+            // passes are pure, so this costs arithmetic and keeps the "same input ⇒ same ids"
+            // guarantee intact.
+            let probe = groupWithCandidates(
                 segments: segments, pauses: pauses, openSegmentId: openSegmentId,
-                fallbackTimeZoneID: fallbackTimeZoneID, previous: previous
+                fallbackTimeZoneID: fallbackTimeZoneID, previous: previous, evidence: evidence,
+                overrides: overrides, policy: policy
             )
+            var semanticSplits: Set<String> = []
+            for candidate in probe.candidates {
+                guard let review = reviews[candidate.newStartSegmentId], review.isBoundary else {
+                    continue
+                }
+                if abs(review.quietMs - candidate.quietMs)
+                    <= BoundaryReviewStore.quietDriftToleranceMs
+                {
+                    semanticSplits.insert(candidate.newStartSegmentId)
+                }
+            }
+            let final = semanticSplits.isEmpty
+                ? probe
+                : groupWithCandidates(
+                    segments: segments, pauses: pauses, openSegmentId: openSegmentId,
+                    fallbackTimeZoneID: fallbackTimeZoneID, previous: previous,
+                    evidence: evidence, overrides: overrides, policy: policy,
+                    semanticSplits: semanticSplits)
             try apply(
-                grouped,
+                final.conversations,
                 segmentStates: Dictionary(
                     segments.map { ($0.segmentId, $0.transcriptionState) },
                     uniquingKeysWith: { _, latest in latest }
                 ),
                 in: d
             )
-            return grouped
+            return RebuiltGrouping(
+                conversations: final.conversations, candidates: probe.candidates)
         }
     }
 
     /// Reads the persisted grouping back (ordered by startMs, members by ordinal).
     public static func fetchAll(_ db: Database) throws -> [GroupedConversation] {
         let rows = try Row.fetchAll(
-            db, sql: "SELECT id, startMs, endMs, timezone, state FROM conversations ORDER BY startMs, id"
+            db,
+            sql: """
+                SELECT id, startMs, endMs, timezone, state, startReason FROM conversations
+                ORDER BY startMs, id
+                """
         )
         let memberRows = try Row.fetchAll(
             db,
@@ -287,7 +436,9 @@ public enum ConversationGrouper {
                 endMs: row["endMs"] ?? row["startMs"],
                 timeZoneID: row["timezone"],
                 isLive: (row["state"] as String) == "live",
-                memberSegmentIds: members[row["id"]] ?? []
+                memberSegmentIds: members[row["id"]] ?? [],
+                startReason: (row["startReason"] as String?).flatMap(
+                    ConversationStartReason.init(rawValue:))
             )
         }
     }

@@ -575,6 +575,17 @@ final class AppComposition {
             // mirrors them into `LivePreviewCache` and this reads the mirror.
             liveTextOf: { livePreviews.text(for: $0) },
             donator: donator,
+            // The optional semantic half of conversation splitting. It only ever adjudicates
+            // joins the structural layer already flagged (8–25 minutes of settled quiet), one
+            // batched call, verdicts cached — and with the AI layer off it does nothing and the
+            // grouping is purely structural.
+            boundaryReviewer: BoundaryReviewer(
+                reviews: BoundaryReviewStore(db: database), router: aiRouter, nowMs: nowMs
+            ),
+            // Turn timings only. The boundary layer sweeps EVERY segment on a regroup, and
+            // `transcripts.load` would decode each one's per-word timing array — megabytes on a
+            // full library — just to discard it.
+            speechTimingsOf: { transcripts.loadSpeechTimings($0) },
             clock: clock,
             log: AppRuntimeLog.runtimeLog
         )
