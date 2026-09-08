@@ -309,6 +309,68 @@ public enum AiPromptTemplates {
         citesSources: true
     )
 
+    /// The long version of "what happened here", for when the header's two sentences are not
+    /// enough.
+    ///
+    /// It is deliberately NOT `meetingNotes`, and the difference is the whole point: meeting
+    /// notes extract and sort (topic / discussion / decisions / open questions), which throws
+    /// away the sequence and everything that did not fit a category. This one retells the
+    /// recording in order and keeps the detail. Nothing is categorized, and there are no action
+    /// items, decisions or takeaways sections — the app already has separate features for all
+    /// three, and a summary that quietly turns into a to-do list is the thing the user asked us
+    /// not to do here.
+    ///
+    /// It also has to earn its place beside the automatic summary already on the conversation
+    /// header (`SegmentAnnotationPrompt`: "1-3 plain sentences"). That one answers *what was
+    /// this*; this one answers *what actually happened in it*. So it does not inherit
+    /// `commonSystemRules` — the one instruction in there this template exists to countermand
+    /// is "Be concise" — and instead restates the transcript-quality caveats itself.
+    public static let extendedSummary = AiPromptTemplate(
+        id: "extended-summary",
+        title: "Extended summary",
+        systemPrompt: """
+            You are writing a long-form account of one recording captured by the user's own \
+            wearable microphone. The transcription is automatic and frequently wrong: misheard \
+            words, garbled names, dropped words, run-on fragments, and annotated gaps where \
+            audio was lost. Read past those errors and report the most plausible meaning, but \
+            never invent anything the text does not support — where a detail is clearly \
+            garbled, say what was being discussed rather than guessing at the word. Where audio \
+            is missing, say so plainly at the point in the account where it happened; never \
+            smooth a gap over.
+
+            WHAT THIS IS. A complete, readable account of what happened and what was said, in \
+            the order it happened. It is not meeting notes. Do not extract action items, next \
+            steps, decisions, takeaways, recommendations, key points, or anything else into \
+            sections or categories — the user has other tools for that and asked for none of it \
+            here. You are retelling the conversation, not processing it.
+
+            LENGTH. The user asked for the long version, and a two-sentence summary of this same \
+            recording is already on their screen, so brevity is not a virtue here. Walk through \
+            every distinct subject in sequence and keep the specifics that were actually said: \
+            names, numbers, places, dates, reasons, what people disagreed about, and how each \
+            subject was left. Several paragraphs for a short recording, and considerably more \
+            for a long one. Do not compress a subject to a clause because it seemed minor, and \
+            do not stop partway — go to the end of the transcript. Stop when you have covered \
+            everything, not when it starts to feel long.
+
+            FORM. Flowing prose in paragraphs, past tense. No headings, no bullet or numbered \
+            lists, no bold or italics. Begin with the first thing that happened rather than a \
+            preamble about the recording or a restatement of what it was about, and end when \
+            the recording does — no closing summary paragraph, no offer of further help. Small \
+            talk, interruptions and dead ends belong in the account when they were part of what \
+            happened; report them briefly and plainly rather than dressing them up.
+
+            CITATIONS. \(citationRules) A long account needs them throughout, not only at the \
+            start — every paragraph should be traceable to the stretch it retells, which is what \
+            lets the reader tap back into the recording and check you.
+
+            If the recording is genuinely thin, write the short honest account the material \
+            supports and say what was unclear. Padding it out is worse than a short answer.
+            """,
+        userPrompt: "Write the full account of what happened in this conversation.",
+        citesSources: true
+    )
+
     // MARK: - Follow-ups
     //
     // The two prompts below replace one that asked a cheap model for "action items" over
@@ -695,6 +757,7 @@ public enum AiPromptTemplates {
 
     public static let builtIn: [AiPromptTemplate] = [
         dailySummary,
+        extendedSummary,
         meetingNotes,
         decisions,
         followUpEmail,

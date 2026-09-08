@@ -9,6 +9,12 @@ import SwiftUI
 /// had anywhere to go — no list, no detail, no history you could return to — so both stayed as
 /// big as the corner of Today they were allowed. They are the two things you come back to
 /// between recordings, which is what a tab is for.
+///
+/// `.noteJobDock()` on every stack is the one piece of app-wide furniture: an AI note being
+/// written is the only thing in this app that the user starts on one screen and collects on
+/// another, so the report on it cannot belong to any single screen. It goes inside each tab
+/// rather than around the `TabView` so it docks above that tab's bar rather than on top of it —
+/// see `NoteJobDock`.
 struct RootView: View {
     @Environment(AppRouter.self) private var router
 
@@ -19,26 +25,31 @@ struct RootView: View {
                 NavigationStack(path: $router.todayPath) {
                     TodayScreen()
                 }
+                .noteJobDock()
             }
             Tab(Copy.Tabs.library, systemImage: "rectangle.stack", value: AppRouter.Tab.library) {
                 NavigationStack(path: $router.libraryPath) {
                     LibraryScreen()
                 }
+                .noteJobDock()
             }
             Tab(Copy.Tabs.followUps, systemImage: "checklist", value: AppRouter.Tab.followUps) {
                 NavigationStack(path: $router.followUpsPath) {
                     FollowUpsScreen()
                 }
+                .noteJobDock()
             }
             Tab(Copy.Tabs.ask, systemImage: "sparkles", value: AppRouter.Tab.ask) {
                 NavigationStack(path: $router.askPath) {
                     AskScreen()
                 }
+                .noteJobDock()
             }
             Tab(Copy.Tabs.settings, systemImage: "gearshape", value: AppRouter.Tab.settings) {
                 NavigationStack(path: $router.settingsPath) {
                     SettingsScreen()
                 }
+                .noteJobDock()
             }
         }
     }

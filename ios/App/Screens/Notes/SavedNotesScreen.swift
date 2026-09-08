@@ -76,13 +76,20 @@ struct SavedNotesScreen: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .task(id: noteId) { await model.load(id: noteId) }
+        // "+" starts another note on the same conversation. It no longer waits for it: the sheet
+        // hands the request to `NoteJobCenter` and closes, and the dock brings the result back —
+        // from here, from wherever the user has gone in the meantime, or not at all if they
+        // would rather carry on reading this one.
         .sheet(isPresented: $model.showTemplates) {
-            if let conversationId = model.note?.conversationId {
-                TemplateSheet(conversationId: conversationId) { note in
+            if let note = model.note {
+                TemplateSheet(
+                    conversationId: note.conversationId,
+                    conversationTitle: note.conversationTitle
+                ) { other in
                     model.showTemplates = false
-                    if note.id != noteId {
-                        router.push(.note(id: note.id))
-                    }
+                    // The sheet lists this conversation's other notes; tapping the one you are
+                    // already reading should not push a second copy of it onto the stack.
+                    if other.id != noteId { router.push(.note(id: other.id)) }
                 }
             }
         }
