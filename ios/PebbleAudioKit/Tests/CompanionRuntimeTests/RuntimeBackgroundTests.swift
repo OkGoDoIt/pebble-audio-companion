@@ -74,69 +74,82 @@ import Testing
 
 // Background RESIDENCY: whether the process is allowed to keep running at all while backgrounded.
 //
-// These are the regression tests for the defect behind "it barely records anything unless I'm in
-// the app": with only `bluetooth-central`, iOS suspends the process between Core Bluetooth wakes,
-// which freezes the 5 s keepalive — and the watch stops its microphone 15 s later
-// (RECEIVER_LIVENESS_TIMEOUT_MS in the firmware). Residency is what stops the suspension, so
-// "capture is on" and "residency is held" must never disagree.
+// Residency is what stops iOS suspending us, and a suspended app cannot answer the watch's 15 s
+// liveness watchdog — the watch then stops its microphone. But it is also the most expensive thing
+// this app can hold, so the rule is narrow: hold it while the watch is ACTUALLY STREAMING, and at
+// no other time.
+//
+// The first version keyed off the user's capture intent instead, and a night of real logs showed
+// what that costs — 152 consecutive minutes holding an audio session with `audio=never`, because
+// the watch was paused and had nothing to send. The phone stayed awake all night for a watch that
+// was asleep.
 @Suite struct BackgroundResidencyWiringTests {
 
-    @Test func capturingHoldsResidency() async throws {
+    @Test func capturingWithoutAStreamDoesNotHoldResidency() async throws {
         let fixture = try RuntimeFixture()
         #expect(fixture.residency.state.value == .notNeeded)
 
+        // Intent alone is not enough. The watch's liveness watchdog runs only in its Streaming
+        // state, so with nothing streaming there is no deadline to meet and being suspended costs
+        // nothing — a BLE notification wakes us when the watch has something to say.
         await fixture.receiver.applyCaptureIntent(.active)
-        #expect(
-            fixture.residency.state.value == .held,
-            "capture is on, so the process must not be suspendable"
-        )
-    }
-
-    @Test func turningCaptureOffReleasesResidency() async throws {
-        let fixture = try RuntimeFixture()
-        await fixture.receiver.applyCaptureIntent(.active)
-        #expect(fixture.residency.state.value == .held)
-
-        await fixture.receiver.applyCaptureIntent(.off)
         #expect(
             fixture.residency.state.value == .notNeeded,
-            "the user turned capture off; holding an audio session would just spend battery"
+            "capture intent with no stream must not hold an audio session"
         )
     }
 
-    @Test func pausingReleasesResidency() async throws {
+    @Test func aLiveStreamHoldsResidency() async throws {
         let fixture = try RuntimeFixture()
-        await fixture.receiver.applyCaptureIntent(.active)
+        try await fixture.beginStreaming()
 
-        // A paused watch is not streaming, so its liveness watchdog is not armed and there is
-        // nothing to stay awake for.
-        await fixture.receiver.applyCaptureIntent(.paused)
-        #expect(fixture.residency.state.value == .notNeeded)
-
-        await fixture.receiver.applyCaptureIntent(.active)
-        #expect(fixture.residency.state.value == .held, "resuming must take residency back")
-    }
-
-    @Test func startingTheReceiverWithCaptureAlreadyActiveHoldsResidency() async throws {
-        // The launch path: intent comes back from settings already `.active`, so it never passes
-        // through applyCaptureIntent. If only that funnel took residency, every relaunch — including
-        // every Core Bluetooth background relaunch — would come up suspendable.
-        let fixture = try RuntimeFixture()  // the fixture's default intent is already `.active`
-        #expect(fixture.residency.state.value == .notNeeded)
-
-        await fixture.receiver.start()
-        #expect(fixture.residency.state.value == .held)
+        #expect(await waitUntil({ fixture.receiver.state.value.isStreaming }))
+        #expect(
+            await waitUntil({ fixture.residency.state.value == .held }),
+            "a streaming watch is exactly when the process must not be suspended"
+        )
         await fixture.receiver.stop()
     }
 
-    @Test func aRepeatedActiveIntentStillEndsUpHeld() async throws {
-        // Residency is re-asserted before applyCaptureIntent's no-change early return, because the
-        // one way this fails is silently: fine in the foreground, dead the moment it backgrounds.
+    @Test func aStreamThatENDSReleasesResidencyAfterTheGrace() async throws {
+        // The battery case from the overnight log: the watch stops sending (its own power-save
+        // pause, a low battery, a policy pause) and the phone must stop holding an audio session
+        // for it. Nothing about the user's intent changed — only the stream.
         let fixture = try RuntimeFixture()
-        await fixture.receiver.applyCaptureIntent(.active)
-        fixture.residency.setWanted(false)  // simulate the session having been lost underneath us
+        try await fixture.beginStreaming()
+        #expect(await waitUntil({ fixture.residency.state.value == .held }))
 
-        await fixture.receiver.applyCaptureIntent(.active)
+        fixture.link.connectionState.value = .disconnected
+        #expect(await waitUntil({ !fixture.receiver.state.value.isStreaming }))
+
+        // Held through the grace window, so a reconnect a second later does not thrash the
+        // audio session...
         #expect(fixture.residency.state.value == .held)
+
+        // ...and released once the stream is really gone.
+        await fixture.clock.advance(by: 21_000)
+        #expect(
+            await waitUntil({ fixture.residency.state.value == .notNeeded }),
+            "a watch that stopped streaming must not keep the phone awake"
+        )
+        await fixture.receiver.stop()
+    }
+
+    @Test func stoppingTheReceiverReleasesResidency() async throws {
+        let fixture = try RuntimeFixture()
+        try await fixture.beginStreaming()
+        #expect(await waitUntil({ fixture.residency.state.value == .held }))
+
+        await fixture.receiver.stop()
+        #expect(fixture.residency.state.value == .notNeeded)
+    }
+
+    @Test func aPausedWatchDoesNotHoldResidency() async throws {
+        // A paused watch is not streaming, so its liveness watchdog is not armed and there is
+        // nothing to stay awake for.
+        let fixture = try RuntimeFixture()
+        await fixture.receiver.applyCaptureIntent(.paused)
+        #expect(fixture.residency.state.value == .notNeeded)
+        await fixture.receiver.stop()
     }
 }

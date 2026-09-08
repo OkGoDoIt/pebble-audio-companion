@@ -30,25 +30,30 @@ import Receiver
 ///     recording indicator — for audio this app never records on the phone.
 ///   - Option `.mixWithOthers`. Without it, activating the session pauses the user's music the
 ///     moment capture is enabled, forever. With it we are inaudible and harmless.
-///   - A continuously rendering graph. An active session that stops producing samples is torn down
-///     by the system; the buffer below is scheduled on a loop so the graph never runs dry.
+///   - Audio that keeps playing. An active session that stops producing samples is torn down by
+///     the system, so a tiny buffer loops forever. It is an `AVAudioPlayer`, NOT an
+///     `AVAudioEngine`: an engine runs a real-time render thread inside THIS process, waking about
+///     two hundred times a second for as long as residency is held, and that is what made the
+///     phone hot. A looping player hands the work to the media server instead.
 ///   - Interruption, route-change and media-services-reset handling. Each of these silently kills
 ///     the session, and a dead session means silent re-suspension with nothing to notice it. After
 ///     a media-services reset every audio object is invalid and must be rebuilt from scratch
-///     (Apple QA1749), which is why `restart()` discards the engine rather than restarting it.
+///     (Apple QA1749), which is why the reset handler rebuilds rather than restarts.
 ///
 /// Honest about the limits, because the status UI must not overclaim:
 ///   - This does not survive a user force-quit; nothing does except AccessorySetupKit on iOS 26.
 ///   - This does not prevent a memory jettison; Bluetooth state restoration relaunches us after
 ///     one.
-///   - It costs battery. That is why it is tied to capture intent and released the moment the
-///     user turns Background Audio off.
+///   - It costs battery, so it is held as narrowly as possible: only while the watch is ACTUALLY
+///     STREAMING, not merely while capture is enabled. See `ReceiverService.syncResidency` — the
+///     watch's liveness watchdog runs only in its Streaming state, so any other state is one where
+///     being suspended costs nothing and a BLE notification wakes us again.
 public final class BackgroundResidency: @unchecked Sendable {
     /// Why residency is or is not held — surfaced in Diagnostics so a silent failure is visible.
     public enum State: String, Sendable, Equatable {
-        /// The user has capture off; residency is deliberately not held.
+        /// Nothing is streaming; residency is deliberately not held.
         case notNeeded
-        /// Session active and the graph is rendering: the process will not be suspended.
+        /// Session active and audio is playing: the process will not be suspended.
         case held
         /// Wanted, but the audio stack refused. The app will be suspended between BLE wakes.
         case failed
@@ -64,8 +69,7 @@ public final class BackgroundResidency: @unchecked Sendable {
     private var observing = false
 
     #if canImport(AVFoundation) && os(iOS)
-        private var engine: AVAudioEngine?
-        private var player: AVAudioPlayerNode?
+        private var player: AVAudioPlayer?
         private var tokens: [NSObjectProtocol] = []
     #endif
 
@@ -113,7 +117,7 @@ public final class BackgroundResidency: @unchecked Sendable {
                 state.value = .failed
                 return
             }
-            guard startEngine() else {
+            guard startPlayer() else {
                 state.value = .failed
                 return
             }
@@ -122,7 +126,7 @@ public final class BackgroundResidency: @unchecked Sendable {
         }
 
         private func release() {
-            stopEngine()
+            stopPlayer()
             // Deactivating tells the system we are done; `.notifyOthersOnDeactivation` lets a
             // paused app resume. Failing here is not worth surfacing: the engine is already down,
             // so we are no longer resident either way.
@@ -133,72 +137,87 @@ public final class BackgroundResidency: @unchecked Sendable {
             log.write("background residency released")
         }
 
-        /// Builds the silent graph. Returns false if the audio stack refused to start.
-        private func startEngine() -> Bool {
-            stopEngine()
-            guard
-                let format = AVAudioFormat(
-                    commonFormat: .pcmFormatFloat32,
-                    sampleRate: 48_000,
-                    channels: 1,
-                    interleaved: false
-                ),
-                let buffer = Self.makeKeepAliveBuffer(format: format)
-            else {
-                log.write("background residency could not build its buffer")
-                return false
-            }
-            let engine = AVAudioEngine()
-            let player = AVAudioPlayerNode()
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            // Belt and braces: the buffer is already inaudible, and the mixer takes it to zero.
-            engine.mainMixerNode.outputVolume = 0
+        /// Starts the keep-alive audio. Returns false if the audio stack refused.
+        ///
+        /// An `AVAudioPlayer` looping a tiny buffer, NOT an `AVAudioEngine` graph. The first
+        /// version used an engine with a player node wired to the main mixer, and that is what
+        /// made the phone hot: an engine runs a real-time render thread INSIDE THIS PROCESS,
+        /// waking at the hardware buffer period — roughly two hundred times a second — for as long
+        /// as residency is held. Rendering silence is not free when you render it yourself.
+        ///
+        /// `AVAudioPlayer` hands a looping buffer to the media server and our process does nothing
+        /// at all between BLE events. The audio session stays active, which is the entire
+        /// requirement for not being suspended.
+        private func startPlayer() -> Bool {
+            stopPlayer()
             do {
-                try engine.start()
+                let player = try AVAudioPlayer(data: BackgroundResidency.keepAliveWave)
+                player.numberOfLoops = -1
+                // The samples are already ~-90 dBFS, which is inaudible under `.mixWithOthers`.
+                // Deliberately not zero: a stream of digital silence at zero volume is the shape
+                // most likely to be treated as "not really playing audio".
+                player.volume = 1
+                guard player.play() else {
+                    log.write("background residency player refused to start")
+                    return false
+                }
+                lock.withLock { self.player = player }
+                return true
             } catch {
-                log.write("background residency engine failed: \(error)")
+                log.write("background residency player failed: \(error)")
                 return false
             }
-            player.scheduleBuffer(buffer, at: nil, options: [.loops])
-            player.play()
-            lock.withLock {
-                self.engine = engine
-                self.player = player
-            }
-            return true
         }
 
-        private func stopEngine() {
-            let (engine, player): (AVAudioEngine?, AVAudioPlayerNode?) = lock.withLock {
-                let pair = (self.engine, self.player)
-                self.engine = nil
+        private func stopPlayer() {
+            let player: AVAudioPlayer? = lock.withLock {
+                let held = self.player
                 self.player = nil
-                return pair
+                return held
             }
             player?.stop()
-            engine?.stop()
         }
 
-        /// One second of effectively-silent audio.
+        /// One second of near-silence as a WAV, built once.
         ///
-        /// Deliberately not pure zeros. A graph rendering nothing but zeros is a shape the system
-        /// is free to treat as "not actually playing audio", and the whole mechanism rests on the
-        /// session staying alive. A dither one LSB wide at 16-bit scale is ~-90 dBFS: below the
-        /// noise floor of any speaker, inaudible under `.mixWithOthers`, and unambiguously a
-        /// running audio graph.
-        private static func makeKeepAliveBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
-            let frames = AVAudioFrameCount(format.sampleRate)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
-                return nil
+        /// 8 kHz mono is a deliberate choice: the media server resamples it to whatever the route
+        /// wants, and the smaller the source the less there is to do. A dither one LSB wide is
+        /// about -90 dBFS — below the noise floor of any speaker, and unambiguously a running
+        /// audio stream rather than digital silence.
+        private static let keepAliveWave: Data = {
+            let sampleRate = 8_000
+            let sampleCount = sampleRate
+            var samples = Data(capacity: sampleCount * 2)
+            for index in 0..<sampleCount {
+                let value: Int16 = index % 2 == 0 ? 1 : -1
+                withUnsafeBytes(of: value.littleEndian) { samples.append(contentsOf: $0) }
             }
-            buffer.frameLength = frames
-            guard let channel = buffer.floatChannelData?[0] else { return nil }
-            let amplitude = Float(1) / Float(Int16.max)
-            for index in 0..<Int(frames) {
-                channel[index] = index % 2 == 0 ? amplitude : -amplitude
+            return BackgroundResidency.wav(pcm16: samples, sampleRate: sampleRate)
+        }()
+
+        private static func wav(pcm16: Data, sampleRate: Int) -> Data {
+            var out = Data()
+            func append32(_ value: UInt32) {
+                withUnsafeBytes(of: value.littleEndian) { out.append(contentsOf: $0) }
             }
-            return buffer
+            func append16(_ value: UInt16) {
+                withUnsafeBytes(of: value.littleEndian) { out.append(contentsOf: $0) }
+            }
+            out.append(contentsOf: Array("RIFF".utf8))
+            append32(UInt32(36 + pcm16.count))
+            out.append(contentsOf: Array("WAVE".utf8))
+            out.append(contentsOf: Array("fmt ".utf8))
+            append32(16)
+            append16(1)  // PCM
+            append16(1)  // mono
+            append32(UInt32(sampleRate))
+            append32(UInt32(sampleRate * 2))  // byte rate
+            append16(2)  // block align
+            append16(16)  // bits per sample
+            out.append(contentsOf: Array("data".utf8))
+            append32(UInt32(pcm16.count))
+            out.append(pcm16)
+            return out
         }
 
         // MARK: - The three ways a session dies silently
@@ -242,9 +261,9 @@ public final class BackgroundResidency: @unchecked Sendable {
                     guard let self, self.lock.withLock({ self.wanted }) else { return }
                     // A route change can stop the engine (unplugging, a Bluetooth speaker
                     // leaving). Cheap to re-check, and invisible when nothing is wrong.
-                    let running = self.lock.withLock { self.engine?.isRunning ?? false }
-                    if !running {
-                        self.log.write("background residency: route change stopped the engine")
+                    let playing = self.lock.withLock { self.player?.isPlaying ?? false }
+                    if !playing {
+                        self.log.write("background residency: route change stopped playback")
                         self.acquire()
                     }
                 })

@@ -45,6 +45,16 @@ public enum ReceiverSessionState: Sendable, Equatable {
 
     case revoked(reasonRaw: Int)
 
+    /// True only while the watch is actually sending us a stream.
+    ///
+    /// This is what background residency keys off, so it is deliberately narrow: the watch's
+    /// receiver-liveness watchdog runs only in its Streaming state, so every other state is one
+    /// where being suspended costs nothing.
+    public var isStreaming: Bool {
+        if case .streaming = self { return true }
+        return false
+    }
+
     /// The decoded denial status, when this is `.denied` with a known raw value.
     public var deniedStatus: AuthStatus? {
         if case .denied(let raw) = self, raw >= 0, raw <= Int(UInt8.max) {

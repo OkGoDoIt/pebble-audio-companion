@@ -79,6 +79,9 @@ public actor CloudLiveTranscriber {
     /// as long as the provider likes; `deliveringSegmentId` uses this so a mute session stops
     /// counting as delivery instead of silencing the chunk path for the rest of the recording.
     private var lastDeliveryAtMs: Int64 = 0
+    /// Live preview only runs for a screen someone is looking at — see `setForeground`.
+    private var isForeground = true
+    private var backgroundStopTask: Task<Void, Never>?
     /// After a session gives up on a segment, the earliest time a new session may be opened for
     /// THAT segment. Without it, the next frame batch would immediately restart the whole
     /// reconnect cycle — a hot loop of failing sockets for the rest of the recording.
@@ -157,10 +160,44 @@ public actor CloudLiveTranscriber {
         return deliveringSegment
     }
 
-    /// Lifecycle hook, deliberately a no-op: an in-flight live socket keeps streaming until its
-    /// segment closes or the `enabled` gate stops the next session. Backgrounding is not a
-    /// reason to stop transcribing audio the phone is still receiving.
-    public func setForeground(_ value: Bool) {}
+    /// Live preview is a FOREGROUND feature, and in the background it is the most expensive thing
+    /// this app does.
+    ///
+    /// This used to be a no-op, on the reasoning that "backgrounding is not a reason to stop
+    /// transcribing audio the phone is still receiving". That was defensible when backgrounding
+    /// meant iOS suspended us within seconds — the socket stalled on its own, and the no-op only
+    /// stopped us tearing it down needlessly. It stopped being defensible the moment the app began
+    /// holding an audio session to stay resident: the socket then genuinely stays open, and every
+    /// frame the watch sends — about seven a second, all day and all night — is forwarded to the
+    /// provider. That keeps the cellular or Wi-Fi radio out of its idle state permanently, which is
+    /// the single most effective way to flatten a phone battery, and it bills the provider for
+    /// twenty-four hours a day of audio nobody asked to have transcribed live.
+    ///
+    /// Nothing is lost by stopping. The audio is already durable on disk; the real transcript comes
+    /// from the transcription queue, not from here. This produces the PREVIEW on the live screen,
+    /// and there is no live screen when the app is in the background. On the way back the chunk
+    /// path has already covered the gap, and the handoff logic in `deliveringSegmentId` is built
+    /// for exactly that takeover.
+    ///
+    /// A short grace period, because leaving the app for two seconds and coming back should not
+    /// tear down and rebuild a socket that is mid-sentence.
+    public func setForeground(_ value: Bool) {
+        isForeground = value
+        backgroundStopTask?.cancel()
+        backgroundStopTask = nil
+        guard !value else { return }
+        backgroundStopTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.backgroundStopGraceMs) * 1_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.stopForBackground()
+        }
+    }
+
+    private func stopForBackground() {
+        guard !isForeground, activeSegmentId != nil else { return }
+        logNote("live cloud socket closed: app backgrounded")
+        stopSession()
+    }
 
     private func handle(_ event: LiveAudioEvent) {
         switch event {
@@ -186,6 +223,8 @@ public actor CloudLiveTranscriber {
 
     private func maybeStartSession(_ event: LiveAudioEvent.SegmentOpened) {
         guard enabled() else { return }
+        // No live screen, no live socket. See `setForeground`.
+        guard isForeground else { return }
         if activeSegmentId == event.segmentId && frameChannel != nil { return }
         if let gate = retryGate, gate.segmentId == event.segmentId, nowMs() < gate.notBeforeMs {
             return
@@ -344,6 +383,10 @@ public actor CloudLiveTranscriber {
     /// purpose: a quiet room costs nothing (no audio arrives, so the chunk path has nothing to
     /// do either), and the socket reclaims the segment on its next words.
     static let deliveryStaleMs: Int64 = 30_000
+
+    /// How long a backgrounded socket is kept before closing, so a glance away and back does not
+    /// thrash it.
+    static let backgroundStopGraceMs: Int64 = 10_000
 }
 
 /// The realtime backend is not configured (no key, no consent). Distinct from a failure: nothing

@@ -11,6 +11,7 @@ import SegmentStore
 import StatusUI
 import Transcription
 import UIKit
+import WireProtocol
 
 // The app's composition root. Built exactly once, at launch, from `PebbleAudioApp`.
 //
@@ -960,9 +961,15 @@ final class AppComposition {
                 guard self != nil, !Task.isCancelled else { return }
                 let audioAge = receiver.streamEvidence.value.lastAudioAtMs
                     .map { "\((clock.nowMs - $0) / 1000)s ago" } ?? "never"
+                // The watch's OWN state, not just ours. Reading an overnight log without it, the
+                // answer to "why was there no audio for two and a half hours" was unavailable:
+                // "authorized, no audio" is equally a paused watch, a power-saving watch, a flat
+                // battery and a watch that quietly stopped. They need different fixes.
+                let watch = receiver.watchServiceState.value.map(Self.watchStateName) ?? "unknown"
                 AppRuntimeLog.shared.flightRecorder?.recordHeartbeat(
                     "link=\(receiver.state.value) intent=\(receiver.captureIntent) "
-                        + "residency=\(residency.state.value.rawValue) audio=\(audioAge)"
+                        + "watch=\(watch) residency=\(residency.state.value.rawValue) "
+                        + "audio=\(audioAge)"
                 )
             }
         }
@@ -1067,6 +1074,15 @@ final class AppComposition {
     }
 
     // MARK: - Receiver identity
+
+    /// The watch's service state in words, for the heartbeat. Raw numbers in a log are a lookup
+    /// the reader should not have to do at 3am.
+    private static func watchStateName(_ raw: Int) -> String {
+        guard raw >= 0, raw <= Int(UInt8.max), let state = ServiceState(rawValue: UInt8(raw)) else {
+            return "raw(\(raw))"
+        }
+        return String(describing: state)
+    }
 
     /// Why this process exists, as far as we can tell at composition time.
     ///

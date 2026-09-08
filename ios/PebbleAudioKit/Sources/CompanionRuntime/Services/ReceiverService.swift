@@ -85,6 +85,16 @@ public actor ReceiverService {
     private let residency: BackgroundResidency?
 
     private var sessionTask: Task<Void, Never>?
+    /// Watches the session state so residency tracks the watch's stream.
+    private var residencyFollower: Task<Void, Never>?
+    /// Invalidates a pending residency release when the stream comes back first.
+    private var residencyGeneration: UInt64 = 0
+
+    /// How long residency is kept after the stream stops. Tearing the audio session down and
+    /// rebuilding it is not free, and a stream that pauses for two seconds — a reconnect, a
+    /// segment rotation — would otherwise thrash it. Short enough that an idle night spends
+    /// nothing.
+    private static let residencyGraceMs: Int64 = 20_000
 
     public init(
         link: any AudioGattLink,
@@ -215,6 +225,7 @@ public actor ReceiverService {
         // then stops its microphone. Taking it first means the very first reconnect of a launch is
         // already protected.
         syncResidency()
+        startResidencyFollower()
         link.connect()
         guard sessionTask == nil else { return }
         intentBox.running = true
@@ -229,15 +240,77 @@ public actor ReceiverService {
     /// overlaps the two. `connect()` is idempotent and never prompts the watch, so the later
     /// `start()` finds the link already up or in progress and leaves it alone.
     public nonisolated func dialLink() {
-        residency?.setWanted(intentBox.value == .active)
+        // Deliberately does NOT take residency: dialling is radio work, and nothing is streaming
+        // yet. `syncResidency` takes it when the watch actually starts sending.
         link.connect()
     }
 
-    /// Residency follows `.active` only. A paused or off watch is not streaming, so its liveness
-    /// watchdog is not armed and there is nothing to stay awake for — holding an audio session
-    /// through a pause would just spend battery.
+    /// Residency follows THE WATCH'S STREAM, not the user's intent.
+    ///
+    /// The first version keyed this off `intent == .active`, and a night of real logs showed what
+    /// that costs: 152 consecutive minutes holding an audio session, keeping the process awake and
+    /// the audio hardware powered, while `audio=never` — the watch was paused (its own power-save
+    /// mute, a low battery, a policy pause) and had nothing to send. The phone stayed up all night
+    /// for a watch that was asleep. That is most of the battery complaint.
+    ///
+    /// Streaming is the right trigger because it is exactly the condition the residency exists to
+    /// serve. The watch's 15 s receiver-liveness watchdog runs ONLY in its Streaming state
+    /// (`prv_check_receiver_liveness_locked` returns early otherwise), so when the watch is not
+    /// streaming there is no deadline to meet and being suspended costs nothing. And getting back
+    /// is free: every way the watch resumes — STREAM_START, a STATE_CHANGED push, a silence probe —
+    /// is a BLE notification, and a notification is precisely what wakes a suspended
+    /// `bluetooth-central` app. We take residency inside that wake, before the watch's watchdog
+    /// window has meaningfully elapsed.
     private func syncResidency() {
-        residency?.setWanted(intentBox.value == .active)
+        let wanted = intentBox.value == .active && session.state.value.isStreaming
+        if wanted {
+            residencyGeneration &+= 1
+            residency?.setWanted(true)
+        } else {
+            scheduleResidencyRelease()
+        }
+    }
+
+    /// Lets go a little after the stream stops, not the instant it does.
+    ///
+    /// Tearing the audio session down and rebuilding it is not free, and a stream that stops for
+    /// two seconds — a reconnect, a segment rotation, a brief drop — would otherwise thrash it.
+    /// The grace window is short enough that an idle night still spends nothing.
+    private func scheduleResidencyRelease() {
+        guard residency != nil else { return }
+        residencyGeneration &+= 1
+        let generation = residencyGeneration
+        // On the INJECTED clock, like every other delay in the receiver: tests drive it on
+        // virtual time instead of waiting twenty real seconds.
+        let clock = self.clock
+        Task { [weak self] in
+            try? await clock.sleep(ms: Self.residencyGraceMs)
+            guard let self else { return }
+            await self.releaseResidencyIfStillIdle(generation)
+        }
+    }
+
+    private func releaseResidencyIfStillIdle(_ generation: UInt64) {
+        guard generation == residencyGeneration else { return }
+        guard !(intentBox.value == .active && session.state.value.isStreaming) else { return }
+        residency?.setWanted(false)
+    }
+
+    /// Follows the session's own state so residency tracks the stream without every caller having
+    /// to remember to ask.
+    private func startResidencyFollower() {
+        guard residencyFollower == nil, residency != nil else { return }
+        let states = session.state.stream()
+        residencyFollower = Task { [weak self] in
+            for await _ in states {
+                guard let self else { return }
+                await self.syncResidencyFromFollower()
+            }
+        }
+    }
+
+    private func syncResidencyFromFollower() {
+        syncResidency()
     }
 
     /// What residency the process actually holds, for Diagnostics. `.failed` here is the difference
@@ -254,6 +327,9 @@ public actor ReceiverService {
 
     /// Tears the session down without touching the user's intent or the watch's pause state.
     public func stop() {
+        residencyFollower?.cancel()
+        residencyFollower = nil
+        residency?.setWanted(false)
         sessionTask?.cancel()
         sessionTask = nil
         intentBox.running = false
@@ -342,9 +418,8 @@ public actor ReceiverService {
     ) async {
         let previous = intentBox.value
         intentBox.set(intent)
-        // Unconditional, and before the early return: a repeated `.active` must still find
-        // residency held, because the one way this can be wrong is silently — the app looks fine
-        // in the foreground and stops recording the moment it is backgrounded.
+        // Unconditional, and before the early return: the one way this can be wrong is silently —
+        // the app looks fine in the foreground and stops recording the moment it is backgrounded.
         syncResidency()
         guard previous != intent else { return }
 
