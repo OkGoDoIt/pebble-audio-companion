@@ -57,7 +57,9 @@ public actor BackgroundCloudUploadCoordinator {
         public var markNoSpeech: @Sendable (_ segmentId: String) async -> Void
         /// `FileTranscriptionQueue.resetAbandonedUploads`: Uploading tasks whose job id is NOT in
         /// the transport's in-flight set go back to Pending; returns the reset segment ids.
-        public var resetAbandonedUploads: @Sendable (_ inFlight: Set<String>) async -> [String]
+        /// `graceMs` is a registration grace — see `TranscriptionQueue.resetAbandonedUploads`.
+        public var resetAbandonedUploads:
+            @Sendable (_ inFlight: Set<String>, _ graceMs: Int64) async -> [String]
 
         public init(
             pendingSegmentIds: @escaping @Sendable () async -> [String],
@@ -70,7 +72,7 @@ public actor BackgroundCloudUploadCoordinator {
                 async -> Void,
             markFailed: @escaping @Sendable (String, String, Bool) async -> Void,
             markNoSpeech: @escaping @Sendable (String) async -> Void,
-            resetAbandonedUploads: @escaping @Sendable (Set<String>) async -> [String]
+            resetAbandonedUploads: @escaping @Sendable (Set<String>, Int64) async -> [String]
         ) {
             self.pendingSegmentIds = pendingSegmentIds
             self.uploadingSegmentIds = uploadingSegmentIds
@@ -100,6 +102,11 @@ public actor BackgroundCloudUploadCoordinator {
     private let bodyDir: URL
     private let nowMs: @Sendable () -> Int64
     private let cloudPrimary: @Sendable () -> Bool
+    /// How long a freshly-submitted upload is left alone before `reconcile` may consider it
+    /// abandoned. Covers the window between the queue being marked `Uploading` and the transport
+    /// registering the URLSession task, in which the job is in neither set.
+    public static let uploadRegistrationGraceMs: Int64 = 5 * 60_000
+
     private let maxConcurrentUploads: Int
 
     public init(
@@ -136,10 +143,18 @@ public actor BackgroundCloudUploadCoordinator {
     }
 
     /// Re-attach to in-flight uploads after a (re)launch and finish any deferred control planes.
-    public func reconcile() async {
+    /// Re-attaches to whatever the transport actually has, and returns anything it does not to
+    /// `Pending`.
+    ///
+    /// `registrationGraceMs` defaults to zero, which is right at LAUNCH: the session has just been
+    /// restored, it knows every task it owns, and nothing has been submitted in this process yet,
+    /// so an `Uploading` task missing from its in-flight set is definitively abandoned and should
+    /// come back immediately. A PERIODIC reconcile needs the grace instead, because it can land in
+    /// the window between marking a task `Uploading` and the transport registering it.
+    public func reconcile(registrationGraceMs: Int64 = 0) async {
         await uploader.reconcile()
         let inFlight = await uploader.inFlightJobIds()
-        _ = await queue.resetAbandonedUploads(inFlight)
+        _ = await queue.resetAbandonedUploads(inFlight, registrationGraceMs)
         for job in jobStore.all() where job.phase == .awaitingControlPlane {
             await runControlPlane(job)
         }

@@ -218,8 +218,22 @@ public final class TranscriptionQueue: Sendable {
     /// Returns Uploading tasks whose id is not in `inFlight` to Pending (the transport forgot
     /// them, e.g. across a relaunch). Returns the reset ids.
     @discardableResult
-    public func resetAbandonedUploads(inFlight: Set<String>) throws -> [String] {
-        try resetToPending(from: .uploading) { !inFlight.contains($0.segmentId) }
+    /// Returns uploads the transport no longer knows about to `Pending`.
+    ///
+    /// `notUpdatedWithinMs` is a REGISTRATION GRACE, and it is what makes this safe to call on a
+    /// timer. There is a window where a task has been marked `Uploading` but the transport has not
+    /// yet registered its URLSession task, so it appears in neither set; resetting it there would
+    /// hand the same segment to the uploader twice, which costs the user money and produces two
+    /// transcripts for one recording. Anything genuinely in flight is either in `inFlight` or
+    /// younger than the grace.
+    public func resetAbandonedUploads(
+        inFlight: Set<String>,
+        notUpdatedWithinMs: Int64 = 0
+    ) throws -> [String] {
+        let cutoff = nowMs() - notUpdatedWithinMs
+        return try resetToPending(from: .uploading) {
+            !inFlight.contains($0.segmentId) && $0.updatedAtMs <= cutoff
+        }
     }
 
     @discardableResult

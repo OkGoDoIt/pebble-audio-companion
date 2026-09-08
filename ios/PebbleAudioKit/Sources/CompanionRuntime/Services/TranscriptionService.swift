@@ -83,6 +83,8 @@ public actor TranscriptionService {
         // was not". The revival is time-gated, so running it on every pass costs a query.
         let unparked = try await processor.reconsiderDisabled().isEmpty == false
         let revived = try await reviveAbandonedFailures() > 0
+        // Same question, third state: an upload the transport has quietly forgotten.
+        await reconcileUploaderIfDue()
         return unparked || revived
     }
 
@@ -210,6 +212,26 @@ public actor TranscriptionService {
     public func reconcileUploader() async {
         await uploader?.reconcile()
     }
+
+    /// Periodic re-attach, for the hole a long-lived process opens.
+    ///
+    /// `reconcile` otherwise runs only at launch, on a background-URLSession event, and when the
+    /// supervisor escalates. That was enough when the app was short-lived; it now stays resident
+    /// for days, so an upload that dies without ever producing a delegate callback would leave its
+    /// task in `Uploading` — invisible, and never transcribed — until the next relaunch. This is
+    /// time-gated and carries the registration grace, so it cannot race a submission in progress.
+    public func reconcileUploaderIfDue() async {
+        guard let uploader else { return }
+        let now = clock.nowMs
+        guard now - lastUploaderReconcileMs >= Self.uploaderReconcileIntervalMs else { return }
+        lastUploaderReconcileMs = now
+        await uploader.reconcile(
+            registrationGraceMs: BackgroundCloudUploadCoordinator.uploadRegistrationGraceMs
+        )
+    }
+
+    private var lastUploaderReconcileMs: Int64 = 0
+    static let uploaderReconcileIntervalMs: Int64 = 15 * 60_000
 
     /// Un-stick the queue mid-session: tasks left `Running` by work that died, and uploads the
     /// transport no longer knows about, go back where they can be picked up again.

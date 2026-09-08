@@ -163,8 +163,11 @@ public enum BackgroundUploadWiring {
                 }
                 await mirror(segmentId, .noSpeech)
             },
-            resetAbandonedUploads: { inFlight in
-                let reset = (try? queue.resetAbandonedUploads(inFlight: inFlight)) ?? []
+            resetAbandonedUploads: { inFlight, graceMs in
+                let reset =
+                    (try? queue.resetAbandonedUploads(
+                        inFlight: inFlight, notUpdatedWithinMs: graceMs
+                    )) ?? []
                 for segmentId in reset { await mirror(segmentId, .pending) }
                 if !reset.isEmpty {
                     log.write("upload reconcile: \(reset.count) abandoned upload(s) requeued")

@@ -170,7 +170,7 @@ private final class FakeUploadQueue: @unchecked Sendable {
             markNoSpeech: { [self] segmentId in
                 lock.withLock { states[segmentId] = .noSpeech }
             },
-            resetAbandonedUploads: { [self] inFlight in
+            resetAbandonedUploads: { [self] inFlight, _ in
                 lock.withLock {
                     let abandoned = order.filter { states[$0] == .uploading && !inFlight.contains($0) }
                     for segmentId in abandoned { states[segmentId] = .pending }
