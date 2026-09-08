@@ -1,5 +1,6 @@
 import SwiftUI
 import AppDB
+import UIKit
 
 /// The Ask tab's ROOT (mockup 2.8 + plan 6.6) — always context-scoped, scope always visible
 /// (anti-B5). It is a list of past conversations plus a composer, and nothing else.
@@ -80,7 +81,10 @@ struct AskScreen: View {
     /// A new question opens its own screen and is asked there, so the thread you were reading
     /// (if you came back from one) is not the thing that answers it.
     private func ask() {
-        let question = model.draft.trimmingCharacters(in: .whitespaces)
+        // `.whitespacesAndNewlines`, now the composer is a multi-line field: a draft that is
+        // three Returns is an empty question, and a trailing newline is not part of what was
+        // asked — it would ride into the thread's own heading and the history row.
+        let question = model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
         model.draft = ""
         Haptics.sent()
@@ -148,6 +152,9 @@ struct AskScreen: View {
                     }
                 }
             }
+            // Drag the list and the keyboard follows your finger down — the gesture people
+            // already use to get out of a composer, and the one that gives the tab bar back.
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
@@ -222,6 +229,25 @@ enum AskAnswerPreview {
 /// The ask field. Dismisses the keyboard on send: on the root the answer is arriving on a
 /// screen that is about to be pushed over it, and in a thread the point of sending is to read
 /// what comes back.
+///
+/// It GROWS with the question. A single-line field made every question look like it was meant
+/// to be short — you could not see the sentence you were typing past about six words, and a
+/// long one scrolled sideways under the cursor. Ask is the one place in the app where the
+/// person writes more than a word, so the box is the size of what they wrote, up to six lines.
+///
+/// Growing is about WRAPPING, not about paragraphs. A question to an AI never legitimately
+/// contains a line break, so the keyboard keeps a Send key and Return sends.
+///
+/// `.submitLabel(.send)` is what puts that key there — it is the real system Send key, not a
+/// drawing of one. What SwiftUI will not do is deliver its press: on a vertical-axis `TextField`
+/// the key inserts a line break and `onSubmit` is never called (still true on iOS 26 — it fires
+/// only for single-line fields and hardware keyboards). There is no modifier that changes this,
+/// so the break IS the press, and `sendOnReturn` reads it as one. It never survives to be seen:
+/// it is stripped in the same state update that added it.
+///
+/// The arrow stays as the visible, non-keyboard way to send. And the keyboard still needs a way
+/// out that is not sending — hence the Done bar above it, and
+/// `.scrollDismissesKeyboard(.interactively)` on the lists both screens put above this field.
 struct AskComposer: View {
     @Binding var text: String
     var placeholder: String
@@ -229,25 +255,46 @@ struct AskComposer: View {
     var send: () -> Void
 
     @FocusState private var focused: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// Newlines count as whitespace here: on a multi-line field the difference between an empty
+    /// box and one holding three Returns is nothing worth sending.
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespaces).isEmpty && !isSending
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
     }
 
+    /// Six lines is about a paragraph at the default sizes. At accessibility sizes six lines is
+    /// most of the screen, and what the field is asking about is the thing above it — so the
+    /// box stops growing sooner there and scrolls inside itself instead.
+    private var maxLines: Int { typeSize.isAccessibilitySize ? 3 : 6 }
+
     var body: some View {
-        HStack(spacing: 10) {
-            TextField(placeholder, text: $text)
+        // Bottom-aligned: the send button belongs beside the line being typed, not floating
+        // half-way up a five-line question.
+        HStack(alignment: .bottom, spacing: 10) {
+            TextField(placeholder, text: $text, axis: .vertical)
                 .font(AppFont.callout)
                 .focused($focused)
+                .lineLimit(1...maxLines)
+                .submitLabel(.send)
+                .onChange(of: text) { previous, current in
+                    sendOnReturn(previous: previous, current: current)
+                }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
                 .frame(minHeight: 44)
                 .background(
-                    Capsule().fill(Tokens.surface)
-                        .overlay(Capsule().strokeBorder(Tokens.barHairline, lineWidth: 0.5))
+                    fieldShape.fill(Tokens.surface)
+                        .overlay(fieldShape.strokeBorder(Tokens.barHairline, lineWidth: 0.5))
                 )
-                .submitLabel(.send)
-                .onSubmit(submit)
+                .toolbar {
+                    // The standard escape. A plain text button, not a `Label`: the keyboard bar
+                    // is a bar, and iOS 26 renders a `Label` in one icon-only.
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button(Copy.Common.done) { dismissKeyboard() }
+                    }
+                }
 
             CircleSendButton(action: submit)
                 .disabled(!canSend)
@@ -255,10 +302,44 @@ struct AskComposer: View {
         }
     }
 
+    /// A capsule at one line, a rounded box after that. A real `Capsule` around a grown field
+    /// draws half-circles the height of the whole box, which looks like a mistake; a fixed
+    /// 22 pt radius is what iMessage's composer does and reads right at every height.
+    private var fieldShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+    }
+
     private func submit() {
         guard canSend else { return }
-        focused = false
+        dismissKeyboard()
         send()
+    }
+
+    /// The Send key's press — the one thing SwiftUI will not hand us directly.
+    ///
+    /// Tightly scoped so that only the key can trigger it: exactly one character was added, and
+    /// it added exactly one line break. Pasting a question that contains line breaks arrives as
+    /// many characters at once and so is still a paste; a break typed into the middle of a
+    /// sentence is still caught, because what is counted is line breaks rather than a suffix.
+    /// The break is stripped in the same update that added it, so the field never renders it and
+    /// the draft never carries it.
+    private func sendOnReturn(previous: String, current: String) {
+        guard current.count == previous.count + 1,
+            current.filter(\.isNewline).count == previous.filter(\.isNewline).count + 1
+        else { return }
+        text = current.filter { !$0.isNewline }
+        submit()
+    }
+
+    /// `focused = false` is the SwiftUI half. The responder call is the other half, because a
+    /// `.keyboard` toolbar belongs to a view hierarchy rather than to a field, and the Ask tab
+    /// keeps TWO composers alive at once — the root's, underneath a pushed thread's. If the bar
+    /// on screen is the other composer's, its `@FocusState` is not the field holding the
+    /// keyboard, and Done would visibly do nothing.
+    private func dismissKeyboard() {
+        focused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
 

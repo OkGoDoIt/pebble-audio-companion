@@ -95,6 +95,9 @@ struct AskThreadScreen: View {
                     Color.clear.frame(height: 400)
                 }
             }
+            // Same escape as the root's history list: drag the thread and the keyboard goes
+            // down with your finger, which is how you get the tab bar back.
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: model.threadProgress) { _, _ in
                 // To the TOP of the newest turn, not the bottom of the thread. An answer can run
                 // to several screens, and landing at its end means reading it backwards: the
@@ -304,7 +307,9 @@ final class AskThreadViewModel {
     }
 
     func sendDraft(scope: AskScope) {
-        let question = draft.trimmingCharacters(in: .whitespaces)
+        // Newlines too: the composer grows with the text now, so a draft can legitimately hold
+        // line breaks — including a trailing one nobody meant to ask.
+        let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isSending else { return }
         draft = ""
         send(question, scope: scope)
