@@ -214,3 +214,110 @@ import Testing
         #expect(observed.lastError == "x")
     }
 }
+
+// A task stops retrying after `maxAttempts`, and the backoff ladder gets there in about an hour.
+// That suits a burst of failures and badly misreads an OUTAGE: an hour on a plane, on the
+// Underground, or with a key that expired overnight, and those recordings were dead — no automatic
+// path back, and no manual one in the UI either. These pin the guarantee that everything is
+// EVENTUALLY transcribed.
+@Suite struct QueueRevivalTests {
+
+    private let clock = ClockBox(1_000)
+    private let db: AppDatabase
+
+    init() throws { db = try AppDatabase.inMemory() }
+
+    private func queue() -> TranscriptionQueue {
+        TranscriptionQueue(database: db, nowMs: { [clock] in clock.now })
+    }
+
+    /// Drives a task all the way to "given up on".
+    private func exhaust(_ q: TranscriptionQueue, _ id: String, error: String) throws {
+        try q.enqueue(id)
+        for _ in 0..<TranscriptionQueue.maxAttempts {
+            _ = try q.markRunning(id)
+            try q.markFailed(id, error: error, retryable: true)
+        }
+        #expect(try q.all().first { $0.segmentId == id }?.retryable == false)
+    }
+
+    @Test func anOutageDoesNotKillARecordingForever() throws {
+        let q = queue()
+        try exhaust(q, "seg-1", error: "The request never reached the provider")
+
+        // Nothing runnable: it has been given up on.
+        #expect(try q.nextRunnable() == nil)
+
+        // Six hours later the safety net tries again, with the WHOLE ladder restored — a revived
+        // task that failed once and died immediately would not be a fix.
+        clock.now += 6 * 60 * 60 * 1000
+        let revived = try q.reviveExhausted(notAttemptedWithinMs: 6 * 60 * 60 * 1000) { _ in true }
+        #expect(revived == ["seg-1"])
+        let task = try #require(try q.all().first { $0.segmentId == "seg-1" })
+        #expect(task.state == .pending)
+        #expect(task.attempts == 0)
+        #expect(task.retryable)
+        #expect(try q.nextRunnable()?.segmentId == "seg-1")
+    }
+
+    @Test func aRecentFailureIsLeftAloneToFinishItsBackoff() throws {
+        let q = queue()
+        try exhaust(q, "seg-1", error: "The request never reached the provider")
+
+        // The sweep runs on every pass, so it must not undo the backoff it just went through.
+        let revived = try q.reviveExhausted(notAttemptedWithinMs: 6 * 60 * 60 * 1000) { _ in true }
+        #expect(revived.isEmpty)
+    }
+
+    @Test func stillRetryingTasksAreNotTouched() throws {
+        let q = queue()
+        try q.enqueue("seg-1")
+        _ = try q.markRunning("seg-1")
+        try q.markFailed("seg-1", error: "boom", retryable: true)
+
+        clock.now += 24 * 60 * 60 * 1000
+        // It has attempts left; the ordinary ladder owns it, not the safety net.
+        #expect(try q.reviveExhausted(notAttemptedWithinMs: 0) { _ in true }.isEmpty)
+    }
+
+    @Test func theCallerChoosesWhatComesBack() throws {
+        let q = queue()
+        try exhaust(q, "network", error: "The request never reached the provider")
+        try exhaust(q, "broken-audio", error: "failed to read audio for segment")
+        clock.now += 24 * 60 * 60 * 1000
+
+        // Audio that cannot be read will never succeed; retrying it forever spends battery and
+        // money on nothing, so the policy leaves it failed and visible.
+        let revived = try q.reviveExhausted(notAttemptedWithinMs: 0) { task in
+            TranscriptionFailureKind.classify(task.lastError).isWorthRevisiting
+        }
+        #expect(revived == ["network"])
+    }
+}
+
+// The taxonomy behind that choice: "the world was temporarily broken" comes back, "this audio is
+// bad" does not.
+@Suite struct FailureRevivalPolicyTests {
+
+    @Test func environmentalFailuresComeBack() {
+        for kind in [
+            TranscriptionFailureKind.noConnection, .keyRejected, .keyNotPermitted, .rateLimited,
+            .providerTrouble, .timedOut, .modelMissing, .localEngineFailed, .notConfigured,
+        ] {
+            #expect(kind.isWorthRevisiting, "\(kind) is fixable and must be retried")
+        }
+    }
+
+    @Test func badAudioStaysFailed() {
+        for kind in [
+            TranscriptionFailureKind.audioUnreadable, .recordingTooLong, .providerRefusedAudio,
+        ] {
+            #expect(!kind.isWorthRevisiting, "\(kind) cannot succeed on a retry")
+        }
+    }
+
+    @Test func everyKindHasAnAnswer() {
+        // A new kind must be classified deliberately, not inherit a default.
+        #expect(TranscriptionFailureKind.allCases.count == 13)
+    }
+}

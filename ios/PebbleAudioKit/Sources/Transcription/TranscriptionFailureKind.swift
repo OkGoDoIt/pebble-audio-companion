@@ -41,6 +41,31 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     /// Something we have no better word for. The honest answer, not a guess.
     case unknown
 
+    /// Whether a task that exhausted its retries for this reason is worth trying again later.
+    ///
+    /// The distinction is between "the world was temporarily broken" and "this audio is bad", and
+    /// it matters because the retry ladder is short: 30 s doubling to 30 m, eight attempts, which
+    /// is about an hour end to end. An hour without a usable network — a flight, a commute
+    /// underground, an expired key nobody noticed until the evening — used to be enough to kill a
+    /// recording's transcript permanently, with nothing anywhere that would ever pick it up again.
+    ///
+    /// So anything environmental or configurational comes back, because the cause is exactly the
+    /// sort of thing that gets fixed: a key is replaced, a plan is topped up, a model finishes
+    /// downloading, the phone finds Wi-Fi.
+    ///
+    /// The three that do NOT come back are the ones where the AUDIO is the problem, and retrying
+    /// them forever would spend battery and money on something that cannot succeed. Those stay
+    /// failed and stay visible in Diagnostics, which is the honest outcome.
+    public var isWorthRevisiting: Bool {
+        switch self {
+        case .keyRejected, .keyNotPermitted, .rateLimited, .providerTrouble, .timedOut,
+            .noConnection, .modelMissing, .localEngineFailed, .notConfigured, .unknown:
+            return true
+        case .recordingTooLong, .audioUnreadable, .providerRefusedAudio:
+            return false
+        }
+    }
+
     /// Classifies a stored `lastError`.
     ///
     /// Matching is on OUR OWN literals (the `TranscriptionError` messages thrown across the

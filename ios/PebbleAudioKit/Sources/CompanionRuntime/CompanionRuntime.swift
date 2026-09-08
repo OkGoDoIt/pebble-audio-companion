@@ -161,6 +161,10 @@ public actor CompanionRuntime {
     /// that is what makes pacing event-driven rather than poll-driven.
     public nonisolated func notifyConfigChanged() {
         wake.signal()
+        // A settings change is the most common way a failure's CAUSE gets fixed — a new key, a
+        // different provider, a model that finished downloading. Recordings that were given up on
+        // should come back now, not in six hours.
+        Task { await environment.transcription.reconsiderAfterConfigurationChange() }
     }
 
     // --- lifecycle -----------------------------------------------------------------------------

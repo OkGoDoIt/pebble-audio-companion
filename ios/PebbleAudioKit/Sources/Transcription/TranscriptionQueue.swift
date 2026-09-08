@@ -155,6 +155,40 @@ public final class TranscriptionQueue: Sendable {
         try resetToPending(from: .disabled)
     }
 
+    /// Gives exhausted failures a fresh start when their cause may have gone away.
+    ///
+    /// A task stops retrying after `maxAttempts`, and the ladder gets there in about an hour. That
+    /// is the right shape for a burst of failures; it is the wrong shape for an OUTAGE, because an
+    /// hour offline then means those recordings are never transcribed again — no automatic path,
+    /// and no manual one either. This is what makes "everything is eventually transcribed" true
+    /// rather than aspirational.
+    ///
+    /// `attempts` is reset as well as the state, so a revived task gets the whole ladder again
+    /// instead of failing once and dying immediately. Callers decide WHICH tasks (see
+    /// `TranscriptionFailureKind.isWorthRevisiting`) and how stale they must be.
+    @discardableResult
+    public func reviveExhausted(
+        notAttemptedWithinMs: Int64,
+        where shouldRevive: (TranscriptionTask) -> Bool
+    ) throws -> [String] {
+        let cutoff = nowMs() - notAttemptedWithinMs
+        return try database.writer.write { db in
+            let matching = try Self.orderedQuery
+                .filter(Column("state") == TaskState.failed.rawValue)
+                .fetchAll(db)
+                .filter { !$0.retryable && $0.updatedAtMs <= cutoff && shouldRevive($0) }
+            for task in matching {
+                var next = task
+                next.state = .pending
+                next.attempts = 0
+                next.retryable = true
+                next.updatedAtMs = nowMs()
+                try next.update(db)
+            }
+            return matching.map(\.segmentId)
+        }
+    }
+
     @discardableResult
     public func markRunning(_ segmentId: String) throws -> TranscriptionTask? {
         try update(segmentId) { task in

@@ -77,8 +77,64 @@ public actor TranscriptionService {
     /// Segments parked while no provider was usable become eligible the moment one is (model
     /// downloaded, key added, mode changed). Returns true when anything changed.
     public func reconsiderDisabled() async throws -> Bool {
-        try await !processor.reconsiderDisabled().isEmpty
+        // Both kinds of parked work, in one stage, because they are the same question asked of two
+        // states: is there anything we gave up on that could succeed now? `Disabled` is "no
+        // provider was usable"; an exhausted `Failed` is "the provider was usable and the world
+        // was not". The revival is time-gated, so running it on every pass costs a query.
+        let unparked = try await processor.reconsiderDisabled().isEmpty == false
+        let revived = try await reviveAbandonedFailures() > 0
+        return unparked || revived
     }
+
+    /// The user just changed something that could fix a failure — a key, a provider, a mode, a
+    /// model. Revive immediately rather than making them wait out the safety-net interval.
+    public func reconsiderAfterConfigurationChange() async {
+        do {
+            _ = try await reviveAbandonedFailures(immediate: true)
+        } catch {
+            log.failure("revive after configuration change", error)
+        }
+    }
+
+    /// Gives up-for-dead recordings another chance, so "everything is eventually transcribed" is
+    /// a guarantee rather than a hope.
+    ///
+    /// A task stops retrying after eight attempts, and the backoff ladder reaches that in about an
+    /// hour. That suits a burst of failures and badly misreads an OUTAGE: an hour on a plane, on
+    /// the Underground, or with a key that expired overnight, and those recordings were dead with
+    /// no automatic path back and no manual one either.
+    ///
+    /// Two cadences, because there are two different reasons a cause goes away:
+    ///
+    /// - `immediate` is the user fixing something — a new key, a different provider, a model that
+    ///   finished downloading. They just acted; they should not wait hours to see it work.
+    /// - Otherwise a slow sweep, so an outage that ended quietly (the phone found Wi-Fi at 3am)
+    ///   still resolves itself without anyone doing anything.
+    ///
+    /// Only reasons that CAN go away are revived. Audio the provider refused, audio too long for
+    /// it, and audio we cannot read are left failed: retrying those forever would spend battery
+    /// and money on something that cannot succeed, and they stay visible in Diagnostics, which is
+    /// the honest outcome.
+    @discardableResult
+    public func reviveAbandonedFailures(immediate: Bool = false) async throws -> Int {
+        let revived = try queue.reviveExhausted(
+            notAttemptedWithinMs: immediate ? 0 : Self.failureRevivalIntervalMs
+        ) { task in
+            TranscriptionFailureKind.classify(task.lastError).isWorthRevisiting
+        }
+        if !revived.isEmpty {
+            log.write(
+                "revived \(revived.count) abandoned transcription task(s)"
+                    + (immediate ? " after a configuration change" : "")
+            )
+        }
+        return revived.count
+    }
+
+    /// How long an exhausted task rests before the safety-net sweep tries it again. Long enough
+    /// that a genuinely broken provider is not hammered, short enough that a day's recordings are
+    /// never stranded overnight.
+    static let failureRevivalIntervalMs: Int64 = 6 * 60 * 60 * 1000
 
     /// Enqueues every closed, not-yet-transcribed segment. Safe to call repeatedly.
     public func enqueueClosedSegments() async throws {
