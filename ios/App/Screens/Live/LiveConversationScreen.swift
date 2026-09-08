@@ -248,14 +248,7 @@ struct LiveConversationScreen: View {
     private var bottomBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             actionsRow
-            if viewModel.snapshot.isLive {
-                Text(Copy.Live.aiHorizon)
-                    .font(AppFont.micro)
-                    .foregroundStyle(Tokens.faint)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                transportRow
-            } else if !conversationId.isEmpty {
+            if !viewModel.snapshot.isLive, !conversationId.isEmpty {
                 // Nothing left to pause or stop; the useful move is the finished conversation,
                 // which has the player, the final transcript and the ⋯ menu this screen cannot.
                 Button(Copy.Live.openConversation) { showEndedConversation() }
@@ -275,6 +268,18 @@ struct LiveConversationScreen: View {
     /// same `FlowLayout` the Conversation screen's bar uses.
     private var actionsRow: some View {
         FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
+            // One control, in the same row as everything else. This was a separate section
+            // holding both Pause and Stop: two buttons for one intention, in a bar of their own,
+            // each explaining itself underneath. Stop is what a person means here — the
+            // recording ends — and turning it back on is the switch on Today, which is where
+            // every other capture decision already lives.
+            if viewModel.snapshot.isLive {
+                ActionPill(title: Copy.Live.stop, systemImage: "stop.fill", style: .stop) {
+                    Haptics.captureEnded()
+                    viewModel.stopTapped()
+                    showEndedConversation()
+                }
+            }
             ActionPill(title: Copy.Conversation.ask, systemImage: "sparkles", style: .filled) {
                 let id = conversationId
                 guard !id.isEmpty else { return }
@@ -292,29 +297,6 @@ struct LiveConversationScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .disabled(conversationId.isEmpty)
         .opacity(conversationId.isEmpty ? 0.4 : 1)
-    }
-
-    /// Both buttons end the conversation; the sublines say what each does to capture after
-    /// that, which is the only difference and the thing the bar never used to admit.
-    private var transportRow: some View {
-        HStack(spacing: 10) {
-            LiveTransportButton(
-                title: Copy.Live.pause, subline: Copy.Live.pauseSubline,
-                systemImage: "pause.fill"
-            ) {
-                Haptics.captureEnded()
-                viewModel.pauseTapped()
-                showEndedConversation()
-            }
-            LiveTransportButton(
-                title: Copy.Live.stop, subline: Copy.Live.stopSubline,
-                systemImage: "stop.fill", role: .stop
-            ) {
-                Haptics.captureEnded()
-                viewModel.stopTapped()
-                showEndedConversation()
-            }
-        }
     }
 
     // MARK: Actions

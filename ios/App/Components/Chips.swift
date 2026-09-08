@@ -138,7 +138,10 @@ struct SuggestionChip: View {
 /// h36 r18 pill: filled-tint (15/600 white) or neutral (`pillFill`, 15/500 label).
 /// Optional leading glyph (sparkle on Ask).
 struct ActionPill: View {
-    enum Style { case filled, neutral }
+    /// `stop` is the destructive-adjacent one: ending a recording is not dangerous, but it is
+    /// the only pill in a bar that changes what the watch is doing, so it carries the app's
+    /// stop colour rather than sitting among the neutral ones looking like another AI action.
+    enum Style { case filled, neutral, stop }
 
     let title: String
     var systemImage: String? = nil
@@ -156,15 +159,30 @@ struct ActionPill: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            .foregroundStyle(style == .filled ? Tokens.onTint : Tokens.label)
+            .foregroundStyle(foreground)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .frame(minHeight: 36)
-            .background(Capsule().fill(style == .filled ? Tokens.tint : Tokens.pillFill))
+            .background(Capsule().fill(fill))
             .frame(minHeight: 44)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+
+    private var foreground: Color {
+        switch style {
+        case .filled: return Tokens.onTint
+        case .neutral: return Tokens.label
+        case .stop: return Tokens.destructive
+        }
+    }
+
+    private var fill: Color {
+        switch style {
+        case .filled: return Tokens.tint
+        case .neutral, .stop: return Tokens.pillFill
+        }
     }
 }
 
