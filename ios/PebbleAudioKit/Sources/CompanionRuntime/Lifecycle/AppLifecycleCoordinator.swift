@@ -19,6 +19,9 @@ public enum AppLifecycleEvent: String, Sendable, Equatable, CaseIterable {
     case willTerminate
     /// A `BGProcessingTask` window opened.
     case backgroundProcessingStarted
+    /// The charger-gated `BGProcessingTask` window opened — see
+    /// `BackgroundTaskPolicy.chargingTaskIdentifier`.
+    case chargingCatchUpStarted
     /// The system is about to suspend us; only optional work is cancelled.
     case backgroundProcessingExpired
     /// `handleEventsForBackgroundURLSession`.
@@ -87,6 +90,9 @@ public actor AppLifecycleCoordinator {
         case .backgroundProcessingStarted:
             await runBackgroundProcessing()
 
+        case .chargingCatchUpStarted:
+            await runChargingCatchUp()
+
         case .backgroundProcessingExpired:
             // Expiration cancels OPTIONAL work only. It never touches the receiver's run state
             // and never changes the user's recording intent: a processing-task timeout must not
@@ -97,6 +103,23 @@ public actor AppLifecycleCoordinator {
         case .backgroundUrlSessionEvents:
             await runtime.handleBackgroundUploadEvents()
         }
+    }
+
+    /// The charger window: drain as much of the backlog as the window allows.
+    ///
+    /// Unlike `runBackgroundProcessing`, this one is allowed to be expensive — that is its whole
+    /// purpose — but it still asks the policy first, because iOS granting the window says the
+    /// SYSTEM is idle, not that the user wants their battery spent (Low Power Mode) or that the
+    /// phone is in a fit state to do it (thermal).
+    private func runChargingCatchUp() async {
+        backgroundWork?.cancel()
+        let runtime = self.runtime
+        let task = Task {
+            _ = await runtime.runChargingCatchUp()
+        }
+        backgroundWork = task
+        await task.value
+        backgroundWork = nil
     }
 
     /// The BGProcessing body: MAINTENANCE ONLY (retention, upload hand-off, diagnostics) plus the
@@ -119,6 +142,24 @@ public actor AppLifecycleCoordinator {
 public enum BackgroundTaskPolicy {
     /// Registered in `Info.plist` under `BGTaskSchedulerPermittedIdentifiers`.
     public static let processingTaskIdentifier = "dev.audiocompanion.app.receiver-processing"
+
+    /// The heavy one: local transcription and AI, on a charger.
+    ///
+    /// A SECOND identifier rather than a flag on the first, because the two want opposite
+    /// scheduling. `processingTaskIdentifier` does light maintenance — retention, the upload
+    /// hand-off, diagnostics — which must keep happening on battery, so it cannot ask for external
+    /// power. This one is exactly the state the OS already models for us: `requiresExternalPower`
+    /// tells iOS to run it when the device is idle and plugged in, which in practice means
+    /// overnight, and it grants minutes rather than the seconds a Bluetooth wake gets.
+    ///
+    /// It still asks the policy before doing anything: iOS decides WHEN it is convenient for the
+    /// system, and `BackgroundWorkPolicy` decides whether it is convenient for the user (Low Power
+    /// Mode, a hot phone, their own setting).
+    public static let chargingTaskIdentifier = "dev.audiocompanion.app.charging-catchup"
+
+    /// Bigger than the ordinary burst: this window exists to clear a night's backlog, and the
+    /// battery it spends is a battery that is being refilled.
+    public static let chargingCatchUpMaxSegments = 200
     /// Earliest begin date: +15 minutes.
     public static let earliestBeginInterval: TimeInterval = 15 * 60
     /// No network and no power requirement: the work is local maintenance, and demanding either

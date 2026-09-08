@@ -760,6 +760,14 @@ enum Copy {
         }
 
         enum TranscriptionAI {
+            /// Named for the outcome, not the mechanism: people care whether their transcripts are
+            /// ready, not which scheduler ran.
+            static let backgroundCatchUp = "Catch Up in the Background"
+            static let backgroundCatchUpFooter =
+                "Transcribing uses the processor, so by default it waits until your iPhone is "
+                + "charging. Recording is never affected. Low Power Mode and a warm phone always "
+                + "pause it, whichever option you pick."
+
             static let title = "Transcription & AI"
             static let transcriptionSection = "Transcription"
             static let aiSection = "AI"

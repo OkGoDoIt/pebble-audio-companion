@@ -29,10 +29,14 @@ public protocol RuntimeSettings: Sendable {
     var retentionMaxBytes: Int64 { get }
     /// False until the user picks a transcription mode ("Later" in onboarding leaves it false).
     var transcriptsConfigured: Bool { get }
+    /// When expensive catch-up (local transcription, AI) may run while the app is not on screen.
+    /// Defaulted so callers that do not care need not declare it. See `BackgroundWorkPolicy`.
+    var backgroundCatchUp: BackgroundCatchUp { get }
 }
 
 extension RuntimeSettings {
     public var retentionMaxBytes: Int64 { RuntimeSettingsDefaults.retentionMaxBytes }
+    public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
 
     // --- Derived semantics (Part 4.6) ---------------------------------------------------------
 
@@ -154,6 +158,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var retentionDays: Int
     public var retentionMaxBytes: Int64
     public var transcriptsConfigured: Bool
+    public var backgroundCatchUp: BackgroundCatchUp
 
     public init(
         captureIntent: CaptureIntent = .off,
@@ -166,7 +171,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         onboardingComplete: Bool = false,
         retentionDays: Int = RuntimeSettingsDefaults.retentionDays,
         retentionMaxBytes: Int64 = RuntimeSettingsDefaults.retentionMaxBytes,
-        transcriptsConfigured: Bool = false
+        transcriptsConfigured: Bool = false,
+        backgroundCatchUp: BackgroundCatchUp = .whileCharging
     ) {
         self.captureIntent = captureIntent
         self.transcriptionMode = transcriptionMode
@@ -179,5 +185,6 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.retentionDays = retentionDays
         self.retentionMaxBytes = retentionMaxBytes
         self.transcriptsConfigured = transcriptsConfigured
+        self.backgroundCatchUp = backgroundCatchUp
     }
 }

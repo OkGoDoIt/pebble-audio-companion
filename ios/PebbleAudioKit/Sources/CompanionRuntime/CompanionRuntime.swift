@@ -397,6 +397,37 @@ public actor CompanionRuntime {
     /// awake (unlike a ~10 s Bluetooth wake). No-op in the foreground: the loop already drains
     /// there, and skipping avoids two concurrent `processNext` callers. The model is released in a
     /// non-cancellable finally, so an expiration never leaves it resident.
+    /// The charger window's body: clear as much backlog as the window allows.
+    ///
+    /// Distinct from `runCatchUpBurst` in exactly two ways — a far larger segment budget, and it
+    /// consults `BackgroundWorkPolicy` first. iOS granting this window means the SYSTEM is idle
+    /// and on power; it says nothing about whether the user has asked to conserve (Low Power Mode)
+    /// or whether the phone is already too hot to help. Both of those override it.
+    ///
+    /// Returns the number of segments processed, and logs the reason when it declines, so a
+    /// backlog that is not moving can explain itself instead of looking like a bug.
+    @discardableResult
+    public func runChargingCatchUp() async -> Int {
+        let decision = BackgroundWorkPolicy.decide(
+            environment.settings.backgroundCatchUp, foreground.devicePower
+        )
+        guard case .run = decision else {
+            if case .hold(let reason) = decision {
+                log.write("charging catch-up declined: \(reason.rawValue)")
+            }
+            // Still worth the cheap half: uploads cost us almost nothing and the system does the
+            // transfer. Declining to spend the CPU is not a reason to sit on finished segments.
+            await environment.transcription.submitPendingToUploader()
+            return 0
+        }
+        log.write("charging catch-up started")
+        let processed = await runCatchUpBurst(
+            maxSegments: BackgroundTaskPolicy.chargingCatchUpMaxSegments
+        )
+        log.write("charging catch-up processed \(processed) segment(s)")
+        return processed
+    }
+
     @discardableResult
     public func runCatchUpBurst(
         maxSegments: Int = PipelinePacing.catchUpMaxSegments
@@ -578,7 +609,12 @@ public actor CompanionRuntime {
                         : CoverageSnapshotService.backgroundHeartbeatMs
                 )
             },
-            submitPendingUploads: { await env.transcription.submitPendingToUploader() }
+            submitPendingUploads: { await env.transcription.submitPendingToUploader() },
+            backgroundWorkDecision: {
+                BackgroundWorkPolicy.decide(
+                    env.settings.backgroundCatchUp, foreground.devicePower
+                )
+            }
         )
     }
 }
@@ -593,6 +629,15 @@ public final class RuntimeForegroundState: @unchecked Sendable {
     private var _catchUpActive = false
 
     public init(foreground: Bool = true) { self._value = foreground }
+
+    /// The device conditions `BackgroundWorkPolicy` judges on. Lives here because this is the one
+    /// object the pass closures already read synchronously, and the decision has to be made inside
+    /// a non-async closure.
+    private var _devicePower = DevicePowerSnapshot()
+    public var devicePower: DevicePowerSnapshot {
+        get { lock.withLock { _devicePower } }
+        set { lock.withLock { _devicePower = newValue } }
+    }
 
     public var value: Bool {
         get { lock.withLock { _value } }

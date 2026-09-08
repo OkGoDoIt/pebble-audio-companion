@@ -1,3 +1,4 @@
+import CompanionRuntime
 import SwiftUI
 import Transcription
 import Intelligence
@@ -54,6 +55,21 @@ struct SettingsTranscriptionScreen: View {
                     )
                 }
                 keyRow(for: settings.cloudTranscriptionProvider)
+                // Where the backlog gets cleared. Phrased around what the person gets and what it
+                // costs them, not around BGTaskScheduler.
+                SettingsPushRow(
+                    title: Copy.Settings.TranscriptionAI.backgroundCatchUp,
+                    value: settings.backgroundCatchUp.displayName
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Settings.TranscriptionAI.backgroundCatchUp,
+                        options: BackgroundCatchUp.allCases.map {
+                            .init(value: $0, label: $0.displayName)
+                        },
+                        selection: $settings.backgroundCatchUp,
+                        footer: Copy.Settings.TranscriptionAI.backgroundCatchUpFooter
+                    )
+                }
             }
 
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.aiSection)

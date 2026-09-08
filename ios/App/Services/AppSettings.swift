@@ -93,7 +93,8 @@ final class AppSettings {
                 onboardingComplete: onboardingComplete,
                 retentionDays: retentionDays,
                 retentionMaxBytes: retentionMaxBytes,
-                transcriptsConfigured: transcriptsConfigured
+                transcriptsConfigured: transcriptsConfigured,
+                backgroundCatchUp: backgroundCatchUp
             )
         )
         onRuntimeSettingsChanged?()
@@ -111,6 +112,15 @@ final class AppSettings {
     var transcriptionMode: TranscriptionMode {
         didSet {
             defaults.set(transcriptionMode.rawValue, forKey: Keys.transcriptionMode)
+            mirrorToRuntime()
+        }
+    }
+
+    /// When transcription is allowed to catch up while the app is not on screen. The default
+    /// waits for a charger, which is free; Low Power Mode and a hot phone override it either way.
+    var backgroundCatchUp: BackgroundCatchUp {
+        didSet {
+            defaults.set(backgroundCatchUp.rawValue, forKey: Keys.backgroundCatchUp)
             mirrorToRuntime()
         }
     }
@@ -259,6 +269,9 @@ final class AppSettings {
         captureIntent =
             defaults.string(forKey: Keys.captureIntent)
             .flatMap(CaptureIntent.init(settingValue:)) ?? .off
+        backgroundCatchUp =
+            defaults.string(forKey: Keys.backgroundCatchUp).flatMap(BackgroundCatchUp.init)
+            ?? .whileCharging
         transcriptionMode =
             defaults.string(forKey: Keys.transcriptionMode).flatMap(TranscriptionMode.init)
             ?? .remoteFirst
@@ -342,6 +355,7 @@ final class AppSettings {
     private enum Keys {
         static let captureIntent = "capture_intent"
         static let transcriptionMode = "transcription_mode"
+        static let backgroundCatchUp = "background_catch_up"
         static let localModel = "local_transcription_model"
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"

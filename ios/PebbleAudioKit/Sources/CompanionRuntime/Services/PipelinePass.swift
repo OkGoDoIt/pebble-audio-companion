@@ -73,6 +73,11 @@ public struct PipelineSteps: Sendable {
     /// transfer itself is done by the system daemon rather than by us — see the background branch
     /// of `run()`.
     public var submitPendingUploads: @Sendable () async -> Void = {}
+    /// Whether expensive catch-up (local STT, AI) may run while backgrounded, and why not when it
+    /// may not. See `BackgroundWorkPolicy`.
+    public var backgroundWorkDecision: @Sendable () -> BackgroundWorkDecision = {
+        .hold(reason: .onBattery)
+    }
 
     public init(
         isForeground: @escaping @Sendable () -> Bool = { true },
@@ -95,7 +100,10 @@ public struct PipelineSteps: Sendable {
         nextRetryAtMs: @escaping @Sendable () async throws -> Int64? = { nil },
         onDiagnosticsDirty: @escaping @Sendable () async -> Void = {},
         refreshCoverageSnapshot: @escaping @Sendable () async -> Void = {},
-        submitPendingUploads: @escaping @Sendable () async -> Void = {}
+        submitPendingUploads: @escaping @Sendable () async -> Void = {},
+        backgroundWorkDecision: @escaping @Sendable () -> BackgroundWorkDecision = {
+            .hold(reason: .onBattery)
+        }
     ) {
         self.isForeground = isForeground
         self.isCatchUpActive = isCatchUpActive
@@ -118,6 +126,7 @@ public struct PipelineSteps: Sendable {
         self.onDiagnosticsDirty = onDiagnosticsDirty
         self.refreshCoverageSnapshot = refreshCoverageSnapshot
         self.submitPendingUploads = submitPendingUploads
+        self.backgroundWorkDecision = backgroundWorkDecision
     }
 }
 
@@ -200,7 +209,13 @@ public struct PipelinePass: Sendable {
         // 1. Background early-return. Receive-only: defer local STT, live preview, AI enrichment
         //    and WAV export, and release the local model so a ~10 s Bluetooth wake stays cheap and
         //    the app is not a jetsam target. Pending segments stay queued.
-        if !steps.isForeground() {
+        // Backgrounded, but the phone may be in a state where expensive work is free — plugged
+        // in, cool, and not in Low Power Mode. `BackgroundWorkPolicy` owns that judgement; when it
+        // says yes we fall through to the ordinary pass instead of deferring, which is what lets a
+        // phone on a desk charger clear its backlog before the user next opens the app.
+        //
+        // The receive path is never what gets traded here: it does not run on this loop.
+        if !steps.isForeground(), !steps.backgroundWorkDecision().isRun {
             onStage(.backgroundDefer)
             if !steps.isCatchUpActive() {
                 await steps.releaseModel("background")

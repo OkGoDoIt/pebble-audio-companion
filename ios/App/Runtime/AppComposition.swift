@@ -74,6 +74,10 @@ final class AppComposition {
     /// Held so the lifecycle observers can tell it whether anyone is watching — that decides
     /// whether a connect attempt gets the give-up watchdog.
     let gattLink: CoreBluetoothAudioGattLink
+    /// Charger / Low Power / thermal, feeding `BackgroundWorkPolicy`.
+    let devicePower = DevicePowerMonitor()
+    /// The shared foreground+device-power object the pipeline pass closures read synchronously.
+    private(set) var foregroundState: RuntimeForegroundState
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
@@ -601,6 +605,7 @@ final class AppComposition {
         )
         let wake = WakeChannel()
         let foreground = RuntimeForegroundState()
+        self.foregroundState = foreground
         let diagnostics = DiagnosticsService(
             store: store,
             retention: retention,
@@ -926,6 +931,22 @@ final class AppComposition {
         today.start()
         startHeartbeat()
 
+        // The device conditions the catch-up policy judges on. Pushed into the shared foreground
+        // state (which the pass closures already read synchronously) and the pipeline woken on
+        // every change, so plugging in starts the backlog clearing within seconds rather than
+        // whenever the next background pass happens to come round.
+        let power = self.devicePower
+        power.onChange = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.foregroundState.devicePower = power.snapshot
+                self.runtime.notifyConfigChanged()
+                self.scheduleChargingCatchUp()
+            }
+        }
+        power.start()
+        foregroundState.devicePower = power.snapshot
+
         // Nothing can suspend us in the foreground, so the assertion is pure liability there —
         // a leaked background task is a 0x8badf00d kill. Dropped on activation, and left to the
         // inbound-notification path to take again once we are backgrounded.
@@ -1029,7 +1050,20 @@ final class AppComposition {
         if !registered {
             AppRuntimeLog.shared.record("BGTaskScheduler registration refused")
         }
+        // The charger-gated twin. Registered separately because it asks iOS for a different KIND
+        // of window: `requiresExternalPower` means "run this when the device is idle and plugged
+        // in", which in practice is overnight and grants minutes rather than seconds.
+        let chargingRegistered = BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: BackgroundTaskPolicy.chargingTaskIdentifier,
+            using: nil
+        ) { task in
+            MainActor.assumeIsolated { AppComposition.shared?.run(chargingTask: task) }
+        }
+        if !chargingRegistered {
+            AppRuntimeLog.shared.record("BGTaskScheduler charging registration refused")
+        }
         scheduleBackgroundProcessing()
+        scheduleChargingCatchUp()
     }
 
     private func run(backgroundTask task: BGTask) {
@@ -1060,6 +1094,55 @@ final class AppComposition {
                 // Expiration cancels OPTIONAL work only — never the receiver, never the intent.
                 await lifecycle.handle(.backgroundProcessingExpired)
                 work.cancel()
+            }
+        }
+    }
+
+    private func run(chargingTask task: BGTask) {
+        AppRuntimeLog.shared.record("charging catch-up window opened")
+        // Re-arm first: a window that ends without a follow-up request is the last one iOS gives.
+        scheduleChargingCatchUp()
+        let lifecycle = self.lifecycle
+        let work = Task {
+            await lifecycle.handle(.chargingCatchUpStarted)
+            AppRuntimeLog.shared.record("charging catch-up window finished")
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = {
+            Task {
+                AppRuntimeLog.shared.record("charging catch-up window expired")
+                await lifecycle.handle(.backgroundProcessingExpired)
+                work.cancel()
+            }
+        }
+    }
+
+    /// Asks iOS for a charger window.
+    ///
+    /// `requiresExternalPower` is the whole point: it is how you tell the system "this is the
+    /// expensive, deferrable work", and the system answers by running it when the device is idle
+    /// and on power. Also re-submitted whenever the power state changes, because a request made
+    /// while on battery is worth renewing the moment a cable appears.
+    func scheduleChargingCatchUp() {
+        let request = BGProcessingTaskRequest(
+            identifier: BackgroundTaskPolicy.chargingTaskIdentifier
+        )
+        request.requiresExternalPower = true
+        // Local transcription needs no network; a cloud mode's uploads are the background
+        // URLSession's problem, not this window's. Demanding connectivity would only make iOS
+        // schedule it less often.
+        request.requiresNetworkConnectivity = false
+        request.earliestBeginDate = Date(
+            timeIntervalSinceNow: BackgroundTaskPolicy.earliestBeginInterval
+        )
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            // Already-submitted is the common case (we re-submit on every power change), and it is
+            // not worth a line every time.
+            let nsError = error as NSError
+            if nsError.code != BGTaskScheduler.Error.Code.tooManyPendingTaskRequests.rawValue {
+                AppRuntimeLog.shared.record("charging catch-up submit failed: \(error)")
             }
         }
     }
