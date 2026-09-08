@@ -236,3 +236,92 @@ private final class OpenAnswers: @unchecked Sendable {
         #expect(try queue.load("seg-1")?.state == .disabled)
     }
 }
+
+// The disagreement that can spin: the segment META says untranscribed while the TASK says
+// complete. The metadata write is best-effort — a detached Task with a `try?`, and
+// `updateTranscriptionState` returns silently when the sidecar cannot be read — so when it fails
+// the segment reappears in this list on every pass. Requeuing unconditionally re-transcribes, and
+// for a cloud user re-UPLOADS, the same audio forever: real money, on a loop, silently.
+@Suite struct EnqueueRepairTests {
+
+    private func queue(_ db: AppDatabase) -> TranscriptionQueue {
+        TranscriptionQueue(database: db, nowMs: { 1_000 })
+    }
+
+    @Test func aCompletedSegmentWithItsTranscriptRepairsTheMetadataInsteadOfRedoingTheWork()
+        async throws
+    {
+        let db = try AppDatabase.inMemory()
+        let root = try makeTempRoot("enqueue-repair")
+        let q = queue(db)
+        let transcripts = FileTranscriptStore(root: root, nowMs: { 1_000 })
+        try q.enqueue("seg-1")
+        _ = try q.markRunning("seg-1")
+        _ = try q.markComplete(
+            "seg-1",
+            result: RoutedTranscription(
+                text: "hello", modeUsed: .localOnly, providerId: "local", modelUsed: "m"
+            )
+        )
+        _ = try transcripts.save(
+            "seg-1",
+            result: RoutedTranscription(
+                text: "hello", modeUsed: .localOnly, providerId: "local", modelUsed: "m"
+            )
+        )
+
+        let announced = AnnouncedStates()
+        let processor = TranscriptionProcessor(
+            queue: q,
+            router: TranscriptionModeRouter(local: nil, remote: nil, mode: { .localOnly }),
+            pcmSource: { _ in AsyncThrowingStream { $0.finish() } },
+            onStateChanged: { id, state in announced.record(id, state) },
+            transcriptStore: transcripts
+        )
+
+        try processor.enqueueClosedSegments(["seg-1"])
+
+        #expect(
+            try q.load("seg-1")?.state == .complete,
+            "the work survives; only the bookkeeping was lost"
+        )
+        #expect(announced.states == [.complete], "re-announce the terminal state to repair the meta")
+    }
+
+    @Test func aCompletedSegmentWhoseTranscriptIsGoneIsGenuinelyRedone() async throws {
+        let db = try AppDatabase.inMemory()
+        let root = try makeTempRoot("enqueue-repair-lost")
+        let q = queue(db)
+        let transcripts = FileTranscriptStore(root: root, nowMs: { 1_000 })
+        try q.enqueue("seg-1")
+        _ = try q.markRunning("seg-1")
+        _ = try q.markComplete(
+            "seg-1",
+            result: RoutedTranscription(
+                text: "hello", modeUsed: .localOnly, providerId: "local", modelUsed: "m"
+            )
+        )
+        // No transcript on disk: the output really is missing.
+
+        let announced = AnnouncedStates()
+        let processor = TranscriptionProcessor(
+            queue: q,
+            router: TranscriptionModeRouter(local: nil, remote: nil, mode: { .localOnly }),
+            pcmSource: { _ in AsyncThrowingStream { $0.finish() } },
+            onStateChanged: { id, state in announced.record(id, state) },
+            transcriptStore: transcripts
+        )
+
+        try processor.enqueueClosedSegments(["seg-1"])
+
+        #expect(try q.load("seg-1")?.state == .pending)
+        #expect(announced.states == [.pending])
+    }
+}
+
+private final class AnnouncedStates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [TaskState] = []
+    func record(_ id: String, _ state: TaskState) { lock.withLock { recorded.append(state) } }
+    var states: [TaskState] { lock.withLock { recorded } }
+}

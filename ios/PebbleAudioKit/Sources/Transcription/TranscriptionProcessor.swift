@@ -51,14 +51,33 @@ public final class TranscriptionProcessor: Sendable {
     /// `segmentIds` are the closed, not-fully-transcribed segments. One with a terminal-success
     /// task is a reattached segment that grew after transcription — requeue it; the rest
     /// enqueue idempotently.
+    /// Enqueues closed segments the segment store believes are not transcribed.
+    ///
+    /// The interesting case is a segment whose META says untranscribed while its TASK says
+    /// complete, because that disagreement is the one that can spin. The metadata write is
+    /// best-effort — a detached `Task` with a `try?`, and `updateTranscriptionState` returns
+    /// silently when the sidecar cannot be read — so if it ever fails the segment reappears here
+    /// on every pass. Requeuing it unconditionally would re-transcribe, and for a cloud user
+    /// re-UPLOAD, the same audio forever: real money, on a loop, with nothing said anywhere.
+    ///
+    /// So ask what is actually missing before deciding what to repair. If the transcript is on
+    /// disk the work was already done and only the bookkeeping was lost, which is repaired by
+    /// re-announcing the terminal state — cheap, and it terminates. Only a genuinely absent
+    /// transcript is worth doing again.
     public func enqueueClosedSegments(_ segmentIds: some Sequence<String>) throws {
         for segmentId in segmentIds {
             let existing = try queue.load(segmentId)
-            if let existing, existing.state == .complete || existing.state == .noSpeech {
+            guard let existing, existing.state == .complete || existing.state == .noSpeech else {
+                try queue.enqueue(segmentId)
+                continue
+            }
+            // `.noSpeech` is terminal with no transcript to check: there was nothing to write.
+            let workSurvives = existing.state == .noSpeech || transcriptStore?.load(segmentId) != nil
+            if workSurvives {
+                onStateChanged(segmentId, existing.state)
+            } else {
                 try queue.requeue(segmentId)
                 onStateChanged(segmentId, .pending)
-            } else {
-                try queue.enqueue(segmentId)
             }
         }
     }
