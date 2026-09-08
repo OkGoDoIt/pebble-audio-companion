@@ -109,9 +109,18 @@ public enum ParakeetEngineFactory {
             }
             try await onQueue {
                 self.destroyLocked()
+                // Before `cactus_init`, every time — telemetry is initialized from inside it, so
+                // afterwards is too late for the very first event. The work happens once; this is
+                // sited at the call rather than at an app-start hook so no later reordering can
+                // separate the two. See `CactusPrivacyConfiguration`.
+                CactusPrivacyConfiguration.configure()
                 guard let loaded = cactus_init(modelPath, nil, false) else {
                     throw ParakeetEngineError.modelLoadFailed(Self.lastError())
                 }
+                // Belt and braces to the environment switch: stop the dispatcher so nothing is
+                // collected or queued for a later flush. After EVERY successful init, because a
+                // re-init starts a new subsystem.
+                cactus_telemetry_shutdown()
                 self.lock.lock()
                 self.handle = loaded
                 self.loadedIdentity = identity
