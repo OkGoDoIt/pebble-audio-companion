@@ -548,6 +548,27 @@ public actor AudioReceiverSession {
         }
     }
 
+    /// Answers the watch's liveness probe on the spot, instead of waiting for the keepalive tick.
+    ///
+    /// While the watch is suppressing silence it sends no audio at all, and pushes a STATE_CHANGED
+    /// every RECEIVER_LIVENESS_TIMEOUT_MS purely to check we are still here — one control
+    /// notification, chosen precisely because that is what wakes a suspended iOS app. If we do not
+    /// answer within its window it stops the microphone.
+    ///
+    /// Relying on `runKeepalive` for that answer is a race we do not need to run. Its `Task.sleep`
+    /// is frozen while the app is suspended, so the reply depends on how promptly the cooperative
+    /// pool reschedules a long-overdue sleep after a wake — and the app is now deliberately
+    /// suspendable during silence, because residency follows the stream rather than the intent.
+    /// Answering straight off the notification that woke us removes the timing question entirely.
+    ///
+    /// Rate-limited by the same outbound-traffic test the keepalive uses, so a healthy streaming
+    /// connection (which checkpoints constantly) sends nothing extra.
+    private func answerWatchProbeIfDue() {
+        guard authorized else { return }
+        guard clock.nowMs - lastOutboundControlMs >= config.keepaliveIntervalMs else { return }
+        auxTasks.append(Task { _ = await self.sendReceiverHealth() })
+    }
+
     /// Per-connection keepalive. While authorized but not sending the watch anything, ping
     /// RECEIVER_HEALTH every interval. This:
     ///  - re-arms the watch's 15 s liveness watchdog so it does not stop capturing, and
@@ -1070,6 +1091,7 @@ public actor AudioReceiverSession {
             // Recording it IS reacting to it: `noteWatchReport` is the single funnel, so the
             // safety nets fire here and on every re-verify read alike.
             noteWatchReport(Int(changed.serviceStateRaw))
+            answerWatchProbeIfDue()
         case let error as ErrorMessage:
             lastProtocolError.value = error
         default:

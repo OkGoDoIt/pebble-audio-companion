@@ -1452,6 +1452,48 @@ import WireProtocol
         #expect(evidence.lastWatchReportAtMs == fx.clock.nowMs)
     }
 
+    /// The watch's silence probe is answered off the notification itself, not off a timer.
+    ///
+    /// While suppressing silence the watch sends no audio and pushes a STATE_CHANGED every
+    /// RECEIVER_LIVENESS_TIMEOUT_MS purely to ask whether we are still here — one control
+    /// notification, chosen because that is what wakes a suspended iOS app. Miss the answer and it
+    /// stops the microphone.
+    ///
+    /// Waiting for `runKeepalive` to notice would make that a race against how quickly the
+    /// cooperative pool reschedules a long-overdue `Task.sleep` after a wake, and the app is now
+    /// deliberately suspendable during silence (residency follows the stream, not the intent).
+    @Test func aWatchProbeDuringSilenceIsAnsweredImmediately() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+
+        // Quiet: nothing outbound for longer than the keepalive interval.
+        await fx.clock.advance(by: 10_000)
+        let before = fx.writes().compactMap { $0 as? ReceiverHealth }.count
+
+        fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.streaming.rawValue))
+        await fx.settle()
+
+        let after = fx.writes().compactMap { $0 as? ReceiverHealth }.count
+        #expect(after > before, "the watch asked whether we are alive; it must get an answer")
+    }
+
+    /// ...and a healthy stream, which checkpoints constantly, sends nothing extra for it.
+    @Test func aProbeOnABusyStreamAddsNoTraffic() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        let before = fx.writes().compactMap { $0 as? ReceiverHealth }.count
+
+        fx.link.pushControl(StateChanged(serviceStateRaw: ServiceState.streaming.rawValue))
+        await fx.settle()
+
+        let after = fx.writes().compactMap { $0 as? ReceiverHealth }.count
+        #expect(after == before, "recent outbound traffic already proves we are alive")
+    }
+
     /// The foreground probe: the app woke after a long suspension and asks directly, without
     /// waiting for the session's own cadence to come round.
     @Test func verifyWatchStateAsksTheWatchOnDemand() async {
