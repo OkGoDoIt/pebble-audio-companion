@@ -635,7 +635,13 @@ public actor AudioReceiverSession {
     private func runCheckpointTicker() async {
         while true {
             do {
-                try await clock.sleep(ms: config.checkpointMinIntervalMs)
+                // Paced by the STALL it detects, not by the checkpoint interval. Those are
+                // different numbers and conflating them meant waking twice a second, for the whole
+                // life of every connection, to notice a two-second condition. The data-driven path
+                // still checkpoints at `checkpointMinIntervalMs`; this only has to catch the case
+                // where data stopped arriving, and a few seconds of extra latency there is
+                // invisible against a watch spool measured in minutes.
+                try await clock.sleep(ms: Self.checkpointStallMs)
             } catch {
                 return // cancelled with the connection
             }
