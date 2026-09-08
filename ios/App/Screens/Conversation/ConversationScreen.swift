@@ -6,6 +6,11 @@ import AppDB
 /// fades in once the header scrolls away), header (title / meta / summary /
 /// editable-on-tap tags), player card, lifecycle state cards, speaker-colored transcript
 /// with inline markers, and the [Ask][Notes][Follow-ups] bottom bar. No tab bar.
+///
+/// Playing a recording turns the screen into a follow-along: the player pins under the
+/// navigation bar once the header scrolls past, the transcript highlights the word being
+/// spoken and scrolls to keep it in view, and a tap on the words moves the audio to them.
+/// None of that is on when nothing is playing — the screen is a reading surface first.
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
@@ -23,6 +28,15 @@ struct ConversationScreen: View {
     /// One jump per arrival: re-scrolling on every reload (rename, tag edit, retranscribe)
     /// would yank the screen back under the user mid-read.
     @State private var didScrollToCited = false
+    /// True once the header has scrolled off the top, which is when a playing player is pinned
+    /// and needs a bar behind it rather than the page colour. Only ever true while playing —
+    /// `pinnedViews` is empty otherwise, so nothing is docked to dress.
+    @State private var headerScrolledPast = false
+    /// Whether the transcript is still keeping up with the audio. Starts armed, switches off
+    /// the moment the reader scrolls, and comes back on a tap or on pressing play.
+    @State private var following = true
+
+    private var playerDocked: Bool { player.isEngaged && headerScrolledPast }
 
     var body: some View {
         Group {
@@ -62,7 +76,10 @@ struct ConversationScreen: View {
             TagEditorSheet(conversationId: conversationId)
         }
         .sheet(isPresented: $model.showTemplates) {
-            TemplateSheet(conversationId: conversationId) { note in
+            TemplateSheet(
+                conversationId: conversationId,
+                conversationTitle: model.display?.title
+            ) { note in
                 model.showTemplates = false
                 router.push(.note(id: note.id))
             }
@@ -102,42 +119,151 @@ struct ConversationScreen: View {
 
     private func content(_ display: ConversationDisplay) -> some View {
         ScrollViewReader { proxy in
-        ScrollView {
-            VStack(alignment: .leading, spacing: Tokens.blockGap) {
-                header(display)
-                if display.player != nil {
-                    PlayerCard(model: player)
+            ScrollView {
+                // A `Section` header rather than an overlay or a `safeAreaInset`, so the player
+                // pins as the very view it already is: no second copy fading in, no scroll
+                // inset appearing under the content and shoving it down. `pinnedViews` is empty
+                // until somebody actually plays something, which is the whole
+                // conditional-sticky rule — a docked player above a transcript nobody is
+                // listening to is just a smaller screen. (`isEngaged`, not `playing`: the pause
+                // button lives inside the docked player, and un-docking on pause would take it
+                // away at the moment it was pressed.)
+                //
+                // The horizontal margin moved off the stack and onto each block because the
+                // pinned header needs a full-bleed background behind it; the card inside keeps
+                // exactly the insets it had.
+                LazyVStack(
+                    alignment: .leading, spacing: Tokens.blockGap,
+                    pinnedViews: player.isEngaged ? [.sectionHeaders] : []
+                ) {
+                    header(display)
+                        .padding(.horizontal, Tokens.screenMargin)
+                    Section {
+                        blocks(display)
+                    } header: {
+                        playerHeader(display)
+                    }
                 }
-                lifecycleCard(display.lifecycle)
-                if !display.transcript.isEmpty {
-                    TranscriptView(
-                        transcript: display.transcript,
-                        provenance: display.provenance,
-                        timeZone: display.timeZone,
-                        focus: focus,
-                        onSpeakerTap: { turn in model.renameTurn = turn },
-                        // Playing is always the user's move: arriving from a citation cues the
-                        // scrubber to the moment, and this is the tap that starts it.
-                        onPlayFrom: display.player == nil
-                            ? nil
-                            : { offsetMs in
-                                player.seek(positionMs: offsetMs)
-                                if !player.playing { player.togglePlay() }
-                            }
-                    )
-                }
-                if let result = model.actionResult {
-                    Text(result)
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.meta)
-                        .frame(maxWidth: .infinity)
-                }
+                .padding(.top, 4)
+                .padding(.bottom, Tokens.blockGap)
             }
-            .padding(.horizontal, Tokens.screenMargin)
-            .padding(.top, 4)
-            .padding(.bottom, Tokens.blockGap)
+            // The reader's hand always wins. Once they scroll, playback stops moving the view
+            // under them and offers a way back instead (the Podcasts / Music-lyrics contract).
+            // `.interacting` is the drag itself — `.animating` is our own scrollTo, and keying
+            // on that would switch following off the moment it turned on.
+            .onScrollPhaseChange { _, phase, _ in
+                guard phase == .interacting, following else { return }
+                withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = false }
+            }
+            .onChange(of: player.playhead.turnId) { _, turnId in
+                followPlayhead(proxy, turnId: turnId)
+            }
+            // Starting playback is an explicit "take me along", so it re-arms following even if
+            // the reader had scrolled off earlier.
+            .onChange(of: player.playing) { _, playing in
+                guard playing, !following else { return }
+                withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = true }
+            }
+            // An inset rather than an overlay: the scroll view's own safe area already excludes
+            // the [Ask][Notes][Follow-ups] bar, so this lands above it, and the last line of the
+            // transcript is never left underneath the pill.
+            .safeAreaInset(edge: .bottom, spacing: 0) { backToPlaying(proxy) }
+            .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
         }
-        .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
+    }
+
+    /// Everything below the player. Its own function only because it is the `Section` content
+    /// and a `ViewBuilder` reads better than a nested closure this long.
+    @ViewBuilder
+    private func blocks(_ display: ConversationDisplay) -> some View {
+        lifecycleCard(display.lifecycle)
+            .padding(.horizontal, Tokens.screenMargin)
+        if !display.transcript.isEmpty {
+            TranscriptView(
+                transcript: display.transcript,
+                provenance: display.provenance,
+                timeZone: display.timeZone,
+                focus: focus,
+                onSpeakerTap: { turn in model.renameTurn = turn },
+                // Playing is always the user's move: arriving from a citation cues the
+                // scrubber to the moment, and this is the tap that starts it. A double tap
+                // on the words is the same move.
+                onPlayFrom: display.player == nil
+                    ? nil : { mediaMs in player.play(fromMs: mediaMs) },
+                // A single tap moves the scrubber and leaves the transport alone: reading
+                // along and jumping about is not the same act as starting the audio.
+                onSeekTo: display.player == nil
+                    ? nil : { mediaMs in player.seek(positionMs: mediaMs) },
+                playhead: display.player == nil ? nil : player.playhead
+            )
+            .padding(.horizontal, Tokens.screenMargin)
+        }
+        if let result = model.actionResult {
+            Text(result)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.meta)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, Tokens.screenMargin)
+        }
+    }
+
+    /// The player, plus the opaque strip it needs once it is pinned.
+    ///
+    /// The card's own geometry never changes between the two states — same insets, same
+    /// controls, same size — so docking cannot make anything jump or shift under the finger.
+    /// All that changes is the strip behind it: page-coloured (invisible) inline, bar-coloured
+    /// with a hairline once content is passing underneath.
+    @ViewBuilder
+    private func playerHeader(_ display: ConversationDisplay) -> some View {
+        if display.player != nil {
+            PlayerCard(model: player)
+                .padding(.horizontal, Tokens.screenMargin)
+                .padding(.vertical, 6)
+                .background(playerDocked ? Tokens.barBg : Tokens.ground)
+                .overlay(alignment: .bottom) {
+                    if playerDocked {
+                        Rectangle().fill(Tokens.barHairline).frame(height: 0.5)
+                    }
+                }
+                .animation(Motion.animation(.easeInOut(duration: 0.18)), value: playerDocked)
+        }
+    }
+
+    /// Offered only while the audio has run on somewhere the reader can no longer see. Cheap,
+    /// one tap, and it leaves the transcript where it is until they ask.
+    @ViewBuilder
+    private func backToPlaying(_ proxy: ScrollViewProxy) -> some View {
+        if !following, player.playhead.isPlaying, let turnId = player.playhead.turnId {
+            Button {
+                withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = true }
+                followPlayhead(proxy, turnId: turnId)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(Copy.Playback.backToPlaying)
+                        .font(AppFont.smallButton)
+                }
+                .foregroundStyle(Tokens.onTint)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 36)
+                .background(Capsule().fill(Tokens.tint))
+                .frame(minHeight: 44)
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 10)
+            .accessibilityHint(Copy.Playback.backToPlayingHint)
+            .transition(Motion.transition(.move(edge: .bottom).combined(with: .opacity)))
+        }
+    }
+
+    /// Keeps the paragraph being spoken on screen, a little above centre so there is something
+    /// to read ahead into.
+    private func followPlayhead(_ proxy: ScrollViewProxy, turnId: String?) {
+        guard following, player.playhead.isPlaying, let turnId else { return }
+        withAnimation(Motion.animation(.easeInOut(duration: 0.35))) {
+            proxy.scrollTo(turnId, anchor: UnitPoint(x: 0, y: 0.34))
         }
     }
 
@@ -215,7 +341,12 @@ struct ConversationScreen: View {
 
     private func load() async {
         await model.load(id: conversationId)
-        guard let display = model.display, let playerDisplay = display.player else { return }
+        guard let display = model.display else { return }
+        // Re-indexed on every reload, not just the first: a re-transcribe replaces the words
+        // under a conversation that may still be playing, and a playhead pointing into the old
+        // transcript would light up whichever paragraph happened to inherit the id.
+        player.loadTranscript(display.transcript)
+        guard let playerDisplay = display.player else { return }
         // `configure` is a no-op once this conversation's engine is attached, so the reloads
         // after a rename or a tag edit never interrupt playback.
         var engine: (any ConversationPlayback)?
@@ -268,6 +399,15 @@ struct ConversationScreen: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(Copy.Conversation.editTags)
             }
+        }
+        // The player sits immediately below this block, so the header clearing the top of the
+        // scroll view is the moment a playing player is pinned. Reported as a Bool, not a
+        // coordinate: an `onGeometryChange` that publishes a `CGFloat` fires on every scroll
+        // frame, and this has to cost nothing while somebody is reading.
+        .onGeometryChange(for: Bool.self) { proxy in
+            proxy.frame(in: .scrollView).maxY < 0
+        } action: { past in
+            headerScrolledPast = past
         }
     }
 
@@ -456,16 +596,16 @@ struct ConversationScreen: View {
     }
 
     /// Plan 6.9: existing notes open directly; otherwise the template sheet.
+    /// Always the template sheet. It used to open the FIRST EXISTING note instead whenever one
+    /// existed, which quietly made [Notes] a one-shot button: a conversation that already had
+    /// Meeting notes could never reach any other template from the bottom bar — you had to open
+    /// the old note and find the "+" in ITS bar. Adding Extended summary is what made that
+    /// unignorable, but it was always wrong: the sheet is the menu, and a menu you can only see
+    /// once is not a menu.
+    ///
+    /// Existing notes are not lost by this — the sheet lists them above the templates.
     private func openNotes() {
-        Task {
-            let notes = (try? await AskLibraryDataSources.current.notes.notes(
-                conversationId: conversationId)) ?? []
-            if let first = notes.first {
-                router.push(.note(id: first.id))
-            } else {
-                model.showTemplates = true
-            }
-        }
+        model.showTemplates = true
     }
 }
 

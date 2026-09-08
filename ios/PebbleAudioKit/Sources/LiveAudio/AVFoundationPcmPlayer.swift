@@ -127,6 +127,29 @@
             }
         }
 
+        /// Throws away every scheduled buffer and keeps playing.
+        ///
+        /// `AVAudioPlayerNode.stop()` is the only way to unschedule buffers; it also resets the
+        /// node, so it is immediately restarted. Without this a seek was inaudible until the two
+        /// seconds the node was already holding had played out — the seek "worked", it just
+        /// happened somewhere the user had stopped looking.
+        public func flush() {
+            let node: AVAudioPlayerNode? = lock.withLock { self.node }
+            guard let node else { return }
+            node.stop()
+            // Slot bookkeeping is reset by hand rather than left to the completion callbacks
+            // `stop()` fires: those arrive later, and a writer parked in `waitForSlot` has to be
+            // let go now or the next batch arrives a buffer-lifetime late.
+            let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+                inFlight = 0
+                let value = slotWaiters
+                slotWaiters = []
+                return value
+            }
+            if !lock.withLock({ stopped }) { node.play() }
+            for waiter in waiters { waiter.resume() }
+        }
+
         public func stop() {
             let (engine, node, waiters): (AVAudioEngine?, AVAudioPlayerNode?, [CheckedContinuation<Void, Never>]) =
                 lock.withLock {

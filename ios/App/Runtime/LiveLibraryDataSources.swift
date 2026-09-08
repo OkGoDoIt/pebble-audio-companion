@@ -342,7 +342,13 @@ extension LiveWorld: ConversationDataSource {
                         text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
                 },
                 assignments: assignments,
-                mediaBeforeMemberMs: mediaBeforeMemberMs
+                mediaBeforeMemberMs: mediaBeforeMemberMs,
+                // Durable transcripts are timed against the STORED audio: the processor decodes
+                // the frame log and hands that to the provider, so gaps are simply absent from
+                // what it heard. Reading those offsets as wall time (which is what this did
+                // before the two clocks were told apart) compressed every transcript position
+                // by the gap ratio — on a silence-suppressed recording, by half or more.
+                timebase: .media
             )
             transcript.append(contentsOf: built.items)
             missingTicks.append(

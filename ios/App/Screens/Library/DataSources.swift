@@ -104,6 +104,20 @@ enum SpeakerRole: Equatable {
     case unresolved // captured marker + dimmed text
 }
 
+/// One word of a turn, tied to where it sits both in the rendered text and on the player's
+/// scrubber. This is what lets playback highlight the word being spoken instead of the whole
+/// paragraph, and what lets a tap on the paragraph seek to the word under the finger.
+///
+/// Character offsets are into `TranscriptTurn.text` counted in `Character`s, so they survive
+/// the `AttributedString` round-trip the transcript renders through. Media offsets are
+/// conversation-wide, like `TranscriptTurn.mediaOffsetMs`.
+struct TranscriptWordSpan: Equatable {
+    var start: Int
+    var end: Int
+    var mediaStartMs: Int64
+    var mediaEndMs: Int64
+}
+
 struct TranscriptTurn: Equatable, Identifiable {
     var id: String
     /// Diarization label within the conversation (stable across renames).
@@ -125,6 +139,14 @@ struct TranscriptTurn: Equatable, Identifiable {
     /// conversation (stored audio only, gaps excluded), not wall time. Nil when the segment
     /// has no stored audio to play.
     var mediaOffsetMs: Int64?
+    /// Where the turn ENDS on the scrubber. Without it a turn is a point rather than a span,
+    /// and "which turn is playing right now?" can only be answered by looking at the next
+    /// turn's start — which is wrong across a gap, where the next turn begins minutes later.
+    var mediaEndMs: Int64?
+    /// Per-word timings, when the provider gave any and they could be aligned to this turn's
+    /// rendered text. Empty is the honest degraded case (older rows, providers with no word
+    /// timings): playback then highlights the whole turn rather than pretending to know more.
+    var words: [TranscriptWordSpan] = []
 }
 
 /// A non-speech row: calm known-quiet, or genuine loss. Never conflated.
@@ -293,6 +315,10 @@ struct NoteTemplate: Equatable, Identifiable {
     var prompt: String? = nil
 
     static let builtIns: [NoteTemplate] = [
+        // First because it is the one that needs no explaining: the plain long account of what
+        // happened, for when the header's two sentences are not enough. Everything below it
+        // reshapes the recording into something (notes, a list, an email); this one does not.
+        NoteTemplate(id: "extended-summary", title: Copy.Notes.templateExtendedSummary),
         NoteTemplate(id: "meeting-notes", title: Copy.Notes.templateMeetingNotes),
         NoteTemplate(id: "decisions", title: Copy.Notes.templateDecisions),
         NoteTemplate(id: "follow-up-email", title: Copy.Notes.templateFollowUpEmail),

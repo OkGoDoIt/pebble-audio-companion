@@ -4,6 +4,11 @@ import SwiftUI
 /// ticks, timecodes, and the 1× speed pill cycling 1 → 1.5 → 2. Backed by `PlayerModel`,
 /// which drives the real decoder-backed engine when the conversation has stored audio and
 /// falls back to a simulated scrub only in the mock/demo world, which has none.
+///
+/// When the conversation screen pins this under the navigation bar during playback it pins
+/// THIS view, unchanged — same controls, same size, same insets. Docking is a change of
+/// surround (the screen puts a bar behind it), never a second, smaller player: a control that
+/// rearranges itself as you scroll has to be re-found every time it moves.
 struct PlayerCard: View {
     @Bindable var model: PlayerModel
 
@@ -46,6 +51,7 @@ struct PlayerCard: View {
         .background(Tokens.surface)
         .clipShape(RoundedRectangle(cornerRadius: Tokens.cardRadius))
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(Copy.Playback.dockedPlayer)
     }
 
     private var scrubber: some View {
@@ -103,6 +109,23 @@ final class PlayerModel {
     var speed: Double = 1
     var missingTicks: [Double] = []
 
+    /// Where the audio is in the transcript. Held here rather than in the screen because the
+    /// position updates arrive here, ten times a second: routing them through the screen's own
+    /// state would re-run its whole body at that rate. See `TranscriptPlayhead`.
+    let playhead = TranscriptPlayhead()
+
+    /// True from the moment playback starts until it is stopped or runs off the end.
+    private(set) var hasStarted = false
+
+    /// Whether this conversation is being LISTENED to, which is a longer thing than whether a
+    /// sample is leaving the speaker right now. The docked player keys off this rather than off
+    /// `playing`, because the pause button lives inside the docked player: un-docking on pause
+    /// would take the control away at the exact moment it was used, and getting it back would
+    /// mean scrolling to the top of the transcript. Deliberately built out of two Bools and not
+    /// out of `positionMs`, so reading it in a view body does not subscribe that view to the
+    /// position ticker.
+    var isEngaged: Bool { playing || hasStarted }
+
     /// The decoder-backed engine over the conversation's stored frames. Nil in the mock and
     /// preview worlds, where `ticker` stands in for it.
     private var engine: (any ConversationPlayback)?
@@ -148,6 +171,14 @@ final class PlayerModel {
             engine.seek(toMs: positionMs)
             observe(engine)
         }
+        playhead.update(mediaMs: positionMs, playing: playing)
+    }
+
+    /// The transcript the playhead runs along. Re-loaded on every display refresh because a
+    /// re-transcribe replaces the words underneath a playing conversation.
+    func loadTranscript(_ transcript: [TranscriptItem]) {
+        playhead.load(transcript: transcript)
+        playhead.update(mediaMs: positionMs, playing: playing)
     }
 
     private func observe(_ engine: any ConversationPlayback) {
@@ -158,6 +189,10 @@ final class PlayerModel {
                 self.playing = update.playing
                 self.positionMs = update.positionMs
                 if update.durationMs > 0 { self.durationMs = update.durationMs }
+                // Running off the end rewinds to zero and stops: that is the session ending,
+                // not a pause, so the docked player lets go too.
+                if !update.playing, update.positionMs == 0 { self.hasStarted = false }
+                self.playhead.update(mediaMs: update.positionMs, playing: update.playing)
             }
         }
     }
@@ -170,11 +205,20 @@ final class PlayerModel {
         guard durationMs > 0 else { return }
         if positionMs >= durationMs { positionMs = 0 }
         playing = true
+        hasStarted = true
         if let engine {
             engine.play(fromMs: positionMs)
         } else {
             simulate()
         }
+        playhead.update(mediaMs: positionMs, playing: true)
+    }
+
+    /// Seek there and make sure it is running — the one move behind "play from here", whether
+    /// it came from a citation band, a double tap on the transcript, or a VoiceOver action.
+    func play(fromMs mediaMs: Int64) {
+        seek(positionMs: mediaMs)
+        if !playing { play() }
     }
 
     func pause() {
@@ -182,17 +226,20 @@ final class PlayerModel {
         ticker?.cancel()
         ticker = nil
         engine?.pause()
+        playhead.update(mediaMs: positionMs, playing: false)
     }
 
     /// Leaving the screen has to end the audio — a conversation that keeps playing from a
     /// screen the user popped is the kind of thing this app can never do.
     func stop() {
         playing = false
+        hasStarted = false
         ticker?.cancel()
         ticker = nil
         observation?.cancel()
         observation = nil
         engine?.stop()
+        playhead.clear()
     }
 
     /// 1× → 1.5× → 2× → 1× (mockup 2.6).
@@ -213,6 +260,9 @@ final class PlayerModel {
         let clamped = min(max(positionMs, 0), durationMs)
         self.positionMs = clamped
         engine?.seek(toMs: clamped)
+        // Move the highlight with the scrubber, paused or not: dragging to a moment and reading
+        // what was said there is half of why the transcript follows the audio at all.
+        playhead.update(mediaMs: clamped, playing: playing)
     }
 
     /// The demo/preview stand-in: no audio exists in the mock world, so the scrubber moves on
@@ -224,6 +274,7 @@ final class PlayerModel {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, self.playing else { return }
                 self.positionMs += Int64(250 * self.speed)
+                self.playhead.update(mediaMs: self.positionMs, playing: true)
                 if self.positionMs >= self.durationMs {
                     self.positionMs = self.durationMs
                     self.pause()

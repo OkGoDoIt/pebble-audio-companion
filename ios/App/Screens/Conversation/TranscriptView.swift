@@ -5,6 +5,12 @@ import AppDB
 /// unresolved = captured marker + dimmed text), inline quiet/missing markers with hairlines
 /// (interruptions render where they happened — never banners), and the centered provenance
 /// line. Tapping a speaker name opens the rename sheet (plan 6.3).
+///
+/// While the conversation is playing it also follows the audio: the paragraph being spoken
+/// stays at full strength while the rest steps back, and inside it the word being spoken is
+/// highlighted. Tapping any paragraph moves playback to the word under the finger. Everything
+/// that drives that is optional and defaulted, because the live screen renders this same view
+/// with no player behind it.
 struct TranscriptView: View {
     let transcript: [TranscriptItem]
     let provenance: String?
@@ -18,6 +24,21 @@ struct TranscriptView: View {
     var onSpeakerTap: ((TranscriptTurn) -> Void)?
     /// Play the conversation from a position on its scrubber. Nil when there is no audio.
     var onPlayFrom: ((Int64) -> Void)?
+    /// Move the scrubber without starting playback — a single tap on the words.
+    var onSeekTo: ((Int64) -> Void)?
+    /// Where the audio is right now. Nil wherever there is no player (the live screen), and the
+    /// transcript then renders exactly as it always did.
+    var playhead: TranscriptPlayhead?
+
+    /// Measured height of one line of transcript body text. Measured rather than assumed
+    /// because Dynamic Type moves it, and a tap on a paragraph is resolved to a word by
+    /// counting lines. See `TranscriptTapGeometry`.
+    @State private var bodyLineHeight: CGFloat = 0
+
+    /// The `.lineSpacing` every transcript paragraph is rendered with. Named because the tap
+    /// geometry has to divide by it, and a silent disagreement between the two would put every
+    /// tap on the wrong line.
+    static let bodyLineSpacing: CGFloat = 4
 
     var body: some View {
         Card {
@@ -40,6 +61,20 @@ struct TranscriptView: View {
                         .padding(.top, 4)
                 }
             }
+        }
+        // A hidden one-liner in an overlay: overlays do not participate in layout, so this
+        // measures the body line height without occupying a pixel of the card.
+        .overlay(alignment: .topLeading) {
+            Text(verbatim: "Ag")
+                .font(AppFont.callout)
+                .fixedSize()
+                .hidden()
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    bodyLineHeight = height
+                }
+                .allowsHitTesting(false)
         }
     }
 
@@ -192,26 +227,17 @@ struct TranscriptView: View {
             // block: they get their own spacing under the single name header.
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(turns) { turn in
-                    Text(turn.text)
-                        .font(AppFont.callout)
-                        // Dimming means PROVISIONAL — words still being revised. It used to
-                        // also mean "we don't know who said this", which dimmed every turn of
-                        // every final transcript that had no speaker assignments (all of a
-                        // migrated library), making finished work read as a draft. An
-                        // unresolved speaker is marked at the NAME, by the captured dot and
-                        // the muted name colour; the words themselves are final.
-                        .foregroundStyle(turn.isInProgress ? Tokens.meta : Tokens.label)
-                        .lineSpacing(4)
-                        .fixedSize(horizontal: false, vertical: true)
-                        // One VoiceOver element per turn, carrying the time the eye reads
-                        // off the stamp beside the name.
-                        .accessibilityLabel(
-                            Copy.A11y.transcriptTurn(
-                                time: turn.startedAt.map {
-                                    TranscriptStamp.text($0, in: timeZone)
-                                },
-                                speaker: turn.name,
-                                text: turn.text))
+                    TranscriptTurnText(
+                        turn: turn,
+                        timeZone: timeZone,
+                        playhead: playhead,
+                        lineHeight: bodyLineHeight,
+                        onSeekTo: onSeekTo,
+                        onPlayFrom: onPlayFrom
+                    )
+                    // Addressable by `ScrollViewReader` so playback can keep the paragraph
+                    // being spoken on screen.
+                    .id(turn.id)
                 }
             }
         }
@@ -233,6 +259,141 @@ struct TranscriptView: View {
         case .you: return Tokens.tint
         case .other: return Tokens.speakerOther
         case .unresolved: return Tokens.meta
+        }
+    }
+}
+
+// MARK: - One paragraph, and the two-way tie to the audio
+
+/// One paragraph of the transcript — the whole follow-along behaviour lives here.
+///
+/// **Rendering** is one `Text` built from an `AttributedString`, so the word being spoken is
+/// highlighted without splitting the paragraph into per-word views. That matters twice: the
+/// paragraph is still line-broken by the text system rather than by a hand-rolled flow layout,
+/// and a two-hour transcript stays a few hundred views instead of tens of thousands.
+///
+/// **Touch** is a single `SpatialTapGesture`, whose location `TranscriptTapGeometry` resolves to
+/// a word. The first tap seeks there; a second tap inside the double-tap window also starts
+/// playback. There is deliberately no `.onTapGesture(count: 2)` beside the single-tap one: that
+/// pairing makes EVERY single tap sit out the double-tap window before anything happens, and on
+/// a transcript the single tap is the common move. Seeking twice to the same word is a no-op, so
+/// recognising the double after the fact costs nothing.
+///
+/// **VoiceOver** gets a "Play from here" action rather than the gesture, because double tap is
+/// VoiceOver's own activation gesture and is not ours to spend.
+private struct TranscriptTurnText: View {
+    let turn: TranscriptTurn
+    let timeZone: TimeZone
+    let playhead: TranscriptPlayhead?
+    /// Measured height of one line of this font; 0 until the card's probe has reported.
+    let lineHeight: CGFloat
+    let onSeekTo: ((Int64) -> Void)?
+    let onPlayFrom: ((Int64) -> Void)?
+
+    /// Kept locally rather than in a dictionary on the card: a per-row `@State` write on first
+    /// layout invalidates one row, where a shared dictionary would invalidate the whole
+    /// transcript once per paragraph.
+    @State private var size: CGSize = .zero
+    @State private var cadence = TapCadence()
+
+    private var isActive: Bool { playhead?.turnId == turn.id }
+
+    /// True while a DIFFERENT paragraph is the one being spoken. Nothing steps back when
+    /// playback is idle or paused — the transcript is a reading surface first, and dimming it
+    /// for a player nobody started would be a mode the user never asked for.
+    private var isBackgrounded: Bool {
+        guard let playhead, playhead.isPlaying, let current = playhead.turnId else { return false }
+        return current != turn.id
+    }
+
+    var body: some View {
+        Text(attributed)
+            .font(AppFont.callout)
+            .lineSpacing(TranscriptView.bodyLineSpacing)
+            .fixedSize(horizontal: false, vertical: true)
+            // Measured BEFORE the full-width frame, so this is the text block's own size: a
+            // wrapped paragraph fills the width anyway, and a one-line turn is measured at its
+            // real width instead of the card's, which is what makes a tap on a short line land
+            // on the word it is under. The frame below only widens the TARGET; both share an
+            // origin, so a tap out in the empty margin simply clamps to the last word.
+            .onGeometryChange(for: CGSize.self) { proxy in
+                proxy.size
+            } action: { newSize in
+                size = newSize
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .gesture(
+                SpatialTapGesture(count: 1, coordinateSpace: .local)
+                    .onEnded { value in handleTap(at: value.location) }
+            )
+            .animation(Motion.animation(.easeInOut(duration: 0.18)), value: isBackgrounded)
+            // One VoiceOver element per turn, carrying the time the eye reads off the stamp
+            // beside the name.
+            .accessibilityLabel(
+                Copy.A11y.transcriptTurn(
+                    time: turn.startedAt.map { TranscriptStamp.text($0, in: timeZone) },
+                    speaker: turn.name,
+                    text: turn.text))
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+            .accessibilityActions {
+                if let onPlayFrom, let start = turn.mediaOffsetMs {
+                    Button(Copy.Conversation.playFromHere) { onPlayFrom(start) }
+                }
+            }
+    }
+
+    /// The paragraph, with the word being spoken picked out.
+    ///
+    /// Dimming here means BACKGROUNDED, never provisional: `isInProgress` (the still-growing
+    /// tail of a live transcript) keeps its own muted colour and is never overridden by
+    /// playback, because "these words may still change" and "this is not the bit playing" are
+    /// different claims.
+    private var attributed: AttributedString {
+        var text = AttributedString(turn.text)
+        text.foregroundColor = baseColor
+        // Only the active paragraph reads `wordIndex`, so a word change invalidates one row
+        // rather than the whole transcript.
+        guard isActive, let index = playhead?.wordIndex,
+            index >= 0, index < turn.words.count,
+            let range = characterRange(turn.words[index], in: text)
+        else { return text }
+        // A highlighter, not a colour swap: the word keeps full label contrast and the tint
+        // sits behind it, which stays legible at a glance while the eye is tracking it.
+        text[range].backgroundColor = Tokens.tintFill18
+        text[range].foregroundColor = Tokens.label
+        return text
+    }
+
+    private var baseColor: Color {
+        if turn.isInProgress { return Tokens.meta }
+        return isBackgrounded ? Tokens.secondaryBody : Tokens.label
+    }
+
+    private func characterRange(
+        _ span: TranscriptWordSpan, in text: AttributedString
+    ) -> Range<AttributedString.Index>? {
+        let characters = text.characters
+        guard span.start >= 0, span.end > span.start, span.end <= characters.count else {
+            return nil
+        }
+        let lower = characters.index(characters.startIndex, offsetBy: span.start)
+        let upper = characters.index(characters.startIndex, offsetBy: span.end)
+        return lower..<upper
+    }
+
+    private func handleTap(at point: CGPoint) {
+        guard onSeekTo != nil || onPlayFrom != nil else { return }
+        guard
+            let target = TranscriptTapGeometry.seekTarget(
+                at: point, in: size, lineHeight: lineHeight,
+                lineSpacing: TranscriptView.bodyLineSpacing, turn: turn)
+        else { return }
+        if cadence.register() {
+            Haptics.checkedOff()
+            onPlayFrom?(target)
+        } else {
+            onSeekTo?(target)
         }
     }
 }

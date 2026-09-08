@@ -460,6 +460,14 @@ final class MockWorld {
                 turn.segmentId = member(conversationId, offset < half ? 1 : 2)
                 turn.mediaOffsetMs = mediaDurationMs > 0
                     ? mediaDurationMs * Int64(offset) / Int64(transcript.count) : nil
+                turn.mediaEndMs = mediaDurationMs > 0
+                    ? mediaDurationMs * Int64(offset + 1) / Int64(transcript.count) : nil
+                // Even word timings, so the follow-along highlight and tap-to-seek are
+                // exercisable in previews and `-demo-data` too. A real provider's timings are
+                // uneven; these are not pretending to be real, they are pretending to exist.
+                if let from = turn.mediaOffsetMs, let until = turn.mediaEndMs {
+                    turn.words = evenWordSpans(turn.text, fromMs: from, toMs: until)
+                }
                 return .turn(turn)
             case .quiet(var marker):
                 marker.startedAt = at
@@ -470,6 +478,32 @@ final class MockWorld {
                 marker.segmentId = member(conversationId, offset < half ? 1 : 2)
                 return .missing(marker)
             }
+        }
+    }
+
+    /// Whitespace-delimited words of a fixture line, spread evenly across the span it occupies
+    /// on the scrubber. Character offsets index the rendered text, exactly as the real aligner
+    /// in `TranscriptItems` produces them.
+    private static func evenWordSpans(
+        _ text: String, fromMs: Int64, toMs: Int64
+    ) -> [TranscriptWordSpan] {
+        let characters = Array(text)
+        var tokens: [(start: Int, end: Int)] = []
+        var index = 0
+        while index < characters.count {
+            while index < characters.count, characters[index].isWhitespace { index += 1 }
+            guard index < characters.count else { break }
+            let start = index
+            while index < characters.count, !characters[index].isWhitespace { index += 1 }
+            tokens.append((start, index))
+        }
+        guard !tokens.isEmpty, toMs > fromMs else { return [] }
+        let span = toMs - fromMs
+        return tokens.enumerated().map { offset, token in
+            TranscriptWordSpan(
+                start: token.start, end: token.end,
+                mediaStartMs: fromMs + span * Int64(offset) / Int64(tokens.count),
+                mediaEndMs: fromMs + span * Int64(offset + 1) / Int64(tokens.count))
         }
     }
 
