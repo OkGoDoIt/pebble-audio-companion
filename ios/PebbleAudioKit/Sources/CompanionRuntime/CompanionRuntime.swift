@@ -154,6 +154,11 @@ public actor CompanionRuntime {
     /// asks it whether transcription is quietly broken.
     public nonisolated var pipelineHealth: PipelineHealthMonitor { health }
     public nonisolated var library: LibraryStore { environment.library }
+    /// Exposed for the one thing a screen legitimately triggers directly: a person overruling
+    /// the automatic grouping. Grouping is derived, so their decision is invisible until it is
+    /// recomputed, and waiting for the next scheduled pass would look like a switch that does
+    /// nothing for several minutes.
+    public nonisolated var enrichment: EnrichmentService { environment.enrichment }
     public nonisolated var captureIntent: CaptureIntent { environment.receiver.captureIntent }
     public nonisolated var isForeground: Bool { foreground.value }
 

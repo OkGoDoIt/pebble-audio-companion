@@ -87,6 +87,22 @@ struct ConversationScreen: View {
         .sheet(isPresented: $model.showFollowUps, onDismiss: { Task { await load() } }) {
             FollowUpsSheet(conversationId: conversationId)
         }
+        .sheet(isPresented: $model.showBoundaries) {
+            ConversationBoundaryEditor(
+                startReason: model.boundaries.startReason,
+                canJoinWithPrevious: model.boundaries.canJoinWithPrevious,
+                isJoinedWithPrevious: model.boundaries.isJoinedWithPrevious,
+                points: model.boundaries.points,
+                onToggleJoinWithPrevious: { on in
+                    Task { await model.setJoinWithPrevious(id: conversationId, on: on) }
+                },
+                onToggleSplit: { segmentId, on in
+                    Task { await model.setSplit(conversationId: conversationId, segmentId: segmentId, on: on) }
+                },
+                onDone: { model.showBoundaries = false }
+            )
+            .presentationDetents([.medium, .large])
+        }
         .alert(Copy.Conversation.rename, isPresented: $model.showRename) {
             TextField("", text: $model.renameDraft)
             Button(Copy.Common.cancel, role: .cancel) {}
@@ -377,6 +393,10 @@ struct ConversationScreen: View {
             Text(display.metaLine)
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.meta)
+            // Why this conversation starts where it does. Grouping is automatic, so without
+            // this a split that surprised someone has no explanation anywhere in the app — and
+            // no visible way to overrule it.
+            ConversationStartCaption(startReason: model.boundaries.startReason)
             if let summary = display.summary {
                 Text(summary)
                     .font(AppFont.subBody)
@@ -427,6 +447,9 @@ struct ConversationScreen: View {
                         id: conversationId)
                     await load()
                 }
+            }
+            Button(Copy.Boundaries.menuItem) {
+                Task { await model.loadBoundaries(id: conversationId) }
             }
             Button(Copy.Conversation.exportAudio) { model.confirmExport = true }
             Button(Copy.Conversation.delete, role: .destructive) {
@@ -626,12 +649,48 @@ final class ConversationViewModel {
     var renameDraft = ""
     var confirmExport = false
     var confirmDelete = false
+    var showBoundaries = false
+    /// Loaded with the conversation so the start caption can render under the title, and
+    /// reloaded when the sheet writes a decision.
+    var boundaries: ConversationBoundariesDisplay = .none
     /// Inline action result (B10 — actions always show progress and a result).
     var actionResult: String?
 
     func load(id: String) async {
         display = try? await AskLibraryDataSources.current.conversations.display(id: id)
         loaded = true
+        boundaries =
+            (try? await AskLibraryDataSources.current.conversations.boundaries(id: id)) ?? .none
+    }
+
+    /// Opens the sheet on fresh values rather than whatever the last load left behind — a
+    /// regroup elsewhere can have moved the members since.
+    func loadBoundaries(id: String) async {
+        boundaries =
+            (try? await AskLibraryDataSources.current.conversations.boundaries(id: id)) ?? .none
+        showBoundaries = true
+    }
+
+    /// `conversationId` is the screen's, for the reload — the write itself is keyed only by the
+    /// segment that would start the new conversation.
+    func setSplit(conversationId: String, segmentId: String, on: Bool) async {
+        try? await AskLibraryDataSources.current.conversations.setSplit(
+            atSegmentId: segmentId, on: on)
+        await loadBoundariesKeepingSheet(id: conversationId)
+    }
+
+    func setJoinWithPrevious(id: String, on: Bool) async {
+        try? await AskLibraryDataSources.current.conversations.setJoinWithPrevious(
+            conversationId: id, on: on)
+        await loadBoundariesKeepingSheet(id: id)
+    }
+
+    /// A write regroups, which can move this conversation's members — or dissolve it into the
+    /// previous one. Re-reading keeps the switches showing what is actually stored, and never
+    /// closes the sheet under the person who is still deciding.
+    private func loadBoundariesKeepingSheet(id: String) async {
+        boundaries =
+            (try? await AskLibraryDataSources.current.conversations.boundaries(id: id)) ?? .none
     }
 
     func exportAudio(id: String) {

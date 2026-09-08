@@ -16,6 +16,10 @@ import StatusUI
 extension Copy {
     enum Boundaries {
         static let title = "Split or join"
+        /// The ⋯ menu entry that opens the sheet. Named for the thing being changed rather than
+        /// the mechanism — "grouping", "boundaries" and "segments" are all words for how this
+        /// works, not for what the person is doing.
+        static let menuItem = "Split or Join…"
         static let footer =
             "This only changes how the recording is grouped in your list. No audio, transcript "
             + "or note is changed or removed."

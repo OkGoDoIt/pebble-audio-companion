@@ -488,6 +488,73 @@ extension LiveWorld: ConversationDataSource {
         _ = try await composition.followUps.toggle(id: id)
     }
 
+    // --- boundaries (split / join) ---------------------------------------------------------
+
+    /// Every member except the first is a place this conversation could be cut, because a member
+    /// is exactly a stretch the receiver already treats as one piece — a cut anywhere else would
+    /// land inside a segment, which grouping cannot express.
+    func boundaries(id: String) async throws -> ConversationBoundariesDisplay {
+        guard let detail = try? await composition.runtime.library.conversation(id: id) else {
+            return .none
+        }
+        let memberIds = detail.members.map(\.segmentId)
+        guard let firstMemberId = memberIds.first else { return .none }
+        let metas = await Self.loadMetas(memberIds, files: composition.files)
+        let overrides = BoundaryOverrideStore(db: composition.database)
+        let decisions = (try? await overrides.all()) ?? [:]
+        let queries = ConversationQueries(db: composition.database)
+        let startReason = try? await queries.startReason(ofConversation: id)
+
+        let conversationStartMs = detail.row.startMs
+        let points: [ConversationBoundaryPoint] = memberIds.dropFirst().compactMap { memberId in
+            guard let meta = metas[memberId] else { return nil }
+            let startMs = ConversationGrouper.segmentStartMs(meta)
+            return ConversationBoundaryPoint(
+                id: memberId,
+                startedAt: Date(timeIntervalSince1970: Double(startMs) / 1000),
+                offsetMs: max(0, startMs - conversationStartMs),
+                isSplit: decisions[memberId] == .split
+            )
+        }
+        // Something to join BACK to: an earlier conversation has to exist. Asked of the listing
+        // rather than inferred from `startReason` being nil, which is also nil for everything
+        // grouped before that column existed and would offer the join on conversations that
+        // have nothing behind them.
+        let sections = (try? await composition.runtime.library.library()) ?? []
+        let hasPrevious = sections.contains { section in
+            section.rows.contains { $0.startMs < conversationStartMs }
+        }
+        return ConversationBoundariesDisplay(
+            startReason: startReason,
+            canJoinWithPrevious: hasPrevious,
+            isJoinedWithPrevious: decisions[firstMemberId] == .join,
+            points: points
+        )
+    }
+
+    func setSplit(atSegmentId segmentId: String, on: Bool) async throws {
+        let overrides = BoundaryOverrideStore(db: composition.database)
+        try await overrides.set(segmentId: segmentId, decision: on ? .split : nil)
+        try await regroupAfterBoundaryChange()
+    }
+
+    func setJoinWithPrevious(conversationId: String, on: Bool) async throws {
+        guard
+            let detail = try? await composition.runtime.library.conversation(id: conversationId),
+            let firstMemberId = detail.members.first?.segmentId
+        else { return }
+        let overrides = BoundaryOverrideStore(db: composition.database)
+        try await overrides.set(segmentId: firstMemberId, decision: on ? .join : nil)
+        try await regroupAfterBoundaryChange()
+    }
+
+    /// Grouping is derived, so a decision only becomes visible once it is recomputed. Doing it
+    /// here rather than waiting for the next pipeline pass is the difference between a switch
+    /// that works and one that appears to do nothing for a few minutes.
+    private func regroupAfterBoundaryChange() async throws {
+        try await composition.runtime.enrichment.regroupPass()
+    }
+
     // --- mapping helpers -----------------------------------------------------------------
 
     /// The one state card the conversation shows. Transcription first (it gates everything

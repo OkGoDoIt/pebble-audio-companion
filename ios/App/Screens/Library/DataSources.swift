@@ -381,6 +381,33 @@ protocol ConversationDataSource: AnyObject {
     func delete(id: String) async throws
     func undoDelete(id: String) async throws
     func toggleFollowUp(id: String) async throws
+
+    /// Everything the "Split or join" sheet draws itself from. Grouping is automatic and
+    /// derived, so this is the one place a person can overrule it — which is the answer to
+    /// "a Stop is a strong signal but not an absolute one": rather than a heuristic guessing
+    /// whether someone ended a meeting or just blanked out a moment, the split is predictable
+    /// and putting it back is one tap.
+    func boundaries(id: String) async throws -> ConversationBoundariesDisplay
+    /// Split so `segmentId` starts a new conversation, or clear that decision and hand the join
+    /// back to the automatic rules. Keyed by the segment alone — segment ids are the only stable
+    /// thing across a regroup, and the conversation this is being done FROM is about to stop
+    /// existing in its current shape anyway.
+    func setSplit(atSegmentId segmentId: String, on: Bool) async throws
+    /// Join this conversation onto the one before it, or clear that decision.
+    func setJoinWithPrevious(conversationId: String, on: Bool) async throws
+}
+
+/// The state of one conversation's boundaries: why it starts where it does, whether it can be
+/// joined backwards, and every interior point that could become a split.
+struct ConversationBoundariesDisplay: Equatable {
+    var startReason: ConversationStartReason?
+    /// False for the oldest conversation there is — nothing to join to.
+    var canJoinWithPrevious: Bool
+    var isJoinedWithPrevious: Bool
+    var points: [ConversationBoundaryPoint]
+
+    static let none = ConversationBoundariesDisplay(
+        startReason: nil, canJoinWithPrevious: false, isJoinedWithPrevious: false, points: [])
 }
 
 @MainActor

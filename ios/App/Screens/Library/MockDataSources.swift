@@ -47,6 +47,11 @@ final class MockWorld {
     }
 
     var conversations: [MockConversation] = []
+    /// The mock's `boundary_overrides` table: segment ids the person has split at, and the
+    /// conversations they have joined backwards. Held so the "Split or join" sheet is really
+    /// usable in previews and `-demo-data` rather than a set of switches that spring back.
+    var mockSplits: Set<String> = []
+    var mockJoinedConversations: Set<String> = []
     var followUps: [FollowUp] = []
     var askEntries: [AskEntry] = []
     var noteRecords: [NoteDisplay] = []
@@ -765,6 +770,57 @@ extension MockWorld: ConversationDataSource {
     func toggleFollowUp(id: String) async throws {
         guard let index = followUps.firstIndex(where: { $0.id == id }) else { return }
         followUps[index].done.toggle()
+        bump()
+    }
+
+    // --- boundaries (split / join) ---------------------------------------------------------
+
+    /// Real enough to work in previews and `-demo-data`: the split points are the transcript's
+    /// own speaker turns after the first, and toggling one actually persists here, so the sheet
+    /// can be used and reviewed without a watch.
+    func boundaries(id: String) async throws -> ConversationBoundariesDisplay {
+        guard let conversation = conversations.first(where: { $0.id == id }) else {
+            return .none
+        }
+        let turns: [TranscriptTurn] = conversation.transcript.compactMap { item in
+            if case .turn(let turn) = item { return turn }
+            return nil
+        }
+        let startMs = Int64((turns.first?.startedAt ?? .now).timeIntervalSince1970 * 1000)
+        let points = turns.dropFirst().enumerated().compactMap {
+            (offset, turn) -> ConversationBoundaryPoint? in
+            guard let startedAt = turn.startedAt else { return nil }
+            let atMs = Int64(startedAt.timeIntervalSince1970 * 1000)
+            return ConversationBoundaryPoint(
+                id: turn.segmentId.isEmpty ? "mock-\(offset)" : turn.segmentId,
+                startedAt: startedAt,
+                offsetMs: max(0, atMs - startMs),
+                isSplit: mockSplits.contains(turn.segmentId)
+            )
+        }
+        return ConversationBoundariesDisplay(
+            startReason: .quiet,
+            canJoinWithPrevious: true,
+            isJoinedWithPrevious: mockJoinedConversations.contains(id),
+            // One point per distinct segment: several turns share a segment, and offering the
+            // same cut three times would be three switches that move together.
+            points: points.reduce(into: [ConversationBoundaryPoint]()) { unique, point in
+                if !unique.contains(where: { $0.id == point.id }) { unique.append(point) }
+            }
+        )
+    }
+
+    func setSplit(atSegmentId segmentId: String, on: Bool) async throws {
+        if on { mockSplits.insert(segmentId) } else { mockSplits.remove(segmentId) }
+        bump()
+    }
+
+    func setJoinWithPrevious(conversationId: String, on: Bool) async throws {
+        if on {
+            mockJoinedConversations.insert(conversationId)
+        } else {
+            mockJoinedConversations.remove(conversationId)
+        }
         bump()
     }
 }
