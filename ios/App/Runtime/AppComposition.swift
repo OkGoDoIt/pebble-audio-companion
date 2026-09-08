@@ -643,7 +643,15 @@ final class AppComposition {
         // risk is being suspended between the delegate returning and the frame reaching disk.
         let activity = BackgroundActivityAssertion(log: AppRuntimeLog.runtimeLog)
         self.backgroundActivity = activity
-        gattLink.onInboundNotification = { activity.renew() }
+        gattLink.onInboundNotification = { [weak residency] in
+            // Only when residency is NOT holding us up. While it is, the process cannot be
+            // suspended and the assertion buys nothing — and a background task renewed by every
+            // notification is never released, which is precisely the shape iOS kills with
+            // 0x8badf00d. Residency is what buys runtime; this only covers the windows where
+            // residency is absent (an interruption, or an audio stack that refused).
+            guard residency?.state.value != .held else { return }
+            activity.renew()
+        }
 
         let receiver = ReceiverService(
             link: gattLink,

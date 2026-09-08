@@ -29,7 +29,14 @@ public final class BackgroundActivityAssertion: @unchecked Sendable {
     private let log: RuntimeLog
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "audio-companion.background-activity")
-    private var releaseGeneration = 0
+    /// One release timer in flight at a time; it re-arms itself while traffic continues.
+    private var releaseArmed = false
+    private var lastRenewMs: Int64 = 0
+    private var heldSinceMs: Int64 = 0
+
+    private static func uptimeMs() -> Int64 {
+        Int64(ProcessInfo.processInfo.systemUptime * 1000)
+    }
 
     #if canImport(UIKit)
         private var identifier: UIBackgroundTaskIdentifier = .invalid
@@ -40,6 +47,14 @@ public final class BackgroundActivityAssertion: @unchecked Sendable {
     /// really has stopped does not hold the budget open.
     private static let idleReleaseMs = 5_000
 
+    /// Hard ceiling on a single hold, well inside the ~30 s iOS grants.
+    ///
+    /// A streaming watch renews this every ~150 ms, so without a ceiling the assertion is never
+    /// released at all — and a background task held to exhaustion is what iOS kills with
+    /// 0x8badf00d. The point of the assertion is to finish the write in flight, not to buy
+    /// unlimited runtime; residency is what buys runtime. Releasing lets the budget recover.
+    private static let maxHoldMs: Int64 = 20_000
+
     public init(log: RuntimeLog = .silent) {
         self.log = log
     }
@@ -48,12 +63,20 @@ public final class BackgroundActivityAssertion: @unchecked Sendable {
     /// once the assertion is held, renewing is a lock and an integer.
     public func renew() {
         #if canImport(UIKit)
-            let needsStart: Bool = lock.withLock {
-                releaseGeneration += 1
-                return identifier == .invalid
+            let now = Self.uptimeMs()
+            let (needsStart, needsArm): (Bool, Bool) = lock.withLock {
+                lastRenewMs = now
+                let start = identifier == .invalid
+                if start { heldSinceMs = now }
+                let arm = !releaseArmed
+                if arm { releaseArmed = true }
+                return (start, arm)
             }
             if needsStart { begin() }
-            scheduleRelease()
+            // ONE timer in flight, re-armed from its own callback. This used to enqueue a fresh
+            // `asyncAfter` on every notification — about seven a second while the watch streams,
+            // each one a dispatch timer that would later fire only to find itself stale.
+            if needsArm { scheduleRelease() }
         #endif
     }
 
@@ -98,11 +121,21 @@ public final class BackgroundActivityAssertion: @unchecked Sendable {
         }
 
         private func scheduleRelease() {
-            let generation = lock.withLock { releaseGeneration }
             queue.asyncAfter(deadline: .now() + .milliseconds(Self.idleReleaseMs)) { [weak self] in
                 guard let self else { return }
-                guard self.lock.withLock({ self.releaseGeneration == generation }) else { return }
-                self.end()
+                let now = Self.uptimeMs()
+                let keepGoing: Bool = self.lock.withLock {
+                    let idle = now - self.lastRenewMs >= Int64(Self.idleReleaseMs)
+                    let expired = now - self.heldSinceMs >= Self.maxHoldMs
+                    let stillWanted = !idle && !expired && self.identifier != .invalid
+                    if !stillWanted { self.releaseArmed = false }
+                    return stillWanted
+                }
+                if keepGoing {
+                    self.scheduleRelease()
+                } else {
+                    self.end()
+                }
             }
         }
     #endif
