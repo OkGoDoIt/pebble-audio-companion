@@ -23,6 +23,8 @@ public struct StartupSteps: Sendable {
     /// Returns true when an import actually ran (first launch after the upgrade).
     public var runLegacyImportIfNeeded: @Sendable () async throws -> Bool
     public var recoverStore: @Sendable () async throws -> Void
+    /// Reclaims empty quarantined logs and counts any that still hold audio.
+    public var sweepQuarantine: @Sendable () async -> Void = {}
     public var recoverQueue: @Sendable () async throws -> Void
     /// Returns the segment ids retention deleted, so the caller can cascade over them.
     public var enforceRetention: @Sendable () async throws -> [String]
@@ -33,6 +35,7 @@ public struct StartupSteps: Sendable {
     public init(
         runLegacyImportIfNeeded: @escaping @Sendable () async throws -> Bool = { false },
         recoverStore: @escaping @Sendable () async throws -> Void = {},
+        sweepQuarantine: @escaping @Sendable () async -> Void = {},
         recoverQueue: @escaping @Sendable () async throws -> Void = {},
         enforceRetention: @escaping @Sendable () async throws -> [String] = { [] },
         cascadeDeleted: @escaping @Sendable (String) async -> Void = { _ in },
@@ -41,6 +44,7 @@ public struct StartupSteps: Sendable {
     ) {
         self.runLegacyImportIfNeeded = runLegacyImportIfNeeded
         self.recoverStore = recoverStore
+        self.sweepQuarantine = sweepQuarantine
         self.recoverQueue = recoverQueue
         self.enforceRetention = enforceRetention
         self.cascadeDeleted = cascadeDeleted
@@ -107,6 +111,9 @@ public actor StartupSequencer {
 
         onStep(.storeRecover)
         do { try await steps.recoverStore() } catch { log.failure("store recover", error) }
+        // Immediately after, because `recoverStore` is the only thing that PUTS anything in
+        // quarantine, and nothing has ever taken anything back out.
+        await steps.sweepQuarantine()
     }
 
     /// Everything the receiver does not have to wait for. Safe to call repeatedly; the caller

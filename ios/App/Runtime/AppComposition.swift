@@ -809,6 +809,14 @@ final class AppComposition {
                     return imported
                 },
                 recoverStore: { try await store.recover() },
+                sweepQuarantine: {
+                    let swept = await store.sweepQuarantine()
+                    guard swept.removed > 0 || swept.retainedWithAudio > 0 else { return }
+                    AppRuntimeLog.shared.record(
+                        "quarantine sweep: removed \(swept.removed) empty, "
+                            + "kept \(swept.retainedWithAudio) with audio"
+                    )
+                },
                 recoverQueue: { try await transcription.recoverOnStart() },
                 enforceRetention: { try await retention.enforce() },
                 cascadeDeleted: { _ = await cascade.deleteSegment($0) },

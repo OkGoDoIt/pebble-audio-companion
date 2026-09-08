@@ -797,6 +797,52 @@ public actor SegmentStore: SegmentSink {
         if reconciled != meta { try writeMetaAtomically(reconciled) }
     }
 
+    /// What a quarantine sweep found.
+    public struct QuarantineSweep: Sendable, Equatable {
+        /// Empty logs (and their stray sidecars) removed. Pure reclaimed disk.
+        public var removed: Int = 0
+        /// Logs that still hold parseable frames. NOT touched — that is real audio, and deleting
+        /// it to tidy a directory would be the worst possible trade.
+        public var retainedWithAudio: Int = 0
+    }
+
+    /// Cleans up `quarantine/`, which until now nothing ever looked at again.
+    ///
+    /// `recover()` moves a `.spxlog` here when its sidecar cannot be read. The only code that ever
+    /// read the directory back was the one-shot legacy importer, so anything quarantined since has
+    /// sat there permanently: invisible to retention (which sweeps `segments/` and has never known
+    /// this exists), never recovered, never deleted. On a real device that was 5.2 MB in 33 files,
+    /// the oldest from June.
+    ///
+    /// The sweep is deliberately asymmetric, because the two cases deserve opposite treatment. A
+    /// log with no parseable frames holds nothing and is deleted. A log that still has frames is
+    /// LEFT ALONE and counted, so it shows up in diagnostics rather than being quietly discarded —
+    /// reconstructing a sidecar for it needs a codec template from a sibling segment, which is the
+    /// importer's job, and throwing real audio away to tidy a directory would be far worse than
+    /// leaving it.
+    @discardableResult
+    public func sweepQuarantine() -> QuarantineSweep {
+        var result = QuarantineSweep()
+        guard fm.fileExists(atPath: quarantineDir.path) else { return result }
+        for url in listDirectory(quarantineDir)
+        where url.lastPathComponent.hasSuffix(Self.logSuffix) {
+            let bytes = [UInt8]((try? Data(contentsOf: url)) ?? Data())
+            if parseRecords(bytes).records.isEmpty {
+                let segmentId = String(url.lastPathComponent.dropLast(Self.logSuffix.count))
+                try? removeIfExists(url)
+                // Any sidecar the importer left beside it goes too; on its own it describes
+                // audio that no longer exists.
+                try? removeIfExists(
+                    quarantineDir.appendingPathComponent("\(segmentId)\(Self.metaSuffix)")
+                )
+                result.removed += 1
+            } else {
+                result.retainedWithAudio += 1
+            }
+        }
+        return result
+    }
+
     private func quarantine(_ url: URL) throws {
         try fm.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
         try atomicMove(from: url, to: quarantineDir.appendingPathComponent(url.lastPathComponent))

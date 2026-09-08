@@ -848,6 +848,60 @@ import WireProtocol
         #expect(await reopened.listSegments().count == 1)
     }
 
+    // Nothing ever read `quarantine/` back except the one-shot legacy importer, so anything
+    // quarantined since sat there permanently — invisible to retention, never recovered, never
+    // deleted. On a real device that was 33 files and 5.2 MB, the oldest from June.
+    //
+    // The sweep is deliberately ASYMMETRIC, and the second half matters far more than the first:
+    // reclaiming a few megabytes is worth nothing next to deleting somebody's audio.
+    @Test func quarantineSweepReclaimsEmptyLogs() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let quarantine = root.appendingPathComponent("quarantine", isDirectory: true)
+        try FileManager.default.createDirectory(at: quarantine, withIntermediateDirectories: true)
+
+        // The shape actually found on the device: a zero-byte log, with a stray sidecar that on
+        // its own describes audio which no longer exists.
+        let empty = quarantine.appendingPathComponent("seg-empty.spxlog")
+        try Data().write(to: empty)
+        let strandedMeta = quarantine.appendingPathComponent("seg-empty.meta.json")
+        try Data("{}".utf8).write(to: strandedMeta)
+
+        let swept = await store.sweepQuarantine()
+
+        #expect(swept.removed == 1)
+        #expect(swept.retainedWithAudio == 0)
+        #expect(!FileManager.default.fileExists(atPath: empty.path))
+        #expect(!FileManager.default.fileExists(atPath: strandedMeta.path))
+    }
+
+    @Test func quarantineSweepNeverDeletesRealAudio() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+
+        // Build a log with genuine frames by letting the store write one, then orphan it.
+        try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+        let openId = try #require(await store.openSegmentId)
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 4))
+        try await store.closeSegment(reason: .interrupted)
+
+        let quarantine = root.appendingPathComponent("quarantine", isDirectory: true)
+        try FileManager.default.createDirectory(at: quarantine, withIntermediateDirectories: true)
+        let withAudio = quarantine.appendingPathComponent("seg-has-audio.spxlog")
+        try FileManager.default.moveItem(
+            at: segmentsDir(root).appendingPathComponent("\(openId).spxlog"), to: withAudio
+        )
+
+        let swept = await store.sweepQuarantine()
+
+        #expect(swept.removed == 0)
+        #expect(swept.retainedWithAudio == 1)
+        #expect(
+            FileManager.default.fileExists(atPath: withAudio.path),
+            "audio must survive a tidy-up; it is counted for diagnostics, not discarded"
+        )
+    }
+
     @Test func resumeStateRoundTrip() async throws {
         let root = try tempRoot()
         let store = FileReceiverResumeStore(root: root)
