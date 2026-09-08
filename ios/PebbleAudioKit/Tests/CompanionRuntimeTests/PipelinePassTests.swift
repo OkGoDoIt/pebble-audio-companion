@@ -74,6 +74,36 @@ import Testing
         #expect(sleepMs == PipelinePacing.backgroundMs)
     }
 
+    /// The one kind of transcription worth starting in the background, because WE do not do the
+    /// work: the bytes go to `nsurlsessiond`, which transfers them on its own schedule and can do
+    /// it while this app is suspended or not running at all.
+    ///
+    /// Uploads used to be submitted only on background ENTRY and in the rare BGProcessing window,
+    /// so a night of recording closed a dozen segments that nobody handed to anything — and
+    /// opening the app in the morning meant watching the whole backlog upload and transcribe at
+    /// once. The deferring pass hands them over as they close.
+    @Test func aBackgroundPassStillHandsFinishedSegmentsToTheUploader() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let pass = pass(clock: clock, recorder: recorder) { steps in
+            steps.isForeground = { false }
+            steps.releaseModel = { reason in calls.record("release:\(reason)") }
+            steps.submitPendingUploads = { calls.record("submitUploads") }
+            steps.drainQueue = {
+                calls.record("drain")
+                return false
+            }
+        }
+
+        _ = try await pass.run()
+
+        #expect(calls.calls.contains("submitUploads"))
+        // ...and still no heavy work: the local model stays released and the queue is not drained.
+        #expect(!calls.calls.contains("drain"))
+        #expect(recorder.stages == [.backgroundDefer])
+    }
+
     @Test func backgroundPassYieldsModelToAnInProgressCatchUpBurst() async throws {
         let clock = TestClock()
         let recorder = StageRecorder()

@@ -577,7 +577,8 @@ public actor CompanionRuntime {
                         ? CoverageSnapshotService.foregroundHeartbeatMs
                         : CoverageSnapshotService.backgroundHeartbeatMs
                 )
-            }
+            },
+            submitPendingUploads: { await env.transcription.submitPendingToUploader() }
         )
     }
 }

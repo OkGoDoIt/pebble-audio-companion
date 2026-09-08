@@ -69,6 +69,10 @@ public struct PipelineSteps: Sendable {
     /// calling it every pass is cheap. Not a `PipelineStage`: it is a side effect at the end of
     /// the pass, not a step whose ORDER anything depends on.
     public var refreshCoverageSnapshot: @Sendable () async -> Void
+    /// Hands newly-closed cloud-primary segments to the background `URLSession`. Cheap, and the
+    /// transfer itself is done by the system daemon rather than by us — see the background branch
+    /// of `run()`.
+    public var submitPendingUploads: @Sendable () async -> Void = {}
 
     public init(
         isForeground: @escaping @Sendable () -> Bool = { true },
@@ -90,7 +94,8 @@ public struct PipelineSteps: Sendable {
         isFollowingOpenSegment: @escaping @Sendable () async -> Bool = { false },
         nextRetryAtMs: @escaping @Sendable () async throws -> Int64? = { nil },
         onDiagnosticsDirty: @escaping @Sendable () async -> Void = {},
-        refreshCoverageSnapshot: @escaping @Sendable () async -> Void = {}
+        refreshCoverageSnapshot: @escaping @Sendable () async -> Void = {},
+        submitPendingUploads: @escaping @Sendable () async -> Void = {}
     ) {
         self.isForeground = isForeground
         self.isCatchUpActive = isCatchUpActive
@@ -112,6 +117,7 @@ public struct PipelineSteps: Sendable {
         self.nextRetryAtMs = nextRetryAtMs
         self.onDiagnosticsDirty = onDiagnosticsDirty
         self.refreshCoverageSnapshot = refreshCoverageSnapshot
+        self.submitPendingUploads = submitPendingUploads
     }
 }
 
@@ -203,6 +209,20 @@ public struct PipelinePass: Sendable {
             // records, and a widget that freezes the moment the app leaves the foreground is
             // exactly the widget Roger called useless.
             await steps.refreshCoverageSnapshot()
+            // ...and worth handing finished segments to the background URLSession.
+            //
+            // This is the one kind of transcription that is genuinely cheap to start while
+            // backgrounded, because WE DO NOT DO THE WORK: the bytes go to `nsurlsessiond`, which
+            // transfers them on its own schedule and can do it while this app is suspended or not
+            // running at all. What it costs us is bounded — `submitPending` stops at
+            // `maxConcurrentUploads` and returns immediately when nothing is pending — and it is
+            // once per closed segment, which is every 15 minutes or 16 MB.
+            //
+            // Without it, uploads were submitted only on background ENTRY and in the rare
+            // BGProcessing window, so a night of recording closed a dozen segments that nobody
+            // handed to anything. Opening the app in the morning then meant watching the whole
+            // backlog upload and transcribe at once, which is exactly the wait this avoids.
+            await steps.submitPendingUploads()
             // A deferring pass is still a completed pass: the loop is turning, and the watchdog
             // must not mistake a backgrounded app for a wedged one.
             health?.passCompleted()
