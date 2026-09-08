@@ -119,12 +119,23 @@ final class PlayerModel {
 
     /// Whether this conversation is being LISTENED to, which is a longer thing than whether a
     /// sample is leaving the speaker right now. The docked player keys off this rather than off
-    /// `playing`, because the pause button lives inside the docked player: un-docking on pause
-    /// would take the control away at the exact moment it was used, and getting it back would
-    /// mean scrolling to the top of the transcript. Deliberately built out of two Bools and not
-    /// out of `positionMs`, so reading it in a view body does not subscribe that view to the
-    /// position ticker.
+    /// `playing`, because the pause button lives inside the docked player: un-docking the instant
+    /// you press pause would take the control away at the exact moment it was used, and getting it
+    /// back would mean scrolling to the top of the transcript.
+    ///
+    /// But it does not stay docked forever either. A pause you do not come back from is just
+    /// reading, and the strip should get out of the way: `pauseGraceSeconds` after a pause,
+    /// engagement lapses on its own and the player returns to its place in the page. Pressing play
+    /// again — or scrubbing, or tapping a line — cancels that.
+    ///
+    /// Deliberately built out of two Bools and not out of `positionMs`, so reading it in a view
+    /// body does not subscribe that view to the position ticker.
     var isEngaged: Bool { playing || hasStarted }
+
+    /// How long a paused player stays docked. Long enough to press play again, or to read the
+    /// line you paused on and decide; short enough that a player you have abandoned does not go
+    /// on occupying the top of a transcript you are now reading.
+    static let pauseGraceSeconds: Double = 15
 
     /// The decoder-backed engine over the conversation's stored frames. Nil in the mock and
     /// preview worlds, where `ticker` stands in for it.
@@ -132,6 +143,8 @@ final class PlayerModel {
     private var configuredId: String?
     private var observation: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
+    /// Pending un-dock of a paused player. See `isEngaged`.
+    private var engagementLapse: Task<Void, Never>?
 
     var speedLabel: String {
         switch speed {
@@ -206,6 +219,7 @@ final class PlayerModel {
         if positionMs >= durationMs { positionMs = 0 }
         playing = true
         hasStarted = true
+        cancelEngagementLapse()
         if let engine {
             engine.play(fromMs: positionMs)
         } else {
@@ -227,6 +241,24 @@ final class PlayerModel {
         ticker = nil
         engine?.pause()
         playhead.update(mediaMs: positionMs, playing: false)
+        startEngagementLapse()
+    }
+
+    /// Let engagement lapse if play is not pressed again. Re-armed from scratch on every pause,
+    /// so pausing, resuming and pausing again gives the full grace each time.
+    private func startEngagementLapse() {
+        cancelEngagementLapse()
+        engagementLapse = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pauseGraceSeconds))
+            guard !Task.isCancelled else { return }
+            guard let self, !self.playing else { return }
+            self.hasStarted = false
+        }
+    }
+
+    private func cancelEngagementLapse() {
+        engagementLapse?.cancel()
+        engagementLapse = nil
     }
 
     /// Leaving the screen has to end the audio — a conversation that keeps playing from a
@@ -234,6 +266,7 @@ final class PlayerModel {
     func stop() {
         playing = false
         hasStarted = false
+        cancelEngagementLapse()
         ticker?.cancel()
         ticker = nil
         observation?.cancel()
@@ -263,6 +296,9 @@ final class PlayerModel {
         // Move the highlight with the scrubber, paused or not: dragging to a moment and reading
         // what was said there is half of why the transcript follows the audio at all.
         playhead.update(mediaMs: clamped, playing: playing)
+        // Scrubbing a paused player is still using it, so it earns its grace again — otherwise
+        // the strip could vanish mid-drag, taking the scrubber out from under the finger.
+        if !playing, hasStarted { startEngagementLapse() }
     }
 
     /// The demo/preview stand-in: no audio exists in the mock world, so the scrubber moves on

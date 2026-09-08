@@ -402,3 +402,57 @@ struct PlaybackSyncTests {
         #expect(cadence.register(now: start.addingTimeInterval(1.7)) == true)
     }
 }
+
+// MARK: - Docking grace
+
+/// The docked player is conditional on engagement, and engagement outlives a pause by a grace
+/// period. Roger settled the rule: docked while playing; a pause you do not come back from within
+/// 15 seconds releases it. Pinned here because both ends are wrong in an obvious way — un-docking
+/// instantly steals the pause button at the moment it is pressed, never un-docking leaves a strip
+/// over a transcript nobody is listening to.
+@MainActor
+@Suite("player docking grace")
+struct PlayerDockingGraceTests {
+
+    @Test("playing is engaged")
+    func playingIsEngaged() {
+        let model = PlayerModel()
+        model.durationMs = 60_000
+        model.play()
+        #expect(model.isEngaged)
+    }
+
+    @Test("a pause stays docked, so the pause button does not vanish under the finger")
+    func pauseKeepsItDocked() {
+        let model = PlayerModel()
+        model.durationMs = 60_000
+        model.play()
+        model.pause()
+        #expect(model.isEngaged, "still docked immediately after pausing")
+    }
+
+    @Test("the grace is fifteen seconds")
+    func graceIsFifteenSeconds() {
+        #expect(PlayerModel.pauseGraceSeconds == 15)
+    }
+
+    @Test("stopping releases it at once — leaving the screen is not a pause")
+    func stopReleasesImmediately() {
+        let model = PlayerModel()
+        model.durationMs = 60_000
+        model.play()
+        model.stop()
+        #expect(!model.isEngaged)
+    }
+
+    @Test("playing again re-engages after a pause")
+    func playingAgainReEngages() {
+        let model = PlayerModel()
+        model.durationMs = 60_000
+        model.play()
+        model.pause()
+        model.play()
+        #expect(model.isEngaged)
+        #expect(model.playing)
+    }
+}
