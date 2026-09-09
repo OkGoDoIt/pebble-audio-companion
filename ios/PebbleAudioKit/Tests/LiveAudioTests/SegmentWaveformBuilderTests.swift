@@ -78,7 +78,9 @@ import WireProtocol
         let wave = await builder.build(meta: meta(frameCount: 40)) { frames(40) }
 
         #expect(wave.bars.allSatisfy { $0.state == .recorded })
-        #expect(wave.bars.allSatisfy { (0.08...0.2).contains($0.amplitude) })
+        // See `LiveAudioMonitorTests.lowLevelSpeechStillLooksRecordedAndVisible`: RMS 120 is an
+        // ordinary speech frame here, not a barely-audible one, and draws like it.
+        #expect(wave.bars.allSatisfy { (0.4...0.7).contains($0.amplitude) })
     }
 
     @Test func gapMarkersLandAtTheMediaPositionOfTheLoss() async {

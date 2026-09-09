@@ -417,9 +417,36 @@ public actor LiveAudioMonitor {
     static let idleTickMs: UInt64 = 250
 
     /// Below this RMS (16-bit full scale 32767) a bar renders as detected silence.
-    public static let silenceRMS = 90.0
+    ///
+    /// Both anchors here were guesses, and on this hardware they were wrong by more than an
+    /// order of magnitude — the reported symptom was "the waveform is very quiet even during
+    /// normal conversations". Measured over 25.7 h of this watch's own recordings (145 segments,
+    /// decoded, frames labelled speech/non-speech by the app's own word timings), the RMS of a
+    /// frame in which somebody is talking is:
+    ///
+    ///     speech      p05 11.6   p25 22.2   p50 42.2   p75 81.0   p95 198.4   p99 393.4
+    ///     non-speech  p05  9.2   p25 13.2   p50 23.6   p75 52.9   p95 170.9   p99 454.1
+    ///
+    /// So the old floor of 90 sat ABOVE the median speech frame: 78.5% of all speech landed
+    /// under it and was classified `.silence`, and a `.silence` bar is drawn at a FIXED height
+    /// with its amplitude discarded (`WaveformView.height(for:)`). Most of a conversation was
+    /// therefore drawn as a flat row of quiet stubs. What survived the floor was then mapped
+    /// against a 8,000 ceiling — 20x the loudest speech this microphone produces — so a median
+    /// speech frame reached 8% of the available height and a p95 one 15%.
+    ///
+    /// The floor is now below the speech distribution rather than through the middle of it, and
+    /// deliberately biased LOW: drawing room tone as a small real bar costs nothing, while
+    /// drawing speech as silence hides the conversation. The ceiling is set near the p99 of real
+    /// speech, so the full height is reachable by a raised voice and ordinary talk lands in the
+    /// middle of the scale.
+    ///
+    /// This is a DISPLAY calibration, not a claim about the audio: the recordings really are
+    /// this quiet (-60 dBFS median speech, post the x3 in voice_speex.c) because the microphone
+    /// is on the back of the watch. See the firmware's silence-suppression note for the same
+    /// measurement in the detector's units.
+    public static let silenceRMS = 12.0
 
-    private static let displayLoudRMS = 8_000.0
+    private static let displayLoudRMS = 500.0
     private static let displayMinRecordedAmplitude = 0.08
 
     /// Watch speech can decode to low PCM levels after Speex. Map RMS on a dB-like curve so

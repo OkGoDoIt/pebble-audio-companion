@@ -96,9 +96,18 @@ private func frames(_ count: Int, loud: Bool) -> [SegmentFrame] {
         let bars = await monitor.bars
         #expect(!bars.isEmpty)
         #expect(bars.allSatisfy { $0.state == .recorded })
-        #expect(bars.allSatisfy { (0.08...0.2).contains($0.amplitude) })
-        #expect(LiveAudioMonitor.displayAmplitude(120) < LiveAudioMonitor.displayAmplitude(1_000))
-        #expect(LiveAudioMonitor.displayAmplitude(1_000) < LiveAudioMonitor.displayAmplitude(8_000))
+        // RMS 120 is a healthy speech frame on this microphone — above the p75 (81) of every
+        // frame in which somebody is talking. It used to draw in the 0.08...0.2 band, because
+        // the scale ran to 8,000: ordinary conversation was a row of stubs, which is what the
+        // recalibrated anchors fix. It must now use a real part of the height.
+        #expect(bars.allSatisfy { (0.4...0.7).contains($0.amplitude) })
+        // Monotonic across the range this microphone actually produces.
+        #expect(LiveAudioMonitor.displayAmplitude(30) < LiveAudioMonitor.displayAmplitude(120))
+        #expect(LiveAudioMonitor.displayAmplitude(120) < LiveAudioMonitor.displayAmplitude(300))
+        // A quiet frame is still visibly quiet rather than bottoming out at the floor.
+        #expect(LiveAudioMonitor.displayAmplitude(30) < 0.35)
+        // Full height is reachable, and only by a genuinely loud frame.
+        #expect(LiveAudioMonitor.displayAmplitude(500) == 1.0)
     }
 
     @Test func gapsMarkBarsAcrossTheirDuration() async {
