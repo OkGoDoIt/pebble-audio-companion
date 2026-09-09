@@ -42,9 +42,9 @@ public final class FilePersonalContextStore: @unchecked Sendable {
     /// refresher finishing mid-import would put the pre-import document back, silently
     /// discarding the names that had just been imported.
     ///
-    /// Callers that go through `mutate` cannot do that to each other. A caller that still does
-    /// its own load/save (the refresher, which is handed closures rather than the store) can
-    /// still lose a change; closing that needs the refresher to take a mutating closure too.
+    /// Callers that go through `mutate` cannot do that to each other, and all three now do: the
+    /// refresher is handed closures rather than the store, so it takes this as one
+    /// (`PersonalContextTermRefresher.init(mutate:)`) and its write-back runs under this lock.
     @discardableResult
     public func mutate(_ body: (inout PersonalContext) -> Void) throws -> PersonalContext {
         lock.lock()

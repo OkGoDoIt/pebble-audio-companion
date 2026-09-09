@@ -110,6 +110,22 @@ final class AppSettings {
         }
     }
 
+    /// The capture intent to put back if the onboarding run that switched capture on never
+    /// finishes.
+    ///
+    /// Step 1's "Connect Watch" writes `captureIntent = .active` (`LiveWatchPairingSource`), on
+    /// purpose — it is the same path Today's Start takes, and a COMPLETED onboarding is meant to
+    /// leave capture running. Until the flow finishes, though, that switch is PROVISIONAL, and
+    /// only one exit ever undid it: the Cancel button on step 2. Someone who got past pairing and
+    /// then walked away — backgrounded at the processing question, force-quit, or had the process
+    /// reclaimed — came back to a live microphone they never agreed to. Onboarding is re-runnable
+    /// from Settings → Diagnostics now, so "they deliberately had capture off before" is the
+    /// ordinary case rather than a fresh-install curiosity.
+    ///
+    /// `nil` means no run is in flight. It is persisted because the exits that matter are exactly
+    /// the ones that end the process.
+    @ObservationIgnored private(set) var onboardingCaptureRestore: CaptureIntent?
+
     /// An OPT-IN timed pause (`CapturePauseSchedule`). `.none` — and nothing scheduled — is the
     /// default and stays the default: flipping the capture switch off writes `.off` with no
     /// timer and no notification, exactly as it always did. A schedule exists only after
@@ -244,6 +260,69 @@ final class AppSettings {
         }
     }
 
+    // ─── Onboarding's provisional capture switch ────────────────────────────
+
+    /// Onboarding is about to switch capture on. Records what to put back.
+    ///
+    /// First writer wins, and that is the point: step 2 is retryable, so by the second attempt
+    /// the stored intent is ALREADY `.active` — re-reading it would record "leave it on" and lose
+    /// the real answer. (That is also why Cancel after a retry used to do nothing at all.)
+    func beginOnboardingCaptureAttempt() {
+        guard onboardingCaptureRestore == nil else { return }
+        setOnboardingCaptureRestore(captureIntent)
+    }
+
+    /// The run ended WITHOUT finishing. Consumes the marker and returns the intent to put back,
+    /// or nil when there is nothing to undo — no run in flight, or capture was already where the
+    /// marker says it should be (someone who had it on before does not get it switched off).
+    func takeOnboardingCaptureRestore() -> CaptureIntent? {
+        let previous = onboardingCaptureRestore
+        setOnboardingCaptureRestore(nil)
+        guard let previous, previous != captureIntent else { return nil }
+        return previous
+    }
+
+    /// The run FINISHED. Capture stays exactly where onboarding left it — that is what Connect
+    /// Watch is for — so the marker is dropped without restoring anything.
+    func onboardingCaptureAttemptCompleted() {
+        setOnboardingCaptureRestore(nil)
+    }
+
+    private func setOnboardingCaptureRestore(_ intent: CaptureIntent?) {
+        onboardingCaptureRestore = intent
+        if let intent {
+            defaults.set(intent.settingValue, forKey: Keys.onboardingCaptureRestore)
+        } else {
+            defaults.removeObject(forKey: Keys.onboardingCaptureRestore)
+        }
+    }
+
+    /// Undoes a provisional "Connect Watch" that no completed onboarding ever ratified.
+    ///
+    /// Called once per process from `init`, which is the only hook that covers every way the flow
+    /// can be abandoned — including a headless Core Bluetooth restoration launch, where there is
+    /// no window, no `onAppear` and no scene phase. It also lands before `AppComposition` reads
+    /// `settings.captureIntent` for the receiver's `initialIntent`, so the corrected value is what
+    /// the runtime starts on: no second write, no extra actor hop, no widget flicker.
+    ///
+    /// It deliberately does NOT fire on `.background`. Stepping out to a password manager for an
+    /// API key at the last step is a normal part of FINISHING onboarding, and switching capture
+    /// off there would contradict the person's own tap and flap a recording already running on the
+    /// watch (an off/on pair of commands, i.e. a real gap in the audio). The residual window is an
+    /// app that stays resident, backgrounded, mid-flow: capture then stays on until the process
+    /// next starts. That is the state the person's own tap plus their on-watch consent put it in,
+    /// and the next launch corrects it.
+    private func restoreCaptureIfOnboardingWasAbandoned() {
+        guard !onboardingComplete, let previous = onboardingCaptureRestore else { return }
+        onboardingCaptureRestore = nil
+        defaults.removeObject(forKey: Keys.onboardingCaptureRestore)
+        guard previous != captureIntent else { return }
+        // Property observers do not fire during initialization, so the defaults write is explicit
+        // (the same reason the `-onboarding.reset` staging block below writes both).
+        captureIntent = previous
+        defaults.set(previous.settingValue, forKey: Keys.captureIntent)
+    }
+
     /// The approved "Keep audio" options (6.7).
     static let retentionOptions = [7, 14, 30, 90, 180, 365]
 
@@ -299,6 +378,9 @@ final class AppSettings {
         captureIntent =
             defaults.string(forKey: Keys.captureIntent)
             .flatMap(CaptureIntent.init(settingValue:)) ?? .off
+        onboardingCaptureRestore =
+            defaults.string(forKey: Keys.onboardingCaptureRestore)
+            .flatMap(CaptureIntent.init(settingValue:))
         capturePause = AppSettings.storedPauseSchedule(defaults)
         backgroundCatchUp =
             defaults.string(forKey: Keys.backgroundCatchUp).flatMap(BackgroundCatchUp.init)
@@ -344,6 +426,10 @@ final class AppSettings {
             defaults.set(true, forKey: Keys.onboardingComplete)
         }
         #endif
+
+        // A "Connect Watch" that no completed onboarding ever ratified does not get to leave the
+        // microphone on. Must precede `mirrorToRuntime()` — the runtime reads the mirror.
+        restoreCaptureIfOnboardingWasAbandoned()
 
         // Property observers do not fire during initialization, so seed the mirror here.
         mirrorToRuntime()
@@ -409,6 +495,8 @@ final class AppSettings {
 
     private enum Keys {
         static let captureIntent = "capture_intent"
+        /// Present only while an onboarding run has capture switched on provisionally.
+        static let onboardingCaptureRestore = "onboarding_capture_restore"
         static let pauseResumeAtMs = "capture_pause_resume_at_ms"
         static let pauseRemindAtMs = "capture_pause_remind_at_ms"
         static let transcriptionMode = "transcription_mode"

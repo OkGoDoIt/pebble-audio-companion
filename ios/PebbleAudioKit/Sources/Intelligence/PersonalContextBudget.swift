@@ -75,12 +75,28 @@ public enum PersonalContextBudget {
     /// Apple also asks for short phrases: "Keep phrases relatively brief, limiting them to one
     /// or two words whenever possible. Lengthy phrases are less likely to be recognized."
     ///
-    /// Nothing reads this yet — the local `SpeechAnalyzerProvider` passes no contextual
-    /// strings — so a local-transcription user currently gets no benefit at all from About
-    /// You. `PersonalContextFormatting.appleContextualStrings` is the shape that path needs.
+    /// Wired: `AppComposition` hands `PersonalContextFormatting.appleContextualStrings` to
+    /// `SpeechAnalyzerProvider`, so a local-transcription user gets the same About You terms the
+    /// two cloud providers already get. (This note used to say nothing read it, which was true
+    /// when it was written and is not now.)
     public static let appleContextualStringsMaxPhrases = 100
 
-    /// Apple's "one or two words" guidance, as a rule we can actually apply.
+    /// Apple's "one or two words" guidance, as a rule we can actually apply — and deliberately
+    /// applied as THREE, not two.
+    ///
+    /// Apple's sentence is "limiting them to one or two words **whenever possible**", which is
+    /// advice about phrasing, not a limit the API enforces (the only enforced number on that page
+    /// is the 100 phrases above). What this constant actually does is decide which of a person's
+    /// own terms are thrown away, and at two the class that goes is three-token names: "Mary Ellen
+    /// Rodriguez", "Core Devices Inc", "Santa Rosa Beach". Those are exactly the words About
+    /// You exists to get right, and they are ranked ahead of most of what survives.
+    ///
+    /// The asymmetry decides it. Apple's own warning about longer phrases is that they are "less
+    /// likely to be recognized" — a phrase that does not fire costs nothing, because the
+    /// recognizer falls back to what it would have done anyway. Dropping a name costs the
+    /// recognition of that name outright. Cheap miss against expensive miss, so the cap is one
+    /// word looser than the guidance and no looser: at four this would start admitting fragments
+    /// of sentences from a pasted bio, which is a different thing from a name.
     public static let appleContextualStringMaxWords = 3
 
     // MARK: - On-device chat model (Apple Foundation Models)

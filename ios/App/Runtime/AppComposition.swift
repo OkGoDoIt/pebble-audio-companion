@@ -556,6 +556,10 @@ final class AppComposition {
             save: { _ = try personalContext.save($0) },
             extractor: PersonalContextTermExtractor(router: aiRouter),
             nowMs: nowMs,
+            // The write-back goes through the store's lock, not a load/save pair: the About You
+            // editor and the Contacts/Calendar imports write the same document, and a refresh
+            // finishing mid-import used to put the pre-import version back.
+            mutate: { _ = try personalContext.mutate($0) },
             log: { AppRuntimeLog.shared.record($0) }
         )
         self.personalContextTerms = personalContextTerms
@@ -739,6 +743,9 @@ final class AppComposition {
             index: index,
             donator: donator,
             lossEvaluator: lossEvaluator,
+            // A manual split/join is keyed by the segment after the join, so deleting that segment
+            // must take the decision with it.
+            boundaryOverrides: BoundaryOverrideStore(db: database),
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog

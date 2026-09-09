@@ -189,21 +189,55 @@ public func totalGapMs(_ meta: SegmentMeta) -> Int64 {
 }
 
 /// User-facing missing time, guarded against stale/impossible gap metadata.
+///
+/// Clamped to `displaySegmentDurationMs`, not to the raw wall span: this number is always shown
+/// beside that one ("18 min · 4 min missing"), and a recording cannot be missing more time than it
+/// claims to be long. The clamp binds in only one direction and never hides loss — recorded loss is
+/// a SUBSET of the recorded gap time the display duration already includes.
 public func displayGapMs(_ meta: SegmentMeta) -> Int64 {
     let totalMs = totalGapMs(meta)
-    let durationMs = segmentDurationMs(meta)
+    let durationMs = displaySegmentDurationMs(meta)
     if totalMs <= 0 { return 0 }
     if durationMs > 0 { return min(totalMs, durationMs) }
     return totalMs
 }
 
-/// Duration of a segment in ms, preferring the sample counters (gaps included).
+/// Wall span of a segment in ms, from the sample counters (gaps included).
+///
+/// The implementation moved down to `SegmentStore.segmentWallSpanMs` when `SegmentMediaClock`
+/// did: the clock has to agree with this to the millisecond or a transcript stamp and the gap
+/// row beside it describe different recordings, and the only way to guarantee that is one
+/// function. This name stays because it is what every caller already imports.
+///
+/// This is a PLACEMENT/CLAMP primitive and stays the raw span on purpose. Its callers convert
+/// between the two clocks or clip gap offsets into the segment's own timeline
+/// (`TranscriptFormatting.collapsedTranscriptGaps`, Ask's excerpt end times); shortening it there
+/// would push gap markers off the end of the timeline they belong to and move Ask's citations. For
+/// "how long was this recording", which is a different question, use `displaySegmentDurationMs`.
 public func segmentDurationMs(_ meta: SegmentMeta) -> Int64 {
-    if let first = meta.firstSampleIndex,
-       let lastExclusive = meta.lastSampleIndexExclusive,
-       lastExclusive > first, meta.sampleRateHz > 0
-    {
-        return Int64((lastExclusive - first) * 1000 / UInt64(meta.sampleRateHz))
-    }
-    return meta.frameCount * Int64(meta.frameDurationMs)
+    segmentWallSpanMs(meta)
+}
+
+/// How long this recording is, for a person reading it.
+///
+/// The wall span is what the watch's sample counter says elapsed, and the counter keeps running
+/// while the BLE link is down — across the real library that is 82 h 15 m (41.4%) of time that no
+/// audio and no gap record accounts for. Reporting it as the recording's length is the same
+/// phantom-duration lie `ConversationBoundaryDetector.displayExtent` removed for conversations,
+/// and this is the per-segment equivalent.
+///
+/// The honest claim is: the audio we hold, plus the time we have a RECORD of missing (loss and
+/// VAD-skipped quiet alike — both really elapsed, and both are gap records), and never more than
+/// the counter's own span. When the metadata adds up this is the wall span to within a rounding
+/// slack, so a healthy recording reads exactly as it did; when it does not, the excess is dropped
+/// rather than presented as recording time.
+///
+/// It deliberately does NOT fall back to stored audio alone when the records fall short: doing
+/// that would erase known loss from the number the loss is reported against, which is the failure
+/// mode that once produced "18 min · 18 min missing".
+public func displaySegmentDurationMs(_ meta: SegmentMeta) -> Int64 {
+    let clock = SegmentMediaClock(meta)
+    let accounted = clock.mediaSpanMs + clock.recordedGapMs
+    guard clock.wallSpanMs > 0 else { return max(accounted, 0) }
+    return max(min(clock.wallSpanMs, accounted), 0)
 }

@@ -313,7 +313,10 @@ public actor BackgroundCloudUploadCoordinator {
             rejected: formatMemory.rejectedFormats(provider))
         for segmentId in await queue.pendingSegmentIds() {
             if budget == 0 { break }
-            guard let audio = await audioSource(segmentId, format) else { continue }
+            guard let audio = await audioSource(segmentId, format) else {
+                await failUnassembled(segmentId)
+                continue
+            }
             // The last point at which this audio is still on the device. A segment that
             // demonstrably contains no voice is settled here rather than uploaded, so the user
             // neither pays for it nor receives the sentences a provider invents out of room tone.
@@ -334,18 +337,77 @@ public actor BackgroundCloudUploadCoordinator {
             let body = audio.body(for: format)
             guard let plan = await capable.uploadPlan(audio: body, sampleRateHz: audio.sampleRateHz)
             else {
-                // The provider declined to plan this segment — no key, no consent, or the body is
-                // over its single-request limit. The last of those leaves the segment Pending and
-                // offered again every pass with no progress, which is invisible without a line
-                // here. It is unreachable at 4% of the WAV and comfortable at FLAC's ~31%; it
-                // would only come back if BOTH rungs were ever refused and a long segment fell all
-                // the way to raw WAV.
+                // The provider declined to plan this segment. `uploadPlan` refuses for exactly two
+                // reasons — no consent/key, and a body over its single-request limit — and those
+                // two want opposite outcomes, so they are told apart rather than lumped together.
+                //
+                // The consent/key half is a CONFIGURATION problem and must stay Pending: the very
+                // next pass sends it once a key is back. `isAvailable()` is literally that same
+                // predicate and was checked at the top of this pass, so the only way it is the
+                // reason is a settings change landing mid-pass — which is why it is re-asked here,
+                // on the refusal path only, where the ordinary pass never pays for it.
+                //
+                // What is left is the size limit, which is a property of the audio and will not
+                // change on its own: the ladder only ever downgrades to LARGER containers, so a
+                // body too big at this rung is too big at every rung below it. That gets a
+                // terminal state instead of being re-offered every pass forever — retryable,
+                // because the foreground processor CAN still transcribe it (the synchronous path
+                // chunks segments the single-request API will not take), with the message
+                // `TranscriptionFailureKind` reads as `.recordingTooLong`, which the safety-net
+                // sweep leaves alone and Diagnostics shows.
+                //
+                // Unreachable at passthrough's 4% of the WAV and comfortable at FLAC's ~31%; it
+                // would only come back if BOTH rungs were refused and a long segment fell all the
+                // way to raw WAV.
                 log("no upload plan for \(segmentId) as \(body.format.rawValue) (\(body.bytes.count) bytes)")
+                guard await cloudProvider.isAvailable() else { continue }
+                await queue.markFailed(
+                    segmentId,
+                    "upload body of \(body.bytes.count) bytes as \(body.format.rawValue) exceeds "
+                        + "the provider's single-request limit",
+                    true
+                )
                 continue
             }
             try await enqueueUpload(segmentId: segmentId, plan: plan, format: body.format)
             budget -= 1
         }
+    }
+
+    /// A Pending segment whose audio could not be assembled at all.
+    ///
+    /// `audioSource` returns nil for a segment with no readable metadata sidecar, or whose frames
+    /// will not decode to anything — see `BackgroundUploadWiring.audioSource`. Both used to
+    /// `continue`, which left the task Pending, which meant the very next background pass picked
+    /// the same segment up, re-read the spool, re-attempted the decode, and dropped it again.
+    /// Forever, invisibly, and at the cost of a full decode per pass on a phone that is supposed
+    /// to be asleep. (`TranscriptionService.enqueueClosedSegments` already refuses to enqueue a
+    /// zero-frame segment, so this is genuinely broken or missing audio, not an empty recording.)
+    ///
+    /// The honest outcome is `Failed`, not `NoSpeech`: the gate that claims silence refuses to do
+    /// so from audio it could not measure (`TranscriptionProcessor.provablySilent` "fails OPEN"),
+    /// and inferring "nobody spoke" from a decode failure would render a hole in the record as
+    /// calm quiet — the one conflation this product does not make.
+    ///
+    /// Retryable, and that is what keeps a TRANSIENT failure transient. Nothing here increments
+    /// `attempts` (only `markRunning`/`markUploading` do), so the task stays eligible: the
+    /// foreground processor's `nextRunnable` picks up a retryable failure once the backoff has
+    /// elapsed and runs it through the ordinary ladder, where a sidecar that was merely unreadable
+    /// before first unlock succeeds and a genuinely corrupt segment exhausts its eight attempts and
+    /// settles. What it does NOT do any more is sit in the background pass's Pending list, because
+    /// `pendingSegmentIds` does not return Failed tasks — which is the whole point.
+    ///
+    /// The wording matters: `TranscriptionFailureKind.classify` reads "failed to read audio" as
+    /// `.audioUnreadable`, whose `isWorthRevisiting` is false, so the six-hourly revival sweep
+    /// leaves it alone rather than re-decoding a broken spool file twice a day.
+    /// No `log` call of its own: `markFailed` is the hook that already writes the user's only
+    /// window onto a background upload that died (`BackgroundUploadWiring.queueHooks`), and it
+    /// writes this message verbatim.
+    private func failUnassembled(_ segmentId: String) async {
+        await queue.markFailed(
+            segmentId, "failed to read audio for \(segmentId) (no metadata, or it did not decode)",
+            true
+        )
     }
 
     private func enqueueUpload(

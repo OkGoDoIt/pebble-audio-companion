@@ -151,8 +151,10 @@ struct OnboardingProcessingChoiceTests {
     /// Neither "first" mode is a guarantee: `TranscriptionModeRouter.localFirst` uploads the
     /// segment on any local failure except cancellation and no-speech (a missing on-device
     /// language model is one of those), and `AiModeRouter.localFirst` reaches the remote provider
-    /// for every follow-up request, because `OnDeviceAiProvider` refuses structured output
-    /// unconditionally. So no choice in this flow may write one.
+    /// for any request the on-device provider declines — which, since it gained structured
+    /// output, means a model without structured generation or a shape it does not know, rather
+    /// than every structured request. Fewer occasions, same guarantee: none. So no choice in this
+    /// flow may write one.
     @Test func noChoiceWritesAFirstModeThatCouldStillUpload() {
         for choice in ProcessingChoice.allCases {
             for transcripts in ProcessingPlace.allCases {
@@ -256,10 +258,14 @@ struct OnboardingProcessingChoiceTests {
 
     // MARK: - The on-device-AI price list is attached to exactly the plans that pay it
 
-    /// `OnDeviceAiProvider.run` throws `providerUnavailable` for every request carrying
-    /// `requiresStructuredOutput`, and both `FollowUpWorker` and `FollowUpCurator` set it — so in
-    /// AI "Local only" no follow-up can ever be proposed. Every plan that lands there must carry
-    /// the note that says so.
+    /// AI "Local only" has a price list, and every plan that lands there must carry it.
+    ///
+    /// It is no longer "no follow-ups at all": `OnDeviceAiProvider` runs the structured shapes it
+    /// knows, so follow-ups ARE proposed on a device with Apple Intelligence — fewer of them, and
+    /// never with a due date (see `Copy.OnboardingProcessing.onDeviceAiNote`, which records the
+    /// measurement). And on a device without Apple Intelligence, `.localOnly` leaves the router
+    /// nowhere to go, so nothing the AI writes appears at all. Both halves are surprising, which
+    /// is exactly why the note has to be attached to every plan that pays for them.
     @Test func onDeviceAiNoteAppearsExactlyWhenAiIsLocalOnlyAndChosen() {
         for choice in ProcessingChoice.allCases {
             for transcripts in ProcessingPlace.allCases {

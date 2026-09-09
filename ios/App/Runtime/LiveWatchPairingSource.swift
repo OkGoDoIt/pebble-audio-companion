@@ -25,10 +25,6 @@ final class LiveWatchPairingSource: WatchPairingSource {
     /// answer arrives first and this timer never fires.
     private static let confirmTimeout: Duration = .seconds(90)
 
-    /// The intent the user had before this attempt, restored if they back out (a cancelled
-    /// attempt must not leave capture switched on behind them).
-    private var intentBeforeAttempt: CaptureIntent?
-
     init(composition: AppComposition) {
         self.composition = composition
     }
@@ -45,10 +41,16 @@ final class LiveWatchPairingSource: WatchPairingSource {
 
     /// The user left step 2. Undo the capture intent this attempt turned on — but only back to
     /// where they had it, never past it.
+    ///
+    /// The record of "where they had it" lives in `AppSettings` rather than in this object, for
+    /// two reasons. It is per-RUN, not per-attempt: step 2 is retryable, and re-reading the
+    /// current intent on the second attempt recorded `.active` (what the first attempt had just
+    /// written) so Cancel-after-a-retry silently did nothing. And it is durable, so the exits with
+    /// no button — backgrounding at step 3, a force-quit, iOS reclaiming the process — are undone
+    /// at the next launch instead of leaving the microphone on. See
+    /// `AppSettings.onboardingCaptureRestore`.
     func cancelPairing() async {
-        guard let previous = intentBeforeAttempt else { return }
-        intentBeforeAttempt = nil
-        guard previous != .active else { return }
+        guard let previous = composition.settings.takeOnboardingCaptureRestore() else { return }
         composition.settings.captureIntent = previous
         CaptureController.reloadWidgetSurfaces()
         await composition.runtime.setCaptureIntent(previous)
@@ -60,7 +62,11 @@ final class LiveWatchPairingSource: WatchPairingSource {
 
         // Exactly Today's Start, in the same order: the settings write first (so every surface
         // flips the moment the user taps), then the runtime call that arms the watch prompt.
-        intentBeforeAttempt = composition.settings.captureIntent
+        //
+        // The intent being overwritten is recorded first, and durably: capture switched on here is
+        // provisional until the flow COMPLETES, and this is what Cancel — or, for every exit
+        // without a button, the next launch — puts back.
+        composition.settings.beginOnboardingCaptureAttempt()
         composition.settings.captureIntent = .active
         // "Every surface" includes the two outside this process. Onboarding is the FIRST time
         // capture is ever switched on, so a widget added during setup would otherwise open on

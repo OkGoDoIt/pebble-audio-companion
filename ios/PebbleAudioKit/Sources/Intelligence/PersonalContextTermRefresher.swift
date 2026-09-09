@@ -19,6 +19,10 @@ import Foundation
 public actor PersonalContextTermRefresher {
     private let load: @Sendable () -> PersonalContext
     private let save: @Sendable (PersonalContext) throws -> Void
+    /// Read-change-write under the store's own lock. Supplied by the composition root
+    /// (`FilePersonalContextStore.mutate`); nil falls back to `load()` … `save()`, which is what
+    /// every construction did before this existed and is still fine for a single-writer test.
+    private let mutate: (@Sendable ((inout PersonalContext) -> Void) throws -> Void)?
     private let extractor: PersonalContextTermExtractor
     private let nowMs: @Sendable () -> Int64
     private let retryAfterMs: Int64
@@ -35,10 +39,12 @@ public actor PersonalContextTermRefresher {
         extractor: PersonalContextTermExtractor,
         nowMs: @escaping @Sendable () -> Int64,
         retryAfterMs: Int64 = 10 * 60 * 1000,
+        mutate: (@Sendable ((inout PersonalContext) -> Void) throws -> Void)? = nil,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.load = load
         self.save = save
+        self.mutate = mutate
         self.extractor = extractor
         self.nowMs = nowMs
         self.retryAfterMs = retryAfterMs
@@ -100,13 +106,34 @@ public actor PersonalContextTermRefresher {
     /// the terms were extracted from — a contacts import or a bio edit that landed during the
     /// model call must not be clobbered, and terms must never be stamped with a hash that no
     /// longer describes them.
+    ///
+    /// The hash check alone was not enough, and could not be. It closes the window from the START
+    /// of the model call to here; it cannot close the window INSIDE this function, between reading
+    /// the document and writing it back. That is a real race and not a narrow one — this file has
+    /// several independent writers (the About You editor, the Contacts import, the Calendar
+    /// import, and this refresher), an import writes the whole document, and a term refresh
+    /// finishing mid-import would put the pre-import version back, silently dropping every name
+    /// that had just been imported. So the read and the write go through the store's own lock via
+    /// `mutate` when one is wired, and the hash check moves inside it.
+    ///
+    /// `mutate` cannot abort, so a stale-hash refusal costs one rewrite of an unchanged document
+    /// under the lock. That is a single small JSON file, at most once per refresh, on the rare
+    /// path where the profile changed while the model was running.
     private func persist(terms: [String], hash: String?, expecting: String?) {
-        var latest = load()
-        guard latest.profileTextHash() == expecting else { return }
-        latest.derivedTerms = terms
-        latest.derivedTermsSourceHash = hash
+        let apply: @Sendable (inout PersonalContext) -> Void = { context in
+            guard context.profileTextHash() == expecting else { return }
+            context.derivedTerms = terms
+            context.derivedTermsSourceHash = hash
+        }
         do {
-            try save(latest)
+            if let mutate {
+                try mutate(apply)
+            } else {
+                var latest = load()
+                guard latest.profileTextHash() == expecting else { return }
+                apply(&latest)
+                try save(latest)
+            }
         } catch {
             log("personal-context terms: save failed: \(error)")
         }

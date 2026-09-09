@@ -74,11 +74,12 @@ public enum PersonalContextFormatting {
     }
 
     /// Contextual strings for Apple's on-device recognizer: at most 100 phrases of one to
-    /// three words each, most important first.
+    /// three words each, most important first. (Three, not Apple's suggested two — see
+    /// `PersonalContextBudget.appleContextualStringMaxWords` for why.)
     ///
-    /// Nothing calls this yet. `SpeechAnalyzerProvider` — the default local engine — passes no
-    /// contextual strings at all, so a local-transcription user gets no benefit from About You
-    /// today. This is the shape that path needs when it is wired up.
+    /// `AppComposition` passes this to `SpeechAnalyzerProvider`, so the default local engine gets
+    /// the same About You terms the cloud providers do. (The note here used to say nothing called
+    /// it; that was true when it was written.)
     public static func appleContextualStrings(
         _ context: PersonalContext,
         maxPhrases: Int = PersonalContextBudget.appleContextualStringsMaxPhrases

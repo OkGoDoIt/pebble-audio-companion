@@ -163,14 +163,17 @@ extension Copy.Privacy {
         }
     }
 
-    /// The AI half, and the one genuinely surprising fact on this screen.
+    /// The AI half.
     ///
-    /// `OnDeviceAiProvider.run` refuses any request tagged `requiresStructuredOutput`, and both
-    /// `FollowUpWorker` and `FollowUpCurator` tag every request they make. `AiModeRouter`'s
-    /// `localFirst` only rethrows `CancellationError` and `consentRequired`, so a
-    /// `providerUnavailable` falls through to the remote provider. The consequence is not a rare
-    /// fallback: in AI Local first, follow-up detection reaches the remote provider every single
-    /// time, because nothing on device can ever answer it.
+    /// This paragraph used to say something stronger and it is no longer true, which is worth
+    /// recording: `OnDeviceAiProvider.run` refused every request tagged `requiresStructuredOutput`,
+    /// and both follow-up workers tag all of theirs, so Local first sent follow-up detection to the
+    /// remote provider *every single time*. On-device structured output now works, so a device with
+    /// Apple Intelligence answers it locally and the fallback is what its name says: a fallback.
+    ///
+    /// What stays true, and is what the qualifier below has to admit, is that `localFirst` still
+    /// reaches the remote provider whenever the on-device model cannot do a job — so text can
+    /// still leave, just no longer always.
     private static func aiQualifier(_ mode: AiProcessingMode, destination: String) -> String? {
         switch mode {
         case .localOnly:

@@ -224,9 +224,11 @@ struct SettingsDiagnosticsScreen: View {
 ///   into "Transcripts are off" for as long as the re-run lasted.
 /// - Provider keys — the key screen. NOT reset; they are in the Keychain and the screen shows
 ///   them masked, so a re-run can skip past it exactly as a first run can.
-/// - `captureIntent` — set by the explicit "Connect Watch" tap in step 1, restored by
-///   `LiveWatchPairingSource.cancelPairing()` if the person backs out. NOT reset: capture is
-///   opt-in, and switching it off to re-show a screen would stop a live recording.
+/// - `captureIntent` — set by the explicit "Connect Watch" tap in step 1, and provisional until
+///   the flow completes: `AppSettings.onboardingCaptureRestore` puts it back if the person backs
+///   out on step 2 OR walks away later (the marker is durable, so an abandoned run is undone at
+///   the next launch). NOT reset by this button: capture is opt-in, and switching it off to
+///   re-show a screen would stop a live recording.
 ///
 /// **What it deliberately does NOT do**, i.e. everything `SettingsWatchScreen.forgetWatch()`
 /// does: drop the binding (`WatchStatusSource.forget()` → `ReceiverService

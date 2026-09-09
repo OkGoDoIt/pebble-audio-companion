@@ -592,7 +592,8 @@ final class RuntimeFixture: @unchecked Sendable {
             enrichment: enrichment,
             index: index,
             donator: donator,
-            lossEvaluator: evaluator
+            lossEvaluator: evaluator,
+            boundaryOverrides: BoundaryOverrideStore(db: database)
         )
         deferredDeletes = DeferredDeleteBuffer(cascade: cascade, clock: clock)
         let snapshotService = CoverageSnapshotService(

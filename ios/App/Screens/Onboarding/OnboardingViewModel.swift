@@ -97,9 +97,12 @@ final class MockWatchPairingSource: WatchPairingSource, @unchecked Sendable {
 /// spellings of "local" and "remote", and neither of the "first" ones is a promise a card may
 /// make: `TranscriptionModeRouter.localFirst` uploads the whole segment on any local failure
 /// except cancellation and no-speech (the on-device language model simply not being installed is
-/// one of those failures), and in AI `localFirst` every follow-up request reaches the remote
-/// provider, because `OnDeviceAiProvider` refuses structured output unconditionally. So a choice
-/// that says "on this phone" maps to `localOnly` — the only mode that cannot upload.
+/// one of those failures), and in AI `localFirst` a structured request the on-device model cannot
+/// take reaches the remote provider. (`OnDeviceAiProvider` no longer refuses structured output
+/// outright — it runs the shapes it has, and refuses only when the model in front of it does not
+/// support structured generation or nothing on-device knows that shape — but "sometimes local" is
+/// still not "local".) So a choice that says "on this phone" maps to `localOnly` — the only mode
+/// that cannot upload.
 enum ProcessingPlace: String, CaseIterable, Identifiable {
     case onPhone, inCloud
 
@@ -517,7 +520,13 @@ final class OnboardingViewModel {
             ? Copy.OnboardingProcessing.detailTitle : Copy.OnboardingProcessing.backToProcessing
     }
 
+    /// The flow completed. Capture stays exactly where step 1 put it — Connect Watch switching
+    /// capture on is intended — so the provisional-capture marker is dropped WITHOUT restoring
+    /// anything. Everything else about that marker is in `AppSettings.onboardingCaptureRestore`;
+    /// this line is the "and it finished" half of it, and it must run before the gate closes,
+    /// because a marker left behind would be undone by the next launch.
     func finish(settings: AppSettings) {
+        settings.onboardingCaptureAttemptCompleted()
         settings.onboardingComplete = true
     }
 

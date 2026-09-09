@@ -79,7 +79,18 @@ import Transcription
         #expect(fixture.uploads.enqueued.count == 1, "the gate is re-read on every hand-off")
     }
 
-    @Test func segmentsWithoutReadableAudioAreSkippedRatherThanUploadedEmpty() async throws {
+    /// The first half of this has never changed: nothing is uploaded when the audio cannot be
+    /// assembled, because an empty file is a paid-for request that produces a fabricated
+    /// transcript.
+    ///
+    /// The second half did. It used to assert the task stayed `Pending`, which is what "skipped"
+    /// meant — and Pending meant the very next background pass picked the same segment up, re-read
+    /// the spool, re-ran the decode and dropped it again. Forever, invisibly, on a phone that is
+    /// meant to be asleep. It now settles as a retryable `Failed` with a message the taxonomy
+    /// reads as `.audioUnreadable`: out of the background pass's Pending list (the loop stops),
+    /// still eligible for the foreground processor's ladder (a sidecar that was merely unreadable
+    /// before first unlock still recovers), and visible in Diagnostics either way.
+    @Test func segmentsWithoutReadableAudioAreFailedRatherThanUploadedEmpty() async throws {
         let fixture = try RuntimeFixture(
             settings: RuntimeSettingsSnapshot(
                 captureIntent: .active, transcriptionMode: .remoteOnly
@@ -92,7 +103,10 @@ import Transcription
         await fixture.runtime.setForeground(false)
 
         #expect(fixture.uploads.enqueued.isEmpty)
-        #expect(try fixture.queue.load(segmentId)?.state == .pending)
+        let task = try fixture.queue.load(segmentId)
+        #expect(task?.state == .failed)
+        #expect(task?.retryable == true)
+        #expect(TranscriptionFailureKind.classify(task?.lastError) == .audioUnreadable)
     }
 
     // MARK: - Hand-off, completion and observability

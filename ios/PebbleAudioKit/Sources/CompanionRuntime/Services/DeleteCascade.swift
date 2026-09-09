@@ -22,6 +22,10 @@ public actor DeleteCascade {
     private let index: (any TranscriptIndexing)?
     private let donator: SpotlightDonator?
     private let lossEvaluator: LossEventEvaluator?
+    /// The user's manual split/join decisions, keyed by the segment that follows the join. Optional
+    /// so every existing construction keeps compiling; the app's composition root passes the real
+    /// one. See `forgetBoundaryOverride`.
+    private let boundaryOverrides: BoundaryOverrideStore?
     private let log: RuntimeLog
 
     public init(
@@ -36,6 +40,7 @@ public actor DeleteCascade {
         index: (any TranscriptIndexing)? = nil,
         donator: SpotlightDonator? = nil,
         lossEvaluator: LossEventEvaluator? = nil,
+        boundaryOverrides: BoundaryOverrideStore? = nil,
         log: RuntimeLog = .silent
     ) {
         self.store = store
@@ -49,6 +54,7 @@ public actor DeleteCascade {
         self.index = index
         self.donator = donator
         self.lossEvaluator = lossEvaluator
+        self.boundaryOverrides = boundaryOverrides
         self.log = log
     }
 
@@ -71,6 +77,7 @@ public actor DeleteCascade {
             log.failure("transcription delete", error)
         }
         await lossEvaluator?.forget(segmentId: segmentId)
+        await forgetBoundaryOverride(segmentId)
 
         // AI outputs whose source set was JUST this segment. An output that also cites surviving
         // segments stays: its remaining citations are still true.
@@ -138,6 +145,21 @@ public actor DeleteCascade {
         }
         await removeFromIndex(id: conversationId, kind: .conversation)
         return deleted
+    }
+
+    /// A manual "these are one conversation" / "these are two" decision is keyed by the segment
+    /// that FOLLOWS the join. Delete that segment and the row is about a join that no longer
+    /// exists, so it never applies again and nothing ever cleans it up — `forget(segmentIds:)`
+    /// was written for exactly this call and had no caller.
+    ///
+    /// Harmless today, because segment ids are not reused. It is still a leak of a decision the
+    /// person made about a recording they have since deleted, in the one table this cascade
+    /// exists to keep honest.
+    private func forgetBoundaryOverride(_ segmentId: String) async {
+        guard let boundaryOverrides else { return }
+        do { try await boundaryOverrides.forget(segmentIds: [segmentId]) } catch {
+            log.failure("boundary override cascade", error)
+        }
     }
 
     private func removeFromIndex(id: String, kind: IndexKind) async {

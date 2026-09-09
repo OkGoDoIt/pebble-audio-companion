@@ -29,6 +29,9 @@ struct RedoOnboardingTests {
     /// from the code under test cannot notice anything.
     private static let settingsKeys = [
         "capture_intent",
+        // Present only while an onboarding run has capture switched on provisionally; a re-run
+        // must not leave one behind, and reopening the gate must not write one.
+        "onboarding_capture_restore",
         "capture_pause_resume_at_ms",
         "capture_pause_remind_at_ms",
         "transcription_mode",

@@ -275,7 +275,6 @@ final class LiveTodayDataSource {
             (try? await composition.people.assignments(forConversation: live.id)) ?? []
         var items: [TranscriptItem] = []
         var zone: TimeZone?
-        var openMeta: SegmentMeta?
         var memberIds: Set<String> = []
 
         // One off-main pass for the members' sidecars and durable transcripts. This refresh
@@ -293,7 +292,6 @@ final class LiveTodayDataSource {
             guard let meta = metas[member.segmentId] else { continue }
             if zone == nil { zone = TranscriptItems.timeZone(meta) }
             let isOpen = member.segmentId == openSegmentId
-            if isOpen { openMeta = meta }
             let durable = durables[member.segmentId]
             memberIds.insert(member.segmentId)
             // A finished transcript covers its whole segment, so every bar of it is transcribed.
