@@ -35,9 +35,7 @@ struct ConversationScreen: View {
     /// Whether the transcript is still keeping up with the audio. Starts armed, switches off
     /// the moment the reader scrolls, and comes back on a tap or on pressing play.
     @State private var following = true
-    /// Whether to offer "jump to the end" — see `JumpToEndPolicy`, which holds the rule. Fed
-    /// from the SAME scroll-phase handler that drives `following`, so there is one answer in
-    /// this screen to "did the reader move the view themselves", not two that can disagree.
+    /// Whether to offer "jump to the end" — see `JumpToEndPolicy`, which holds the rule.
     @State private var jumpToEnd = JumpToEndPolicy()
     /// The two halves of "does this conversation run on below the fold". Measured, because it
     /// has to be known before anybody has scrolled.
@@ -186,16 +184,14 @@ struct ConversationScreen: View {
                 .background { heightProbe { contentHeight = $0 } }
             }
             .background { heightProbe { viewportHeight = $0 } }
-            // The reader's hand always wins, and it wins for both offers at once. Once they
-            // scroll, playback stops moving the view under them and offers a way back instead
-            // (the Podcasts / Music-lyrics contract), and "jump to the end" stands down because
-            // where they are is now where they chose to be. `.interacting` is the drag itself —
+            // The reader's hand wins over PLAYBACK: once they scroll, the transcript stops
+            // being moved under them and offers a way back instead (the Podcasts /
+            // Music-lyrics contract). It does not affect the ⌄ button, which asks only where
+            // the view is, never how it got there. `.interacting` is the drag itself —
             // `.animating` is our own scrollTo, and keying on that would switch following off
             // the moment it turned on.
             .onScrollPhaseChange { _, phase, _ in
-                guard phase == .interacting else { return }
-                jumpToEnd.readerTookOver()
-                guard following else { return }
+                guard phase == .interacting, following else { return }
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = false }
             }
             // Are we at the end? The same arithmetic the Live screen uses: measured against the

@@ -41,10 +41,9 @@ struct LiveConversationScreen: View {
     /// five minutes ago) could be read at all while recording.
     @State private var followsTail = true
     /// Whether to offer the ⌄ ride back to the newest words — the same rule and the same control
-    /// as the finished Conversation, with `rearmsWhenContentGrows` because this one is still
-    /// being said. `followsTail` and this share their at-the-end reading, so the screen cannot
-    /// hold two answers to "is the reader at the tail".
-    @State private var jumpToEnd = JumpToEndPolicy(rearmsWhenContentGrows: true)
+    /// as the finished Conversation. `followsTail` and this share their at-the-end reading, so
+    /// the screen cannot hold two answers to "is the reader at the tail".
+    @State private var jumpToEnd = JumpToEndPolicy()
     /// The two halves of "does this run on below the fold". Measured, because it has to be known
     /// before anybody has scrolled — opening a live conversation that is ALREADY long is the
     /// case with no auto-follow behind it (`follow` runs on change, and nothing has changed yet).
@@ -109,19 +108,7 @@ struct LiveConversationScreen: View {
                 followsTail = atBottom
                 jumpToEnd.atEndChanged(atBottom)
             }
-            // The reader's hand wins immediately — before the geometry catches up — so the
-            // button cannot linger through the gesture that is dismissing it. `.interacting` is
-            // the drag itself; `.animating` is our own `follow`, and keying on that would arm
-            // the offer every time we scrolled on the reader's behalf.
-            .onScrollPhaseChange { _, phase, _ in
-                guard phase == .interacting else { return }
-                jumpToEnd.readerTookOver()
-            }
             .onChange(of: newestRowKey) { _, _ in follow(proxy) }
-            // A genuinely new turn, not the tail being revised: the reader has been left behind
-            // rather than choosing to be, so offer the way back. `follow` has already taken
-            // anyone still at the end, so this only ever reaches someone who is not.
-            .onChange(of: newestTurnId) { _, _ in jumpToEnd.contentGrew() }
             .onChange(of: contentHeight) { _, _ in updateBelowFold() }
             .onChange(of: viewportHeight) { _, _ in updateBelowFold() }
             // An inset, not an overlay: the scroll view's safe area already excludes the
@@ -271,11 +258,6 @@ struct LiveConversationScreen: View {
             }
         }
     }
-
-    /// The identity of the newest row, which changes only when one is APPENDED — unlike
-    /// `newestRowKey`, which also changes on every revision of the in-progress line, several
-    /// times a second.
-    private var newestTurnId: String { viewModel.snapshot.items.last?.id ?? "" }
 
     /// Reports a view's height once when it appears and again whenever it changes — and the
     /// "once when it appears" is the point. `onScrollGeometryChange` runs its action only when

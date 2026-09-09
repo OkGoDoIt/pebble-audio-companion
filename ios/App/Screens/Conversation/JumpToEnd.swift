@@ -1,68 +1,37 @@
 import SwiftUI
 
 /// Whether to offer the ride back to the end of a long conversation — the small ⌄ button in the
-/// bottom corner, and the three-part rule it was asked for:
+/// bottom corner.
 ///
-///  * **on open**, if the conversation runs on below the fold → offer it;
-///  * **while the reader is at the end** and the conversation grows underneath them (a
-///    transcript landing, a still-recording conversation appending) → offer it;
-///  * **if the reader scrolled up themselves** → do not.
+/// The rule is the whole of it: **the conversation runs on below the fold, and you are not at
+/// the end of it.** Nothing about how you got there. An earlier version armed and disarmed the
+/// offer by tracking whether the reader had scrolled up themselves, on the theory that someone
+/// reading halfway up does not want to be offered a way out of it — but the button is a small
+/// quiet circle in a corner that costs nothing to ignore, and a control that reasons about your
+/// intent is a control that is sometimes wrong about it. Being simply, always there is better
+/// than being clever four times out of five.
 ///
-/// That last clause is the whole reason this is a type and not a comparison. "Not at the bottom"
-/// is the same fact in both of the last two cases, and it means opposite things: a reader who
-/// scrolled up is reading something and does not want the screen offering to take it away, while
-/// a reader whose conversation grew under them has been left behind without moving. So the offer
-/// is *armed* rather than derived — disarmed the moment the reader's finger moves the view,
-/// re-armed whenever they are back at the end. Coming back to the end is the only thing that
-/// re-arms it: a reader who scrolls up and stays there is not asked again, however much arrives
-/// below them.
-///
-/// **Where the live screen differs, and why it is a flag and not a second type.** On a finished
-/// conversation nothing arrives, so a reader who scrolled up is reading and is left alone —
-/// which is the rule as it was asked for. A live conversation is the same rule against a
-/// different world: it goes on being said while they read, so "your hand wins" has to end
-/// somewhere, and the honest place is the moment words they cannot see actually arrive. That is
-/// `rearmsWhenContentGrows`, and it is keyed on a new turn rather than on the tail being revised
-/// — the in-progress line changes several times a second, and re-arming on that would put the
-/// button back under the reader's thumb before they had finished the gesture that dismissed it.
-///
-/// `isPlaying` is the fourth input and it exists to keep one corner to one offer. While audio is
-/// playing that corner belongs to playback: either the transcript is following the playhead (in
-/// which case the end is not where the reader is going) or they have scrolled away from it and
-/// "Back to playing" is the offer. Two floating buttons in the same corner, pointing at two
-/// different places, is a worse screen than either of them alone.
+/// `isPlaying` is the one input that is not geometry, and it is not about intent either: it is
+/// about which control owns the corner. While audio plays that corner belongs to playback —
+/// either the transcript is following the playhead, in which case the end is not where the
+/// reader is going, or they have scrolled away from it and "Back to playing" is the offer. Two
+/// floating buttons in one corner pointing at two different places is a worse screen than
+/// either alone.
 struct JumpToEndPolicy: Equatable {
-    /// The conversation is taller than the screen. Nothing to offer when the whole thing fits:
-    /// measured from the content and the viewport rather than from the scroll offset, because
-    /// this is the one input that has to be right *before* anybody scrolls.
+    /// The conversation is taller than the screen. Nothing to offer when the whole thing fits —
+    /// and measured from the content and the viewport rather than from the scroll offset,
+    /// because it is also what keeps the button off a screen that has not been measured yet.
     private(set) var contentBelowFold = false
 
     /// The end of the conversation is on screen (near enough — the tail can be growing while a
     /// gesture finishes, so "within a flick" counts).
     private(set) var atEnd = false
 
-    /// The reader has moved the view themselves and has not returned to the end since.
-    private(set) var readerScrolled = false
-
     /// Audio is playing, so the bottom corner belongs to playback.
     private(set) var isPlaying = false
 
-    /// Whether a new turn landing below the reader overrides their scroll. False on a finished
-    /// conversation (nothing is arriving; they scrolled up to read), true on a live one.
-    let rearmsWhenContentGrows: Bool
-
-    init(rearmsWhenContentGrows: Bool = false) {
-        self.rearmsWhenContentGrows = rearmsWhenContentGrows
-    }
-
-    /// Nothing is offered until the screen has actually been measured. Every default here is
-    /// the quiet one — an unmeasured conversation shows no button — which is only safe because
-    /// the measurement is guaranteed to arrive: the screen feeds `contentBelowFoldChanged` from
-    /// an `onChange(initial: true)`, which always fires once, rather than from
-    /// `onScrollGeometryChange`, whose action runs only when its value *changes* and so would
-    /// say nothing at all about a conversation that was already long when it opened.
     var shows: Bool {
-        contentBelowFold && !atEnd && !readerScrolled && !isPlaying
+        contentBelowFold && !atEnd && !isPlaying
     }
 
     // MARK: - Events
@@ -72,40 +41,21 @@ struct JumpToEndPolicy: Equatable {
         contentBelowFold = belowFold
     }
 
-    /// The end of the conversation came into view, or left it. Arriving at the end re-arms the
-    /// offer — being there is what earns the ride back when the next turn lands.
+    /// The end of the conversation came into view, or left it.
     mutating func atEndChanged(_ nowAtEnd: Bool) {
         atEnd = nowAtEnd
-        if nowAtEnd { readerScrolled = false }
-    }
-
-    /// The reader dragged the view. Their hand wins: no offer until they are back at the end.
-    mutating func readerTookOver() {
-        readerScrolled = true
     }
 
     mutating func playbackChanged(_ playing: Bool) {
         isPlaying = playing
     }
 
-    /// A new turn was appended. Only the live screen sends this, and only a genuinely new turn:
-    /// a reader who has scrolled up while the conversation carried on without them has not
-    /// chosen to be behind, they have simply been left there, so the way back is offered again.
-    /// Sent from a screen that does not re-arm, or while the reader is still at the end, it
-    /// changes nothing.
-    mutating func contentGrew() {
-        guard rearmsWhenContentGrows else { return }
-        readerScrolled = false
-    }
-
     /// The offer was accepted. Taken as arriving straight away so the button does not sit there
     /// through its own scroll animation; the next geometry reading confirms it either way.
     mutating func jumped() {
         atEnd = true
-        readerScrolled = false
     }
 }
-
 
 // MARK: - The control
 
