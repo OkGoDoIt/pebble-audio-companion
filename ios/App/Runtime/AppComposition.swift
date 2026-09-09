@@ -1107,7 +1107,8 @@ final class AppComposition {
                 AppRuntimeLog.shared.flightRecorder?.recordHeartbeat(
                     "link=\(receiver.state.value) intent=\(receiver.captureIntent) "
                         + "watch=\(watch) residency=\(residency.state.value.rawValue) "
-                        + "audio=\(audioAge) \(cost) phone=\(phone) watchbatt=\(watchBattery)"
+                        + "audio=\(audioAge) app=\(backgrounded ? "bg" : "fg") \(cost) "
+                        + "phone=\(phone) watchbatt=\(watchBattery)"
                 )
             }
         }
