@@ -12,8 +12,12 @@ public struct GroupedConversation: Equatable, Sendable {
     /// Deterministic: `conv-<firstMemberSegmentId>` (stabilized against a previous grouping
     /// when retention removes the first member — see `group(segments:...)`).
     public var id: String
+    /// Wall clock of the first thing said, where settled evidence knows it, and the first
+    /// member's placement otherwise (`ConversationBoundaryDetector.displayExtent`).
     public var startMs: Int64
-    /// Wall-clock end of the last member so far. For a live conversation this is the
+    /// Wall clock of the last thing said — NOT the container edge, which on this hardware
+    /// over-reports by 41% because the watch's sample counter free-runs through a dropped BLE
+    /// link. For a live conversation, and for anything not yet settled, this is still the
     /// last-flushed extent end; `isLive` (not a nil end) marks liveness so queries and
     /// coverage never have to special-case NULL.
     public var endMs: Int64
@@ -49,24 +53,41 @@ public enum ConversationGrouper {
 
     // --- segment wall-clock endpoints ---------------------------------------------------------
 
-    /// `startTimeMs` anchors sample index 0 — but only when the watch's sample counter really
-    /// started at 0 for this stream. It does not always: the counter free-runs on the watch
-    /// across reattach, so a reattached stream's first segment can carry a first index worth
-    /// hours. Anchoring that at `startTimeMs` places the segment HOURS INTO THE FUTURE (in
-    /// Roger's library, 197 of 435 segments, by up to 14.8 h), which inflates durations, files
-    /// conversations under the wrong day, and makes segments falsely abut the next one.
+    /// Where this segment starts on the wall clock.
     ///
-    /// The phone's own `receivedAtMs` is the ceiling: audio cannot have been recorded after the
-    /// phone received it. A spooled backfill legitimately anchors EARLIER, and that still works.
+    /// **The diagnosis this comment used to carry was wrong, and it is worth recording why.** It
+    /// blamed the watch: "the counter free-runs across reattach", and every downstream fix was
+    /// built on that. Measured against 774 real sidecars, the firmware's time base is *accurate* —
+    /// it captures `start_time_ms` once at stream birth, resends it verbatim on RESUME, and
+    /// advances the counter through pauses so it stays a wall clock. The 598 segments that kept
+    /// the firmware's value land within **±32 s** of their own `receivedAtMs`, across streams up
+    /// to 24 h long.
+    ///
+    /// The corruption was the app's: `SegmentStore` overwrote `startTimeMs` with `receivedAtMs`
+    /// on every RESUME and every 15-minute rotation while `firstSampleIndex` kept counting from
+    /// stream birth — adding the whole elapsed stream twice. 100% of the future-shifted segments
+    /// were on that branch (91 of 169, up to +24.36 h); zero on the birth-clock branch.
+    ///
+    /// `SegmentMeta.startWallMs` now repairs that shape on decode, so this delegates to it and
+    /// the `receivedAtMs` clamp is a safety net rather than the load-bearing fix it had become.
     public static func segmentStartMs(_ meta: SegmentMeta) -> Int64 {
-        guard let first = meta.firstSampleIndex else { return meta.receivedAtMs }
-        return min(wallMs(ofSample: first, in: meta), meta.receivedAtMs)
+        meta.startWallMs
     }
 
     /// End = start + the wall time the sample extents span (quiet included — the watch keeps
     /// counting through VAD-suppressed silence, so a mostly-quiet 15 min segment really is
     /// 15 min long). Bounded by `closedAtMs`: the segment cannot still be recording after the
     /// phone closed it, which is what kept a watch-side index jump from claiming 15 h.
+    ///
+    /// This is deliberately NOT capped at `segmentAudioMs`, even though the two differ by 82 h
+    /// across Roger's library. This value is a PLACEMENT: it says where the member's audio sits
+    /// in wall time, and everything downstream — the chain window, gap spans, the transcript
+    /// screen's clock — depends on that. Capping it was measured on the real library and made
+    /// things worse: interior loss then reads as a gap BETWEEN segments, the 5-minute chain
+    /// window fires on it, and the grouping picks up 7–12 extra false splits (against the
+    /// hand-labelled non-boundaries) to gain one correct boundary. The phantom duration is a
+    /// DISPLAY bug and is fixed where it belongs, in
+    /// `ConversationBoundaryDetector.displayExtent`.
     public static func segmentEndMs(_ meta: SegmentMeta) -> Int64 {
         let start = segmentStartMs(meta)
         guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
@@ -76,6 +97,17 @@ public enum ConversationGrouper {
         }
         let spanMs = Int64((last - first) * 1000 / UInt64(meta.sampleRateHz > 0 ? meta.sampleRateHz : 16_000))
         return max(min(start + spanMs, meta.closedAtMs ?? Int64.max), start)
+    }
+
+    /// The audio this member actually holds: `frameCount × frameDurationMs`. NOT the same as
+    /// its wall span, and the difference is the whole phantom-duration bug — across the library
+    /// the two differ by 82 h 15 m (41.4%), because the watch's sample counter keeps running
+    /// while the BLE link is down. Used for the DISPLAYED extent of a conversation nobody spoke
+    /// in (see `ConversationBoundaryDetector.displayExtent`); never for placement.
+    public static func segmentAudioMs(_ meta: SegmentMeta) -> Int64 {
+        let frames = max(meta.frameCount, 0)
+        let perFrame = Int64(meta.frameDurationMs > 0 ? meta.frameDurationMs : 20)
+        return frames * perFrame
     }
 
     static func wallMs(ofSample sampleIndex: UInt64, in meta: SegmentMeta) -> Int64 {
@@ -188,11 +220,17 @@ public enum ConversationGrouper {
 
         func emit(_ slice: ArraySlice<SegmentMeta>, reason: ConversationStartReason?) {
             guard let first = slice.first, let last = slice.last else { return }
+            // First word to last word, not container edge to container edge — see
+            // `ConversationBoundaryDetector.displayExtent`. Falls back to the container edges
+            // whenever the evidence cannot yet justify anything shorter, so a caller with no
+            // transcripts gets exactly the v1 extents.
+            let extent = ConversationBoundaryDetector.displayExtent(
+                members: Array(slice), evidence: evidence)
             result.append(
                 GroupedConversation(
                     id: "conv-\(first.segmentId)",
-                    startMs: segmentStartMs(first),
-                    endMs: slice.map(segmentEndMs).max() ?? segmentEndMs(last),
+                    startMs: extent.startMs,
+                    endMs: extent.endMs,
                     timeZoneID: first.recordedTimeZone ?? fallbackTimeZoneID,
                     isLive: openSegmentId != nil && last.segmentId == openSegmentId,
                     memberSegmentIds: slice.map(\.segmentId),

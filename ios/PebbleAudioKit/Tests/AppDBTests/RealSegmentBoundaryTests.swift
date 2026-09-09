@@ -16,11 +16,14 @@ import Testing
 //  * The 5-minute chain window cannot see any of that. Of the 555 joins INSIDE those 210
 //    conversations, 370 abut to the second and NOT ONE exceeds 5 minutes: rotations hand
 //    straight over, and the watch counts through quiet, so the silence is inside the segments.
-//  * With this layer at its default 25-minute bar: 237 conversations, 176 with speech, p90
-//    2 h 15 m, longest 9 h 06 m, >4 h down from 16 to 9. 27 new splits over three months.
-//  * Reading all 29 stretches at or above 25 minutes by hand: every one is a real boundary.
-//    In the 8–25 minute band (68 candidates, ~23 a month) it is about half and half, which is
-//    exactly why that band waits for the semantic reviewer instead of splitting.
+//  * With this layer at its 15-minute bar plus the flanking-flow guard and the honest extent:
+//    263 conversations, 163 with speech, p90 2 h 03 m, longest 7 h 38 m, >4 h down from 16 to 4.
+//    (At the 25-minute bar it was 237 / 151 / p90 2 h 54 m / longest 16 h 29 m / >4 h 9.)
+//  * Scored against 95 hand-labelled `certain` boundaries at ±3 minutes it finds 67, up from 62,
+//    and lands on 34 of the 149 hand-labelled traps, up from 30 — see
+//    `RealSegmentSplitDistributionTests` for the full table and both failure classes.
+//  * The 8–15 minute band stays a candidate band and waits for the semantic reviewer: in the
+//    labels, silences of 5–10 minutes run about 7:1 AGAINST being a boundary.
 //
 // This suite pins the invariants rather than the exact counts, so a library that grows does not
 // fail it — but the direction (fewer monsters, no split without settled evidence) is enforced.
@@ -48,6 +51,10 @@ private struct BackupTranscript: Decodable {
     struct Turn: Decodable {
         var startMs: Int64
         var endMs: Int64
+        /// Carried so the evidence here matches what the app builds: the flanking-flow guard
+        /// needs word counts and is inert without them, so a fixture that omitted the text
+        /// would be exercising a configuration nothing ships.
+        var text: String?
     }
     var segments: [Turn]?
 }
@@ -68,7 +75,13 @@ private func loadEvidence(_ metas: [SegmentMeta]) -> [String: SegmentSpeechEvide
             .appendingPathComponent("\(meta.segmentId).transcript.json")
         let speech: [SpeechSpan]? = (try? Data(contentsOf: url))
             .flatMap { try? decoder.decode(BackupTranscript.self, from: $0) }
-            .map { ($0.segments ?? []).map { SpeechSpan(startMs: $0.startMs, endMs: $0.endMs) } }
+            .map {
+                ($0.segments ?? []).map { turn in
+                    SpeechSpan(
+                        startMs: turn.startMs, endMs: turn.endMs,
+                        wordCount: (turn.text ?? "").split(whereSeparator: \.isWhitespace).count)
+                }
+            }
         out[meta.segmentId] = SegmentSpeechEvidence.of(meta, transcriptSpeech: speech)
     }
     return out
@@ -87,10 +100,16 @@ private func loadEvidence(_ metas: [SegmentMeta]) -> [String: SegmentSpeechEvide
             segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: evidence)
 
-        // It splits, and it splits conservatively: a rule that doubled the conversation count
+        // It splits, and it splits conservatively: a rule that DOUBLED the conversation count
         // would be fragmenting real conversations, not finding boundaries.
+        //
+        // The bound was 3/2 while `quietSplitMs` was 25 minutes. At 15 it is 1.25× on the full
+        // 2026-09-08 library (210 → 263) and 1.57× on this smaller, partial snapshot, so the
+        // ratio is too coarse to be the real gate — that is now
+        // `RealSegmentSplitDistributionTests`, which scores the same grouping against 149
+        // hand-labelled NON-boundaries and holds the false-split rate at 34/149.
         #expect(after.count > before.count)
-        #expect(after.count < before.count * 3 / 2)
+        #expect(after.count < before.count * 2)
 
         // Nothing is lost or duplicated: every segment still belongs to exactly one
         // conversation, in the same order.

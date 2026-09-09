@@ -66,7 +66,15 @@ public actor EnrichmentService {
         self.store = store
         self.database = database
         self.pauseJournal = pauseJournal
-        self.transcriptOf = transcriptOf
+        // ONE seam cleans every model input this service drives — titles, summaries and tags
+        // (`EnrichmentWorker`), follow-ups (`FollowUpWorker`), boundary review
+        // (`BoundaryReviewer`), and the transcript donated to search below — because all four
+        // read their text through this closure. Cleaning at each call site instead would be
+        // four edits and one of them would eventually be forgotten.
+        //
+        // It is a VIEW, not a rewrite: `withLoopedArtefactsCollapsed()` returns `self` when
+        // there is nothing to collapse, and never touches the file the transcript screen reads.
+        self.transcriptOf = { transcriptOf($0)?.withLoopedArtefactsCollapsed() }
         self.liveTextOf = liveTextOf
         self.donator = donator
         self.boundaryReviewer = boundaryReviewer
@@ -301,10 +309,15 @@ public actor EnrichmentService {
             // Only a `.complete` member has timings worth reading: `.noSpeech` settles with no
             // speech at all, and every other state is unsettled whatever the file says, so
             // reading it would be work done to reach the same answer.
+            // The word count rides along because the boundary layer's flanking-flow guard needs
+            // to know how MUCH was said either side of a silence, not merely that something
+            // was: a break bracketed by full conversation is a pause inside one occasion.
             let timings: [SpeechSpan]? =
                 meta.transcriptionState == .complete
                 ? speechTimingsOf(meta.segmentId)?.map {
-                    SpeechSpan(startMs: $0.startMs, endMs: $0.endMs)
+                    SpeechSpan(
+                        startMs: $0.startMs, endMs: $0.endMs,
+                        wordCount: $0.text.split(whereSeparator: \.isWhitespace).count)
                 }
                 : nil
             let evidence = SegmentSpeechEvidence.of(meta, transcriptSpeech: timings)

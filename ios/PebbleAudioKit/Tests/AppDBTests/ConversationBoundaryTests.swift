@@ -85,18 +85,23 @@ private func evidenceMap(_ items: [SegmentSpeechEvidence]) -> [String: SegmentSp
     }
 
     @Test func quietUnderTheHardThresholdOnlyProducesACandidate() {
-        // 20 minutes of nothing. Measured over Roger's library, stretches in the 8–25 minute
-        // band are a real boundary about half the time — so the default is to leave it alone
-        // and offer it to the reviewer.
-        let segments = rotations(3, minutesEach: 10)
+        // 12 minutes of nothing. The candidate band is 8–15 minutes: against the 149
+        // hand-labelled NON-boundaries, silences in this band are traps far more often than
+        // they are boundaries (the 5–10 minute band alone runs about 7:1 against splitting),
+        // so the default is to leave it alone and offer it to the reviewer.
+        //
+        // This case used 20 minutes and one conversation before 2026-09-08, when `quietSplitMs`
+        // came down from 25 minutes to 15; 20 minutes of silence is now a split, so the shape
+        // it is testing lives at 12.
+        let segments = rotations(3, minutesEach: 6)
         let evidence = evidenceMap([
-            settled("s0", [(0, 5)]), settled("s1", []), settled("s2", [(5, 10)]),
+            settled("s0", [(0, 3)]), settled("s1", []), settled("s2", [(3, 6)]),
         ])
         let result = group(segments, evidence: evidence)
         #expect(result.conversations.count == 1)
         #expect(result.candidates.count == 1)
         #expect(result.candidates[0].newStartSegmentId == "s1")
-        #expect(result.candidates[0].quietMs == minutesMs(20))
+        #expect(result.candidates[0].quietMs == minutesMs(12))
         #expect(result.candidates[0].lossFraction == 0)
 
         // The reviewer confirming that candidate is what splits it, and it is labelled as such.
@@ -179,9 +184,14 @@ private func evidenceMap(_ items: [SegmentSpeechEvidence]) -> [String: SegmentSp
         ])
         #expect(group(segments, evidence: before).conversations.count == 2)
 
+        // The backfill fills the silence outright. (It used to leave s3's first 18 minutes
+        // quiet, which was under the old 25-minute bar and therefore still one conversation;
+        // at 15 minutes that residue is itself a split, which tested the threshold rather than
+        // the regroup. The point here is that new evidence dissolves an old split, so the
+        // evidence has to actually be new.)
         let backfilled = evidenceMap([
             settled("s0", [(0, 18)]), settled("s1", [(0, 20)]), settled("s2", [(0, 20)]),
-            settled("s3", [(18, 20)]),
+            settled("s3", [(0, 20)]),
         ])
         #expect(group(segments, evidence: backfilled).conversations.count == 1)
     }
@@ -430,9 +440,12 @@ private func evidenceMap(_ items: [SegmentSpeechEvidence]) -> [String: SegmentSp
     @Test func aCachedSemanticVerdictIsAppliedByTheRebuildAndExpiresWhenTheQuietMoves() async throws {
         let db = try AppDatabase.inMemory()
         let reviews = BoundaryReviewStore(db: db)
-        let segments = rotations(3, minutesEach: 10)
+        // 12 minutes of quiet — inside the 8–15 minute candidate band. (This used 20 minutes
+        // until `quietSplitMs` came down from 25 to 15 on 2026-09-08; 20 is now an automatic
+        // split and there is no candidate for the reviewer to weigh in on.)
+        let segments = rotations(3, minutesEach: 6)
         let evidence = evidenceMap([
-            settled("s0", [(0, 5)]), settled("s1", []), settled("s2", [(5, 10)]),
+            settled("s0", [(0, 3)]), settled("s1", []), settled("s2", [(3, 6)]),
         ])
         let candidates = try await ConversationGrouper.rebuildDetailed(
             segments: segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
@@ -442,7 +455,7 @@ private func evidenceMap(_ items: [SegmentSpeechEvidence]) -> [String: SegmentSp
 
         try await reviews.save([
             BoundaryReview(
-                segmentId: "s1", isBoundary: true, quietMs: minutesMs(20),
+                segmentId: "s1", isBoundary: true, quietMs: minutesMs(12),
                 reason: "different people", createdAtMs: t0)
         ])
         let split = try await ConversationGrouper.rebuild(

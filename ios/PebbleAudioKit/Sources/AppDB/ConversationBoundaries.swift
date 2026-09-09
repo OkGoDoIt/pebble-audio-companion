@@ -27,8 +27,16 @@ import WireProtocol
 //    an arbitrary 15-minute rotation boundary rather than anything the person experienced.
 //
 // What is left, and what this file implements: a conversation ends where a long stretch of the
-// record contains no speech. Two thresholds, because the evidence says the middle is genuinely
-// ambiguous (see `BoundaryPolicy`).
+// record contains no speech AND the wearer was not still in full flow either side of it. Two
+// thresholds, because the evidence says the middle is genuinely ambiguous, plus one guard —
+// see `BoundaryPolicy`, which also records what a 150-boundary / 149-trap hand-labelled
+// yardstick said about the rules that were tried and dropped (rolling word-rate lulls,
+// artefact stripping, cutting on recorded link gaps).
+//
+// This file also owns the DISPLAYED extent of a conversation
+// (`ConversationBoundaryDetector.displayExtent`), because the answer to "how long was it" comes
+// from the same evidence as "where did it end": first word to last word, never a container
+// edge. 41.4% of the library's displayed time was phantom before that.
 
 /// One run of speech inside a member segment, in the transcript's own clock (milliseconds from
 /// the start of that segment's stored audio) — exactly what `SegmentTranscript.segments`
@@ -36,10 +44,16 @@ import WireProtocol
 public struct SpeechSpan: Equatable, Sendable {
     public var startMs: Int64
     public var endMs: Int64
+    /// Words in this run. Defaulted to 0 so every existing caller keeps compiling, and 0 is the
+    /// safe value: the only rule that reads it (the flanking-flow guard in `BoundaryPolicy`)
+    /// then measures nothing and never blocks a split, which is exactly the behaviour before
+    /// word counts existed.
+    public var wordCount: Int
 
-    public init(startMs: Int64, endMs: Int64) {
+    public init(startMs: Int64, endMs: Int64, wordCount: Int = 0) {
         self.startMs = startMs
         self.endMs = max(endMs, startMs)
+        self.wordCount = wordCount
     }
 }
 
@@ -135,17 +149,41 @@ public enum BoundaryDecision: String, Sendable, Codable, CaseIterable {
 /// Tunables. Conservative by default; every number below is justified by the same measured
 /// library, and the two thresholds exist because the middle band is genuinely ambiguous.
 ///
-/// Reading 93 boundary candidates by hand:
-///  - **≥ 25 min of no speech**: every single one of the 29 stretches at or above 25 minutes is
-///    a real boundary — a different room, different people, a flight, a night's sleep. This is
-///    `quietSplitMs`, and it needs no AI.
-///  - **8–25 min**: roughly half. "Right. / And the next part is…" six minutes later is one
-///    conversation; "…time to put the kettle on" → "Okay, let me check the weather report"
-///    six minutes later is two. Nothing structural separates them, so this band is only ever a
-///    CANDIDATE: with the semantic reviewer off it does not split at all.
-///  - **< 8 min**: dominated by ordinary pauses inside a conversation. Never a boundary.
+/// The numbers moved once, on 2026-09-08, against a **hand-labelled yardstick** rather than the
+/// earlier hand-read sample: 150 boundaries (95 `certain`, 55 `unsure`) and 149 deliberate
+/// NON-boundaries — the traps — read from 93.5% of the library's 74,125 utterances. Scoring is
+/// a ±3-minute match on `certain`, with a predicted split landing on a trap counted as a false
+/// split, because a splitter that fragments real conversations is worse than the status quo.
+///
+///  - **`quietSplitMs` 25 min → 15 min.** At 25 the rule found 62 of 95 certain boundaries and
+///    hit 30 of 149 traps; at 15 it finds 67 and hits 34. Five real boundaries for five traps
+///    is not obviously a win on count — it is a win on shape, because all five of the new
+///    boundaries are "different people" / "place change" (a meeting ending, a new place, a
+///    different room) while four of the five new traps are one long SOLO dictation session cut
+///    into two solo dictation sessions, the class the labeller flagged as the softest call in
+///    the file. It is also what breaks the 9-hour "conversation": 2026-08-15 becomes 1h21m of
+///    solo dictation plus the genuine 7h38m long conversation, which is the labels' own answer.
+///  - **8–15 min** stays a CANDIDATE band: with the semantic reviewer off it does not split.
+///  - **< 8 min**: dominated by ordinary pauses. The label file is emphatic here — the 5–10
+///    minute band runs about 7:1 AGAINST splitting (49 traps to 7 certain boundaries).
+///
+/// What was measured and **rejected**, so it is not tried again:
+///  - **A rolling words-per-minute "lull" rule** (the obvious answer to sporadic hallucinated
+///    one-liners keeping a stretch alive). At 10 wpm over 12 min it splits 8 certain boundaries
+///    and 12 traps — worse than chance. Its own showcase case, 2026-08-20, carries ZERO certain
+///    boundaries and SEVEN traps in the labels: the "sparse aftermath" it wants to cut off is
+///    two speakers in one place with background noise. Tightened to 5 wpm over 15 min it stops losing, but
+///    it is then a strictly worse restatement of a lower `quietSplitMs`, so it does not earn its
+///    complexity.
+///  - **Stripping looped ASR artefacts before measuring.** 7.9% of turns and 4.8% of words in
+///    the library are repetition-loop artefacts, but removing them moves ZERO cuts at every
+///    threshold swept: the loops sit inside stretches that are already speech. Worth doing for
+///    honest word counts and titles; worthless for grouping.
+///  - **Cutting on a recorded link gap ≥ 10 min.** Two extra cuts library-wide, no boundary
+///    found, no trap hit — already covered by `.interrupted` on a loss-dominated quiet stretch.
 public struct BoundaryPolicy: Equatable, Sendable {
-    /// A settled no-speech stretch at least this long always ends the conversation.
+    /// A settled no-speech stretch at least this long ends the conversation — unless the
+    /// wearer was still in full flow on both sides of it (`flankFlowWordsPerMinute`).
     public var quietSplitMs: Int64
     /// A settled no-speech stretch at least this long is offered to the semantic reviewer.
     /// Below `quietSplitMs` nothing happens without a verdict.
@@ -158,17 +196,37 @@ public struct BoundaryPolicy: Equatable, Sendable {
     /// and orphan whatever the user had tagged on the second half. Twice as much dead air
     /// before we act on it.
     public var lossThresholdMultiplier: Double
+    /// Refuse to cut an INTERIOR silence when the wearer was talking at this rate or above on
+    /// BOTH sides of it. A break in the middle of a continuous occasion — coffee, a bathroom
+    /// trip, a delayed flight — is bracketed by full conversation; the end of an occasion is
+    /// not. Measured: this removes four traps and costs zero certain boundaries, and the four
+    /// include the two the label file calls out by name (2026-07-01, three hours waiting in a
+    /// waiting room with the same speaker either side of a 45-minute silence, and the longest
+    /// silence in the whole library, where the same solo dictation resumes verbatim).
+    ///
+    /// A blocked stretch is not discarded: it becomes a CANDIDATE, so the semantic reviewer can
+    /// still confirm it from what was actually said.
+    ///
+    /// Set to 0 to disable. It is also inert wherever `SpeechSpan.wordCount` is left at its
+    /// default, so a caller that supplies no word counts gets the unguarded rule.
+    public var flankFlowWordsPerMinute: Double
+    /// How much of the record either side of the silence the guard reads.
+    public var flankWindowMs: Int64
 
     public init(
-        quietSplitMs: Int64 = 25 * 60 * 1000,
+        quietSplitMs: Int64 = 15 * 60 * 1000,
         quietCandidateMs: Int64 = 8 * 60 * 1000,
         lossDominanceFraction: Double = 0.5,
-        lossThresholdMultiplier: Double = 2
+        lossThresholdMultiplier: Double = 2,
+        flankFlowWordsPerMinute: Double = 30,
+        flankWindowMs: Int64 = 10 * 60 * 1000
     ) {
         self.quietSplitMs = quietSplitMs
         self.quietCandidateMs = quietCandidateMs
         self.lossDominanceFraction = lossDominanceFraction
         self.lossThresholdMultiplier = lossThresholdMultiplier
+        self.flankFlowWordsPerMinute = flankFlowWordsPerMinute
+        self.flankWindowMs = flankWindowMs
     }
 
     public static let `default` = BoundaryPolicy()
@@ -236,14 +294,45 @@ public enum ConversationBoundaryDetector {
     static func speechSpansMs(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
         -> [(Int64, Int64)]
     {
+        spokenRuns(meta, evidence).map { ($0.startMs, $0.endMs) }
+    }
+
+    /// The same runs, keeping the word count, for the rules that need to know how much was
+    /// said and not merely that something was.
+    static func spokenRuns(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
+        -> [(startMs: Int64, endMs: Int64, wordCount: Int)]
+    {
         guard let evidence, !evidence.speech.isEmpty else { return [] }
         let start = ConversationGrouper.segmentStartMs(meta)
         let span = max(ConversationGrouper.segmentEndMs(meta) - start, 0)
         return evidence.speech.map { run in
             let a = min(max(run.startMs, 0), span)
             let b = min(max(run.endMs, a), span)
-            return (start + a, start + b)
+            return (start + a, start + b, run.wordCount)
         }
+    }
+
+    /// Words per minute over one wall-clock window. A run straddling the edge contributes in
+    /// proportion to its overlap, so the answer does not jump when a turn happens to start one
+    /// second before the window does.
+    static func wordRate(
+        from startMs: Int64, to endMs: Int64,
+        runs: [(startMs: Int64, endMs: Int64, wordCount: Int)]
+    ) -> Double {
+        let minutes = Double(endMs - startMs) / 60_000
+        guard minutes > 0 else { return 0 }
+        var words = 0.0
+        for run in runs where run.endMs > startMs && run.startMs < endMs {
+            let length = run.endMs - run.startMs
+            guard length > 0 else {
+                // A zero-length run still said something; count it where it sits.
+                words += Double(run.wordCount)
+                continue
+            }
+            let overlap = min(run.endMs, endMs) - max(run.startMs, startMs)
+            words += Double(run.wordCount) * Double(overlap) / Double(length)
+        }
+        return words / minutes
     }
 
     /// Wall-clock stretches of MISSING audio inside one member. VAD-suppressed silence
@@ -272,6 +361,79 @@ public enum ConversationBoundaryDetector {
             let b = min(max(a + length, a), end)
             return b > a ? (a, b) : nil
         }
+    }
+
+    /// The extent a conversation should DISPLAY: first word to last word, never a container
+    /// edge — and where nothing was ever said, the audio actually received rather than the
+    /// wall time the sample counter happened to run through.
+    ///
+    /// THE BUG THIS FIXES. 41.4% of the library's displayed time was phantom: 198 h 46 m of
+    /// segment wall-span against 116 h 30 m of audio received. `transportReset` drops the BLE
+    /// link, the watch's sample counter free-runs while it is down, and
+    /// `lastSampleIndexExclusive − firstSampleIndex` then turns a dropped connection into hours
+    /// of "conversation". The worst single segment displayed **16 h 29 m and holds 32 seconds of
+    /// audio**; three of the ten longest "conversations" in the library contained 1 m 44 s to
+    /// 2 m 34 s of speech each. Speech-anchoring the extent removes every one of them from the
+    /// top of the list without moving a single boundary: measured over the 2026-09-08 backup it
+    /// leaves precision, recall and false splits EXACTLY unchanged while the longest displayed
+    /// conversation drops from 16 h 29 m to 8 h 59 m, p90 from 2 h 54 m to 2 h 05 m and the
+    /// median from 26 m 38 s to 14 m 57 s.
+    ///
+    /// It deliberately does NOT cap `segmentEndMs` itself. That was measured too, and it is a
+    /// trap: capping a member's PLACEMENT at the audio it holds turns interior loss into an
+    /// inter-segment gap, the 5-minute chain window then fires on it, and the library picks up
+    /// 7 to 12 extra false splits for one extra correct boundary. Placement is where the audio
+    /// sits in wall time; extent is how much of it there is. They are not the same number.
+    ///
+    /// Trimming only ever eats SETTLED silence, from the outside in, and stops at the first
+    /// member that could still change its mind — so a live conversation keeps its container end
+    /// and a pending transcript never shortens anything. With no evidence at all this returns
+    /// the container edges, which is exactly the v1 behaviour.
+    static func displayExtent(
+        members: [SegmentMeta], evidence: [String: SegmentSpeechEvidence]
+    ) -> (startMs: Int64, endMs: Int64) {
+        guard let first = members.first else { return (0, 0) }
+        let containerStart = ConversationGrouper.segmentStartMs(first)
+        let containerEnd = max(
+            members.map(ConversationGrouper.segmentEndMs).max() ?? containerStart, containerStart)
+
+        // Walk in from the front for the first word and in from the back for the last, skipping
+        // members that are SETTLED AND SILENT (those contribute nothing) and stopping dead at
+        // the first member that is not settled yet (we cannot claim it is empty, so it keeps
+        // its whole placement). Both walks return nil only when every member is settled and
+        // nobody spoke anywhere.
+        var start: Int64?
+        for meta in members {
+            guard let known = evidence[meta.segmentId], known.isSettled else {
+                start = ConversationGrouper.segmentStartMs(meta)
+                break
+            }
+            if let firstWord = spokenRuns(meta, known).map(\.startMs).min() {
+                start = firstWord
+                break
+            }
+        }
+        var end: Int64?
+        for meta in members.reversed() {
+            guard let known = evidence[meta.segmentId], known.isSettled else {
+                end = ConversationGrouper.segmentEndMs(meta)
+                break
+            }
+            if let lastWord = spokenRuns(meta, known).map(\.endMs).max() {
+                end = lastWord
+                break
+            }
+        }
+        guard start != nil || end != nil else {
+            // Nothing was ever said and we now know it. The honest length is the audio we hold,
+            // not the hours the counter ran through while the link was down. Never longer than
+            // the container: a spool backfill can add audio, and the extent must not outrun the
+            // wall time it is supposed to sit in.
+            let audio = members.reduce(Int64(0)) { $0 + ConversationGrouper.segmentAudioMs($1) }
+            return (containerStart, min(containerEnd, containerStart + audio))
+        }
+        let clampedStart = min(max(start ?? containerStart, containerStart), containerEnd)
+        return (clampedStart, max(min(end ?? containerEnd, containerEnd), clampedStart))
     }
 
     /// A maximal run of the conversation's wall span in which nothing was said.
@@ -360,6 +522,24 @@ public enum ConversationBoundaryDetector {
         var cutsByIndex: [Int: ConversationStartReason] = [:]
         var candidates: [BoundaryCandidate] = []
 
+        // Every word the run holds, once, for the flanking-flow guard. Cheap: it is the same
+        // evidence `quietStretches` already walks.
+        let runs: [(startMs: Int64, endMs: Int64, wordCount: Int)] =
+            policy.flankFlowWordsPerMinute > 0
+            ? members.flatMap { spokenRuns($0, evidence[$0.segmentId]) }
+            : []
+
+        /// True when the wearer was talking at conversational pace on BOTH sides of the
+        /// silence — a break inside one occasion rather than the end of it.
+        func isStillInFullFlow(_ stretch: QuietStretch) -> Bool {
+            guard policy.flankFlowWordsPerMinute > 0, !runs.isEmpty else { return false }
+            let window = policy.flankWindowMs
+            let before = wordRate(
+                from: stretch.startMs - window, to: stretch.startMs, runs: runs)
+            let after = wordRate(from: stretch.endMs, to: stretch.endMs + window, runs: runs)
+            return min(before, after) >= policy.flankFlowWordsPerMinute
+        }
+
         for stretch in quietStretches(members: members, evidence: evidence) {
             let overlapping = members.filter {
                 ConversationGrouper.segmentEndMs($0) > stretch.startMs
@@ -414,7 +594,12 @@ public enum ConversationBoundaryDetector {
             guard !blocked.contains(startingSegment) else { continue }
 
             let lossDominated = lossFraction > policy.lossDominanceFraction
-            if duration >= splitAt {
+            // The guard applies to INTERIOR silences only. A leading or trailing stretch is not
+            // a cut through anything — it peels silent members off the ends so the conversation
+            // starts near its first word — and by construction one of its two flanks is empty.
+            let guarded =
+                !stretch.isLeading && !stretch.isTrailing && isStillInFullFlow(stretch)
+            if duration >= splitAt, !guarded {
                 let reason: ConversationStartReason = lossDominated ? .interrupted : .quiet
                 cutsByIndex[chosen.index] = strongest(cutsByIndex[chosen.index], reason)
             } else if semanticSplits.contains(startingSegment) {
