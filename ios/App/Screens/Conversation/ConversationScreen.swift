@@ -39,9 +39,10 @@ struct ConversationScreen: View {
     /// and nothing else — see `ScrollToBottom`. Starts true so a screen that has not been
     /// measured yet stays quiet.
     @State private var isAtBottom = true
-
-    /// The end of the conversation, as somewhere to scroll to.
-    private static let endAnchor = "conversation-end"
+    /// Drives the ride to the bottom. A `ScrollPosition` asks the scroll view for its own bottom
+    /// EDGE, which is why there is no longer a marker view at the end of the stack to aim at —
+    /// see `scrollToBottom()`.
+    @State private var scrollPosition = ScrollPosition()
 
     private var playerDocked: Bool { player.isEngaged && headerScrolledPast }
 
@@ -166,16 +167,11 @@ struct ConversationScreen: View {
                     } header: {
                         playerHeader(display)
                     }
-                    // Somewhere to scroll TO. `scrollTo` needs an identified view, and the last
-                    // paragraph is the wrong one to name: on a conversation that is still being
-                    // transcribed it stops being the last one a few seconds later.
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.endAnchor)
                 }
                 .padding(.top, 4)
                 .padding(.bottom, Tokens.blockGap)
             }
+            .scrollPosition($scrollPosition)
             // The reader's hand wins over PLAYBACK: once they scroll, the transcript stops
             // being moved under them and offers a way back instead (the Podcasts /
             // Music-lyrics contract). It does not affect the ⌄ button, which asks only where
@@ -205,7 +201,7 @@ struct ConversationScreen: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 if showsScrollToBottom {
-                    ScrollToBottomButton { scrollToBottom(proxy) }
+                    ScrollToBottomButton { scrollToBottom() }
                 }
             }
             .motionAware(.snappy(duration: 0.25), value: showsScrollToBottom)
@@ -314,12 +310,24 @@ struct ConversationScreen: View {
         }
     }
 
+    /// The bottom EDGE of the scroll view, not a marker view near the bottom of the content.
+    ///
+    /// The version this replaces put a 1 pt `Color.clear` at the end of the stack and asked the
+    /// proxy to scroll to it, and that landed short twice over. It sat ABOVE the stack's own
+    /// trailing padding, so a perfect jump still left `Tokens.blockGap` below the fold; and
+    /// `scrollTo` aims at an offset derived from the content size, which in a `LazyVStack` is
+    /// part estimate — the rows below get their real heights as they are laid out, and the
+    /// scroll settles short of where it was aiming. That is the "it stops with the provenance
+    /// line still cut off, and a second press fixes it" report: by the second press everything
+    /// is laid out and the estimate is exact. Asking for the edge asks the scroll view for its
+    /// own maximum offset, which is exact whatever the content is doing.
+    ///
     /// Taken as arriving straight away, so the button does not sit there through its own scroll
     /// animation; the next geometry reading confirms it either way.
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+    private func scrollToBottom() {
         isAtBottom = true
         withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
-            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            scrollPosition.scrollTo(edge: .bottom)
         }
     }
 

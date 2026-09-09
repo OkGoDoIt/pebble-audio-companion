@@ -42,13 +42,15 @@ struct LiveConversationScreen: View {
     /// — several times a second — so nothing above the newest words could be read while
     /// recording. Starts true so an unmeasured screen stays quiet.
     @State private var isAtBottom = true
+    /// Drives both rides to the tail — the automatic one as lines arrive, and the button. A
+    /// `ScrollPosition` asks the scroll view for its own bottom EDGE, which is why there is no
+    /// longer a marker view at the end of the stack to aim at; see `scrollToBottom()`.
+    @State private var scrollPosition = ScrollPosition()
     /// The conversation this screen was watching, kept after the live snapshot stops carrying
     /// one. `LiveTodayDataSource` publishes an EMPTY snapshot the moment there is no live row —
     /// no id, no started line — so without this, a recording that ends while you are looking at
     /// it leaves a screen that can no longer say what it was about or open what it produced.
     @State private var lastKnownId = ""
-
-    private let bottomAnchor = "live-transcript-bottom"
 
     /// The conversation everything on this screen addresses: the live one, or the one that has
     /// just ended under it.
@@ -64,32 +66,30 @@ struct LiveConversationScreen: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: Tokens.blockGap) {
-                    header
-                    // The timeline goes first, in the same place the finished Conversation
-                    // puts its player card — this screen's answer to "how much of this have we
-                    // actually got, and where did it break".
-                    if let timeline = viewModel.snapshot.timeline {
-                        LiveTimelineCard(timeline: timeline)
-                    }
-                    transcriptCard
-                    Color.clear.frame(height: 1).id(bottomAnchor)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Tokens.blockGap) {
+                header
+                // The timeline goes first, in the same place the finished Conversation
+                // puts its player card — this screen's answer to "how much of this have we
+                // actually got, and where did it break".
+                if let timeline = viewModel.snapshot.timeline {
+                    LiveTimelineCard(timeline: timeline)
                 }
-                .padding(.horizontal, Tokens.screenMargin)
-                .padding(.top, 4)
-                .padding(.bottom, 16)
+                transcriptCard
             }
-            .onAtBottomChange { isAtBottom = $0 }
-            .onChange(of: newestRowKey) { _, _ in follow(proxy) }
-            .overlay(alignment: .bottomTrailing) {
-                if !isAtBottom {
-                    ScrollToBottomButton { scrollToBottom(proxy) }
-                }
-            }
-            .motionAware(.snappy(duration: 0.25), value: isAtBottom)
+            .padding(.horizontal, Tokens.screenMargin)
+            .padding(.top, 4)
+            .padding(.bottom, 16)
         }
+        .scrollPosition($scrollPosition)
+        .onAtBottomChange { isAtBottom = $0 }
+        .onChange(of: newestRowKey) { _, _ in follow() }
+        .overlay(alignment: .bottomTrailing) {
+            if !isAtBottom {
+                ScrollToBottomButton { scrollToBottom() }
+            }
+        }
+        .motionAware(.snappy(duration: 0.25), value: isAtBottom)
         .background(Tokens.ground)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
@@ -213,25 +213,33 @@ struct LiveConversationScreen: View {
         return last.id
     }
 
+    /// The bottom EDGE of the scroll view, not a marker view near the bottom of the content.
+    /// The marker this replaces sat above the stack's own trailing padding, and `scrollTo` aims
+    /// at an offset derived from a `LazyVStack`'s part-estimated content size — between them the
+    /// jump landed short, leaving the last line cut off until a second press. Asking for the
+    /// edge asks the scroll view for its own maximum offset, which is exact.
+    ///
     /// Taking the ride also re-arms following: the reader asked to be at the tail, and staying
     /// there is what they asked for. Taken as arriving straight away so the button does not sit
     /// there through its own scroll animation; the next geometry reading confirms it either way.
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+    private func scrollToBottom() {
         isAtBottom = true
         withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            scrollPosition.scrollTo(edge: .bottom)
         }
     }
 
     /// Keep the newest words on screen — but only while the reader is already there. Reduce
-    /// Motion still scrolls, it just doesn't animate.
-    private func follow(_ proxy: ScrollViewProxy) {
+    /// Motion still scrolls, it just doesn't animate. The edge matters more here than anywhere:
+    /// a live transcript grows under the scroll, so an offset computed a moment ago is stale by
+    /// the time it lands.
+    private func follow() {
         guard viewModel.snapshot.isLive, isAtBottom else { return }
         if reduceMotion {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            scrollPosition.scrollTo(edge: .bottom)
         } else {
             withAnimation(.easeOut(duration: 0.25)) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                scrollPosition.scrollTo(edge: .bottom)
             }
         }
     }
