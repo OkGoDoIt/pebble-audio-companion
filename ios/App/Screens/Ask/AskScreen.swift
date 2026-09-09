@@ -248,9 +248,14 @@ enum AskAnswerPreview {
 /// so the break IS the press, and `sendOnReturn` reads it as one. It never survives to be seen:
 /// it is stripped in the same state update that added it.
 ///
-/// The arrow stays as the visible, non-keyboard way to send. And the keyboard still needs a way
-/// out that is not sending — hence the Done bar above it, and
-/// `.scrollDismissesKeyboard(.interactively)` on the lists both screens put above this field.
+/// The arrow stays as the visible, non-keyboard way to send, and swiping the answers above the
+/// field puts the keyboard away (`.scrollDismissesKeyboard(.interactively)`).
+///
+/// There is deliberately NO keyboard-accessory Done. On iOS 26 a `.keyboard` toolbar item is
+/// drawn as a floating pill above the keyboard's trailing edge — which is exactly where this
+/// composer already puts its send button, so the two overlapped and the screen appeared to have
+/// grown a second, mystery control in the corner while you were typing a follow-up. The escape
+/// it offered is one the system already provides here twice over.
 struct AskComposer: View {
     @Binding var text: String
     var placeholder: String
@@ -290,14 +295,6 @@ struct AskComposer: View {
                     fieldShape.fill(Tokens.surface)
                         .overlay(fieldShape.strokeBorder(Tokens.barHairline, lineWidth: 0.5))
                 )
-                .toolbar {
-                    // The standard escape. A plain text button, not a `Label`: the keyboard bar
-                    // is a bar, and iOS 26 renders a `Label` in one icon-only.
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button(Copy.Common.done) { dismissKeyboard() }
-                    }
-                }
 
             CircleSendButton(action: submit)
                 .disabled(!canSend)
