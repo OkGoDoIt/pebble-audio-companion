@@ -144,6 +144,64 @@ struct JumpToEndPolicyTests {
         #expect(policy.shows)
     }
 
+    // MARK: - The live conversation, which is still being said
+
+    /// The same conversation, open on the Live screen: still going, so a turn can land below a
+    /// reader who has scrolled away.
+    private func live(belowFold: Bool = true) -> JumpToEndPolicy {
+        var policy = JumpToEndPolicy(rearmsWhenContentGrows: true)
+        policy.contentBelowFoldChanged(belowFold)
+        return policy
+    }
+
+    @Test("a live conversation that is already long offers the ride the moment it opens")
+    func liveOffersOnOpen() {
+        #expect(live().shows)
+    }
+
+    @Test("scrolling up in a live conversation still withdraws the offer")
+    func liveHandStillWins() {
+        var policy = live()
+        policy.readerTookOver()
+        policy.atEndChanged(false)
+        #expect(policy.shows == false)
+    }
+
+    @Test("a new turn landing below a reader who scrolled away offers the ride back")
+    func liveRearmsOnANewTurn() {
+        var policy = live()
+        policy.readerTookOver()
+        policy.atEndChanged(false)
+        #expect(policy.shows == false)
+        policy.contentGrew()
+        #expect(policy.shows)
+    }
+
+    @Test("a new turn while the reader is at the end offers nothing — following took them")
+    func liveSilentWhenAlreadyAtTheEnd() {
+        var policy = live()
+        policy.atEndChanged(true)
+        policy.contentGrew()
+        #expect(policy.shows == false)
+    }
+
+    @Test("a finished conversation is left alone when a late transcript lands under it")
+    func finishedDoesNotRearm() {
+        var policy = opened()
+        policy.readerTookOver()
+        policy.atEndChanged(false)
+        policy.contentGrew()
+        #expect(policy.shows == false)
+    }
+
+    @Test("a live conversation that fits on one screen offers nothing, however much arrives")
+    func liveSilentWhenItFits() {
+        var policy = live(belowFold: false)
+        policy.readerTookOver()
+        policy.contentGrew()
+        #expect(policy.shows == false)
+    }
+
     // MARK: - The conversation shrinks back onto one screen
 
     @Test("a re-transcribe that shortens the conversation withdraws the offer")

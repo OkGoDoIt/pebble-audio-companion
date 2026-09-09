@@ -375,40 +375,15 @@ struct ConversationScreen: View {
         }
     }
 
-    /// The way back to the end of a long conversation (`JumpToEndPolicy` decides when).
-    ///
-    /// Deliberately the quieter of the two controls that can hold this slot. "Back to playing"
-    /// is a filled tint capsule because it reports something — the audio has run on out of
-    /// sight — and it should be noticed. This one reports nothing; it is a shortcut for a
-    /// gesture the reader could already perform, so it is a plain surface circle that sits in
-    /// the corner and waits, the same card material and border the rest of the screen is made
-    /// of. Round rather than a capsule for the same reason it carries no label: it is one
-    /// direction, not a sentence.
+    /// The way back to the end of a long conversation (`JumpToEndPolicy` decides when, and
+    /// `JumpToEndButton` is the control — shared with the live screen).
     private func jumpToEndButton(_ proxy: ScrollViewProxy) -> some View {
-        Button {
+        JumpToEndButton {
             jumpToEnd.jumped()
             withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
             }
-        } label: {
-            Image(systemName: "chevron.down")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Tokens.tint)
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(Tokens.surface))
-                .overlay { Circle().strokeBorder(Tokens.cardBorder, lineWidth: 0.5) }
-                .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 2)
-                .hitTarget(44)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Copy.Reading.jumpToEnd)
-        .accessibilityHint(Copy.Reading.jumpToEndHint)
-        // Trailing, in the corner the thumb reaches, while the pill that shares this slot stays
-        // centred: they are different offers and should not be mistaken for one another moving.
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.trailing, Tokens.screenMargin)
-        .padding(.bottom, 10)
-        .transition(Motion.transition(.scale(scale: 0.8).combined(with: .opacity)))
     }
 
     /// Keeps the paragraph being spoken on screen, a little above centre so there is something
