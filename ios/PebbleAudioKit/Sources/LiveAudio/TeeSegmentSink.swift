@@ -80,7 +80,8 @@ public final class TeeSegmentSink: SegmentSink {
         await monitor.onGap(
             receivedAtMs: nowMs(),
             approxDurationMs: Int64(gap.missingFrameCount) * 20,
-            silence: silence)
+            silence: silence,
+            sampleIndex: gap.firstMissingSampleIndex)
     }
 
     public func closeSegment(reason: SegmentCloseReason) async throws {

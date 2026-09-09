@@ -159,21 +159,48 @@ public actor LiveAudioMonitor {
                 )
             )
         }
+        if let newest = frames.last {
+            latestFrame = (sampleIndex: newest.sampleIndex, timeMs: receivedAtMs)
+        }
         trimPending()
         wakeups?.yield(())
     }
+
+    /// The newest frame's place on both clocks, so a gap that names its position in the stream
+    /// can be drawn where that audio would have been rather than when the notice arrived.
+    private var latestFrame: (sampleIndex: UInt64, timeMs: Int64)?
 
     /// Records a span with no received audio. `silence` = true marks voice-activity silence the
     /// watch withheld to save power: it renders as quiet (flat) bars, never as an amber gap,
     /// because no audio was lost. `silence` = false marks a genuine gap (audio that should have
     /// arrived but did not).
-    public func onGap(receivedAtMs: Int64, approxDurationMs: Int64, silence: Bool = false) {
+    ///
+    /// - Parameter sampleIndex: where the missing audio begins in the stream's sample clock,
+    ///   when the watch said. Frames are drawn where they were received (this is a live view,
+    ///   and audio that arrives late is late), but a gap notice describes audio that should
+    ///   have arrived EARLIER — the watch reports loss at its trailing edge, after a catch-up
+    ///   burst has already delivered everything around it. Filling backward from the arrival
+    ///   time painted the notice over bars of real audio, and since a gap outranks a recorded
+    ///   bar in a bucket, a recording that had lost nothing at all showed amber. With the sample
+    ///   index the span lands on the audio it describes; without one it falls back to arrival.
+    public func onGap(
+        receivedAtMs: Int64, approxDurationMs: Int64, silence: Bool = false,
+        sampleIndex: UInt64? = nil
+    ) {
+        let duration = min(max(approxDurationMs, barMs), windowMs)
+        var trailingEdgeMs = receivedAtMs
+        if let sampleIndex, let latest = latestFrame, sampleIndex <= latest.sampleIndex {
+            let samplesPerMs = max(1, frameSamples / Int(frameDurationMs))
+            let behindMs = Int64((latest.sampleIndex - sampleIndex) / UInt64(samplesPerMs))
+            let startMs = latest.timeMs - behindMs
+            trailingEdgeMs = min(receivedAtMs, startMs + duration)
+        }
         pending.append(
             Entry(
-                timeMs: receivedAtMs,
+                timeMs: trailingEdgeMs,
                 segmentId: nil,
                 payload: nil,
-                gapDurationMs: min(max(approxDurationMs, barMs), windowMs),
+                gapDurationMs: duration,
                 silenceFill: silence
             )
         )

@@ -123,6 +123,40 @@ private func frames(_ count: Int, loud: Bool) -> [SegmentFrame] {
         #expect(gapBars.allSatisfy { (101_000..<102_000).contains($0.timeMs) })
     }
 
+    // A watch gap notice names where the missing audio was in the stream. It arrives at its
+    // trailing edge, often after a catch-up burst has delivered everything around it; filling
+    // backward from the ARRIVAL time painted the notice over real audio (and a gap outranks a
+    // recorded bar), so a recording that had lost nothing showed amber.
+    @Test func gapWithASampleIndexIsDrawnWhereThatAudioWas() async {
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { 104_000 })
+        // 40 frames = 800 ms of audio ending at 100_000: frame k sits at 99_220 + 20k.
+        await monitor.onFrames(segmentId: "seg-1", frames: frames(40, loud: true), receivedAtMs: 100_000)
+        // The notice for frames 10..19 (200 ms, starting at sample 3_200) arrives three seconds
+        // later — its span is 99_420..99_620 in the stream, not 102_800..103_000.
+        await monitor.onGap(
+            receivedAtMs: 103_000, approxDurationMs: 200, sampleIndex: 10 * 320)
+
+        await monitor.processPending()
+
+        let gapBars = await monitor.bars.filter { $0.state == .gap }
+        #expect(!gapBars.isEmpty)
+        #expect(gapBars.allSatisfy { (99_250..<99_750).contains($0.timeMs) },
+                "drawn on the stream position, not the arrival time: \(gapBars.map(\.timeMs))")
+        // The audio after the loss, up to the newest frame, is still recorded.
+        let recent = await monitor.bars.filter { $0.timeMs >= 99_750 }
+        #expect(recent.allSatisfy { $0.state == .recorded })
+    }
+
+    @Test func gapWithoutASampleIndexStillFillsBackFromArrival() async {
+        let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { 100_000 })
+        await monitor.onFrames(segmentId: "seg-1", frames: frames(13, loud: true), receivedAtMs: 100_000)
+        await monitor.onGap(receivedAtMs: 102_000, approxDurationMs: 1_000, sampleIndex: nil)
+        await monitor.processPending()
+        let gapBars = await monitor.bars.filter { $0.state == .gap }
+        #expect(gapBars.count == 4)
+        #expect(gapBars.allSatisfy { (101_000..<102_000).contains($0.timeMs) })
+    }
+
     @Test func suppressedSilenceRendersAsQuietNotGap() async {
         let monitor = LiveAudioMonitor(decoder: FakeDecoder(), nowMs: { 100_000 })
         await monitor.onFrames(segmentId: "seg-1", frames: frames(13, loud: true), receivedAtMs: 100_000)
