@@ -298,34 +298,39 @@ final class NoteJobCenter {
     /// here has to be a sentence a person can act on — the enrichment one is a diagnostic string
     /// for a database column, and shipping it to the dock would put "AI provider unavailable:
     /// openai-chat" in front of the user.
+    ///
+    /// It used to show `providerFailed`'s message verbatim, on the reasoning that "the provider's
+    /// own message is the only thing that ever explains a 401, a rate limit or a context
+    /// overflow". Both halves of that turned out to be wrong on a real device:
+    ///
+    ///  • On a four-hour conversation with remote AI ON, the message shown was "On-device AI
+    ///    generation failed" — the FALLBACK's message. The cloud cause, the only one worth
+    ///    acting on, had been dropped by the router. That is fixed at the source
+    ///    (`AiModeRouter.leadingWithPrimary`), and `AiFailure` now reads both halves out.
+    ///  • The cloud provider's message is not explanatory prose, it is up to 240 bytes of
+    ///    OpenAI's response body — which on a 401 is the request and a partly-redacted key. B20
+    ///    bans that from a screen, and the transcription axis has classified rather than quoted
+    ///    since `TranscriptionFailureKind` existed. This is the AI axis catching up.
     static func reason(for error: Error) -> String {
         if error is CancellationError { return Copy.NoteJobs.cancelled }
-        if let aiError = error as? AiError {
-            switch aiError {
-            case .providerUnavailable:
-                return Copy.NoteJobs.providerUnavailable
-            case .consentRequired:
-                return Copy.NoteJobs.consentRequired
-            case .providerFailed(let message, _):
-                // The provider's own message is the only thing that ever explains a 401, a rate
-                // limit or a context overflow, so it is shown rather than flattened into
-                // "Something went wrong" — trimmed, because some of them arrive as a wall.
-                let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? Copy.NoteJobs.unknown : trimmed
-            }
-        }
         // The conversation had nothing to read: `LiveWorld` throws this when the note row or its
-        // transcripts are missing.
+        // transcripts are missing. Checked before the AI taxonomy because it is not an AI
+        // failure at all — nothing was ever sent.
         if let cocoa = error as? CocoaError, cocoa.code == .fileNoSuchFile {
             return Copy.NoteJobs.nothingToWorkFrom
         }
-        if let urlError = error as? URLError {
-            return urlError.localizedDescription
+        let failure = AiFailure.classify(error)
+        // Only for something outside the taxonomy entirely — a database error on the way to the
+        // model, say. A classified `.unknown` still gets the AI wording, which points at
+        // Detailed Logs; this one has no such promise to make.
+        if failure.kind == .unknown, failure.fallback == nil, !(error is AiError) {
+            if let localized = error as? LocalizedError, let description = localized.errorDescription
+            {
+                return description
+            }
+            return Copy.NoteJobs.unknown
         }
-        if let localized = error as? LocalizedError, let description = localized.errorDescription {
-            return description
-        }
-        return Copy.NoteJobs.unknown
+        return failure.reason
     }
 }
 

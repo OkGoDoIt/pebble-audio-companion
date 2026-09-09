@@ -163,8 +163,9 @@ private struct NanoBoom: LocalizedError {
     /// refuses only when the model cannot, or when nothing on-device knows the shape.)
     ///
     /// Refusing is still the honest outcome: the plain-text path would truncate the conversation
-    /// to 12k characters, cap the reply at 256 tokens and enforce no shape at all — and the
-    /// unparseable result would look exactly like the conversation having no follow-ups.
+    /// to whatever the 4,096-token window leaves, cap the reply short and enforce no shape at
+    /// all — and the unparseable result would look exactly like the conversation having no
+    /// follow-ups.
     @Test func refusesACallThatRequiresASchemaItCannotEnforce() async {
         let provider = OnDeviceAiProvider(model: FakeOnDeviceModel(response: "{}"))
         await #expect(throws: AiError.self) {

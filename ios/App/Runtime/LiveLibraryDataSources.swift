@@ -1180,6 +1180,13 @@ extension LiveWorld: NotesDataSource {
                     citationNumber: stretch.number
                 )
             }
+        // A conversation with nothing transcribed yet is a CRASH without this. `AiRunRequest.init`
+        // asserts `!transcripts.isEmpty` — a `precondition`, so it traps in release too — and
+        // "Notes" is reachable from any conversation, including one recorded a minute ago whose
+        // transcription is still queued or has failed. The dock already has a sentence for this
+        // exact situation ("There is no transcript for this conversation yet"), keyed off
+        // `fileNoSuchFile`; it just had no way to be thrown.
+        guard !excerpts.isEmpty else { throw CocoaError(.fileNoSuchFile) }
         let result = try await composition.aiRouter.run(
             AiRunRequest(
                 requestId: UUID().uuidString.lowercased(),

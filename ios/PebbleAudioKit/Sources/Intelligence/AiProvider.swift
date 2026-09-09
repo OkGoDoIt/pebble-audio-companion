@@ -86,8 +86,9 @@ public struct AiRunRequest: Sendable {
     ///
     /// Without this the mode router's ordinary fallback quietly hands a follow-up extraction to
     /// the on-device model, which ignores the model override, truncates the conversation to
-    /// 12k characters, caps the answer at 256 tokens and enforces no schema at all — so the
-    /// reply cannot parse, and the failure looks like the conversation having no follow-ups.
+    /// whatever the context window leaves, caps the answer short and enforces no schema at all —
+    /// so the reply cannot parse, and the failure looks like the conversation having no
+    /// follow-ups.
     ///
     /// The tag is unchanged, but what it costs is not: `OnDeviceAiProvider` used to refuse
     /// EVERY request carrying it. Apple's Foundation Models framework has guided generation, so

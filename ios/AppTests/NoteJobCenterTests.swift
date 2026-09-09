@@ -250,13 +250,25 @@ struct NoteJobCenterTests {
         #expect(
             NoteJobCenter.reason(for: AiError.consentRequired(providerId: "openai-chat"))
                 == Copy.NoteJobs.consentRequired)
-        // A provider's own message is the only thing that ever explains a 401 or a rate limit,
-        // so it survives rather than being flattened.
-        #expect(NoteJobCenter.reason(for: AiError.providerFailed("Rate limited", underlying: nil))
-            == "Rate limited")
+        // A provider's message is no longer quoted. It used to be, on the reasoning that it was
+        // "the only thing that ever explains a 401 or a rate limit" — but the cloud provider
+        // splices up to 240 bytes of OpenAI's response body into it, which on a 401 is the
+        // request and a partly-redacted key, and B20 keeps that off screens. The kit classifies
+        // (`AiFailure`) and the app writes the sentence, exactly as the transcription axis has
+        // done since `TranscriptionFailureKind`.
+        #expect(
+            NoteJobCenter.reason(
+                for: AiError.providerFailed("OpenAI responses request failed (401): denied"))
+                == Copy.AiFailure.keyRejected)
+        #expect(
+            NoteJobCenter.reason(
+                for: AiError.providerFailed("OpenAI responses request failed (429): slow down"))
+                == Copy.AiFailure.rateLimited)
+        // Unrecognised stays unrecognised — a guess dressed up as a diagnosis is worse than
+        // pointing at the log that now has the detail.
         #expect(
             NoteJobCenter.reason(for: AiError.providerFailed("   ", underlying: nil))
-                == Copy.NoteJobs.unknown)
+                == Copy.AiFailure.unknown)
         // What `LiveWorld` throws when the conversation has nothing to read.
         #expect(
             NoteJobCenter.reason(for: CocoaError(.fileNoSuchFile))

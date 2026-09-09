@@ -544,7 +544,13 @@ final class AppComposition {
                 model: { settingsBox.aiModel },
                 grounding: aiGrounding
             ),
-            mode: { settingsBox.aiMode }
+            mode: { settingsBox.aiMode },
+            // AI failures had no home. The device's `diagnostics/companion.log` carried link,
+            // session, heartbeat and cloud *transcription* lines and not one AI or note-job
+            // line, so "my Extended summary keeps failing" could not be taken any further than
+            // the sentence on the dock — which was itself naming the wrong provider. Same sink
+            // as the pipeline: classified kinds and provider ids, never transcript text.
+            log: { AppRuntimeLog.shared.record($0) }
         )
         self.aiRouter = aiRouter
 

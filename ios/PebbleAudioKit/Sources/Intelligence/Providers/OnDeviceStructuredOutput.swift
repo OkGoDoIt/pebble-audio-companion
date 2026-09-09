@@ -41,8 +41,9 @@ public enum OnDeviceStructuredShape: String, Sendable, CaseIterable {
     }
 
     /// How much input this shape may be handed. The follow-up shape chunks and filters its own
-    /// input, so it takes the conversation whole rather than the 12k-character slice the prose
-    /// path uses — truncating a conversation is what makes a closed loop look open.
+    /// input — it never sends this body to the model in one piece — so it takes the conversation
+    /// whole rather than the window-sized slice the prose path gets from
+    /// `OnDeviceContextBudget`. Truncating a conversation is what makes a closed loop look open.
     public var maxInputChars: Int {
         switch self {
         case .followUps: return FollowUpWorker.maxTranscriptChars

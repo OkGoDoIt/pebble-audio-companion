@@ -1,5 +1,6 @@
 import SwiftUI
 import AppDB
+import Intelligence
 
 /// One Ask conversation, as a pushed detail screen: back chevron, edge-swipe, the lot.
 ///
@@ -36,6 +37,8 @@ struct AskThreadScreen: View {
         }
         .padding(.horizontal, Tokens.screenMargin)
         .padding(.bottom, 8)
+        // Same composer, same clearance — see `AskScreen`.
+        .noteJobDockClearance()
         .background(Tokens.ground)
         // The question is the heading of the content; repeating it in the bar would say it
         // twice and truncate it once. The back button already reads "Ask".
@@ -81,6 +84,17 @@ struct AskThreadScreen: View {
                                     Text(Copy.Ask.didNotGoThrough)
                                         .font(AppFont.subBody)
                                         .foregroundStyle(Tokens.tertiary)
+                                    // WHY it did not go through. This card used to say only
+                                    // the line above, which reads the same for a rejected API
+                                    // key, an aeroplane and a question too long for the
+                                    // on-device model — three situations with three different
+                                    // things to do about them, and Retry the right move in
+                                    // only one.
+                                    if let reason = model.failedReason {
+                                        Text(reason)
+                                            .font(AppFont.subBody)
+                                            .foregroundStyle(Tokens.tertiary)
+                                    }
                                     Button(Copy.Common.retry) { model.retry(scope: scope) }
                                         .buttonStyle(.smallBordered)
                                 }
@@ -274,6 +288,9 @@ final class AskThreadViewModel {
     /// The question waiting on an answer, and the one whose answer failed. Only one at a time.
     private(set) var pendingQuestion: String?
     private(set) var failedQuestion: String?
+    /// The classified cause, in the app's own words. Nil when there is nothing useful to add
+    /// beyond "that didn't go through" — never a raw provider message (B20).
+    private(set) var failedReason: String?
     /// Thread the next answer joins. Nil until the first answer of a new conversation lands,
     /// which is what mints it.
     private var threadId: String?
@@ -320,6 +337,7 @@ final class AskThreadViewModel {
     func send(_ question: String, scope: AskScope) {
         pendingQuestion = question
         failedQuestion = nil
+        failedReason = nil
         let thread = openThread
         Task {
             do {
@@ -330,9 +348,15 @@ final class AskThreadViewModel {
                 turns.append(entry)
                 await resolveCitationTitles()
                 pendingQuestion = nil
+            } catch is CancellationError {
+                pendingQuestion = nil
             } catch {
                 pendingQuestion = nil
                 failedQuestion = question
+                let failure = AiFailure.classify(error)
+                // `.unknown` adds nothing the line above does not already say, so it is left
+                // off rather than padding the card with "Something went wrong."
+                failedReason = failure.kind == .unknown ? nil : failure.reason
             }
         }
     }
