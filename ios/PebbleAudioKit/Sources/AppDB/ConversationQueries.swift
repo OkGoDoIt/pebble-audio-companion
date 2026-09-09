@@ -265,6 +265,7 @@ public struct ConversationQueries: Sendable {
             sql: """
                 SELECT ct.conversationId AS conversationId, t.name AS name
                 FROM conversation_tags ct JOIN tags t ON t.id = ct.tagId
+                WHERE ct.source <> '\(TagSource.removed)'
                 ORDER BY t.name COLLATE NOCASE ASC
                 """
         ) {
@@ -347,7 +348,14 @@ public struct ConversationQueries: Sendable {
     static func matches(_ row: ConversationListRow, filter: LibraryFilter, tagName: String?)
         -> Bool
     {
-        if let tagName, !row.tags.contains(tagName) { return false }
+        // Case-insensitively: the selected name can arrive from a deep link
+        // (`companion://library?tag=travel`) typed by hand, and a chip that filters to nothing
+        // because the tag is stored as "Travel" is indistinguishable from an empty library.
+        if let tagName,
+            !row.tags.contains(where: { $0.caseInsensitiveCompare(tagName) == .orderedSame })
+        {
+            return false
+        }
         switch filter {
         case .all: return true
         case .untranscribed: return row.lifecycle != .complete

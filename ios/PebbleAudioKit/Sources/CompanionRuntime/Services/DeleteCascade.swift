@@ -121,6 +121,7 @@ public actor DeleteCascade {
             do { try await annotations.delete(conversationId) } catch {
                 log.failure("annotation cascade", error)
             }
+            await forgetTags(conversationId)
             await enrichment.forgetFollowUpExtraction(conversationId: conversationId)
             await removeFromIndex(id: conversationId, kind: .conversation)
         }
@@ -143,6 +144,7 @@ public actor DeleteCascade {
         do { try await annotations.delete(conversationId) } catch {
             log.failure("annotation delete", error)
         }
+        await forgetTags(conversationId)
         await removeFromIndex(id: conversationId, kind: .conversation)
         return deleted
     }
@@ -159,6 +161,15 @@ public actor DeleteCascade {
         guard let boundaryOverrides else { return }
         do { try await boundaryOverrides.forget(segmentIds: [segmentId]) } catch {
             log.failure("boundary override cascade", error)
+        }
+    }
+
+    /// Tag pairs are keyed by conversation id with no foreign key to `conversations`, so a
+    /// deleted conversation would otherwise keep counting toward every chip it carried — the
+    /// Library would offer "budget 7" and show six rows.
+    private func forgetTags(_ conversationId: String) async {
+        do { try await TagStore(db: annotations.db).forgetConversation(conversationId) } catch {
+            log.failure("tag cascade", error)
         }
     }
 

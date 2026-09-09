@@ -60,11 +60,13 @@ private struct FakeFailure: LocalizedError {
 @Suite struct EnrichmentWorkerTests {
     private let clock = TestWallClock(ms: 50_000)
     private let store: AnnotationStore
+    private let tags: TagStore
 
     init() throws {
         let db = try AppDatabase.inMemory()
         let clock = self.clock
         store = try AnnotationStore(db: db, nowMs: { clock.now })
+        tags = TagStore(db: db)
     }
 
     private func meta(
@@ -136,6 +138,13 @@ private struct FakeFailure: LocalizedError {
         #expect(annotation?.tags == ["work", "planning"])
         #expect(annotation?.modeUsed == .localOnly)
         #expect(annotation?.providerId == "fake")
+        // The generated tags have to REACH the Library: its chip row, its tag filter and the
+        // Search "Tags" section all read `conversation_tags`, and for as long as the pass wrote
+        // only `annotations.tagsJson` every library was untagged and the chip row never
+        // appeared.
+        #expect(
+            try await tags.tags(forConversation: "conv-seg-1").map(\.name) == ["planning", "work"])
+        #expect(try await tags.listTags().map(\.name).sorted() == ["planning", "work"])
     }
 
     @Test func finalizedAnnotationWithoutTagsIsBackfilled() async throws {

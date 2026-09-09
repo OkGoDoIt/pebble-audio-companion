@@ -37,6 +37,52 @@ import Testing
         #expect(tags[0].count == 2)  // c1 (deduped) + c2
     }
 
+    @Test func aiTagsAreAdoptedAndAReRunReplacesItsOwnSet() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = TagStore(db: db)
+        #expect(try await store.applyAiTags(conversationId: "c1", names: ["work", "budget"]))
+        #expect(try await store.tags(forConversation: "c1").map(\.name) == ["budget", "work"])
+        // Re-running the pass over the same conversation is a no-op, not a write: every
+        // library observation would otherwise wake on an unchanged proposal.
+        #expect(
+            try await store.applyAiTags(conversationId: "c1", names: ["budget", "WORK"]) == false)
+        // A different proposal replaces the set rather than piling onto it.
+        #expect(try await store.applyAiTags(conversationId: "c1", names: ["budget", "taxes"]))
+        #expect(try await store.tags(forConversation: "c1").map(\.name) == ["budget", "taxes"])
+    }
+
+    @Test func aRemovedAiTagStaysRemovedAndWhatThePersonAddedIsLeftAlone() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = TagStore(db: db)
+        try await store.applyAiTags(conversationId: "c1", names: ["work", "budget"])
+        _ = try await store.addTag(conversationId: "c1", name: "Dana", source: TagSource.user)
+
+        let work = try await store.tags(forConversation: "c1").first { $0.name == "work" }
+        try await store.removeTag(conversationId: "c1", tagId: #require(work).id)
+        #expect(try await store.tags(forConversation: "c1").map(\.name) == ["budget", "Dana"])
+
+        // The same proposal arrives again on the next pass; it must not undo the removal, and
+        // it must not re-source the tag the person typed.
+        try await store.applyAiTags(conversationId: "c1", names: ["work", "budget", "Dana"])
+        let after = try await store.tags(forConversation: "c1")
+        #expect(after.map(\.name) == ["budget", "Dana"])
+        #expect(after.first { $0.name == "Dana" }?.source == TagSource.user)
+        // A removed name is still offered in the editor — removal is not a ban.
+        #expect(try await store.suggestions(forConversation: "c1").map(\.name).contains("work"))
+        // ... and it counts for nothing until someone puts it back.
+        #expect(try await store.listTags().contains { $0.name == "work" } == false)
+    }
+
+    @Test func deletingAConversationStopsItsTagsCounting() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = TagStore(db: db)
+        try await store.applyAiTags(conversationId: "c1", names: ["work"])
+        try await store.applyAiTags(conversationId: "c2", names: ["work"])
+        #expect(try await store.listTags().first?.count == 2)
+        try await store.forgetConversation("c2")
+        #expect(try await store.listTags().first?.count == 1)
+    }
+
     @Test func tagSuggestionsExcludeConversationsOwnTags() async throws {
         let db = try AppDatabase.inMemory()
         let store = TagStore(db: db)

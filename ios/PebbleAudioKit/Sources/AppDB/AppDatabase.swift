@@ -390,6 +390,51 @@ public struct AppDatabase: Sendable {
                 t.add(column: "startReason", .text)
             }
         }
+        // Every annotation ever generated carried 2-4 AI tags in `annotations.tagsJson`, and
+        // nothing ever turned them into rows: the Library chip row, the tag filter, the row and
+        // detail pills and the Search "Tags" section all read `conversation_tags`, which only
+        // the Tag Editor wrote. So the feature looked absent — an untagged library with no chip
+        // row at all — while the tags themselves had been sitting in the database the whole
+        // time. `AnnotationStore.save` adopts them from now on; this hands the existing library
+        // the tags it already paid for instead of making it wait for a re-run that (for a
+        // finished conversation) never comes.
+        migrator.registerMigration("v11-adopt-ai-tags") { db in
+            var idsByName: [String: String] = [:]  // lowercased name -> tag id
+            for row in try Row.fetchAll(db, sql: "SELECT id, name FROM tags") {
+                idsByName[(row["name"] as String).lowercased()] = row["id"]
+            }
+            for row in try Row.fetchAll(
+                db,
+                sql: "SELECT conversationId, tagsJson FROM annotations WHERE tagsJson IS NOT NULL")
+            {
+                let conversationId: String = row["conversationId"]
+                guard let json: String = row["tagsJson"],
+                    let names = try? JSONDecoder().decode([String].self, from: Data(json.utf8))
+                else { continue }
+                for name in names {
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    let key = trimmed.lowercased()
+                    let tagId: String
+                    if let existing = idsByName[key] {
+                        tagId = existing
+                    } else {
+                        tagId = UUID().uuidString.lowercased()
+                        idsByName[key] = tagId
+                        try db.execute(
+                            sql: "INSERT INTO tags (id, name) VALUES (?, ?)",
+                            arguments: [tagId, trimmed])
+                    }
+                    try db.execute(
+                        sql: """
+                            INSERT INTO conversation_tags (conversationId, tagId, source)
+                            VALUES (?, ?, 'ai')
+                            ON CONFLICT(conversationId, tagId) DO NOTHING
+                            """,
+                        arguments: [conversationId, tagId])
+                }
+            }
+        }
         try migrator.migrate(writer)
     }
 }

@@ -324,18 +324,38 @@ public struct CustomTemplate: Equatable, Sendable {
 
 // MARK: - TagStore (Q10)
 
+/// The `conversation_tags.source` values.
+public enum TagSource {
+    /// Proposed by the annotation pass and adopted automatically (`TagStore.applyAiTags`).
+    public static let ai = "ai"
+    /// Added (or re-added) by the person in the Tag Editor.
+    public static let user = "user"
+    /// Tombstone: an AI-proposed tag the person removed. The pair is KEPT, with this source,
+    /// so the next enrichment pass over the same conversation does not silently re-propose
+    /// what they just took off. Every read filters it out, so it is invisible everywhere.
+    public static let removed = "removed"
+}
+
 public struct TagStore: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
+    /// Tags carried by at least one conversation, most used first.
+    ///
+    /// Zero-count tags are dropped rather than listed: the Library chip row is a filter, and a
+    /// chip that filters the library down to nothing is a dead control. A name with no pairs
+    /// left (its last conversation deleted, or its only proposal withdrawn) still lives in
+    /// `tags` so the Tag Editor can suggest it again.
     static func fetchTags(_ db: Database) throws -> [TagWithCount] {
         try Row.fetchAll(
             db,
             sql: """
                 SELECT t.id AS id, t.name AS name, COUNT(ct.conversationId) AS count
                 FROM tags t
-                LEFT JOIN conversation_tags ct ON ct.tagId = t.id
+                LEFT JOIN conversation_tags ct
+                    ON ct.tagId = t.id AND ct.source <> '\(TagSource.removed)'
                 GROUP BY t.id
+                HAVING count > 0
                 ORDER BY count DESC, t.name COLLATE NOCASE ASC
                 """
         ).map { TagWithCount(id: $0["id"], name: $0["name"], count: $0["count"]) }
@@ -357,7 +377,7 @@ public struct TagStore: Sendable {
                 sql: """
                     SELECT t.id AS id, t.name AS name, ct.source AS source
                     FROM conversation_tags ct JOIN tags t ON t.id = ct.tagId
-                    WHERE ct.conversationId = ?
+                    WHERE ct.conversationId = ? AND ct.source <> '\(TagSource.removed)'
                     ORDER BY t.name COLLATE NOCASE ASC
                     """,
                 arguments: [conversationId]
@@ -374,7 +394,7 @@ public struct TagStore: Sendable {
                 sql: """
                     SELECT t.id AS id, t.name AS name, ct.source AS source
                     FROM conversation_tags ct JOIN tags t ON t.id = ct.tagId
-                    WHERE ct.conversationId = ?
+                    WHERE ct.conversationId = ? AND ct.source <> '\(TagSource.removed)'
                     ORDER BY t.name COLLATE NOCASE ASC
                     """,
                 arguments: [conversationId]
@@ -382,24 +402,33 @@ public struct TagStore: Sendable {
         }.values(in: db.reader)
     }
 
+    /// Find-or-create a tag id for `name`, matching case-INSENSITIVELY.
+    ///
+    /// `tags.name` is `UNIQUE ON CONFLICT REPLACE`, so a second insert of the same name would
+    /// delete the first row and cascade its pairs away — every conversation silently loses the
+    /// tag. Matching NOCASE also keeps "Budget" from becoming a second chip beside "budget";
+    /// the annotation pass lowercases general topics but title-cases proper nouns, and models
+    /// are not consistent about which a word is.
+    static func tagId(_ db: Database, forName name: String) throws -> String {
+        if let existing = try String.fetchOne(
+            db, sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", arguments: [name])
+        {
+            return existing
+        }
+        let tagId = UUID().uuidString.lowercased()
+        try db.execute(sql: "INSERT INTO tags (id, name) VALUES (?, ?)", arguments: [tagId, name])
+        return tagId
+    }
+
     /// Adds a tag (find-or-create by name) to a conversation. A user re-adding an AI-proposed
-    /// tag upgrades the pair's source.
+    /// tag — or one they had removed — upgrades the pair's source.
     @discardableResult
     public func addTag(
         conversationId: String, name: String, source: String
     ) async throws -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return try await db.writer.write { db in
-            let existing = try String.fetchOne(
-                db, sql: "SELECT id FROM tags WHERE name = ?", arguments: [trimmed])
-            let tagId: String
-            if let existing {
-                tagId = existing
-            } else {
-                tagId = UUID().uuidString.lowercased()
-                try db.execute(
-                    sql: "INSERT INTO tags (id, name) VALUES (?, ?)", arguments: [tagId, trimmed])
-            }
+            let tagId = try Self.tagId(db, forName: trimmed)
             try db.execute(
                 sql: """
                     INSERT INTO conversation_tags (conversationId, tagId, source)
@@ -412,12 +441,123 @@ public struct TagStore: Sendable {
         }
     }
 
+    /// Removes a tag from a conversation. An AI-proposed tag leaves a tombstone (see
+    /// `TagSource.removed`) so the next annotation pass cannot put it straight back; a tag the
+    /// person added themselves is simply deleted.
     public func removeTag(conversationId: String, tagId: String) async throws {
         try await db.writer.write { db in
-            try db.execute(
-                sql: "DELETE FROM conversation_tags WHERE conversationId = ? AND tagId = ?",
+            let source = try String.fetchOne(
+                db,
+                sql: "SELECT source FROM conversation_tags WHERE conversationId = ? AND tagId = ?",
                 arguments: [conversationId, tagId]
             )
+            if source == TagSource.ai {
+                try db.execute(
+                    sql: """
+                        UPDATE conversation_tags SET source = ?
+                        WHERE conversationId = ? AND tagId = ?
+                        """,
+                    arguments: [TagSource.removed, conversationId, tagId]
+                )
+            } else {
+                try db.execute(
+                    sql: "DELETE FROM conversation_tags WHERE conversationId = ? AND tagId = ?",
+                    arguments: [conversationId, tagId]
+                )
+            }
+        }
+    }
+
+    /// Adopts the annotation pass's proposed tags for one conversation.
+    ///
+    /// The AI tags were being written to `annotations.tagsJson` and read back by nothing that
+    /// filters: the Library chip row, the `tagName` filter, the row/detail pills and the
+    /// Search "Tags" section all read `conversation_tags`, which only the Tag Editor ever
+    /// wrote. So every library was untagged unless the person typed the tags in by hand, and
+    /// the chip row — hidden when there are no tags — never appeared at all.
+    ///
+    /// Adoption is a REPLACE of this conversation's AI set, never a merge: a re-run proposing
+    /// a different set leaves the old names behind. Pairs the person owns are untouched —
+    /// their tags are not re-sourced, and the ones they removed stay removed.
+    ///
+    /// Returns whether anything changed, so a no-op pass does not wake every library
+    /// observation.
+    @discardableResult
+    public static func applyAiTags(
+        _ db: Database, conversationId: String, names: [String]
+    ) throws -> Bool {
+        let proposed =
+            names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { unique, name in
+                if !unique.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                    unique.append(name)
+                }
+            }
+
+        let existing = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT ct.tagId AS tagId, ct.source AS source, t.name AS name
+                FROM conversation_tags ct JOIN tags t ON t.id = ct.tagId
+                WHERE ct.conversationId = ?
+                """,
+            arguments: [conversationId]
+        ).map {
+            (tagId: $0["tagId"] as String, source: $0["source"] as String, name: $0["name"] as String)
+        }
+
+        // A name the person owns or has removed is theirs to decide; the pass says nothing
+        // about it either way.
+        let spokenFor = Set(
+            existing.filter { $0.source != TagSource.ai }.map { $0.name.lowercased() })
+        let wanted = proposed.filter { !spokenFor.contains($0.lowercased()) }
+        let wantedKeys = Set(wanted.map { $0.lowercased() })
+        let mine = existing.filter { $0.source == TagSource.ai }
+        var changed = false
+
+        for pair in mine where !wantedKeys.contains(pair.name.lowercased()) {
+            try db.execute(
+                sql: """
+                    DELETE FROM conversation_tags WHERE conversationId = ? AND tagId = ?
+                    """,
+                arguments: [conversationId, pair.tagId]
+            )
+            changed = true
+        }
+
+        let held = Set(mine.map { $0.name.lowercased() })
+        for name in wanted where !held.contains(name.lowercased()) {
+            let tagId = try Self.tagId(db, forName: name)
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_tags (conversationId, tagId, source)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(conversationId, tagId) DO NOTHING
+                    """,
+                arguments: [conversationId, tagId, TagSource.ai]
+            )
+            changed = true
+        }
+        return changed
+    }
+
+    @discardableResult
+    public func applyAiTags(conversationId: String, names: [String]) async throws -> Bool {
+        try await db.writer.write {
+            try Self.applyAiTags($0, conversationId: conversationId, names: names)
+        }
+    }
+
+    /// Drops every pair for a conversation that no longer exists (delete cascade). Without
+    /// this the deleted conversation keeps inflating every chip's count, and a filter on that
+    /// chip shows fewer rows than the count promised.
+    public func forgetConversation(_ conversationId: String) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "DELETE FROM conversation_tags WHERE conversationId = ?",
+                arguments: [conversationId])
         }
     }
 
@@ -427,10 +567,20 @@ public struct TagStore: Sendable {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         try await db.writer.write { db in
             if let target = try String.fetchOne(
-                db, sql: "SELECT id FROM tags WHERE name = ? AND id <> ?",
+                db, sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND id <> ?",
                 arguments: [trimmed, tagId]
             ) {
-                // Merge: repoint pairs (keeping existing target pairs), drop the old tag.
+                // Merge: repoint pairs (keeping existing target pairs), drop the old tag. A
+                // tombstone on the target would otherwise win the `OR IGNORE` and swallow a
+                // real pair, so the removal is cleared first — a rename is the person putting
+                // the tag back into play under a new name.
+                try db.execute(
+                    sql: """
+                        DELETE FROM conversation_tags
+                        WHERE tagId = ? AND source = ? AND conversationId IN
+                            (SELECT conversationId FROM conversation_tags WHERE tagId = ?)
+                        """,
+                    arguments: [target, TagSource.removed, tagId])
                 try db.execute(
                     sql: "UPDATE OR IGNORE conversation_tags SET tagId = ? WHERE tagId = ?",
                     arguments: [target, tagId])
@@ -444,7 +594,9 @@ public struct TagStore: Sendable {
         }
     }
 
-    /// Recently used tags not already on this conversation (Tag Editor "Suggestions").
+    /// Recently used tags not already on this conversation (Tag Editor "Suggestions"). A tag
+    /// the person removed here IS offered again — the tombstone only stops the AI from
+    /// re-proposing it, it does not put the name out of reach.
     public func suggestions(
         forConversation conversationId: String, limit: Int = 6
     ) async throws -> [TagWithCount] {
@@ -453,16 +605,18 @@ public struct TagStore: Sendable {
                 db,
                 sql: """
                     SELECT t.id AS id, t.name AS name,
-                        (SELECT COUNT(*) FROM conversation_tags c2 WHERE c2.tagId = t.id) AS count,
+                        (SELECT COUNT(*) FROM conversation_tags c2
+                            WHERE c2.tagId = t.id AND c2.source <> ?) AS count,
                         IFNULL((SELECT MAX(rowid) FROM conversation_tags c3 WHERE c3.tagId = t.id), -1)
                             AS lastUse
                     FROM tags t
                     WHERE t.id NOT IN
-                        (SELECT tagId FROM conversation_tags WHERE conversationId = ?)
+                        (SELECT tagId FROM conversation_tags
+                            WHERE conversationId = ? AND source <> ?)
                     ORDER BY lastUse DESC, t.name COLLATE NOCASE ASC
                     LIMIT ?
                     """,
-                arguments: [conversationId, limit]
+                arguments: [TagSource.removed, conversationId, TagSource.removed, limit]
             ).map { TagWithCount(id: $0["id"], name: $0["name"], count: $0["count"]) }
         }
     }

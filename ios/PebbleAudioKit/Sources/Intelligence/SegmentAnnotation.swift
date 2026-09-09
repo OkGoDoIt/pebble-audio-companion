@@ -140,6 +140,13 @@ public struct AnnotationStore: Sendable {
                     toStore.modelUsed, toStore.attempts, toStore.lastError,
                 ]
             )
+            // `tagsJson` is the PROPOSAL; the Library's chips, tag filter, row/detail pills and
+            // Search all read `conversation_tags`. Adopting here — in the annotation's own
+            // transaction — is what makes the generated tags exist for the person rather than
+            // only in a column nothing filters on. Unchanged proposals write nothing, so a
+            // re-save does not churn every library observation.
+            try TagStore.applyAiTags(
+                db, conversationId: toStore.conversationId, names: toStore.tags)
         }
         return stamped
     }

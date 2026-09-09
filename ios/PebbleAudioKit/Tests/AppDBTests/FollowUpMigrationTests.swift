@@ -58,6 +58,28 @@ import Testing
                         model TEXT,
                         updatedAtMs INTEGER NOT NULL
                     );
+                    -- Read and written by `v11-adopt-ai-tags`, which turns the tags every
+                    -- annotation already carried into rows the Library can filter on.
+                    CREATE TABLE tags (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE ON CONFLICT REPLACE
+                    );
+                    CREATE TABLE conversation_tags (
+                        conversationId TEXT NOT NULL,
+                        tagId TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                        source TEXT NOT NULL,
+                        PRIMARY KEY (conversationId, tagId)
+                    );
+                    CREATE TABLE annotations (
+                        conversationId TEXT PRIMARY KEY,
+                        title TEXT,
+                        summary TEXT,
+                        tagsJson TEXT,
+                        isFinal BOOLEAN NOT NULL DEFAULT 0,
+                        sourceCharCount INTEGER NOT NULL DEFAULT 0,
+                        finalAttempts INTEGER NOT NULL DEFAULT 0,
+                        updatedAtMs INTEGER NOT NULL DEFAULT 0
+                    );
                     """)
             for index in 0..<rows {
                 try db.execute(
@@ -81,6 +103,21 @@ import Testing
                     VALUES (?, ?, 0, NULL, NULL, ?)
                     """,
                 arguments: [UUID().uuidString.lowercased(), "Mine", 1_780_000_000_000])
+            // Annotations as every previous release wrote them: tags generated, stored, and
+            // adopted by nothing. Note "Work" and "work" — the model title-cases whatever it
+            // reads as a proper noun, so the same topic arrives both ways.
+            for (conversationId, tagsJson) in [
+                ("conv-0", #"["work","budget"]"#),
+                ("conv-1", #"["Work","Sarah"]"#),
+                ("conv-2", #"[]"#),
+            ] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO annotations (conversationId, title, summary, tagsJson)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [conversationId, "A talk", "About things", tagsJson])
+            }
         }
         try queue.close()
     }
@@ -194,6 +231,27 @@ import Testing
                     quote: "I got to take Theo at 7:00.", why: "Theo misses his ride",
                     createdAtMs: 1))
             #expect(try await candidates.pendingCount() == 1)
+        }
+    }
+
+    /// The tags every annotation already carried become tags the Library can actually filter
+    /// on. Before this migration `conversation_tags` was written by the Tag Editor alone, so a
+    /// library with hundreds of generated tags showed no chip row at all.
+    @Test func theTagsAlreadyGeneratedBecomeTagsTheLibraryCanFilterOn() async throws {
+        try await withUpgradedDatabase(rows: 3) { db in
+            let tags = TagStore(db: db)
+            #expect(
+                try await tags.tags(forConversation: "conv-0").map(\.name) == ["budget", "work"])
+            // "Work" folds into the existing "work" rather than becoming a second chip.
+            #expect(try await tags.tags(forConversation: "conv-1").map(\.name) == ["Sarah", "work"])
+            #expect(try await tags.tags(forConversation: "conv-2").isEmpty)
+            // Adopted, not authored: the person can still remove any of them.
+            #expect(
+                try await tags.tags(forConversation: "conv-0").allSatisfy {
+                    $0.source == TagSource.ai
+                })
+            let all = try await tags.listTags()
+            #expect(all.first(where: { $0.name == "work" })?.count == 2)
         }
     }
 }
