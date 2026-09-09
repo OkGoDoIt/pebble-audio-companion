@@ -670,7 +670,13 @@ extension LiveWorld: AskDataSource {
         for meta in scoped {
             guard let transcript = loaded[meta.segmentId], !transcript.text.isEmpty
             else { continue }
-            let startMs = Int64(meta.startTimeMs)
+            // `segmentStartMs`, not `startTimeMs`: the latter is the STREAM's birth, so every
+            // mid-stream segment is filed early by `firstSampleIndex` samples — across this
+            // library a median of 30 min, p90 6 h 24 m, worst 19 h 33 m, with 502 of 767
+            // segments off by over a minute. This is the date Ask puts in front of the model
+            // and prints beside the answer, so it was answering "what did I say last night"
+            // with material from the wrong evening.
+            let startMs = ConversationGrouper.segmentStartMs(meta)
             let endMs = startMs + segmentDurationMs(meta)
             excerpts.append(
                 TranscriptExcerpt(
@@ -954,13 +960,43 @@ extension LiveWorld: AskDataSource {
         // `EnrichmentService`; this path builds its own excerpts and needed it explicitly.
         let transcript = transcript.withLoopedArtefactsCollapsed()
         guard !transcript.text.isEmpty else { return [] }
-        let startMs = Int64(meta.startTimeMs)
+        // An excerpt's stamp is `segmentStartMs + span.startMs`, so BOTH halves have to be the
+        // wall clock or the sum is meaningless. Neither was.
+        //
+        //  - `startTimeMs` is the STREAM's birth, not this segment's; `startWallMs` (which
+        //    `segmentStartMs` returns) adds `firstSampleIndex` and clamps to `receivedAtMs`.
+        //    Across this library the two differ by a median of 1 h.
+        //  - the provider's span offsets count STORED audio, so they have to come back through
+        //    the segment's gap records before they can be added to a wall anchor. Watch-side
+        //    silence suppression (PebbleOS a47acac74) withholds 4.1-13.8% of airtime, and on
+        //    the real library reading those offsets as wall time puts the last excerpt of a
+        //    segment a median of 7.5 s early in the default mode, p90 1 m 07 s, worst 21.8 min.
+        //
+        // These stamps are what Ask shows beside a citation and what `citationTarget` turns
+        // back into a scrubber position, so the error was visible twice: the wrong time printed
+        // and the wrong moment played.
+        //
+        // ONLY WHERE THE RECORDS SUPPORT IT. When a segment's gaps do not account for the
+        // difference between its stored audio and its elapsed wall time, `SegmentMediaClock`
+        // falls back to a proportional guess, and converting on a guess re-inflates exactly the
+        // phantom durations the honest-extent work removed. Measured on the 2026-09-08 backup:
+        // 169 of the transcribed segments are inexact, and stretching their 14,272 turns
+        // proportionally moves 4,813 of them by over a minute — the worst from 14 m 43 s to
+        // 14 h 59 m. `TranscriptItems` and `ConversationBoundaryDetector.spokenRuns` both
+        // decline the same way, and all three must agree or the transcript screen, the split
+        // and the citation describe different recordings.
+        let clock = SegmentMediaClock(meta)
+        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
+        let startMs = ConversationGrouper.segmentStartMs(meta)
         return CitableExcerpts.split(
             segmentId: segmentId,
             segmentStartMs: startMs,
-            segmentEndMs: startMs + segmentDurationMs(meta),
+            segmentEndMs: startMs + clock.wallSpanMs,
             spans: transcript.segments.map {
-                TranscriptSpan(text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
+                TranscriptSpan(
+                    text: $0.text,
+                    startMs: toWall($0.startMs),
+                    endMs: toWall(max($0.endMs, $0.startMs)))
             },
             wholeText: transcript.text)
     }
@@ -984,20 +1020,47 @@ extension LiveWorld: AskDataSource {
             let mediaMs = mediaDurationMs(meta)
             if member.segmentId == citedId {
                 // Where the cited STRETCH starts on the scrubber, not where its recording
-                // does. Wall time maps onto media time proportionally — the same mapping the
-                // transcript rows and the missing ticks use, since media time is the wall
-                // span minus its gaps.
+                // does — the same wall→media conversion the transcript rows and the missing
+                // ticks use, through the member's own gap records.
+                //
+                // This used to interpolate proportionally (a point 40% through the wall span
+                // is 40% through the stored audio), which is only true when the gaps are
+                // spread evenly. `SegmentMediaClock` replaced that guess for the transcript
+                // screen; leaving the copy here meant tapping a citation and tapping the turn
+                // it cites landed in different places on the same scrubber. Watch-side silence
+                // suppression (PebbleOS a47acac74) makes the disagreement routine rather than
+                // occasional: the withheld quiet is 4.1-13.8% of airtime, concentrated in the
+                // stretches where nobody is talking, which is exactly where "evenly spread"
+                // stops being true.
+                //
+                // The anchor is `ConversationGrouper.segmentStartMs`, not `startTimeMs`, for
+                // the reason `SegmentMeta.startWallMs` documents: `startTimeMs` is the STREAM's
+                // birth, so for every mid-stream segment it is early by `firstSampleIndex`
+                // samples — a median of 1 h across this library. Subtracting it from a wall
+                // citation put `into` past the end of the span and pinned the target at the
+                // segment's last sample.
                 guard mediaMs > 0 else { break }
-                let memberStartMs = Int64(meta.startTimeMs)
-                let wallSpanMs = max(segmentDurationMs(meta), 1)
-                let into = min(max((citation.startMs ?? memberStartMs) - memberStartMs, 0), wallSpanMs)
-                mediaOffsetMs = mediaBeforeMemberMs + mediaMs * into / wallSpanMs
+                let memberStartMs = ConversationGrouper.segmentStartMs(meta)
+                let clock = SegmentMediaClock(meta)
+                let into = min(
+                    max((citation.startMs ?? memberStartMs) - memberStartMs, 0), clock.wallSpanMs)
+                // Untouched on the way in, untouched on the way out. `drafts` above (and
+                // `TranscriptItems`) leave an inexact segment's offsets on the media clock
+                // rather than acting on the proportional guess, so converting back here would
+                // apply an inverse that was never applied — on the 2026-09-08 backup that is
+                // 169 segments and 4,813 turns that move by over a minute, worst 14 h 44 m.
+                mediaOffsetMs =
+                    mediaBeforeMemberMs
+                    + (clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs))
                 break
             }
             mediaBeforeMemberMs += mediaMs
         }
         let meta = metas[citedId]
-        let startedAtMs = citation.startMs ?? meta.map { Int64($0.startTimeMs) }
+        // Same anchor as everything else that says when a recording happened (see
+        // `SegmentMeta.startWallMs`): `startTimeMs` is the stream's birth and files a
+        // mid-stream segment a median of 1 h early.
+        let startedAtMs = citation.startMs ?? meta.map { ConversationGrouper.segmentStartMs($0) }
         return CitationTarget(
             conversationId: conversationId,
             conversationTitle: detail.row.title ?? "Conversation",
@@ -1088,12 +1151,21 @@ extension LiveWorld: NotesDataSource {
                     !transcript.text.isEmpty
                 else { return nil }
                 let meta = fallbackMetas[segmentId]
+                // `segmentStartMs` (= `startWallMs`), not the raw field: `startTimeMs` anchors
+                // sample index 0 of the STREAM, so a rotation successor or a reattach carries
+                // the stream's birth clock. Over the 2026-09-08 backup that is a different
+                // instant for 602 of 774 segments, 594 of them by more than a minute (median
+                // 1 h 59 m, worst 24 h 21 m). This is the clock time printed into the note
+                // prompt, so the model was told a morning conversation happened the night
+                // before — the citing branch below has used the right anchor since
+                // `citableStretches`; only this no-stretches fallback was left behind.
+                let startMs = meta.map { ConversationGrouper.segmentStartMs($0) }
                 return TranscriptExcerpt(
                     segmentId: segmentId,
                     text: transcript.text,
-                    startTimeMs: meta.map { Int64($0.startTimeMs) },
-                    timeLabel: meta.map {
-                        TimeFmt.time(Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000))
+                    startTimeMs: startMs,
+                    timeLabel: startMs.map {
+                        TimeFmt.time(Date(timeIntervalSince1970: Double($0) / 1000))
                     }
                 )
             }
@@ -1214,8 +1286,15 @@ extension LiveWorld: NotesDataSource {
             momentsLabel: Self.momentsLabel(
                 citations,
                 startedAt: { [files = composition.files] segmentId in
+                    // The footer under a saved note names the clock times its citations point
+                    // at, so it has to use the SAME anchor `citationTarget` opens the player
+                    // with (`segmentStartMs`/`startWallMs`). On the raw `startTimeMs` the
+                    // footer and the player disagreed for 602 of the backup's 774 segments —
+                    // "2 moments · 9:36 PM, 9:51 PM" under a note whose taps land hours away.
                     files.readMeta(segmentId).map {
-                        Date(timeIntervalSince1970: Double($0.startTimeMs) / 1000)
+                        Date(
+                            timeIntervalSince1970:
+                                Double(ConversationGrouper.segmentStartMs($0)) / 1000)
                     }
                 }),
             citations: citations
@@ -1484,20 +1563,34 @@ extension LiveFollowUps: FollowUpsDataSource {
     /// The stored offsets are relative to the SEGMENT (that is what the transcriber reports),
     /// while a citation is wall-clock — so the segment's own start is added here. Getting that
     /// wrong opens the recording at the top and quietly looks like the timestamp is broken.
+    ///
+    /// Both halves of that sum were wrong, in the same direction, and the errors compounded.
+    /// The transcriber's offsets count STORED audio, so they have to come back through the
+    /// segment's gap records before they mean anything on a wall clock; and `startTimeMs` is
+    /// the stream's birth rather than this segment's (median 30 min early over this library).
+    /// Watch-side silence suppression (PebbleOS a47acac74) makes the first of those grow from
+    /// occasional to routine: 4.1-13.8% of airtime is now withheld, concentrated in the pauses.
     func source(of id: String) async -> CitationTarget? {
         guard let row = try? await composition.followUps.load(id: id),
             let segmentId = row.sourceSegmentId
         else { return nil }
-        let segmentStartMs = composition.files.readMeta(segmentId).map { Int64($0.startTimeMs) }
+        let meta = composition.files.readMeta(segmentId)
+        let clock = meta.map { SegmentMediaClock($0) }
+        func wallMs(_ mediaOffsetMs: Int64) -> Int64? {
+            guard let meta, let clock else { return nil }
+            // And only where the gap records explain the recording. On an inexact segment the
+            // clock's fallback is a proportional guess; acting on it here sends the player to a
+            // moment nothing was said at (169 segments on the 2026-09-08 backup, 4,813 turns
+            // moved by over a minute, worst 14 h 44 m). Left alone, the offset at least sits
+            // where the audio does — the same choice `TranscriptItems` and `spokenRuns` make.
+            let offset = clock.isExact ? clock.wall(fromMedia: mediaOffsetMs) : mediaOffsetMs
+            return ConversationGrouper.segmentStartMs(meta) + offset
+        }
         let citation = AskCitation(
             segmentId: segmentId,
             number: 1,
-            startMs: row.sourceStartMs.flatMap { offset in
-                segmentStartMs.map { $0 + offset }
-            },
-            endMs: row.sourceEndMs.flatMap { offset in
-                segmentStartMs.map { $0 + offset }
-            })
+            startMs: row.sourceStartMs.flatMap(wallMs),
+            endMs: row.sourceEndMs.flatMap(wallMs))
         return await world.citationTarget(for: citation)
     }
 

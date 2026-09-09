@@ -463,9 +463,15 @@ private struct FakeFailure: LocalizedError {
         #expect(provider.runCount == 1)
     }
 
+    /// `receivedAtMs` moves with the start, because it has to: `SegmentMeta.startWallMs` —
+    /// which is what "newest" is now measured on — is clamped by it, on the ground that audio
+    /// cannot have been recorded after the phone received it. Leaving the base fixture's
+    /// `receivedAtMs: 1_000` here described a recording that arrived in 1970 and started two
+    /// and a half hours later, and every segment then collapsed onto the same anchor.
     private func metaAt(_ segmentId: String, startTimeMs: UInt64) -> SegmentMeta {
         var value = meta(segmentId)
         value.startTimeMs = startTimeMs
+        value.receivedAtMs = Int64(startTimeMs) + 1_200
         return value
     }
 }

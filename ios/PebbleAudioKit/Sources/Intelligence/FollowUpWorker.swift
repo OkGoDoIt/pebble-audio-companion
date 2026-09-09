@@ -313,8 +313,17 @@ public final class FollowUpWorker: @unchecked Sendable {
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             return FollowUpSourcePart(
+                // `startWallMs`, not the raw `startTimeMs`: the latter anchors sample index 0 of
+                // the STREAM, so every reattach and every 15-minute rotation successor carries
+                // the stream's birth clock instead of its own start. Over the 2026-09-08 backup
+                // (774 segments) the two differ on 602 of them, 594 by more than a minute, by a
+                // median of 1 h 59 m and up to 24 h 21 m. This value is the day and clock time
+                // the model is told the conversation happened at — which is what "tomorrow" and
+                // "next Tuesday" inside it resolve against — and it is what `recordedAtMs` on
+                // every candidate row becomes, so "play the moment this came from" was aiming at
+                // the stream's birth rather than the sentence.
                 segmentId: member.segmentId,
-                startedAtMs: Int64(member.startTimeMs),
+                startedAtMs: member.startWallMs,
                 text: text,
                 turns: transcript.segments)
         }

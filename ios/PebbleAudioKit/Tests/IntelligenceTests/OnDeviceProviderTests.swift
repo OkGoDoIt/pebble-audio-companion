@@ -156,11 +156,15 @@ private struct NanoBoom: LocalizedError {
         #expect(result.providerId == "fake-on-device")
     }
 
-    /// Some answers are only meaningful in a strict schema this provider cannot enforce.
-    /// Refusing is honest: the mode router's fallback would otherwise hand a follow-up
-    /// extraction to a model that truncates the conversation to 12k characters, caps the reply
-    /// at 256 tokens and enforces no shape at all — and the unparseable result would look
-    /// exactly like the conversation having no follow-ups.
+    /// Some answers are only meaningful in a strict schema, and this MODEL cannot hold one:
+    /// `FakeOnDeviceModel` takes the protocol's `supportsStructuredOutput` default of false, so
+    /// it stands for a device whose on-device model has no guided generation. (The provider
+    /// itself can do structured output now — see the shapes in `OnDeviceStructuredOutput` — and
+    /// refuses only when the model cannot, or when nothing on-device knows the shape.)
+    ///
+    /// Refusing is still the honest outcome: the plain-text path would truncate the conversation
+    /// to 12k characters, cap the reply at 256 tokens and enforce no shape at all — and the
+    /// unparseable result would look exactly like the conversation having no follow-ups.
     @Test func refusesACallThatRequiresASchemaItCannotEnforce() async {
         let provider = OnDeviceAiProvider(model: FakeOnDeviceModel(response: "{}"))
         await #expect(throws: AiError.self) {

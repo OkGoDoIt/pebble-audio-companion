@@ -127,9 +127,15 @@ public final class EnrichmentWorker: @unchecked Sendable {
     /// Most recent conversation first; a conversation with no members sorts last. Ties break on
     /// the id so the order is TOTAL — Swift's sort is not stable, and a per-pass budget handed a
     /// non-deterministic order would pick a different few conversations every pass.
+    ///
+    /// "Most recent" is each member's OWN start (`startWallMs`), not the raw `startTimeMs` —
+    /// that field anchors sample index 0 of the stream, so a conversation made of rotation
+    /// successors sorts by when its stream was born. Over the 2026-09-08 backup the two differ
+    /// on 602 of 774 segments, 594 by more than a minute, and this comparator decides which
+    /// three conversations a pass spends its provider calls on.
     static func newestFirst(_ a: EnrichmentConversation, _ b: EnrichmentConversation) -> Bool {
-        let left = a.members.map(\.startTimeMs).max() ?? 0
-        let right = b.members.map(\.startTimeMs).max() ?? 0
+        let left = a.members.map(\.startWallMs).max() ?? 0
+        let right = b.members.map(\.startWallMs).max() ?? 0
         if left != right { return left > right }
         return a.conversationId < b.conversationId
     }
@@ -190,18 +196,35 @@ public final class EnrichmentWorker: @unchecked Sendable {
     }
 
     /// One excerpt per member with non-blank text, in member order.
+    ///
+    /// Two corrections to what the model is told about WHEN, both the same bug the follow-up
+    /// renderer already fixed on its side:
+    ///  - the anchor is `startWallMs`, this segment's own start. The raw `startTimeMs` is the
+    ///    stream's birth clock, which on the 2026-09-08 backup is a different instant for 602
+    ///    of 774 segments — 594 by more than a minute, median 1 h 59 m, worst 24 h 21 m.
+    ///  - it carries a real local time. Without a `timeLabel`,
+    ///    `AiTranscriptFormatting.buildUserContent` falls back to "(starts at epoch ms
+    ///    1788193751778)", which is a unit nothing else in these prompts uses and which the
+    ///    model has to guess at — the same reason `FollowUpTranscriptRenderer` prints days and
+    ///    clock times. Formatted in the zone the audio was RECORDED in (Q16).
     private func memberExcerpts(
         _ conversation: EnrichmentConversation, textOf: (SegmentMeta) -> String?
     ) -> [TranscriptExcerpt] {
-        conversation.members.compactMap { member in
+        let now = nowMs()
+        return conversation.members.compactMap { member in
             guard
                 let text = textOf(member)?.trimmingCharacters(in: .whitespacesAndNewlines),
                 !text.isEmpty
             else { return nil }
+            let startMs = member.startWallMs
             return TranscriptExcerpt(
                 segmentId: member.segmentId,
                 text: text,
-                startTimeMs: Int64(member.startTimeMs)
+                startTimeMs: startMs,
+                timeLabel: askWhenLabel(
+                    startMs: startMs, endMs: nil,
+                    timeZoneID: member.recordedTimeZone ?? TimeZone.current.identifier,
+                    nowMs: now)
             )
         }
     }

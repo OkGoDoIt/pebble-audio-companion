@@ -82,9 +82,14 @@ let package = Package(
             dependencies: ["WireProtocol", "SegmentStore", "AudioCodec", "AppDB", "CCactus"],
             swiftSettings: swiftSettings
         ),
+        // StatusUI: Ask's per-segment gap note is the SAME status vocabulary the Library row
+        // shows, and it used to be a hand-maintained replica of the classifier
+        // (`AskGapVisibility`) plus its own raw-milliseconds arithmetic. Same edge, same reason
+        // as SearchKit's below — a second copy of "quiet is never loss" drifts silently, and
+        // this one already had, telling the model a 2-minute recording was 14 hours missing.
         .target(
             name: "Intelligence",
-            dependencies: ["Transcription", "AppDB", "SegmentStore"],
+            dependencies: ["Transcription", "AppDB", "SegmentStore", "StatusUI"],
             swiftSettings: swiftSettings
         ),
         .target(

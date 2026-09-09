@@ -1,6 +1,9 @@
 import Foundation
 import AppDB
 import SegmentStore
+// The gap vocabulary and the duration formatter, not a second copy of either — the same edge
+// SearchKit takes for the same reason.
+import StatusUI
 import WireProtocol
 
 // Port of `app/.../AskRetriever.kt` plus the Ask plumbing from `AudioCompanionRuntime.kt`
@@ -180,12 +183,46 @@ public struct AskRetriever: Sendable {
 // milliseconds and answers as though every recording happened today — so "we fly out
 // tomorrow", said in a conversation from last week, gets reported as tomorrow.
 
+/// Formatters, memoized by (format, zone).
+///
+/// Building a `DateFormatter` costs about 45 µs and there are two per label. One Ask question
+/// over "Everything" labels every segment in scope, and `EnrichmentWorker` labels every member
+/// of every conversation it examines on every pipeline pass — measured on this machine, 600
+/// labels is 53 ms of formatter construction and 0.9 ms of actual formatting. The set of
+/// (format, zone) pairs is tiny and bounded by the zones the user has recorded in, so this
+/// cache never grows with the library.
+///
+/// Configured once and then only ever read: `DateFormatter.string(from:)` is thread-safe, and
+/// the lock covers the dictionary rather than the formatting.
+private final class AskFormatterCache: @unchecked Sendable {
+    static let shared = AskFormatterCache()
+    private let lock = NSLock()
+    private var cache: [String: DateFormatter] = [:]
+
+    func formatter(_ format: String, _ timeZoneID: String) -> DateFormatter {
+        func build(_ zone: TimeZone) -> DateFormatter {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            formatter.timeZone = zone
+            return formatter
+        }
+        // An id that does not resolve falls back to the DEVICE's zone, which can change under
+        // us; a cached formatter would then keep formatting in the old one. That case is a
+        // corrupt `recordedTimeZone` and is not worth caching, so it is built fresh instead.
+        guard let zone = TimeZone(identifier: timeZoneID) else { return build(.current) }
+        let key = "\(timeZoneID)\u{1}\(format)"
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = cache[key] { return existing }
+        let formatter = build(zone)
+        cache[key] = formatter
+        return formatter
+    }
+}
+
 private func askDateFormatter(_ format: String, _ timeZoneID: String) -> DateFormatter {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = format
-    formatter.timeZone = TimeZone(identifier: timeZoneID) ?? .current
-    return formatter
+    AskFormatterCache.shared.formatter(format, timeZoneID)
 }
 
 private func askDate(_ ms: Int64) -> Date {
@@ -306,85 +343,53 @@ public func askCitationNumber(of segmentId: String, sourceOrder: [String]) -> In
 /// gap including VAD-skipped silence (bug B7), telling the model audio was missing when the
 /// watch had simply skipped known-quiet time; silence never reaches the prompt here. Nil when
 /// the segment has no genuinely missing audio.
+///
+/// TWO THINGS THIS SENTENCE HAS TO GET RIGHT, AND NEITHER IS ABOUT WORDING.
+///
+/// **It must describe THIS recording.** A gap record routinely runs past the audio its segment
+/// covers — when the watch's liveness watchdog trips it records the whole elapsed outage as one
+/// gap against whatever segment is still open — so `missingFrameCount` is not this recording's
+/// loss. Counted raw, over the 2026-09-08 backup (774 segments), 34 segments claimed MORE
+/// missing time than the entire recording is long: the worst told the model a 2 min 04 s
+/// recording was 14 h 47 m missing, and one 18 s recording was "3 h 21 m missing" when none of
+/// that outage overlaps it at all. `displayGapMs` is the same clipped-and-clamped number the
+/// Library row shows a person, so the model and the reader are now told the same thing —
+/// 25 notes disappear entirely (the loss was wholly outside the recording), 46 shrink in count
+/// and 69 in duration, by a median of 2.1 s and up to 14 h 46 m.
+///
+/// **It must not ship raw units to a language model.** "about 1234000ms missing" makes a model
+/// do arithmetic it is bad at, in a unit nothing else in the prompt uses; every other time in
+/// these prompts is in words (see `askWhenLabel`, `AiPromptTemplates`). `Formatting.duration`
+/// is the vocabulary the rest of the app already speaks.
 public func askGapSummary(_ meta: SegmentMeta) -> String? {
-    let lost = askVisibleLossGaps(meta)
-    if lost.isEmpty { return nil }
-    let missingMs = lost.reduce(Int64(0)) {
-        $0 + Int64($1.missingFrameCount) * Int64(meta.frameDurationMs)
-    }
+    // Gaps that overlap this segment's own audio at all; a gap wholly outside it is the hole
+    // BETWEEN recordings and belongs to neither.
+    let lost = askVisibleLossGaps(meta).filter { gapDurationMsWithinSegment($0, meta) > 0 }
+    guard !lost.isEmpty else { return nil }
+    let missingMs = displayGapMs(meta)
+    guard missingMs > 0 else { return nil }
     let noun = lost.count == 1 ? "gap" : "gaps"
-    return "\(lost.count) \(noun), about \(missingMs)ms missing; "
+    // Sub-second loss is real and worth naming, but "about 0 sec" is not a claim — 39 segments
+    // in the backup land there.
+    let amount = missingMs < 1_000 ? "under a second" : "about \(Formatting.duration(missingMs))"
+    return "\(lost.count) \(noun), \(amount) missing; "
         + "answer may be incomplete for this segment."
 }
 
-/// Local replica of StatusUI's visible-loss classifier (StatusUI is not an Intelligence
-/// dependency). Behavior-identical: silence-suppressed gaps are never loss, watch-reported
+/// Visible loss for one segment — silence-suppressed gaps are never loss, watch-reported
 /// non-silence gaps always are, and a receiver-synthesized `sequence_skip` fully covered by a
 /// single silence gap renders as quiet, not loss.
+///
+/// This used to be a hand-maintained REPLICA of `StatusUI.GapVisibility` (`AskGapVisibility`),
+/// kept because StatusUI was not an Intelligence dependency. It is now the real one: SearchKit
+/// took this exact edge for this exact reason — see the note on the `SearchKit` target in
+/// `Package.swift` about the gap classifier that was copied and then drifted — and a second
+/// copy of a rule this product cares about ("quiet is never loss") is the shape that drifts
+/// silently. Watch-side silence suppression (PebbleOS a47acac74) is about to put 90-300 gap
+/// records a day through this path where there were effectively none, so the two copies were
+/// about to be exercised hard for the first time.
 public func askVisibleLossGaps(_ meta: SegmentMeta) -> [GapMeta] {
-    let visibility = AskGapVisibility(meta.gaps)
-    return meta.gaps.filter { visibility.isVisibleLoss($0) }
-}
-
-private func askIsSilenceGap(_ gap: GapMeta) -> Bool {
-    guard let raw = gap.reasonRaw, raw >= 0, raw <= Int(UInt8.max),
-        let reason = GapReason(rawValue: UInt8(raw))
-    else { return false }
-    return reason.isSilence
-}
-
-/// Sorted silence intervals with a running max end: "is this sequence-skip fully covered by
-/// some single silence gap?" in O(log n) (mirrors StatusUI's GapVisibility).
-struct AskGapVisibility {
-    private let silenceStarts: [UInt64]
-    private let silenceMaxEnd: [UInt64]
-
-    init(_ gaps: [GapMeta]) {
-        let silence = gaps
-            .filter { askIsSilenceGap($0) }
-            .map {
-                (
-                    UInt64($0.firstMissingSequence),
-                    UInt64($0.firstMissingSequence) + UInt64($0.missingFrameCount)
-                )
-            }
-            .sorted { $0.0 < $1.0 }
-        var starts = [UInt64]()
-        var maxEnds = [UInt64]()
-        starts.reserveCapacity(silence.count)
-        maxEnds.reserveCapacity(silence.count)
-        var runningMax: UInt64 = 0
-        for (index, interval) in silence.enumerated() {
-            runningMax = index == 0 ? interval.1 : max(runningMax, interval.1)
-            starts.append(interval.0)
-            maxEnds.append(runningMax)
-        }
-        silenceStarts = starts
-        silenceMaxEnd = maxEnds
-    }
-
-    func isVisibleLoss(_ gap: GapMeta) -> Bool {
-        if askIsSilenceGap(gap) { return false }
-        if gap.origin != GapMeta.originSequenceSkip { return true }
-        let start = UInt64(gap.firstMissingSequence)
-        return !coveredBySingleSilenceGap(start: start, end: start + UInt64(gap.missingFrameCount))
-    }
-
-    private func coveredBySingleSilenceGap(start: UInt64, end: UInt64) -> Bool {
-        var lo = 0
-        var hi = silenceStarts.count - 1
-        var idx = -1
-        while lo <= hi {
-            let mid = (lo + hi) >> 1
-            if silenceStarts[mid] <= start {
-                idx = mid
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
-        }
-        return idx >= 0 && silenceMaxEnd[idx] >= end
-    }
+    visibleLossGaps(meta)
 }
 
 // MARK: - Scope resolution (plan Part 6.6)

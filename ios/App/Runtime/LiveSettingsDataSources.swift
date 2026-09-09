@@ -1251,8 +1251,12 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private static func failures(
         _ tasks: [TranscriptionTask], segments: [SegmentMeta]
     ) -> [DiagnosticFailure] {
+        // `startWallMs`, not `startTimeMs`: the raw field anchors sample index 0 of the STREAM,
+        // so a reattach or a rotation successor carries the stream's birth clock. Over the
+        // 2026-09-08 backup the two differ for 602 of 774 segments, 594 by more than a minute.
+        // This row's whole job is to name a moment the reader can place.
         let startById = Dictionary(
-            segments.map { ($0.segmentId, $0.startTimeMs) }, uniquingKeysWith: { first, _ in first }
+            segments.map { ($0.segmentId, $0.startWallMs) }, uniquingKeysWith: { first, _ in first }
         )
         return
             tasks
@@ -1264,7 +1268,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
             .map { task in
                 // When the recording was made; failing that, when it last tried. Either way the
                 // row names a moment the reader can place, never a segment id.
-                let stampMs = startById[task.segmentId].map(Int64.init) ?? task.updatedAtMs
+                let stampMs = startById[task.segmentId] ?? task.updatedAtMs
                 let date = Date(timeIntervalSince1970: Double(stampMs) / 1000)
                 return DiagnosticFailure(
                     id: task.segmentId,
@@ -1346,14 +1350,20 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         _ metas: [SegmentMeta], openId: String?
     ) -> [DiagnosticSegment] {
         metas.suffix(6).reversed().map { meta in
-            let start = Date(timeIntervalSince1970: Double(meta.startTimeMs) / 1000)
+            // This segment's own start, not the stream's birth (`SegmentMeta.startWallMs`).
+            // The support report is read alongside the user's account of when something went
+            // wrong, so a row headed with the wrong hour is worse than no row.
+            let start = Date(timeIntervalSince1970: Double(meta.startWallMs) / 1000)
             let isOpen = meta.segmentId == openId
             let head =
                 "\(TimeFmt.time(start)) · "
                 + (isOpen
                     ? Copy.Settings.Diagnostics.segmentRecordingNow
                     : Copy.Settings.Diagnostics.segmentStopped)
-            var detail = Formatting.duration(segmentDurationMs(meta))
+            // The honest length, not the wall span: the watch's sample counter keeps running while
+            // the link is down, and across the real library that phantom time is 41.4% of what the
+            // span claims. `displayGapMs` is clamped to the same number, so the pair agrees.
+            var detail = Formatting.duration(displaySegmentDurationMs(meta))
             let missing = displayGapMs(meta)
             if missing > 0 { detail += " · \(Formatting.duration(missing)) missing" }
             return DiagnosticSegment(title: head, detail: detail)

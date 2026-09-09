@@ -255,9 +255,11 @@ import WireProtocol
         let meta = makeIntelligenceSegment(
             id: "seg-1", startTimeMs: 1_000, transcribed: true,
             gaps: [lossGap(frames: 100), silenceGap(frames: 9_000)])
+        // Plain language, not raw milliseconds: this string goes into a model's prompt, where
+        // every other time is in words.
         #expect(
             askGapSummary(meta)
-                == "1 gap, about 2000ms missing; answer may be incomplete for this segment.")
+                == "1 gap, about 2 sec missing; answer may be incomplete for this segment.")
     }
 
     @Test func gapSummaryIsNilWhenOnlySilenceWasSkipped() {
@@ -280,10 +282,11 @@ import WireProtocol
         let meta = makeIntelligenceSegment(
             id: "seg-1", startTimeMs: 1_000, transcribed: true,
             gaps: [silenceGap(frames: 9_000), covered, standalone])
-        // Only the standalone skip (25 frames = 500 ms) counts.
+        // Only the standalone skip (25 frames = 500 ms) counts — and half a second is named as
+        // such rather than rendered "about 0 sec".
         #expect(
             askGapSummary(meta)
-                == "1 gap, about 500ms missing; answer may be incomplete for this segment.")
+                == "1 gap, under a second missing; answer may be incomplete for this segment.")
     }
 
     // MARK: Scope resolution (Part 6.6)

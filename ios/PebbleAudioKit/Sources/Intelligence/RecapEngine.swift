@@ -385,7 +385,13 @@ public actor DailyRecapEngine {
                 if nowMs() - existing.updatedAtMs < minRefreshIntervalMs { continue }
             }
             let excerpts = daySegments
-                .sorted { $0.startTimeMs < $1.startTimeMs }
+                // Ordered on the same anchor they are bucketed and labelled with. Sorting on
+                // the raw `startTimeMs` ordered the day's recordings by when their STREAMS
+                // began, which is a different sequence entirely once a stream spans a day: over
+                // the 2026-09-08 backup 602 of 774 segments carry an anchor that is not their
+                // own, 594 of them by more than a minute. A recap read out of order narrates
+                // the evening before the morning.
+                .sorted { $0.startWallMs < $1.startWallMs }
                 .compactMap { meta -> TranscriptExcerpt? in
                     guard
                         let text = transcriptTextOf(meta.segmentId)?
