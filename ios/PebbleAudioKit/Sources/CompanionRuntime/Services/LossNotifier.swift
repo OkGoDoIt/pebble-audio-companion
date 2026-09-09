@@ -50,8 +50,16 @@ public struct NoopLossNotifier: LossNotifier {
 
 /// Q9 trigger mechanics (plan 6.10), evaluated retroactively at gap-persist time.
 ///
-/// Qualifying: a single visible-loss record ≥ `thresholdMs` (30 s), OR a spool-overflow gap of
-/// **any** length.
+/// Qualifying: a single visible-loss record ≥ `thresholdMs` (30 s), whatever its cause.
+///
+/// Spool overflow used to qualify at **any** length, on the reasoning that the watch filling its
+/// buffer means the link was down long enough to matter. It does not: the spool overflows on
+/// short blips too, and the first thing this alert actually did in the field was interrupt
+/// someone to report FIVE SECONDS of missing audio. A notification is an interruption, and five
+/// seconds of a background recording is not worth one — the gap is still drawn on the coverage
+/// strip and still shown in the conversation, which is where a person goes to ask how complete a
+/// recording is. Overflow keeps its OTHER exemption (it is not deferred to segment close, since
+/// the watch has already finalized it); it just has to clear the same bar as every other loss.
 ///
 /// Excluded:
 /// - **quiet** — VAD-suppressed silence is not loss; it never fires (`visibleLossGaps` filter).
@@ -149,15 +157,11 @@ public actor LossEventEvaluator {
         let durationMs = gapDurationMs(gap, frameDurationMs: meta.frameDurationMs)
         let isSpoolOverflow = gap.origin == GapMeta.originWatch && reason == .spoolOverflow
 
-        if isSpoolOverflow {
-            return LossEvent(
-                segmentId: meta.segmentId, cause: .spoolOverflow,
-                durationMs: durationMs, detectedAtMs: nowMs
-            )
-        }
+        // One bar for every cause: below it, the gap is recorded and drawn but never announced.
         guard durationMs >= thresholdMs else { return nil }
         return LossEvent(
-            segmentId: meta.segmentId, cause: .interruption,
+            segmentId: meta.segmentId,
+            cause: isSpoolOverflow ? .spoolOverflow : .interruption,
             durationMs: durationMs, detectedAtMs: nowMs
         )
     }

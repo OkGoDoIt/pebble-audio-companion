@@ -51,11 +51,29 @@ import WireProtocol
         #expect(notifier.events.isEmpty)
     }
 
-    @Test func spoolOverflowFiresAtAnyLengthAndEvenWhileTheSegmentIsOpen() async throws {
+    /// The alert's first act in the field was interrupting someone to report five seconds of
+    /// missing audio — a spool overflow, which used to qualify at any length. The gap is still
+    /// recorded and still drawn; it is just not worth a notification.
+    @Test func aShortSpoolOverflowIsRecordedButNotAnnounced() async throws {
         let notifier = RecordingLossNotifier()
         let subject = evaluator(notifier: notifier)
-        // One single frame — far under the 30 s threshold.
-        let gap = Fixture.watchGap(reason: .spoolOverflow, missingFrames: 1)
+        let gap = Fixture.watchGap(reason: .spoolOverflow, missingFrames: 250)  // 5 s
+        let meta = Fixture.meta(gaps: [gap], isOpen: true)
+
+        let fired = await subject.gapPersisted(
+            meta: meta, gap: gap, isSegmentOpen: true, nowMs: 1_000
+        )
+
+        #expect(fired == nil)
+        #expect(notifier.events.isEmpty)
+    }
+
+    /// Overflow keeps its other exemption: the watch has already finalized it, so it is not
+    /// deferred to segment close the way an in-flight interruption is.
+    @Test func aLongSpoolOverflowFiresEvenWhileTheSegmentIsOpen() async throws {
+        let notifier = RecordingLossNotifier()
+        let subject = evaluator(notifier: notifier)
+        let gap = Fixture.watchGap(reason: .spoolOverflow, missingFrames: 2_000)  // 40 s
         let meta = Fixture.meta(gaps: [gap], isOpen: true)
 
         let fired = await subject.gapPersisted(
