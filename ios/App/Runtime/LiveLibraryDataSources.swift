@@ -83,6 +83,77 @@ final class LiveWorld {
         }.value
     }
 
+    /// What one walk over a conversation's members produced.
+    struct WalkedMembers: Sendable {
+        var transcript: [TranscriptItem] = []
+        var missingTicks: [Double] = []
+        /// Total STORED audio across the members — the player's clock, not the wall span.
+        var mediaMs: Int64 = 0
+        var provider: String?
+        var transcribedAtMs: Int64?
+        var zone: TimeZone?
+    }
+
+    /// Turns the loaded metas and transcripts into the screen's rows — OFF the main actor.
+    ///
+    /// Decoding was moved off main a while ago; this loop was not, and it is the expensive half.
+    /// Measured against the largest real transcript in the 2026-09-09 backup (24,854 words),
+    /// `TranscriptItems.member` alone is 136 ms for ONE member on a Mac — a phone is slower, a
+    /// long conversation has several members, and the screen re-runs the whole thing on every
+    /// database tick it observes. That is a main thread blocked for a second at a time while
+    /// somebody is reading, which is exactly what "the app gets unresponsive in a longer
+    /// conversation" is.
+    static func walkMembers(
+        _ memberIds: [String],
+        metas: [String: SegmentMeta],
+        transcripts: [String: SegmentTranscript],
+        assignments: [SpeakerAssignment]
+    ) async -> WalkedMembers {
+        await Task.detached(priority: .userInitiated) {
+            var result = WalkedMembers()
+            for segmentId in memberIds {
+                guard let meta = metas[segmentId] else { continue }
+                let stored = transcripts[segmentId]
+                if let stored {
+                    result.provider = stored.providerId
+                    result.transcribedAtMs = max(result.transcribedAtMs ?? 0, stored.createdAtMs)
+                }
+                if result.zone == nil { result.zone = TranscriptItems.timeZone(meta) }
+                // `TranscriptSegment`/`TranscriptWord` exist in both Transcription (what the
+                // provider produced) and SearchKit (what the timeline formatter reads); bridge
+                // them.
+                let built = TranscriptItems.member(
+                    segmentId: segmentId,
+                    meta: meta,
+                    segments: (stored?.segments ?? []).map {
+                        SearchKit.TranscriptSegment(
+                            text: $0.text, startMs: $0.startMs, endMs: $0.endMs,
+                            speaker: $0.speaker)
+                    },
+                    words: (stored?.words ?? []).map {
+                        SearchKit.TranscriptWord(
+                            text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
+                    },
+                    assignments: assignments,
+                    mediaBeforeMemberMs: result.mediaMs,
+                    // Durable transcripts are timed against the STORED audio: the processor
+                    // decodes the frame log and hands that to the provider, so gaps are simply
+                    // absent from what it heard. Reading those offsets as wall time (which is
+                    // what this did before the two clocks were told apart) compressed every
+                    // transcript position by the gap ratio — on a silence-suppressed recording,
+                    // by half or more.
+                    timebase: .media
+                )
+                let before = result.mediaMs
+                result.transcript.append(contentsOf: built.items)
+                result.missingTicks.append(
+                    contentsOf: built.missingMediaOffsets.map { Double(before + $0) })
+                result.mediaMs += built.mediaMs
+            }
+            return result
+        }.value
+    }
+
     /// Same hop for the sidecar metas of a conversation's members.
     static func loadMetas(
         _ segmentIds: [String], files: SegmentFileReader
@@ -305,14 +376,6 @@ extension LiveWorld: ConversationDataSource {
         let tagRows = (try? await composition.tags.tags(forConversation: id)) ?? []
         let followUps = (try? await composition.followUps.list(conversationId: id)) ?? []
 
-        var transcript: [TranscriptItem] = []
-        /// Media time consumed by the members already walked — the player's clock.
-        var mediaBeforeMemberMs: Int64 = 0
-        var missingTicks: [Double] = []
-        var provider: String?
-        var transcribedAtMs: Int64?
-        var zone: TimeZone?
-
         // One off-main pass for every member's sidecar and transcript: an hour-long conversation
         // is megabytes of word-timing JSON, and this used to decode all of it on the main actor
         // on every DB tick the open conversation observed.
@@ -320,46 +383,18 @@ extension LiveWorld: ConversationDataSource {
         let metas = await Self.loadMetas(memberIds, files: composition.files)
         let storedTranscripts = await Self.loadTranscripts(memberIds, store: composition.transcripts)
 
-        for member in detail.members {
-            guard let meta = metas[member.segmentId] else { continue }
-            let stored = storedTranscripts[member.segmentId]
-            if let stored {
-                provider = stored.providerId
-                transcribedAtMs = max(transcribedAtMs ?? 0, stored.createdAtMs)
-            }
-            if zone == nil { zone = TranscriptItems.timeZone(meta) }
-            // `TranscriptSegment`/`TranscriptWord` exist in both Transcription (what the
-            // provider produced) and SearchKit (what the timeline formatter reads); bridge them.
-            let built = TranscriptItems.member(
-                segmentId: member.segmentId,
-                meta: meta,
-                segments: (stored?.segments ?? []).map {
-                    SearchKit.TranscriptSegment(
-                        text: $0.text, startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker)
-                },
-                words: (stored?.words ?? []).map {
-                    SearchKit.TranscriptWord(
-                        text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
-                },
-                assignments: assignments,
-                mediaBeforeMemberMs: mediaBeforeMemberMs,
-                // Durable transcripts are timed against the STORED audio: the processor decodes
-                // the frame log and hands that to the provider, so gaps are simply absent from
-                // what it heard. Reading those offsets as wall time (which is what this did
-                // before the two clocks were told apart) compressed every transcript position
-                // by the gap ratio — on a silence-suppressed recording, by half or more.
-                timebase: .media
-            )
-            transcript.append(contentsOf: built.items)
-            missingTicks.append(
-                contentsOf: built.missingMediaOffsets.map { Double(mediaBeforeMemberMs + $0) })
-            mediaBeforeMemberMs += built.mediaMs
-        }
+        let walked = await Self.walkMembers(
+            memberIds, metas: metas, transcripts: storedTranscripts, assignments: assignments)
+        let transcript = walked.transcript
+        let missingTicks = walked.missingTicks
+        let provider = walked.provider
+        let transcribedAtMs = walked.transcribedAtMs
+        let zone = walked.zone
 
         // The scrubber measures STORED AUDIO. Using the wall span instead (a 1 hr 4 min
         // conversation holding 33 min of audio) made the player claim time that does not
         // exist, and every position on it was wrong by however much was missing.
-        let duration = mediaBeforeMemberMs
+        let duration = walked.mediaMs
         let hasWords = transcript.contains { if case .turn = $0 { return true } else { return false } }
         let aiAvailable = await composition.aiRouter.isAvailable()
         return ConversationDisplay(

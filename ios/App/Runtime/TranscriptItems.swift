@@ -44,7 +44,13 @@ enum TranscriptTimebase {
     case wall
 }
 
-@MainActor
+/// Deliberately NOT `@MainActor`. Nothing in here touches the UI — it maps stored segments and
+/// word timings onto the screen's value types — and the isolation was costing real freezes: the
+/// conversation screen rebuilds its whole display on every database tick it observes, and on a
+/// long conversation this loop is 136 ms of pure computation for ONE member segment (measured on
+/// the largest real transcript in the 2026-09-09 backup: 24,854 words, on a Mac; a phone is
+/// slower and a conversation has several members). All of it ran on the main thread, so a
+/// pipeline pass writing an annotation froze the screen the reader was looking at.
 enum TranscriptItems {
     /// Builds the rows for one member segment from whatever text exists for it — the durable
     /// transcript when it has landed, the live preview while it hasn't.
