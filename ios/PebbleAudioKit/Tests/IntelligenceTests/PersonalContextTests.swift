@@ -27,13 +27,19 @@ import Testing
 }
 
 @Suite struct PersonalContextFormattingTests {
+    // Contract changed by stream PC: a clamp now ends on a word boundary rather than at an
+    // exact character count, because a bias hint or a grounding fact cut mid-word is worse
+    // than a slightly shorter one — a speech model will happily bias toward the fragment.
+    // The ellipsis is the single-character "…" so it costs one character, not three.
     @Test func clampsLongProfileForSonioxAndGrounding() throws {
         let long = String(repeating: "word ", count: 5_000)
         let ctx = PersonalContext(profileText: long, biasTranscription: true, groundAi: true)
         let text = try #require(
             PersonalContextFormatting.transcriptionText(ctx, budgetChars: 100))
-        #expect(text.count == 100)
-        #expect(text.hasSuffix("..."))
+        #expect(text.count <= 100)
+        #expect(text.count > 90)
+        #expect(text.hasSuffix("…"))
+        #expect(!text.hasSuffix("wor…"))
     }
 
     @Test func openAiSttPromptUsesDerivedTermsOnly() {
