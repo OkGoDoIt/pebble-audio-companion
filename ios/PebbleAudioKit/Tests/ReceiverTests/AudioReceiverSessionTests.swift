@@ -1014,6 +1014,115 @@ import WireProtocol
         #expect(fx.session.state.value == .streaming(streamId: streamId + 1))
     }
 
+    // The watch's spool recycles its oldest chunk when it cannot grow and, until the matching
+    // firmware fix, reported an overflow gap for every record in it — including frames it had
+    // already sent and this app had already stored. In segments where every sequence number was
+    // on disk, the sidecars still carried a ~30-frame "overflow" every 300 frames (2026-09-09).
+    // A gap that ends inside what is already stored is phantom and must not be persisted.
+    @Test func watchGapOverAudioAlreadyStoredIsNotPersisted() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        fx.link.pushData(data(0, 32))
+        fx.link.pushData(data(32, 8))
+        await fx.settle()
+        #expect(fx.sink.appends.count == 2)
+
+        fx.link.pushData(
+            StreamGap(
+                streamId: streamId,
+                firstMissingSequence: 8,
+                missingFrameCount: 30,
+                firstMissingSampleIndex: 8 * 320,
+                reasonRaw: GapReason.spoolOverflow.rawValue,
+                watchDropCounter: 30
+            )
+        )
+        await fx.settle()
+        #expect(fx.sink.gaps.isEmpty, "frames 8..37 are on disk; the notice describes no loss")
+
+        // Contiguity is untouched: the next frames attach with no synthesized skip either.
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(40, 4))
+        await fx.settle()
+        #expect(fx.sink.gaps.isEmpty)
+        #expect(fx.checkpoints().last?.highestContiguousSequencePersisted == 43)
+    }
+
+    // ...and a notice that straddles the stored prefix keeps only the part that is not stored.
+    @Test func watchGapPartlyOverStoredAudioIsClippedToTheUnstoredTail() async {
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        fx.link.pushData(data(0, 10))
+        await fx.settle()
+
+        fx.link.pushData(
+            StreamGap(
+                streamId: streamId,
+                firstMissingSequence: 6,
+                missingFrameCount: 8,  // 6..13, of which 6..9 are stored
+                firstMissingSampleIndex: 6 * 320,
+                reasonRaw: GapReason.spoolOverflow.rawValue,
+                watchDropCounter: 8
+            )
+        )
+        await fx.settle()
+        #expect(fx.sink.gaps.count == 1)
+        let gap = fx.sink.gaps[0]
+        #expect(gap.firstMissingSequence == 10)
+        #expect(gap.missingFrameCount == 4)
+        #expect(gap.firstMissingSampleIndex == 10 * 320)
+        #expect(gap.origin == .watchReported(reasonRaw: Int(GapReason.spoolOverflow.rawValue), watchDropCounter: 8))
+
+        // The clipped loss is accounted: 14 attaches after it with no synthesized skip.
+        await fx.clock.advance(by: 600)
+        fx.link.pushData(data(14, 2))
+        await fx.settle()
+        #expect(fx.sink.gaps.count == 1)
+        #expect(fx.checkpoints().last?.highestContiguousSequencePersisted == 15)
+    }
+
+    // On every re-authorization the watch drained its pending gap notices 30-150 ms BEFORE the
+    // re-announced STREAM_START reached us, and each one was dropped as "no open stream" — the
+    // record is gone from the watch the moment it is sent, so the reason was lost for good. A
+    // notice for a stream we have not heard of is held and applied when that stream opens.
+    @Test func gapNoticeArrivingBeforeStreamStartIsAppliedWhenTheStreamOpens() async {
+        let fx = await startSession()
+        await authorize(fx)
+
+        fx.link.pushData(
+            StreamGap(
+                streamId: streamId,
+                firstMissingSequence: 5_000,
+                missingFrameCount: 104,
+                firstMissingSampleIndex: 5_000 * 320,
+                reasonRaw: GapReason.spoolOverflow.rawValue,
+                watchDropCounter: 104
+            )
+        )
+        await fx.settle()
+        #expect(fx.sink.gaps.isEmpty, "nothing to attach it to yet")
+        #expect(fx.session.state.value == .authorized)
+
+        fx.link.pushData(resumeStart())
+        await fx.settle()
+        #expect(fx.session.state.value == .streaming(streamId: streamId))
+        #expect(fx.sink.gaps.count == 1, "the held notice lands on the stream it named")
+        let gap = fx.sink.gaps[0]
+        #expect(gap.firstMissingSequence == 5_000)
+        #expect(gap.missingFrameCount == 104)
+        #expect(gap.origin == .watchReported(reasonRaw: Int(GapReason.spoolOverflow.rawValue), watchDropCounter: 104))
+
+        // The buffered audio after the loss attaches contiguously: one gap, and it has a reason.
+        fx.link.pushData(data(5_104, 8))
+        await fx.settle()
+        #expect(fx.sink.gaps.count == 1)
+        #expect(fx.sink.appends.first?.first?.sequence == 5_104)
+    }
+
     @Test func resumeStreamWithLeadingOverflowGap_recordsLossOnceAndAdoptsBase() async {
         let fx = await startSession()
         await authorize(fx)

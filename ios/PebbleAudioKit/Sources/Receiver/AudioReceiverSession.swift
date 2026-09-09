@@ -315,6 +315,19 @@ public actor AudioReceiverSession {
     /// Wall time of the last inbound control/data notification; drives the keepalive idle check.
     private var lastInboundMs: Int64 = 0
 
+    /// STREAM_GAP notices that arrived for a stream we have not (yet) been told about, keyed by
+    /// stream id. The watch drains its pending-gap table before the re-announced STREAM_START
+    /// reaches us on every re-authorization (2026-09-09: six notices, 33 ms ahead of the start),
+    /// and it takes each record OUT of that table to send it — so a notice dropped here is gone
+    /// from both sides, and the loss it described is recorded later with no reason. Held briefly
+    /// and replayed the moment the stream opens; bounded so a watch that never announces cannot
+    /// grow it.
+    private var orphanGaps: [UInt32: [StreamGap]] = [:]
+    private static let orphanGapsPerStream = 16
+    /// Frames the watch reported lost that this app had already stored (see `handleStreamGap`).
+    private var phantomGapFrames: UInt32 = 0
+    private var phantomGapNotices: UInt32 = 0
+
     /// Wall time of the last STREAM_DATA / STREAM_GAP that arrived with no stream to attach it to
     /// — either no open stream at all, or one whose id we do not recognise.
     ///
@@ -1267,6 +1280,13 @@ public actor AudioReceiverSession {
             stream = StreamContext(start: start, nowMs: clock.nowMs)
             noteAudioArrived()
             setState(.streaming(streamId: start.streamId))
+            if let held = orphanGaps.removeValue(forKey: start.streamId), !held.isEmpty {
+                log("applying \(held.count) gap notice(s) that arrived before STREAM_START")
+                for gap in held {
+                    try await handleStreamGap(gap)
+                }
+            }
+            orphanGaps.removeAll()
         case let data as StreamData:
             guard let ctx = stream, ctx.streamId == data.streamId else {
                 // Audio for a stream we cannot attach. Deliberately NOT counted as
@@ -1289,12 +1309,24 @@ public actor AudioReceiverSession {
                 // every one of the 5,194 watch-reported gaps carries a reason and not one of the
                 // 2,690 receiver-synthesized ones does, and the 38 largest unattributed holes hold
                 // 62.6 h between them. Name it in the recorder so the next export can confirm it.
-                log(
-                    "dropped a watch gap notice for stream \(gap.streamId) "
-                        + "(\(gap.missingFrameCount) frames, reason \(gap.reasonRaw)): "
-                        + (stream == nil
-                            ? "no open stream" : "our stream is \(stream?.streamId ?? 0)")
-                        + " — this loss will be recorded with no reason")
+                //
+                // So it is HELD, not dropped: on 2026-09-09 every re-authorization delivered the
+                // watch's pending gaps 30-150 ms before the re-announced STREAM_START. The
+                // notice is applied the moment that start opens the stream (`StreamStart`
+                // above); if no start ever comes, the link teardown discards it.
+                var held = orphanGaps[gap.streamId] ?? []
+                if held.isEmpty {
+                    log(
+                        "holding a watch gap notice for stream \(gap.streamId) "
+                            + "(\(gap.missingFrameCount) frames, reason \(gap.reasonRaw)): "
+                            + (stream == nil
+                                ? "no open stream" : "our stream is \(stream?.streamId ?? 0)")
+                            + " — applied when that stream is announced")
+                }
+                if held.count < Self.orphanGapsPerStream {
+                    held.append(gap)
+                    orphanGaps[gap.streamId] = held
+                }
                 noteOrphanData(1)
                 return
             }
@@ -1429,12 +1461,48 @@ public actor AudioReceiverSession {
             firstSampleIndex: message.firstMissingSampleIndex
         )
 
+        // A watch gap is a claim about frames the receiver never got. Check it against what is
+        // already stored before believing it. The watch's spool recycles its oldest chunk when
+        // it cannot grow, and (until the matching firmware fix) recorded an overflow gap for
+        // EVERY record in that chunk — including the ones it had already sent and this app had
+        // already written, which merely had not been checkpoint-trimmed yet. Measured on
+        // 2026-09-09: in segments where every sequence number in the range was on disk, the
+        // sidecar still carried a ~30-frame "spool overflow" every 300 frames — 10% of all audio
+        // drawn as missing on the waveform, in the transcript and in the day's "missing" total,
+        // none of it lost. Everything below `contiguousNext` is stored or already accounted for
+        // by an earlier notice, so a gap that ends there is phantom, and one that starts below
+        // it is clipped to the part that is not.
+        var first = message.firstMissingSequence
+        var count = message.missingFrameCount
+        var sampleIndex = message.firstMissingSampleIndex
+        if count > 0 {
+            let endExclusive = first &+ count
+            if endExclusive <= ctx.contiguousNext {
+                phantomGapFrames &+= count
+                phantomGapNotices &+= 1
+                if phantomGapNotices == 1 {
+                    log(
+                        "ignored a watch gap notice for \(count) frame(s) from \(first) "
+                            + "(reason \(message.reasonRaw)): every one of them is already stored")
+                }
+                await maybeSendCheckpoint(ctx)
+                return
+            }
+            if first < ctx.contiguousNext {
+                let trimmed = ctx.contiguousNext &- first
+                phantomGapFrames &+= trimmed
+                first = ctx.contiguousNext
+                count &-= trimmed
+                sampleIndex &+= UInt64(trimmed) &* ctx.frameSamples
+            }
+        }
+
         try await sink.recordGap(
             streamId: ctx.streamId,
             gap: GapRecord(
-                firstMissingSequence: message.firstMissingSequence,
-                missingFrameCount: message.missingFrameCount,
-                firstMissingSampleIndex: message.firstMissingSampleIndex,
+                firstMissingSequence: first,
+                missingFrameCount: count,
+                firstMissingSampleIndex: sampleIndex,
                 origin: .watchReported(
                     reasonRaw: Int(message.reasonRaw),
                     watchDropCounter: message.watchDropCounter
@@ -1443,15 +1511,12 @@ public actor AudioReceiverSession {
         )
 
         var advancedSamples: UInt64 = 0
-        if message.missingFrameCount == 0 {
+        if count == 0 {
             // Unknown extent: account for it when the next STREAM_DATA shows where it ends.
-            ctx.openWatchGapFrom = message.firstMissingSequence
+            ctx.openWatchGapFrom = first
         } else {
-            ctx.rememberKnownGap(
-                first: message.firstMissingSequence,
-                missingCount: message.missingFrameCount
-            )
-            if message.firstMissingSequence <= ctx.contiguousNext {
+            ctx.rememberKnownGap(first: first, missingCount: count)
+            if first <= ctx.contiguousNext {
                 // Known-lost range adjoining the contiguous prefix: those frames will never
                 // arrive, so contiguity (and the checkpoint) advances past them.
                 advancedSamples = ctx.advanceAccountedPrefix()
@@ -1567,6 +1632,14 @@ public actor AudioReceiverSession {
                 "link down: \(orphanedFrameCount.value) frames arrived with no stream to attach "
                     + "them to — the watch was sending audio this app could not store")
         }
+        if phantomGapNotices > 0 {
+            log(
+                "link down: ignored \(phantomGapNotices) watch gap notice(s) covering "
+                    + "\(phantomGapFrames) frame(s) that were already stored")
+        }
+        phantomGapNotices = 0
+        phantomGapFrames = 0
+        orphanGaps.removeAll()
         lastOrphanDataAtMs = 0
         orphanedFrameCount.value = 0
     }
