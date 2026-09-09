@@ -111,7 +111,17 @@ struct SettingsLocalModelScreen: View {
 
     /// The fallback fact, worded for whether anything is being done about it right now.
     private func fallbackNotice(_ option: LocalModelOption) -> String {
-        model.state(for: option.id).isBusy
+        let busy = model.state(for: option.id).isBusy
+        // Apple Speech stands in only when iOS actually has a speech model for this phone's
+        // language. `fallsBackToAppleSpeech` answers "would the kit fall back?", not "would the
+        // fallback work?", so on a phone with no system model this card was naming an engine
+        // that transcribes nothing — the substitution it exists to expose, one level down.
+        guard model.state(for: LocalModelCatalog.appleSpeechId) == .installed else {
+            return busy
+                ? Copy.Settings.TranscriptionAI.noFallbackNoticeInProgress(option.compactName)
+                : Copy.Settings.TranscriptionAI.noFallbackNotice(option.compactName)
+        }
+        return busy
             ? Copy.Settings.TranscriptionAI.fallbackNoticeInProgress(option.compactName)
             : Copy.Settings.TranscriptionAI.fallbackNotice(option.compactName)
     }

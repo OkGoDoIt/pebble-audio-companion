@@ -226,11 +226,20 @@ struct SettingsScreen: View {
         }
     }
 
-    /// e.g. "Soniox · GPT-5.6".
+    /// e.g. "Soniox · GPT-5.6", or just "Local only" when neither half uses a service.
+    ///
+    /// Each half names the engine that half actually uses. The AI half used to print the cloud
+    /// model unconditionally, so a fully-local phone read "Local only · GPT-5.6" — a service
+    /// named on a screen whose whole promise is that no service is involved.
     private var transcriptionPreview: String {
         let transcription = settings.transcriptionMode == .localOnly
             ? Copy.Settings.TranscriptionAI.localOnly
             : settings.cloudTranscriptionProvider.displayName
+        guard settings.aiMode != .localOnly else {
+            return settings.transcriptionMode == .localOnly
+                ? Copy.Settings.TranscriptionAI.localOnly
+                : "\(transcription) · \(Copy.Settings.TranscriptionAI.localOnly)"
+        }
         return "\(transcription) · \(sources.aiModelShortName(for: settings.aiModel))"
     }
 

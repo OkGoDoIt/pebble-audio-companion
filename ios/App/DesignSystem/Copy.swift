@@ -792,7 +792,6 @@ enum Copy {
             static let mode = "Mode"
             static let localModel = "Local model"
             static let cloudProvider = "Cloud provider"
-            static let model = "Model"
             /// Key rows, e.g. "Soniox key" / "OpenAI key". Keys NEVER render inline.
             static func keyRow(provider: String) -> String { "\(provider) key" }
 
