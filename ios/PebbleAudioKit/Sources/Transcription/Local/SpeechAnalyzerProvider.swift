@@ -22,13 +22,29 @@ import Foundation
 public final class SpeechAnalyzerProvider: TranscriptionProvider {
     public static let providerId = "speechanalyzer"
 
+    /// Apple's documented ceiling for contextual strings: "no more than 100" phrases of "one or
+    /// two words". Enforced HERE as well as at the source, so the provider's own contract holds
+    /// whatever a caller hands it.
+    public static let maxContextualStrings = 100
+
     public let id = SpeechAnalyzerProvider.providerId
     private let locale: Locale
     private let inventory: any SpeechAssetInventorying
+    private let contextualStrings: @Sendable () -> [String]
 
-    public init(locale: Locale = .current, inventory: (any SpeechAssetInventorying)? = nil) {
+    /// - Parameter contextualStrings: names and jargon to bias recognition towards, most
+    ///   important first — the About You terms, via
+    ///   `PersonalContextFormatting.appleContextualStrings`. Read per transcription (not
+    ///   captured once) so an edited profile takes effect on the next recording, and defaulted
+    ///   empty so no existing call site changes.
+    public init(
+        locale: Locale = .current,
+        inventory: (any SpeechAssetInventorying)? = nil,
+        contextualStrings: @escaping @Sendable () -> [String] = { [] }
+    ) {
         self.locale = locale
         self.inventory = inventory ?? Self.defaultInventory()
+        self.contextualStrings = contextualStrings
     }
 
     static func defaultInventory() -> any SpeechAssetInventorying {
@@ -56,11 +72,26 @@ public final class SpeechAnalyzerProvider: TranscriptionProvider {
                     locale: locale,
                     pcmChunks: pcmChunks,
                     sampleRateHz: sampleRateHz,
-                    providerId: id
+                    providerId: id,
+                    contextualStrings: Self.sanitized(contextualStrings())
                 )
             }
         #endif
         throw TranscriptionError.providerUnavailable(providerId: id)
+    }
+
+    /// Drops blanks and duplicates (case-insensitively, keeping the first — the ranking puts the
+    /// most important term first) and applies the 100-phrase ceiling.
+    static func sanitized(_ terms: [String]) -> [String] {
+        var seen: Set<String> = []
+        var kept: [String] = []
+        for term in terms {
+            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { continue }
+            kept.append(trimmed)
+            if kept.count == maxContextualStrings { break }
+        }
+        return kept
     }
 }
 
@@ -148,7 +179,8 @@ func localSpeechFinalText(_ pieces: [String]) -> String? {
             locale: Locale,
             pcmChunks: AsyncThrowingStream<Data, Error>,
             sampleRateHz: Int,
-            providerId: String
+            providerId: String,
+            contextualStrings: [String] = []
         ) async throws -> TranscriptionResult {
             let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale) ?? locale
             let transcriber = SpeechTranscriber(
@@ -163,6 +195,31 @@ func localSpeechFinalText(_ pieces: [String]) -> String? {
                 )
             }
             let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+            // Personal-context biasing. Until now the DEFAULT local engine received no context
+            // at all: someone transcribing on device got nothing whatever from About You, while
+            // both cloud providers were being handed the same terms (Soniox `contextTerms`,
+            // OpenAI `sttPrompt`). That is backwards — the on-device engine is the smaller model
+            // and needs the help more.
+            //
+            // HONEST CAVEAT, because this is worth stating rather than claiming a win: Apple
+            // documents `AnalysisContext.contextualStrings` against `DictationTranscriber`, and
+            // this path runs `SpeechTranscriber`. The API accepts the context on the analyzer
+            // either way, but whether `SpeechTranscriber` consults it is undocumented, so this
+            // may be entirely inert. It costs one dictionary of at most 100 short strings per
+            // segment and cannot make recognition worse, which is why it is wired up anyway —
+            // but nothing here should be read as "on-device transcription now knows your
+            // contacts" until that is measured against real audio.
+            //
+            // A failure to set the context is swallowed on purpose: biasing is an optimisation,
+            // and losing a whole recording's transcript because a hint would not attach is a
+            // far worse outcome than transcribing it unbiased.
+            if !contextualStrings.isEmpty {
+                let context = AnalysisContext()
+                context.contextualStrings = [.general: contextualStrings]
+                try? await analyzer.setContext(context)
+            }
+
             let (inputSequence, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
 
             // Collect finalized results concurrently with feeding.

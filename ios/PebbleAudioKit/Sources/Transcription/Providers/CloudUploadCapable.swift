@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 
 // Port of `core/transcription/.../CloudUploadCapable.kt`.
@@ -11,9 +12,22 @@ import Foundation
 ///  - upload-then-control-plane (Soniox): the upload returns a file handle; the small
 ///    create/poll/fetch control plane runs later in an awake window -> `.needsControlPlane`.
 public protocol CloudUploadCapable: Sendable {
-    /// The initial background upload (endpoint, headers, multipart parts) for `wav`, or nil if
-    /// this provider cannot currently background-upload (e.g. no key / consent / too large).
-    func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan?
+    /// Containers this provider is willing to be offered, best first.
+    ///
+    /// The COORDINATOR walks this, not the provider, because the ladder position depends on what
+    /// the app has durably learned about the provider (`CloudUploadFormatMemory`) and on what the
+    /// spool can actually supply for this segment — neither of which a provider knows. See
+    /// `CloudUploadFormatPreference`.
+    var uploadFormatLadder: [CloudAudioFormat] { get }
+
+    /// The initial background upload (endpoint, headers, multipart parts) for an already-packaged
+    /// body, or nil if this provider cannot currently background-upload (e.g. no key / consent /
+    /// too large).
+    ///
+    /// The body arrives ENCODED rather than as PCM: choosing the container is a policy decision
+    /// that outlived being a per-provider constant, and re-deriving it here would mean every
+    /// provider re-implementing the same ladder.
+    func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan?
 
     /// Interprets the upload's HTTP response: a finished transcript, or a follow-up step.
     func onUploadResponse(httpStatus: Int, body: String) async throws -> CloudUploadStep

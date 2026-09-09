@@ -275,19 +275,27 @@ public struct SonioxRtToken: Sendable, Equatable, Decodable {
     public var speaker: String?
     public var startMs: Int64?
     public var endMs: Int64?
+    /// Soniox's own 0…1 confidence for this token. Soniox documents it as a REQUIRED, non-optional
+    /// field of the realtime token — unlike `start_ms`/`end_ms`/`speaker`/`language` — and this
+    /// decoder had no key for it, so it was discarded on arrival. Optional here anyway: this
+    /// struct is also what the tests construct, and a frame that omits it must not fail to decode
+    /// (see `RtMessage`'s note on forgiving decoding).
+    public var confidence: Double?
 
     public init(
         text: String = "",
         isFinal: Bool = false,
         speaker: String? = nil,
         startMs: Int64? = nil,
-        endMs: Int64? = nil
+        endMs: Int64? = nil,
+        confidence: Double? = nil
     ) {
         self.text = text
         self.isFinal = isFinal
         self.speaker = speaker
         self.startMs = startMs
         self.endMs = endMs
+        self.confidence = confidence
     }
 
     enum CodingKeys: String, CodingKey {
@@ -296,6 +304,7 @@ public struct SonioxRtToken: Sendable, Equatable, Decodable {
         case speaker
         case startMs = "start_ms"
         case endMs = "end_ms"
+        case confidence
     }
 
     public init(from decoder: Decoder) throws {
@@ -305,6 +314,7 @@ public struct SonioxRtToken: Sendable, Equatable, Decodable {
         self.speaker = try container.decodeIfPresent(String.self, forKey: .speaker)
         self.startMs = try container.decodeIfPresent(Int64.self, forKey: .startMs)
         self.endMs = try container.decodeIfPresent(Int64.self, forKey: .endMs)
+        self.confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
     }
 }
 
@@ -343,15 +353,25 @@ public final class SonioxRealtimeAccumulator {
         var speaker = first.speaker
         var start = first.startMs ?? 0
         var end = first.endMs ?? start
+        var confidences: [Double] = []
 
         func flush() {
             let text = current.trimmed
             if !text.isEmpty {
+                let summary = TokenConfidence.summary(confidences)
                 segments.append(
-                    TranscriptSegment(text: text, startMs: start, endMs: max(end, start), speaker: speaker)
+                    TranscriptSegment(
+                        text: text,
+                        startMs: start,
+                        endMs: max(end, start),
+                        speaker: speaker,
+                        confidence: summary.mean,
+                        minConfidence: summary.min
+                    )
                 )
             }
             current = ""
+            confidences.removeAll(keepingCapacity: true)
         }
 
         for token in tokens {
@@ -361,6 +381,7 @@ public final class SonioxRealtimeAccumulator {
                 start = token.startMs ?? start
             }
             current += token.text
+            if let confidence = token.confidence { confidences.append(confidence) }
             if let tokenEnd = token.endMs { end = tokenEnd }
         }
         flush()

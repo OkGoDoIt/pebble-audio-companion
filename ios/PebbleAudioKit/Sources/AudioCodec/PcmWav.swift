@@ -11,6 +11,17 @@ public enum PcmWav {
         return out
     }
 
+    /// The PCM payload of a canonical `PcmWav` body, without copying.
+    ///
+    /// Mirrors the header sniff `SegmentEnergy.profile(wav:)` already does: anything shorter than
+    /// the header, or not starting with `RIFF`, is treated as raw PCM. Callers that hold an
+    /// assembled upload body (`SegmentAudio.wav`) and need the samples back — the FLAC re-encode
+    /// in `CloudAudioBody` — go through here rather than re-deriving the offset.
+    public static func pcmBody(of wav: Data) -> Data {
+        guard wav.count > headerBytes, wav.prefix(4).elementsEqual("RIFF".utf8) else { return wav }
+        return wav.dropFirst(headerBytes)
+    }
+
     public static func headerMono16(pcmSizeBytes: Int, sampleRateHz: Int) -> Data {
         precondition(sampleRateHz > 0, "sampleRateHz must be positive")
         precondition(pcmSizeBytes >= 0, "pcmSizeBytes must be non-negative")

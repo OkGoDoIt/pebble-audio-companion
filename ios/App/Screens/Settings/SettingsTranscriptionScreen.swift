@@ -88,6 +88,21 @@ struct SettingsTranscriptionScreen: View {
                         footer: Copy.Settings.TranscriptionAI.backgroundCatchUpFooter
                     )
                 }
+                // The other half of "what does this cost me": the row above spends battery, this
+                // one spends data. Wi-Fi only by default — see `CloudUploadNetworkPolicy`.
+                SettingsPushRow(
+                    title: Copy.Settings.TranscriptionAI.uploadNetwork,
+                    value: settings.cloudUploadNetwork.displayName
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Settings.TranscriptionAI.uploadNetwork,
+                        options: CloudUploadNetwork.allCases.map {
+                            .init(value: $0, label: $0.displayName)
+                        },
+                        selection: $settings.cloudUploadNetwork,
+                        footer: Copy.Settings.TranscriptionAI.uploadNetworkFooter
+                    )
+                }
             }
 
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.aiSection)
@@ -322,41 +337,51 @@ struct ApiKeyChangeScreen: View {
                     .disabled(!canSave)
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
-            SettingsFooter(text: replaceFooter)
+            if let replaceFooter { SettingsFooter(text: replaceFooter) }
 
+            // No footer under the delete row: the confirmation it raises says what stops
+            // working, which is where that belongs.
             if savedKey != nil {
                 ListCard {
                     DestructiveRow(title: Copy.Settings.TranscriptionAI.deleteKey) {
                         confirmDelete = true
                     }
                 }
-                SettingsFooter(
-                    text: Copy.Settings.TranscriptionAI
-                        .deleteKeyFootnote(provider: provider.displayName)
-                )
+                // Anchored to the card that raises it. Attached to `SettingsScroll` the source
+                // rect is the whole screen and iOS 26 places the panel against the top of it,
+                // far from the row that was tapped. Same fix as `SettingsWatchScreen` and
+                // `SettingsStorageScreen`.
+                .confirmationDialog(
+                    Copy.Settings.TranscriptionAI.deleteKey,
+                    isPresented: $confirmDelete,
+                    titleVisibility: .hidden
+                ) {
+                    Button(
+                        Copy.Settings.TranscriptionAI.deleteKeyButton, role: .destructive
+                    ) {
+                        Haptics.destructiveConfirmed()
+                        settings.removeApiKey(for: provider)
+                        newKey = ""
+                        didSave = false
+                        // Cleared here as well as by the dialog's own dismissal: deleting the
+                        // key collapses the `savedKey != nil` block this dialog is anchored to,
+                        // and a host that disappears before SwiftUI writes `false` through the
+                        // binding would leave the flag set — so the row would raise its own
+                        // confirmation, unasked, the next time a key was saved.
+                        confirmDelete = false
+                    }
+                } message: {
+                    Text(
+                        Copy.Settings.TranscriptionAI
+                            .deleteKeyMessage(provider: provider.displayName)
+                    )
+                }
             }
         }
         .animation(.snappy(duration: 0.22), value: trimmedKey.isEmpty)
         .animation(.snappy(duration: 0.22), value: savedKey)
         .navigationTitle(Copy.Settings.TranscriptionAI.keyRow(provider: provider.displayName))
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            Copy.Settings.TranscriptionAI.deleteKey,
-            isPresented: $confirmDelete,
-            titleVisibility: .hidden
-        ) {
-            Button(Copy.Settings.TranscriptionAI.deleteKeyButton, role: .destructive) {
-                Haptics.destructiveConfirmed()
-                settings.removeApiKey(for: provider)
-                newKey = ""
-                didSave = false
-            }
-        } message: {
-            Text(
-                Copy.Settings.TranscriptionAI
-                    .deleteKeyMessage(provider: provider.displayName)
-            )
-        }
     }
 
     // MARK: Current key
@@ -442,13 +467,16 @@ struct ApiKeyChangeScreen: View {
         )
     }
 
-    /// What Save will do, or — right after one — that it did. Never the verdict: that belongs
-    /// to the key above, so the two facts can never be mistaken for each other.
-    private var replaceFooter: String {
+    /// That a save happened, and — the first time, when nothing above has said it yet — where
+    /// the key goes. Never the verdict: that belongs to the key above, so the two facts can
+    /// never be mistaken for each other.
+    ///
+    /// Nil while replacing an existing key: the card above already carries "Stored in this
+    /// phone's Keychain.", and the section is headed "Replace key", so a second line saying
+    /// saving replaces it was the same sentence a third time.
+    private var replaceFooter: String? {
         if didSave { return Copy.Settings.TranscriptionAI.keySavedFootnote }
-        return savedKey == nil
-            ? Copy.Settings.TranscriptionAI.keychainFootnote
-            : Copy.Settings.TranscriptionAI.keyChangeFootnote
+        return savedKey == nil ? Copy.Settings.TranscriptionAI.keychainFootnote : nil
     }
 
     /// Save first, then ask the provider: the key belongs to the user, so it is stored whatever

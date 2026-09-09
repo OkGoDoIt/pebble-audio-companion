@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 
 // Port of `core/transcription/.../SelectableCloudTranscriptionProvider.kt` and
@@ -47,8 +48,14 @@ public final class SelectableCloudTranscriptionProvider: TranscriptionProvider, 
         active() as? any CloudUploadCapable
     }
 
-    public func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
-        await activeUploadCapable?.uploadPlan(wav: wav, sampleRateHz: sampleRateHz)
+    /// The active backend's ladder, or WAV alone when nothing can upload — the floor, so a caller
+    /// that resolves against this never picks a format that has no chance of being sent.
+    public var uploadFormatLadder: [CloudAudioFormat] {
+        activeUploadCapable?.uploadFormatLadder ?? [.wav]
+    }
+
+    public func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
+        await activeUploadCapable?.uploadPlan(audio: audio, sampleRateHz: sampleRateHz)
     }
 
     public func onUploadResponse(httpStatus: Int, body: String) async throws -> CloudUploadStep {

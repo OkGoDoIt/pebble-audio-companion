@@ -30,6 +30,10 @@ public final class TranscriptionProcessor: Sendable {
     /// appended after reattach).
     private let isSegmentOpen: @Sendable (_ segmentId: String) async -> Bool
 
+    /// Loudest-second RMS below which a segment is not handed to a provider at all, or nil to
+    /// disable the check. See `SegmentEnergy.provableSilenceFloorRms` for the derivation.
+    private let silenceFloorRms: Double?
+
     public init(
         queue: TranscriptionQueue,
         router: TranscriptionModeRouter,
@@ -37,7 +41,8 @@ public final class TranscriptionProcessor: Sendable {
         sampleRateHz: Int = 16_000,
         onStateChanged: @escaping @Sendable (String, TaskState) -> Void = { _, _ in },
         transcriptStore: FileTranscriptStore? = nil,
-        isSegmentOpen: @escaping @Sendable (String) async -> Bool = { _ in false }
+        isSegmentOpen: @escaping @Sendable (String) async -> Bool = { _ in false },
+        silenceFloorRms: Double? = SegmentEnergy.provableSilenceFloorRms
     ) {
         self.queue = queue
         self.router = router
@@ -46,6 +51,7 @@ public final class TranscriptionProcessor: Sendable {
         self.onStateChanged = onStateChanged
         self.transcriptStore = transcriptStore
         self.isSegmentOpen = isSegmentOpen
+        self.silenceFloorRms = silenceFloorRms
     }
 
     /// `segmentIds` are the closed, not-fully-transcribed segments. One with a terminal-success
@@ -115,6 +121,14 @@ public final class TranscriptionProcessor: Sendable {
             return disabled
         }
 
+        // Nothing is sent anywhere — cloud or local — until the audio has been shown to contain
+        // something. See `provablySilent` for what "shown" costs and what it is allowed to mean.
+        if try await provablySilent(task.segmentId) {
+            let terminal = try queue.markNoSpeech(task.segmentId)
+            onStateChanged(task.segmentId, .noSpeech)
+            return terminal
+        }
+
         try queue.markRunning(task.segmentId)
         onStateChanged(task.segmentId, .running)
         let segmentId = task.segmentId
@@ -152,6 +166,48 @@ public final class TranscriptionProcessor: Sendable {
             )
             onStateChanged(segmentId, .failed)
             return failed
+        }
+    }
+
+    /// Decodes the segment once and asks whether it demonstrably contains no voice.
+    ///
+    /// Placed here, before `markRunning`, for three reasons.
+    ///
+    /// 1. **It is the only point that can prevent the send.** Measuring the stream *while* a
+    ///    provider drains it would learn the same thing one round trip too late — the audio has
+    ///    already left. Running first is what buys the outcome: no upload, no charge, and — the
+    ///    reason this work exists — no opportunity for a provider to invent sentences out of room
+    ///    tone.
+    /// 2. **It is the same PCM.** `pcmSource` is the production factory the router would call, so
+    ///    what is measured is byte-for-byte what would have been transcribed, not an approximation
+    ///    read off the spool.
+    /// 3. **It costs a decode, and only a decode.** Measured with this code over the real spool:
+    ///    116 hours of audio decoded and profiled in 130 s of CPU, ~3200× realtime, 170 ms for an
+    ///    average nine-minute segment. It replaces either a multi-megabyte cloud upload or an ASR
+    ///    pass. The stream is single-use, so the router builds a fresh one for the real attempt —
+    ///    that second decode is the price, and it is the smaller half of the trade.
+    ///
+    /// Fails OPEN. Any error decoding — a truncated spool, a store that has moved on — leaves the
+    /// segment to the normal path, where the providers' own empty/short-audio handling and the
+    /// retry ladder already apply. A gate that cannot measure must never claim silence.
+    ///
+    /// The outcome is `.noSpeech`: terminal, not a failure, never retried, and already the state
+    /// this pipeline uses for "settled, nothing was said" — `SegmentSpeechEvidence` treats it as
+    /// settled-with-no-speech and the transcript view renders the span as quiet rather than as
+    /// missing audio. The spool file is untouched; a user-requested re-transcribe requeues it like
+    /// any other segment.
+    private func provablySilent(_ segmentId: String) async throws -> Bool {
+        guard let silenceFloorRms else { return false }
+        do {
+            var meter = SegmentEnergyMeter(sampleRateHz: sampleRateHz, floorRms: silenceFloorRms)
+            for try await chunk in try await pcmSource(segmentId) {
+                meter.consume(chunk)
+            }
+            return meter.finish().isProvablySilent(floorRms: silenceFloorRms)
+        } catch let error where error is CancellationError {
+            throw error
+        } catch {
+            return false
         }
     }
 }

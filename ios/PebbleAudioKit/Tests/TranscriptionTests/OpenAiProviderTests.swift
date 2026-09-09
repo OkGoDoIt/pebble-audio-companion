@@ -71,7 +71,7 @@ func jsonResponse(_ content: String) -> HttpTransportResponse {
         }
     }
 
-    @Test func uploadsWavMultipartAndParsesText() async throws {
+    @Test func uploadsAudioMultipartAndParsesText() async throws {
         let transport = FakeHttpTransport { _ in
             jsonResponse(#"{"text":"hello watch"}"#)
         }
@@ -82,20 +82,27 @@ func jsonResponse(_ content: String) -> HttpTransportResponse {
             model: { "gpt-transcribe" }
         )
 
+        // Half a second of audio. Long enough to clear `PcmFlac.minimumFrames`, so this asserts
+        // the body a real segment produces rather than the short-chunk WAV fallback.
         let result = try await provider.transcribe(
-            pcmChunks: pcmStream([Data(repeating: 1, count: 640)]), sampleRateHz: 16_000
+            pcmChunks: pcmStream([Data(repeating: 1, count: 16_000)]), sampleRateHz: 16_000
         )
 
         #expect(result.text == "hello watch")
         #expect(result.providerId == "openai")
         let request = try #require(transport.requests.first)
         #expect(request.headers["Authorization"] == "Bearer test-key")
-        // The body is multipart form data carrying a WAV file part.
+        // The body is multipart form data carrying the segment audio. FLAC since stream DU —
+        // lossless, so the model sees the same samples, at ~31% of the bytes. This is the
+        // SYNCHRONOUS path, which is handed decoded PCM and so tops out at FLAC; the background
+        // path packages the watch's own Speex frames instead. See
+        // `OpenAiTranscriptionProvider.pcmFormatLadder`, `PcmFlac` and `OggSpeex`.
         let body = try #require(request.body)
         let bodyText = String(decoding: body, as: UTF8.self)
         #expect(bodyText.contains("name=\"model\""))
-        #expect(bodyText.contains("Content-Type: audio/wav"))
-        #expect(bodyText.contains("RIFF"))
+        #expect(bodyText.contains("Content-Type: audio/flac"))
+        #expect(bodyText.contains("filename=\"segment-0.flac\""))
+        #expect(bodyText.contains("fLaC"))
     }
 
     @Test func splitsLargePcmIntoMultipleUploads() async throws {

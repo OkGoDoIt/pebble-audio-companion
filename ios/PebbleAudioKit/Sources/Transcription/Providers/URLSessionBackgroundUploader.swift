@@ -30,6 +30,9 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
     private var backgroundEventsCompletions: [@Sendable () -> Void] = []
 
     private let sessionIdentifierValue: String
+    /// What networks uploads may use, re-read per request. See `CloudUploadNetworkPolicy` for why
+    /// this is per-request state and not part of the session configuration.
+    private var networkPolicy: @Sendable () -> CloudUploadNetwork
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: sessionIdentifierValue)
         // The session retains its delegate (self) — intentional for this app-lifetime singleton.
@@ -37,11 +40,32 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
     }()
     private lazy var sessionDelegate = Delegate(owner: self)
 
-    public init(sessionIdentifier: String = URLSessionBackgroundUploader.sessionIdentifier) {
+    public init(
+        sessionIdentifier: String = URLSessionBackgroundUploader.sessionIdentifier,
+        networkPolicy: @escaping @Sendable () -> CloudUploadNetwork = {
+            CloudUploadNetworkPolicy.default
+        }
+    ) {
         self.sessionIdentifierValue = sessionIdentifier
+        self.networkPolicy = networkPolicy
         (self.outcomes, self.outcomeContinuation) =
             AsyncStream<CloudUploadOutcome>.makeStream(bufferingPolicy: .unbounded)
         super.init()
+    }
+
+    /// Points the uploader at the live user setting.
+    ///
+    /// A setter rather than an init argument because the production instance is the `shared`
+    /// singleton, created before any settings object exists. `AppSettings` installs a closure over
+    /// its runtime box, so the next enqueued segment sees the current choice — no session rebuild,
+    /// which a background session could not do anyway.
+    public func setNetworkPolicy(_ policy: @escaping @Sendable () -> CloudUploadNetwork) {
+        lock.withLock { networkPolicy = policy }
+    }
+
+    /// The policy the next request would be stamped with. Exposed for tests and diagnostics.
+    public var currentNetworkPolicy: CloudUploadNetwork {
+        lock.withLock { networkPolicy }()
     }
 
     /// Registers a `handleEventsForBackgroundURLSession` completion handler.
@@ -60,17 +84,29 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
     }
 
     public func enqueue(_ request: CloudUploadRequest) async {
-        guard let url = URL(string: request.url) else { return }
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = request.method
-        for (name, value) in request.headers {
-            urlRequest.setValue(value, forHTTPHeaderField: name)
-        }
+        guard let urlRequest = uploadRequest(for: request) else { return }
         let task = session.uploadTask(
             with: urlRequest, fromFile: URL(fileURLWithPath: request.bodyFilePath)
         )
         task.taskDescription = request.jobId
         task.resume()
+    }
+
+    /// The `URLRequest` for one job, network policy included.
+    ///
+    /// Split out so the policy is assertable without creating a real background session (as with
+    /// the completion-handler contract above). The policy is stamped here, per request, rather
+    /// than on the session configuration — see `CloudUploadNetworkPolicy` for why a background
+    /// session cannot carry it.
+    func uploadRequest(for request: CloudUploadRequest) -> URLRequest? {
+        guard let url = URL(string: request.url) else { return nil }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method
+        for (name, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
+        }
+        CloudUploadNetworkPolicy.apply(currentNetworkPolicy, to: &urlRequest)
+        return urlRequest
     }
 
     public func reconcile() async {

@@ -22,6 +22,26 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
     public static let defaultPollIntervalMs: Int64 = 2_000
     public static let defaultMaxPollAttempts = 150
     public static let defaultMaxUploadBytes = 100 * 1024 * 1024
+
+    /// Containers this provider will be offered, best first.
+    ///
+    /// Ogg Speex is the watch's own frames repackaged — 4.08% of the WAV, no decode, no re-encode
+    /// (`OggSpeex`). Soniox lists `ogg` among the formats it "automatically detects" and says
+    /// nothing about codecs (https://soniox.com/docs/stt/async/async-transcription), so this is an
+    /// educated bet rather than a documented guarantee; FLAC below it IS documented, is lossless,
+    /// and is still a 63% saving. `CloudUploadFormatPreference` handles the rest: the coordinator
+    /// walks this ladder and durably skips anything Soniox has actually refused.
+    public static let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+
+    public var uploadFormatLadder: [CloudAudioFormat] { Self.uploadFormatLadder }
+
+    /// The ladder for the synchronous path, which is handed decoded PCM and so cannot package the
+    /// watch's frames.
+    public static let pcmFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.pcmLadder
+
+    /// This backend's identity for keyed state (the durable format memory).
+    public static let cloudProvider: CloudProvider = .soniox
+
     static let segmentGapMs: Int64 = 800
     private static let statusCompleted = "completed"
     private static let statusError = "error"
@@ -40,6 +60,10 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
     private let pollIntervalMs: Int64
     private let maxPollAttempts: Int
     private let maxUploadBytes: Int
+    /// What the app has learned about which containers Soniox will read. Consulted by the
+    /// SYNCHRONOUS path here (the background path is driven by the coordinator, which owns the
+    /// same store), and written to when this path is the one that discovers a rejection.
+    private let formatMemory: any CloudUploadFormatMemory
     /// Injectable so tests can poll without real delays.
     private let sleep: @Sendable (Int64) async throws -> Void
 
@@ -56,6 +80,7 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         pollIntervalMs: Int64 = SonioxTranscriptionProvider.defaultPollIntervalMs,
         maxPollAttempts: Int = SonioxTranscriptionProvider.defaultMaxPollAttempts,
         maxUploadBytes: Int = SonioxTranscriptionProvider.defaultMaxUploadBytes,
+        formatMemory: any CloudUploadFormatMemory = NoCloudUploadFormatMemory(),
         sleep: @escaping @Sendable (Int64) async throws -> Void = { ms in
             try await Task.sleep(nanoseconds: UInt64(max(0, ms)) * 1_000_000)
         }
@@ -72,6 +97,7 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         self.pollIntervalMs = pollIntervalMs
         self.maxPollAttempts = maxPollAttempts
         self.maxUploadBytes = maxUploadBytes
+        self.formatMemory = formatMemory
         self.sleep = sleep
     }
 
@@ -92,17 +118,51 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
             throw TranscriptionError.providerUnavailable(providerId: id)
         }
 
-        let wav = try await encodeWav(pcmChunks: pcmChunks, sampleRateHz: sampleRateHz)
+        let pcm = try await collectPcm(pcmChunks: pcmChunks)
 
-        let fileId = try await uploadFile(key: key, wav: wav)
-        do {
-            let result = try await transcribeUploadedFile(key: key, fileId: fileId)
-            await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
-            return result
-        } catch {
-            await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
-            throw error
+        // This path receives DECODED PCM, so passthrough is not available to it and the ladder
+        // starts at FLAC. One downgrade is possible (FLAC -> WAV) and it is taken inline rather
+        // than by failing the segment: a container Soniox will not read is not a reason to make
+        // the user wait out a backoff for audio we are holding right now.
+        var format = CloudUploadFormatPreference.resolve(
+            ladder: Self.pcmFormatLadder, rejected: formatMemory.rejectedFormats(Self.cloudProvider))
+        while true {
+            let audio = CloudAudioBody.encode(pcm: pcm, sampleRateHz: sampleRateHz, format: format)
+            do {
+                let fileId = try await uploadFile(key: key, audio: audio)
+                do {
+                    let result = try await transcribeUploadedFile(key: key, fileId: fileId)
+                    await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
+                    formatMemory.noteSuccess(Self.cloudProvider)
+                    return result
+                } catch {
+                    await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
+                    throw error
+                }
+            } catch {
+                guard let next = downgrade(after: error, from: format) else { throw error }
+                format = next
+            }
         }
+    }
+
+    /// Records a container Soniox has refused and returns the next rung, or nil when this failure
+    /// was not about the container (or there is nowhere left to fall).
+    private func downgrade(after error: Error, from format: CloudAudioFormat) -> CloudAudioFormat? {
+        if case TranscriptionError.noSpeechDetected = error { return nil }
+        guard let complaint = CloudUploadFormatRejection.complaint(in: error),
+            CloudUploadFormatRejection.isFormatRejection(
+                format: format, httpStatus: complaint.httpStatus, body: complaint.evidence),
+            let next = CloudUploadFormatPreference.next(
+                after: format, ladder: Self.pcmFormatLadder,
+                rejected: formatMemory.rejectedFormats(Self.cloudProvider))
+        else { return nil }
+        formatMemory.recordRejection(
+            CloudFormatRejectionRecord(
+                format: format, httpStatus: complaint.httpStatus, evidence: complaint.evidence,
+                recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000)),
+            provider: Self.cloudProvider)
+        return next
     }
 
     /// Create -> poll -> fetch -> map for an already-uploaded file; always best-effort deletes
@@ -123,15 +183,23 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
 
     // MARK: - CloudUploadCapable: background-upload the file, finish the control plane when awake
 
-    public func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+    public func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         guard cloudConsent(), let key = apiKey()?.nonBlank else { return nil }
-        if wav.count > maxUploadBytes { return nil }
+        // Size-checked on the bytes that actually go on the wire, not on the PCM they came from.
+        // Deliberately more permissive than the old `wav.count > maxUploadBytes`: a passthrough
+        // body is 4% of the WAV and a FLAC one ~37%, so segments that used to be rejected here —
+        // and then sat `Pending` forever, see the note on
+        // `BackgroundCloudUploadCoordinator.submitPending` — now fit with room to spare.
+        if audio.bytes.count > maxUploadBytes { return nil }
         return CloudUploadPlan(
             url: "\(baseUrl)/v1/files",
             headers: ["Authorization": "Bearer \(key)"],
             textFields: [],
             file: MultipartBody.FilePart(
-                name: "file", filename: "segment.wav", contentType: "audio/wav", bytes: wav
+                name: "file",
+                filename: audio.filename("segment"),
+                contentType: audio.contentType,
+                bytes: audio.bytes
             )
         )
     }
@@ -162,12 +230,11 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
 
     // MARK: - Flow steps
 
-    private func encodeWav(
-        pcmChunks: AsyncThrowingStream<Data, Error>,
-        sampleRateHz: Int
-    ) async throws -> Data {
+    private func collectPcm(pcmChunks: AsyncThrowingStream<Data, Error>) async throws -> Data {
         var pcm = Data()
         for try await chunk in pcmChunks where !chunk.isEmpty {
+            // Bounds the PCM held in memory, which is what this guard was always really about;
+            // the encoded body is smaller than the PCM in every format we send.
             if pcm.count + chunk.count > maxUploadBytes {
                 throw TranscriptionError.transcriptionFailed(
                     "segment audio exceeds \(maxUploadBytes) byte Soniox upload limit"
@@ -178,16 +245,19 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         if pcm.isEmpty {
             throw TranscriptionError.noSpeechDetected("empty audio for Soniox upload")
         }
-        return PcmWav.encodeMono16(pcm: pcm, sampleRateHz: sampleRateHz)
+        return pcm
     }
 
-    private func uploadFile(key: String, wav: Data) async throws -> String {
+    private func uploadFile(key: String, audio: CloudAudioBody) async throws -> String {
         let boundary = "PebbleAudioKit-\(UUID().uuidString)"
         let (body, contentType) = MultipartBody.encode(
             boundary: boundary,
             textFields: [],
             file: MultipartBody.FilePart(
-                name: "file", filename: "segment.wav", contentType: "audio/wav", bytes: wav
+                name: "file",
+                filename: audio.filename("segment"),
+                contentType: audio.contentType,
+                bytes: audio.bytes
             )
         )
         let response = try await transport.execute(
@@ -257,8 +327,14 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
             case Self.statusCompleted:
                 return
             case Self.statusError:
+                // Soniox stores the file first and transcodes it here, so a container it cannot
+                // read surfaces as a transcription-level error with no status of its own. Carried
+                // structurally (`httpStatus: 0`) so the format classifier can read the wording
+                // rather than the upload coordinator re-parsing a rendered sentence.
                 throw TranscriptionError.transcriptionFailed(
-                    "Soniox transcription error: \(meta.errorMessage ?? "unknown")"
+                    "Soniox transcription error: \(meta.errorMessage ?? "unknown")",
+                    underlying: CloudFormatComplaint(
+                        httpStatus: 0, evidence: meta.errorMessage ?? "")
                 )
             default:
                 if attempt < maxPollAttempts - 1 { try await sleep(pollIntervalMs) }
@@ -309,7 +385,9 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
     }
 
     /// Groups consecutive tokens into segments, breaking on a speaker change or a silence gap.
-    private func groupIntoSegments(_ tokens: [SonioxBatchToken]) -> [TranscriptSegment] {
+    /// Internal rather than private so the per-turn confidence summary can be asserted directly
+    /// against a real response body, without standing up the four-request control plane.
+    func groupIntoSegments(_ tokens: [SonioxBatchToken]) -> [TranscriptSegment] {
         guard let first = tokens.first else { return [] }
         var segments: [TranscriptSegment] = []
         var current = ""
@@ -317,17 +395,25 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         var end = first.endMs ?? 0
         var speaker = first.speaker
         var prevEnd = first.startMs ?? 0
+        var confidences: [Double] = []
 
         func flush() {
             let cleaned = current.trimmed
             if !cleaned.isEmpty {
+                let summary = TokenConfidence.summary(confidences)
                 segments.append(
                     TranscriptSegment(
-                        text: cleaned, startMs: start, endMs: max(end, start), speaker: speaker
+                        text: cleaned,
+                        startMs: start,
+                        endMs: max(end, start),
+                        speaker: speaker,
+                        confidence: summary.mean,
+                        minConfidence: summary.min
                     )
                 )
             }
             current = ""
+            confidences.removeAll(keepingCapacity: true)
         }
 
         for token in tokens {
@@ -340,6 +426,7 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
                 speaker = token.speaker
             }
             current += token.text ?? ""
+            if let confidence = token.confidence { confidences.append(confidence) }
             end = token.endMs ?? 0
             prevEnd = token.endMs ?? 0
         }
@@ -356,8 +443,14 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         )
     }
 
+    /// Every failed Soniox response, with its status and body preserved as a
+    /// `CloudFormatComplaint` alongside the rendered message. The message is what the user's
+    /// diagnostics show; the complaint is what `CloudUploadFormatRejection` reasons about, and
+    /// keeping both means the upload coordinator never has to parse a sentence to find a status.
     private func failure(stage: String, status: Int, body: String) -> TranscriptionError {
-        .transcriptionFailed("Soniox \(stage) failed (\(status)): \(body.prefix(240))")
+        .transcriptionFailed(
+            "Soniox \(stage) failed (\(status)): \(body.prefix(240))",
+            underlying: CloudFormatComplaint(httpStatus: status, evidence: body))
     }
 
     // MARK: - Wire shapes
@@ -418,6 +511,12 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         var endMs: Int64?
         var speaker: String?
         var isAudioEvent: Bool?
+        /// Soniox's own 0…1 confidence for this token. It has been in every response body all
+        /// along — the reference response for
+        /// `GET /v1/transcriptions/{id}/transcript` shows it — and this decoder simply had no key
+        /// for it, so `JSONDecoder` dropped it silently from 585 transcripts. See the note on
+        /// `TranscriptSegment.confidence` for why it is collected and not yet used.
+        var confidence: Double?
 
         enum CodingKeys: String, CodingKey {
             case text
@@ -425,7 +524,25 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
             case endMs = "end_ms"
             case speaker
             case isAudioEvent = "is_audio_event"
+            case confidence
         }
+    }
+}
+
+/// Per-turn summary of a provider's per-token confidences.
+///
+/// Shared by the async and realtime Soniox paths so the two cannot describe the same number
+/// differently. Rounded to four decimals: that is far finer than any distribution question this
+/// is meant to answer, and it keeps the stored JSON free of `0.9500000000000001`.
+enum TokenConfidence {
+    static func summary(_ values: [Double]) -> (mean: Double?, min: Double?) {
+        guard !values.isEmpty else { return (nil, nil) }
+        let mean = values.reduce(0, +) / Double(values.count)
+        return (round4(mean), round4(values.min() ?? mean))
+    }
+
+    private static func round4(_ value: Double) -> Double {
+        (value * 10_000).rounded() / 10_000
     }
 }
 

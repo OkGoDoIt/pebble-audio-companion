@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 import Testing
 
@@ -55,11 +56,14 @@ private final class FakeOpenAi: TranscriptionProvider, CloudUploadCapable, @unch
         throw AssertionError("not used")
     }
 
-    func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+
+    func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(
             url: "https://openai/transcriptions",
             file: MultipartBody.FilePart(
-                name: "file", filename: "s.wav", contentType: "audio/wav", bytes: wav
+                name: "file", filename: audio.filename("s"), contentType: audio.contentType,
+                bytes: audio.bytes
             )
         )
     }
@@ -84,11 +88,14 @@ private final class FakeSoniox: TranscriptionProvider, CloudUploadCapable, @unch
         throw AssertionError("not used")
     }
 
-    func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+
+    func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(
             url: "https://soniox/files",
             file: MultipartBody.FilePart(
-                name: "file", filename: "s.wav", contentType: "audio/wav", bytes: wav
+                name: "file", filename: audio.filename("s"), contentType: audio.contentType,
+                bytes: audio.bytes
             )
         )
     }
@@ -206,7 +213,9 @@ private final class FakeUploadQueue: @unchecked Sendable {
                 cloudProvider: cloud,
                 jobStore: jobStore,
                 queue: queue.hooks,
-                audioSource: { _ in SegmentAudio(wav: Data(repeating: 1, count: 64), sampleRateHz: 16_000) },
+                audioSource: { _, _ in
+                    SegmentAudio(wav: Data(repeating: 1, count: 64), sampleRateHz: 16_000)
+                },
                 bodyDir: root.appendingPathComponent("bodies", isDirectory: true),
                 nowMs: { 1 },
                 cloudPrimary: { true }

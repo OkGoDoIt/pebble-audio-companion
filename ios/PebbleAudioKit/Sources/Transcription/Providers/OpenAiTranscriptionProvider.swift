@@ -20,6 +20,33 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
     public static let defaultMaxUploadBytes = 24_000_000
     private static let bytesPerSample = 2
 
+    /// Containers this provider will be offered, best first.
+    ///
+    /// OpenAI's OpenAPI spec v2.3.0 lists `flac` and `ogg` among the formats
+    /// `CreateTranscriptionRequest.file` accepts and asks for an extension-bearing filename plus a
+    /// matching content type, which is what `CloudAudioBody` supplies. Its *prose* guide currently
+    /// lists a shorter set that omits both; the spec is what the endpoint validates against, and
+    /// neither document says whether `ogg` covers Speex. So the top rung is a bet
+    /// (`OggSpeex`: 4.08% of the WAV, no decode, no re-encode), FLAC below it is documented and
+    /// lossless, and `CloudUploadFormatPreference` learns and remembers a refusal rather than
+    /// making anyone flip a constant by hand.
+    ///
+    /// Passthrough also retires this provider's chunker. The largest real segment is 28.9 MB as
+    /// WAV, over OpenAI's 25 MB limit, so `transcribe` currently splits the PCM at a fixed byte
+    /// boundary — mid-sentence, which OpenAI's own guide warns "can remove context and reduce
+    /// accuracy". The same segment is 1.18 MB as Ogg Speex and 11.6 MB as FLAC; on either rung the
+    /// split never happens.
+    public static let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+
+    public var uploadFormatLadder: [CloudAudioFormat] { Self.uploadFormatLadder }
+
+    /// The ladder for the synchronous path, which is handed decoded PCM and so cannot package the
+    /// watch's frames.
+    public static let pcmFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.pcmLadder
+
+    /// This backend's identity for keyed state (the durable format memory).
+    public static let cloudProvider: CloudProvider = .openAi
+
     public let id = "openai"
 
     private let transport: any HttpTransport
@@ -35,6 +62,10 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
     let endpointUrl: String
     let modelsUrl: String
     private let maxUploadBytes: Int
+    /// What the app has learned about which containers OpenAI will read. Consulted by the
+    /// SYNCHRONOUS path here; the background path is driven by the coordinator, which owns the
+    /// same store.
+    private let formatMemory: any CloudUploadFormatMemory
 
     public init(
         transport: any HttpTransport,
@@ -45,7 +76,8 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
         sttPrompt: @escaping @Sendable () -> String? = { nil },
         endpointUrl: String = OpenAiTranscriptionProvider.defaultEndpointUrl,
         modelsUrl: String = OpenAiTranscriptionProvider.defaultModelsUrl,
-        maxUploadBytes: Int = OpenAiTranscriptionProvider.defaultMaxUploadBytes
+        maxUploadBytes: Int = OpenAiTranscriptionProvider.defaultMaxUploadBytes,
+        formatMemory: any CloudUploadFormatMemory = NoCloudUploadFormatMemory()
     ) {
         precondition(
             maxUploadBytes > Self.wavHeaderBytes,
@@ -60,6 +92,13 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
         self.endpointUrl = endpointUrl
         self.modelsUrl = modelsUrl
         self.maxUploadBytes = maxUploadBytes
+        self.formatMemory = formatMemory
+    }
+
+    /// The best rung the synchronous path may use right now.
+    private func pcmUploadFormat() -> CloudAudioFormat {
+        CloudUploadFormatPreference.resolve(
+            ladder: Self.pcmFormatLadder, rejected: formatMemory.rejectedFormats(Self.cloudProvider))
     }
 
     public func isAvailable() async -> Bool {
@@ -165,40 +204,79 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
         if pcm.isEmpty {
             throw TranscriptionError.noSpeechDetected("empty PCM chunk")
         }
-        let wav = PcmWav.encodeMono16(pcm: pcm, sampleRateHz: sampleRateHz)
-        if wav.count > maxUploadBytes {
+        // The guard stays on the PCM-plus-header size the chunker sized against, NOT on the
+        // encoded body: `transcribe` splits on raw PCM bytes before anything is encoded, so
+        // re-deriving that arithmetic from a compressed size would change where the splits fall.
+        // A FLAC body is strictly smaller than the WAV this measures, so the check is only ever
+        // conservative.
+        if Self.wavHeaderBytes + pcm.count > maxUploadBytes {
             throw TranscriptionError.transcriptionFailed(
-                "WAV upload chunk \(wav.count) exceeds \(maxUploadBytes) byte limit"
+                "WAV upload chunk \(Self.wavHeaderBytes + pcm.count) exceeds \(maxUploadBytes) byte limit"
             )
         }
-        let (fields, filePart) = requestParts(wav: wav, filename: "segment-\(chunkIndex).wav")
-        let boundary = "PebbleAudioKit-\(UUID().uuidString)"
-        let (body, contentType) = MultipartBody.encode(
-            boundary: boundary, textFields: fields, file: filePart
-        )
-        let response = try await transport.execute(
-            HttpTransportRequest(
-                method: "POST",
-                url: endpointUrl,
-                headers: [
-                    "Authorization": "Bearer \(key)",
-                    "Content-Type": contentType,
-                ],
-                body: body
+        // One downgrade is possible on this path (FLAC -> WAV) and it is taken inline: a container
+        // OpenAI will not read is not a reason to fail audio we are holding right now.
+        var format = pcmUploadFormat()
+        while true {
+            let audio = CloudAudioBody.encode(pcm: pcm, sampleRateHz: sampleRateHz, format: format)
+            let (fields, filePart) = requestParts(audio: audio, name: "segment-\(chunkIndex)")
+            let boundary = "PebbleAudioKit-\(UUID().uuidString)"
+            let (body, contentType) = MultipartBody.encode(
+                boundary: boundary, textFields: fields, file: filePart
             )
-        )
-        if response.status != 200 {
-            throw TranscriptionError.transcriptionFailed(
-                "OpenAI transcription failed (\(response.status)): \(response.text.prefix(240))"
+            let response = try await transport.execute(
+                HttpTransportRequest(
+                    method: "POST",
+                    url: endpointUrl,
+                    headers: [
+                        "Authorization": "Bearer \(key)",
+                        "Content-Type": contentType,
+                    ],
+                    body: body
+                )
             )
+            if response.status != 200 {
+                if let next = downgrade(
+                    from: audio.format, httpStatus: response.status, body: response.text)
+                {
+                    format = next
+                    continue
+                }
+                throw TranscriptionError.transcriptionFailed(
+                    "OpenAI transcription failed (\(response.status)): \(response.text.prefix(240))",
+                    underlying: CloudFormatComplaint(
+                        httpStatus: response.status, evidence: response.text)
+                )
+            }
+            formatMemory.noteSuccess(Self.cloudProvider)
+            return try parseChunk(body: response.body, offsetMs: chunkStartMs)
         }
-        return try parseChunk(body: response.body, offsetMs: chunkStartMs)
+    }
+
+    /// Records a container OpenAI has refused and returns the next rung, or nil when this response
+    /// was not about the container (or there is nowhere left to fall).
+    private func downgrade(
+        from format: CloudAudioFormat, httpStatus: Int, body: String
+    ) -> CloudAudioFormat? {
+        guard
+            CloudUploadFormatRejection.isFormatRejection(
+                format: format, httpStatus: httpStatus, body: body),
+            let next = CloudUploadFormatPreference.next(
+                after: format, ladder: Self.pcmFormatLadder,
+                rejected: formatMemory.rejectedFormats(Self.cloudProvider))
+        else { return nil }
+        formatMemory.recordRejection(
+            CloudFormatRejectionRecord(
+                format: format, httpStatus: httpStatus, evidence: body,
+                recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000)),
+            provider: Self.cloudProvider)
+        return next
     }
 
     /// The multipart text fields + file part shared by the synchronous path and `uploadPlan`.
     private func requestParts(
-        wav: Data,
-        filename: String
+        audio: CloudAudioBody,
+        name: String
     ) -> (fields: [(String, String)], file: MultipartBody.FilePart) {
         let modelValue = effectiveModel()
         let format = responseFormat(model: modelValue)
@@ -214,7 +292,10 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
             fields.append(("prompt", prompt))
         }
         let file = MultipartBody.FilePart(
-            name: "file", filename: filename, contentType: "audio/wav", bytes: wav
+            name: "file",
+            filename: audio.filename(name),
+            contentType: audio.contentType,
+            bytes: audio.bytes
         )
         return (fields, file)
     }
@@ -234,12 +315,14 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
 
     // MARK: - CloudUploadCapable: single-shot background upload (the response IS the transcript)
 
-    public func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+    public func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         guard cloudConsent(), let key = apiKey()?.nonBlank else { return nil }
         // One background upload is a single request; segments larger than the API limit stay on
-        // the synchronous chunked path.
-        if wav.count > maxUploadBytes { return nil }
-        let (fields, filePart) = requestParts(wav: wav, filename: "segment.wav")
+        // the synchronous chunked path. Sized on the encoded body, so the longest real segment —
+        // 28.9 MB of WAV, over the limit — now fits in one request as 1.18 MB of Ogg Speex or
+        // 11.6 MB of FLAC, and the mid-sentence chunker is never reached.
+        if audio.bytes.count > maxUploadBytes { return nil }
+        let (fields, filePart) = requestParts(audio: audio, name: "segment")
         return CloudUploadPlan(
             url: endpointUrl,
             headers: ["Authorization": "Bearer \(key)"],
@@ -251,7 +334,8 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
     public func onUploadResponse(httpStatus: Int, body: String) async throws -> CloudUploadStep {
         guard (200..<300).contains(httpStatus) else {
             throw TranscriptionError.transcriptionFailed(
-                "OpenAI transcription failed (\(httpStatus)): \(body.prefix(240))"
+                "OpenAI transcription failed (\(httpStatus)): \(body.prefix(240))",
+                underlying: CloudFormatComplaint(httpStatus: httpStatus, evidence: body)
             )
         }
         let chunk = try parseChunk(body: Data(body.utf8), offsetMs: 0)

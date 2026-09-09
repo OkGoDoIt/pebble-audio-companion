@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 
 // Port of `core/transcription/.../CloudUploadJobStore.kt`.
@@ -19,6 +20,14 @@ public struct CloudUploadJob: Codable, Sendable, Equatable {
     /// (Soniox) the uploaded file id, once known.
     public var sonioxFileId: String?
     public let createdAtMs: Int64
+    /// Container the body was assembled in.
+    ///
+    /// The outcome of a background upload can arrive in a DIFFERENT PROCESS — the app was
+    /// suspended or killed, the transport finished, and iOS relaunched us to hand it over — so
+    /// nothing about the request survives except this record. Without the format there is no way
+    /// to attribute a rejection to the container that caused it. Nil on records written before
+    /// this existed; those are FLAC or WAV by construction and are never downgraded.
+    public var uploadFormat: CloudAudioFormat?
 
     public init(
         jobId: String,
@@ -26,7 +35,8 @@ public struct CloudUploadJob: Codable, Sendable, Equatable {
         phase: CloudUploadPhase = .uploading,
         bodyFilePath: String,
         sonioxFileId: String? = nil,
-        createdAtMs: Int64
+        createdAtMs: Int64,
+        uploadFormat: CloudAudioFormat? = nil
     ) {
         self.jobId = jobId
         self.provider = provider
@@ -34,6 +44,7 @@ public struct CloudUploadJob: Codable, Sendable, Equatable {
         self.bodyFilePath = bodyFilePath
         self.sonioxFileId = sonioxFileId
         self.createdAtMs = createdAtMs
+        self.uploadFormat = uploadFormat
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +55,8 @@ public struct CloudUploadJob: Codable, Sendable, Equatable {
         self.bodyFilePath = try container.decode(String.self, forKey: .bodyFilePath)
         self.sonioxFileId = try container.decodeIfPresent(String.self, forKey: .sonioxFileId)
         self.createdAtMs = try container.decode(Int64.self, forKey: .createdAtMs)
+        self.uploadFormat = try container.decodeIfPresent(
+            CloudAudioFormat.self, forKey: .uploadFormat)
     }
 }
 

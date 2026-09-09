@@ -283,6 +283,33 @@ public final class TranscriptionQueue: Sendable {
         }
     }
 
+    /// Returns a task to Pending and REFUNDS the attempt the upload spent, for a failure that
+    /// says nothing about the segment.
+    ///
+    /// Today there is exactly one such failure: the provider would not read the container we sent
+    /// (see `CloudUploadFormatPreference`). The audio is fine, the queue is fine, the request was
+    /// simply addressed in a format that provider does not accept, and the very next pass sends
+    /// the identical bytes one rung down the ladder. Counting that as an attempt would mean a
+    /// segment unlucky enough to be among the first after a provider change arrived at the format
+    /// that works with a quarter of its eight-attempt budget already gone — and the budget exists
+    /// to bound genuinely broken work, which this is not.
+    ///
+    /// Deliberately NOT `requeue`, which zeroes `attempts` outright: that would also forgive real
+    /// failures the task had already accumulated. This gives back one attempt and nothing else, so
+    /// it cannot loop — the ladder has three rungs and a rejection is remembered durably, so a
+    /// segment can be refunded at most twice in the life of the app.
+    @discardableResult
+    public func requeueWithoutAttempt(_ segmentId: String) throws -> TranscriptionTask? {
+        try update(segmentId) { task in
+            var next = task
+            next.state = .pending
+            next.attempts = max(0, task.attempts - 1)
+            next.retryable = true
+            next.lastError = nil
+            return next
+        }
+    }
+
     /// Forces a task back to Pending for a user-requested re-transcribe, regardless of its
     /// current (possibly terminal) state, and clears the attempt count/error so it runs
     /// immediately under the current transcription mode. Returns nil when no task exists for

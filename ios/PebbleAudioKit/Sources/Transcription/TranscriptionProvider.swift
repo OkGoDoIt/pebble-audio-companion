@@ -27,11 +27,44 @@ public struct TranscriptSegment: Sendable, Equatable, Codable {
     public let endMs: Int64
     public let speaker: String?
 
-    public init(text: String, startMs: Int64, endMs: Int64, speaker: String? = nil) {
+    /// Mean of the provider's per-token confidences over this turn, 0…1, or nil when the
+    /// provider did not report any.
+    ///
+    /// COLLECTED, NOT ACTED ON. Soniox returns a `confidence` on every token of every async and
+    /// realtime response and this app decoded straight past it for 585 transcripts — the only
+    /// signal in the hallucination problem that is orthogonal to everything streams HC and HS
+    /// measured, arriving free on bytes already paid for. Nothing branches on it yet, and nothing
+    /// should until the distribution has been measured against the shipped `TranscriptArtefacts`
+    /// verdict on this user's own library: every audio-side rule that *looked* separable turned
+    /// out to trade real speech for artefact at 1:1, and a confidence threshold guessed from a
+    /// plausible-looking histogram would be the same mistake with a new number.
+    ///
+    /// Per TURN and not per word on purpose. The corpus is 74,125 turns against 517,236 words, so
+    /// this is the granularity the artefact rule already works at and a seventh of the JSON — and
+    /// the word array is the one this app has already had a main-thread stall over
+    /// (`FileTranscriptStore.loadSpeechTimings`).
+    public let confidence: Double?
+
+    /// The weakest single token in this turn, 0…1, or nil when unreported. Kept beside the mean
+    /// because a confabulated turn and a real one could plausibly differ in their floor while
+    /// agreeing on their average; which of the two separates anything is exactly the open
+    /// question, so both are recorded and neither is used.
+    public let minConfidence: Double?
+
+    public init(
+        text: String,
+        startMs: Int64,
+        endMs: Int64,
+        speaker: String? = nil,
+        confidence: Double? = nil,
+        minConfidence: Double? = nil
+    ) {
         self.text = text
         self.startMs = startMs
         self.endMs = endMs
         self.speaker = speaker
+        self.confidence = confidence
+        self.minConfidence = minConfidence
     }
 }
 

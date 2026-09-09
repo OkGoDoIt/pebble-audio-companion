@@ -60,9 +60,17 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
 
     private let lock = NSLock()
     private var _lastSuccessfulMode: TranscriptionMode?
+    private var _lastFallback: ProcessingFallback?
 
     public var lastSuccessfulMode: TranscriptionMode? {
         lock.withLock { _lastSuccessfulMode }
+    }
+
+    /// Whether a "first" mode is currently being served by its fallback, and why. Nil when the
+    /// preferred path is working (or when the mode has no fallback). See `ProcessingFallback`
+    /// for the set/clear rules — this is the value Settings discloses.
+    public var lastFallback: ProcessingFallback? {
+        lock.withLock { _lastFallback }
     }
 
     public init(
@@ -93,6 +101,10 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
         pcmChunks: @escaping PcmChunksFactory, sampleRateHz: Int
     ) async throws -> RoutedTranscription {
         let result: RoutedTranscription
+        // Set only where a fallback actually produced the result; every other path clears it.
+        // Assigned before the throwing calls below can escape, so a run that fails outright
+        // leaves the previous state alone rather than inventing one — see `ProcessingFallback`.
+        var fallback: ProcessingFallback?
         switch mode() {
         case .localOnly:
             result = try await runProvider(
@@ -119,6 +131,12 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
                         self.remote, role: "remote", pcmChunks: pcmChunks,
                         sampleRateHz: sampleRateHz, modeUsed: .remoteOnly, suppressed: error)
                 }
+                // `storedFailureMessage`, not `transcriptionErrorMessage`: it is the exact string
+                // the queue persists as `lastError`, and `classify` is written against that
+                // shape (our own literals, parenthesised HTTP statuses, the `URLError` marker).
+                fallback = ProcessingFallback(
+                    direction: .localToCloud,
+                    cause: .classify(storedFailureMessage(error)))
             }
 
         case .remoteFirst:
@@ -134,9 +152,15 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
                 result = try await runProvider(
                     local, role: "local", pcmChunks: pcmChunks, sampleRateHz: sampleRateHz,
                     modeUsed: .localOnly, suppressed: error)
+                fallback = ProcessingFallback(
+                    direction: .cloudToLocal,
+                    cause: .classify(storedFailureMessage(error)))
             }
         }
-        lock.withLock { _lastSuccessfulMode = result.modeUsed }
+        lock.withLock {
+            _lastSuccessfulMode = result.modeUsed
+            _lastFallback = fallback
+        }
         return result
     }
 

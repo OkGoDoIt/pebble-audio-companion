@@ -49,23 +49,42 @@ public final class SpeexFrameDecoder: Sendable {
         frames: [Data],
         pcmChunkBytes: Int = SpeexFrameDecoder.defaultPcmChunkBytes
     ) throws -> [Data] {
+        var chunks: [Data] = []
+        try decode(frames: frames, pcmChunkBytes: pcmChunkBytes) { chunks.append($0) }
+        return chunks
+    }
+
+    /// Streams decoded PCM to `receive` and keeps NOTHING: the caller sees the same bounded chunks
+    /// in the same order as `decode(frames:)` but nothing accumulates them.
+    ///
+    /// This is the shape the upload path needs after Speex passthrough. The segment's frames go to
+    /// the provider untouched, so the only remaining reason to decode is the silence gate
+    /// (`SegmentEnergyMeter`), which is a streaming statistic — asking for `[Data]` there would
+    /// materialise 28.9 MB of PCM for a 15-minute segment purely to compute a handful of RMS
+    /// numbers from it, inside a background window with a jetsam ceiling.
+    ///
+    /// The closure is non-escaping and runs on the caller's thread, so the private Speex decoder
+    /// state is still touched by exactly one thread for the life of the call.
+    public func decode(
+        frames: [Data],
+        pcmChunkBytes: Int = SpeexFrameDecoder.defaultPcmChunkBytes,
+        receive: (Data) throws -> Void
+    ) throws {
         guard pcmChunkBytes > 0 else {
             throw AudioCodecError.transcriptionFailed("pcmChunkBytes must be positive")
         }
         let session = try makeSession()
-        var chunks: [Data] = []
         var pending = Data()
         for frame in frames {
             pending.append(try session.decodeFrame(frame))
             while pending.count >= pcmChunkBytes {
-                chunks.append(pending.prefix(pcmChunkBytes))
+                try receive(pending.prefix(pcmChunkBytes))
                 pending.removeFirst(pcmChunkBytes)
             }
         }
         if !pending.isEmpty {
-            chunks.append(pending)
+            try receive(pending)
         }
-        return chunks
     }
 
     /// Convenience for callers that want the whole decoded stream as one buffer.
