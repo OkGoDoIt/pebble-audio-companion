@@ -220,6 +220,11 @@ public actor DailyRecapEngine {
     private let minRefreshIntervalMs: Int64
     private let maxGenerationsPerRefresh: Int
     private let maxCondensationsPerRefresh: Int
+    /// Diagnostics for the condense pass. Whether the Today card is long because the pass has
+    /// not run, because the provider was down, or because the model would not shorten the day
+    /// is invisible from the outside — and it was unanswerable from the flight recorder, which
+    /// is where a question about a shipped build gets answered.
+    private let log: @Sendable (String) -> Void
     private let sleepMs: @Sendable (Int64) async throws -> Void
 
     /// Days whose segment set was fully handled by a previous pass (digest current, or nothing
@@ -250,6 +255,7 @@ public actor DailyRecapEngine {
         minRefreshIntervalMs: Int64 = 30 * 60 * 1000,
         maxGenerationsPerRefresh: Int = DailyRecapEngine.defaultMaxGenerationsPerRefresh,
         maxCondensationsPerRefresh: Int = DailyRecapEngine.defaultMaxCondensationsPerRefresh,
+        log: @escaping @Sendable (String) -> Void = { _ in },
         sleepMs: @escaping @Sendable (Int64) async throws -> Void = { ms in
             try await Task.sleep(nanoseconds: UInt64(max(0, ms)) * 1_000_000)
         }
@@ -266,6 +272,7 @@ public actor DailyRecapEngine {
         self.minRefreshIntervalMs = minRefreshIntervalMs
         self.maxGenerationsPerRefresh = maxGenerationsPerRefresh
         self.maxCondensationsPerRefresh = maxCondensationsPerRefresh
+        self.log = log
         self.sleepMs = sleepMs
     }
 
@@ -337,14 +344,17 @@ public actor DailyRecapEngine {
             } catch {
                 // Provider down / no consent / out of quota. Leave the day unstamped so the
                 // next pass tries again, and stop: the rest would fail the same way.
+                log("recap condense failed \(recap.dateKey) — \(error.localizedDescription)")
                 return
             }
             condensed += 1
             switch outcome {
             case .condensed(let text):
+                log("recap condensed \(recap.dateKey) \(recap.text.count) → \(text.count) chars")
                 try await store.saveCondensation(
                     dateKey: recap.dateKey, sourceText: recap.text, shortText: text)
             case .notShorter:
+                log("recap condense refused \(recap.dateKey) — not shorter than \(recap.text.count) chars")
                 try await store.saveCondensation(
                     dateKey: recap.dateKey, sourceText: recap.text, shortText: nil)
             }

@@ -644,7 +644,8 @@ final class AppComposition {
                 prompt: AiPromptTemplates.dailySummary,
                 onRecapSaved: makeRecapDonationHook(
                     donator: donator, clock: clock, log: AppRuntimeLog.runtimeLog
-                )
+                ),
+                log: { AppRuntimeLog.shared.record($0) }
             ),
             store: recapStore
         )

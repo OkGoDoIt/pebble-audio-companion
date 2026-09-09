@@ -297,6 +297,11 @@ struct TodayScreen: View {
     // header row carries the chevron that says where the rest lives. The extra "Read the full
     // recap" line appears only when there IS more, so it can never promise something the tap
     // does not deliver.
+    //
+    // The fallback is CLAMPED (`RecapDisplay.cardLineLimit`). Leaning on the condensation alone
+    // left the card's height in the hands of a second AI call: when it had not run yet, or the
+    // day's digest overran by more than the acceptance rule would shorten, the card went back
+    // to being the tallest thing on Today with nothing on screen admitting it.
 
     private func recapCard(_ recap: RecapDisplay) -> some View {
         Button {
@@ -326,6 +331,11 @@ struct TodayScreen: View {
                         .foregroundStyle(Tokens.secondaryBody)
                         .lineSpacing(5)
                         .multilineTextAlignment(.leading)
+                        // Bounded when the card is showing an uncondensed digest — see
+                        // `RecapDisplay.cardLineLimit`. Without it the card's height is whatever
+                        // the model wrote, and a busy day put a three-paragraph essay above
+                        // everything else on Today.
+                        .lineLimit(recap.cardLineLimit)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

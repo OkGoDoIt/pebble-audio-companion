@@ -72,6 +72,21 @@ struct RecapDisplay: Equatable {
 
     /// True while the card is showing a shortened form, so it can say where the rest is.
     var isCondensed: Bool { condensed != nil }
+
+    /// How many lines the card gives the recap.
+    ///
+    /// The condensation is bounded by construction, so it is shown whole. An UNCONDENSED digest
+    /// is bounded by nothing: the second pass only runs when there is a provider, only lands
+    /// when the model returns something meaningfully shorter, and until then the card renders
+    /// whatever the day's summary happened to be — which on a full day is three paragraphs that
+    /// push the coverage strip, the follow-ups and the conversations off the screen. That is the
+    /// state this card was redesigned to make impossible, and it must not depend on a second AI
+    /// call succeeding. Clamped, the chevron and the truncation say the rest is one tap away.
+    ///
+    /// Seven lines: the approved artboard's condensation is four, the condense prompt aims at
+    /// about sixty words, and seven is comfortably above both — so the clamp bites on a runaway
+    /// digest and never on a day the card could have shown whole.
+    var cardLineLimit: Int? { isCondensed ? nil : 7 }
 }
 
 // MARK: - Follow-ups / conversations

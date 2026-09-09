@@ -108,12 +108,30 @@ private let shortDigest = "Quiet morning. You worked through the redesign after 
         #expect(!RecapCondenser.isUsable("   \n ", source: longDigest()))
     }
 
-    @Test func aShortAnswerThatIsStillOverTheBoundIsRefused() {
-        // 40% shorter, but still longer than a medium paragraph: it would not fix the card.
+    /// A barely-shorter answer is refused however long the source is: the ceiling scales, the
+    /// "meaningfully shorter" rule does not.
+    @Test func anAnswerThatBarelyShortensAMonsterDigestIsRefused() {
+        let source = String(repeating: "x", count: 2000)
+        let short = String(repeating: "y", count: 1_400)  // 70% — under the ratio, over half
+        #expect(!RecapCondenser.isUsable(short, source: source))
+    }
+
+    /// The ceiling is `mediumParagraphCharacters` OR half the source, whichever is larger. A
+    /// flat 520 refused a 60% cut of a runaway digest — and, because a refusal stamps the day
+    /// as attempted, left that day showing the essay for good.
+    @Test func aBigCutOfARunawayDigestIsAcceptedEvenAboveTheMediumParagraphBound() {
         let source = String(repeating: "x", count: 2000)
         let short = String(repeating: "y", count: 800)
-        #expect(Double(short.count) <= Double(source.count) * RecapCondenser.minimumShorteningRatio)
-        #expect(!RecapCondenser.isUsable(short, source: source))
+        #expect(short.count > RecapCondenser.mediumParagraphCharacters)
+        #expect(RecapCondenser.isUsable(short, source: source))
+    }
+
+    /// An ordinary digest keeps the flat bound: half of 700 is 350, and the medium paragraph is
+    /// the floor, so a 600-character "shortening" of it is still refused.
+    @Test func anOrdinaryDigestKeepsTheMediumParagraphFloor() {
+        let source = String(repeating: "x", count: 700)
+        #expect(!RecapCondenser.isUsable(String(repeating: "y", count: 600), source: source))
+        #expect(RecapCondenser.isUsable(String(repeating: "y", count: 400), source: source))
     }
 }
 

@@ -51,13 +51,19 @@ public enum RecapCondenser {
         normalized(text).count > mediumParagraphCharacters
     }
 
-    /// True when a condensation is worth showing in place of its source: non-empty, inside the
-    /// medium-paragraph bound, and meaningfully shorter than what it replaces.
+    /// True when a condensation is worth showing in place of its source: non-empty,
+    /// meaningfully shorter than what it replaces, and short enough to read as a card.
+    ///
+    /// "Short enough" is `mediumParagraphCharacters` OR half the source, whichever is LARGER.
+    /// A flat 520-character ceiling refused the condensation of exactly the digests that need
+    /// one most: a runaway 1,900-character day answered with a 700-character paragraph is a
+    /// two-thirds cut and obviously worth showing, and refusing it stamped the day as attempted
+    /// (`Outcome.notShorter`) so it was never asked again — the card kept the essay for good.
     public static func isUsable(_ condensed: String, source: String) -> Bool {
         let short = normalized(condensed)
         let long = normalized(source)
         guard !short.isEmpty, !long.isEmpty else { return false }
-        guard short.count <= mediumParagraphCharacters else { return false }
+        guard short.count <= max(mediumParagraphCharacters, long.count / 2) else { return false }
         return Double(short.count) <= Double(long.count) * minimumShorteningRatio
     }
 
