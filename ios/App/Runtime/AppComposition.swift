@@ -582,7 +582,10 @@ final class AppComposition {
 
         let enrichment = EnrichmentService(
             worker: EnrichmentWorker(
-                annotations: annotations, router: aiRouter, nowMs: nowMs
+                annotations: annotations, router: aiRouter, nowMs: nowMs,
+                // One `stat` per member per pass instead of a decoded transcript: the workers
+                // memoise what they learned from a transcript against this.
+                transcriptVersionOf: { transcripts.version($0) }
             ),
             // Follow-ups are two passes over one store of candidates: extraction proposes from
             // a single conversation, curation decides across all of them. Both are handed the
@@ -599,7 +602,8 @@ final class AppComposition {
                     else { return nil }
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
-                }
+                },
+                transcriptVersionOf: { transcripts.version($0) }
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,
@@ -742,7 +746,11 @@ final class AppComposition {
             onStoreEvent: { wake.signal() },
             onCoverageTrigger: { await coverageTriggers.fire($0) },
             log: AppRuntimeLog.runtimeLog,
-            sessionLog: AppRuntimeLog.receiverLog
+            sessionLog: AppRuntimeLog.receiverLog,
+            // Foreground entry starts the receiver before `runtime.start()` has recovered the
+            // store; the gate inside the service keeps the session from opening a segment that
+            // recovery would then close as interrupted.
+            sessionWaitsForStoreRecovery: true
         )
         self.receiver = receiver
 
@@ -1199,9 +1207,17 @@ final class AppComposition {
     private func registerBackgroundTask() {
         guard !didRegisterBackgroundTask else { return }
         didRegisterBackgroundTask = true
+        // `using: .main`, and NOT nil. With nil, BGTaskScheduler invokes the launch handler on
+        // its own private serial queue ("com.apple.BGTaskScheduler (<identifier>)"), and the
+        // `MainActor.assumeIsolated` below is a hard assertion: `dispatch_assert_queue` fails,
+        // SIGTRAP, and the process dies before `run(backgroundTask:)` runs a single line. That
+        // was EVERY BGTask launch since the SwiftUI composition root (58c86ef): the crash reports
+        // named the queue, and the flight recorder saw only the relaunch. A crash there is not a
+        // missed maintenance window — it kills the receiver mid-stream (15:49 on 2026-09-09: ten
+        // minutes of audio) and it is what "relaunched every ~30 minutes overnight" actually was.
         let registered = BGTaskScheduler.shared.register(
             forTaskWithIdentifier: BackgroundTaskPolicy.processingTaskIdentifier,
-            using: nil
+            using: .main
         ) { task in
             MainActor.assumeIsolated { AppComposition.shared?.run(backgroundTask: task) }
         }
@@ -1213,7 +1229,7 @@ final class AppComposition {
         // in", which in practice is overnight and grants minutes rather than seconds.
         let chargingRegistered = BGTaskScheduler.shared.register(
             forTaskWithIdentifier: BackgroundTaskPolicy.chargingTaskIdentifier,
-            using: nil
+            using: .main  // same trap as above
         ) { task in
             MainActor.assumeIsolated { AppComposition.shared?.run(chargingTask: task) }
         }
