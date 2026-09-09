@@ -92,6 +92,14 @@ public actor ReceiverService {
     private let residency: BackgroundResidency?
 
     private var sessionTask: Task<Void, Never>?
+    /// `start()` was asked for a session; it begins the moment the store is recovered.
+    private var sessionWanted = false
+    /// Whether `SegmentStore.recover()` has run. The session must not open a segment before it:
+    /// `recover()` closes any segment it finds open as interrupted, so a session that raced ahead
+    /// of recovery would have its first live segment cut from under it. The gate lets every
+    /// caller `start()` the receiver as early as it likes (foreground entry, restoration) and
+    /// leaves the ordering to the runtime, which flips this once, after recovery.
+    private var storeRecovered: Bool
     /// Watches the session state so residency tracks the watch's stream.
     private var residencyFollower: Task<Void, Never>?
     /// Invalidates a pending residency release when the stream comes back first.
@@ -119,11 +127,13 @@ public actor ReceiverService {
         onStoreEvent: @escaping @Sendable () -> Void = {},
         onCoverageTrigger: @escaping @Sendable (CoverageSnapshotTrigger) async -> Void = { _ in },
         log: RuntimeLog = .silent,
-        sessionLog: ReceiverLog = .silent
+        sessionLog: ReceiverLog = .silent,
+        sessionWaitsForStoreRecovery: Bool = false
     ) {
         let intent = IntentBox()
         intent.set(initialIntent)
         let armed = ArmedFlag()
+        self.storeRecovered = !sessionWaitsForStoreRecovery
 
         self.link = link
         self.store = store
@@ -238,7 +248,19 @@ public actor ReceiverService {
         syncResidency()
         startResidencyFollower()
         link.connect()
-        guard sessionTask == nil else { return }
+        sessionWanted = true
+        startSessionIfReady()
+    }
+
+    /// The runtime's statement that `SegmentStore.recover()` has run. A `start()` that arrived
+    /// earlier begins its session now; later ones begin immediately.
+    public func markStoreRecovered() {
+        storeRecovered = true
+        startSessionIfReady()
+    }
+
+    private func startSessionIfReady() {
+        guard sessionWanted, storeRecovered, sessionTask == nil else { return }
         intentBox.running = true
         sessionTask = session.start()
     }
@@ -341,6 +363,7 @@ public actor ReceiverService {
         residencyFollower?.cancel()
         residencyFollower = nil
         residency?.setWanted(false)
+        sessionWanted = false
         sessionTask?.cancel()
         sessionTask = nil
         intentBox.running = false

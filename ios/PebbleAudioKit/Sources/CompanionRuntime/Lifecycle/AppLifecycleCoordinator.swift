@@ -81,12 +81,19 @@ public actor AppLifecycleCoordinator {
             // stops it demoting an app the person is looking at. Ordering-proof in both
             // directions — see `ReceiverService.clearLaunchedInBackground`.
             runtime.environment.receiver.clearLaunchedInBackground()
+            // The receiver BEFORE the foreground bookkeeping. `setForeground(true)` reconciles
+            // transcriptions and asks the watch to verify its state, and a foreground entry is
+            // exactly the moment the store and database are busiest (Today and Library rebuild
+            // on a large library); nothing in it is a precondition of receiving. On 2026-09-09
+            // the receiver was still not started ten minutes after a launch, with the link ready
+            // and the watch overflowing its buffer, because everything in front of it queued.
+            //
             // Idempotent by construction: `startCapture` is NOT called here — a foreground entry
             // must never prompt the watch (only an explicit Start/Settings tap arms that).
-            await runtime.setForeground(true)
             if runtime.captureIntent != .off {
                 await runtime.environment.receiver.start()
             }
+            await runtime.setForeground(true)
             await runtime.reconcilePendingTranscriptions()
             // Foreground entry always rewrites the widget's file. `setForeground(true)` cannot
             // be relied on for this: it is a transition guard, and the very first activation of

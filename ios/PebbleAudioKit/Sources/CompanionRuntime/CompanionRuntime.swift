@@ -186,13 +186,26 @@ public actor CompanionRuntime {
         if environment.settings.captureIntent != .off {
             environment.receiver.dialLink()
         }
+        let startedAtMs = clock.nowMs
+        var lastStepMs = startedAtMs
+        // Every step between "process alive" and "receiver started" is a step during which the
+        // watch is capturing audio nobody is storing. The flight recorder therefore gets the cost
+        // of each one, so that the next stall is measured rather than reasoned about.
+        func noteStep(_ name: String) {
+            let now = clock.nowMs
+            log.write("startup: \(name) took \(now - lastStepMs) ms (\(now - startedAtMs) ms in)")
+            lastStepMs = now
+        }
 
-        // Recovery on a real migrated container takes tens of seconds, and until this file exists
-        // every widget on the Home Screen shows its "no data yet" state — a fresh install
-        // therefore looked broken for the whole of that window, and an install whose recovery
-        // never finished looked broken forever. It is rewritten at the end of `start()` with the
-        // real receiver state; this first one only has to be honest.
-        await refreshSnapshot(.manual)
+        // The first coverage snapshot, early and OFF the receiver's path. Until this file exists
+        // every widget on the Home Screen shows its "no data yet" state, and recovery on a
+        // migrated container takes tens of seconds — so it is written concurrently rather than
+        // after recovery. It used to be awaited HERE, in front of recovery and the receiver,
+        // and it lists every segment in the store; on 2026-09-09 the receiver started 37 s and
+        // then 9 min 23 s after the link was ready (the second across a background suspension)
+        // while the watch overflowed a 6 s buffer. It is rewritten at the end of `start()` with
+        // the real receiver state; this first one only has to be honest.
+        let earlySnapshot = Task { await self.refreshSnapshot(.manual) }
 
         // Only the store-critical half. `SegmentStore.recover()` must run before any segment
         // opens, so the receiver genuinely waits for it — but nothing else in the order has that
@@ -200,6 +213,8 @@ public actor CompanionRuntime {
         // transcription catch-up is what let a ~10 s Core Bluetooth wake expire with a restored
         // link and nobody consuming it.
         await environment.startup.recoverBeforeReceiving()
+        await environment.receiver.markStoreRecovered()
+        noteStep("store recovery")
 
         // Restoration relaunch: receive-only is applied BEFORE the receiver starts, so a
         // background wake never spins up transcription or AI.
@@ -226,10 +241,14 @@ public actor CompanionRuntime {
         if environment.settings.captureIntent != .off {
             await environment.receiver.start()
         }
+        noteStep("receiver start")
 
         // Everything past this point is catch-up on audio that is ALREADY durable, so it runs
         // after the receive path is live rather than in front of it.
+        await earlySnapshot.value
+        noteStep("first snapshot")
         await environment.startup.recoverRemainder()
+        noteStep("remaining recovery")
         // The startup order already ran the identical sweep (`StartupStep.retentionEnforce`), so
         // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
         await retention.noteSweptElsewhere()
