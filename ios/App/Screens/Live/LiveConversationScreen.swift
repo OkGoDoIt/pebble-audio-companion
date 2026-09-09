@@ -255,6 +255,10 @@ struct LiveConversationScreen: View {
         .padding(.horizontal, Tokens.screenMargin)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        // Room for the note-job card, which parks itself above whatever a screen keeps at its
+        // bottom edge. Without this it lands on these pills — which is the report that started
+        // this: a card covering the controls underneath it.
+        .noteJobDockClearance()
         .background(Tokens.barBg)
         .overlay(alignment: .top) {
             Rectangle().fill(Tokens.barHairline).frame(height: 0.5)

@@ -29,6 +29,9 @@ struct AskScreen: View {
         }
         .padding(.horizontal, Tokens.screenMargin)
         .padding(.bottom, 8)
+        // The composer sits at the bottom edge in a plain stack rather than a bar, so it needs
+        // the same clearance a bar does — otherwise the note-job card lands on the field.
+        .noteJobDockClearance()
         .background(Tokens.ground)
         .navigationTitle(Copy.Ask.title)
         .toolbar {
