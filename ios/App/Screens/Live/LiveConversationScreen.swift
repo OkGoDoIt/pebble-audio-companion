@@ -35,20 +35,13 @@ struct LiveConversationScreen: View {
     @State private var viewModel = LiveViewModel()
     @State private var showTemplates = false
     @State private var showFollowUps = false
-    /// False the moment the reader scrolls up off the tail. Without it the transcript snapped
-    /// back to the bottom on every revision of the in-progress line — which is several times a
-    /// second — so nothing above the newest words (the timeline, the summary, anything said
-    /// five minutes ago) could be read at all while recording.
-    @State private var followsTail = true
-    /// Whether to offer the ⌄ ride back to the newest words — the same rule and the same control
-    /// as the finished Conversation. `followsTail` and this share their at-the-end reading, so
-    /// the screen cannot hold two answers to "is the reader at the tail".
-    @State private var jumpToEnd = JumpToEndPolicy()
-    /// The two halves of "does this run on below the fold". Measured, because it has to be known
-    /// before anybody has scrolled — opening a live conversation that is ALREADY long is the
-    /// case with no auto-follow behind it (`follow` runs on change, and nothing has changed yet).
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
+    /// Whether the newest words are on screen. It answers both questions this screen asks about
+    /// the tail, so it cannot hold two contradictory answers: it is why the transcript keeps
+    /// scrolling itself as lines arrive, and its negative is the ⌄ button. Without the first
+    /// half the transcript snapped back to the bottom on every revision of the in-progress line
+    /// — several times a second — so nothing above the newest words could be read while
+    /// recording. Starts true so an unmeasured screen stays quiet.
+    @State private var isAtBottom = true
     /// The conversation this screen was watching, kept after the live snapshot stops carrying
     /// one. `LiveTodayDataSource` publishes an EMPTY snapshot the moment there is no live row —
     /// no id, no started line — so without this, a recording that ends while you are looking at
@@ -56,10 +49,6 @@ struct LiveConversationScreen: View {
     @State private var lastKnownId = ""
 
     private let bottomAnchor = "live-transcript-bottom"
-
-    /// Taller than the screen by more than this and there is something worth jumping to. Below
-    /// it a flick gets there and a button would be furniture. Same figure as the Conversation.
-    private static let belowFoldSlack: CGFloat = 24
 
     /// The conversation everything on this screen addresses: the live one, or the one that has
     /// just ended under it.
@@ -91,33 +80,15 @@ struct LiveConversationScreen: View {
                 .padding(.horizontal, Tokens.screenMargin)
                 .padding(.top, 4)
                 .padding(.bottom, 16)
-                .background { heightProbe { contentHeight = $0 } }
             }
-            .background { heightProbe { viewportHeight = $0 } }
-            // Within 48 pt of the end counts as "at the end": the tail grows while the gesture
-            // finishes, so an exact comparison would drop out of follow mode on its own.
-            // Compared against the MAXIMUM offset (content + bottom inset − container) rather
-            // than the raw content height, so the pinned bar's inset does not read as "the
-            // reader has scrolled away", and content shorter than the screen stays following.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                let maxOffset =
-                    geometry.contentSize.height + geometry.contentInsets.bottom
-                    - geometry.containerSize.height
-                return geometry.contentOffset.y >= maxOffset - 48
-            } action: { _, atBottom in
-                followsTail = atBottom
-                jumpToEnd.atEndChanged(atBottom)
-            }
+            .onAtBottomChange { isAtBottom = $0 }
             .onChange(of: newestRowKey) { _, _ in follow(proxy) }
-            .onChange(of: contentHeight) { _, _ in updateBelowFold() }
-            .onChange(of: viewportHeight) { _, _ in updateBelowFold() }
-            // An inset, not an overlay: the scroll view's safe area already excludes the
-            // [Stop][Ask][Notes] bar, so this lands above it and the newest line is never left
-            // underneath the control.
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                jumpToEndButton(proxy)
-                    .motionAware(.snappy(duration: 0.25), value: jumpToEnd.shows)
+            .overlay(alignment: .bottomTrailing) {
+                if !isAtBottom {
+                    ScrollToBottomButton { scrollToBottom(proxy) }
+                }
             }
+            .motionAware(.snappy(duration: 0.25), value: isAtBottom)
         }
         .background(Tokens.ground)
         .navigationBarTitleDisplayMode(.inline)
@@ -242,49 +213,20 @@ struct LiveConversationScreen: View {
         return last.id
     }
 
-    /// The ⌄ ride back to the newest words. `JumpToEndPolicy` decides when; `JumpToEndButton`
-    /// is the control the finished Conversation draws, so the two screens offer the same thing
-    /// in the same corner. Taking it also re-arms following: the reader asked to be at the tail,
-    /// and staying there is what they asked for.
-    @ViewBuilder
-    private func jumpToEndButton(_ proxy: ScrollViewProxy) -> some View {
-        if jumpToEnd.shows {
-            JumpToEndButton {
-                jumpToEnd.jumped()
-                followsTail = true
-                withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                }
-            }
+    /// Taking the ride also re-arms following: the reader asked to be at the tail, and staying
+    /// there is what they asked for. Taken as arriving straight away so the button does not sit
+    /// there through its own scroll animation; the next geometry reading confirms it either way.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        isAtBottom = true
+        withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
-    }
-
-    /// Reports a view's height once when it appears and again whenever it changes — and the
-    /// "once when it appears" is the point. `onScrollGeometryChange` runs its action only when
-    /// the value it derives *changes*, so a conversation that is already longer than the screen
-    /// when it opens never produces a first reading from it. `onChange(initial: true)` always
-    /// fires. Neither of these runs per scrolled frame: a height changes when the transcript
-    /// does, or on rotation.
-    private func heightProbe(_ report: @escaping (CGFloat) -> Void) -> some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onChange(of: proxy.size.height, initial: true) { _, height in
-                    report(height)
-                }
-        }
-    }
-
-    /// Both halves or neither: the two probes report in the same layout pass but in no fixed
-    /// order, and answering from one of them would flash the button onto a screen that fits.
-    private func updateBelowFold() {
-        guard contentHeight > 0, viewportHeight > 0 else { return }
-        jumpToEnd.contentBelowFoldChanged(contentHeight > viewportHeight + Self.belowFoldSlack)
     }
 
     /// Keep the newest words on screen — but only while the reader is already there. Reduce
     /// Motion still scrolls, it just doesn't animate.
     private func follow(_ proxy: ScrollViewProxy) {
-        guard viewModel.snapshot.isLive, followsTail else { return }
+        guard viewModel.snapshot.isLive, isAtBottom else { return }
         if reduceMotion {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         } else {

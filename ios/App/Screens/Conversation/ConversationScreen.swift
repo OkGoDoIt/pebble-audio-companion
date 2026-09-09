@@ -35,19 +35,13 @@ struct ConversationScreen: View {
     /// Whether the transcript is still keeping up with the audio. Starts armed, switches off
     /// the moment the reader scrolls, and comes back on a tap or on pressing play.
     @State private var following = true
-    /// Whether to offer "jump to the end" — see `JumpToEndPolicy`, which holds the rule.
-    @State private var jumpToEnd = JumpToEndPolicy()
-    /// The two halves of "does this conversation run on below the fold". Measured, because it
-    /// has to be known before anybody has scrolled.
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
+    /// Whether the end of the conversation is on screen. The ⌄ button is the negative of this
+    /// and nothing else — see `ScrollToBottom`. Starts true so a screen that has not been
+    /// measured yet stays quiet.
+    @State private var isAtBottom = true
 
     /// The end of the conversation, as somewhere to scroll to.
     private static let endAnchor = "conversation-end"
-
-    /// A conversation this much taller than the screen has something worth jumping to. Below
-    /// it, a flick gets there and a button would be furniture.
-    private static let belowFoldSlack: CGFloat = 24
 
     private var playerDocked: Bool { player.isEngaged && headerScrolledPast }
 
@@ -181,9 +175,7 @@ struct ConversationScreen: View {
                 }
                 .padding(.top, 4)
                 .padding(.bottom, Tokens.blockGap)
-                .background { heightProbe { contentHeight = $0 } }
             }
-            .background { heightProbe { viewportHeight = $0 } }
             // The reader's hand wins over PLAYBACK: once they scroll, the transcript stops
             // being moved under them and offers a way back instead (the Podcasts /
             // Music-lyrics contract). It does not affect the ⌄ button, which asks only where
@@ -194,24 +186,9 @@ struct ConversationScreen: View {
                 guard phase == .interacting, following else { return }
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = false }
             }
-            // Are we at the end? The same arithmetic the Live screen uses: measured against the
-            // MAXIMUM offset (content + bottom inset − container) rather than the raw content
-            // height, so the bottom bar's inset does not read as "the reader has scrolled away".
-            // Within 48 pt counts, because the tail can grow while a gesture finishes.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                let maxOffset =
-                    geometry.contentSize.height + geometry.contentInsets.bottom
-                    - geometry.containerSize.height
-                return geometry.contentOffset.y >= maxOffset - 48
-            } action: { _, atEnd in
-                jumpToEnd.atEndChanged(atEnd)
-            }
+            .onAtBottomChange { isAtBottom = $0 }
             .onChange(of: player.playhead.turnId) { _, turnId in
                 followPlayhead(proxy, turnId: turnId)
-            }
-            // While audio plays the bottom corner belongs to playback — see `bottomAffordance`.
-            .onChange(of: player.playhead.isPlaying, initial: true) { _, playing in
-                jumpToEnd.playbackChanged(playing)
             }
             // Starting playback is an explicit "take me along", so it re-arms following even if
             // the reader had scrolled off earlier.
@@ -219,41 +196,21 @@ struct ConversationScreen: View {
                 guard playing, !following else { return }
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = true }
             }
-            .onChange(of: contentHeight) { _, _ in updateBelowFold() }
-            .onChange(of: viewportHeight) { _, _ in updateBelowFold() }
-            // An inset rather than an overlay: the scroll view's own safe area already excludes
-            // the [Ask][Notes][Follow-ups] bar, so this lands above it, and the last line of the
-            // transcript is never left underneath the control.
+            // "Back to playing" keeps its inset — it reports something, and pushing the last
+            // line clear of it is right. The ⌄ floats instead: an inset would change the very
+            // scroll geometry that decides whether to show it.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                bottomAffordance(proxy)
-                    .motionAware(.snappy(duration: 0.25), value: jumpToEnd.shows)
+                backToPlaying(proxy)
+                    .motionAware(.snappy(duration: 0.25), value: showsBackToPlaying)
             }
+            .overlay(alignment: .bottomTrailing) {
+                if showsScrollToBottom {
+                    ScrollToBottomButton { scrollToBottom(proxy) }
+                }
+            }
+            .motionAware(.snappy(duration: 0.25), value: showsScrollToBottom)
             .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
         }
-    }
-
-    /// Reports a view's height once when it appears and again whenever it changes — and the
-    /// "once when it appears" is the point. `onScrollGeometryChange` only runs its action when
-    /// the value it derives *changes*, so a conversation that is already longer than the screen
-    /// the moment it opens never produces a first reading from it, which is exactly the case
-    /// "show the button when the bottom is below the fold on open" is about. `onChange` with
-    /// `initial: true` always fires. Neither of these fires per scrolled frame: a height only
-    /// changes when the transcript does, or on rotation.
-    private func heightProbe(_ report: @escaping (CGFloat) -> Void) -> some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onChange(of: proxy.size.height, initial: true) { _, height in
-                    report(height)
-                }
-        }
-    }
-
-    /// Both halves or neither: the two probes report in the same layout pass but in no fixed
-    /// order, and answering from one of them would flash the button onto a conversation that
-    /// turns out to fit on the screen.
-    private func updateBelowFold() {
-        guard contentHeight > 0, viewportHeight > 0 else { return }
-        jumpToEnd.contentBelowFoldChanged(contentHeight > viewportHeight + Self.belowFoldSlack)
     }
 
     /// Everything below the player. Its own function only because it is the `Section` content
@@ -313,29 +270,15 @@ struct ConversationScreen: View {
         }
     }
 
-    /// One offer at a time in the bottom corner, and never two.
+    /// The ⌄ appears for one reason: the bottom of the conversation is not on screen.
     ///
-    /// "Back to playing" and "jump to the end" are the same gesture — one tap, take me where I
-    /// am not — aimed at two different places, so they were never going to be one control: a
-    /// button that means "the voice" while audio runs and "the last thing said" when it does
-    /// not is a button you have to think about, and this screen is meant to be read. Nor are
-    /// they two controls sharing a corner. They are ONE slot showing whichever of the two is
-    /// the answer right now, which is decidable because the moments they are wanted do not
-    /// overlap:
-    ///
-    ///  * audio playing, reader has scrolled off → the destination is the voice → the pill;
-    ///  * audio playing, transcript keeping up → nothing to offer, the view is already moving;
-    ///  * nothing playing → the only destination worth naming is the end → the ⌄ button.
-    ///
-    /// Structuring it as one slot rather than two conditions is what makes that a guarantee
-    /// instead of a claim: whatever the two rules do, the screen can only draw one of them.
-    @ViewBuilder
-    private func bottomAffordance(_ proxy: ScrollViewProxy) -> some View {
-        if showsBackToPlaying {
-            backToPlaying(proxy)
-        } else if jumpToEnd.shows {
-            jumpToEndButton(proxy)
-        }
+    /// The single extra condition is playback, and it is not about the reader's intent — it is
+    /// about who owns the corner. While audio runs, either the transcript is following the
+    /// playhead (the view is already moving, so there is nothing to offer) or the reader has
+    /// scrolled off it and "Back to playing" is the offer. Two floating buttons pointing at two
+    /// different places is a worse screen than either alone.
+    private var showsScrollToBottom: Bool {
+        !isAtBottom && !player.playhead.isPlaying
     }
 
     private var showsBackToPlaying: Bool {
@@ -346,7 +289,7 @@ struct ConversationScreen: View {
     /// one tap, and it leaves the transcript where it is until they ask.
     @ViewBuilder
     private func backToPlaying(_ proxy: ScrollViewProxy) -> some View {
-        if let turnId = player.playhead.turnId {
+        if showsBackToPlaying, let turnId = player.playhead.turnId {
             Button {
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = true }
                 followPlayhead(proxy, turnId: turnId)
@@ -371,14 +314,12 @@ struct ConversationScreen: View {
         }
     }
 
-    /// The way back to the end of a long conversation (`JumpToEndPolicy` decides when, and
-    /// `JumpToEndButton` is the control — shared with the live screen).
-    private func jumpToEndButton(_ proxy: ScrollViewProxy) -> some View {
-        JumpToEndButton {
-            jumpToEnd.jumped()
-            withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
-                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-            }
+    /// Taken as arriving straight away, so the button does not sit there through its own scroll
+    /// animation; the next geometry reading confirms it either way.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        isAtBottom = true
+        withAnimation(Motion.animation(.easeOut(duration: 0.3))) {
+            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
         }
     }
 
