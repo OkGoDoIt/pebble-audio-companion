@@ -117,6 +117,9 @@ final class AppComposition {
     private var todaySource: LiveTodayDataSource?
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
+    /// Per-heartbeat counters for the battery telemetry: how many Bluetooth notifications woke
+    /// us and how much CPU we spent since the last line.
+    private let telemetry = HeartbeatTelemetry()
     private var foregroundReleaseToken: NSObjectProtocol?
     private var backgroundMarkToken: NSObjectProtocol?
 
@@ -705,7 +708,9 @@ final class AppComposition {
         // risk is being suspended between the delegate returning and the frame reaching disk.
         let activity = BackgroundActivityAssertion(log: AppRuntimeLog.runtimeLog)
         self.backgroundActivity = activity
+        let telemetry = self.telemetry
         gattLink.onInboundNotification = { [weak residency] in
+            telemetry.noteInboundNotification()
             // Only when residency is NOT holding us up. While it is, the process cannot be
             // suspended and the assertion buys nothing — and a background task renewed by every
             // notification is never released, which is precisely the shape iOS kills with
@@ -1071,6 +1076,7 @@ final class AppComposition {
         let receiver = self.receiver
         let residency = self.residency
         let clock = self.clock
+        let telemetry = self.telemetry
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
@@ -1082,10 +1088,20 @@ final class AppComposition {
                 // "authorized, no audio" is equally a paused watch, a power-saving watch, a flat
                 // battery and a watch that quietly stopped. They need different fixes.
                 let watch = receiver.watchServiceState.value.map(Self.watchStateName) ?? "unknown"
+                // The battery half. Every line carries what this process cost since the last one
+                // (CPU seconds; Bluetooth notifications received; control messages written to
+                // the watch) beside the two batteries themselves, so a day of lines is a
+                // percent-per-hour reading for both devices against whatever each was doing.
+                // Without these the log could say WHAT the app was doing, never what it cost.
+                let cost = telemetry.sample(
+                    controlWrites: receiver.outboundControlCount.value)
+                let phone = await MainActor.run { HeartbeatTelemetry.phoneBattery() }
+                let watchBattery = receiver.watchBatteryPercent.value
+                    .map { "\($0)%" } ?? "?"
                 AppRuntimeLog.shared.flightRecorder?.recordHeartbeat(
                     "link=\(receiver.state.value) intent=\(receiver.captureIntent) "
                         + "watch=\(watch) residency=\(residency.state.value.rawValue) "
-                        + "audio=\(audioAge)"
+                        + "audio=\(audioAge) \(cost) phone=\(phone) watchbatt=\(watchBattery)"
                 )
             }
         }
@@ -1534,5 +1550,60 @@ final class AppRuntimeLog: @unchecked Sendable {
                 self.lock.unlock()
             }
         }
+    }
+}
+
+/// The per-heartbeat cost counters. Cheap on the hot path (one lock, one increment per
+/// notification) and read once a minute.
+final class HeartbeatTelemetry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var notifications = 0
+    private var lastNotifications = 0
+    private var lastCpuSeconds: Double = HeartbeatTelemetry.cpuSeconds()
+    private var lastControlWrites = 0
+
+    /// Called on the Core Bluetooth delegate queue for every inbound notification.
+    func noteInboundNotification() {
+        lock.withLock { notifications += 1 }
+    }
+
+    /// One heartbeat's worth of deltas, formatted for the log line, and the baseline advanced.
+    func sample(controlWrites: Int) -> String {
+        let cpu = Self.cpuSeconds()
+        return lock.withLock {
+            let notificationDelta = notifications - lastNotifications
+            lastNotifications = notifications
+            let cpuDelta = max(0, cpu - lastCpuSeconds)
+            lastCpuSeconds = cpu
+            let controlDelta = max(0, controlWrites - lastControlWrites)
+            lastControlWrites = controlWrites
+            return String(
+                format: "cpu=+%.2fs notif=+%d ctl=+%d", cpuDelta, notificationDelta, controlDelta)
+        }
+    }
+
+    /// User + system CPU time this process has consumed, in seconds.
+    private static func cpuSeconds() -> Double {
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+        func seconds(_ t: timeval) -> Double { Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000 }
+        return seconds(usage.ru_utime) + seconds(usage.ru_stime)
+    }
+
+    /// "87%/unplugged", "62%/charging", or "?" when monitoring is off. `DevicePowerMonitor`
+    /// enables battery monitoring at launch, so the level is normally available.
+    @MainActor
+    static func phoneBattery() -> String {
+        let device = UIDevice.current
+        let level = device.batteryLevel
+        guard level >= 0 else { return "?" }
+        let state: String
+        switch device.batteryState {
+        case .charging: state = "charging"
+        case .full: state = "full"
+        case .unplugged: state = "unplugged"
+        default: state = "unknown"
+        }
+        return "\(Int((level * 100).rounded()))%/\(state)"
     }
 }

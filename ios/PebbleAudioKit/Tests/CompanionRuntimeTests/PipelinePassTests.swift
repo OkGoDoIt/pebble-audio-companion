@@ -370,3 +370,82 @@ final class Recorder: @unchecked Sendable {
         set { lock.withLock { _flag = newValue } }
     }
 }
+
+// Thermal hold: the FOREGROUND pass stops spending the CPU and the neural engine once the phone
+// is hot, while everything cheap keeps running. The background policy already refused at
+// `.serious`; the foreground did not, and that is how a backlog catch-up cooked the phone and got
+// the process thermally jettisoned.
+@Suite struct PipelineThermalHoldTests {
+    @Test func aHotPhoneSkipsModelWorkButKeepsTheCheapStagesAndTheOrder() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        var steps = PipelineSteps()
+        steps.isThermallyThrottled = { true }
+        steps.drainQueue = {
+            calls.record("drain")
+            return true
+        }
+        steps.enrich = {
+            calls.record("enrich")
+            return ["conv-1"]
+        }
+        steps.extractFollowUps = {
+            calls.record("followUps")
+            return true
+        }
+        steps.refreshRecap = { calls.record("recap") }
+        steps.liveLocalPass = {
+            calls.record("liveLocal")
+            return true
+        }
+        steps.regroup = { calls.record("regroup") }
+        steps.enforceRetentionIfDue = {
+            calls.record("retention")
+            return false
+        }
+        steps.refreshCoverageSnapshot = { calls.record("snapshot") }
+        let pass = PipelinePass(steps: steps, clock: clock, onStage: { recorder.record($0) })
+
+        let sleepMs = try await pass.run()
+
+        // Nothing heavy ran...
+        #expect(!calls.calls.contains("drain"))
+        #expect(!calls.calls.contains("enrich"))
+        #expect(!calls.calls.contains("followUps"))
+        #expect(!calls.calls.contains("recap"))
+        #expect(!calls.calls.contains("liveLocal"))
+        // ...the cheap, product-critical stages did...
+        #expect(calls.calls.contains("regroup"))
+        #expect(calls.calls.contains("retention"))
+        #expect(calls.calls.contains("snapshot"))
+        // ...the announced order is the same contract as ever...
+        #expect(
+            recorder.stages == [
+                .reconsiderDisabled, .enqueueClosedSegments, .drainQueue, .retention, .regroup,
+                .enrich, .donate, .followUps, .recap, .liveLocal, .liveCloudPrune, .wavExport,
+                .idleModelRelease,
+            ]
+        )
+        // ...and with nothing processed the loop settles into its idle cadence rather than
+        // spinning on work it is refusing to do.
+        #expect(sleepMs == PipelinePacing.idleMs)
+    }
+
+    @Test func aCoolPhoneRunsModelWorkAsBefore() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        var steps = PipelineSteps()
+        steps.isThermallyThrottled = { false }
+        steps.drainQueue = {
+            calls.record("drain")
+            return false
+        }
+        let pass = PipelinePass(steps: steps, clock: clock, onStage: { recorder.record($0) })
+
+        _ = try await pass.run()
+
+        #expect(calls.calls.contains("drain"))
+    }
+}

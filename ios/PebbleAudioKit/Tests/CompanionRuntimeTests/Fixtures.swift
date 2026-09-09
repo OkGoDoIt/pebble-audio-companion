@@ -263,7 +263,12 @@ enum Fixture {
     static let receiverId: [UInt8] = (0..<32).map { UInt8($0) }
 
     static func receiverConfig() -> ReceiverConfig {
-        ReceiverConfig(receiverId: receiverId, receiverName: "test")
+        // The 2 s / 500 ms cadence the receive-path tests were written against; production runs
+        // slower (`ReceiverConfig.checkpointAudioMs`), which `ReceiverConfigDefaultsTests` pins.
+        ReceiverConfig(
+            receiverId: receiverId, receiverName: "test",
+            checkpointAudioMs: 2_000, checkpointMinIntervalMs: 500
+        )
     }
 
     static func streamStart(

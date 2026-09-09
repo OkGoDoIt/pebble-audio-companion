@@ -82,6 +82,16 @@ final class LiveWatchStatusSource: WatchStatusSource {
                 firmwareVersion = Self.firmwareLabel(info.fwVersionPacked)
             }
         }
+        // The watch's own battery, from its standard Battery Service. It stays at the last value
+        // read across a disconnect, which is the best estimate there is; `isConnected` says
+        // separately whether it is current.
+        Task { [weak self] in
+            let receiver = await runtime.environment.receiver
+            for await percent in receiver.watchBatteryPercent.stream() {
+                guard let self else { return }
+                batteryPercent = percent
+            }
+        }
         // The watch's own advertised name ("Pebble Time 2 4F21"), so someone with two watches
         // can tell which one is bound. It falls back to the generic word only while no watch
         // has ever been seen — never as a stand-in for one that has.

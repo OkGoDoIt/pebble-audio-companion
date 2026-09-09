@@ -140,7 +140,13 @@ import WireProtocol
             sink: sink,
             policy: policy,
             resumeStore: resumeStore,
-            config: ReceiverConfig(receiverId: receiverId, receiverName: "Audio Companion"),
+            // The cadence tests below drive the MECHANISM on a 2 s / 500 ms schedule, which is
+            // the one the KMP contract was written against. The production defaults are slower
+            // (see `ReceiverConfig.checkpointAudioMs`) and are pinned by their own test.
+            config: ReceiverConfig(
+                receiverId: receiverId, receiverName: "Audio Companion",
+                checkpointAudioMs: 2_000, checkpointMinIntervalMs: 500
+            ),
             clock: clock,
             captureIntent: captureIntent,
             consumeEnableRequestPermission: consumeEnableRequestPermission

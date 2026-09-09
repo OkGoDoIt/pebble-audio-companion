@@ -80,6 +80,8 @@ import Testing
     {
         let fixture = try RuntimeFixture()
         let coordinator = AppLifecycleCoordinator(runtime: fixture.runtime)
+        // On a charger: the default "While Charging" policy lets the burst run.
+        fixture.foreground.devicePower = DevicePowerSnapshot(isPluggedIn: true)
         await fixture.runtime.start()
         await TestClock.settle()
         let runningBefore = fixture.receiver.isRunning
@@ -93,6 +95,45 @@ import Testing
         #expect(fixture.runtime.captureIntent == intentBefore)
         // It also releases the model afterwards, so nothing stays resident into suspension.
         #expect(fixture.lifecycle.releaseReasons.contains("background catch-up"))
+        await fixture.runtime.stop()
+    }
+
+    /// The light processing window used to run its ten-segment burst regardless of the user's
+    /// catch-up setting; iOS grants that window about every half hour through a night on
+    /// battery. Now it asks the same policy the charger window does, so "While Charging" means
+    /// what it says. Maintenance still runs; only the model work is declined.
+    @Test func backgroundProcessingOnBatteryDeclinesTheCatchUpBurst() async throws {
+        let fixture = try RuntimeFixture()
+        let coordinator = AppLifecycleCoordinator(runtime: fixture.runtime)
+        fixture.foreground.devicePower = DevicePowerSnapshot(isPluggedIn: false)
+        await fixture.runtime.start()
+        await TestClock.settle()
+
+        await coordinator.handle(.didEnterBackground)
+        await coordinator.handle(.backgroundProcessingStarted)
+
+        #expect(
+            !fixture.lifecycle.releaseReasons.contains("background catch-up"),
+            "no burst should have run on battery under the default While Charging policy")
+        #expect(fixture.runtime.captureIntent != .off)
+        await fixture.runtime.stop()
+    }
+
+    /// Heat overrides the charger: past `.serious` the CPU is already throttled, so the burst
+    /// would be slower and hotter, and it is what got the process thermally jettisoned.
+    @Test func backgroundProcessingWhileHotDeclinesTheCatchUpBurstEvenOnACharger() async throws {
+        let fixture = try RuntimeFixture()
+        let coordinator = AppLifecycleCoordinator(runtime: fixture.runtime)
+        fixture.foreground.devicePower = DevicePowerSnapshot(
+            isPluggedIn: true, thermalState: .serious
+        )
+        await fixture.runtime.start()
+        await TestClock.settle()
+
+        await coordinator.handle(.didEnterBackground)
+        await coordinator.handle(.backgroundProcessingStarted)
+
+        #expect(!fixture.lifecycle.releaseReasons.contains("background catch-up"))
         await fixture.runtime.stop()
     }
 

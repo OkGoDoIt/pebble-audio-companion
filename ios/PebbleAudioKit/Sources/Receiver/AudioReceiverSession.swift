@@ -71,6 +71,15 @@ public struct ReceiverConfig: Sendable {
     public let receiverName: String
     public let protoVersion: Int
     /// Send a checkpoint once this much appended audio has accumulated.
+    ///
+    /// A checkpoint is not cheap: it is an fsync of the frame log, a GATT write, and an ACK
+    /// notification back -- three flash-and-radio events, on both ends. The defaults used to be
+    /// 2 s of audio OR 500 ms of wall time, and because audio arrives in real time the wall rule
+    /// won every time: two checkpoints a second, all day. Three seconds is what the watch can
+    /// comfortably hold un-acknowledged even at its 8 KB spool floor (about 6.5 s of audio),
+    /// with room for a slow drain on top, and it is a third of the watch's 15 s receiver-liveness
+    /// window, which is what checkpoints re-arm while a stream is flowing. Six times fewer
+    /// checkpoints; the audio itself is no less safe -- anything unacknowledged is re-sent.
     public let checkpointAudioMs: Int64
     /// ... or once this much wall time has passed since the last send (and new data exists).
     public let checkpointMinIntervalMs: Int64
@@ -88,8 +97,8 @@ public struct ReceiverConfig: Sendable {
         receiverId: [UInt8],
         receiverName: String,
         protoVersion: Int = ProtocolConstants.protocolVersion,
-        checkpointAudioMs: Int64 = 2_000,
-        checkpointMinIntervalMs: Int64 = 500,
+        checkpointAudioMs: Int64 = 3_000,
+        checkpointMinIntervalMs: Int64 = 3_000,
         keepaliveIntervalMs: Int64 = 5_000,
         keepaliveMaxFailures: Int = 2,
         streamVerifyIntervalMs: Int64 = 20_000
@@ -220,8 +229,14 @@ public actor AudioReceiverSession {
     /// is what the keepalive has to watch. See `runKeepalive`.
     private var lastOutboundControlMs: Int64 = 0
 
+    /// Control messages handed to the link since the session was built. Telemetry: the phone's
+    /// heartbeat prints the delta, so a log reader can see how often the app is writing to the
+    /// watch (checkpoints, almost entirely) without a Bluetooth sniffer.
+    nonisolated public let outboundControlCount = StateSubject<Int>(0)
+
     private func noteOutboundControl() {
         lastOutboundControlMs = clock.nowMs
+        outboundControlCount.value = outboundControlCount.value + 1
     }
 
     /// Asks the watch to pause capture (maps to the watch's PausedPolicy state, visible in its

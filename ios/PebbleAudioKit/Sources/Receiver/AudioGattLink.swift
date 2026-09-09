@@ -66,6 +66,14 @@ public protocol AudioGattLink: Sendable {
     /// peer (fakes, command-line tools) keep the default and never publish one.
     var deviceName: StateSubject<String?> { get }
 
+    /// The watch's own battery level, 0-100, from the standard Battery Service it hosts
+    /// alongside the companion service; nil until one has been read. Published because it is
+    /// the one instrument this app has for judging the WATCH'S battery: logged at every change
+    /// and in every heartbeat, it turns a night of flight-recorder lines into a percent-per-hour
+    /// figure against whatever the watch was doing at the time. Links that cannot read it
+    /// (fakes, command-line tools) keep the default and never publish one.
+    var watchBatteryPercent: StateSubject<Int?> { get }
+
     /// Reads the Info characteristic (raw 20-byte snapshot).
     func readInfo() async throws -> [UInt8]
 
@@ -111,9 +119,12 @@ public protocol AudioGattLink: Sendable {
 /// purpose: a computed property that minted a new subject per access would hand every
 /// subscriber its own stream and silently drop the (correct) nil.
 private let unnamedDevice = StateSubject<String?>(nil)
+/// Same reasoning, for links that never read the watch's battery.
+private let unknownWatchBattery = StateSubject<Int?>(nil)
 
 public extension AudioGattLink {
     var deviceName: StateSubject<String?> { unnamedDevice }
+    var watchBatteryPercent: StateSubject<Int?> { unknownWatchBattery }
     func connect() {}
     func disconnect() {}
     func resync() {}

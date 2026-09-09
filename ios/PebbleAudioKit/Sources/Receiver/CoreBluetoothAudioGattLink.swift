@@ -16,6 +16,8 @@ public enum AudioCompanionGattIds {
     public static let pebblePairingServiceUUID = CBUUID(string: "FED9")
     public static let deviceInformationServiceUUID = CBUUID(string: "180A")
     public static let batteryServiceUUID = CBUUID(string: "180F")
+    /// Battery Level (org.bluetooth.characteristic.battery_level): one byte, 0-100.
+    public static let batteryLevelCharacteristicUUID = CBUUID(string: "2A19")
     public static let serviceUUID = CBUUID(string: ProtocolConstants.serviceUUID)
     public static let infoCharacteristicUUID = CBUUID(string: ProtocolConstants.infoCharacteristicUUID)
     public static let controlCharacteristicUUID = CBUUID(string: ProtocolConstants.controlCharacteristicUUID)
@@ -26,6 +28,10 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     public let connectionState = StateSubject<LinkState>(.disconnected)
     public let lastFailure = StateSubject<ConnectFailure?>(nil)
     public let deviceName = StateSubject<String?>(nil)
+    /// See `AudioGattLink.watchBatteryPercent`. The last value read survives a disconnect on
+    /// purpose: it is still the best estimate anyone has, and Settings says separately whether
+    /// the watch is connected right now.
+    public let watchBatteryPercent = StateSubject<Int?>(nil)
 
     // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
     // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
@@ -43,6 +49,9 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     private var infoCharacteristic: CBCharacteristic?
     private var controlCharacteristic: CBCharacteristic?
     private var dataCharacteristic: CBCharacteristic?
+    /// The standard Battery Service's level characteristic, when the watch exposes one. Optional
+    /// in every sense: the link is `.ready` without it, and nothing about audio waits on it.
+    private var batteryLevelCharacteristic: CBCharacteristic?
     private var pendingInfoRead: PendingOperation<[UInt8]>?
     private var pendingControlWrite: PendingOperation<Void>?
     private var pendingNotifyCharacteristics: [CBCharacteristic] = []
@@ -935,6 +944,7 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         infoCharacteristic = nil
         controlCharacteristic = nil
         dataCharacteristic = nil
+        batteryLevelCharacteristic = nil
         pendingNotifyCharacteristics.removeAll()
         failPendingOperations(reason)
         // The channels outlive the connection; their CONTENTS must not. A new GATT session takes a
@@ -1118,8 +1128,15 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         peripheral.delegate = self
         rememberPeripheral(peripheral)
         enterConnecting("connected, discovering services")
-        peripheral.discoverServices([AudioCompanionGattIds.serviceUUID])
+        peripheral.discoverServices(Self.discoveredServiceUUIDs)
     }
+
+    /// The companion service, plus the watch's standard Battery Service for the battery
+    /// telemetry. Battery is best-effort: its absence changes nothing below.
+    private static let discoveredServiceUUIDs: [CBUUID] = [
+        AudioCompanionGattIds.serviceUUID,
+        AudioCompanionGattIds.batteryServiceUUID,
+    ]
 
     public func centralManager(
         _ central: CBCentralManager,
@@ -1211,7 +1228,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         // moved. `enterConnecting` re-arms the watchdog so a rediscovery that stalls is not a new
         // way to sit at "Connecting" forever.
         enterConnecting("services changed, rediscovering", automatic: automaticConnect)
-        peripheral.discoverServices([AudioCompanionGattIds.serviceUUID])
+        peripheral.discoverServices(Self.discoveredServiceUUIDs)
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -1237,6 +1254,52 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
             ],
             for: service
         )
+        // Battery, if the watch offers it. Asked for AFTER the companion characteristics so its
+        // answer can never arrive ahead of the one the handshake is waiting on.
+        if let battery = peripheral.services?.first(where: {
+            $0.uuid == AudioCompanionGattIds.batteryServiceUUID
+        }) {
+            peripheral.discoverCharacteristics(
+                [AudioCompanionGattIds.batteryLevelCharacteristicUUID], for: battery
+            )
+        }
+    }
+
+    /// The Battery Service half of characteristic discovery: read the level once now, and
+    /// subscribe so every change the watch reports lands in the flight recorder. Failures here
+    /// are logged and forgotten -- the link's readiness is decided by the companion service alone.
+    private func handleBatteryCharacteristics(_ peripheral: CBPeripheral, _ service: CBService,
+                                              error: Error?) {
+        if let error {
+            log("battery service: characteristic discovery failed: \(describeError(error))")
+            return
+        }
+        guard let level = service.characteristics?.first(where: {
+            $0.uuid == AudioCompanionGattIds.batteryLevelCharacteristicUUID
+        }) else {
+            log("battery service: no battery level characteristic")
+            return
+        }
+        batteryLevelCharacteristic = level
+        peripheral.readValue(for: level)
+        if level.properties.contains(.notify) {
+            peripheral.setNotifyValue(true, for: level)
+        }
+    }
+
+    /// A Battery Level value: one byte, 0-100, anything else ignored. Logged only when it
+    /// changes, so a watch that reports the same level every few minutes costs one line per
+    /// percent, not one per report.
+    private func handleBatteryLevel(_ value: [UInt8], error: Error?) {
+        if let error {
+            log("battery level read failed: \(describeError(error))")
+            return
+        }
+        guard let raw = value.first, raw <= 100 else { return }
+        let percent = Int(raw)
+        guard watchBatteryPercent.value != percent else { return }
+        watchBatteryPercent.value = percent
+        log("watch battery \(percent)%")
     }
 
     public func peripheral(
@@ -1244,6 +1307,12 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
+        // The Battery Service answers on this same delegate. It must never be mistaken for the
+        // companion service failing discovery, which is what the fall-through below would call it.
+        if service.uuid == AudioCompanionGattIds.batteryServiceUUID {
+            handleBatteryCharacteristics(peripheral, service, error: error)
+            return
+        }
         if let error {
             log("didDiscoverCharacteristics error=\(describeError(error))")
             failAndReset(classifyFailure(error, fallback: .unknown))
@@ -1279,6 +1348,12 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        // The battery subscription is not part of the handshake: it neither advances the pending
+        // list nor may it re-run `reachReady`, and a refusal of it is not a link fault.
+        if characteristic.uuid == AudioCompanionGattIds.batteryLevelCharacteristicUUID {
+            if let error { log("battery level subscribe failed: \(describeError(error))") }
+            return
+        }
         if let error {
             // Subscribing writes the characteristic's CCCD. A rejection here is an ATT-level
             // refusal (CBATTErrorDomain) — in practice a stale iOS GATT cache after a firmware
@@ -1331,6 +1406,8 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
             } else {
                 log("data notification error: \(describeError(error))")
             }
+        case AudioCompanionGattIds.batteryLevelCharacteristicUUID:
+            handleBatteryLevel(value, error: error)
         default:
             break
         }

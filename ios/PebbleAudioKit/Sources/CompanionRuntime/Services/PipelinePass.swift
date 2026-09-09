@@ -78,6 +78,17 @@ public struct PipelineSteps: Sendable {
     public var backgroundWorkDecision: @Sendable () -> BackgroundWorkDecision = {
         .hold(reason: .onBattery)
     }
+    /// True while the phone is too hot for model work, in the FOREGROUND too.
+    ///
+    /// The background policy already refuses at thermal `.serious`; the foreground pass did not,
+    /// and the flight recorder shows what that cost: the app comes forward, the local model
+    /// starts on a backlog, the phone reaches `thermal=serious` on battery within minutes, and
+    /// iOS then kills the process in the background (a thermal jettison), which relaunches it
+    /// into another recovery sweep. Once the OS is throttling the CPU the work is slower AND
+    /// hotter, so holding it is the faster path to a finished transcript as well as the cooler
+    /// one. Receive, grouping and retention are never held -- they are cheap and they are the
+    /// product.
+    public var isThermallyThrottled: @Sendable () -> Bool = { false }
 
     public init(
         isForeground: @escaping @Sendable () -> Bool = { true },
@@ -103,7 +114,8 @@ public struct PipelineSteps: Sendable {
         submitPendingUploads: @escaping @Sendable () async -> Void = {},
         backgroundWorkDecision: @escaping @Sendable () -> BackgroundWorkDecision = {
             .hold(reason: .onBattery)
-        }
+        },
+        isThermallyThrottled: @escaping @Sendable () -> Bool = { false }
     ) {
         self.isForeground = isForeground
         self.isCatchUpActive = isCatchUpActive
@@ -127,6 +139,7 @@ public struct PipelineSteps: Sendable {
         self.refreshCoverageSnapshot = refreshCoverageSnapshot
         self.submitPendingUploads = submitPendingUploads
         self.backgroundWorkDecision = backgroundWorkDecision
+        self.isThermallyThrottled = isThermallyThrottled
     }
 }
 
@@ -187,10 +200,15 @@ public struct PipelinePass: Sendable {
     private func stage<Value>(
         _ stage: PipelineStage,
         fallback: Value,
+        heavy: Bool = false,
         _ body: () async throws -> Value
     ) async throws -> Value {
         onStage(stage)
         if let health, !health.shouldRun(stage) { return fallback }
+        // Model work waits for the phone to cool down. Announced like every other skip, so the
+        // stage order the tests assert on is unchanged; not recorded as a failure, because
+        // nothing failed.
+        if heavy, steps.isThermallyThrottled() { return fallback }
         do {
             let value = try await body()
             health?.succeeded(stage)
@@ -255,7 +273,7 @@ public struct PipelinePass: Sendable {
         try await stage(.enqueueClosedSegments, fallback: (), steps.enqueueClosedSegments)
 
         // 4. Drain, under the processing mutex owned by TranscriptionService.
-        if try await stage(.drainQueue, fallback: false, steps.drainQueue) {
+        if try await stage(.drainQueue, fallback: false, heavy: true, steps.drainQueue) {
             processed = true
             await steps.onDiagnosticsDirty()
         }
@@ -281,7 +299,7 @@ public struct PipelinePass: Sendable {
         // 7/8. Titles + summaries, then search/Spotlight donation of exactly what changed.
         //      BOUNDED per pass: the backlog drains over many passes rather than holding this
         //      one open for minutes.
-        let enriched = try await stage(.enrich, fallback: [], steps.enrich)
+        let enriched = try await stage(.enrich, fallback: [], heavy: true, steps.enrich)
         try await stage(.donate, fallback: ()) {
             guard !enriched.isEmpty else { return }
             processed = true
@@ -291,17 +309,19 @@ public struct PipelinePass: Sendable {
 
         // 9. Follow-up extraction over finished conversations (plan Part 4.5) — after enrich,
         //    on the same durable transcripts, and bounded the same way.
-        if try await stage(.followUps, fallback: false, steps.extractFollowUps) {
+        if try await stage(.followUps, fallback: false, heavy: true, steps.extractFollowUps) {
             processed = true
             await steps.onDiagnosticsDirty()
         }
 
         // 10. Daily recap (its own debounce decides whether anything actually runs).
-        try await stage(.recap, fallback: (), steps.refreshRecap)
+        try await stage(.recap, fallback: (), heavy: true, steps.refreshRecap)
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.
-        if try await stage(.liveLocal, fallback: false, steps.liveLocalPass) { processed = true }
+        if try await stage(.liveLocal, fallback: false, heavy: true, steps.liveLocalPass) {
+            processed = true
+        }
 
         // 12. Cloud live previews are pruned once the durable transcript supersedes them.
         try await stage(.liveCloudPrune, fallback: (), steps.liveCloudPrune)

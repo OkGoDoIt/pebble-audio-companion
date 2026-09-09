@@ -246,7 +246,11 @@ public actor CompanionRuntime {
         let pass = PipelinePass(
             steps: makeSteps(), clock: clock, health: health, onStage: stageObserver ?? { _ in })
         let loop = PipelineLoop(pass: pass, wake: wake, clock: clock, health: health, log: log)
-        loopTask = Task { await loop.run() }
+        // `.utility`, not the default: everything on this loop is deferrable work that the user
+        // is not waiting on tap-for-tap, and the scheduler puts utility work on the efficiency
+        // cores at lower clocks. The UI reads the results through database observation and
+        // never blocks on a pass.
+        loopTask = Task(priority: .utility) { await loop.run() }
     }
 
     private func startSupervisor() {
@@ -268,7 +272,7 @@ public actor CompanionRuntime {
             restartLoop: { [weak self] in await self?.restartLoop() },
             log: log
         )
-        supervisorTask = Task { await supervisor.run() }
+        supervisorTask = Task(priority: .utility) { await supervisor.run() }
     }
 
     /// Replaces a wedged loop. The old task is cancelled and given a moment to unwind; if it is
@@ -444,6 +448,29 @@ public actor CompanionRuntime {
         )
         log.write("charging catch-up processed \(processed) segment(s)")
         return processed
+    }
+
+    /// The light BGProcessing window's catch-up: the ordinary bounded burst, gated on the same
+    /// policy as the charger window.
+    ///
+    /// It was not gated, and the flight recorder shows the consequence: iOS granted the light
+    /// task roughly every half hour through a night on battery, and each grant ran a
+    /// ten-segment local-transcription burst that the user's own setting ("While Charging") said
+    /// should not happen. The maintenance half of the window still runs unconditionally; this
+    /// only decides whether the CPU and the neural engine are spent on a phone that is not
+    /// plugged in, is in Low Power Mode, or is already hot.
+    @discardableResult
+    public func runBackgroundCatchUpIfAllowed() async -> Int {
+        let decision = BackgroundWorkPolicy.decide(
+            environment.settings.backgroundCatchUp, foreground.devicePower
+        )
+        guard case .run = decision else {
+            if case .hold(let reason) = decision {
+                log.write("background catch-up declined: \(reason.rawValue)")
+            }
+            return 0
+        }
+        return await runCatchUpBurst()
     }
 
     @discardableResult
@@ -632,6 +659,18 @@ public actor CompanionRuntime {
                 BackgroundWorkPolicy.decide(
                     env.settings.backgroundCatchUp, foreground.devicePower
                 )
+            },
+            isThermallyThrottled: {
+                let throttled = foreground.devicePower.thermalState >= .serious
+                // Say so once per transition. The device-power line already records the thermal
+                // state itself; this names what the pipeline did about it.
+                if foreground.noteThermalHold(throttled) {
+                    log.write(
+                        throttled
+                            ? "pipeline: holding model work until the phone cools down"
+                            : "pipeline: phone cooled down; model work resumes")
+                }
+                return throttled
             }
         )
     }
@@ -666,5 +705,17 @@ public final class RuntimeForegroundState: @unchecked Sendable {
     public var catchUpActive: Bool {
         get { lock.withLock { _catchUpActive } }
         set { lock.withLock { _catchUpActive = newValue } }
+    }
+
+    private var _thermalHoldAnnounced = false
+
+    /// Records whether the pipeline is currently holding model work for heat. Returns true when
+    /// that changed, so the caller can log the transition exactly once.
+    public func noteThermalHold(_ holding: Bool) -> Bool {
+        lock.withLock {
+            guard _thermalHoldAnnounced != holding else { return false }
+            _thermalHoldAnnounced = holding
+            return true
+        }
     }
 }

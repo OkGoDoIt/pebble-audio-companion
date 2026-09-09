@@ -144,14 +144,15 @@ public actor AppLifecycleCoordinator {
     }
 
     /// The BGProcessing body: MAINTENANCE ONLY (retention, upload hand-off, diagnostics) plus the
-    /// sanctioned bounded catch-up burst. Never STT/AI/export outside the burst, and never a
-    /// change to the receiver's run state.
+    /// sanctioned bounded catch-up burst -- which, like the charger window's, asks
+    /// `BackgroundWorkPolicy` first. Never STT/AI/export outside the burst, and never a change
+    /// to the receiver's run state.
     private func runBackgroundProcessing() async {
         backgroundWork?.cancel()
         let runtime = self.runtime
         let task = Task {
             await runtime.runBackgroundMaintenance()
-            _ = await runtime.runCatchUpBurst()
+            _ = await runtime.runBackgroundCatchUpIfAllowed()
         }
         backgroundWork = task
         await task.value
