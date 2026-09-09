@@ -182,14 +182,21 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
         /// language reason, carrying how much of the row it accounts for and how many separate
         /// interruptions it covers — that breakdown is the whole content of the expanded row.
         public var reasons: [LossReason]
+        /// Looped transcriber output that stood in this stretch and is not shown as rows (see
+        /// `TranscriptLoopSuppression.swift`). Only ever set on a QUIET row: the audio was
+        /// received and it was silent, so this is not loss and must never be labelled as loss.
+        /// Zero for every row the caller did not ask to have suppressed.
+        public var suppressedRepeats: Int
 
         public init(
-            startMs: Int64, durationMs: Int64, missing: Bool, reasons: [LossReason] = []
+            startMs: Int64, durationMs: Int64, missing: Bool, reasons: [LossReason] = [],
+            suppressedRepeats: Int = 0
         ) {
             self.startMs = startMs
             self.durationMs = durationMs
             self.missing = missing
             self.reasons = reasons
+            self.suppressedRepeats = suppressedRepeats
         }
 
         public var label: String {
@@ -201,7 +208,18 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
                 if let summary = reasonSummary { return "\(base) (\(summary))" }
                 return base
             }
-            return "quiet for \(Formatting.duration(durationMs))"
+            let quiet = "quiet for \(Formatting.duration(durationMs))"
+            // Say what was taken out, in the plainest terms available: the model wrote text
+            // over a silent room, and the person reading this is owed the fact rather than an
+            // unexplained hole where a wall of repeated lines used to be.
+            guard suppressedRepeats >= minimumReportedSuppressedLines else { return quiet }
+            let hidden =
+                suppressedRepeats == 1
+                ? "1 repeated line hidden" : "\(suppressedRepeats) repeated lines hidden"
+            // A loop can emit a hundred lines in ten seconds. Leading with "quiet for 10 sec"
+            // there would bury the thing that actually happened under a duration nobody cares
+            // about, so the short ones report only the lines.
+            return durationMs < silenceBreakThresholdMs ? hidden : "\(quiet) · \(hidden)"
         }
 
         /// True when the row has a breakdown worth opening. One reason is already spelled out
@@ -259,6 +277,14 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
 /// the words and starts interrupting the reading of them.
 public let minimumShownLossMs: Int64 = 10_000
 
+/// Hidden looped lines below this many are collapsed without saying so. The line itself is
+/// still on screen — suppression never touches a first occurrence — so six echoes of "Yeah."
+/// cost the reader nothing, while a row per burst would cost them the transcript. Ten is where
+/// the hidden material stops being a stutter and starts being a stretch of the recording:
+/// across the measured library it labels the 70 substantial loops and stays quiet for the 221
+/// small ones (median 1.6 s long).
+public let minimumReportedSuppressedLines = 10
+
 let silenceBreakThresholdMs: Int64 = 5_000
 let quietPauseThresholdMs: Int64 = 30_000
 let gapCollapseWindowMs: Int64 = 5_000
@@ -266,14 +292,25 @@ let gapCollapseWindowMs: Int64 = 5_000
 /// Derives the transcript timeline for one segment: readable speech blocks interleaved with
 /// unlabeled breaks, calm quiet rows, and explicit loss rows (loss is never hidden and quiet is
 /// never framed as loss).
+///
+/// `suppressedLoops` describes stretches the caller has already removed from `segments` with
+/// `filteringLoopedArtefacts`; they are folded into the quiet rows so a hidden loop reads as
+/// the quiet it actually was, and says how many lines it stands for. Callers that pass nothing
+/// get exactly the behavior they had before suppression existed.
 public func transcriptTimelineItems(
     meta: SegmentMeta,
     segments: [TranscriptSegment],
-    words: [TranscriptWord] = []
+    words: [TranscriptWord] = [],
+    suppressedLoops: [SuppressedLoop] = []
 ) -> [TranscriptTimelineItem] {
     let speech = coalescedSpeechBlocks(segments: segments, words: words)
         .flatMap { splitSpeechBlock($0) }
-    if speech.isEmpty { return [] }
+    if speech.isEmpty {
+        // A recording whose text was ENTIRELY looped artefact still has a story: it was quiet,
+        // and the transcriber filled the silence. Saying nothing here would leave the reader
+        // with a blank screen and no idea why.
+        return coalesceTimelineQuiet(quietRowsForUncoveredLoops([], suppressedLoops))
+    }
 
     let gaps = collapsedTranscriptGaps(meta)
     var items: [TranscriptTimelineItem] = []
@@ -324,7 +361,74 @@ public func transcriptTimelineItems(
         }
         return seen.insert(key).inserted
     }
-    return coalesceTimelineQuiet(deduped)
+    return coalesceTimelineQuiet(attributingSuppressedLoops(deduped, suppressedLoops))
+}
+
+/// Folds suppressed loops into the rows that already cover their time, and gives a quiet row of
+/// its own to any loop nothing covers — a loop at the very start of a recording has no
+/// preceding speech to open a pause against, and that is exactly the 99%-artefact case.
+private func attributingSuppressedLoops(
+    _ items: [TranscriptTimelineItem], _ loops: [SuppressedLoop]
+) -> [TranscriptTimelineItem] {
+    guard !loops.isEmpty else { return items }
+    var out = items
+    var uncovered: [SuppressedLoop] = []
+    for loop in loops {
+        // A quiet row over the same stretch is the right home, so look for one before settling
+        // for anything else — the rows are in time order and a merged speech block can spill
+        // into the loop's span, so first-overlap-wins would hand the count to the wrong row.
+        if let index = out.firstIndex(where: { item in
+            guard let pause = item.asPause, !pause.missing else { return false }
+            return overlaps(pause.startMs, pause.startMs + pause.durationMs, loop)
+        }), var pause = out[index].asPause {
+            pause.suppressedRepeats += loop.turnCount
+            out[index] = .pause(pause)
+            continue
+        }
+        // A break is the SAME quiet, just short enough that it normally goes unlabelled.
+        // Promote it in place rather than inserting a second row: the coalescing pass
+        // re-derives the form from the merged duration and count, so a hundred lines emitted in
+        // ten seconds still get said out loud, and a handful still do not.
+        if let index = out.firstIndex(where: { item in
+            guard let gap = item.asBreak else { return false }
+            return overlaps(gap.startMs, gap.startMs + gap.durationMs, loop)
+        }), let gap = out[index].asBreak {
+            out[index] = .pause(
+                TranscriptTimelineItem.Pause(
+                    startMs: gap.startMs, durationMs: gap.durationMs, missing: false,
+                    suppressedRepeats: loop.turnCount))
+            continue
+        }
+        // Surviving speech already accounts for this time: there is no hole to explain, and a
+        // quiet row laid over it would invent one.
+        let inSpeech = out.contains { item in
+            guard let speech = item.asSpeech else { return false }
+            return overlaps(speech.startMs, speech.endMs, loop)
+        }
+        if !inSpeech { uncovered.append(loop) }
+    }
+    return quietRowsForUncoveredLoops(out, uncovered)
+}
+
+private func quietRowsForUncoveredLoops(
+    _ items: [TranscriptTimelineItem], _ loops: [SuppressedLoop]
+) -> [TranscriptTimelineItem] {
+    guard !loops.isEmpty else { return items }
+    var out = items
+    for loop in loops {
+        let row = TranscriptTimelineItem.Pause(
+            startMs: loop.startMs,
+            durationMs: max(loop.endMs - loop.startMs, 0),
+            missing: false,
+            suppressedRepeats: loop.turnCount)
+        let insertion = out.firstIndex { $0.startMs > loop.startMs } ?? out.count
+        out.insert(.pause(row), at: insertion)
+    }
+    return out
+}
+
+private func overlaps(_ startMs: Int64, _ endMs: Int64, _ loop: SuppressedLoop) -> Bool {
+    loop.startMs < endMs && startMs <= loop.endMs
 }
 
 /// Collapses consecutive non-speech rows of the same kind so the transcript reads cleanly: a
@@ -344,9 +448,11 @@ private func coalesceTimelineQuiet(
         }
         let startMs = items[i].startMs
         var totalMs: Int64 = 0
+        var suppressed = 0
         var j = i
         while j < items.count, timelineQuietKind(items[j]) == kind {
             totalMs += timelineItemDurationMs(items[j])
+            if case .pause(let pause) = items[j] { suppressed += pause.suppressedRepeats }
             j += 1
         }
         if kind == .loss {
@@ -362,11 +468,18 @@ private func coalesceTimelineQuiet(
                     )
                 )
             )
-        } else if totalMs >= quietPauseThresholdMs {
+        } else if totalMs >= quietPauseThresholdMs
+            || suppressed >= minimumReportedSuppressedLines
+        {
+            // Normally quiet needs 30 s to earn a labelled row. A stretch that hid a
+            // substantial number of lines earns one at any length, because a loop can emit a
+            // hundred of them in ten seconds and the reader would otherwise see the transcript
+            // skip with nothing said about it.
             out.append(
                 .pause(
                     TranscriptTimelineItem.Pause(
-                        startMs: startMs, durationMs: totalMs, missing: false
+                        startMs: startMs, durationMs: totalMs, missing: false,
+                        suppressedRepeats: suppressed
                     )
                 )
             )
@@ -527,7 +640,12 @@ private func collapsedTranscriptGaps(_ meta: SegmentMeta) -> [TranscriptTimeline
                         let (start, end) = rangeOf(gap)
                         return [
                             LossReason(
-                                text: gapDescription(gap), durationMs: max(end - start, 0))
+                                // The DISPLAYED length, not the raw record: a gap clipped to this
+                                // segment can run ten hours raw and show as seconds, and the
+                                // wording has to match what the person is looking at. Without it
+                                // a 10 h 30 m hole read "the phone briefly missed audio".
+                                text: gapDescription(gap, displayedDurationMs: max(end - start, 0)),
+                                durationMs: max(end - start, 0))
                         ]
                     })
                 : []
