@@ -1,4 +1,5 @@
 import Foundation
+import Transcription
 
 // Port of `core/ai/.../AiModeRouter.kt`.
 
@@ -15,9 +16,18 @@ public final class AiModeRouter: @unchecked Sendable {
 
     private let lock = NSLock()
     private var _lastSuccessfulMode: AiProcessingMode?
+    private var _lastFallback: ProcessingFallback?
 
     public var lastSuccessfulMode: AiProcessingMode? {
         lock.withLock { _lastSuccessfulMode }
+    }
+
+    /// Whether a "first" mode is currently being served by its fallback, and why. Nil when the
+    /// preferred provider is working. Same contract as the transcription router's — see
+    /// `ProcessingFallback` in the Transcription module, which owns the rules for both axes so
+    /// the disclosure cannot mean two different things depending on which one it came from.
+    public var lastFallback: ProcessingFallback? {
+        lock.withLock { _lastFallback }
     }
 
     public init(
@@ -44,6 +54,8 @@ public final class AiModeRouter: @unchecked Sendable {
 
     public func run(_ request: AiRunRequest) async throws -> RoutedAiResult {
         let result: RoutedAiResult
+        /// Set only where a fallback actually produced the result; every other path clears it.
+        var fallback: ProcessingFallback?
         switch mode() {
         case .localOnly:
             result = try await runProvider(local, role: "local", request, modeUsed: .localOnly)
@@ -60,6 +72,8 @@ public final class AiModeRouter: @unchecked Sendable {
             } catch {
                 result = try await runProvider(
                     remote, role: "remote", request, modeUsed: .remoteOnly, suppressed: error)
+                fallback = ProcessingFallback(
+                    direction: .localToCloud, cause: .classify(Self.message(of: error)))
             }
 
         case .remoteFirst:
@@ -71,10 +85,32 @@ public final class AiModeRouter: @unchecked Sendable {
             } catch {
                 result = try await runProvider(
                     local, role: "local", request, modeUsed: .localOnly, suppressed: error)
+                fallback = ProcessingFallback(
+                    direction: .cloudToLocal, cause: .classify(Self.message(of: error)))
             }
         }
-        lock.withLock { _lastSuccessfulMode = result.modeUsed }
+        lock.withLock {
+            _lastSuccessfulMode = result.modeUsed
+            _lastFallback = fallback
+        }
         return result
+    }
+
+    /// The failed path's message, in the shape `ProcessingFallbackCause.classify` reads: our own
+    /// thrown literals, a parenthesised HTTP status, or the `URLError` marker. `AiError` carries
+    /// no `LocalizedError` conformance, so its three cases are spelled out rather than left to
+    /// `localizedDescription` (which would print "The operation couldn't be completed").
+    private static func message(of error: Error) -> String? {
+        guard let aiError = error as? AiError else { return storedFailureMessage(error) }
+        switch aiError {
+        case .providerUnavailable(let providerId), .consentRequired(let providerId):
+            return "provider unavailable: \(providerId)"
+        case .providerFailed(let message, let underlying):
+            // A network failure is the one cause worth naming separately, and it arrives
+            // wrapped: `storedFailureMessage` stamps the marker `classify` looks for.
+            if let underlying, underlying is URLError { return storedFailureMessage(underlying) }
+            return message
+        }
     }
 
     private func runProvider(

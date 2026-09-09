@@ -32,6 +32,27 @@ public protocol OnDeviceLanguageModel: Sendable {
     /// should throw on failure; `CancellationError` must propagate.
     func generate(instructions: String, prompt: String, maxOutputTokens: Int?) async throws
         -> String
+
+    // The two members below are REQUIREMENTS with defaults in `OnDeviceStructuredOutput.swift`,
+    // not extension-only members. That distinction is load-bearing and cost a debugging round:
+    // `OnDeviceAiProvider` holds an existential, and a member that lives only in a protocol
+    // extension is dispatched statically — the Foundation Models bridge would have gone on
+    // reporting `false` from the extension's default and every structured request would have
+    // been refused on every device, silently, exactly as before. Declared here, they dispatch
+    // to the conformer; defaulted there, every existing conformer and test double still
+    // compiles untouched and still says "no".
+
+    /// Whether this model can be held to a named output shape.
+    var supportsStructuredOutput: Bool { get }
+
+    /// Produces the body named by `shape`. Implementations should throw on failure;
+    /// `CancellationError` must propagate.
+    func generateStructured(
+        _ shape: OnDeviceStructuredShape,
+        instructions: String,
+        prompt: String,
+        maxOutputTokens: Int?
+    ) async throws -> String
 }
 
 /// `AiProvider` backed by an on-device OS model. This is a fully local, private provider: it
@@ -46,7 +67,14 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
     /// On-device context windows are small; keep input well under the budget. Titles/
     /// summaries care about the gist, so a generous-but-bounded slice of a long transcript
     /// is fine.
-    public static let defaultMaxInputChars = 12_000
+    ///
+    /// 12,000 was over the cliff, not near it. Apple Foundation Models reports a **4,096-token**
+    /// window, and the ceiling was binary-searched against the real model: 11,047 characters
+    /// bare, and 9,946 once the personal-context grounding block is prepended — which it always
+    /// is. So a 12,000-character transcript threw `exceededContextWindowSize` and failed EVERY
+    /// on-device annotation, with or without grounding, on every device. 8,000 leaves room for
+    /// the grounding block, the instructions and the reply.
+    public static let defaultMaxInputChars = 8_000
 
     /// Title + 1-3 sentence summary is short; cap output so generation stays fast.
     public static let defaultMaxOutputTokens = 256
@@ -76,30 +104,55 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
     }
 
     public func run(_ request: AiRunRequest) async throws -> AiProviderResult {
-        // Some calls are only meaningful in a strict JSON schema, and this provider has no way
-        // to enforce one. Refusing is honest: the caller records a failure it can retry, rather
-        // than a confident empty answer built from unparseable prose.
-        if request.metadata[AiRunRequest.requiresStructuredOutputKey] != nil {
-            throw AiError.providerUnavailable(providerId: id)
-        }
+        let needsSchema = request.metadata[AiRunRequest.requiresStructuredOutputKey] != nil
         guard let activeModel = model else {
             throw AiError.providerUnavailable(providerId: id)
         }
         guard await activeModel.availability() == .available else {
             throw AiError.providerUnavailable(providerId: id)
         }
+        // Some answers are only meaningful in the shape the prompt names. This provider used to
+        // refuse ALL of them, because a text-only model cannot be held to one; it now refuses
+        // only when the model in front of it genuinely cannot, or when nothing on-device knows
+        // how to produce that particular shape. Refusing is still the honest outcome in those
+        // cases: the caller records a failure it can retry, rather than a confident empty answer
+        // built out of unparseable prose.
+        var shape: OnDeviceStructuredShape?
+        if needsSchema {
+            guard activeModel.supportsStructuredOutput,
+                let matched = OnDeviceStructuredShape.forPromptId(request.prompt.id)
+            else { throw AiError.providerUnavailable(providerId: id) }
+            shape = matched
+        }
         let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: maxInputChars)
+            request,
+            // A structured shape does its own chunking and filtering, so it is handed the
+            // conversation whole. Truncating one to 12k characters is how a loop that closes in
+            // the last ten minutes of a recording comes back looking open.
+            maxInputChars: shape?.maxInputChars ?? maxInputChars)
         let instructions = buildInstructions(request.prompt.systemPrompt)
         let text: String
         do {
-            text = try await activeModel.generate(
-                instructions: instructions,
-                prompt: userContent,
-                maxOutputTokens: maxOutputTokens
-            )
+            if let shape {
+                text = try await activeModel.generateStructured(
+                    shape,
+                    instructions: instructions,
+                    prompt: userContent,
+                    maxOutputTokens: maxOutputTokens
+                )
+            } else {
+                text = try await activeModel.generate(
+                    instructions: instructions,
+                    prompt: userContent,
+                    maxOutputTokens: maxOutputTokens
+                )
+            }
         } catch let error where error is CancellationError || error is AiError {
             throw error
+        } catch is OnDeviceStructuredError {
+            // The model said it could and then could not: unavailable, not failed, so a First
+            // mode falls back to the cloud instead of burning one of the caller's attempts.
+            throw AiError.providerUnavailable(providerId: id)
         } catch {
             throw AiError.providerFailed("On-device AI generation failed", underlying: error)
         }

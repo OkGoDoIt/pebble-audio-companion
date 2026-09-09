@@ -88,6 +88,13 @@ public struct AiRunRequest: Sendable {
     /// the on-device model, which ignores the model override, truncates the conversation to
     /// 12k characters, caps the answer at 256 tokens and enforces no schema at all — so the
     /// reply cannot parse, and the failure looks like the conversation having no follow-ups.
+    ///
+    /// The tag is unchanged, but what it costs is not: `OnDeviceAiProvider` used to refuse
+    /// EVERY request carrying it. Apple's Foundation Models framework has guided generation, so
+    /// the refusal is now conditional on the model in front of it genuinely not being able to
+    /// hold a shape, and on there being an on-device implementation of that particular one —
+    /// see `OnDeviceStructuredOutput.swift`. Setting the tag still means "refuse rather than
+    /// improvise"; it no longer means "the cloud, always".
     public static let requiresStructuredOutputKey = "requiresStructuredOutput"
 
     public let requestId: String
