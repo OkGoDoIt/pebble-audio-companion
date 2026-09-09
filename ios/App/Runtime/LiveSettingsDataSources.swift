@@ -1149,35 +1149,67 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var detailedLogLines: [String] = AppRuntimeLog.shared.recent
 
     private(set) var supportReportText = ""
+    private(set) var powerAlert: String?
+
+    /// Whether the Diagnostics screen is on screen. NOTHING below runs while it is not.
+    ///
+    /// This source exists from launch (it is built with the rest of the settings graph), and it
+    /// used to refresh on every diagnostics publish, every receiver-state change, every Info read
+    /// and every log line -- decoding every sidecar in the spool each time and building the
+    /// support report through `CompanionRuntime.supportReport()`, which refreshes diagnostics,
+    /// which publishes, which refreshed this source again. A feedback loop at a full CPU core for
+    /// as long as the process lived, and residency made the process live all day. The rule now:
+    /// an off-screen source records that it is stale and does nothing; appearing refreshes once.
+    @ObservationIgnored private var isVisible = false
+    @ObservationIgnored private var staleWhileHidden = true
 
     init(composition: AppComposition) {
         self.composition = composition
         let runtime = composition.runtime
         Task { [weak self] in
-            for await _ in runtime.diagnostics.stream() { await self?.refresh() }
+            for await _ in runtime.diagnostics.stream() { await self?.refreshIfVisible() }
         }
         Task { [weak self] in
-            for await _ in runtime.receiverState.stream() { await self?.refresh() }
+            for await _ in runtime.receiverState.stream() { await self?.refreshIfVisible() }
         }
         // The Info snapshot is re-read on every handshake (and after an enable prompt), which is
         // when the watch's send-refusal counter moves for us. Without this the row would only
         // change when something else happened to trigger a refresh.
         Task { [weak self] in
-            for await _ in runtime.watchInfo.stream() { await self?.refresh() }
+            for await _ in runtime.watchInfo.stream() { await self?.refreshIfVisible() }
         }
         // The log ring is not part of the runtime's diagnostics, and most of what writes to it
         // (the BLE link, the receiver session, the queue, background tasks) moves none of the
         // streams above. It needs its own subscription or the screen never redraws for it.
+        // Reading it means re-reading the whole flight-recorder file, so: only while visible.
         Task { [weak self] in
             for await _ in AppRuntimeLog.shared.generations() {
-                await MainActor.run { self?.detailedLogLines = AppRuntimeLog.shared.recent }
+                await MainActor.run {
+                    guard let self, self.isVisible else { return }
+                    self.detailedLogLines = AppRuntimeLog.shared.recent
+                }
                 // Coalesce a burst of writes into one redraw.
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
     }
 
+    func setVisible(_ visible: Bool) {
+        isVisible = visible
+        guard visible, staleWhileHidden else { return }
+        Task { [weak self] in await self?.refresh() }
+    }
+
+    private func refreshIfVisible() async {
+        guard isVisible else {
+            staleWhileHidden = true
+            return
+        }
+        await refresh()
+    }
+
     private func refresh() async {
+        staleWhileHidden = false
         let composition = self.composition
         let diagnostics = composition.runtime.diagnostics.value
         queueWaiting = diagnostics.queuedTranscriptionTasks
@@ -1198,17 +1230,26 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         orphanedFrames = composition.runtime.orphanedFrameCount.value
         watchLink = Self.linkFault(composition)
         watchSend = Self.sendHealth(composition.runtime.watchInfo.value)
-        // Off-main: this refreshes on the diagnostics tick while the screen is open, and
-        // `listSegments()` decodes every sidecar in the spool.
-        let files = composition.files
-        let metas = await Task.detached(priority: .userInitiated) { files.listSegments() }.value
+        // The store's in-memory index, not the file reader: `SegmentFileReader.listSegments()`
+        // decodes every sidecar in the spool from disk, which is what made each turn of the old
+        // loop so expensive (a third of the whole profile was JSON-decoding sidecars).
+        let metas = await composition.store.listSegments()
         recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
         failedItems = Self.failures(
             (try? composition.queue.all()) ?? [], segments: metas
         )
         pipeline = Self.pipeline(
             composition.runtime.pipelineHealth.health, nowMs: composition.clock.nowMs)
-        let report = await composition.runtime.supportReport()
+        detailedLogLines = AppRuntimeLog.shared.recent
+        powerAlert = composition.powerWatchdogAlert
+        // Built from the values already in hand. NEVER through `runtime.supportReport()`: that
+        // refreshes diagnostics, which publishes, which would bring us straight back here.
+        let report = SupportReport(
+            generatedAtMs: composition.clock.nowMs,
+            receiverState: String(describing: composition.runtime.receiverState.value),
+            captureIntent: String(describing: composition.runtime.captureIntent),
+            diagnostics: diagnostics
+        )
         supportReportText = Self.report(
             report, segments: recentSegments, failures: failedItems, link: watchLink,
             watchSend: watchSend, pipeline: pipeline

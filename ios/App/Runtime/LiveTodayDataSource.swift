@@ -124,7 +124,29 @@ final class LiveTodayDataSource {
                     self?.scheduleRefresh()
                 }
             })
+        // Everything above is deferred while the app is in the background (see `refresh`), so the
+        // first thing a returning app does is rebuild what it deferred.
+        tasks.append(
+            Task { [weak self] in
+                let notifications = NotificationCenter.default.notifications(
+                    named: UIApplication.willEnterForegroundNotification)
+                for await _ in notifications {
+                    self?.scheduleRefresh()
+                }
+            })
         scheduleRefresh()
+    }
+
+    /// Whether a rebuild is worth doing right now: someone can see the result.
+    ///
+    /// The Today model is rebuilt on every receiver, diagnostics and library event and on a
+    /// ten-second tick -- a library query, the follow-ups, the recap, the live transcript walk.
+    /// It used to do that around the clock while the app sat in the background (residency keeps
+    /// the process awake for as long as the watch streams), which a CPU profile put at a tenth of
+    /// a core, for a screen with nobody in front of it. In the background only the timed-pause
+    /// resolver runs; the model is rebuilt on the way back to the foreground.
+    private var canRebuild: Bool {
+        UIApplication.shared.applicationState != .background
     }
 
     deinit {
@@ -175,6 +197,10 @@ final class LiveTodayDataSource {
             // is most likely to be looking at when it happens.
             CaptureController.reloadWidgetSurfaces()
         }
+
+        // The pause resolver above must run whether or not anyone is looking; nothing below it
+        // needs to. `willEnterForeground` schedules the rebuild this skips.
+        guard canRebuild else { return }
 
         let openSegmentId = await composition.store.openSegmentId
         composition.openSegment.set(openSegmentId)

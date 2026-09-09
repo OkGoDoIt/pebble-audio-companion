@@ -950,6 +950,7 @@ enum Copy {
 
         enum Diagnostics {
             static let title = "Diagnostics"
+            static let powerAlert = "Battery"
             static let receiver = "Receiver"
             static let receiverRecording = "Recording from Pebble"
             static let watchReports = "Watch reports"

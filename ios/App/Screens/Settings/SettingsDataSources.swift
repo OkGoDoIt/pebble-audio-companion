@@ -780,6 +780,14 @@ protocol DiagnosticsSource: AnyObject {
     /// Raw technical lines — counters and gap metadata only, never audio or transcript text.
     var detailedLogLines: [String] { get }
     var supportReportText: String { get }
+    /// The app's own CPU watchdog: set when this process has been spending more than its budget
+    /// while in the background. Nil is the calm case and the row is absent.
+    var powerAlert: String? { get }
+    /// The screen says when it is on screen. A live source does nothing while it is not: the
+    /// counters it keeps are re-read from every sidecar and the whole log file, and a source
+    /// that refreshes for a screen nobody is looking at is how a feedback loop went unnoticed
+    /// at a full CPU core.
+    func setVisible(_ visible: Bool)
 }
 
 @MainActor
@@ -799,6 +807,9 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var enrichmentRunning = false
     var failedItems: [DiagnosticFailure] = []
     var pipeline = DiagnosticPipeline(summary: Copy.Settings.Diagnostics.pipelineWorking("2 s"))
+    var powerAlert: String?
+
+    func setVisible(_ visible: Bool) {}
 
     func rebuildSearchIndex() async {
         indexRebuild = .running

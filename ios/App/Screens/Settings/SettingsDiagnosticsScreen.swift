@@ -12,6 +12,13 @@ struct SettingsDiagnosticsScreen: View {
     var body: some View {
         SettingsScroll {
             ListCard {
+                if let alert = diagnostics.powerAlert {
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.powerAlert,
+                        value: alert,
+                        showsChevron: false
+                    )
+                }
                 SettingsRow(
                     title: Copy.Settings.Diagnostics.receiver,
                     value: diagnostics.receiverStatus,
@@ -192,6 +199,9 @@ struct SettingsDiagnosticsScreen: View {
             #endif
         }
         .navigationTitle(Copy.Settings.Diagnostics.title)
+        // The source only works while it is being looked at; see `DiagnosticsSource.setVisible`.
+        .onAppear { diagnostics.setVisible(true) }
+        .onDisappear { diagnostics.setVisible(false) }
     }
 
     #if DEBUG

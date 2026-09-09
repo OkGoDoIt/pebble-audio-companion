@@ -208,11 +208,18 @@ import WireProtocol
         freeSpace.bytes = 10 * 1024 * 1024 * 1024
         #expect(manager.receiverFlags() == 0)
 
+        // The reading is remembered for `freeSpaceCacheMs`: the volume query behind it is a
+        // CacheDelete walk, and every checkpoint asked for it twice. Inside the window a change
+        // on disk is not seen...
         freeSpace.bytes = 400 * 1024 * 1024  // < 500 MB: low storage, no pause yet
+        #expect(manager.receiverFlags() == 0)
+        // ...and past it, it is.
+        clock.now += RetentionManager.freeSpaceCacheMs
         #expect(manager.receiverFlags() == ProtocolConstants.receiverFlagLowStorage)
         #expect(manager.lowStorage)
         #expect(!manager.pauseRequested)
 
+        clock.now += RetentionManager.freeSpaceCacheMs
         freeSpace.bytes = 100 * 1024 * 1024  // < 200 MB: low storage + pause requested
         #expect(
             manager.receiverFlags()
@@ -220,6 +227,7 @@ import WireProtocol
         #expect(manager.freeStorageHintKb() == 100 * 1024)
 
         // Hint saturates instead of wrapping for very large free space.
+        clock.now += RetentionManager.freeSpaceCacheMs
         freeSpace.bytes = 8 * 1024 * 1024 * 1024 * 1024
         #expect(manager.freeStorageHintKb() == UInt32.max)
     }

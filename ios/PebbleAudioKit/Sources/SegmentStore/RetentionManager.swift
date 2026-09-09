@@ -166,8 +166,24 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         log("retention: age cap evicted \(count) segment(s) older than \(days) day(s)")
     }
 
-    public var lowStorage: Bool { freeSpace.freeBytes() < config.lowStorageFloorBytes }
-    public var pauseRequested: Bool { freeSpace.freeBytes() < config.pauseFloorBytes }
+    /// The free-space reading, remembered for a while.
+    ///
+    /// `URL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])` is not a
+    /// stat call: it asks CacheDelete to size every purgeable cache on the volume, tens of
+    /// milliseconds of work in another process and this one. It was being asked on every
+    /// checkpoint (twice, for the flags and the hint) and on every diagnostics refresh -- a
+    /// 45-second CPU profile of the backgrounded app showed 6% of a core inside it. Free space
+    /// does not change meaningfully inside half a minute, and every consumer of this value is a
+    /// hint or a floor with hundreds of megabytes of margin.
+    public static let freeSpaceCacheMs: Int64 = 30_000
+    private let freeSpaceCache = FreeSpaceCache()
+
+    private func freeBytes() -> Int64 {
+        freeSpaceCache.value(nowMs: nowMs(), ttlMs: Self.freeSpaceCacheMs) { freeSpace.freeBytes() }
+    }
+
+    public var lowStorage: Bool { freeBytes() < config.lowStorageFloorBytes }
+    public var pauseRequested: Bool { freeBytes() < config.pauseFloorBytes }
 
     public func receiverFlags() -> UInt32 {
         var flags: UInt32 = 0
@@ -177,8 +193,30 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
     }
 
     public func freeStorageHintKb() -> UInt32 {
-        let kb = freeSpace.freeBytes() / 1024
+        let kb = freeBytes() / 1024
         if kb >= Int64(UInt32.max) { return UInt32.max }
         return UInt32(max(kb, 0))
+    }
+}
+
+/// A value remembered for `ttlMs` of the injected clock. Thread-safe; the reader runs outside the
+/// lock so a slow query never serialises callers behind it.
+final class FreeSpaceCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cached: Int64?
+    private var cachedAtMs: Int64 = 0
+
+    func value(nowMs: Int64, ttlMs: Int64, read: () -> Int64) -> Int64 {
+        let hit: Int64? = lock.withLock {
+            guard let cached, nowMs - cachedAtMs < ttlMs, nowMs >= cachedAtMs else { return nil }
+            return cached
+        }
+        if let hit { return hit }
+        let fresh = read()
+        lock.withLock {
+            cached = fresh
+            cachedAtMs = nowMs
+        }
+        return fresh
     }
 }

@@ -86,7 +86,21 @@ public final class DiagnosticsService: Sendable {
     private let enrichment: @Sendable () async -> (waiting: Int, running: Bool)
 
     /// Observable published value (`.value` for a sync read, `.stream()` to follow changes).
+    ///
+    /// PUBLISHED ONLY WHEN THE CONTENT CHANGES. The struct carries `lastRefreshedAtMs`, so the
+    /// synthesized equality said every refresh was a change and `StateSubject` emitted on every
+    /// one -- which turned any observer that refreshes in response to an emission into an
+    /// infinite loop. That is exactly what the Diagnostics screen's data source did (it built
+    /// its support report through `CompanionRuntime.supportReport()`, which refreshes), and the
+    /// loop ran at a full CPU core for as long as the process was awake: invisible while iOS
+    /// suspended a backgrounded app, and a 30%-an-hour battery drain once residency kept the
+    /// app running. Gating the publish on content starves any such cycle -- the second turn
+    /// publishes nothing -- and it is cheaper for every honest observer as well.
     public let snapshot = StateSubject<RuntimeDiagnostics>(RuntimeDiagnostics())
+
+    /// Refreshes performed and snapshots actually published, for the tests that pin the gate.
+    public private(set) var refreshCount = 0
+    public private(set) var publishCount = 0
 
     public init(
         store: SegmentStore,
@@ -127,7 +141,25 @@ public final class DiagnosticsService: Sendable {
             transcriptionDeferredInBackground: !isForeground(),
             lastRefreshedAtMs: clock.nowMs
         )
+        refreshCount += 1
+        guard value.contentDiffers(from: snapshot.value) else { return snapshot.value }
+        publishCount += 1
         snapshot.value = value
         return value
+    }
+}
+
+extension RuntimeDiagnostics {
+    /// Whether anything a reader could act on changed. The refresh timestamp is bookkeeping,
+    /// and the free-space hint moves by a few kilobytes every time audio is written, so both are
+    /// compared coarsely: the hint counts as changed once it has moved by a megabyte.
+    public func contentDiffers(from other: RuntimeDiagnostics) -> Bool {
+        var lhs = self
+        var rhs = other
+        lhs.lastRefreshedAtMs = 0
+        rhs.lastRefreshedAtMs = 0
+        lhs.freeStorageHintKb /= 1024
+        rhs.freeStorageHintKb /= 1024
+        return lhs != rhs
     }
 }
