@@ -176,6 +176,17 @@ struct SettingsDiagnosticsScreen: View {
             }
             SettingsFooter(text: Copy.Settings.Diagnostics.rebuildIndexFooter)
 
+            // Re-runs the setup flow. It used to be `#if DEBUG`, which put it in exactly the
+            // build nobody tests onboarding in: the flow is about pairing a real watch, and a
+            // real watch means a release install. It sits beside Rebuild Index because both are
+            // "do the thing again", and like that one it states what it does not touch.
+            ListCard {
+                TintActionRow(title: Copy.Settings.Diagnostics.redoOnboarding) {
+                    OnboardingRerun.reopen(settings)
+                }
+            }
+            SettingsFooter(text: Copy.Settings.Diagnostics.redoOnboardingFooter)
+
             #if DEBUG
             designSection
             #endif
@@ -184,19 +195,55 @@ struct SettingsDiagnosticsScreen: View {
     }
 
     #if DEBUG
-    /// Debug-only design references (also the onboarding reset for state walkthroughs).
+    /// Debug-only design references.
     @ViewBuilder
     private var designSection: some View {
         SettingsSectionHeader(title: "Design")
         ListCard {
             SettingsPushRow(title: "Token gallery") { TokenGallery() }
             SettingsPushRow(title: "Component gallery") { ComponentGallery() }
-            SettingsRow(title: "Reset onboarding", showsChevron: false) {
-                settings.onboardingComplete = false
-            }
         }
     }
     #endif
+}
+
+// MARK: - Redo onboarding
+
+/// "Redo onboarding" — re-running the FLOW, which is not the same thing as undoing the setup.
+///
+/// The distinction is the whole point, so it is a named operation with a test suite rather than
+/// a closure in a row, and this comment is the list the test pins.
+///
+/// **What onboarding itself writes**, and therefore the only things resetting it could
+/// legitimately touch:
+/// - `onboardingComplete` — the flag the full-screen gate in `PebbleAudioApp` reads, and the
+///   only gate there is. Reset.
+/// - `transcriptionMode`, `aiMode`, `transcriptsConfigured` — step 3. NOT reset: the flow now
+///   seeds itself from them (`OnboardingViewModel.seed(from:)`), so it opens on the answer the
+///   person already gave, and clearing them first would both lose that answer and drop Today
+///   into "Transcripts are off" for as long as the re-run lasted.
+/// - Provider keys — the key screen. NOT reset; they are in the Keychain and the screen shows
+///   them masked, so a re-run can skip past it exactly as a first run can.
+/// - `captureIntent` — set by the explicit "Connect Watch" tap in step 1, restored by
+///   `LiveWatchPairingSource.cancelPairing()` if the person backs out. NOT reset: capture is
+///   opt-in, and switching it off to re-show a screen would stop a live recording.
+///
+/// **What it deliberately does NOT do**, i.e. everything `SettingsWatchScreen.forgetWatch()`
+/// does: drop the binding (`WatchStatusSource.forget()` → `ReceiverService
+/// .revokeReceiverLocally()`, which stops the session, disconnects the link and clears the
+/// resume store), force `captureIntent` to `.off`, and pop the Settings stack. Those belong to
+/// "Forget This Watch". This is "show me the flow again", and the binding surviving is what
+/// makes step 2 pass straight through — a re-run does not cost you a fresh consent tap on the
+/// watch, and someone who WANTS to see that prompt runs Forget Receiver on the watch itself.
+///
+/// Recordings, transcripts, notes and follow-ups live in the database and are not mentioned by
+/// any of the above — no path from this button reaches them.
+enum OnboardingRerun {
+    /// Reopens the onboarding gate. One write; the flow does the rest.
+    @MainActor
+    static func reopen(_ settings: AppSettings) {
+        settings.onboardingComplete = false
+    }
 }
 
 /// One failed recording: when it was made, then the reason in full underneath.

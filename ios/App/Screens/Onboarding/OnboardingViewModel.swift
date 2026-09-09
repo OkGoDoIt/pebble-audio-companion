@@ -256,8 +256,26 @@ final class OnboardingViewModel {
     let source: WatchPairingSource
     @ObservationIgnored private var pairingTask: Task<Void, Never>?
 
-    /// TODO(M9): point at the real published firmware guide.
-    static let firmwareGuideURL = URL(string: "https://github.com/coredevices/PebbleOS")!
+    /// The answer this flow was OPENED on, when it was opened on one at all.
+    ///
+    /// Onboarding is re-runnable now (Settings → Diagnostics → Redo onboarding), so it can no
+    /// longer assume it is looking at a fresh install. `nil` means nothing seeded it — a unit
+    /// test driving the model directly, or a preview — and every write below then behaves
+    /// exactly as it did before seeding existed.
+    @ObservationIgnored private var seededAnswer: SeededAnswer?
+
+    /// What `seed(from:)` found, kept so the flow can tell "they confirmed what they already
+    /// had" from "they changed it".
+    ///
+    /// It records the two PLACES and whether transcripts were configured, not the card — the
+    /// card is a rendering of those three, and it changes on its own for reasons that are not a
+    /// decision: opening the two-axis screen sets `choice = .mixed` before the person has
+    /// touched an axis.
+    private struct SeededAnswer: Equatable {
+        var transcripts: ProcessingPlace
+        var ai: ProcessingPlace
+        var transcriptsConfigured: Bool
+    }
 
     init(source: WatchPairingSource? = nil) {
         #if DEBUG
@@ -353,6 +371,80 @@ final class OnboardingViewModel {
         Task { [source] in await source.cancelPairing() }
     }
 
+    // MARK: Seeding from what is already stored
+
+    /// Starts step 3 on the answer the person already has, rather than on this screen's default.
+    ///
+    /// `choice` defaulted to `.cloud` because that is what the artboard shows on a fresh
+    /// install — which is fine exactly once. The flow is re-runnable now, and on a second pass
+    /// that default is a trap: someone who set "On this phone" months ago would open the
+    /// question with "In the cloud" pre-selected and tapping the one obvious button would move
+    /// their transcripts and AI to OpenAI without ever having said so. Seeding from the stored
+    /// modes makes the screen show the answer it is asking about.
+    ///
+    /// On a genuine first install this changes nothing: the stored defaults are
+    /// `.remoteFirst`/`.remoteFirst`, which map straight back to `.cloud`.
+    ///
+    /// The mapping is `backToProcessing`'s collapse rule plus the one distinction that rule
+    /// cannot make: "Later" and "On this phone" write identical modes and differ only in
+    /// `transcriptsConfigured`, so that flag is what tells them apart here too.
+    func seed(from settings: AppSettings) {
+        guard seededAnswer == nil else { return }
+        let transcripts: ProcessingPlace =
+            settings.transcriptionMode == .localOnly ? .onPhone : .inCloud
+        let ai: ProcessingPlace = settings.aiMode == .localOnly ? .onPhone : .inCloud
+        let seededChoice: ProcessingChoice
+        switch (transcripts, ai) {
+        case (.onPhone, .onPhone): seededChoice = settings.transcriptsConfigured ? .onPhone : .later
+        case (.inCloud, .inCloud): seededChoice = .cloud
+        default: seededChoice = .mixed
+        }
+        choice = seededChoice
+        transcriptsPlace = transcripts
+        aiPlace = ai
+        seededAnswer = SeededAnswer(
+            transcripts: transcripts,
+            ai: ai,
+            transcriptsConfigured: settings.transcriptsConfigured
+        )
+    }
+
+    /// Whether the current answer is still the one this flow was seeded with.
+    ///
+    /// False when nothing seeded the model at all — an unseeded flow has no earlier answer to
+    /// preserve, so it always writes.
+    private var answerIsUntouched: Bool {
+        guard let seededAnswer else { return false }
+        return seededAnswer
+            == SeededAnswer(
+                transcripts: transcriptsPlace,
+                ai: aiPlace,
+                transcriptsConfigured: plan.transcriptsConfigured
+            )
+    }
+
+    /// The plan as it will actually be applied, given what is already stored.
+    ///
+    /// Identical to `plan` in every case except one: when the answer is still the seeded one,
+    /// the STORED modes are kept verbatim instead of being collapsed onto the two modes the
+    /// cards can express. Settings offers all four `TranscriptionMode` / `AiProcessingMode`
+    /// cases and onboarding writes only `.localOnly` and `.remoteFirst`, so without this a
+    /// person on `.localFirst` who re-runs the flow and changes nothing would come out on
+    /// `.remoteFirst` — a different pipeline, nothing they touched, nothing they were told.
+    ///
+    /// The seed maps `.localOnly → on this phone` and everything else to the cloud, which is
+    /// exactly `cloudTranscriptionEnabled` / `remoteAiEnabled`, so the card the person is
+    /// looking at still states where their data goes correctly. This is what makes the sentence
+    /// underneath it, and the provider keys asked for after it, describe the real modes too.
+    func appliedPlan(with settings: AppSettings) -> ProcessingPlan {
+        guard answerIsUntouched else { return plan }
+        return ProcessingPlan(
+            transcriptionMode: settings.transcriptionMode,
+            aiMode: settings.aiMode,
+            transcriptsConfigured: plan.transcriptsConfigured
+        )
+    }
+
     // MARK: Processing → done
 
     /// Opens the two-axis screen, seeded from the preset the person is currently on so the
@@ -397,7 +489,9 @@ final class OnboardingViewModel {
     /// Today's Start takes) and is not touched here — consent on the watch by itself never
     /// switches capture on (anti-B3).
     func continueFromProcessing(settings: AppSettings) {
-        let plan = self.plan
+        // `appliedPlan` — not `plan` — so a re-run that nobody changed writes back exactly what
+        // was already there rather than the nearest card's approximation of it.
+        let plan = appliedPlan(with: settings)
         settings.transcriptionMode = plan.transcriptionMode
         settings.aiMode = plan.aiMode
         settings.transcriptsConfigured = plan.transcriptsConfigured

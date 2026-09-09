@@ -26,17 +26,10 @@ struct OnboardingProcessingDetailView: View {
             GeometryReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(Copy.OnboardingProcessing.detailTitle)
-                                .font(AppFont.screenTitle)
-                                .foregroundStyle(Tokens.label)
-                            Text(Copy.OnboardingProcessing.detailLine)
-                                .font(AppFont.subBody)
-                                .foregroundStyle(Tokens.tertiary)
-                                .lineSpacing(3)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.bottom, 2)
+                        Text(Copy.OnboardingProcessing.detailTitle)
+                            .font(AppFont.screenTitle)
+                            .foregroundStyle(Tokens.label)
+                            .padding(.bottom, 2)
 
                         axis(
                             header: Copy.OnboardingProcessing.transcriptsSection,
@@ -65,9 +58,12 @@ struct OnboardingProcessingDetailView: View {
                         )
 
                         // The payoff: the exact stance these two answers add up to, restated the
-                        // instant either of them changes.
-                        OnboardingConsequences(plan: model.plan, settings: settings)
-                            .padding(.top, 4)
+                        // instant either of them changes. `appliedPlan` because on a re-run
+                        // where neither axis has moved the stored modes are what will be kept.
+                        OnboardingConsequences(
+                            plan: model.appliedPlan(with: settings), settings: settings
+                        )
+                        .padding(.top, 4)
                     }
                     .padding(.horizontal, 24)
                     .padding(.bottom, 12)
@@ -81,17 +77,10 @@ struct OnboardingProcessingDetailView: View {
                 .scrollBounceBehavior(.basedOnSize)
             }
 
-            VStack(spacing: 12) {
-                Button(Copy.Onboarding.continueButton) {
-                    model.continueFromProcessing(settings: settings)
-                }
-                .buttonStyle(.primaryFilled)
-
-                Text(Copy.Onboarding.transcriptsFootnote)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
-                    .multilineTextAlignment(.center)
+            Button(Copy.Onboarding.continueButton) {
+                model.continueFromProcessing(settings: settings)
             }
+            .buttonStyle(.primaryFilled)
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }

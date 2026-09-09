@@ -33,6 +33,10 @@ struct OnboardingFlow: View {
         }
         .motionAware(.snappy(duration: 0.3), value: model.phase)
         .environment(settings)
+        // Start step 3 on the answer this install already has. The flow is re-runnable from
+        // Settings → Diagnostics now, so it can no longer assume a fresh install whose stored
+        // modes happen to match the card it pre-selects. On a real first run this is a no-op.
+        .onAppear { model.seed(from: settings) }
     }
 
     private var stepTransition: AnyTransition {
@@ -47,6 +51,7 @@ struct OnboardingFlow: View {
 
 private struct OnboardingConnectView: View {
     let model: OnboardingViewModel
+    @State private var showFirmwareGuide = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -75,14 +80,38 @@ private struct OnboardingConnectView: View {
                 }
                 .buttonStyle(.primaryFilled)
 
-                Text(Copy.Onboarding.connectFootnote)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
-                    .multilineTextAlignment(.center)
+                firmwareFootnote
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
+        .sheet(isPresented: $showFirmwareGuide) { FirmwareSetupGuideSheet() }
+    }
+
+    /// "Requires the custom audio firmware." has always been true and has never been actionable
+    /// — the one hard prerequisite of the whole product, stated as a dead end. The sentence is
+    /// unchanged; the tinted half after it is the way out, and the whole line is the tap target
+    /// so it does not become a second line on the screen.
+    private var firmwareFootnote: some View {
+        Button {
+            showFirmwareGuide = true
+        } label: {
+            (Text(Copy.Onboarding.connectFootnote).foregroundStyle(Tokens.meta)
+                + Text(" ")
+                + Text(Copy.FirmwareGuidance.howToInstall).foregroundStyle(Tokens.tint))
+                .font(AppFont.footnote)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                // 13pt of text is not a tap target; the padding is.
+                .padding(.vertical, 6)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            "\(Copy.Onboarding.connectFootnote) \(Copy.FirmwareGuidance.howToInstall)"
+        )
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -114,6 +143,7 @@ private struct ConnectHeroGlyph: View {
 private struct OnboardingConfirmView: View {
     let model: OnboardingViewModel
     @Environment(\.openURL) private var openURL
+    @State private var showFirmwareGuide = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,6 +174,7 @@ private struct OnboardingConfirmView: View {
             .padding(.bottom, 20)
         }
         .motionAware(.snappy(duration: 0.25), value: model.pairing)
+        .sheet(isPresented: $showFirmwareGuide) { FirmwareSetupGuideSheet() }
     }
 
     /// Scanning / connecting / authorizing. NOTHING is waiting on the watch yet, so this must
@@ -189,15 +220,32 @@ private struct OnboardingConfirmView: View {
         .frame(maxWidth: 300)
     }
 
+    @ViewBuilder
     private func failureCard(_ failure: OnboardingFailure) -> some View {
-        StatusCard(
-            dotColor: dotColor(failure.dotStyle),
-            headline: failure.headline,
-            line: failure.line,
-            action: .init(title: failure.actionTitle, style: .bordered) {
-                perform(failure)
+        VStack(spacing: 12) {
+            StatusCard(
+                dotColor: dotColor(failure.dotStyle),
+                headline: failure.headline,
+                line: failure.line,
+                action: .init(title: failure.actionTitle, style: .bordered) {
+                    perform(failure)
+                }
+            )
+
+            // A watch on stock firmware is invisible to this app in exactly the way a watch in
+            // the next room is: the scan finds nothing either way, and "No Pebble found" sends
+            // everyone to look for a Bluetooth problem. This is the second question worth
+            // asking, and it is only asked on the branch where it is genuinely ambiguous —
+            // "This Pebble can't send audio" already answers it, and its own action IS the guide.
+            if failure == .noPebbleFound {
+                Button(Copy.FirmwareGuidance.noPebbleFirmwarePrompt) {
+                    showFirmwareGuide = true
+                }
+                .font(AppFont.subBody)
+                .foregroundStyle(Tokens.tint)
+                .padding(.vertical, 4)
             }
-        )
+        }
     }
 
     private func dotColor(_ style: OnboardingFailure.DotStyle) -> Color {
@@ -211,7 +259,10 @@ private struct OnboardingConfirmView: View {
     private func perform(_ failure: OnboardingFailure) {
         switch failure {
         case .cantSendAudio:
-            openURL(OnboardingViewModel.firmwareGuideURL)
+            // Was `openURL` to the PebbleOS repository on GitHub — a source tree, offered to
+            // someone whose watch cannot send audio, under a button called "Firmware Guide".
+            // The guide is in the app now, and it names the steps rather than the code.
+            showFirmwareGuide = true
         case .bluetoothDenied, .bluetoothOff:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 openURL(url)
@@ -352,17 +403,10 @@ private struct OnboardingProcessingView: View {
                 .scrollBounceBehavior(.basedOnSize)
             }
 
-            VStack(spacing: 12) {
-                Button(Copy.Onboarding.continueButton) {
-                    model.continueFromProcessing(settings: settings)
-                }
-                .buttonStyle(.primaryFilled)
-
-                Text(Copy.Onboarding.transcriptsFootnote)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
-                    .multilineTextAlignment(.center)
+            Button(Copy.Onboarding.continueButton) {
+                model.continueFromProcessing(settings: settings)
             }
+            .buttonStyle(.primaryFilled)
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
@@ -388,7 +432,11 @@ private struct OnboardingProcessingView: View {
                 }
             }
             if isSelected {
-                OnboardingConsequences(plan: model.plan, settings: settings)
+                // `appliedPlan`, not `plan`: on a re-run where nothing has been changed the
+                // modes that will actually be written are the stored ones, and the stance under
+                // the card has to describe those — a `.localFirst` install must not be told
+                // "every recording is uploaded" for a choice it is about to keep.
+                OnboardingConsequences(plan: model.appliedPlan(with: settings), settings: settings)
                     .padding(.horizontal, 4)
                     .transition(Motion.transition(.opacity.combined(with: .move(edge: .top))))
             }
@@ -434,8 +482,9 @@ private struct OnboardingCloudKeyView: View {
     @Environment(AppSettings.self) private var settings
 
     /// What the chosen combination actually needs. Both flags cannot be false — the model only
-    /// enters this phase when `needsAnyKey`.
-    private var plan: ProcessingPlan { model.plan }
+    /// enters this phase when `needsAnyKey`. `appliedPlan` so the rows describe the modes that
+    /// were actually written, which on an unchanged re-run are the stored ones.
+    private var plan: ProcessingPlan { model.appliedPlan(with: settings) }
 
     @State private var sonioxKey = ""
     @State private var openAiKey = ""

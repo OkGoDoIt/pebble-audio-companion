@@ -15,7 +15,7 @@ let package = Package(
             targets: [
                 "WireProtocol", "SegmentStore", "Receiver", "StatusUI", "AppDB",
                 "Transcription", "Intelligence", "LiveAudio", "SearchKit", "Migration",
-                "CompanionRuntime", "AudioCodec",
+                "CompanionRuntime", "AudioCodec", "Firmware",
             ]
         ),
     ],
@@ -65,6 +65,10 @@ let package = Package(
             ]
         ),
         .target(name: "WireProtocol", swiftSettings: swiftSettings),
+        // Custom-firmware distribution: the release feed, version ordering, checksum
+        // verification and the hand-off record. Depends on nothing else in the kit on purpose —
+        // it is reachable from Settings alone and must not be able to disturb the capture path.
+        .target(name: "Firmware", swiftSettings: swiftSettings),
         .target(name: "SegmentStore", dependencies: ["WireProtocol"], swiftSettings: swiftSettings),
         .target(name: "Receiver", dependencies: ["WireProtocol", "SegmentStore"], swiftSettings: swiftSettings),
         .target(name: "StatusUI", dependencies: ["Receiver", "SegmentStore"], swiftSettings: swiftSettings),
@@ -111,6 +115,10 @@ let package = Package(
         ),
         .testTarget(
             name: "WireProtocolTests", dependencies: ["WireProtocol"],
+            resources: [.copy("Fixtures")], swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "FirmwareTests", dependencies: ["Firmware"],
             resources: [.copy("Fixtures")], swiftSettings: swiftSettings
         ),
         .testTarget(name: "SegmentStoreTests", dependencies: ["SegmentStore"], swiftSettings: swiftSettings),

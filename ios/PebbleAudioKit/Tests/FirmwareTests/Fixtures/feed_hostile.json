@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "releases": [
+    {
+      "version": "v4.36.2",
+      "board": "obelix",
+      "notes": "Plaintext asset URL — must be dropped, the digest travels with the image.",
+      "url": "http://example.invalid/pebble-4.36.2-obelix.pbz",
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    {
+      "version": "v4.36.3",
+      "board": "obelix",
+      "notes": "Truncated digest — must be dropped rather than verified loosely.",
+      "url": "https://example.invalid/pebble-4.36.3-obelix.pbz",
+      "sha256": "7777"
+    },
+    {
+      "version": "v4.36.4",
+      "board": "obelix",
+      "notes": "Digest with a sha256: prefix — must be dropped.",
+      "url": "https://example.invalid/pebble-4.36.4-obelix.pbz",
+      "sha256": "sha256:88888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "version": "latest",
+      "board": "obelix",
+      "notes": "Unorderable version — must be dropped, never treated as newest.",
+      "url": "https://example.invalid/pebble-latest-obelix.pbz",
+      "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    {
+      "version": "v4.36.5",
+      "board": "obelix",
+      "notes": "No digest at all — must be dropped.",
+      "url": "https://example.invalid/pebble-4.36.5-obelix.pbz"
+    },
+    {
+      "version": "v4.35.0",
+      "board": "obelix",
+      "notes": "The only sound entry in this document.",
+      "url": "https://example.invalid/pebble-4.35.0-obelix.pbz",
+      "sizeBytes": 1000,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ]
+}

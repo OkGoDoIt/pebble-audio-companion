@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 99,
+  "releases": [
+    {
+      "version": "v9.0.0",
+      "board": "obelix",
+      "notes": "A document shape this build does not know. Refused wholesale.",
+      "url": "https://example.invalid/pebble-9.0.0-obelix.pbz",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

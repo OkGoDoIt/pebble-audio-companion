@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "releases": [
+    {
+      "version": "v4.36.1",
+      "board": "obelix",
+      "publishedAt": "2026-08-14T09:30:00Z",
+      "notes": "Upstream 4.36.1. Audio companion service unchanged.",
+      "url": "https://example.invalid/releases/download/v4.36.1/pebble-4.36.1-obelix.pbz",
+      "sizeBytes": 1245184,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "version": "v4.9",
+      "board": "obelix",
+      "publishedAt": "2026-05-02T11:00:00Z",
+      "notes": "First public build.",
+      "url": "https://example.invalid/releases/download/v4.9/pebble-4.9-obelix.pbz",
+      "sizeBytes": 1200000,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "version": "v4.10",
+      "board": "obelix",
+      "publishedAt": "2026-06-20T08:00:00Z",
+      "notes": "Newer than 4.9 despite sorting before it as text.",
+      "url": "https://example.invalid/releases/download/v4.10/pebble-4.10-obelix.pbz",
+      "sizeBytes": 1210000,
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "version": "v4.37.0-rc.1",
+      "board": "obelix",
+      "publishedAt": "2026-09-01T17:45:00Z",
+      "notes": "Release candidate. Not offered unless prereleases are asked for.",
+      "url": "https://example.invalid/releases/download/v4.37.0-rc.1/pebble-4.37.0-rc.1-obelix.pbz",
+      "sizeBytes": 1250000,
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "prerelease": true
+    },
+    {
+      "version": "v4.36.1",
+      "board": "asterix",
+      "publishedAt": "2026-08-14T09:30:00Z",
+      "notes": "Same build, different watch.",
+      "url": "https://example.invalid/releases/download/v4.36.1/pebble-4.36.1-asterix.pbz",
+      "sizeBytes": 1100000,
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  ]
+}
