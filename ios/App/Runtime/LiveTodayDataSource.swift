@@ -171,6 +171,9 @@ final class LiveTodayDataSource {
         CapturePauseResolver.resolveIfDue(settings: composition.settings, nowMs: nowMs) {
             [weak self] intent in
             self?.applyCaptureIntent(intent)
+            // An auto-resume is the one capture change nobody taps, so it is the one the widget
+            // is most likely to be looking at when it happens.
+            CaptureController.reloadWidgetSurfaces()
         }
 
         let openSegmentId = await composition.store.openSegmentId
@@ -527,7 +530,10 @@ final class LiveTodayDataSource {
         return .transcriptsFailing
     }
 
-    private static func coverage(
+    /// Internal rather than private so `CUCoverageQuietRecutTests` can pin the quiet recut on
+    /// the real mapping. It is a pure static — no composition, no database, no watch — which is
+    /// exactly why the recut was testable enough to be worth doing here.
+    static func coverage(
         nowMs: Int64,
         zone: String,
         dateKey: String,
@@ -545,8 +551,30 @@ final class LiveTodayDataSource {
             bounds.endMs > bounds.startMs, !day.spans.isEmpty
         else { return nil }
 
+        // THE QUIET LAYER. `CoverageComputer` can only separate VAD quiet from audio when it is
+        // handed the frame log's sample ranges, and reading the frame log is megabytes on a path
+        // that runs every ten seconds — so this call passes none, and everything the watch chose
+        // not to send was counted as RECORDED. On a quiet day that is the headline: "1 hr
+        // recorded" for an hour in which the watch sent a few minutes of speech, on a product
+        // whose promise is that quiet and loss are never dressed up as each other or as audio.
+        // The `.quiet` colour was literally unreachable from real data; only the artboard drew it.
+        //
+        // The watch already tells us where it suppressed silence — a reported gap whose reason is
+        // `silenceSuppressed`, in the sidecars this refresh has ALREADY loaded — so this is free:
+        // no extra read, no decode, one pass over gap metadata that is in memory anyway. The live
+        // screen's timeline has done exactly this since it was written; running its code here is
+        // what keeps the day strip and the conversation strip from disagreeing about the same
+        // minute (`App/Screens/Live/LiveTimeline.swift`).
+        //
+        // Totals are recomputed from the recut spans rather than reused from `day`: quiet time
+        // comes out of recorded, so the headline has to come out with it.
+        let recut = LiveTimeline.merged(
+            LiveTimeline.applyingQuiet(day.spans, silence: LiveTimeline.silenceWindows(segments)))
+        let recordedMs = LiveTimeline.total(recut, .recorded)
+        let missingMs = LiveTimeline.total(recut, .missing)
+
         let domain = Double(bounds.endMs - bounds.startMs)
-        let spans = day.spans.map { span -> CoverageSpanDisplay in
+        let spans = recut.map { span -> CoverageSpanDisplay in
             let lower = Double(span.startMs - bounds.startMs) / domain
             let upper = Double(span.endMs - bounds.startMs) / domain
             let range = min(max(lower, 0), 1)...min(max(upper, lower), 1)
@@ -556,9 +584,9 @@ final class LiveTodayDataSource {
             )
         }
         return CoverageDisplay(
-            headline: Copy.Today.recorded(Formatting.duration(day.totalRecordedMs)),
-            missingText: day.totalMissingMs > 0
-                ? Copy.Today.missing(Formatting.duration(day.totalMissingMs)) : nil,
+            headline: Copy.Today.recorded(Formatting.duration(recordedMs)),
+            missingText: missingMs > 0
+                ? Copy.Today.missing(Formatting.duration(missingMs)) : nil,
             spans: spans
         )
     }
@@ -661,7 +689,9 @@ final class LiveTodayDataSource {
         _ row: ConversationListRow, liveSnippet: String? = nil, liveStatusLine: String? = nil
     ) -> ConversationRowDisplay {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
-        var meta = "\(TimeFmt.time(start)) · \(Formatting.duration(row.durationMs))"
+        var meta =
+            "\(TimeFmt.time(start)) · "
+            + ConversationDuration.label(durationMs: row.durationMs, isLive: row.isLive)
         if row.isLive { meta += " so far" }
         return ConversationRowDisplay(
             id: row.id,
@@ -747,6 +777,7 @@ extension LiveTodayDataSource: TodayDataSource {
             // comes first so the card flips the moment the user taps, rather than waiting for
             // a watch that may not be in range.
             composition.settings.captureIntent = .active
+            CaptureController.reloadWidgetSurfaces()
             Task { [composition] in
                 await composition.runtime.startCapture()
                 await self.refresh()
@@ -793,6 +824,12 @@ extension LiveTodayDataSource: TodayDataSource {
     private func setIntent(_ intent: CaptureIntent, source: PauseSource) {
         let composition = self.composition
         composition.settings.captureIntent = intent
+        // The widget and the Control Center toggle read the App Group we have just written, and
+        // nothing asks them to look again — so Today's Stop, the live screen's Stop and every
+        // "Pause for…" left both surfaces showing the previous state until iOS next happened to
+        // refresh them. `CaptureController` has done this since it was written; this is the same
+        // call for the transport that does NOT go through it.
+        CaptureController.reloadWidgetSurfaces()
         Task {
             await composition.runtime.setCaptureIntent(intent, source: source)
             await self.refresh()

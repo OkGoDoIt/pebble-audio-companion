@@ -29,6 +29,20 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
             // Getting this wrong is not cosmetic: the flag is what keeps a background wake from
             // loading a transcription model and running the whole foreground pipeline on the
             // tightest memory budget iOS ever gives us.
+            //
+            // MEASURED, and neither signal is trustworthy on its own. In the 2026-09-08 flight
+            // recorder all 22 process starts recorded `applicationState == .active`, including
+            // the 05:35/06:07/06:37/07:07 wakes that were plainly headless — so signal (2) never
+            // fires, and signal (1) is the only one that catches a background launch at all. But
+            // (1) over-fires in the other direction: iOS supplies the key to ANY launch with Core
+            // Bluetooth state to restore, and 21 of those 22 starts carried it, including the
+            // 18:51:48 foreground launch after an install-over that left Today and Library with
+            // no live conversation for the whole of a healthy recording.
+            //
+            // So this stays deliberately conservative — assume headless, because being wrong that
+            // way is cheap — and the correction is made where the truth actually is: the root
+            // view's first appearance, through `AppComposition.noteSceneActive()`. A guess about
+            // why the process exists must never outlive a window the person can see.
             let launchedHeadless =
                 options?[.bluetoothCentrals] != nil
                 || application.applicationState == .background
@@ -111,12 +125,19 @@ struct PebbleAudioApp: App {
                     nativeSurfaces.handle(userActivity: activity)
                 }
                 .task {
+                    // A window exists. This is the earliest moment anything in the process can
+                    // say so, and it is the only statement that is never wrong — see
+                    // `AppComposition.noteSceneActive()`. It must come before the surfaces work
+                    // because it is what un-wedges a launch iOS mis-labelled as headless.
+                    AppComposition.noteSceneActive()
                     nativeSurfaces.start { route in router.navigate(to: route) }
                     await nativeSurfaces.handleForeground()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
-                    case .active: Task { await nativeSurfaces.handleForeground() }
+                    case .active:
+                        AppComposition.noteSceneActive()
+                        Task { await nativeSurfaces.handleForeground() }
                     case .background: nativeSurfaces.handleBackground()
                     default: break
                     }

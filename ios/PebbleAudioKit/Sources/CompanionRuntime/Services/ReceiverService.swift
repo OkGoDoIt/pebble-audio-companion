@@ -468,7 +468,17 @@ public actor ReceiverService {
         intentBox.launchedInBackground = true
     }
 
-    public func clearLaunchedInBackground() {
+    /// Undoes the latch, and `nonisolated` for exactly the same ordering reason `mark` is.
+    ///
+    /// The latch is an INFERENCE about why the process exists, and it is wrong often: iOS hands
+    /// `UIApplicationLaunchOptionsBluetoothCentralsKey` to any launch that has Core Bluetooth
+    /// state to restore, INCLUDING a launch the user started by tapping the icon. `start()` reads
+    /// the latch seconds later (after `recoverBeforeReceiving()`, which is tens of seconds on a
+    /// migrated container), so a clear that had to hop onto this actor could land on the wrong
+    /// side of that read and let a visible app be demoted to receive-only. Clearing through the
+    /// same lock-protected box as `mark` makes "the scene came up, so we are not headless" land
+    /// before the read, whatever the task ordering.
+    public nonisolated func clearLaunchedInBackground() {
         intentBox.launchedInBackground = false
     }
 

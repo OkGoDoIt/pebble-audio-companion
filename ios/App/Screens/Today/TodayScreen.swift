@@ -327,11 +327,6 @@ struct TodayScreen: View {
                         .lineSpacing(5)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
-                    if recap.isCondensed {
-                        Text(Copy.Recap.readFull)
-                            .font(AppFont.chip)
-                            .foregroundStyle(Tokens.tint)
-                    }
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: Tokens.cardRadius))

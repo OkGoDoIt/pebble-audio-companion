@@ -82,6 +82,10 @@ final class AppComposition {
     let cloudHealth: CloudHealthMonitor
     let localModel: LocalModelManager
     let aiRouter: AiModeRouter
+    /// The DURABLE transcription router (not the live-preview one). Held so Settings can read
+    /// `lastFallback` and disclose that a "first" mode is being served by its fallback; nothing
+    /// else needs it, because `TranscriptionProcessor` already owns the transcribing.
+    let transcriptionRouter: TranscriptionModeRouter
     let index: TranscriptIndex
     let donator: SpotlightDonator
     let askRetriever: AskRetriever
@@ -106,6 +110,10 @@ final class AppComposition {
     /// Set at install; owns the Spotlight donation watermark the index rebuild has to clear.
     private(set) weak var nativeSurfaces: NativeSurfaceCoordinator?
     private var didRegisterBackgroundTask = false
+    /// Set once a scene has actually come up — see `noteSceneActive()`. Latches true: a process
+    /// that has ever shown a window is not one iOS started headless, and nothing after that point
+    /// may apply receive-only to it.
+    private static var sceneHasBeenActive = false
     private var todaySource: LiveTodayDataSource?
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
@@ -312,6 +320,11 @@ final class AppComposition {
             PersonalContextFormatting.aiGroundingBlock(personalContext.load())
         }
 
+        // Which audio containers each cloud provider has been observed to refuse. ONE store,
+        // shared by the synchronous providers and the background upload coordinator, so a
+        // rejection discovered on either path is honoured by both instead of being rediscovered
+        // (and paid for) twice. See `CloudUploadFormatPreference`.
+        let uploadFormats = CloudUploadFormatStore(root: containerRoot)
         let batchCloud = SelectableCloudTranscriptionProvider(
             selected: { settingsBox.cloudTranscriptionProvider },
             openAi: OpenAiTranscriptionProvider(
@@ -319,7 +332,8 @@ final class AppComposition {
                 apiKey: openAiKey,
                 cloudConsent: cloudConsent,
                 diarizationEnabled: diarize,
-                sttPrompt: sttPrompt
+                sttPrompt: sttPrompt,
+                formatMemory: uploadFormats
             ),
             soniox: SonioxTranscriptionProvider(
                 transport: transport,
@@ -327,14 +341,30 @@ final class AppComposition {
                 cloudConsent: cloudConsent,
                 diarizationEnabled: diarize,
                 contextText: sonioxContext,
-                contextTerms: contextTerms
+                contextTerms: contextTerms,
+                formatMemory: uploadFormats
             )
         )
         // The local engine resolves per call from the persisted local-model selection: Apple
         // SpeechAnalyzer (the default, with the id read as its language) or a downloaded
         // Parakeet model.
         let localBatch = SelectableLocalTranscriptionProvider(
-            selected: { settingsBox.localTranscriptionModelId }
+            selected: { settingsBox.localTranscriptionModelId },
+            // Hand Apple's engine the same About You terms the two cloud providers already get.
+            // `appleContextualStrings` shapes them to that API's contract (≤100 phrases, short);
+            // the provider re-applies the ceiling itself. `termRefresh.nudge()` rides along the
+            // way it does for the cloud paths, so the derived terms stay in step with the bio
+            // without a timer — see `contextTerms` above.
+            makeAppleSpeech: { locale in
+                SpeechAnalyzerProvider(
+                    locale: locale,
+                    contextualStrings: {
+                        termRefresh.nudge()
+                        return PersonalContextFormatting.appleContextualStrings(
+                            personalContext.load())
+                    }
+                )
+            }
         )
         let router = TranscriptionModeRouter(
             local: localBatch,
@@ -342,6 +372,7 @@ final class AppComposition {
             onRemoteOutcome: classifiedCloudOutcomeSink(cloudHealth),
             mode: { settingsBox.transcriptionMode }
         )
+        self.transcriptionRouter = router
         let processor = TranscriptionProcessor(
             queue: queue,
             router: router,
@@ -378,7 +409,8 @@ final class AppComposition {
             root: containerRoot,
             settings: settingsBox,
             nowMs: nowMs,
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            formatMemory: uploadFormats
         )
 
         let transcription = TranscriptionService(
@@ -593,7 +625,10 @@ final class AppComposition {
         let recap = RecapService(
             engine: DailyRecapEngine(
                 listSegments: { files.listSegments() },
-                transcriptTextOf: { transcripts.load($0)?.text },
+                // Collapsed, like every other model input (see `TranscriptCleanup.swift`): a
+                // day containing one looped recording would otherwise hand the recap 12 000
+                // words of the same sentence and get a day summarised around it.
+                transcriptTextOf: { transcripts.load($0)?.withLoopedArtefactsCollapsed().text },
                 store: recapStore,
                 run: { request in try await aiRouter.run(request) },
                 prompt: AiPromptTemplates.dailySummary,
@@ -908,8 +943,11 @@ final class AppComposition {
         let transcripts = self.transcripts
         nativeSurfaces.attachDatabase(database) { conversationId in
             guard let detail = try? await queries.detail(id: conversationId) else { return nil }
+            // Collapsed before it is indexed: 1 649 copies of one sentence in a single
+            // recording would otherwise dominate bm25 for every word in it, so searching
+            // "clothes" would return that one silent afternoon ahead of anything real.
             let text = detail.members
-                .compactMap { transcripts.load($0.segmentId)?.text }
+                .compactMap { transcripts.load($0.segmentId)?.withLoopedArtefactsCollapsed().text }
                 .joined(separator: "\n")
             return text.isEmpty ? nil : text
         }
@@ -992,8 +1030,15 @@ final class AppComposition {
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil
         ) { _ in link.setForeground(false) }
         // The launch itself: `.background` here means iOS started us headless, and the link must
-        // already know that before its first connect attempt.
+        // already know that before its first connect attempt. Unreliable on its own — every
+        // process start in the 2026-09-08 recorder read `.active`, headless wakes included — so it
+        // is only a seed; `handleRestorationRelaunch()` and `noteSceneActive()` are what correct it.
         gattLink.setForeground(UIApplication.shared.applicationState != .background)
+
+        // A retried bootstrap (the graph failed on the first attempt and was rebuilt from
+        // `didBecomeActive`) is born into a process whose window is ALREADY on screen, and
+        // `scenePhase` will not change again to say so. Carry the fact across.
+        if Self.sceneHasBeenActive { applySceneActive() }
     }
 
     /// A line a minute, for as long as the process is alive.
@@ -1059,9 +1104,57 @@ final class AppComposition {
     /// lifecycle event still runs, for the rest of the transition and for the handled-events
     /// ledger the tests assert on.
     func handleRestorationRelaunch() {
+        // NOT the same claim as "iOS started us headless" — see `noteSceneActive()` and the
+        // `launchedHeadless` comment in `PebbleAudioApp`. A scene that has already come up wins.
+        guard !Self.sceneHasBeenActive else {
+            AppRuntimeLog.shared.record("launch cause: Core Bluetooth state restoration (visible)")
+            receiver.clearLaunchedInBackground()
+            return
+        }
         AppRuntimeLog.shared.record("launch cause: Core Bluetooth state restoration")
         receiver.markLaunchedInBackground()
+        // The link's give-up watchdog must not be armed for a wake nobody is watching (see
+        // `CoreBluetoothAudioGattLink.setForeground`). `install()` seeds it from
+        // `UIApplication.shared.applicationState`, and the flight recorder shows that reading is
+        // `.active` even on a plainly headless 05:35 relaunch — so this is the only place in the
+        // launch that knows better. A real foreground launch corrects it a moment later, from
+        // `didBecomeActive` and from `noteSceneActive()`.
+        gattLink.setForeground(false)
         Task { [lifecycle] in await lifecycle.handle(.restorationRelaunch) }
+    }
+
+    /// A scene is on screen. The one unambiguous statement in the whole launch that a person is
+    /// looking at this app — and therefore the thing that decides foreground, rather than a launch
+    /// option or `UIApplication.shared.applicationState`, both of which lie here (21 of the 22
+    /// process starts in the 2026-09-08 flight recorder were labelled `(foreground)` and ALSO
+    /// carried the Core Bluetooth restoration key, including plainly headless 30-minute wakes).
+    ///
+    /// Called from `PebbleAudioApp` on the root view's first appearance and on every
+    /// `scenePhase == .active`. Costs one actor hop when nothing is wrong — `setForeground` is a
+    /// transition guard and returns immediately when the runtime is already foreground — so it
+    /// adds no timer, no poll and no per-frame work. When something IS wrong it is the whole
+    /// repair: without it, a launch mis-labelled headless leaves the pipeline taking its
+    /// background early-return, which skips the regroup step every screen's live conversation
+    /// comes from, and only backgrounding the app and returning could ever undo it.
+    /// STATIC on purpose: `bootstrap` can fail and retry into a NEW composition (a background
+    /// relaunch before first unlock), and that one has to be born knowing a window already exists
+    /// rather than starting the same guess over — see `install()`.
+    static func noteSceneActive() {
+        // The launch banner could not say why this process exists (see `launchCause()`); this is
+        // the moment it becomes knowable, so the answer is written once, next to the banner it
+        // completes. Once per process — `noteSceneActive` also fires on every return to the
+        // foreground, and "the app is visible" is not news the second time.
+        if !sceneHasBeenActive {
+            AppRuntimeLog.shared.record("launch cause: a window came on screen (foreground)")
+        }
+        sceneHasBeenActive = true
+        shared?.applySceneActive()
+    }
+
+    private func applySceneActive() {
+        receiver.clearLaunchedInBackground()
+        gattLink.setForeground(true)
+        Task { [runtime] in await runtime.setForeground(true) }
     }
 
     // MARK: - Background processing
@@ -1203,20 +1296,25 @@ final class AppComposition {
         return String(describing: state)
     }
 
-    /// Why this process exists, as far as we can tell at composition time.
+    /// Why this process exists — which, at composition time, is not yet knowable.
     ///
-    /// `.background` here means iOS started us without a user — a Core Bluetooth event, a
-    /// BGProcessing window, a background URLSession completion, or a widget/Siri invocation. The
-    /// distinction matters more than any other line in the log: without it, four background
-    /// relaunches and one long-lived foreground session look identical, and they are opposite
-    /// diagnoses. The delegate refines this to "restoration" when it knows.
+    /// This used to read `UIApplication.shared.applicationState` and print "foreground" or
+    /// "background". MEASURED and wrong: composition runs from `PebbleAudioApp.init`, before
+    /// `didFinishLaunchingWithOptions` and long before any scene, and in the 2026-09-08 flight
+    /// recorder ALL 22 process starts read `.active` — including the 05:35 / 06:07 / 06:37 /
+    /// 07:07 half-hourly wakes that were plainly headless. So every line in the file said
+    /// "(foreground)", and the one distinction the launch banner exists to draw — "the app kept
+    /// running" versus "iOS killed it and brought it back four times" — was not drawn at all.
+    ///
+    /// A label that is right one time in five is worse than no label, because it is read as
+    /// evidence. The banner therefore states what is true at that instant, and the two signals
+    /// that ARE trustworthy write the answer underneath it a moment later, each exactly once:
+    /// `handleRestorationRelaunch()` ("Core Bluetooth state restoration") and `noteSceneActive()`
+    /// ("a window came on screen"). Reading a log means pairing the banner with the next
+    /// `launch cause:` line; a start with neither is a wake nothing ever explained, which is
+    /// itself the finding.
     private static func launchCause() -> String {
-        switch UIApplication.shared.applicationState {
-        case .background: return "background"
-        case .active: return "foreground"
-        case .inactive: return "inactive"
-        @unknown default: return "unknown"
-        }
+        "cause pending"
     }
 
     /// The name the watch shows in its consent prompt.

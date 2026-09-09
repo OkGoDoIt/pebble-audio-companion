@@ -6,13 +6,29 @@ import StatusUI
 @Observable
 @MainActor
 final class TodayViewModel {
-    private let dataSource: any TodayDataSource
+    /// Only what a test or a preview handed us. The real screen resolves the holder on every use
+    /// instead of copying it at init.
+    ///
+    /// Capturing `AppDataSources.current.today` once was a standing hazard: `bootstrap` can fail
+    /// and retry later (a background relaunch before first unlock), and a view model built in
+    /// between would spend its whole life observing an object the runtime no longer publishes to,
+    /// recovering only if the view happened to be rebuilt. Every other screen in the app already
+    /// reads its holder at the point of use — Library reads it inside `.task` — which is why
+    /// Library and Today failed IDENTICALLY on 2026-09-08 despite binding differently, and is how
+    /// that mechanism was ruled out as the cause. The hazard is real all the same; this closes it.
+    private let injectedDataSource: (any TodayDataSource)?
+    private var dataSource: any TodayDataSource {
+        injectedDataSource ?? AppDataSources.current.today
+    }
     /// Deleting, putting off and undoing a delete go through the follow-ups source, not through
     /// `TodayDataSource`: that is the one place those writes are already got right (a delete
     /// also has to leave Spotlight, and an undo has to put the row back with its provenance
     /// rather than as a fresh hand-written item). Today observes the same table, so the card
     /// refreshes from the write either way.
-    private let followUpsSource: any FollowUpsDataSource
+    private let injectedFollowUpsSource: (any FollowUpsDataSource)?
+    private var followUpsSource: any FollowUpsDataSource {
+        injectedFollowUpsSource ?? AskLibraryDataSources.current.followUps
+    }
 
     private(set) var snapshot: TodaySnapshot
     /// Ticks the person has just made, applied over whatever the last snapshot carried, so the
@@ -29,14 +45,16 @@ final class TodayViewModel {
         dataSource: (any TodayDataSource)? = nil,
         followUps: (any FollowUpsDataSource)? = nil
     ) {
-        let source = dataSource ?? AppDataSources.current.today
-        self.dataSource = source
-        self.followUpsSource = followUps ?? AskLibraryDataSources.current.followUps
-        self.snapshot = source.todaySnapshot()
+        self.injectedDataSource = dataSource
+        self.injectedFollowUpsSource = followUps
+        self.snapshot = (dataSource ?? AppDataSources.current.today).todaySnapshot()
     }
 
     func observe() async {
-        for await value in dataSource.todayUpdates() {
+        // Resolved HERE, not at init: `.task` re-runs whenever the screen comes back, so the
+        // stream is always taken from whatever the holder points at now.
+        let source = dataSource
+        for await value in source.todayUpdates() {
             for item in value.followUps where optimisticDone[item.id] == item.done {
                 optimisticDone[item.id] = nil
             }

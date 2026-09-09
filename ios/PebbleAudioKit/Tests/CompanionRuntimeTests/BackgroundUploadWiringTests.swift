@@ -85,7 +85,7 @@ import Transcription
                 captureIntent: .active, transcriptionMode: .remoteOnly
             ),
             withBackgroundUploads: true,
-            segmentAudio: { _ in nil }
+            segmentAudio: { _, _ in nil }
         )
         let segmentId = try await pendingSegment(fixture)
 

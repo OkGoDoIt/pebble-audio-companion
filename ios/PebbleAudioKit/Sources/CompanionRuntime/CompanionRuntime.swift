@@ -203,6 +203,15 @@ public actor CompanionRuntime {
 
         // Restoration relaunch: receive-only is applied BEFORE the receiver starts, so a
         // background wake never spins up transcription or AI.
+        //
+        // THIS IS THE LAST WORD ON `foreground` FOR THE WHOLE LAUNCH, and everything above it can
+        // take tens of seconds (`recoverBeforeReceiving()` on a migrated container), so by the
+        // time it runs the app may well be on screen with its `didBecomeActive` already spent —
+        // and `setForeground` is a transition guard, so a demotion here could not be undone
+        // without a background round trip. That is what left Today and Library with no live
+        // conversation for the whole of a healthy recording on 2026-09-08. The latch is therefore
+        // cleared by `.didBecomeActive` (see `AppLifecycleCoordinator`), which is the only
+        // statement in the system that a scene actually came up.
         if environment.receiver.launchedInBackground {
             foreground.value = false
         }

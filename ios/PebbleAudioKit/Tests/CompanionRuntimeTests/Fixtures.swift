@@ -1,4 +1,5 @@
 import AppDB
+import AudioCodec
 import CompanionRuntime
 import Foundation
 import Intelligence
@@ -176,11 +177,14 @@ final class FakeCloudUploadBackend: TranscriptionProvider, CloudUploadCapable, @
         TranscriptionResult(text: "unused", providerId: id, modelUsed: "m")
     }
 
-    func uploadPlan(wav: Data, sampleRateHz: Int) async -> CloudUploadPlan? {
+    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+
+    func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(
             url: "https://fake.invalid/transcriptions",
             file: MultipartBody.FilePart(
-                name: "file", filename: "s.wav", contentType: "audio/wav", bytes: wav
+                name: "file", filename: audio.filename("s"), contentType: audio.contentType,
+                bytes: audio.bytes
             )
         )
     }
@@ -439,8 +443,8 @@ final class RuntimeFixture: @unchecked Sendable {
         /// the rest of the suite keeps its no-cloud runtime.
         withBackgroundUploads: Bool = false,
         /// Audio the coordinator "reads" for a segment; nil means the segment has no audio.
-        segmentAudio: @escaping @Sendable (String) async -> SegmentAudio? = { _ in
-            SegmentAudio(wav: Data(repeating: 7, count: 64), sampleRateHz: 16_000)
+        segmentAudio: @escaping @Sendable (String, CloudAudioFormat) async -> SegmentAudio? = {
+            _, _ in SegmentAudio(wav: Data(repeating: 7, count: 64), sampleRateHz: 16_000)
         }
     ) throws {
         root = Fixture.temporaryDirectory("root")

@@ -101,8 +101,11 @@ public actor CoverageSnapshotService {
         var freshCache: [String: CachedCoverage] = [:]
         for meta in segments {
             let segmentZone = meta.recordedTimeZone ?? zone
-            guard LogicalDay.dateKey(forMs: Int64(meta.startTimeMs), timeZoneID: segmentZone)
-                == dateKey
+            // `startWallMs`, not `startTimeMs`: the raw field anchors sample index 0 of the STREAM,
+            // so for a reattach or a 15-minute rotation successor it is the stream's birth, not
+            // this segment's. Bucketing on it put 102 of Roger's 767 segments on the wrong day —
+            // silently dropping them out of today's coverage, or pulling in yesterday's.
+            guard LogicalDay.dateKey(forMs: meta.startWallMs, timeZoneID: segmentZone) == dateKey
             else { continue }
             // Frame extents are what separate VAD-quiet from recorded time, and reading them is
             // the expensive part. A closed segment's frames never change, so they are read once

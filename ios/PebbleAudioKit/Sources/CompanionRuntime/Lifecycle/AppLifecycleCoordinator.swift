@@ -50,6 +50,21 @@ public actor AppLifecycleCoordinator {
         handled.append(event)
         switch event {
         case .restorationRelaunch:
+            // TRAP 2: the relaunch notice is NOT proof that nobody is looking. iOS supplies
+            // `UIApplicationLaunchOptionsBluetoothCentralsKey` to every launch that has Core
+            // Bluetooth state to restore, so a user tapping the icon while the watch is connected
+            // gets one too — 21 of the 22 launches in the September 8 flight recorder carried it,
+            // including the foreground one at 18:51:48 that wedged Today and Library. Receive-only
+            // is therefore applied ONLY while no scene has come up. Once one has, the latch is
+            // cleared instead, because `runtime.start()` reads it seconds later (after
+            // `recoverBeforeReceiving()`) and would otherwise demote a visible app with nothing
+            // able to promote it again: `setForeground` is a transition guard, so this launch's
+            // own `didBecomeActive` is already spent and only a background round trip can repair
+            // it. That is exactly the "I left the app and came back and it started working".
+            guard !handled.contains(.didBecomeActive) else {
+                runtime.environment.receiver.clearLaunchedInBackground()
+                return
+            }
             // TRAP: receive-only must be applied BEFORE the receiver starts. The relaunch is a
             // background wake; starting the pipeline here would decode audio and load a model for
             // a UI nobody is looking at, on the tightest memory budget iOS ever gives us.
@@ -60,6 +75,12 @@ public actor AppLifecycleCoordinator {
             await runtime.start()
 
         case .didBecomeActive:
+            // FIRST, and synchronously: a scene became active, so this process is not headless
+            // however the launch was labelled. `runtime.start()` may still be inside
+            // `recoverBeforeReceiving()` and about to read this latch; clearing it here is what
+            // stops it demoting an app the person is looking at. Ordering-proof in both
+            // directions — see `ReceiverService.clearLaunchedInBackground`.
+            runtime.environment.receiver.clearLaunchedInBackground()
             // Idempotent by construction: `startCapture` is NOT called here — a foreground entry
             // must never prompt the watch (only an explicit Start/Settings tap arms that).
             await runtime.setForeground(true)

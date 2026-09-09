@@ -48,31 +48,92 @@ public enum BackgroundUploadWiring {
         BackgroundCloudUploadCoordinator.defaultBodyDir(root: root)
     }
 
-    /// Segment id → the WAV the cloud provider is asked to transcribe.
+    /// Segment id + the container the coordinator resolved → the bytes to upload.
     ///
     /// Reads through the SYNCHRONOUS spool reader (like the live/export seams) so assembling a
     /// body never hops the store actor while the app is being suspended. Returns nil for a
     /// segment with no metadata or no audio — the coordinator then skips it rather than uploading
     /// an empty file.
+    ///
+    /// **Passthrough (`.oggSpeex`) never assembles a WAV.** The frames come off disk, they are
+    /// packaged into an Ogg container by byte-copying (`OggSpeex`), and the only reason anything
+    /// is decoded at all is the silence gate — which is then measured STREAMING, chunk by chunk,
+    /// with the PCM discarded as it goes. So the peak this holds for a 15-minute segment falls
+    /// from ~58 MB (28.9 MB of PCM plus the 28.9 MB WAV built from it) to ~1.3 MB, inside a
+    /// background window with a jetsam ceiling. The decode itself is not saved — the gate needs it.
+    ///
+    /// Measured over 0.70 h of real audio (four segments, debug build, so the absolute numbers are
+    /// pessimistic and only the ratios carry): the decode is **9.72 s per hour of audio**, the
+    /// energy meter adds **0.45 s**, and the remux costs **0.116 s** — 1.2% of the decode. Total
+    /// **10.29 s/h** for passthrough against **10.88 s/h** for the FLAC path (decode + WAV
+    /// assembly + FLAC encode), so passthrough is the CHEAPER path as well as the smaller one.
+    ///
+    /// The PCM rungs behave exactly as before: decode, assemble, hand over the WAV.
+    ///
+    /// A segment whose frames cannot be packaged (empty, or an unexpected frame size) falls back
+    /// to decoding for a PCM body rather than being skipped. A remux failure must not cost a
+    /// transcript any more than a FLAC encoder failure does.
     public static func audioSource(
-        files: SegmentFileReader
-    ) -> @Sendable (_ segmentId: String) async -> SegmentAudio? {
-        { segmentId in
+        files: SegmentFileReader,
+        log: RuntimeLog = .silent
+    ) -> @Sendable (_ segmentId: String, _ format: CloudAudioFormat) async -> SegmentAudio? {
+        { segmentId, format in
             guard let meta = files.readMeta(segmentId) else { return nil }
+            let sampleRateHz = Int(meta.sampleRateHz)
             let decoder = SpeexFrameDecoder(
-                sampleRateHz: Int(meta.sampleRateHz),
+                sampleRateHz: sampleRateHz,
                 bitRateBps: Int(meta.bitRateBps),
                 frameSamples: meta.frameSamples
             )
             let payloads = files.readFrames(segmentId).map { Data($0.payload) }
+
+            if format == .oggSpeex,
+                let packaged = try? CloudAudioBody.passthrough(
+                    speexFrames: payloads, sampleRateHz: sampleRateHz,
+                    frameSamples: meta.frameSamples, bitRateBps: Int(meta.bitRateBps)),
+                // Decoded ONLY to answer the silence gate: bounded chunks in, RMS out, PCM
+                // dropped on the floor as it goes. Nothing is accumulated.
+                let energy = streamedEnergy(decoder: decoder, frames: payloads, sampleRateHz: sampleRateHz)
+            {
+                return SegmentAudio(
+                    wav: Data(),
+                    sampleRateHz: sampleRateHz,
+                    packaged: packaged,
+                    energy: energy
+                )
+            }
+            if format == .oggSpeex {
+                log.write("upload passthrough unavailable for \(segmentId); sending PCM instead")
+            }
+
             guard let pcm = try? decoder.decodeAll(frames: payloads), !pcm.isEmpty else {
                 return nil
             }
             return SegmentAudio(
-                wav: PcmWav.encodeMono16(pcm: pcm, sampleRateHz: Int(meta.sampleRateHz)),
-                sampleRateHz: Int(meta.sampleRateHz)
+                wav: PcmWav.encodeMono16(pcm: pcm, sampleRateHz: sampleRateHz),
+                sampleRateHz: sampleRateHz
             )
         }
+    }
+
+    /// Loudness profile of a segment, measured without ever holding its PCM. Nil when nothing
+    /// decoded, which the caller treats as "fall back to the PCM path" rather than as silence —
+    /// an undecodable segment is a bookkeeping problem, not a quiet room.
+    private static func streamedEnergy(
+        decoder: SpeexFrameDecoder, frames: [Data], sampleRateHz: Int
+    ) -> SegmentEnergyProfile? {
+        var meter = SegmentEnergyMeter(sampleRateHz: sampleRateHz)
+        var decodedAnything = false
+        do {
+            try decoder.decode(frames: frames) { chunk in
+                decodedAnything = true
+                meter.consume(chunk)
+            }
+        } catch {
+            return nil
+        }
+        guard decodedAnything else { return nil }
+        return meter.finish()
     }
 
     /// The queue/transcript-store seam, adapted onto the real `TranscriptionQueue`,
@@ -173,6 +234,12 @@ public enum BackgroundUploadWiring {
                     log.write("upload reconcile: \(reset.count) abandoned upload(s) requeued")
                 }
                 return reset
+            },
+            requeueWithoutAttempt: { segmentId in
+                do { _ = try queue.requeueWithoutAttempt(segmentId) } catch {
+                    log.failure("upload requeue after format downgrade", error)
+                }
+                await mirror(segmentId, .pending)
             }
         )
     }
@@ -197,17 +264,25 @@ public enum BackgroundUploadWiring {
         log: RuntimeLog = .silent,
         /// Overridden only by tests, so the cloud-primary gating can be proven without a real
         /// Speex spool in the way.
-        audioSource: (@Sendable (_ segmentId: String) async -> SegmentAudio?)? = nil
+        audioSource: (
+            @Sendable (_ segmentId: String, _ format: CloudAudioFormat) async -> SegmentAudio?
+        )? = nil,
+        /// The durable record of which containers each provider has refused. Shares `root` with
+        /// the providers' own store, so the synchronous and background paths learn from each
+        /// other rather than each discovering the same rejection separately.
+        formatMemory: (any CloudUploadFormatMemory)? = nil
     ) -> BackgroundCloudUploadCoordinator {
         BackgroundCloudUploadCoordinator(
             uploader: uploader,
             cloudProvider: cloudProvider,
             jobStore: CloudUploadJobStore(root: root),
             queue: queueHooks(queue: queue, transcripts: transcripts, store: store, log: log),
-            audioSource: audioSource ?? Self.audioSource(files: files),
+            audioSource: audioSource ?? Self.audioSource(files: files, log: log),
             bodyDir: bodyDir(root: root),
             nowMs: nowMs,
-            cloudPrimary: { settings.cloudIsPrimaryTranscription }
+            cloudPrimary: { settings.cloudIsPrimaryTranscription },
+            formatMemory: formatMemory ?? CloudUploadFormatStore(root: root),
+            log: { message in log.write(message) }
         )
     }
 }

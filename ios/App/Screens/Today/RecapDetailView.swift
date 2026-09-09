@@ -5,13 +5,12 @@ import SwiftUI
 /// bar (conventions §3).
 ///
 /// This screen is the reason the Today card may show a shortened form at all: everything the
-/// digest said is HERE, whole, and the card's chevron points at it. Two consequences the code
-/// below is careful about:
+/// digest said is HERE, whole, and the card's chevron points at it. So it renders
+/// `recap.digest` — the full digest — never `recap.cardText`. A "full recap" that turned out to
+/// be the same short paragraph would make the tap pointless.
 ///
-///   • It renders `recap.digest` — the full digest — never `recap.cardText`. A "full recap"
-///     that turned out to be the same short paragraph would make the tap pointless.
-///   • When the card WAS showing a short form, the provenance block says so, so a person
-///     arriving here can tell this is the same recap read at length rather than a second one.
+/// It carries no line saying the card above was a short version: the card said "Read the full
+/// recap" on the way in, which is the same fact where it is actually useful.
 struct RecapDetailView: View {
     let recap: RecapDisplay?
 
@@ -24,18 +23,10 @@ struct RecapDetailView: View {
                     Text(detail.title)
                         .font(AppFont.detailTitle)
                         .foregroundStyle(Tokens.label)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(detail.generatedLine)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if recap.isCondensed {
-                            Text(Copy.Recap.cardShowsShortVersion)
-                                .font(AppFont.footnote)
-                                .foregroundStyle(Tokens.tertiary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+                    Text(detail.generatedLine)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     Card {
                         VStack(alignment: .leading, spacing: 12) {

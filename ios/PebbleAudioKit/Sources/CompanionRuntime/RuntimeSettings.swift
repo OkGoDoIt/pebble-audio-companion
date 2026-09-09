@@ -32,11 +32,15 @@ public protocol RuntimeSettings: Sendable {
     /// When expensive catch-up (local transcription, AI) may run while the app is not on screen.
     /// Defaulted so callers that do not care need not declare it. See `BackgroundWorkPolicy`.
     var backgroundCatchUp: BackgroundCatchUp { get }
+    /// Which networks segment audio may be uploaded over. Defaulted so callers that do not care
+    /// need not declare it. See `CloudUploadNetworkPolicy`.
+    var cloudUploadNetwork: CloudUploadNetwork { get }
 }
 
 extension RuntimeSettings {
     public var retentionMaxBytes: Int64 { RuntimeSettingsDefaults.retentionMaxBytes }
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
+    public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
 
     // --- Derived semantics (Part 4.6) ---------------------------------------------------------
 
@@ -143,6 +147,15 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     public var retentionDays: Int { value.retentionDays }
     public var retentionMaxBytes: Int64 { value.retentionMaxBytes }
     public var transcriptsConfigured: Bool { value.transcriptsConfigured }
+    // These two forwards are not optional, even though the protocol extension supplies a default
+    // for both: WITHOUT them the box silently answers with the default and ignores the snapshot
+    // the app just wrote into it. That is exactly what had happened to `backgroundCatchUp` — the
+    // app mirrored the user's choice into `RuntimeSettingsSnapshot` on every change, the runtime
+    // read it back through this box, and got `.whileCharging` regardless, so "Always" and "Only
+    // When Open" did nothing at all. A protocol-extension default is a fallback for conformers
+    // that have no such value; a box that HAS one must forward it.
+    public var backgroundCatchUp: BackgroundCatchUp { value.backgroundCatchUp }
+    public var cloudUploadNetwork: CloudUploadNetwork { value.cloudUploadNetwork }
 }
 
 /// Plain value mirror of the truth table.
@@ -159,6 +172,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var retentionMaxBytes: Int64
     public var transcriptsConfigured: Bool
     public var backgroundCatchUp: BackgroundCatchUp
+    public var cloudUploadNetwork: CloudUploadNetwork
 
     public init(
         captureIntent: CaptureIntent = .off,
@@ -172,7 +186,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         retentionDays: Int = RuntimeSettingsDefaults.retentionDays,
         retentionMaxBytes: Int64 = RuntimeSettingsDefaults.retentionMaxBytes,
         transcriptsConfigured: Bool = false,
-        backgroundCatchUp: BackgroundCatchUp = .whileCharging
+        backgroundCatchUp: BackgroundCatchUp = .whileCharging,
+        cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default
     ) {
         self.captureIntent = captureIntent
         self.transcriptionMode = transcriptionMode
@@ -186,5 +201,6 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.retentionMaxBytes = retentionMaxBytes
         self.transcriptsConfigured = transcriptsConfigured
         self.backgroundCatchUp = backgroundCatchUp
+        self.cloudUploadNetwork = cloudUploadNetwork
     }
 }
