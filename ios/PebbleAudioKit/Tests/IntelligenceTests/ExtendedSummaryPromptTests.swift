@@ -72,13 +72,31 @@ struct ExtendedSummaryPromptTests {
         #expect(prompt.contains("do not extract"))
     }
 
-    /// The two things that make it long rather than merely different: cover everything, in the
-    /// order it happened.
-    @Test func itAsksForLengthAndSequence() {
+    /// This used to assert the opposite — "brevity is not a virtue", "do not stop", "in the
+    /// order it happened" — and the prompt obliged: measured against a real 1 h 23 m recording
+    /// it wrote **7,089 tokens, 5,797 words, in 70.4 seconds**, which is past the transport's
+    /// 60-second idle timeout, so the note never arrived at all. The shape asked for is a
+    /// longer SUMMARY, not a retelling, and these are the phrases that keep it one.
+    @Test func itAsksForALongerSummaryAndNotARetelling() {
         let prompt = template.systemPrompt.lowercased()
-        #expect(prompt.contains("in the order it happened"))
-        #expect(prompt.contains("brevity is not a virtue"))
-        #expect(prompt.contains("do not stop"))
+        // A bound, stated as a number the model can act on.
+        #expect(prompt.contains("300 to 500 words"))
+        #expect(prompt.contains("nothing gets more"))
+        // The failure mode named, so a model that drifts into it has been told not to.
+        #expect(prompt.contains("turn by turn"))
+        #expect(prompt.contains("step back and summarise"))
+        // And none of the licence that produced the runaway.
+        for gone in ["brevity is not a virtue", "do not stop", "in the order it happened"] {
+            #expect(!prompt.contains(gone), "\(gone) is what made it write an essay")
+        }
+    }
+
+    /// A prompt is a request; the ceiling is what makes it a guarantee. The runaway happened
+    /// because the Responses payload carried no `max_output_tokens` at all.
+    @Test func itIsCappedWithHeadroom() {
+        let ceiling = CloudOutputBudget.maxOutputTokens(forTemplateId: template.id)
+        #expect(ceiling < 7_089, "the cap must be well under the runaway it exists to stop")
+        #expect(ceiling > 873, "... and clear of what the rewritten prompt was measured to write")
     }
 
     /// It is prose the user reads, not a document. The note screen renders inline Markdown only,

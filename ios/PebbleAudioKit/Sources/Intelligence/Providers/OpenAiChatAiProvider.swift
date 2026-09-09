@@ -89,6 +89,10 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
             "reasoning": [
                 "effort": request.metadata[AiRunRequest.reasoningEffortKey] ?? reasoningEffort
             ],
+            // A ceiling, not a length policy — the prompt asks, this guarantees. Without it an
+            // "extended summary" wrote 5,797 words and took 70 s, which is past the transport's
+            // idle timeout, so the note never arrived at all. See `CloudOutputBudget`.
+            "max_output_tokens": CloudOutputBudget.maxOutputTokens(forTemplateId: request.prompt.id),
         ]
         if let textConfig = responseTextConfig(for: request.prompt) {
             payload["text"] = textConfig
@@ -111,6 +115,13 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
                     + String(response.text.prefix(240)))
         }
         let parsed = try decodeResponse(response.body)
+        // A response cut off at the ceiling is not a shorter note, it is a note that stops
+        // mid-sentence — and handing that back as finished is exactly the silent wrong answer
+        // this app keeps removing. Retrying is cheap and usually works, so say so and let it.
+        if parsed.status == "incomplete", parsed.incompleteDetails?.reason == "max_output_tokens" {
+            throw AiError.providerFailed(
+                "OpenAI stopped at the output limit for \(request.prompt.id)")
+        }
         let text = (parsed.outputText() ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw AiError.providerFailed("OpenAI responses returned an empty completion")
@@ -283,11 +294,21 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         var outputTextField: String?
         var output: [OutputItem]?
         var usage: Usage?
+        /// "completed" or "incomplete". A 200 does not mean the model finished — it means the
+        /// request was served, and a run stopped at `max_output_tokens` comes back 200 with a
+        /// partial answer in it.
+        var status: String?
+        var incompleteDetails: IncompleteDetails?
 
         private enum CodingKeys: String, CodingKey {
             case model
             case outputTextField = "output_text"
-            case output, usage
+            case incompleteDetails = "incomplete_details"
+            case output, usage, status
+        }
+
+        struct IncompleteDetails: Decodable {
+            var reason: String?
         }
 
         struct OutputItem: Decodable {

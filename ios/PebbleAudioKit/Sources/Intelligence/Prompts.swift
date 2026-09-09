@@ -322,14 +322,27 @@ public enum AiPromptTemplates {
     ///
     /// It also has to earn its place beside the automatic summary already on the conversation
     /// header (`SegmentAnnotationPrompt`: "1-3 plain sentences"). That one answers *what was
-    /// this*; this one answers *what actually happened in it*. So it does not inherit
-    /// `commonSystemRules` — the one instruction in there this template exists to countermand
-    /// is "Be concise" — and instead restates the transcript-quality caveats itself.
+    /// this*; this one answers the same question at length. So it does not inherit
+    /// `commonSystemRules` — the one instruction in there this template exists to soften is
+    /// "Be concise" — and instead restates the transcript-quality caveats itself.
+    ///
+    /// **This prompt used to ask for a complete retelling** — "brevity is not a virtue here",
+    /// "walk through every distinct subject in sequence", "considerably more for a long one",
+    /// "do not stop partway". Against a real 1 h 23 m recording (10,928 input tokens) that
+    /// produced **7,089 output tokens — 5,797 words** of turn-by-turn narration, and took
+    /// **70.4 seconds**, which is past `URLSession`'s 60-second idle timeout: the request died
+    /// with `-1001` and the note simply never arrived. The timeout was the symptom. The bug was
+    /// asking a model to write an essay and then waiting for it in one piece.
+    ///
+    /// The same recording under the wording below: **873 tokens, 669 words, 10.4 seconds**. A
+    /// 15-minute recording gets 430 tokens and 325 words, so it still scales with the material.
+    /// `CloudOutputBudget` caps it as well, because a prompt is a request and a ceiling is a
+    /// guarantee — this one ran away once already.
     public static let extendedSummary = AiPromptTemplate(
         id: "extended-summary",
         title: "Extended summary",
         systemPrompt: """
-            You are writing a long-form account of one recording captured by the user's own \
+            You are writing a fuller summary of one recording captured by the user's own \
             wearable microphone. The transcription is automatic and frequently wrong: misheard \
             words, garbled names, dropped words, run-on fragments, and annotated gaps where \
             audio was lost. Read past those errors and report the most plausible meaning, but \
@@ -338,33 +351,31 @@ public enum AiPromptTemplates {
             is missing, say so plainly at the point in the account where it happened; never \
             smooth a gap over.
 
-            WHAT THIS IS. A complete, readable account of what happened and what was said, in \
-            the order it happened. It is not meeting notes. Do not extract action items, next \
-            steps, decisions, takeaways, recommendations, key points, or anything else into \
-            sections or categories — the user has other tools for that and asked for none of it \
-            here. You are retelling the conversation, not processing it.
+            WHAT THIS IS. The longer version of the one-to-three sentence summary already on \
+            the user's screen: fuller, not exhaustive. It is not a retelling of the transcript \
+            and it is not meeting notes. Do not walk the conversation through turn by turn, and \
+            do not extract action items, next steps, decisions, takeaways, recommendations or \
+            key points into sections or categories — the user has other tools for that and \
+            asked for none of it here.
 
-            LENGTH. The user asked for the long version, and a two-sentence summary of this same \
-            recording is already on their screen, so brevity is not a virtue here. Walk through \
-            every distinct subject in sequence and keep the specifics that were actually said: \
-            names, numbers, places, dates, reasons, what people disagreed about, and how each \
-            subject was left. Several paragraphs for a short recording, and considerably more \
-            for a long one. Do not compress a subject to a clause because it seemed minor, and \
-            do not stop partway — go to the end of the transcript. Stop when you have covered \
-            everything, not when it starts to feel long.
+            LENGTH. Three to six paragraphs, roughly 300 to 500 words. A short or thin \
+            recording gets less; nothing gets more. A long recording does not earn a longer \
+            answer, it earns a better-chosen one — cover the subjects that actually mattered \
+            and the specifics that were said about them (names, numbers, places, dates, what \
+            people disagreed about, how each was left), and leave the rest out. Small talk, \
+            interruptions and dead ends belong here only when they were part of what happened. \
+            If you find yourself recounting the conversation in sequence, you have the wrong \
+            shape: step back and summarise.
 
             FORM. Flowing prose in paragraphs, past tense. No headings, no bullet or numbered \
-            lists, no bold or italics. Begin with the first thing that happened rather than a \
-            preamble about the recording or a restatement of what it was about, and end when \
-            the recording does — no closing summary paragraph, no offer of further help. Small \
-            talk, interruptions and dead ends belong in the account when they were part of what \
-            happened; report them briefly and plainly rather than dressing them up.
+            lists, no bold or italics. Begin with the substance rather than a preamble about \
+            the recording, and end when you have covered the subjects that mattered — no \
+            closing summary paragraph, no offer of further help.
 
-            CITATIONS. \(citationRules) A long account needs them throughout, not only at the \
-            start — every paragraph should be traceable to the stretch it retells, which is what \
-            lets the reader tap back into the recording and check you.
+            CITATIONS. \(citationRules) Every paragraph should be traceable to the stretch it \
+            draws on, which is what lets the reader tap back into the recording and check you.
 
-            If the recording is genuinely thin, write the short honest account the material \
+            If the recording is genuinely thin, write the short honest summary the material \
             supports and say what was unclear. Padding it out is worse than a short answer.
             """,
         userPrompt: "Write the full account of what happened in this conversation.",
