@@ -35,6 +35,44 @@ targets:
         product: PebbleAudioKit
       - target: Widgets
         embed: true
+    # Stamps App/Generated/BuildInfo.swift with this build's actual wall-clock time and git
+    # revision, immediately before Compile Sources. The committed file at that path is a
+    # placeholder ("unknown") — XcodeGen enumerates source files as of `xcodegen generate` time,
+    # so something has to already be on disk there for a fresh checkout's first build to compile
+    # at all; this phase overwrites its contents every build after that. `outputFiles` declares
+    # the write for ENABLE_USER_SCRIPT_SANDBOXING; `basedOnDependencyAnalysis: false` is what
+    # makes it run on every build rather than only when Xcode thinks its inputs changed — there
+    # are deliberately no declared inputs, so "unchanged" is never true.
+    preBuildScripts:
+      - name: Generate Build Info
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/App/Generated/BuildInfo.swift
+        script: |
+          set -eu
+          cd "$SRCROOT"
+          DATE_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          # Read-only git queries only (no writes attempted anywhere but the declared output
+          # below, so this stays inside ENABLE_USER_SCRIPT_SANDBOXING without further entitlement).
+          # The working tree lives one level up from $SRCROOT ($SRCROOT is the directory holding
+          # the .xcodeproj, i.e. ios/). Never fail the build over this -- a build run outside a
+          # git checkout, or with git unavailable, still gets a real date and "unknown" revision.
+          GIT_REV="$(git -C "$SRCROOT/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          if [ "$GIT_REV" != "unknown" ]; then
+            if ! git -C "$SRCROOT/.." diff --quiet 2>/dev/null || \
+               ! git -C "$SRCROOT/.." diff --cached --quiet 2>/dev/null; then
+              GIT_REV="${GIT_REV}-dirty"
+            fi
+          fi
+          mkdir -p "$SRCROOT/App/Generated"
+          cat > "$SRCROOT/App/Generated/BuildInfo.swift" <<SWIFT
+          // GENERATED FILE — do not hand-edit. See the "Generate Build Info" script phase
+          // (project.yml, App target), which writes this on every build.
+          enum BuildInfo {
+              static let builtAtISO8601 = "$DATE_ISO"
+              static let gitRevision = "$GIT_REV"
+          }
+          SWIFT
     settings:
       base:
         INFOPLIST_FILE: App/Info.plist

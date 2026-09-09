@@ -950,6 +950,8 @@ enum Copy {
 
         enum Diagnostics {
             static let title = "Diagnostics"
+            static let build = "Build"
+            static let buildUnknown = "Unknown — rebuild through Xcode to stamp it"
             static let powerAlert = "Battery"
             static let receiver = "Receiver"
             static let receiverRecording = "Recording from Pebble"

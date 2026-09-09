@@ -12,6 +12,13 @@ struct SettingsDiagnosticsScreen: View {
     var body: some View {
         SettingsScroll {
             ListCard {
+                // First, because every row below it is read in its light: a report from a build
+                // that is two deploys old answers a different question than the reader thinks.
+                SettingsRow(
+                    title: Copy.Settings.Diagnostics.build,
+                    value: diagnostics.buildInfo,
+                    showsChevron: false
+                )
                 if let alert = diagnostics.powerAlert {
                     SettingsRow(
                         title: Copy.Settings.Diagnostics.powerAlert,

@@ -1150,6 +1150,10 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
 
     private(set) var supportReportText = ""
     private(set) var powerAlert: String?
+    /// Stamped into the binary by the "Generate Build Info" script phase, so it is a constant for
+    /// the life of the process apart from the "ago" half, which is recomputed on every refresh.
+    private(set) var buildInfo = BuildFormatting.describe(
+        builtAtISO8601: BuildInfo.builtAtISO8601, revision: BuildInfo.gitRevision, nowMs: 0)
 
     /// Whether the Diagnostics screen is on screen. NOTHING below runs while it is not.
     ///
@@ -1242,6 +1246,9 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
             composition.runtime.pipelineHealth.health, nowMs: composition.clock.nowMs)
         detailedLogLines = AppRuntimeLog.shared.recent
         powerAlert = composition.powerWatchdogAlert
+        buildInfo = BuildFormatting.describe(
+            builtAtISO8601: BuildInfo.builtAtISO8601, revision: BuildInfo.gitRevision,
+            nowMs: composition.clock.nowMs)
         // Built from the values already in hand. NEVER through `runtime.supportReport()`: that
         // refreshes diagnostics, which publishes, which would bring us straight back here.
         let report = SupportReport(

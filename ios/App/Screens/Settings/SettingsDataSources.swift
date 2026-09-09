@@ -780,6 +780,11 @@ protocol DiagnosticsSource: AnyObject {
     /// Raw technical lines — counters and gap metadata only, never audio or transcript text.
     var detailedLogLines: [String] { get }
     var supportReportText: String { get }
+    /// When this binary was built, and from which revision: "Sep 9, 2026 at 3:24 PM · 84ca738 ·
+    /// 12 min ago". The question it answers is "am I looking at the build I just installed, or
+    /// the one from this morning?", which every other row on this screen is read in the light of
+    /// — a stale build makes a healthy-looking report meaningless.
+    var buildInfo: String { get }
     /// The app's own CPU watchdog: set when this process has been spending more than its budget
     /// while in the background. Nil is the calm case and the row is absent.
     var powerAlert: String? { get }
@@ -808,6 +813,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var failedItems: [DiagnosticFailure] = []
     var pipeline = DiagnosticPipeline(summary: Copy.Settings.Diagnostics.pipelineWorking("2 s"))
     var powerAlert: String?
+    var buildInfo = "Sep 9, 2026 at 3:24 PM · 84ca738 · 12 min ago"
 
     func setVisible(_ visible: Bool) {}
 
