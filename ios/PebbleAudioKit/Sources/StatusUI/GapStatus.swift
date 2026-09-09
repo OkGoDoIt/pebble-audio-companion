@@ -10,8 +10,39 @@ import SegmentStore
 // strings; the two had already drifted, so the copy was deleted and SearchKit now depends on
 // this module. Change the wording here and every surface changes with it.
 
-/// Plain-language reason for one gap. Calm by design (ux plan: "visible but not alarmist");
-/// gaps are expected in normal use, so no "Gap:"/error framing.
+/// Longer than this and an unattributed sequence skip may not be called "brief".
+private let briefSkipLimitMs: Int64 = 60_000
+
+/// Plain-language reason for one gap, told against the length actually shown beside it.
+///
+/// A receiver-synthesized skip is the one gap this app genuinely cannot attribute: it saw the
+/// watch's sequence numbers jump and the watch never said why. Nearly all of them really are a
+/// lost notification or two — across Roger's 88-day export the median is 0.9 s and p90 is 14.8 s,
+/// which "briefly" describes honestly. But 79 of the 2,690 *display* longer than a minute and
+/// together hold 27 h, the largest a single 10 h 30 m hole, and calling that "brief" is the one
+/// thing a background-microphone product must not do: the duration is rendered right next to this
+/// text, so the copy contradicted the number and made real loss read as a hiccup.
+///
+/// `displayedDurationMs` must be the length the caller is about to show, which is the gap CLIPPED
+/// to the segment's own audio extent (`gapDurationMsWithinSegment`), not `missingFrameCount`. The
+/// two differ a lot — 16 gaps in the export run past a minute raw but display under one — so
+/// deciding on the raw count would over-claim on exactly those. Pass nil when the length is not
+/// known; that keeps the original wording rather than guessing.
+///
+/// Nothing here invents a cause. The reason is unknown, and the honest form is to drop the claim
+/// of brevity, not to name a culprit.
+public func gapDescription(_ gap: GapMeta, displayedDurationMs: Int64?) -> String {
+    if gap.origin == GapMeta.originSequenceSkip, let shown = displayedDurationMs,
+        shown >= briefSkipLimitMs
+    {
+        return "phone missed audio"
+    }
+    return gapDescription(gap)
+}
+
+/// Calm by design (ux plan: "visible but not alarmist"); gaps are expected in normal use, so no
+/// "Gap:"/error framing. Prefer `gapDescription(_:displayedDurationMs:)` wherever the rendered
+/// length is known — see its note on why "briefly" needs that length to stay truthful.
 public func gapDescription(_ gap: GapMeta) -> String {
     let reason = gapReason(of: gap)
     if gap.origin == GapMeta.originSequenceSkip { return "phone briefly missed audio" }

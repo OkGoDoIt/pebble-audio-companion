@@ -288,12 +288,29 @@ public actor SegmentStore: SegmentSink {
         try fm.createDirectory(at: segmentsDir, withIntermediateDirectories: true)
         segmentCounter += 1
         let segmentId = "seg-\(receivedAtMs)-\(String(format: "%08x", start.streamId))-\(segmentCounter)"
-        // The StreamStart carries the stream-BIRTH wall clock, which can be 15 minutes (rotation
-        // successor) to hours (RESUME outside the reattach window) old by the time a mid-stream
-        // segment is minted. Anchor those at receive time so the timeline/recap files them when
-        // they actually happened; only a segment that begins at the stream's birth keeps it.
-        let resume = (start.flags & ProtocolConstants.streamStartFlagResume) != 0
-            || dedupeFloorSequence != nil
+        // `startTimeMs` anchors SAMPLE INDEX 0 of the stream — it is half of a pair, and the other
+        // half is `firstSampleIndex`. The wall clock of any sample is
+        // `startTimeMs + sampleIndex·1000/rate`, and the firmware guarantees it: it captures the
+        // birth clock once in `prv_begin_stream_locked()`, resends it verbatim on every RESUME
+        // re-announcement, and advances the sample counter through pauses (`elapsed_ms / 20`) so
+        // the counter stays a wall clock. Measured against Roger's 88-day export, the 598 segments
+        // that kept the firmware's value land within ±32 s of their own `receivedAtMs`.
+        //
+        // This used to re-anchor mid-stream segments at receive time, reasoning that a birth clock
+        // "15 minutes (rotation successor) to hours (RESUME) old" filed them under the wrong time.
+        // That broke the pair: it moved `startTimeMs` forward while leaving `firstSampleIndex`
+        // counted from birth, so the whole elapsed stream got added twice and the segment landed
+        // that far in the FUTURE. In the same export it hit 169 segments; 91 of them were more
+        // than a minute ahead of their own arrival, 413 h of phantom shift in total, worst case
+        // +24.4 h — which is the "segments hours in the future" that
+        // `ConversationGrouper.segmentStartMs` clamps against, and the reason
+        // `CoverageComputer`'s sample→wall mapping put whole recordings on the wrong day.
+        // Rotation is the common case, not the rare one: every 15-minute successor took it, so the
+        // error grew with the age of the stream.
+        //
+        // So keep the wire value verbatim and let the pair stay self-consistent. A segment's own
+        // start is `SegmentMeta.startWallMs` (= startTimeMs + firstSampleIndex, clamped by
+        // receivedAtMs), which is what every consumer wants and is now correct by construction.
         let meta = SegmentMeta(
             segmentId: segmentId,
             streamId: start.streamId,
@@ -304,7 +321,7 @@ public actor SegmentStore: SegmentSink {
             sampleRateHz: start.sampleRateHz,
             bitRateBps: start.bitRateBps,
             frameDurationMs: start.frameDurationMs,
-            startTimeMs: resume ? UInt64(bitPattern: receivedAtMs) : start.startTimeMs,
+            startTimeMs: start.startTimeMs,
             startMonotonicMs: start.startMonotonicMs,
             receivedAtMs: receivedAtMs,
             provenance: provenance.map {

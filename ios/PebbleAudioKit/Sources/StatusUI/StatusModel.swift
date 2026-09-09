@@ -179,17 +179,17 @@ public enum StatusCopy {
     public static func connectedQuiet(device: String) -> String { "\(device) · quiet" }
     public static let connectedQuietUnnamed = "Quiet right now"
 
-    // Stale-recording branch (attention · bordered [Find Watch]). The `.streaming` latch has run
+    // Stale-recording branch (attention · bordered [Reconnect]). The `.streaming` latch has run
     // out of evidence — see `StreamEvidence`. It deliberately does NOT say recording stopped: we
     // do not know that, and claiming it would be the same kind of lie in the other direction.
     public static let notHearingAudio = "Connected, not hearing audio"
     public static let notHearingAudioStoppedLine =
-        "Your Pebble says it is no longer recording. Find Watch starts it again."
+        "Your Pebble says it is no longer recording. Reconnect starts it again."
     public static let notHearingAudioUnverifiedLine =
         "Nothing has arrived for a while and your Pebble hasn’t confirmed it is still recording."
 
     // The watch is recording and this phone is not receiving it (attention · bordered
-    // [Find Watch]). Distinct from `notHearingAudio`: there, a stream WAS open and went quiet;
+    // [Reconnect]). Distinct from `notHearingAudio`: there, a stream WAS open and went quiet;
     // here no stream was ever announced to us, so nothing the watch captures is reaching the
     // phone at all. The app rebuilds the link on its own within a minute, and the sentence says
     // so — the button is for someone who does not want to wait.
@@ -200,14 +200,20 @@ public enum StatusCopy {
     // Paused family (attention · filled [Resume]).
     public static let paused = "Paused"
     public static let pausedLine =
-        "The watch is not capturing. Coverage shows this as paused, not missing."
+        "The watch is not capturing."
     public static let resume = "Resume"
 
-    // Reconnecting family (attention · bordered [Find Watch]).
+    // Reconnecting family (attention · bordered [Reconnect]).
     public static let reconnecting = "Reconnecting…"
     public static let reconnectingLine =
         "Your Pebble is out of range. It keeps recording and buffers a few minutes."
-    public static let findWatch = "Find Watch"
+    /// One action, one word. This said "Find Watch", which reads as Find My — and this app
+    /// cannot ring a watch: `StatusAction.findWatch` is `CompanionRuntime.reconnect()` →
+    /// `AudioGattLink.resync()`, and the audio-companion control channel has no buzz opcode at
+    /// all. Settings · Watch was renamed to "Reconnect" after a user asked what the row did; the
+    /// status card kept the old word, so one button had two names. The SYMBOL keeps its name on
+    /// purpose — renaming the enum case reaches a dozen files and changes nothing anyone sees.
+    public static let findWatch = "Reconnect"
 
     // Bluetooth-off family (red · filled [Open Settings]).
     public static let bluetoothOff = "Bluetooth is off"

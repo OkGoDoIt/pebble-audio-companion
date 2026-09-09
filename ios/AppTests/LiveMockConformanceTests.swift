@@ -87,6 +87,9 @@ struct LiveMockConformanceTests {
         Pair(
             protocolName: "CloudHealthSource", live: "LiveCloudHealthSource",
             mock: "MockCloudHealthSource"),
+        Pair(
+            protocolName: "ProcessingModeSource", live: "LiveProcessingModeSource",
+            mock: "MockProcessingModeSource"),
         Pair(protocolName: "ApiKeyChecking", live: "LiveApiKeyChecker", mock: "MockApiKeyChecker"),
         // `ConversationPlayback` is a per-conversation engine handed back by
         // `ConversationDataSource.playback(id:)`, not a source with a mock twin: `MockWorld`
@@ -130,9 +133,18 @@ struct LiveMockConformanceTests {
     static let exemptions: [Exemption] = [
         Exemption(
             "LiveWatchStatusSource.batteryPercent", .notAStub,
-            "Battery is not part of the audio-companion GATT service, so the watch never "
-                + "reports one and the row stays blank. `MockWatchStatusSource` shows 78% only "
-                + "so the artboard renders. Closing this needs a firmware characteristic."),
+            "The row is blank because this APP never reads the level, not because the watch "
+                + "will not give it. (The previous reason here said the watch never reports one "
+                + "and that closing this needed a firmware characteristic. Both are false: "
+                + "`PebbleOS/src/bluetooth-fw/nimble/init.c` calls `ble_svc_bas_init()` and "
+                + "`ble_bas.c` pushes `sys_battery_get_charge_state().charge_percent` on every "
+                + "battery-state event, so the standard Battery Service 0x180F is live on the "
+                + "watch — and `AudioCompanionGattIds.batteryServiceUUID` already names it, used "
+                + "only as a reconnect hint.) Closing this is app-side and needs no firmware: "
+                + "discover 0x180F, subscribe to Battery Level 0x2A19, and publish it through "
+                + "the link the way `deviceName` already is. Left open because a battery read "
+                + "means new GATT subscriptions on the capture path, which is a change to weigh "
+                + "on its own. `MockWatchStatusSource` shows 78% so the artboard renders."),
         Exemption(
             "LiveTodayDataSource.recap(_:aiModelName:rows:)", .fieldPopulated,
             "RecapBullet.citations: `DailyRecapEngine` returns prose, not grounded citations, "

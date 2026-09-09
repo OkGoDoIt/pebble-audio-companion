@@ -83,7 +83,7 @@ enum CaptureDeliveryOutcome {
 struct PauseCaptureIntent: AppIntent, CaptureRequestingIntent {
     static var title: LocalizedStringResource = "Pause Capture"
     static var description = IntentDescription(
-        "Stops capturing audio from your Pebble. Coverage shows this as paused, not missing."
+        "Stops capturing audio from your Pebble."
     )
     /// Never yanks the user into the app unless the app turns out to be the only way to act.
     static var openAppWhenRun: Bool = false

@@ -1,4 +1,5 @@
 import Foundation
+import Intelligence
 import Observation
 import Receiver
 import SwiftUI
@@ -319,16 +320,63 @@ struct AiModelOption: Identifiable, Hashable {
 
 // MARK: - About You
 
+/// One import source as the screens need it. A value type, so the live source and the mock
+/// cannot describe the same situation with different shapes.
+struct ImportSourceState: Equatable {
+    /// What iOS is currently willing to hand over. `limited` is the iOS 18+ Contacts case,
+    /// where only the contacts the user picked in the system sheet are visible.
+    enum Access: Equatable { case notDetermined, granted, limited, denied }
+
+    var kind: ContextImportKind
+    var isEnabled: Bool
+    var access: Access
+    var isRefreshing: Bool
+    /// When the last SUCCESSFUL import finished — the only input to "Updated …".
+    var lastImportedAtMs: Int64?
+    var lastFailure: ContextImportFailure?
+    var importedCount: Int
+    var selection: ContextImportSelection
+    var pastDays: Int
+    var futureDays: Int
+}
+
+/// A group, account or calendar the user can include or exclude.
+struct ImportChoice: Identifiable, Equatable {
+    /// Namespaced (`group:` / `container:` / a calendar identifier), because Contacts groups
+    /// and containers are two different id spaces sharing one selection.
+    let id: String
+    let name: String
+    /// The account it lives in ("iCloud", "Work"), where that is not the name itself.
+    let detail: String?
+    let section: ImportChoiceSection
+}
+
+/// Which list a choice belongs to on the picker.
+enum ImportChoiceSection: Equatable { case account, group, calendar }
+
+/// About You: the bio, and per-source control of the two phone imports.
+///
+/// The imports used to be two fire-once buttons with no state — see `ContextImportSettings` in
+/// the kit for what that cost. Everything the screen now needs about a source is one
+/// `ImportSourceState`, and every change to a source goes through one of these calls.
 @MainActor
 protocol AboutYouSource: AnyObject {
+    /// The free-text bio. Written by the screen's debounced saver, never per keystroke.
     var bio: String { get set }
-    var contactsSummary: String? { get }
-    var calendarSummary: String? { get }
-    var contactsImporting: Bool { get }
-    var calendarImporting: Bool { get }
-    func importContacts()
-    func importCalendar()
+    func state(for kind: ContextImportKind) -> ImportSourceState
+    /// Turning a source ON is the ONE place either framework is asked for permission.
+    func setEnabled(_ enabled: Bool, for kind: ContextImportKind)
+    func setSelection(_ selection: ContextImportSelection, for kind: ContextImportKind)
+    func setCalendarWindow(pastDays: Int, futureDays: Int)
+    /// A user-initiated refresh. Automatic ones happen without the screen asking.
+    func refresh(_ kind: ContextImportKind)
+    /// Both sources at once. Removing ONE source's data is `setEnabled(false, for:)`: a switch
+    /// that is off must not leave imported names in the context behind it, so the two are the
+    /// same act and there is no second control that could disagree with the switch.
     func clearImported()
+    /// The groups / accounts / calendars available to pick from. Empty when access has not
+    /// been granted — asking for the list must never provoke a permission prompt.
+    func choices(for kind: ContextImportKind) async -> [ImportChoice]
 }
 
 @MainActor
@@ -337,34 +385,110 @@ final class MockAboutYouSource: AboutYouSource {
     var bio =
         "Roger — software engineer, keen hiker. Planning a long walking trip. "
         + "Book club friends at Riverside Hall: Owen Hughes, Jamie Lee…"
-    private(set) var contactsSummary: String? = Copy.Settings.AboutYou.peopleImported(142)
-    private(set) var calendarSummary: String? = Copy.Settings.AboutYou.nextWeeks(3)
-    private(set) var contactsImporting = false
-    private(set) var calendarImporting = false
 
-    func importContacts() {
-        guard !contactsImporting else { return }
-        contactsImporting = true
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.4))
-            self?.contactsSummary = Copy.Settings.AboutYou.peopleImported(142)
-            self?.contactsImporting = false
+    private var settings = ContextImportSettings(
+        contacts: ContextSourceSettings(
+            isEnabled: true, lastImportedAtMs: MockAboutYouSource.nowMs - 4 * 60 * 1000,
+            importedCount: 142
+        ),
+        calendar: ContextSourceSettings(
+            isEnabled: true, pastDays: 30, futureDays: 21,
+            lastImportedAtMs: MockAboutYouSource.nowMs - 4 * 60 * 1000, importedCount: 38
+        )
+    )
+    private var refreshing: Set<ContextImportKind> = []
+
+    private nonisolated static var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+    func state(for kind: ContextImportKind) -> ImportSourceState {
+        let source = settings[kind]
+        return ImportSourceState(
+            kind: kind,
+            isEnabled: source.isEnabled,
+            access: source.isEnabled ? .granted : .notDetermined,
+            isRefreshing: refreshing.contains(kind),
+            lastImportedAtMs: source.lastImportedAtMs,
+            lastFailure: source.lastFailure,
+            importedCount: source.importedCount,
+            selection: source.selection,
+            pastDays: source.pastDays,
+            futureDays: source.futureDays
+        )
+    }
+
+    func setEnabled(_ enabled: Bool, for kind: ContextImportKind) {
+        settings[kind].isEnabled = enabled
+        if enabled {
+            refresh(kind)
+        } else {
+            removeImported(kind)
         }
     }
 
-    func importCalendar() {
-        guard !calendarImporting else { return }
-        calendarImporting = true
+    func setSelection(_ selection: ContextImportSelection, for kind: ContextImportKind) {
+        settings[kind].selection = selection
+        refresh(kind)
+    }
+
+    func setCalendarWindow(pastDays: Int, futureDays: Int) {
+        settings.calendar.pastDays = pastDays
+        settings.calendar.futureDays = futureDays
+        refresh(.calendar)
+    }
+
+    func refresh(_ kind: ContextImportKind) {
+        guard !refreshing.contains(kind) else { return }
+        refreshing.insert(kind)
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.4))
-            self?.calendarSummary = Copy.Settings.AboutYou.nextWeeks(3)
-            self?.calendarImporting = false
+            try? await Task.sleep(for: .seconds(1.2))
+            guard let self else { return }
+            settings[kind].lastImportedAtMs = Self.nowMs
+            settings[kind].lastFailure = nil
+            settings[kind].importedCount =
+                settings[kind].selection.selectsNothing ? 0 : (kind == .contacts ? 142 : 38)
+            refreshing.remove(kind)
         }
+    }
+
+    /// Off means the data is gone, not parked — the same rule the live source keeps.
+    private func removeImported(_ kind: ContextImportKind) {
+        settings[kind].lastImportedAtMs = nil
+        settings[kind].importedCount = 0
+        settings[kind].contributedTerms = []
     }
 
     func clearImported() {
-        contactsSummary = nil
-        calendarSummary = nil
+        for kind in ContextImportKind.allCases {
+            settings[kind].isEnabled = false
+            removeImported(kind)
+        }
+    }
+
+    func choices(for kind: ContextImportKind) async -> [ImportChoice] {
+        switch kind {
+        case .contacts:
+            return [
+                ImportChoice(
+                    id: "container:icloud", name: "iCloud", detail: nil, section: .account),
+                ImportChoice(
+                    id: "container:work", name: "Work", detail: nil, section: .account),
+                ImportChoice(
+                    id: "group:bookclub", name: "Riverside Hall", detail: "iCloud",
+                    section: .group),
+                ImportChoice(
+                    id: "group:family", name: "Family", detail: "iCloud", section: .group),
+            ]
+        case .calendar:
+            return [
+                ImportChoice(
+                    id: "cal:home", name: "Home", detail: "iCloud", section: .calendar),
+                ImportChoice(
+                    id: "cal:work", name: "Work", detail: "Exchange", section: .calendar),
+                ImportChoice(
+                    id: "cal:birthdays", name: "Birthdays", detail: "Subscribed",
+                    section: .calendar),
+            ]
+        }
     }
 }
 
@@ -441,6 +565,39 @@ final class MockCloudHealthSource: CloudHealthSource {
             try? await Task.sleep(for: .seconds(1.5))
             self?.testState = .connected(ago: "just now")
         }
+    }
+}
+
+// MARK: - Processing modes (what the routers are actually doing)
+
+/// Whether a "first" mode is currently being carried by its fallback, per axis.
+///
+/// Read on demand, never streamed: `lastFallback` changes at most once per transcribed segment
+/// or AI job, and the only reader is a settings screen. See `Copy+ProcessingFallback.swift` for
+/// what the app says about it and why that sentence lives on Storage & Privacy.
+@MainActor
+protocol ProcessingModeSource: AnyObject {
+    /// `TranscriptionModeRouter.lastFallback` — nil when the configured path is working.
+    var transcriptionFallback: ProcessingFallback? { get }
+    /// `AiModeRouter.lastFallback` — nil when the configured path is working.
+    var aiFallback: ProcessingFallback? { get }
+}
+
+/// The artboard case is the healthy one: both nil, so the stance card shows no live line. The
+/// two overrides exist for previews and for the design gallery — a mock that could only ever
+/// render "everything is fine" is how an unreachable state ships broken.
+@MainActor
+@Observable
+final class MockProcessingModeSource: ProcessingModeSource {
+    var transcriptionFallback: ProcessingFallback?
+    var aiFallback: ProcessingFallback?
+
+    init(
+        transcriptionFallback: ProcessingFallback? = nil,
+        aiFallback: ProcessingFallback? = nil
+    ) {
+        self.transcriptionFallback = transcriptionFallback
+        self.aiFallback = aiFallback
     }
 }
 
@@ -696,6 +853,7 @@ final class SettingsDataSources {
     let aboutYou: AboutYouSource
     let diagnostics: DiagnosticsSource
     let cloudHealth: CloudHealthSource
+    let processing: ProcessingModeSource
     let apiKeys: ApiKeyChecking
     let aiModels: [AiModelOption]
 
@@ -707,6 +865,7 @@ final class SettingsDataSources {
         aboutYou: AboutYouSource? = nil,
         diagnostics: DiagnosticsSource? = nil,
         cloudHealth: CloudHealthSource? = nil,
+        processing: ProcessingModeSource? = nil,
         apiKeys: ApiKeyChecking? = nil,
         aiModels: [AiModelOption]? = nil
     ) {
@@ -717,6 +876,7 @@ final class SettingsDataSources {
         self.aboutYou = aboutYou ?? MockAboutYouSource()
         self.diagnostics = diagnostics ?? MockDiagnosticsSource()
         self.cloudHealth = cloudHealth ?? MockCloudHealthSource()
+        self.processing = processing ?? MockProcessingModeSource()
         self.apiKeys = apiKeys ?? MockApiKeyChecker()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),

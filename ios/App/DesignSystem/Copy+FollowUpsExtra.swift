@@ -18,13 +18,15 @@ extension Copy.FollowUps {
     // The originals ended "— you can add your own any time" and "and you can always add your
     // own". Both were true only while a + button existed. Nobody used it, it is gone, and an
     // empty state that offers something the screen cannot do is worse than a shorter one.
+    //
+    // They then carried a second sentence each ("Most conversations have none, and that is
+    // normal", "Nothing here yet") — reassurance about, and a restatement of, an empty screen
+    // the reader is already looking at.
 
     static let emptyOpenBodySuggested =
-        "Things you say you will do turn up here, pulled out of what you record. Most "
-        + "conversations have none, and that is normal."
+        "Things you say you will do turn up here, pulled out of what you record."
     static let emptyOpenBodySuggestedNoAi =
-        "Nothing here yet. Follow-ups are suggested from your recordings once AI processing is "
-        + "set up."
+        "Follow-ups are suggested from your recordings once AI processing is set up."
 
     // MARK: Filed away, at the foot of the open list
     //

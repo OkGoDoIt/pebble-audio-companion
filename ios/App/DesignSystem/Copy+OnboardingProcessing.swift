@@ -53,8 +53,9 @@ extension Copy {
         static let laterTitle = "Later"
         /// Verified: "Later" leaves `transcriptsConfigured` false, and both Today's status card
         /// (`LiveTodayDataSource`) and the widget (`AppComposition`) render `Copy.Status
-        /// .transcriptsOff` from exactly that flag while capture is meant to be running.
-        static let laterBody = "Choose later. Until you do, Today shows that transcripts are off."
+        /// .transcriptsOff` from exactly that flag while capture is meant to be running. It
+        /// opened with "Choose later." — the card's own title.
+        static let laterBody = "Today shows that transcripts are off until you choose."
 
         // ─── The quiet way to the two-axis screen ────────────────────────────
 
@@ -69,9 +70,9 @@ extension Copy {
 
         /// Named for the button that opens it, so the two read as one action.
         static let detailTitle = "Set them separately"
-        /// One line saying why this screen exists, so it does not read as a settings dump.
-        static let detailLine =
-            "These are two separate jobs, and they can run in different places."
+        // `detailLine` ("These are two separate jobs, and they can run in different places.")
+        // is gone: two headed sections with two options each is the same statement, made by
+        // the layout.
 
         static let transcriptsSection = "Transcripts"
         static let aiSection = "Notes & AI"
@@ -124,11 +125,15 @@ extension Copy {
         /// Both halves were checked in the kit, and both are surprising enough that finding them
         /// out by accident would feel like the app broke:
         ///
-        /// 1. `OnDeviceAiProvider.run` throws `providerUnavailable` for ANY request carrying
-        ///    `AiRunRequest.requiresStructuredOutputKey`, and `FollowUpWorker` and
-        ///    `FollowUpCurator` set that key on every request they make. In `.localOnly` the
-        ///    router never reaches a remote provider, so follow-up detection cannot produce a
-        ///    single proposal — not rarely, never.
+        /// 1. Follow-ups ARE found here, and they are not as good. `OnDeviceAiProvider` no
+        ///    longer refuses structured output outright — Apple's guided generation can hold a
+        ///    schema, so `FoundationModelsStructured.swift` produces the same JSON the cloud
+        ///    path does. What it cannot do is judge: measured over twenty hand-labelled
+        ///    conversations from real capture, it returned four items where a careful reader
+        ///    finds eight, and it never proposes a due date, because every date it produced was
+        ///    the recording's own day stamped on everything. The sentence below says "fewer"
+        ///    and "no dates" for that reason. It used to say follow-ups were not proposed at
+        ///    all, which was true when it was written.
         /// 2. `FoundationModelsLanguageModel.availability()` reports `.available` only when Apple
         ///    Intelligence is enabled on a device that supports it; anything else makes the
         ///    provider unavailable, and in `.localOnly` the router has nowhere else to go — so on
@@ -139,8 +144,8 @@ extension Copy {
         /// Deliberately NOT phrased as a warning and deliberately not coloured: keeping everything
         /// on the phone is a legitimate, respectable choice, and this is its price list.
         static let onDeviceAiNote =
-            "Summaries and answers need Apple Intelligence on this iPhone, and follow-ups are not "
-            + "proposed."
+            "Summaries and answers need Apple Intelligence on this iPhone. Follow-ups are found "
+            + "here too — fewer of them, and without due dates."
 
         // ─────────────────────────────────────────────────────────────────────
         // MARK: Key hand-off — ask for what this combination actually needs
@@ -153,8 +158,7 @@ extension Copy {
 
         /// Cloud transcription (whether or not the AI is also remote): both providers transcribe,
         /// so both rows are offered and the sentence says how to pick.
-        static let keysLineTranscriptionOnly =
-            "Soniox and OpenAI both transcribe. Add a key for whichever you want to use."
+        static let keysLineTranscriptionOnly = "Soniox and OpenAI both transcribe."
         /// Local transcripts, remote AI: OpenAI is the only provider involved, so it is the only
         /// row — and the line says what stays empty without it rather than nagging.
         static let keysLineAiOnly =

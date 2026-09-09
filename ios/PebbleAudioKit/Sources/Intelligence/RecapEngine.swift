@@ -392,7 +392,9 @@ public actor DailyRecapEngine {
                             .trimmingCharacters(in: .whitespacesAndNewlines),
                         !text.isEmpty
                     else { return nil }
-                    let startMs = Int64(meta.startTimeMs)
+                    // `startTimeMs` anchors the STREAM, not this segment: on a resumed or
+                    // rotated segment the two differ by a median of 1 h and a max of 24.4 h.
+                    let startMs = meta.startWallMs
                     return TranscriptExcerpt(
                         segmentId: meta.segmentId,
                         text: text,
@@ -426,7 +428,7 @@ public actor DailyRecapEngine {
     }
 
     private func dayKey(of meta: SegmentMeta) -> String {
-        LogicalDay.dateKey(forMs: Int64(meta.startTimeMs), timeZoneID: zoneID(of: meta))
+        LogicalDay.dateKey(forMs: meta.startWallMs, timeZoneID: zoneID(of: meta))
     }
 
     /// "YYYY-MM-DD HH:mm" in the segment's recorded zone (Q16 / plan 6.4).

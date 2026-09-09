@@ -79,12 +79,12 @@ enum Copy {
         static func connectedQuiet(device: String) -> String { "\(device) · quiet" }
         static let connectedQuietUnnamed = "Quiet right now"
 
-        // attention dot · bordered [Find Watch] — the `.streaming` latch has outlived its
+        // attention dot · bordered [Reconnect] — the `.streaming` latch has outlived its
         // evidence (see `Receiver.StreamEvidence`). Never says recording stopped: we do not
         // always know that, and asserting it would be the same lie pointing the other way.
         static let notHearingAudio = "Connected, not hearing audio"
         static let notHearingAudioStoppedLine =
-            "Your Pebble says it is no longer recording. Find Watch starts it again."
+            "Your Pebble says it is no longer recording. Reconnect starts it again."
         static let notHearingAudioUnverifiedLine =
             "Nothing has arrived for a while and your Pebble hasn’t confirmed it is still recording."
         /// The StatusStates artboard's family line.
@@ -94,13 +94,20 @@ enum Copy {
 
         // attention dot · filled [Resume]
         static let paused = "Paused"
-        static let pausedLine = "The watch is not capturing. Coverage shows this as paused, not missing."
+        static let pausedLine = "The watch is not capturing."
         static let resume = "Resume"
 
-        // attention dot · bordered [Find Watch]
+        // attention dot · bordered [Reconnect]
         static let reconnecting = "Reconnecting…"
         static let reconnectingLine = "Your Pebble is out of range. It keeps recording and buffers a few minutes."
-        static let findWatch = "Find Watch"
+        /// One action, one word. This said "Find Watch" — which reads as Find My, and this app
+        /// cannot make a watch ring: the audio-companion control channel has no buzz opcode, and
+        /// the action is `CompanionRuntime.reconnect()` → `AudioGattLink.resync()`. Settings ·
+        /// Watch was renamed to "Reconnect" when a user asked what the row did; the status card
+        /// kept the old word, so the same button had two names. The SYMBOL stays `findWatch` —
+        /// it is `StatusAction.findWatch` all the way down into the kit, and renaming the case
+        /// is churn across a dozen files for no user-visible gain.
+        static let findWatch = "Reconnect"
 
         // red dot · filled [Open Settings]
         static let bluetoothOff = "Bluetooth is off"
@@ -147,15 +154,18 @@ enum Copy {
     // ─────────────────────────────────────────────────────────────────────────
     enum Onboarding {
         static let connectTitle = "Audio from your Pebble"
+        /// It used to add "You choose where transcription happens." — which step 3 then asks in
+        /// so many words, two screens later.
         static let connectBody =
-            "Your watch records in the background and streams to this phone. You choose where transcription happens."
+            "Your watch records in the background and streams to this phone."
         static let connectButton = "Connect Watch"
         static let connectFootnote = "Requires the custom audio firmware."
 
         static let confirmTitle = "Confirm on your watch"
         static let waiting = "Waiting for your Pebble…"
         /// Sub-line while the phone is still looking for the watch (before any on-watch prompt).
-        static let waitingLine = "Keep the watch nearby. This usually takes a few seconds."
+        /// The one thing the reader can act on; a spinner already says it is in progress.
+        static let waitingLine = "Keep the watch nearby."
 
         // Watch-face mock on the Confirm screen.
         static let watchFaceTitle = "AUDIO COMPANION"
@@ -175,16 +185,19 @@ enum Copy {
         static let laterTitle = "Later"
         static let laterBody = "Audio is kept safely; transcribe whenever you decide."
         static let continueButton = "Continue"
-        static let transcriptsFootnote = "You can change this any time in Settings."
+        // `transcriptsFootnote` ("You can change this any time in Settings.") is gone from under
+        // both Continue buttons: every setting in this app can be changed in Settings, and
+        // saying so under one of them is not information.
 
         // Cloud key hand-off (6.7): one key screen before Today.
         /// Both providers are offered at once — one can transcribe while the other runs the AI,
         /// so a screen that only takes one key at a time hides half the product.
         static let addProviderKey = "Add your provider keys"
-        /// The one calm sentence that explains the split (P0: no over-explaining).
+        /// The one calm sentence that explains the split (P0: no over-explaining). It ended
+        /// "— add one, or one of each", which is what two optional fields and a Skip button
+        /// already say.
         static let providerKeysLine =
-            "Soniox only transcribes; OpenAI can transcribe and run the AI features — add one, "
-            + "or one of each."
+            "Soniox transcribes; OpenAI transcribes and runs the AI features."
         static let sonioxRole = "transcription"
         static let openAiRole = "transcription and AI"
         static let keyPlaceholder = "API key"
@@ -225,9 +238,9 @@ enum Copy {
             /// The watch's GATT server refused a handle: a stale iOS cache, typical right after
             /// flashing firmware. Retrying the same handles never clears it — only re-discovery.
             static let needsReconnect = "Your Pebble needs to reconnect"
-            static let needsReconnectLine =
-                "Turn Bluetooth off and back on, then try again. This can happen right after "
-                + "updating the watch firmware."
+            /// Just the fix. Why it happened (a firmware update, usually) is not something the
+            /// reader can act on.
+            static let needsReconnectLine = "Turn Bluetooth off and back on, then try again."
         }
     }
 
@@ -421,11 +434,10 @@ enum Copy {
         static func completedOn(_ when: String) -> String { "Done \(when)" }
         static func filedAwayOn(_ when: String) -> String { "Filed away \(when)" }
 
-        /// The footer under the open list. It explains the one behaviour people would
-        /// otherwise experience as the app losing things.
-        static let ageFooter =
-            "Suggestions you never act on are filed away after two weeks. Nothing is deleted — "
-            + "they are under Filed away."
+        // `ageFooter` explained the two-week age rule under the open list. It was written when
+        // filed-away items left the screen entirely; they no longer do — the "Filed away · N"
+        // disclosure sits at the foot of that same list, and a count you can open says it
+        // better than a sentence about it.
 
         // Empty states. Each says which kind of empty this is; "All caught up." was shown for
         // "you ticked everything", "this conversation produced nothing", and "the feature has
@@ -438,13 +450,10 @@ enum Copy {
         static let emptyCompletedBody = "Ticked-off follow-ups collect here."
         static let emptyArchivedTitle = "Nothing filed away"
         static let emptyArchivedBody =
-            "Suggestions you never act on move here after two weeks, so the open list stays "
-            + "about now."
+            "Suggestions you never act on move here after two weeks."
         static let conversationEmpty = "Nothing to follow up on from this conversation."
         static let missingTitle = "This follow-up is gone"
-        static let missingBody =
-            "It was completed and cleared, or deleted. A widget or a search result can be a few "
-            + "minutes behind."
+        static let missingBody = "It was completed and cleared, or deleted."
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -493,7 +502,8 @@ enum Copy {
     // ─────────────────────────────────────────────────────────────────────────
     enum Library {
         static let title = "Library"
-        static let scopeAll = "All"
+        // (`scopeAll` was here and was never referenced — `filterAll` below is the string the
+        // scope menu actually uses.)
         static let searchPlaceholder = "Search or ask"
         static let moreTags = "more…"
         /// Folds into the row meta line, e.g. "7:02 PM · 1 hr 40 min · mostly quiet".
@@ -507,8 +517,7 @@ enum Copy {
     }
 
     enum Search {
-        /// Hand-off row: sparkle + "Ask about “travel”".
-        static func askAbout(_ query: String) -> String { "Ask about “\(query)”" }
+        // (`askAbout(_:)` was here — a hand-off row that no search surface ever rendered.)
         static let tagsSection = "Tags"
         static let conversationsSection = "Conversations"
         static let followUpsSection = "Follow-ups"
@@ -559,8 +568,8 @@ enum Copy {
         /// one. Without it a partial answer looks exactly like a thorough one, and "I found
         /// nothing" reads as a verdict on the whole range instead of on a slice of it.
         static func partialCoverage(read: Int, inScope: Int) -> String {
-            "Read \(read) of \(inScope) conversations — this range was too large to read in "
-                + "full, so anything not mentioned may simply not have been reached."
+            "Read \(read) of \(inScope) conversations — anything not mentioned may not have "
+                + "been reached."
         }
 
         // Scope picker (6.6).
@@ -630,8 +639,9 @@ enum Copy {
         // Enrichment (AI title/summary/tags). Transcribing is done; AI has not caught up.
         // "Working on it" and "there is genuinely nothing here" must never look alike.
         static let summaryComing = "Transcribed · summary still to come"
-        static let summaryComingLine =
-            "AI is working through the backlog in the background. The transcript is already saved."
+        /// The headline already says the transcript is there, so the line only has to say who
+        /// is behind and why.
+        static let summaryComingLine = "AI is working through a backlog."
         static let noSummary = "No summary for this one"
         static let noSummaryLine = "AI is turned off, so titles, tags and summaries stay blank."
         static let summaryGaveUp = "Summary didn’t generate"
@@ -668,18 +678,23 @@ enum Copy {
         }
         /// The calm line before the first words arrive (one line, per the state-card rule).
         /// TRUE ONLY while audio is actually arriving — see `LiveTranscriptStatus` for the
-        /// other four things this line used to be shown for.
-        static let waiting = "Listening — words appear here as they are recognized."
-        /// The watch is capturing but suppressing silence. Calm: quiet is not loss (Q6).
-        static let quiet = "Quiet right now — the watch sends audio when it hears sound."
+        /// other four things this line used to be shown for. It went on to promise that words
+        /// would appear here, which is what an empty transcript card on a screen headed
+        /// "Recording now" is for.
+        static let waiting = "Listening…"
+        /// The watch is capturing but suppressing silence. Calm: quiet is not loss (Q6) — and
+        /// "quiet" is the word that carries that, not the sentence about the watch's VAD that
+        /// used to follow it.
+        static let quiet = "Quiet right now."
         /// Nothing is reaching the phone. Says what happens to the audio meanwhile, because the
         /// honest answer is reassuring: the watch holds it and re-sends it.
         static let notHearing =
             "No audio is arriving from the watch — what it records meanwhile is sent when the "
             + "link is back."
-        /// Recording is safe without transcription, and that is the part to lead with.
+        /// Recording is safe without transcription, and that is the part to lead with. "So no
+        /// words appear here" described the empty card it is printed on.
         static let transcriptsOff =
-            "Transcription isn't set up, so no words appear here. The audio is still recorded."
+            "Transcription isn't set up. The audio is still recorded."
         /// The live engine specifically. The final transcript is a different path and still runs.
         static let transcriptionDown =
             "Live words aren't coming through right now. The recording is safe and will be "
@@ -764,10 +779,12 @@ enum Copy {
             /// Named for the outcome, not the mechanism: people care whether their transcripts are
             /// ready, not which scheduler ran.
             static let backgroundCatchUp = "Catch Up in the Background"
+            /// Only the two facts the options themselves cannot carry. "While Charging" already
+            /// says when it runs; what it does not say is that the phone's own conditions
+            /// override the choice, and that recording is never part of the bargain.
             static let backgroundCatchUpFooter =
-                "Transcribing uses the processor, so by default it waits until your iPhone is "
-                + "charging. Recording is never affected. Low Power Mode and a warm phone always "
-                + "pause it, whichever option you pick."
+                "Low Power Mode and a warm phone pause it either way. Recording is never "
+                + "affected."
 
             static let title = "Transcription & AI"
             static let transcriptionSection = "Transcription"
@@ -852,17 +869,15 @@ enum Copy {
             static let saveKey = "Save Key"
             /// Under the current-key card: where the key lives, in the user's terms.
             static let keychainFootnote = "Stored in this phone’s Keychain."
-            /// Under the field while a key is already stored — states what Save will do.
-            static let keyChangeFootnote = "Saving replaces the key above."
+            // `keyChangeFootnote` ("Saving replaces the key above.") is gone — it sat under a
+            // field in a section headed "Replace key".
             /// Under the field right after a save. The save is never gated on the check, so
             /// "saved" is stated plainly here and the provider's verdict is shown above.
             static let keySavedFootnote = "Saved to this phone’s Keychain."
             static let deleteKey = "Delete Saved Key…"
             static let deleteKeyButton = "Delete Saved Key"
-            /// The honest consequence — named under the row, and again in the dialog.
-            static func deleteKeyFootnote(provider: String) -> String {
-                "Anything that uses your \(provider) key stops working until you add another."
-            }
+            // `deleteKeyFootnote` said the same thing as `deleteKeyMessage` one tap earlier.
+            // The consequence belongs where the decision is made, which is the dialog.
             static func deleteKeyMessage(provider: String) -> String {
                 "This removes the \(provider) key from this phone’s Keychain. "
                     + "You’ll need to paste it again to use \(provider)."
@@ -895,14 +910,17 @@ enum Copy {
             // before "Keep audio" ever did, which made the visible rule a lie. The rule is
             // stated whether or not a limit is set, so nothing disappears unexplained.
             static let storageLimit = "Storage limit"
-            static let noLimit = "No limit"
+            // (`noLimit` was here; the "No limit" option's label comes from
+            // `AppSettings.retentionLimitLabel`, which is what the picker actually reads.)
             static func usedOfLimit(used: String, limit: String) -> String {
                 "\(used) of \(limit) used"
             }
+            /// Both rules, and nothing about the order the retention pass walks its candidates
+            /// in — "recovered audio last" was a fact about `RetentionManager`, not one anybody
+            /// can act on.
             static let limitFooter =
-                "Recordings are removed once they pass Keep audio. With a storage limit set, the "
-                + "oldest fully-transcribed recordings also go when the total goes over it — "
-                + "recovered audio last."
+                "Recordings are removed once they pass Keep audio. A storage limit removes the "
+                + "oldest first."
         }
 
         enum AboutYou {
@@ -1058,8 +1076,9 @@ enum Copy {
             static let recentSegments = "Recent segments"
             // Plain-language segment states — never key=value dumps.
             static let segmentRecordingNow = "recording now"
-            static let segmentContinued = "continued"
-            static let segmentContinuedDetail = "reattached after a blip"
+            // (`segmentContinued` / `segmentContinuedDetail` were here. `MockDiagnosticsSource`
+            // spells those two words out in its sample rows and `LiveDiagnosticsSource` builds
+            // the real ones from the sidecar, so nothing ever read them.)
             static let segmentStopped = "stopped"
             static let supportReport = "Support Report"
             /// The whole history, as a file. Named for what the person gets, not for the
@@ -1081,7 +1100,7 @@ enum Copy {
             static let rebuildIndexBusy = "Rebuilding…"
             static let rebuildIndexFooter =
                 "Rebuilds what Search and Spotlight look through. Recordings, transcripts and "
-                + "notes are not touched. Takes a few seconds for a large library."
+                + "notes are not touched."
             static func rebuildIndexDone(_ count: Int) -> String {
                 count == 1
                     ? "Rebuilt · 1 conversation indexed"
@@ -1147,7 +1166,7 @@ enum Copy {
         static let followUpsName = "Follow-ups"
         static let followUpsDescription = "Open follow-ups from your conversations. Tap one to open it."
         static let coverageName = "Day coverage"
-        static let coverageDescription = "A diagnostic strip of the whole day — what was recorded, quiet, and missing. Start with Recording status if you want to see or change what is happening now."
+        static let coverageDescription = "A diagnostic strip of the whole day — what was recorded, quiet, and missing."
 
         /// Shown while a requested change has not been confirmed by the app yet. The trailing
         /// ellipsis is the honesty: the switch moved, the watch has not answered.
@@ -1165,7 +1184,8 @@ enum Copy {
 
         /// Live-conversation chrome.
         static let untitledConversation = "This conversation"
-        /// Short form of `Live.waiting` — a widget has one line, not a sentence and a half.
+        /// The same word `Live.waiting` uses. It was the short form of a longer sentence there;
+        /// the sentence is gone and the two now agree exactly.
         static let listening = "Listening…"
         static let nothingRecording = "Nothing recording right now."
 
@@ -1208,7 +1228,8 @@ enum Copy {
         static let followUpHint = "Double tap to change"
         static func followUpFilter(_ label: String) -> String { "Showing: \(label)" }
         static let followUpOpenHint = "Double tap to open this follow-up"
-        static func followUpDue(_ when: String) -> String { "Due \(when)" }
+        // (`followUpDue(_:)` was here — the due date is spoken as part of the row's own combined
+        // element, so nothing ever called it.)
         static let waveformLabel = "Live minute waveform"
         static let coverageLabel = "Day coverage"
         static let coverageHint = "Double tap for a breakdown of the day"
@@ -1231,8 +1252,9 @@ enum Copy {
         static func transcriptTurn(time: String?, speaker: String?, text: String) -> String {
             [time, speaker, text].compactMap { $0 }.joined(separator: ", ")
         }
-        /// Suffix for the turn still being transcribed.
-        static let turnInProgress = "still being transcribed"
+        // (`turnInProgress` was here — a suffix for the tail still being transcribed. The
+        // in-progress turn is dimmed visually and reads through `transcriptTurn` like any other,
+        // so the suffix was never appended.)
         /// One inline marker row, e.g. "9:48 AM, quiet for 2 min".
         static func transcriptMarker(time: String?, text: String) -> String {
             [time, text].compactMap { $0 }.joined(separator: ", ")

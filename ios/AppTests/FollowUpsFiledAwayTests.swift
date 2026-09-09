@@ -195,6 +195,7 @@ struct FollowUpsFiledAwayTests {
 final class FakeFollowUpsSource: FollowUpsDataSource {
     var rows: [FollowUpItem]
     var automaticProposalsEnabled = true
+    var proposalsAreOnDevice = false
 
     init(rows: [FollowUpItem]) { self.rows = rows }
 

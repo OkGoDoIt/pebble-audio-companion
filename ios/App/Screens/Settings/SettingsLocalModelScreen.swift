@@ -61,6 +61,36 @@ struct SettingsLocalModelScreen: View {
                         }
                     }
                 }
+                // Anchored to the card that raises it. Attached to `SettingsScroll` the source
+                // rect is the whole screen and iOS 26 places the panel against the top of it,
+                // far from the row that was tapped. Same fix as `SettingsWatchScreen` and
+                // `SettingsStorageScreen`. (The card, not each row: `presenting: removeTarget`
+                // already names which model is going, and one dialog per row would be a dialog
+                // per model in the catalog.)
+                .confirmationDialog(
+                    removeTarget?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
+                    isPresented: Binding(
+                        get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: removeTarget
+                ) { target in
+                    Button(
+                        Copy.Settings.TranscriptionAI.removeModelButton, role: .destructive
+                    ) {
+                        Haptics.destructiveConfirmed()
+                        model.delete(target.id)
+                        // Cleared here as well as by the dialog's own dismissal: removing the
+                        // LAST installed model collapses the card this dialog is anchored to,
+                        // and a host that disappears before SwiftUI writes `false` through the
+                        // binding would leave `removeTarget` set — so the next remove, after a
+                        // re-download, would find the dialog already "presented" and show
+                        // nothing.
+                        removeTarget = nil
+                    }
+                } message: { target in
+                    Text(removeNote(target))
+                }
             }
 
             SettingsFooter(text: Copy.Settings.TranscriptionAI.wifiFootnote)
@@ -77,21 +107,6 @@ struct SettingsLocalModelScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         // Re-reading install state is the only thing opening this screen does.
         .task { model.refresh() }
-        .confirmationDialog(
-            removeTarget?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
-            isPresented: Binding(
-                get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: removeTarget
-        ) { target in
-            Button(Copy.Settings.TranscriptionAI.removeModelButton, role: .destructive) {
-                Haptics.destructiveConfirmed()
-                model.delete(target.id)
-            }
-        } message: { target in
-            Text(removeNote(target))
-        }
     }
 
     /// The fallback fact, worded for whether anything is being done about it right now.

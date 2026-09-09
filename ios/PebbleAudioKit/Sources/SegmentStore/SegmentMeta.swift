@@ -123,6 +123,26 @@ public struct SegmentMeta: Equatable, Sendable {
 
     public var isOpen: Bool { closeReason == nil }
 
+    /// When THIS segment's first sample was recorded, in wall-clock ms.
+    ///
+    /// `startTimeMs` is a STREAM anchor — the wall clock of sample index 0 — so it is the right
+    /// answer only for a segment that begins at the stream's birth. Every mid-stream segment (a
+    /// reattach, or any of the 15-minute rotation successors) starts `firstSampleIndex` samples
+    /// later, and using the raw field for it files the recording under the stream's start instead
+    /// of its own: across Roger's 88-day export the two differ by a median of 1 h and a maximum of
+    /// 24.4 h. Anything that wants "when did this recording happen" — day bucketing, recaps,
+    /// citations, coverage — wants this, not `startTimeMs`.
+    ///
+    /// `receivedAtMs` is the ceiling, for the same reason `ConversationGrouper.segmentStartMs`
+    /// uses it: audio cannot have been recorded after the phone received it. Spooled backfill
+    /// legitimately anchors earlier and still does.
+    public var startWallMs: Int64 {
+        guard let first = firstSampleIndex, sampleRateHz > 0 else { return receivedAtMs }
+        let offsetMs = Int64(first * 1000 / UInt64(sampleRateHz))
+        let (anchored, overflowed) = Int64(bitPattern: startTimeMs).addingReportingOverflow(offsetMs)
+        return overflowed ? receivedAtMs : min(anchored, receivedAtMs)
+    }
+
     /// True for audio restored from `quarantine/` by the migration importer.
     public var isRecovered: Bool { recoveredAtMs != nil }
 
@@ -173,6 +193,48 @@ extension SegmentMeta: Codable {
         dedupeFloorSequence = try c.decodeIfPresent(UInt32.self, forKey: .dedupeFloorSequence)
         recordedTimeZone = try c.decodeIfPresent(String.self, forKey: .recordedTimeZone)
         recoveredAtMs = try c.decodeIfPresent(Int64.self, forKey: .recoveredAtMs)
+        startTimeMs = Self.repairedStartTimeMs(
+            storedStartTimeMs: startTimeMs,
+            receivedAtMs: receivedAtMs,
+            firstSampleIndex: firstSampleIndex,
+            sampleRateHz: sampleRateHz
+        )
+    }
+
+    /// Undo the mid-stream re-anchoring that older builds wrote into the sidecar.
+    ///
+    /// Until this was fixed, `SegmentStore.openSegmentInternal` stored
+    /// `startTimeMs = receivedAtMs` for every RESUME and every 15-minute rotation successor, while
+    /// `firstSampleIndex` kept counting from the stream's birth. That breaks the pair the whole
+    /// timeline rests on — the wall clock of a sample is `startTimeMs + sampleIndex·1000/rate` —
+    /// and adds the entire elapsed stream a second time, placing the segment that far in the
+    /// FUTURE. In Roger's 88-day export it hit 169 segments (91 of them >1 min ahead of their own
+    /// arrival, 413 h of phantom shift, worst case +24.4 h).
+    ///
+    /// The corrupted shape is exact and self-identifying: `startTimeMs == receivedAtMs` with a
+    /// non-zero `firstSampleIndex`. A segment written correctly cannot look like that — with the
+    /// firmware's birth clock, `startTimeMs` sits `firstSampleIndex·1000/rate` BEFORE
+    /// `receivedAtMs`, so the two coincide only when that offset is zero. Recovering the birth
+    /// clock as `receivedAtMs − firstSampleIndex·1000/rate` restores the invariant; it can be
+    /// early by at most the spool window (~67 s) when the first frames were a backfill, which is
+    /// inside the ±32 s the uncorrupted segments already show and is not comparable to the hours
+    /// it replaces.
+    ///
+    /// Repairing on read rather than by rewriting sidecars keeps the user's files untouched and
+    /// fixes the whole existing library the moment it is next loaded.
+    static func repairedStartTimeMs(
+        storedStartTimeMs: UInt64,
+        receivedAtMs: Int64,
+        firstSampleIndex: UInt64?,
+        sampleRateHz: UInt32
+    ) -> UInt64 {
+        guard receivedAtMs > 0, sampleRateHz > 0,
+              let first = firstSampleIndex, first > 0,
+              storedStartTimeMs == UInt64(bitPattern: receivedAtMs)
+        else { return storedStartTimeMs }
+        let offsetMs = Int64(first * 1000 / UInt64(sampleRateHz))
+        guard offsetMs > 0, offsetMs < receivedAtMs else { return storedStartTimeMs }
+        return UInt64(bitPattern: receivedAtMs - offsetMs)
     }
 
     public func encode(to encoder: Encoder) throws {

@@ -18,7 +18,6 @@ struct SettingsWatchScreen: View {
         SettingsScroll {
             deviceCard
             infoCard
-            SettingsFooter(text: Copy.Settings.Watch.reportsFooter)
             ListCard {
                 TintActionRow(
                     title: Copy.Settings.Watch.reconnect,
@@ -181,6 +180,11 @@ struct SettingsWatchScreen: View {
         // coverage went on rendering the rest of the day as paused.
         settings.captureIntent = .off
         capture.applyCaptureIntent(.off)
+        // …and the two surfaces outside this process, which read the App Group and are never
+        // told it changed. A forgotten watch that leaves the Home Screen widget and the Control
+        // Center toggle saying "Recording" is the worst version of that staleness: it is the one
+        // capture change where the person has explicitly asked for everything to stop.
+        CaptureController.reloadWidgetSurfaces()
         router.settingsPath = []
         settings.onboardingComplete = false
     }

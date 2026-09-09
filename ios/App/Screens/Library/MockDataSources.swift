@@ -1360,6 +1360,10 @@ extension MockFollowUps: FollowUpsDataSource {
 
     var automaticProposalsEnabled: Bool { true }
 
+    /// The artboard shows the cloud case; the on-device banner has its own preview rather than
+    /// being the default every screenshot inherits.
+    var proposalsAreOnDevice: Bool { false }
+
     private func mutate(_ id: String, _ change: (inout FollowUp) -> Void) {
         guard let index = followUps.firstIndex(where: { $0.id == id }) else { return }
         change(&followUps[index])

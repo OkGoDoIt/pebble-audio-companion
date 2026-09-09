@@ -157,15 +157,18 @@ struct PrivacyStanceTests {
     /// and `FollowUpCurator` tag all of theirs — so in AI "Local first" follow-up detection
     /// reaches the remote provider on every single run, not occasionally. The copy says
     /// "always", because that is what the router does.
-    @Test func localFirstAiAdmitsFollowUpsAlwaysGoOut() throws {
+    /// Renamed from `localFirstAiAdmitsFollowUpsAlwaysGoOut`. On-device follow-ups landed, so
+    /// "always … for finding follow-ups" became false on any device with Apple Intelligence.
+    /// What still has to be admitted is the fallback itself.
+    @Test func localFirstAiAdmitsTextCanStillLeave() throws {
         let stance = Copy.Privacy.stance(
             for: inputs(transcription: .localOnly, ai: .localFirst, stt: nil, remoteAi: "OpenAI")
         )
 
         let qualifier = try #require(stance.qualifiers.first)
         #expect(qualifier.contains("Local first"))
-        #expect(qualifier.contains("always"))
-        #expect(qualifier.contains("follow-ups"))
+        #expect(qualifier.contains("Text still goes"))
+        #expect(!qualifier.contains("always"), "on-device follow-ups made that word false")
     }
 
     /// The "only" modes are unambiguous — the summary has already said everything goes out —

@@ -94,7 +94,8 @@ final class AppSettings {
                 retentionDays: retentionDays,
                 retentionMaxBytes: retentionMaxBytes,
                 transcriptsConfigured: transcriptsConfigured,
-                backgroundCatchUp: backgroundCatchUp
+                backgroundCatchUp: backgroundCatchUp,
+                cloudUploadNetwork: cloudUploadNetwork
             )
         )
         onRuntimeSettingsChanged?()
@@ -138,6 +139,18 @@ final class AppSettings {
     var backgroundCatchUp: BackgroundCatchUp {
         didSet {
             defaults.set(backgroundCatchUp.rawValue, forKey: Keys.backgroundCatchUp)
+            mirrorToRuntime()
+        }
+    }
+
+    /// Which networks segment audio may be uploaded over. Wi-Fi only by default: the upload is
+    /// the one genuinely large thing this app sends, and nothing is lost by waiting — the audio
+    /// is spooled and the queue re-offers it the moment a permitted network appears. See
+    /// `CloudUploadNetworkPolicy`. Read by the background uploader through the runtime box, which
+    /// is installed once at the end of `init`.
+    var cloudUploadNetwork: CloudUploadNetwork {
+        didSet {
+            defaults.set(cloudUploadNetwork.rawValue, forKey: Keys.cloudUploadNetwork)
             mirrorToRuntime()
         }
     }
@@ -290,6 +303,11 @@ final class AppSettings {
         backgroundCatchUp =
             defaults.string(forKey: Keys.backgroundCatchUp).flatMap(BackgroundCatchUp.init)
             ?? .whileCharging
+        // Absent key => Wi-Fi only. Existing installs land here too, which is the point: the
+        // upload session had no network policy at all and was free to spend cellular data.
+        cloudUploadNetwork =
+            defaults.string(forKey: Keys.cloudUploadNetwork).flatMap(CloudUploadNetwork.init)
+            ?? CloudUploadNetworkPolicy.default
         transcriptionMode =
             defaults.string(forKey: Keys.transcriptionMode).flatMap(TranscriptionMode.init)
             ?? .remoteFirst
@@ -329,6 +347,13 @@ final class AppSettings {
 
         // Property observers do not fire during initialization, so seed the mirror here.
         mirrorToRuntime()
+
+        // Point the background uploader at the live setting. Registered here rather than in
+        // `AppComposition` because the uploader is a process-wide singleton created long before
+        // the runtime is assembled, and a background `URLSession` cannot be reconfigured once it
+        // exists — so the policy has to be read per request, from a box that outlives both.
+        let box = runtimeSettings
+        URLSessionBackgroundUploader.shared.setNetworkPolicy { box.cloudUploadNetwork }
     }
 
     /// Re-reads every key from defaults.
@@ -388,6 +413,7 @@ final class AppSettings {
         static let pauseRemindAtMs = "capture_pause_remind_at_ms"
         static let transcriptionMode = "transcription_mode"
         static let backgroundCatchUp = "background_catch_up"
+        static let cloudUploadNetwork = "cloud_upload_network"
         static let localModel = "local_transcription_model"
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"

@@ -238,25 +238,10 @@ struct LiveParityTests {
         #expect(!ended.conversationId.isEmpty)
     }
 
-    // MARK: - The transport says which is which
-
-    /// Roger's report was "I'm not entirely certain the technical difference between pause and
-    /// stop in our case". Both end the conversation, so both sublines open with the same words;
-    /// the difference is what follows, and it has to actually differ.
-    @Test func theTwoTransportSublinesShareTheirConsequenceAndDifferAfterIt() {
-        let pause = Copy.Live.pauseSubline
-        let stop = Copy.Live.stopSubline
-        #expect(pause != stop)
-        #expect(pause.hasPrefix("ends here"))
-        #expect(stop.hasPrefix("ends here"))
-        #expect(pause.contains("resume"))
-        #expect(!stop.contains("resume"))
-    }
-
-    /// The middle dot is a typographic separator, not a word. VoiceOver gets a comma.
-    @Test func theSpokenTransportLabelHasNoMiddleDot() {
-        let spoken = Copy.A11y.transport(Copy.Live.stop, Copy.Live.stopSubline)
-        #expect(spoken.hasPrefix(Copy.Live.stop))
-        #expect(!spoken.contains("·"))
-    }
+    // The two tests that used to close this suite pinned the Pause/Stop sublines ("ends here ·
+    // resume anytime" / "ends here · recording off") and the spoken form built from them. Both
+    // the Pause button and its sublines are gone: the bar offers one Stop, so there is no
+    // second control to be told apart from and nothing left for a caption to disambiguate.
+    // `theEndedDemoSnapshotStillNamesItsConversation` above already covers what Stop leaves
+    // behind.
 }

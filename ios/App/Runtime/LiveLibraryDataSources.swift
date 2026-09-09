@@ -948,6 +948,12 @@ extension LiveWorld: AskDataSource {
         -> [CitableExcerptDraft]
     {
         guard !transcript.text.isEmpty, let meta else { return [] }
+        // Ask's citable excerpts were the last model input still reading raw transcript text,
+        // so a conversation whose transcriber looped could be cited hundreds of times on the
+        // same fabricated sentence. Same collapse every other AI surface gets, via one seam in
+        // `EnrichmentService`; this path builds its own excerpts and needed it explicitly.
+        let transcript = transcript.withLoopedArtefactsCollapsed()
+        guard !transcript.text.isEmpty else { return [] }
         let startMs = Int64(meta.startTimeMs)
         return CitableExcerpts.split(
             segmentId: segmentId,
@@ -1502,19 +1508,29 @@ extension LiveFollowUps: FollowUpsDataSource {
     var automaticProposalsEnabled: Bool {
         switch composition.settings.aiMode {
         case .localOnly:
-            // False on EVERY device, not just one without Apple Intelligence. Follow-up
-            // detection and curation both tag their requests `requiresStructuredOutput`, and
-            // `OnDeviceAiProvider.run` throws `providerUnavailable` for anything carrying that
-            // tag before it even looks at the model; `.localOnly` has no fallback to catch it.
-            // So this can never produce a proposal, and the comment this replaces — "whether
-            // Apple Intelligence is available is the runtime's question" — was answering a
-            // question nothing was asking. The empty state has to say the app is not looking,
-            // rather than imply nothing in the week was worth remembering. Onboarding can now
-            // put someone here deliberately, which is what made it worth fixing.
-            return false
+            // A capability question about THIS device, not a constant. It used to return false
+            // everywhere, and that was correct at the time: `OnDeviceAiProvider.run` refused
+            // anything tagged `requiresStructuredOutput` before it looked at the model at all.
+            // The refusal is now conditional on the model actually lacking guided generation
+            // (`OnDeviceStructuredOutput.swift`), so on a device with Apple Intelligence on,
+            // local proposals are real — fewer and rougher than the cloud's, which is what
+            // `proposalsAreOnDevice` below exists to say out loud, but real. On a device
+            // without it, or with it still downloading, the answer is still false and the empty
+            // state still says the app is not looking.
+            return OnDeviceAiCapability.canProposeFollowUps
         case .remoteOnly, .remoteFirst, .localFirst:
             return composition.settings.hasApiKey(for: .openAi)
         }
+    }
+
+    /// True when the proposals on this list were found by the on-device reader rather than the
+    /// cloud one. The two are not the same product and the screen must not imply they are:
+    /// measured over twenty hand-labelled conversations from this user's own recordings, the
+    /// on-device path returned four items where a careful reader finds eight — it misses most
+    /// of them, and it never proposes a due date. That is worth having and it is not worth
+    /// pretending about; `Copy.LocalFollowUps` is what says so.
+    var proposalsAreOnDevice: Bool {
+        composition.settings.aiMode == .localOnly && OnDeviceAiCapability.canProposeFollowUps
     }
 
     private func removeFollowUpFromIndex(id: String) {

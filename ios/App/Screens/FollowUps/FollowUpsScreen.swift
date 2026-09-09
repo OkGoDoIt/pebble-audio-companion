@@ -48,6 +48,19 @@ struct FollowUpsScreen: View {
 
     private var content: some View {
         List {
+            // Said once, at the top, only when the on-device reader is the one proposing. It
+            // leads with what is MISSING rather than with what might be wrong: the measurement
+            // is certain that it finds fewer (three of eight a careful reader found) and never
+            // dates them, and much less certain about how often it is wrong.
+            if model.scope == .open, !model.isEmpty, model.proposalsAreOnDevice {
+                Text(Copy.LocalFollowUps.banner)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityLabel(Copy.LocalFollowUps.bannerA11y)
+            }
             ForEach(model.sections) { section in
                 Section {
                     ForEach(section.items) { item in
@@ -97,6 +110,9 @@ struct FollowUpsScreen: View {
     // shorter and nothing said why. They are still not part of the working list — they are
     // collapsed, unticked, one type size down, at the very bottom — but the count is always
     // on screen, and opening it takes one tap.
+    //
+    // That is also why the footer sentence itself is gone. It explained the age rule to a
+    // reader who could not see its results; now the results are the row above.
 
     @ViewBuilder
     private var filedAwayTail: some View {
@@ -112,10 +128,6 @@ struct FollowUpsScreen: View {
                     }
                 }
             }
-        } footer: {
-            Text(Copy.FollowUps.ageFooter)
-                .font(AppFont.footnote)
-                .foregroundStyle(Tokens.meta)
         }
     }
 
@@ -513,7 +525,7 @@ final class FollowUpsViewModel {
         var items: [FollowUpItem]
     }
 
-    private let source: any FollowUpsDataSource
+    private let injectedSource: (any FollowUpsDataSource)?
 
     var scope: FollowUpListScope = .open {
         didSet { if scope != oldValue { Task { await reload() } } }
@@ -542,8 +554,19 @@ final class FollowUpsViewModel {
     private var hidden: Set<String> = []
     private(set) var now = Date()
 
+    /// Resolved at point of use, not captured at init.
+    ///
+    /// A view model built before the live graph is installed would otherwise observe the mock
+    /// world for its whole life. That is not hypothetical: a launch iOS labelled "Bluetooth
+    /// state restoration" left the runtime receive-only while the app was visible, and the same
+    /// shape of latent binding fault was the first suspect. It was not the cause there, but it
+    /// is a real hazard and this is what closes it.
+    private var source: any FollowUpsDataSource {
+        injectedSource ?? AskLibraryDataSources.current.followUps
+    }
+
     init(source: (any FollowUpsDataSource)? = nil) {
-        self.source = source ?? AskLibraryDataSources.current.followUps
+        self.injectedSource = source
     }
 
     func start(scope requested: String?) async {
@@ -565,6 +588,12 @@ final class FollowUpsViewModel {
         // Read on `.open` only: the other two scopes are already showing their own everything.
         var loadedFiledAway: [FollowUpItem] = []
         if scope == .open { loadedFiledAway = await filedAwaySlice() }
+        // EVERY mutation below the guard, including this one. `optimisticDone` used to be
+        // rewritten before it, so a load that had already been superseded still got to retire
+        // the overrides — and a tick made while that load was in flight was reverted by a
+        // snapshot too old to know about it, with `items` left untouched. The rule is now the
+        // plain one: a stale load changes nothing at all.
+        guard generation == loadGeneration else { return }
         // Anything the DB now agrees with is no longer an optimistic guess — and neither is
         // anything that has left this slice entirely. Keeping an override for a row that is no
         // longer here is how a ticked item came back later still rendering as done, with its
@@ -574,7 +603,6 @@ final class FollowUpsViewModel {
             guard present.contains(id) else { return false }
             return loadedItems.first { $0.id == id }?.done != done
         }
-        guard generation == loadGeneration else { return }
         // A deleted row is held back until it is gone from BOTH lists: without the second half,
         // deleting from the filed-away summary un-hid the row on the very next reload and it
         // flickered back for as long as the write took.
@@ -620,6 +648,11 @@ final class FollowUpsViewModel {
     }
 
     var filedAwayCount: Int { visibleFiledAway.count }
+
+    /// Whether the proposals on this screen were found by the on-device model. It changes what
+    /// an empty list MEANS, so the screen says so rather than presenting two very different
+    /// readers as one.
+    var proposalsAreOnDevice: Bool { source.proposalsAreOnDevice }
 
     var filedAwayPreview: [FollowUpItem] {
         Array(visibleFiledAway.prefix(Self.filedAwayPreviewLimit))
@@ -700,9 +733,15 @@ final class FollowUpsViewModel {
             // Both of these used to end by offering to let you write your own. There is no
             // longer anywhere to do that, and an empty state that suggests a control the screen
             // does not have is worse than a shorter sentence.
-            return source.automaticProposalsEnabled
-                ? Copy.FollowUps.emptyOpenBodySuggested
-                : Copy.FollowUps.emptyOpenBodySuggestedNoAi
+            guard source.automaticProposalsEnabled else {
+                return Copy.FollowUps.emptyOpenBodySuggestedNoAi
+            }
+            // On-device extraction is deliberately cautious — it drops anything it cannot
+            // verify — so an empty list means something different here than it does on the
+            // cloud path, and the empty state is the only place that difference can be said.
+            return source.proposalsAreOnDevice
+                ? Copy.LocalFollowUps.emptyOpenBody
+                : Copy.FollowUps.emptyOpenBodySuggested
         case .completed: return Copy.FollowUps.emptyCompletedBody
         case .archived: return Copy.FollowUps.emptyArchivedBody
         }

@@ -50,6 +50,7 @@ final class LiveWatchPairingSource: WatchPairingSource {
         intentBeforeAttempt = nil
         guard previous != .active else { return }
         composition.settings.captureIntent = previous
+        CaptureController.reloadWidgetSurfaces()
         await composition.runtime.setCaptureIntent(previous)
     }
 
@@ -61,6 +62,10 @@ final class LiveWatchPairingSource: WatchPairingSource {
         // flips the moment the user taps), then the runtime call that arms the watch prompt.
         intentBeforeAttempt = composition.settings.captureIntent
         composition.settings.captureIntent = .active
+        // "Every surface" includes the two outside this process. Onboarding is the FIRST time
+        // capture is ever switched on, so a widget added during setup would otherwise open on
+        // "Off" over a watch that had already started recording.
+        CaptureController.reloadWidgetSurfaces()
         await runtime.startCapture()
 
         // …and then the part that actually reaches the watch. `startCapture` starts the SESSION,

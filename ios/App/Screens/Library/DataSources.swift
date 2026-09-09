@@ -580,6 +580,11 @@ protocol FollowUpsDataSource: AnyObject {
     /// True when the app is set up to propose follow-ups at all. The empty state says which
     /// kind of empty it is looking at rather than implying nothing was worth remembering.
     var automaticProposalsEnabled: Bool { get }
+
+    /// True when those proposals come from the on-device reader rather than the cloud one.
+    /// The on-device path finds about half as much and is right about roughly three quarters
+    /// of what it shows, so the screen has to say so — see `Copy.LocalFollowUps`.
+    var proposalsAreOnDevice: Bool { get }
 }
 
 // MARK: - The holder
@@ -696,7 +701,9 @@ enum TimeFmt {
     /// Library row meta: "7:02 PM · 1 hr 40 min · mostly quiet" / "12:04 PM · 48 min so far".
     static func rowMeta(_ row: LibraryRow) -> String {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
-        var meta = "\(time(start)) · \(Formatting.duration(row.durationMs))"
+        var meta =
+            "\(time(start)) · "
+            + ConversationDuration.label(durationMs: row.durationMs, isLive: row.isLive)
         if row.isLive { meta += " so far" }
         if row.mostlyQuiet { meta += " · \(Copy.Library.mostlyQuiet)" }
         // An untitled row is either still being written or genuinely bare; say which.
@@ -709,6 +716,7 @@ enum TimeFmt {
     /// Conversation header meta: "Yesterday · 9:35 – 9:53 PM · 18 min".
     static func conversationMeta(start: Date, end: Date) -> String {
         let durationMs = Int64(end.timeIntervalSince(start) * 1000)
-        return "\(dayLabel(for: start)) · \(timeRange(start, end)) · \(Formatting.duration(durationMs))"
+        return "\(dayLabel(for: start)) · \(timeRange(start, end)) · "
+            + ConversationDuration.label(durationMs: durationMs)
     }
 }

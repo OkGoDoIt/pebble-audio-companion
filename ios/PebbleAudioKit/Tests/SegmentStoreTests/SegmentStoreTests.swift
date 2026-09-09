@@ -691,9 +691,17 @@ import WireProtocol
         let successor = try #require(await store.readMeta(successorId))
         #expect(
             successor.dedupeFloorSequence == 5, "successor must inherit the stream high-water mark")
+        // `startTimeMs` is the STREAM anchor (wall clock of sample index 0) and must survive
+        // rotation verbatim: it is one half of a pair with `firstSampleIndex`, and overwriting it
+        // with the rotation clock while the successor's samples keep counting from stream birth is
+        // what used to place segments up to 24 h in the future. The successor's OWN start is
+        // `startWallMs`, and that is what must land at the rotation.
         #expect(
-            successor.startTimeMs == UInt64(rotationClock),
-            "mid-stream segment anchors at receive time")
+            successor.startTimeMs == streamStart().startTimeMs,
+            "the stream anchor survives rotation unchanged")
+        #expect(
+            successor.startWallMs == rotationClock,
+            "the successor's own start is where it was minted")
 
         // A rewind re-sends the predecessor's tail: it must not duplicate into the empty
         // successor, while genuinely new frames append normally.
@@ -723,7 +731,77 @@ import WireProtocol
             provenance: nil)
         let newId = try #require(await store.openSegmentId)
         #expect(newId != firstId)
-        #expect(try #require(await store.readMeta(newId)).startTimeMs == UInt64(clock.now))
+        let resumed = try #require(await store.readMeta(newId))
+        #expect(
+            resumed.startTimeMs == streamStart().startTimeMs,
+            "the stream anchor is kept verbatim, so sample index -> wall clock stays valid")
+        #expect(resumed.startWallMs == clock.now, "the segment itself is filed at receipt")
+    }
+
+    @Test func resumeMintedSegmentIsNotPlacedInTheFutureByItsSampleIndex() async throws {
+        // The regression this guards is the largest single source of wrong times in the field:
+        // storing `startTimeMs = receivedAtMs` for a resume/rotation segment while its frames kept
+        // stream-birth sample indexes added the whole elapsed stream twice, placing 91 of Roger's
+        // 767 segments more than a minute after their own arrival (413 h of phantom shift, worst
+        // case +24.4 h). Anchoring must never put a segment ahead of when the phone received it.
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let birth: UInt64 = 1_781_000_000_000
+        let fourHours: Int64 = 4 * 60 * 60_000
+        clock.now = Int64(birth) + fourHours
+        try await store.openSegment(
+            start: streamStart(flags: ProtocolConstants.streamStartFlagResume, startTimeMs: birth),
+            receivedAtMs: clock.now,
+            provenance: nil)
+        let id = try #require(await store.openSegmentId)
+        // Four hours of stream: 16 kHz x 4 h = 230.4 M samples, i.e. sequence 720_000.
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(720_000, 2))
+        try await store.closeSegment(reason: .interrupted)
+        let meta = try #require(await store.readMeta(id))
+        #expect(meta.firstSampleIndex == 720_000 * 320, "frames keep their stream-relative index")
+        #expect(meta.startWallMs <= meta.receivedAtMs, "audio cannot be recorded after receipt")
+        #expect(
+            abs(meta.startWallMs - meta.receivedAtMs) < 1_000,
+            "a live resume segment starts at receipt, not four hours later")
+    }
+
+    @Test func decodingRepairsLegacyResumeAnchoredSidecar() async throws {
+        // Sidecars already on disk from the broken store: `startTimeMs == receivedAtMs` with a
+        // stream-relative `firstSampleIndex`. Decoding restores the pair rather than rewriting the
+        // user's files, so the whole existing library is correct the next time it is read.
+        let receivedAt: Int64 = 1_781_004_000_000
+        let sampleIndex: UInt64 = 720_000 * 320  // four hours at 16 kHz
+        let broken = """
+            {"segmentId":"seg-x","streamId":1,"protocolVersion":1,"codecIdRaw":1,"channels":1,
+             "frameSamples":320,"sampleRateHz":16000,"bitRateBps":9800,"frameDurationMs":20,
+             "startTimeMs":\(receivedAt),"startMonotonicMs":0,"receivedAtMs":\(receivedAt),
+             "firstSampleIndex":\(sampleIndex)}
+            """
+        let meta = try JSONDecoder().decode(SegmentMeta.self, from: Data(broken.utf8))
+        #expect(meta.startTimeMs == UInt64(receivedAt - 4 * 60 * 60_000))
+        #expect(meta.startWallMs == receivedAt, "repaired pair anchors the segment at receipt")
+
+        // A healthy sidecar must be left exactly alone: the birth clock already sits one sample
+        // offset before receipt, so the two never coincide unless the offset is zero.
+        let healthy = """
+            {"segmentId":"seg-y","streamId":1,"protocolVersion":1,"codecIdRaw":1,"channels":1,
+             "frameSamples":320,"sampleRateHz":16000,"bitRateBps":9800,"frameDurationMs":20,
+             "startTimeMs":\(receivedAt - 4 * 60 * 60_000),"startMonotonicMs":0,
+             "receivedAtMs":\(receivedAt),"firstSampleIndex":\(sampleIndex)}
+            """
+        let ok = try JSONDecoder().decode(SegmentMeta.self, from: Data(healthy.utf8))
+        #expect(ok.startTimeMs == UInt64(receivedAt - 4 * 60 * 60_000))
+
+        // A genuine stream-birth segment (firstSampleIndex 0) legitimately has
+        // startTimeMs == receivedAtMs and must not be moved.
+        let birth = """
+            {"segmentId":"seg-z","streamId":1,"protocolVersion":1,"codecIdRaw":1,"channels":1,
+             "frameSamples":320,"sampleRateHz":16000,"bitRateBps":9800,"frameDurationMs":20,
+             "startTimeMs":\(receivedAt),"startMonotonicMs":0,"receivedAtMs":\(receivedAt),
+             "firstSampleIndex":0}
+            """
+        let fresh = try JSONDecoder().decode(SegmentMeta.self, from: Data(birth.utf8))
+        #expect(fresh.startTimeMs == UInt64(receivedAt))
     }
 
     @Test func rewindRefillFillsRecordedGapAndShrinksIt() async throws {

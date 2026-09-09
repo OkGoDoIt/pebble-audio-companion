@@ -119,12 +119,12 @@ struct LiveConversationScreen: View {
         }
     }
 
-    // MARK: Header ("Recording now" · started line · Live badge · summary so far)
+    // MARK: Header ("Recording now" · started line · Live badge · summary)
     //
     // Same shape as the finished Conversation's header — title, meta line, summary — because
-    // it is the same conversation. The one addition is the caption under the summary: the
-    // enrichment worker runs a PROVISIONAL pass while a conversation is open and rewrites it as
-    // the text grows, so a summary presented here as final would be wrong within the minute.
+    // it is the same conversation. The summary is provisional (the enrichment worker rewrites
+    // it as the text grows) and used to carry a caption saying so; the headline and the Live
+    // badge above it already do.
 
     /// "Recording now" only while that is true. When the recording ends somewhere else — the
     /// watch out of range, capture turned off from Today, Settings, Control Center or a
@@ -172,10 +172,6 @@ struct LiveConversationScreen: View {
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 3)
-                Text(Copy.Live.summarySoFar)
-                    .font(AppFont.micro)
-                    .foregroundStyle(Tokens.faint)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -234,7 +230,7 @@ struct LiveConversationScreen: View {
         }
     }
 
-    // MARK: Bottom bar ([Ask][Notes][Follow-ups] · the AI horizon line · [Pause][Stop])
+    // MARK: Bottom bar ([Stop][Ask][Notes][Follow-ups])
     //
     // The actions are in the same place, in the same order, with the same labels as the
     // finished Conversation's bar — a person who knows that screen finds them here without

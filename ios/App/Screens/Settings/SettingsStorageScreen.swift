@@ -24,6 +24,13 @@ struct SettingsStorageScreen: View {
     /// the Transcription & AI screen is reflected here the moment this screen redraws.
     private var stance: Copy.Privacy.Stance { settings.privacyStance }
 
+    /// What the pipeline is doing right now, as against what the configuration allows: the
+    /// present-tense half of the stance. Empty whenever the chosen path is working, which is the
+    /// normal case — see `Copy+ProcessingFallback.swift` for why this line lives here.
+    private var fallbackNotices: [Copy.Privacy.FallbackNotice] {
+        Copy.Privacy.FallbackNotice.current(settings, SettingsDataSources.current.processing)
+    }
+
     var body: some View {
         @Bindable var settings = settings
         SettingsScroll {
@@ -170,6 +177,18 @@ struct SettingsStorageScreen: View {
                     Text(qualifier)
                         .font(AppFont.footnote)
                         .foregroundStyle(Tokens.meta)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // The present tense, directly under the conditional it completes. The qualifier
+                // above says a "first" mode CAN use the other path; this says it IS, and why.
+                // Absent whenever the chosen path is working, so there is nothing standing here
+                // to be ignored — and `label`, not `meta`, because unlike the qualifier this is
+                // a statement about right now that someone might want to act on.
+                ForEach(fallbackNotices) { notice in
+                    Text(notice.text)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.label)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -16,26 +16,23 @@ extension Copy.Settings.Watch {
     /// the audio-companion service has no buzz/alert opcode at all (there is nothing in
     /// `PROTOCOL.md` §4.1 to send). So the row is named for what it does.
     ///
-    /// The status card on Today still says "Find Watch" for the same action — that label is the
-    /// plan's approved copy for the failure families (6.7), where the card's detail line has
-    /// already explained the situation. Here there is no such line, which is exactly why this
-    /// row needs its own.
+    /// The status card on Today used to keep the old "Find Watch" label for the same action, on
+    /// the grounds that its detail line had already explained the situation. One action with two
+    /// names is still two names, so the card now says "Reconnect" too (`Copy.Status.findWatch`).
+    /// This row keeps its own subline because, unlike the card, it has no detail line to lean on.
     static let reconnect = "Reconnect"
     static let reconnectSub =
-        "Rebuilds the Bluetooth link when your watch is nearby but nothing is arriving. "
-        + "It does not ring or buzz the watch."
+        "Rebuilds the Bluetooth link when nothing is arriving. It does not ring the watch."
     /// Result line after a successful rebuild (B10: an action never ends in silence).
     static let reconnected = "Connected"
 
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: Info rows
     // ─────────────────────────────────────────────────────────────────────────
-
-    /// Sits under the info card. The watch's *own* reported state is a different fact from the
-    /// phone's capture intent shown on the device card above, and when the two disagree that
-    /// difference is the whole story — so the screen says which is which.
-    static let reportsFooter =
-        "What the watch itself reports, which can differ from the switch on this phone."
+    //
+    // `reportsFooter` ("What the watch itself reports, which can differ from the switch on this
+    // phone.") sat under the info card. The row inside it is already labelled "Watch reports",
+    // which is the same sentence in two words.
 
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: Forget confirmation

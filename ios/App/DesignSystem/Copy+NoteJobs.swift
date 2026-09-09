@@ -50,9 +50,10 @@ extension Copy {
         /// on the line underneath.
         static func didNotFinish(_ template: String) -> String { "\(template) didn't finish" }
 
-        /// Sub-line while a job runs and we do not know the conversation's title. This is the
-        /// sentence the whole change exists to make true, so it is worth saying once.
-        static let keepsGoing = "This keeps going while you use the app."
+        // `keepsGoing` ("This keeps going while you use the app.") stood in for the sub-line
+        // when we did not know the conversation's title. A dock that stays put while the user
+        // walks around the app demonstrates that better than a sentence claiming it, so the
+        // sub-line is simply omitted in that case.
 
         /// "+2 more" — how many other notes are queued behind the one on show. The dock shows
         /// one at a time on purpose: they surface in turn as each is dealt with.
@@ -77,7 +78,7 @@ extension Copy {
 
         // ── Accessibility ────────────────────────────────────────────────────
         static func writingLabel(_ template: String) -> String {
-            "Writing \(template). This keeps going while you use the app."
+            "Writing \(template)."
         }
         static func readyLabel(_ template: String) -> String {
             "\(template) ready. Double tap View to open it."

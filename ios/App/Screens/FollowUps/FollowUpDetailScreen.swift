@@ -64,15 +64,6 @@ struct FollowUpDetailScreen: View {
                 model.setDue(picked)
             }
         }
-        .confirmationDialog(
-            Copy.FollowUps.deleteConfirm, isPresented: $confirmDelete, titleVisibility: .visible
-        ) {
-            Button(Copy.FollowUps.delete, role: .destructive) {
-                Haptics.destructiveConfirmed()
-                model.delete()
-                dismiss()
-            }
-        }
         // Keyed to `id`: a second `companion://followup/<other>` replaces the path element and
         // SwiftUI reuses this view, so a bare `.task` would leave the model showing — and every
         // control writing to — the previous follow-up.
@@ -259,6 +250,20 @@ struct FollowUpDetailScreen: View {
             ListCard {
                 DestructiveRow(title: "\(Copy.FollowUps.delete)…") { confirmDelete = true }
             }
+            // Anchored to the card that raises it. Attached to the screen root the source rect
+            // is the whole view, and iOS 26 puts the panel against the top of it — the length of
+            // the screen away from the row the finger is still on. Same fix as
+            // `SettingsWatchScreen` and `SettingsStorageScreen`.
+            .confirmationDialog(
+                Copy.FollowUps.deleteConfirm, isPresented: $confirmDelete,
+                titleVisibility: .visible
+            ) {
+                Button(Copy.FollowUps.delete, role: .destructive) {
+                    Haptics.destructiveConfirmed()
+                    model.delete()
+                    dismiss()
+                }
+            }
         }
     }
 
@@ -318,7 +323,7 @@ private struct AnyButtonStyle: ButtonStyle {
 @MainActor
 @Observable
 final class FollowUpDetailViewModel {
-    private let store: any FollowUpsDataSource
+    private let injectedStore: (any FollowUpsDataSource)?
     private var id: String = ""
 
     private(set) var item: FollowUpItem?
@@ -328,8 +333,13 @@ final class FollowUpDetailViewModel {
     private(set) var loaded = false
     private(set) var now = Date()
 
+    /// Resolved at point of use — see the note on `FollowUpsViewModel.source`.
+    private var store: any FollowUpsDataSource {
+        injectedStore ?? AskLibraryDataSources.current.followUps
+    }
+
     init(source: (any FollowUpsDataSource)? = nil) {
-        store = source ?? AskLibraryDataSources.current.followUps
+        self.injectedStore = source
     }
 
     func start(id: String) async {

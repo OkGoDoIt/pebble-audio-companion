@@ -425,7 +425,7 @@ public func segmentsInAskScope(
     else { return metas }  // .everything
     return metas.filter { meta in
         let key = LogicalDay.dateKey(
-            forMs: Int64(meta.startTimeMs),
+            forMs: meta.startWallMs,
             timeZoneID: meta.recordedTimeZone ?? fallbackTimeZoneID)
         return range.contains(key)
     }

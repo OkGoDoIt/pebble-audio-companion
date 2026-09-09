@@ -94,14 +94,22 @@ enum TranscriptItems {
             }
         }
 
-        let timeline = transcriptTimelineItems(meta: meta, segments: segments, words: words)
+        // Looped transcriber output is taken out of the rows before anything else is derived
+        // from them (see `SearchKit/TranscriptLoopSuppression.swift`). Both streams have to be
+        // filtered together — the aligner below walks the word stream POSITIONALLY against the
+        // rendered text, so dropping turns without dropping their words slides every later
+        // highlight by the removed characters.
+        let cleaned = filteringLoopedArtefacts(segments: segments, words: words)
+        let timeline = transcriptTimelineItems(
+            meta: meta, segments: cleaned.segments, words: cleaned.words,
+            suppressedLoops: cleaned.loops)
         // Word timings are aligned to the rendered turns ONCE for the whole member, because the
         // only reliable correspondence between them is positional: both derive from the same
         // provider token stream, so the Nth letter of the transcript is the Nth letter of the
         // words. Aligning turn-by-turn on time windows instead would drift wherever
         // `splitSpeechBlock` interpolated a chunk boundary.
         var aligner = TranscriptWordAligner(
-            words: words, speechTexts: timeline.compactMap { $0.asSpeech?.text })
+            words: cleaned.words, speechTexts: timeline.compactMap { $0.asSpeech?.text })
 
         for (offset, item) in timeline.enumerated() {
             let itemId = "\(segmentId)-\(offset)"

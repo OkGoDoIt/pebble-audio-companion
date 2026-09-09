@@ -98,21 +98,24 @@ extension Copy.Privacy {
             headline = "Only text goes to \(ai)"
             summary =
                 "Recordings are transcribed on this iPhone, so the audio itself never leaves it. "
-                + "Transcript text, and anything you have written in About You, is sent to \(ai) "
+                + "Transcript text, and everything in About You — including names imported from "
+                + "Contacts and Calendar — is sent to \(ai) "
                 + "to write summaries, notes and answers."
 
         case (let stt?, let ai?) where stt == ai:
             headline = "Audio and text go to \(stt)"
             summary =
                 "Recordings are sent to \(stt) to be transcribed. The transcript text, and "
-                + "anything you have written in About You, goes back to \(stt) to write "
+                + "everything in About You — including names imported from Contacts and Calendar — "
+                + "goes back to \(stt) to write "
                 + "summaries, notes and answers."
 
         case (let stt?, let ai?):
             headline = "Audio goes to \(stt), text to \(ai)"
             summary =
                 "Recordings are sent to \(stt) to be transcribed. The transcript text, and "
-                + "anything you have written in About You, is then sent to \(ai) to write "
+                + "everything in About You — including names imported from Contacts and Calendar — "
+                + "is then sent to \(ai) to write "
                 + "summaries, notes and answers."
         }
 
@@ -175,9 +178,12 @@ extension Copy.Privacy {
         case .remoteOnly:
             return nil
         case .localFirst:
+            // The "always the case for finding follow-ups" tail was true when the on-device
+            // provider refused every structured request. It now proposes follow-ups locally on a
+            // device with Apple Intelligence, so the sentence stops there — a privacy claim that
+            // over-states what leaves is still a wrong claim, even in the safe direction.
             return "AI is set to Local first, so most of it runs on this iPhone. Text still goes "
-                + "to \(destination) when the on-device model cannot do a job, which is always "
-                + "the case for finding follow-ups."
+                + "to \(destination) when the on-device model cannot do a job."
         case .remoteFirst:
             return "AI is set to Remote first, so \(destination) does the work; the on-device "
                 + "model is the fallback when that fails."

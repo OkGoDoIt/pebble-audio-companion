@@ -1264,6 +1264,22 @@ public actor AudioReceiverSession {
             try await handleStreamData(data)
         case let gap as StreamGap:
             guard let ctx = stream, ctx.streamId == gap.streamId else {
+                // An orphaned GAP is worse than an orphaned frame, and it is the likeliest
+                // explanation for the library's unattributed holes. The watch TAKES a gap record
+                // out of its pending table to send it (`prv_send_one_pending_gap_locked`) and only
+                // puts it back on BLE backpressure — so a notice we drop here is gone from both
+                // sides. The hole itself survives, because the next STREAM_DATA still shows the
+                // sequence jump and `handleStreamData` synthesizes a `sequence_skip`; what is lost
+                // is the REASON. That matches the shape of the loss in Roger's export exactly:
+                // every one of the 5,194 watch-reported gaps carries a reason and not one of the
+                // 2,690 receiver-synthesized ones does, and the 38 largest unattributed holes hold
+                // 62.6 h between them. Name it in the recorder so the next export can confirm it.
+                log(
+                    "dropped a watch gap notice for stream \(gap.streamId) "
+                        + "(\(gap.missingFrameCount) frames, reason \(gap.reasonRaw)): "
+                        + (stream == nil
+                            ? "no open stream" : "our stream is \(stream?.streamId ?? 0)")
+                        + " — this loss will be recorded with no reason")
                 noteOrphanData(1)
                 return
             }
@@ -1523,6 +1539,19 @@ public actor AudioReceiverSession {
         // treats anything within `orphanDataMaxAgeMs` (40 s) as current, so a dead connection's
         // orphans stayed "recent" well into the NEW one and could drive
         // `checkForAStreamWeShouldHave` into another resync — a reconnect loop feeding itself.
+        // Say it out loud before zeroing it. `orphanedFrameCount` is the one instrument that tells
+        // airtime loss apart from a spool that never freed, and it is per-CONNECTION: this reset
+        // is correct for the live evidence latch, but it also meant the number never survived long
+        // enough to be seen. Roger's flight recorder shows 27 process starts and 77 disconnects in
+        // a single day, so Diagnostics — which only renders the row while the count is above zero
+        // — was reading a counter that had just been wiped, and reported nothing for outages that
+        // cost hours. Logging it at teardown puts the evidence in the recorder the support export
+        // already carries, at one line per disconnect.
+        if orphanedFrameCount.value > 0 {
+            log(
+                "link down: \(orphanedFrameCount.value) frames arrived with no stream to attach "
+                    + "them to — the watch was sending audio this app could not store")
+        }
         lastOrphanDataAtMs = 0
         orphanedFrameCount.value = 0
     }

@@ -20,22 +20,21 @@ extension Copy {
         /// the mechanism — "grouping", "boundaries" and "segments" are all words for how this
         /// works, not for what the person is doing.
         static let menuItem = "Split or Join…"
+        /// The one thing this sheet has to promise, since "split" on a recording app reads like
+        /// destructive editing.
         static let footer =
-            "This only changes how the recording is grouped in your list. No audio, transcript "
-            + "or note is changed or removed."
+            "This only changes how the recording is grouped. Nothing is deleted."
 
         static let joinHeader = "Previous conversation"
         static let join = "Join with the previous conversation"
         static let joined = "Joined with the previous conversation"
-        static let joinFooter =
-            "Use this when one conversation was split in two — after you stopped and started "
-            + "recording again, for instance."
+        // `joinFooter` said when to use this ("after you stopped and started recording again,
+        // for instance") under a row that already reads "Join with the previous conversation".
         static let undoJoin = "Separate them again"
 
         static let splitHeader = "Start a new conversation"
-        static let splitFooter =
-            "A new conversation can start wherever the recording picked back up. Tap a time to "
-            + "split there, and tap it again to undo."
+        /// The instruction only. Which times are offered is what the list of times is for.
+        static let splitFooter = "Tap a time to split there, and tap it again to undo."
         static let noSplitPoints =
             "This is one continuous recording, so there is nowhere inside it to split."
 

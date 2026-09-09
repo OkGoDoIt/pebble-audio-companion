@@ -86,10 +86,14 @@ struct ConversationBoundaryEditor: View {
                     action: { onToggleJoinWithPrevious(!isJoinedWithPrevious) }
                 )
             }
-            Text(isJoinedWithPrevious ? Copy.Boundaries.undoJoin : Copy.Boundaries.joinFooter)
-                .font(AppFont.footnote)
-                .foregroundStyle(Tokens.meta)
-                .fixedSize(horizontal: false, vertical: true)
+            // Only once the join stands: "untick to separate them again" is worth a line,
+            // "here is when you might want to join" is not — the row says that itself.
+            if isJoinedWithPrevious {
+                Text(Copy.Boundaries.undoJoin)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

@@ -155,13 +155,14 @@ struct NoteJobDock: View {
         }
     }
 
-    /// Where it came from, or — while it runs and we were never told the conversation's title —
-    /// the sentence the user's report was actually about: this does not hold you up.
+    /// Where it came from. Nothing when we were never told the conversation's title: the dock
+    /// staying put while the user walks around the app is what says "this does not hold you
+    /// up", and it says it better than a line claiming so.
     private func subline(_ job: NoteJobCenter.Job) -> String {
         var parts: [String] = []
         switch job.state {
         case .running:
-            parts.append(job.conversationTitle ?? Copy.NoteJobs.keepsGoing)
+            if let title = job.conversationTitle { parts.append(title) }
         case .finished:
             if let title = job.conversationTitle { parts.append(title) }
         case .failed(let reason):
