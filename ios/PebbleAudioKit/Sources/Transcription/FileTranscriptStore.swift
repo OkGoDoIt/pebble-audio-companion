@@ -116,6 +116,18 @@ public final class FileTranscriptStore: Sendable {
         return try? JSONDecoder().decode(SegmentTranscript.self, from: data)
     }
 
+    /// A cheap identity for the transcript file: its size and modification time, or "absent".
+    /// One `stat`, no read. Anything derived from the decoded transcript can be memoised
+    /// against this and recomputed only when the file actually changes.
+    public func version(_ segmentId: String) -> String {
+        let url = transcriptURL(segmentId)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        else { return "absent" }
+        let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(size)@\(modified)"
+    }
+
     /// Just the turn timings, for callers that need to know WHERE speech was and not what was
     /// said — the conversation-boundary layer regroups over every segment in the library, and
     /// `load` would decode the per-word timing array of each one to throw it away. On a full

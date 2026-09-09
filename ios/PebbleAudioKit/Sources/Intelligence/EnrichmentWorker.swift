@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import SegmentStore
 import Transcription
@@ -44,7 +45,8 @@ public struct EnrichmentConversation: Sendable {
 /// back to transcript snippets.
 public final class EnrichmentWorker: @unchecked Sendable {
     /// Bounds the authoritative final pass so a persistently failing provider cannot spin.
-    public static let maxAttempts = 3
+    /// Shared with the library's "waiting" count, which stops counting at the same number.
+    public static let maxAttempts = AnnotationPolicy.maxFinalAttempts
 
     /// Conversations actually SENT to the provider in one `enrich` call.
     ///
@@ -68,14 +70,43 @@ public final class EnrichmentWorker: @unchecked Sendable {
     private let annotations: AnnotationStore
     private let router: AiModeRouter?
     private let nowMs: @Sendable () -> Int64
+    private let transcriptVersionOf: @Sendable (String) -> String?
 
+    /// Finished conversations whose members' transcripts held no text, by membership key. A
+    /// transcript is loaded and decoded — every word of it — to learn that, and without this
+    /// memo every pass re-learned it for every such conversation in the library. Keyed so a
+    /// change to any member (a new segment, a re-transcription, a rewritten file) drops the
+    /// entry and the next pass looks again.
+    private let emptyFinals = TranscriptMemo<String>()
+
+    /// - Parameter transcriptVersionOf: something that changes whenever a segment's transcript
+    ///   file changes (size and modification time will do). Nil means "unknown", and an unknown
+    ///   version disables the memo for that conversation — so a test that swaps `transcriptOf`
+    ///   under the same segment id still sees the new text.
     public init(
         annotations: AnnotationStore, router: AiModeRouter?,
-        nowMs: @escaping @Sendable () -> Int64
+        nowMs: @escaping @Sendable () -> Int64,
+        transcriptVersionOf: @escaping @Sendable (String) -> String? = { _ in nil }
     ) {
         self.annotations = annotations
         self.router = router
         self.nowMs = nowMs
+        self.transcriptVersionOf = transcriptVersionOf
+    }
+
+    /// The identity of a conversation's transcribed inputs: members, their transcription state
+    /// and their transcript file versions. Nil when any member's version is unknown.
+    static func membershipKey(
+        _ conversation: EnrichmentConversation,
+        transcriptVersionOf: (String) -> String?
+    ) -> String? {
+        var parts: [String] = []
+        parts.reserveCapacity(conversation.members.count)
+        for member in conversation.members {
+            guard let version = transcriptVersionOf(member.segmentId) else { return nil }
+            parts.append("\(member.segmentId)|\(member.transcriptionState.rawValue)|\(version)")
+        }
+        return parts.joined(separator: ";")
     }
 
     /// What, if anything, the worker should do for one conversation this pass.
@@ -153,16 +184,31 @@ public final class EnrichmentWorker: @unchecked Sendable {
         if !conversation.isOpen, !conversation.members.isEmpty,
             conversation.members.allSatisfy({ !$0.isOpen && $0.isFullyTranscribed })
         {
+            // Decide from the annotation record BEFORE touching a transcript. These checks used
+            // to come after the excerpts were built, so every finished, already-annotated
+            // conversation in the library had all of its transcripts read and JSON-decoded on
+            // every pipeline pass — one pass every few seconds while a segment is open — just to
+            // return `.none`. Profiled on 2026-09-09 at a quarter of a CPU core, continuously:
+            // the whole of the phone's "CPU budget exceeded" afternoon.
+            //
+            // Older final annotations were title/summary only. Treat tagless finals as due
+            // for one structured final pass so library tags backfill automatically.
+            if let existing, existing.isFinal, !existing.tags.isEmpty { return .none }
+            if (existing?.finalAttempts ?? 0) >= Self.maxAttempts { return .none }
+            let key = Self.membershipKey(conversation, transcriptVersionOf: transcriptVersionOf)
+            if let key, emptyFinals.contains(conversation.conversationId, key: key) {
+                return .none
+            }
             let excerpts = memberExcerpts(conversation) { member in
                 guard member.transcriptionState == .complete else { return nil }
                 return transcriptOf(member.segmentId)?.text
             }
             let combinedLength = combinedLength(excerpts)
-            if combinedLength == 0 { return .none }
-            // Older final annotations were title/summary only. Treat tagless finals as due
-            // for one structured final pass so library tags backfill automatically.
-            if let existing, existing.isFinal, !existing.tags.isEmpty { return .none }
-            if (existing?.finalAttempts ?? 0) >= Self.maxAttempts { return .none }
+            if combinedLength == 0 {
+                if let key { emptyFinals.remember(conversation.conversationId, key: key) }
+                return .none
+            }
+            emptyFinals.forget(conversation.conversationId)
             return .generate(excerpts: excerpts, combinedLength: combinedLength, isFinal: true)
         }
 
@@ -306,5 +352,28 @@ public final class EnrichmentWorker: @unchecked Sendable {
             return description
         }
         return String(describing: type(of: error))
+    }
+}
+
+/// A small lock-guarded `conversation id -> key` memo shared by the workers on the pipeline
+/// loop, so a decision that needed a transcript decoded is not re-derived every pass.
+final class TranscriptMemo<Key: Equatable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String: Key] = [:]
+
+    func contains(_ id: String, key: Key) -> Bool {
+        lock.withLock { entries[id] == key }
+    }
+
+    func value(_ id: String) -> Key? {
+        lock.withLock { entries[id] }
+    }
+
+    func remember(_ id: String, key: Key) {
+        lock.withLock { entries[id] = key }
+    }
+
+    func forget(_ id: String) {
+        lock.withLock { _ = entries.removeValue(forKey: id) }
     }
 }

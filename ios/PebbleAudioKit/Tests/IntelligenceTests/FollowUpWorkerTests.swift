@@ -56,6 +56,13 @@ private struct ScriptedFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private final class LoadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    var value: Int { lock.withLock { _value } }
+    func increment() { lock.withLock { _value += 1 } }
+}
+
 @Suite struct FollowUpWorkerTests {
     private let clock = TestWallClock(ms: 1_788_193_751_778)
     private let db: AppDatabase
@@ -139,6 +146,48 @@ private struct ScriptedFailure: LocalizedError {
         """
 
     // MARK: Cases
+
+    // A settled conversation whose members and transcript files have not changed is skipped
+    // without opening a transcript. Every pass used to decode all of them to recompute a
+    // length it already had (see `EnrichmentWorker` for the cost).
+    @Test func aSettledConversationWithUnchangedInputsIsNotReRead() async throws {
+        let provider = ScriptedAiProvider(response: Self.twoItems)
+        let clock = self.clock
+        let worker = FollowUpWorker(
+            candidates: candidates,
+            state: state,
+            router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly }),
+            nowMs: { clock.now },
+            timeZone: { TimeZone(identifier: "America/New_York")! },
+            transcriptVersionOf: { _ in "v1" }
+        )
+        let convs = [conversation("conv-1", members: [meta("seg-1")])]
+        let loads = LoadCounter()
+        let transcriptOf: (String) -> SegmentTranscript? = {
+            loads.increment()
+            return self.transcript($0)
+        }
+        _ = try await worker.extract(convs, transcriptOf: transcriptOf)
+        #expect(provider.runCount == 1)
+        let firstPassLoads = loads.value
+        #expect(firstPassLoads >= 1)
+
+        _ = try await worker.extract(convs, transcriptOf: transcriptOf)
+        #expect(provider.runCount == 1)
+        #expect(loads.value == firstPassLoads, "settled and unchanged: no transcript opened")
+
+        // A changed transcript file is a different question and is read again.
+        let changed = FollowUpWorker(
+            candidates: candidates,
+            state: state,
+            router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly }),
+            nowMs: { clock.now },
+            timeZone: { TimeZone(identifier: "America/New_York")! },
+            transcriptVersionOf: { _ in "v2" }
+        )
+        _ = try await changed.extract(convs, transcriptOf: transcriptOf)
+        #expect(loads.value > firstPassLoads)
+    }
 
     @Test func aFinishedConversationProducesGroundedCandidates() async throws {
         let provider = ScriptedAiProvider(response: Self.twoItems)

@@ -210,6 +210,17 @@ public final class FollowUpWorker: @unchecked Sendable {
     private let nowMs: @Sendable () -> Int64
     private let timeZone: @Sendable () -> TimeZone
     private let contextOf: @Sendable (String) async -> FollowUpConversationContext?
+    private let transcriptVersionOf: @Sendable (String) -> String?
+
+    /// The combined transcript length last computed for a conversation, by membership key.
+    /// Freshness is judged on that length, and computing it means reading and JSON-decoding
+    /// every member transcript; without the memo every pass did that for every finished
+    /// conversation in the library, settled or not (see `EnrichmentWorker`).
+    private struct Measured: Equatable {
+        let key: String
+        let combined: Int
+    }
+    private let measured = TranscriptMemo<Measured>()
 
     public init(
         candidates: FollowUpCandidateStore,
@@ -218,7 +229,8 @@ public final class FollowUpWorker: @unchecked Sendable {
         nowMs: @escaping @Sendable () -> Int64,
         timeZone: @escaping @Sendable () -> TimeZone = { .current },
         contextOf: @escaping @Sendable (String) async -> FollowUpConversationContext? =
-            { _ in nil }
+            { _ in nil },
+        transcriptVersionOf: @escaping @Sendable (String) -> String? = { _ in nil }
     ) {
         self.candidates = candidates
         self.state = state
@@ -226,6 +238,7 @@ public final class FollowUpWorker: @unchecked Sendable {
         self.nowMs = nowMs
         self.timeZone = timeZone
         self.contextOf = contextOf
+        self.transcriptVersionOf = transcriptVersionOf
     }
 
     /// Drops the extraction bookkeeping for a conversation that no longer exists, so the
@@ -253,11 +266,31 @@ public final class FollowUpWorker: @unchecked Sendable {
         for conversation in ordered {
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
+            let existing = settledStates[conversation.conversationId]
+            // Same inputs as last time, and a state that says nothing to do: answer without
+            // opening a single transcript. This is the steady state of every finished
+            // conversation in the library, on every pass.
+            let key = EnrichmentWorker.membershipKey(
+                conversation, transcriptVersionOf: transcriptVersionOf)
+            if let existing, let key,
+                let last = measured.value(conversation.conversationId), last.key == key,
+                last.combined == existing.sourceCharCount
+            {
+                if existing.settled { continue }
+                if existing.attempts >= Self.maxAttempts,
+                    now - existing.updatedAtMs < Self.retryAfterMs
+                {
+                    continue
+                }
+            }
             guard let parts = partsIfDue(conversation, transcriptOf: transcriptOf) else {
                 continue
             }
             let combined = parts.map(\.text).joined(separator: "\n\n").count
-            let existing = settledStates[conversation.conversationId]
+            if let key {
+                measured.remember(
+                    conversation.conversationId, key: Measured(key: key, combined: combined))
+            }
             // A different transcript length is a different question: start the budget over.
             let fresh = existing.map { $0.sourceCharCount != combined } ?? true
             if let existing, !fresh {

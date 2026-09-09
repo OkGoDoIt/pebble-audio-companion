@@ -48,6 +48,12 @@ public enum LibraryFilter: String, Equatable, Sendable {
     case withMissingAudio
 }
 
+/// Shared with the enrichment worker (Intelligence depends on this module) so the library's
+/// "waiting" count and the worker's give-up rule cannot drift apart.
+public enum AnnotationPolicy {
+    public static let maxFinalAttempts = 3
+}
+
 public struct ConversationListRow: Equatable, Sendable {
     public var id: String
     /// Annotation title; nil until enrichment lands (UI falls back to a time label).
@@ -118,7 +124,20 @@ public struct ConversationListRow: Equatable, Sendable {
 
     /// Enrichment has produced nothing yet AND the transcript it needs is ready — so the row
     /// is waiting on AI, not on capture.
-    public var awaitingAnnotation: Bool { !hasAnnotation && lifecycle == .complete }
+    /// Untitled AND still eligible for a title. A conversation the enrichment worker has
+    /// already given up on (`AnnotationPolicy.maxFinalAttempts` failed final passes) is not
+    /// "waiting": counting it made Diagnostics say "54 waiting" all afternoon for work that was
+    /// never going to happen.
+    public var awaitingAnnotation: Bool {
+        !hasAnnotation && lifecycle == .complete
+            && annotationFinalAttempts < AnnotationPolicy.maxFinalAttempts
+    }
+
+    /// Untitled because every final pass failed; nothing will retry it on its own.
+    public var annotationGivenUp: Bool {
+        !hasAnnotation && lifecycle == .complete
+            && annotationFinalAttempts >= AnnotationPolicy.maxFinalAttempts
+    }
 }
 
 public struct LibraryDaySection: Equatable, Sendable {

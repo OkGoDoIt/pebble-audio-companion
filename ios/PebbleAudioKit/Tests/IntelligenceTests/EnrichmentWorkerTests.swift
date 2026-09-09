@@ -57,6 +57,13 @@ private struct FakeFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    var value: Int { lock.withLock { _value } }
+    func increment() { lock.withLock { _value += 1 } }
+}
+
 @Suite struct EnrichmentWorkerTests {
     private let clock = TestWallClock(ms: 50_000)
     private let store: AnnotationStore
@@ -123,6 +130,60 @@ private struct FakeFailure: LocalizedError {
             router: provider.map { AiModeRouter(local: $0, remote: nil, mode: { .localOnly }) },
             nowMs: { clock.now }
         )
+    }
+
+    // Every pass used to read and JSON-decode the transcripts of every finished conversation in
+    // the library before noticing it was already annotated — a quarter of a CPU core,
+    // continuously, on 2026-09-09. The decision has to come from the annotation record alone.
+    @Test func finishedAnnotatedConversationsDoNotOpenTheirTranscripts() async throws {
+        let provider = FakeAiProvider()
+        let worker = worker(provider)
+        let convs = conversations([meta("seg-1")])
+        _ = try await worker.enrich(convs, transcriptOf: { transcript($0) })
+        #expect(provider.runCount == 1)
+
+        let loads = Counter()
+        _ = try await worker.enrich(
+            convs,
+            transcriptOf: {
+                loads.increment()
+                return transcript($0)
+            })
+        #expect(provider.runCount == 1)
+        #expect(loads.value == 0, "an annotated final conversation is decided without I/O")
+    }
+
+    // A finished conversation with nothing transcribable is decided by decoding its transcripts;
+    // with a transcript version to key on, that answer is remembered until a member changes.
+    @Test func emptyFinalConversationsAreRememberedByTranscriptVersion() async throws {
+        let provider = FakeAiProvider()
+        let clock = self.clock
+        let worker = EnrichmentWorker(
+            annotations: store,
+            router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly }),
+            nowMs: { clock.now },
+            transcriptVersionOf: { _ in "v1" }
+        )
+        let convs = conversations([meta("seg-1")])
+        let empty = SegmentTranscript(
+            segmentId: "seg-1", text: "   ", modeUsed: .localOnly, providerId: "local",
+            createdAtMs: 0)
+        let loads = Counter()
+        let transcriptOf: (String) -> SegmentTranscript? = { _ in
+            loads.increment()
+            return empty
+        }
+        _ = try await worker.enrich(convs, transcriptOf: transcriptOf)
+        #expect(loads.value == 1)
+        _ = try await worker.enrich(convs, transcriptOf: transcriptOf)
+        #expect(loads.value == 1, "same members, same version: the empty verdict is reused")
+        #expect(provider.runCount == 0)
+
+        // Without a version nothing is assumed, and the transcript is read again.
+        let unversioned = self.worker(provider)
+        _ = try await unversioned.enrich(convs, transcriptOf: transcriptOf)
+        _ = try await unversioned.enrich(convs, transcriptOf: transcriptOf)
+        #expect(loads.value == 3)
     }
 
     @Test func annotatesTranscribedSegments() async throws {
