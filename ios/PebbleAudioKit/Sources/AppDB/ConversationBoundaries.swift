@@ -286,11 +286,34 @@ public enum ConversationBoundaryDetector {
 
     /// Wall-clock speech runs for one member, clamped into the member's own span.
     ///
-    /// The transcript's clock counts stored audio, while the member's span is wall time, so the
-    /// two drift by however much the member lost. Clamping bounds the error at one member's
-    /// length (≤ ~20 min in practice) and, more importantly, keeps a drifted timestamp from
-    /// inventing quiet outside the segment it came from. Every threshold here is far larger
-    /// than that drift.
+    /// The transcript's clock counts STORED AUDIO — `TranscriptionProcessor.segmentPcmSource`
+    /// decodes the frame log and hands only that to the provider, so anything the log is
+    /// missing is simply absent from what the provider heard. The member's span is wall time.
+    /// The two are converted through the member's own gap records (`SegmentMediaClock`), which
+    /// is the same conversion the transcript screen and the scrubber use; adding the raw
+    /// provider offset to the member's start, as this used to, silently assumes the two clocks
+    /// are the same one.
+    ///
+    /// THIS IS THE RULE THAT NOTICES QUIET, so getting it wrong here is not a cosmetic error —
+    /// it deletes the evidence the rule exists to read. Watch-side silence suppression
+    /// (PebbleOS a47acac74) had fired zero times in 88 days and now withholds 4.1%-13.8% of
+    /// airtime; every suppressed millisecond is quiet that vanishes from the media clock.
+    /// Measured over the real library with suppression synthesised at the firmware's own rates,
+    /// reading media offsets as wall offsets loses 22% / 35% / 54% of the interior no-speech
+    /// stretches over five minutes (light / balanced / aggressive) and 20% / 70% / 80% of those
+    /// over twelve — i.e. exactly the long silences a conversation is supposed to end at.
+    ///
+    /// ONLY WHEN THE RECORDS SUPPORT IT (`SegmentMediaClock.isExact`). Where they do not — the
+    /// gap list does not account for the difference between stored audio and elapsed wall time
+    /// — the clock falls back to a proportional guess, and this is the one caller that must not
+    /// act on a guess: a split is a structural decision a person then sees. Measured over the
+    /// 2026-09-08 library, 23 of 765 segments are inexact and extreme with it (one claims
+    /// 15 h 01 m of wall time around 14 m 45 s of audio across 79 records that add up to
+    /// neither), and stretching their transcripts proportionally moved 7,285 turns by over a
+    /// minute — up to 14 h 44 m — which put three more conversations over four hours and
+    /// re-created exactly the phantom durations `displayExtent` exists to remove. Suppression
+    /// does not produce that shape: the watch writes a gap record for every run it suppresses,
+    /// so a silence-suppressed segment's records DO add up and this converts.
     static func speechSpansMs(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
         -> [(Int64, Int64)]
     {
@@ -305,9 +328,11 @@ public enum ConversationBoundaryDetector {
         guard let evidence, !evidence.speech.isEmpty else { return [] }
         let start = ConversationGrouper.segmentStartMs(meta)
         let span = max(ConversationGrouper.segmentEndMs(meta) - start, 0)
+        let clock = SegmentMediaClock(meta)
+        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
         return evidence.speech.map { run in
-            let a = min(max(run.startMs, 0), span)
-            let b = min(max(run.endMs, a), span)
+            let a = min(max(toWall(run.startMs), 0), span)
+            let b = min(max(toWall(run.endMs), a), span)
             return (start + a, start + b, run.wordCount)
         }
     }
@@ -402,27 +427,50 @@ public enum ConversationBoundaryDetector {
         // the first member that is not settled yet (we cannot claim it is empty, so it keeps
         // its whole placement). Both walks return nil only when every member is settled and
         // nobody spoke anywhere.
+        // One `spokenRuns` per member, reused by both walks and the widening below. Each call
+        // builds a `SegmentMediaClock` over the member's gap records, and silence suppression
+        // multiplies those records by an order of magnitude, so asking three times per member
+        // per regroup is real work for an answer that cannot differ.
+        let runs = members.map { spokenRuns($0, evidence[$0.segmentId]) }
         var start: Int64?
-        for meta in members {
-            guard let known = evidence[meta.segmentId], known.isSettled else {
+        for (index, meta) in members.enumerated() {
+            guard evidence[meta.segmentId]?.isSettled == true else {
                 start = ConversationGrouper.segmentStartMs(meta)
                 break
             }
-            if let firstWord = spokenRuns(meta, known).map(\.startMs).min() {
+            if let firstWord = runs[index].map(\.startMs).min() {
                 start = firstWord
                 break
             }
         }
         var end: Int64?
-        for meta in members.reversed() {
-            guard let known = evidence[meta.segmentId], known.isSettled else {
-                end = ConversationGrouper.segmentEndMs(meta)
+        for index in members.indices.reversed() {
+            guard evidence[members[index].segmentId]?.isSettled == true else {
+                end = ConversationGrouper.segmentEndMs(members[index])
                 break
             }
-            if let lastWord = spokenRuns(meta, known).map(\.endMs).max() {
+            if let lastWord = runs[index].map(\.endMs).max() {
                 end = lastWord
                 break
             }
+        }
+        // Members OVERLAP in wall time — the watch's sample counter free-runs across a rotation
+        // handover, and a spool backfill legitimately anchors earlier than the segment that
+        // received it — so "the last member that spoke" is not always the member holding the
+        // last word. The walks above take the first speaking member from each end and stop, so
+        // a word in a member they stepped over could fall outside the extent, and the extent's
+        // one hard rule is that it only ever eats SILENCE. Widening onto the real extremes
+        // costs nothing (the runs are already computed) and cannot shorten anything.
+        //
+        // This became reachable when `spokenRuns` started placing runs at their true wall
+        // position rather than at an offset from the member's start: before that every run sat
+        // in the member's first `frameCount × 20 ms`, so the walks' answer was almost always
+        // also the extreme. 67 words in the 2026-09-08 library fall outside it now.
+        if let earliest = runs.compactMap({ $0.map(\.startMs).min() }).min() {
+            start = min(start ?? earliest, earliest)
+        }
+        if let latest = runs.compactMap({ $0.map(\.endMs).max() }).max() {
+            end = max(end ?? latest, latest)
         }
         guard start != nil || end != nil else {
             // Nothing was ever said and we now know it. The honest length is the audio we hold,

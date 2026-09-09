@@ -34,6 +34,11 @@ struct MemberTranscript {
 ///   offsets into the stored audio — `.media`, the player's own clock.
 /// - The **live preview** (`LiveTranscriber`) offsets each chunk by `sampleOffsetMs`, which
 ///   counts samples since the segment's first sample — `.wall`.
+///
+/// Everything downstream of `member` runs on the WALL clock and only the wall clock. The
+/// declared timebase says what has to be converted on the way in, not what the renderer works
+/// in — see the note in `member` on why mixing the two inside `transcriptTimelineItems` is not
+/// survivable.
 enum TranscriptTimebase {
     case media
     case wall
@@ -77,21 +82,76 @@ enum TranscriptItems {
         func wallDate(_ offsetMs: Int64) -> Date {
             Date(timeIntervalSince1970: Double(wallStartMs + offsetMs) / 1000)
         }
-        /// A provider timing, as a wall offset into this member.
-        func wallOffset(_ providerMs: Int64) -> Int64 {
-            switch timebase {
-            case .wall: return min(max(providerMs, 0), clock.wallSpanMs)
-            case .media: return clock.wall(fromMedia: providerMs)
-            }
-        }
-        /// A provider timing, as a position on the CONVERSATION's scrubber.
-        func mediaOffset(_ providerMs: Int64) -> Int64? {
+        // Whether the durable path can be converted at all. When a segment's gap records do not
+        // account for the difference between its stored audio and its elapsed wall time, the
+        // clock falls back to a proportional guess, and a guess is worse than the honest default
+        // here: 23 of the 765 segments in the real library claim hours of wall time around
+        // minutes of audio (the worst, 15 h 01 m around 14 m 45 s across 79 records that add up
+        // to neither), and spreading their turns proportionally moves 7,285 of them by over a
+        // minute, the worst by 14 h 44 m — inventing a stamp for every one. Left alone, the
+        // provider's offsets at least sit where the audio does.
+        //
+        // `ConversationBoundaryDetector.spokenRuns` declines for the same reason. The two must
+        // not disagree about when a word was said: the conversation's displayed extent comes
+        // from one and the stamps inside it from the other.
+        let convertsFromMedia = timebase == .media && clock.isExact
+        let passesMediaThrough = timebase == .media && !clock.isExact
+        /// A wall offset into this member, as a position on the CONVERSATION's scrubber.
+        func mediaOffset(_ wallMs: Int64) -> Int64? {
             guard result.mediaMs > 0 else { return nil }
-            switch timebase {
-            case .wall: return mediaBeforeMemberMs + clock.media(fromWall: providerMs)
-            case .media:
-                return mediaBeforeMemberMs + min(max(providerMs, 0), clock.mediaSpanMs)
+            guard !passesMediaThrough else {
+                // Untouched on the way in, so untouched on the way out.
+                return mediaBeforeMemberMs + min(max(wallMs, 0), clock.mediaSpanMs)
             }
+            return mediaBeforeMemberMs + clock.media(fromWall: wallMs)
+        }
+        /// The stamp beside a turn. Clamped to the member's span so a live preview that has
+        /// run past the metadata cannot print a time outside the recording it belongs to.
+        func speechDate(_ wallMs: Int64) -> Date {
+            wallDate(min(max(wallMs, 0), clock.wallSpanMs))
+        }
+
+        // ONE CLOCK, DECIDED HERE, BEFORE ANYTHING IS DERIVED.
+        //
+        // `transcriptTimelineItems` interleaves the provider's speech with the segment's gap
+        // records, and those records are WALL offsets — they come from sample indices, which
+        // free-run through the audio nobody stored. Handing it media-clock speech therefore
+        // ordered two different clocks against each other: a gap row was inserted before the
+        // first block whose *media* start exceeded the gap's *wall* start, which pushes every
+        // quiet and interrupted marker later in the list by the stored/elapsed difference —
+        // measured over the real library, a median of 33 s and a p90 of 3 m 28 s TODAY, on loss
+        // gaps alone, rising to 54 s / 3 m 57 s once watch-side silence suppression ships
+        // (PebbleOS a47acac74; 4.1-13.8% of airtime withheld). It also computed the "quiet
+        // for…" rows between blocks as a media-time difference, which is zero across exactly
+        // the silence the row exists to describe.
+        //
+        // Lifting the provider's timings onto the wall clock up front is the whole fix, and it
+        // is cheap: one binary search per timing, no allocation beyond the mapped arrays. The
+        // rows' own stamps were already converted individually and were already right; this is
+        // about the order they appear in and the gaps derived BETWEEN them.
+        let wallSegments: [SearchKit.TranscriptSegment]
+        let wallWords: [SearchKit.TranscriptWord]
+        if convertsFromMedia {
+            wallSegments = segments.map {
+                var span = $0
+                span.startMs = clock.wall(fromMedia: $0.startMs)
+                span.endMs = clock.wall(fromMedia: max($0.endMs, $0.startMs))
+                return span
+            }
+            wallWords = words.map {
+                var span = $0
+                span.startMs = clock.wall(fromMedia: $0.startMs)
+                span.endMs = clock.wall(fromMedia: max($0.endMs, $0.startMs))
+                return span
+            }
+        } else {
+            // Already the right clock (the live preview), or a segment whose records cannot
+            // place it. Deliberately NOT clamped to the segment's span either way: the live
+            // preview can be a flush ahead of the metadata it is previewing, and pinning its
+            // newest rows to the last known sample would stack them on one instant. The stamp
+            // is clamped where it is rendered, exactly as it was before.
+            wallSegments = segments
+            wallWords = words
         }
 
         // Looped transcriber output is taken out of the rows before anything else is derived
@@ -99,7 +159,7 @@ enum TranscriptItems {
         // filtered together — the aligner below walks the word stream POSITIONALLY against the
         // rendered text, so dropping turns without dropping their words slides every later
         // highlight by the removed characters.
-        let cleaned = filteringLoopedArtefacts(segments: segments, words: words)
+        let cleaned = filteringLoopedArtefacts(segments: wallSegments, words: wallWords)
         let timeline = transcriptTimelineItems(
             meta: meta, segments: cleaned.segments, words: cleaned.words,
             suppressedLoops: cleaned.loops)
@@ -118,7 +178,7 @@ enum TranscriptItems {
                 // Everything that reads `result` is computed BEFORE the append: `mediaOffset`
                 // closes over `result`, and calling it inside the argument of a mutating call
                 // on `result.items` is an overlapping access to the same variable.
-                let startedAt = wallDate(wallOffset(speech.startMs))
+                let startedAt = speechDate(speech.startMs)
                 let startOffset = mediaOffset(speech.startMs)
                 let endOffset = mediaOffset(speech.endMs)
                 let wordSpans = aligner.spans(for: speech.text, media: mediaOffset)
@@ -212,135 +272,13 @@ enum TranscriptItems {
 
 /// Stored audio in a segment, in milliseconds — frames on disk, not the wall span the segment
 /// covers. `segmentDurationMs` is the latter, and the two differ by exactly the audio lost.
+///
+/// `SegmentMediaClock` and both duration primitives now live in the kit
+/// (`SegmentStore/SegmentMediaClock.swift`), because the conversation-boundary detector and
+/// Ask's citation targets need the same conversion and sit below this layer. This stays as the
+/// name the app-side call sites already use.
 func mediaDurationMs(_ meta: SegmentMeta) -> Int64 {
-    let frames = meta.frameCount * Int64(meta.frameDurationMs)
-    return frames > 0 ? frames : segmentDurationMs(meta)
-}
-
-// MARK: - Wall ↔ media
-
-/// Converts one segment's two clocks into each other using its own gap records.
-///
-/// Media time is wall time minus everything that was never stored — lost audio and VAD-skipped
-/// silence alike, since neither reaches the frame log. Both directions are therefore exact
-/// arithmetic over the gap spans, not the proportional guess this replaced: proportionally, a
-/// point 40% through a member's wall span is 40% through its stored audio, which is only true
-/// when the gaps happen to be spread evenly. On a real recording — where the quiet hours are
-/// one long gap and the talking is another — it is wrong by minutes.
-///
-/// Gap records overlap routinely (a sequence-skip inside a silence-suppressed span records
-/// both), so the spans are unioned before anything is counted; summing raw durations would
-/// double-count and push media time negative.
-struct SegmentMediaClock {
-    let wallSpanMs: Int64
-    let mediaSpanMs: Int64
-
-    /// Unioned gap spans in wall ms since the segment's first sample.
-    private let starts: [Int64]
-    private let ends: [Int64]
-    /// Gap time already closed BEFORE span i, and the media time consumed when span i begins.
-    private let closedBefore: [Int64]
-    private let mediaAtStart: [Int64]
-    /// False when the gap records do not account for the wall/media difference (truncated
-    /// sidecars, metadata written by an older build). The proportional mapping is then still
-    /// the best available guess, and pretending otherwise would be the actual lie.
-    private let exact: Bool
-
-    init(_ meta: SegmentMeta) {
-        let wall = max(segmentDurationMs(meta), 0)
-        let media = mediaDurationMs(meta)
-        wallSpanMs = wall
-        mediaSpanMs = media
-
-        let rate = Int64(max(meta.sampleRateHz, 1))
-        var raw: [(Int64, Int64)] = []
-        raw.reserveCapacity(meta.gaps.count)
-        for gap in meta.gaps {
-            let anchor = meta.firstSampleIndex ?? gap.firstMissingSampleIndex
-            let samples =
-                gap.firstMissingSampleIndex >= anchor
-                ? gap.firstMissingSampleIndex - anchor : 0
-            let start = min(max(Int64(samples) * 1_000 / rate, 0), wall)
-            let duration = max(Int64(gap.missingFrameCount) * Int64(meta.frameDurationMs), 0)
-            let end = min(start + duration, wall)
-            if end > start { raw.append((start, end)) }
-        }
-        raw.sort { $0.0 < $1.0 }
-
-        var mergedStarts: [Int64] = []
-        var mergedEnds: [Int64] = []
-        for span in raw {
-            if let last = mergedEnds.last, span.0 <= last {
-                if span.1 > last { mergedEnds[mergedEnds.count - 1] = span.1 }
-            } else {
-                mergedStarts.append(span.0)
-                mergedEnds.append(span.1)
-            }
-        }
-        starts = mergedStarts
-        ends = mergedEnds
-
-        var closed: [Int64] = []
-        var atStart: [Int64] = []
-        closed.reserveCapacity(mergedStarts.count)
-        atStart.reserveCapacity(mergedStarts.count)
-        var running: Int64 = 0
-        for index in mergedStarts.indices {
-            closed.append(running)
-            atStart.append(max(mergedStarts[index] - running, 0))
-            running += mergedEnds[index] - mergedStarts[index]
-        }
-        closedBefore = closed
-        mediaAtStart = atStart
-        // 5% (or 2 s, whichever is larger) of slack: gap durations are frame-quantized and the
-        // wall span is sample-derived, so they never agree to the millisecond.
-        exact = abs((wall - running) - media) <= max(2_000, media / 20)
-    }
-
-    /// Where a wall offset into the segment lands on the scrubber.
-    func media(fromWall wallMs: Int64) -> Int64 {
-        guard mediaSpanMs > 0, wallSpanMs > 0 else { return 0 }
-        let point = min(max(wallMs, 0), wallSpanMs)
-        guard exact else { return mediaSpanMs * point / wallSpanMs }
-        guard let index = lastIndex(in: starts, notAfter: point) else {
-            return min(point, mediaSpanMs)
-        }
-        let insideThisGap = min(max(point - starts[index], 0), ends[index] - starts[index])
-        let skipped = closedBefore[index] + insideThisGap
-        return min(max(point - skipped, 0), mediaSpanMs)
-    }
-
-    /// Where a scrubber position sits on the wall clock — what a transcript stamp reads.
-    func wall(fromMedia mediaMs: Int64) -> Int64 {
-        guard mediaSpanMs > 0, wallSpanMs > 0 else { return 0 }
-        let point = min(max(mediaMs, 0), mediaSpanMs)
-        guard exact else { return wallSpanMs * point / mediaSpanMs }
-        guard let index = lastIndex(in: mediaAtStart, notAfter: point) else {
-            return min(point, wallSpanMs)
-        }
-        // Media time does not advance during a gap, so a media instant at or past a gap's start
-        // is on the far side of it: the whole span has elapsed.
-        let skipped = closedBefore[index] + (ends[index] - starts[index])
-        return min(point + skipped, wallSpanMs)
-    }
-
-    /// Last index whose value is <= `value`; nil when the array is empty or starts after it.
-    private func lastIndex(in values: [Int64], notAfter value: Int64) -> Int? {
-        guard let first = values.first, first <= value else { return nil }
-        var low = 0
-        var high = values.count - 1
-        var found = 0
-        while low <= high {
-            let mid = (low + high) / 2
-            if values[mid] <= value {
-                found = mid
-                low = mid + 1
-            } else {
-                high = mid - 1
-            }
-        }
-        return found
-    }
+    segmentStoredAudioMs(meta)
 }
 
 // MARK: - Word alignment

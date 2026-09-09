@@ -293,6 +293,17 @@ let gapCollapseWindowMs: Int64 = 5_000
 /// unlabeled breaks, calm quiet rows, and explicit loss rows (loss is never hidden and quiet is
 /// never framed as loss).
 ///
+/// **`segments` and `words` must be WALL offsets into the segment** — milliseconds since its
+/// first sample, the same clock `meta.gaps` are on. That is not a formality: this function
+/// orders the gap records against the speech, and the two producers of transcript timings do
+/// not agree on a clock. A durable transcript is timed against STORED audio (the processor
+/// decodes the frame log and hands only that to the provider), so its offsets have to come back
+/// through `SegmentMediaClock` first; the live preview is already on the wall clock. Feeding
+/// media offsets in here does not make the rows wrong one at a time — it puts every quiet and
+/// interrupted marker in the wrong PLACE in the list, and computes the pause between two turns
+/// as a media-time difference, which is zero across exactly the silence the pause describes.
+/// `App/Runtime/TranscriptItems.swift` does the conversion; see its `TranscriptTimebase` note.
+///
 /// `suppressedLoops` describes stretches the caller has already removed from `segments` with
 /// `filteringLoopedArtefacts`; they are folded into the quiet rows so a hidden loop reads as
 /// the quiet it actually was, and says how many lines it stands for. Callers that pass nothing
@@ -317,13 +328,30 @@ public func transcriptTimelineItems(
     var gapIndex = 0
     var previousSpeechEnd: Int64?
     for block in speech {
-        var insertedGapBeforeBlock = false
+        // Everything the segment recorded between the previous turn and this one.
+        var pending: [TranscriptTimelineItem.Pause] = []
         while gapIndex < gaps.count, gaps[gapIndex].startMs <= block.startMs {
-            items.append(.pause(gaps[gapIndex]))
+            pending.append(gaps[gapIndex])
             gapIndex += 1
-            insertedGapBeforeBlock = true
         }
-        if let previousEnd = previousSpeechEnd, !insertedGapBeforeBlock {
+        // A stretch whose only records are SILENCE-SUPPRESSED is quiet the whole way through,
+        // and its length is the stretch — not the sum of the records inside it.
+        //
+        // The watch withholds only the part of a silence its detector is confident about: it
+        // arms after 5-20 s of near-continuous quiet (mode-dependent) and resumes on the first
+        // frame above the resume threshold, so a room with a fridge, a car outside and a TV two
+        // rooms away produces many short records scattered through one long silence rather than
+        // one record covering it. Over this library, with suppression synthesised at the
+        // firmware's own measured rates (PebbleOS a47acac74: 4.1-13.8% of airtime across 60-200
+        // episodes an hour), that is 15-50 records per segment averaging ~2.5 s each. Reporting
+        // their sum would have told a reader who watched eight minutes of transcript go by that
+        // it had been "quiet for 38 sec".
+        //
+        // Loss is deliberately NOT treated this way. An interruption row says how much audio is
+        // MISSING, which is the sum of the records and nothing else; stretching it over the
+        // quiet around it would claim loss that did not happen. So a stretch holding any loss
+        // keeps exactly the behaviour it has always had.
+        if let previousEnd = previousSpeechEnd, !pending.contains(where: \.missing) {
             let pauseMs = block.startMs - previousEnd
             if pauseMs >= quietPauseThresholdMs {
                 items.append(
@@ -341,6 +369,7 @@ public func transcriptTimelineItems(
                 )
             }
         }
+        items.append(contentsOf: pending.map { .pause($0) })
         items.append(.speech(block))
         previousSpeechEnd = max(previousSpeechEnd ?? block.endMs, block.endMs)
     }
@@ -432,9 +461,22 @@ private func overlaps(_ startMs: Int64, _ endMs: Int64, _ loop: SuppressedLoop) 
 }
 
 /// Collapses consecutive non-speech rows of the same kind so the transcript reads cleanly: a
-/// run of quiet spans becomes one quiet period of their combined length, and a run of
-/// interruptions becomes one. The merged quiet total is then labelled by length — 30 s+ gets a
-/// "quiet for…" label, 5–30 s a bare break, shorter is dropped.
+/// run of quiet spans becomes one quiet period, and a run of interruptions becomes one. The
+/// merged quiet total is then labelled by length — 30 s+ gets a "quiet for…" label, 5–30 s a
+/// bare break, shorter is dropped.
+///
+/// The two kinds measure differently, and the difference is the product rule rather than an
+/// inconsistency:
+///
+/// - **Quiet** is a STRETCH of the recording, so the merged row spans from the start of the
+///   first row to the end of the last. Nothing was said anywhere in between — that is what put
+///   these rows next to each other with no speech separating them — so the reader's question is
+///   "how long was I looking at nothing", and the answer is the span. Summing the parts instead
+///   answered a question nobody asked and, once the watch began withholding scattered seconds
+///   of a long silence, answered it with a number an order of magnitude too small.
+/// - **Loss** is a QUANTITY of missing audio, so the merged row is the sum. Its reason
+///   breakdown adds up to it, and stretching it across the intact audio between two dropouts
+///   would claim loss that did not happen.
 private func coalesceTimelineQuiet(
     _ items: [TranscriptTimelineItem]
 ) -> [TranscriptTimelineItem] {
@@ -446,15 +488,20 @@ private func coalesceTimelineQuiet(
             i += 1
             continue
         }
-        let startMs = items[i].startMs
+        var startMs = items[i].startMs
+        var endMs = startMs
         var totalMs: Int64 = 0
         var suppressed = 0
         var j = i
         while j < items.count, timelineQuietKind(items[j]) == kind {
-            totalMs += timelineItemDurationMs(items[j])
+            let duration = timelineItemDurationMs(items[j])
+            totalMs += duration
+            startMs = min(startMs, items[j].startMs)
+            endMs = max(endMs, items[j].startMs + duration)
             if case .pause(let pause) = items[j] { suppressed += pause.suppressedRepeats }
             j += 1
         }
+        if kind == .quiet { totalMs = max(endMs - startMs, 0) }
         if kind == .loss {
             let reasons = mergedLossReasons(
                 items[i..<j].compactMap { item in
