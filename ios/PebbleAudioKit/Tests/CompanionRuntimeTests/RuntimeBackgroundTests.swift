@@ -40,10 +40,13 @@ import Testing
     @Test func foregroundIdlePassChecksForModelRelease() async throws {
         let fixture = try RuntimeFixture()
         await fixture.runtime.start()
-        await TestClock.settle()
+        // `settle()` yields a fixed number of times; whether the foreground loop has reached its
+        // idle check by then depends on how much real work startup did ahead of it, so a fixed
+        // yield count is a race rather than a synchronisation point. Wait for the fact itself.
+        let checked = await waitUntil { fixture.lifecycle.idleChecks > 0 }
 
         #expect(
-            fixture.lifecycle.idleChecks > 0,
+            checked,
             "expected the foreground loop to evaluate idle model release"
         )
         await fixture.runtime.stop()
