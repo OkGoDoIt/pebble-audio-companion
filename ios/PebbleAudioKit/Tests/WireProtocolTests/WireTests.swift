@@ -153,3 +153,58 @@ import Testing
         return message
     }
 }
+
+@Suite struct InfoSnapshotVersionTests {
+    private static let v1: [UInt8] = [
+        1, 1, 1, 3, 1, 0b011, 0, 0, 0, 0, 0, 0, 2, 0, 9, 4, 0, 0, 0, 0,
+    ]
+
+    @Test func aVersionOneSnapshotHasNoRestart() {
+        guard case .decoded(let message) = AudioCompanionProtocol.decodeInfo(Self.v1),
+            let info = message as? InfoSnapshot
+        else { Issue.record("v1 info did not decode"); return }
+        #expect(info.infoVersion == 1)
+        #expect(info.restart == nil)
+        #expect(info.fwVersionText == "4.9.2")
+    }
+
+    // The golden fixture: a watchdog restart that made the fault-loop guard stand down. The
+    // phone reads the reason, the counters and the stuck task's PC/LR instead of an
+    // unexplained "disabled".
+    @Test func aVersionTwoSnapshotCarriesTheLastRestart() {
+        // spec/fixtures/info_v2_after_fault.bin, byte for byte.
+        let bytes: [UInt8] = [
+            0x02, 0x01, 0x01, 0x00, 0x01, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x24, 0x04, 0x07, 0x00, 0x00, 0x00, 0x10, 0x00, 0x05, 0x01, 0xCD, 0xAB, 0x00, 0x10,
+            0x01, 0xEF, 0x00, 0x10,
+        ]
+        #expect(bytes.count == ProtocolConstants.infoSnapshotV2Bytes)
+        guard case .decoded(let message) = AudioCompanionProtocol.decodeInfo(bytes),
+            let info = message as? InfoSnapshot, let restart = info.restart
+        else { Issue.record("v2 info did not decode with a restart"); return }
+        #expect(info.infoVersion == 2)
+        #expect(info.fwVersionText == "4.36.0")
+        #expect(info.sendBackpressureEventsRaw == 7)
+        #expect(restart.reasonRaw == 16)
+        #expect(restart.isFault)
+        #expect(restart.reasonName == "watchdog")
+        #expect(restart.faultBoots == 0)
+        #expect(restart.errorReboots == 5)
+        #expect(restart.stoodDown)
+        #expect(restart.faultPc == 0x1000_ABCD)
+        #expect(restart.faultLr == 0x1000_EF01)
+        #expect(restart.summary.contains("STOOD DOWN"))
+        #expect(restart.summary.contains("pc=0x1000abcd"))
+    }
+
+    // A version-2 header on a 20-byte body (a truncated read) is still a valid v1 snapshot.
+    @Test func aShortVersionTwoReadFallsBackToTheVersionOneFields() {
+        var bytes = Self.v1
+        bytes[0] = 2
+        guard case .decoded(let message) = AudioCompanionProtocol.decodeInfo(bytes),
+            let info = message as? InfoSnapshot
+        else { Issue.record("short v2 info did not decode"); return }
+        #expect(info.infoVersion == 2)
+        #expect(info.restart == nil)
+    }
+}

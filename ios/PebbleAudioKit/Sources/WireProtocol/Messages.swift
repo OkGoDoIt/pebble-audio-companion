@@ -34,6 +34,71 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
     /// service init. Raw because it is only a count when `flags` bit3 says so — read
     /// `sendBackpressureEvents`, never this.
     public let sendBackpressureEventsRaw: UInt32
+    /// Info version 2 (32 bytes): the watch's last restart. Nil from a version-1 watch. See
+    /// `WatchRestart`.
+    public let restart: WatchRestart?
+
+    /// What the watch knows about its own last restart, reported so a crash loop is visible from
+    /// the phone. Until 2026-09-09 the only trace of one was AUTH_RESULT status 3 — the
+    /// fault-loop guard had turned background audio off after three restarts in 100 s, and the
+    /// phone reported "disabled" for two hours.
+    public struct WatchRestart: Equatable, Sendable {
+        /// `RebootReasonCode` from the firmware (16 = watchdog, 17 = assert, 18 = stack
+        /// overflow, 19 = hard fault, 21 = event queue full, 22 = out of memory; below 16 is
+        /// a deliberate restart).
+        public let reasonRaw: Int
+        /// The guard's consecutive-fault counter; 0 again after a stand-down.
+        public let faultBoots: Int
+        /// Lifetime fault-class restarts, saturating at 255.
+        public let errorReboots: Int
+        /// The guard turned background audio off at this boot.
+        public let stoodDown: Bool
+        /// Stuck-task PC/LR (watchdog) or the fault address; 0 when unknown.
+        public let faultPc: UInt32
+        public let faultLr: UInt32
+
+        public init(
+            reasonRaw: Int, faultBoots: Int, errorReboots: Int, stoodDown: Bool,
+            faultPc: UInt32, faultLr: UInt32
+        ) {
+            self.reasonRaw = reasonRaw
+            self.faultBoots = faultBoots
+            self.errorReboots = errorReboots
+            self.stoodDown = stoodDown
+            self.faultPc = faultPc
+            self.faultLr = faultLr
+        }
+
+        public var isFault: Bool { reasonRaw >= 16 }
+
+        public var reasonName: String {
+            switch reasonRaw {
+            case 0: return "unknown"
+            case 1: return "low battery"
+            case 2: return "software update"
+            case 3: return "reset buttons held"
+            case 4: return "shutdown from the menu"
+            case 16: return "watchdog"
+            case 17: return "assert"
+            case 18: return "stack overflow"
+            case 19: return "hard fault"
+            case 20: return "launcher panic"
+            case 21: return "event queue full"
+            case 22: return "out of memory"
+            case 23: return "bluetooth coredump"
+            default: return "code \(reasonRaw)"
+            }
+        }
+
+        /// One line for the flight recorder.
+        public var summary: String {
+            let fault = isFault
+                ? String(format: " pc=0x%08x lr=0x%08x", faultPc, faultLr) : ""
+            return "last restart: \(reasonName)\(fault); \(faultBoots) fault boot(s) in a row, "
+                + "\(errorReboots) fault restart(s) logged"
+                + (stoodDown ? "; the watch STOOD DOWN (turned background audio off) at this boot" : "")
+        }
+    }
 
     public init(
         infoVersion: Int,
@@ -45,7 +110,8 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         reserved0: Int = 0,
         watchCapabilities: UInt32 = 0,
         fwVersionPacked: UInt32 = 0,
-        sendBackpressureEventsRaw: UInt32 = 0
+        sendBackpressureEventsRaw: UInt32 = 0,
+        restart: WatchRestart? = nil
     ) {
         self.infoVersion = infoVersion
         self.protocolMin = protocolMin
@@ -57,6 +123,13 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         self.watchCapabilities = watchCapabilities
         self.fwVersionPacked = fwVersionPacked
         self.sendBackpressureEventsRaw = sendBackpressureEventsRaw
+        self.restart = restart
+    }
+
+    /// "4.36.0" from the packed word, or nil when the watch did not fill it in.
+    public var fwVersionText: String? {
+        guard fwVersionPacked != 0 else { return nil }
+        return "\(fwVersionPacked >> 24).\((fwVersionPacked >> 16) & 0xFF).\(fwVersionPacked & 0xFFFF)"
     }
 
     public var serviceState: ServiceState? { ServiceState(rawValue: serviceStateRaw) }
@@ -91,6 +164,14 @@ public struct InfoSnapshot: AudioCompanionMessage, Equatable {
         w.u32(watchCapabilities)
         w.u32(fwVersionPacked)
         w.u32(sendBackpressureEventsRaw)
+        if infoVersion >= 2, let restart {
+            w.u8(restart.reasonRaw)
+            w.u8(restart.faultBoots)
+            w.u8(restart.errorReboots)
+            w.u8(restart.stoodDown ? 1 : 0)
+            w.u32(restart.faultPc)
+            w.u32(restart.faultLr)
+        }
         return w.toBytes()
     }
 }

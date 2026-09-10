@@ -15,6 +15,8 @@ public enum ProtocolConstants {
 
     public static let receiverIdBytes: Int = 32
     public static let infoSnapshotBytes: Int = 20
+    /// Info version 2 appends the watch's last restart (Section 3).
+    public static let infoSnapshotV2Bytes: Int = 32
 
     // GATT identifiers (Section 1). Base UUID is third-party-owned, deliberately not Pebble's.
     public static let baseUUID = "7C2B0000-9E4D-4FC2-A2B3-1D6E8A1C9F50"

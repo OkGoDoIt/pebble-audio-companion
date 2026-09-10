@@ -1,0 +1,14 @@
+{
+  "channel": "info",
+  "description": "Info v2 after a watchdog restart that made the fault-loop guard stand down: 32 bytes, a v1 parser reads the first 20",
+  "expect": "parse",
+  "fields": {
+    "flags": 9,
+    "fw_version_packed": 69468160,
+    "info_version": 2,
+    "send_backpressure_events": 7,
+    "service_state": 0
+  },
+  "name": "info_v2_after_fault",
+  "size": 32
+}

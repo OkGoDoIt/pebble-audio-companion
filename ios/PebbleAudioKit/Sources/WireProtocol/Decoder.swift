@@ -31,18 +31,39 @@ public enum AudioCompanionProtocol {
             return .malformed(reason: "info snapshot too short: \(bytes.count)")
         }
         var r = WireReader(bytes)
+        let infoVersion = r.u8()
+        let protocolMin = r.u8()
+        let protocolMax = r.u8()
+        let serviceStateRaw = UInt8(r.u8())
+        let codecBitmap = r.u8()
+        let flags = r.u8()
+        let reserved0 = r.u16()
+        let watchCapabilities = r.u32()
+        let fwVersionPacked = r.u32()
+        let sendBackpressureEventsRaw = r.u32()
+        var restart: InfoSnapshot.WatchRestart?
+        if infoVersion >= 2, bytes.count >= ProtocolConstants.infoSnapshotV2Bytes {
+            let reasonRaw = r.u8()
+            let faultBoots = r.u8()
+            let errorReboots = r.u8()
+            let stoodDown = r.u8()
+            restart = InfoSnapshot.WatchRestart(
+                reasonRaw: reasonRaw, faultBoots: faultBoots, errorReboots: errorReboots,
+                stoodDown: stoodDown != 0, faultPc: r.u32(), faultLr: r.u32())
+        }
         return .decoded(
             InfoSnapshot(
-                infoVersion: r.u8(),
-                protocolMin: r.u8(),
-                protocolMax: r.u8(),
-                serviceStateRaw: UInt8(r.u8()),
-                codecBitmap: r.u8(),
-                flags: r.u8(),
-                reserved0: r.u16(),
-                watchCapabilities: r.u32(),
-                fwVersionPacked: r.u32(),
-                sendBackpressureEventsRaw: r.u32()
+                infoVersion: infoVersion,
+                protocolMin: protocolMin,
+                protocolMax: protocolMax,
+                serviceStateRaw: serviceStateRaw,
+                codecBitmap: codecBitmap,
+                flags: flags,
+                reserved0: reserved0,
+                watchCapabilities: watchCapabilities,
+                fwVersionPacked: fwVersionPacked,
+                sendBackpressureEventsRaw: sendBackpressureEventsRaw,
+                restart: restart
             )
         )
     }

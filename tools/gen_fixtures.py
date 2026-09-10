@@ -102,12 +102,25 @@ def error_msg(code, detail) -> bytes:
     return struct.pack("<BBI", MSG_ERROR, code, detail)
 
 
-def info(state, codec_bitmap, flags, fw_version_packed, send_backpressure_events=0) -> bytes:
+def info(
+    state,
+    codec_bitmap,
+    flags,
+    fw_version_packed,
+    send_backpressure_events=0,
+    info_version=1,
+    last_reboot_reason=0,
+    fault_boots=0,
+    error_reboots=0,
+    stood_down=0,
+    fault_pc=0,
+    fault_lr=0,
+) -> bytes:
     # send_backpressure_events occupies what was reserved1 (same 20 bytes, same info_version).
     # It is only a count when flags bit3 is set; older firmware leaves it zero.
-    return struct.pack(
+    head = struct.pack(
         "<BBBBBBHIII",
-        1,  # info_version
+        info_version,
         1,  # protocol_min
         1,  # protocol_max
         state,
@@ -117,6 +130,21 @@ def info(state, codec_bitmap, flags, fw_version_packed, send_backpressure_events
         0,  # watch_capabilities
         fw_version_packed,
         send_backpressure_events,
+    )
+    if info_version < 2:
+        return head
+    # info_version 2 appends the watch's last restart (32 bytes total): RebootReasonCode, the
+    # fault-loop guard's consecutive-fault counter, lifetime fault count, whether the guard
+    # stood down at this boot, and the newest trace entry's PC/LR. A v1 parser reads the first
+    # 20 bytes and ignores the rest.
+    return head + struct.pack(
+        "<BBBBII",
+        last_reboot_reason,
+        fault_boots,
+        error_reboots,
+        stood_down,
+        fault_pc,
+        fault_lr,
     )
 
 
@@ -225,6 +253,32 @@ def build_fixtures():
             "fw_version_packed": (4 << 24) | (9 << 16) | 2,
         },
         "Info read while streaming: receiver bound + enabled, Speex codec, fw 4.9.2",
+    )
+    add(
+        "info_v2_after_fault",
+        info(
+            state=0,
+            codec_bitmap=0x01,
+            flags=0b1001,
+            fw_version_packed=(4 << 24) | (36 << 16) | 0,
+            send_backpressure_events=7,
+            info_version=2,
+            last_reboot_reason=16,  # RebootReasonCode_Watchdog
+            fault_boots=0,
+            error_reboots=5,
+            stood_down=1,
+            fault_pc=0x1000ABCD,
+            fault_lr=0x1000EF01,
+        ),
+        "info",
+        "parse",
+        {
+            "info_version": 2, "service_state": 0, "flags": 9,
+            "fw_version_packed": (4 << 24) | (36 << 16) | 0,
+            "send_backpressure_events": 7,
+        },
+        "Info v2 after a watchdog restart that made the fault-loop guard stand down: 32 bytes, "
+        "a v1 parser reads the first 20",
     )
     add(
         "info_disabled",

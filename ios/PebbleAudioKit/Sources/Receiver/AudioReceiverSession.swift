@@ -445,6 +445,7 @@ public actor AudioReceiverSession {
             let snapshot = message as? InfoSnapshot
         else { return false }
         watchInfo.value = snapshot
+        noteWatchRestart(snapshot)
         noteWatchReport(Int(snapshot.serviceStateRaw))
         return true
     }
@@ -943,6 +944,7 @@ public actor AudioReceiverSession {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
+                noteWatchRestart(snapshot)
                 noteWatchReport(Int(snapshot.serviceStateRaw))
             }
         default:
@@ -1198,12 +1200,27 @@ public actor AudioReceiverSession {
         authRequestTask = Task { await self.awaitAuthResult(firstToken: token) }
     }
 
+    /// The last restart summary written to the log, so a watch that keeps reporting the same
+    /// restart on every Info read is logged once, and a NEW restart is logged the moment it is
+    /// seen.
+    private var loggedRestartSummary: String?
+
+    private func noteWatchRestart(_ snapshot: InfoSnapshot) {
+        guard let restart = snapshot.restart else { return }
+        let fw = snapshot.fwVersionText.map { " (fw \($0))" } ?? ""
+        let summary = restart.summary + fw
+        guard summary != loggedRestartSummary else { return }
+        loggedRestartSummary = summary
+        log("watch \(summary)")
+    }
+
     private func refreshInfoSnapshot() async {
         guard let bytes = try? await link.readInfo() else { return }
         switch AudioCompanionProtocol.decodeInfo(bytes) {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
+                noteWatchRestart(snapshot)
                 noteWatchReport(Int(snapshot.serviceStateRaw))
             }
         default:
