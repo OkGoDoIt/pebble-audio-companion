@@ -249,6 +249,20 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
         update { $0.lastPassCompletedAtMs = now }
     }
 
+    /// The process was suspended while a pass was in flight: none of the wall-clock time since
+    /// the pass began was spent running it. Re-base the start so the stall rule judges only the
+    /// time the process was awake. Without this, coming back to the app after an hour in the
+    /// background read as "pipeline pass wedged; restarting the loop" (2026-09-09 22:05), which
+    /// cancelled a healthy pass and requeued its uploads for nothing.
+    public func passRebasedAfterSuspension() {
+        let now = nowMs()
+        update { health in
+            guard let started = health.lastPassStartedAtMs else { return }
+            if let completed = health.lastPassCompletedAtMs, completed >= started { return }
+            health.lastPassStartedAtMs = now
+        }
+    }
+
     /// A pass that ended by throwing past the per-stage isolation.
     public func passAbandoned(_ error: Error) {
         update { $0.abandonedPasses += 1 }

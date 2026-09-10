@@ -238,8 +238,16 @@ private final class Box<Value>: @unchecked Sendable {
         health.passStarted()
         #expect(await supervisor.tick().isEmpty)
 
-        await clock.advance(by: PipelineHealth.passStallMs + 1)
-        #expect(await supervisor.tick() == ["restart-loop"])
+        // Ticking at its real cadence: the process is awake the whole time, the pass never ends.
+        var elapsed: Int64 = 0
+        var actions: [String] = []
+        while elapsed <= PipelineHealth.passStallMs {
+            await clock.advance(by: PipelineSupervisor.tickMs)
+            elapsed += PipelineSupervisor.tickMs
+            actions = await supervisor.tick()
+            if !actions.isEmpty { break }
+        }
+        #expect(actions == ["restart-loop"])
         #expect(restarts.count == 1)
         #expect(health.health.loopRestarts == 1)
 
@@ -247,6 +255,38 @@ private final class Box<Value>: @unchecked Sendable {
         health.passStarted()
         health.passCompleted()
         #expect(await supervisor.tick().isEmpty)
+        #expect(restarts.count == 1)
+    }
+
+    // Coming back to the app after an hour in the background read as "pipeline pass wedged"
+    // (2026-09-09 22:05): the pass had been in flight for an hour of WALL time and zero time
+    // running. A tick that arrives long after the last one is a resumed process, and the
+    // stall clock starts over from there.
+    @Test func aSuspensionIsNotAWedgedPass() async throws {
+        let clock = TestClock()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+        let restarts = Counter()
+        let supervisor = PipelineSupervisor(
+            health: health, clock: clock, restartLoop: { restarts.increment() })
+
+        health.passStarted()
+        #expect(await supervisor.tick().isEmpty)
+
+        // Suspended for an hour with the pass still open.
+        await clock.advance(by: 60 * 60 * 1000)
+        #expect(await supervisor.tick().isEmpty)
+        #expect(restarts.count == 0)
+
+        // Awake again and the pass STILL does not finish: now it is wedged.
+        var elapsed: Int64 = 0
+        var actions: [String] = []
+        while elapsed <= PipelineHealth.passStallMs {
+            await clock.advance(by: PipelineSupervisor.tickMs)
+            elapsed += PipelineSupervisor.tickMs
+            actions = await supervisor.tick()
+            if !actions.isEmpty { break }
+        }
+        #expect(actions == ["restart-loop"])
         #expect(restarts.count == 1)
     }
 

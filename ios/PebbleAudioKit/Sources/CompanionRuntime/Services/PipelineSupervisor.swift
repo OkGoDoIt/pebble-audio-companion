@@ -51,6 +51,9 @@ public actor PipelineSupervisor {
     /// How often the supervisor looks. Long: everything it watches is measured in minutes, and
     /// a tick costs a clock read and a dictionary walk.
     public static let tickMs: Int64 = 30_000
+    /// A tick this late is a resumed process, not a slow one.
+    public static let suspensionGapMs: Int64 = 3 * tickMs
+    private var lastTickAtMs: Int64?
 
     public init(
         health: PipelineHealthMonitor,
@@ -71,6 +74,12 @@ public actor PipelineSupervisor {
     public func tick() async -> [String] {
         var actions: [String] = []
         let now = clock.nowMs
+        // A tick that arrives much later than its interval means the process was suspended in
+        // between, not that a pass ran for that long. Judge the stall from now on.
+        if let last = lastTickAtMs, now - last > Self.suspensionGapMs {
+            health.passRebasedAfterSuspension()
+        }
+        lastTickAtMs = now
         let current = health.health
 
         if current.passIsStalled(nowMs: now) {
