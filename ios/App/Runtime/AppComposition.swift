@@ -326,11 +326,6 @@ final class AppComposition {
             PersonalContextFormatting.aiGroundingBlock(personalContext.load())
         }
 
-        // Which audio containers each cloud provider has been observed to refuse. ONE store,
-        // shared by the synchronous providers and the background upload coordinator, so a
-        // rejection discovered on either path is honoured by both instead of being rediscovered
-        // (and paid for) twice. See `CloudUploadFormatPreference`.
-        let uploadFormats = CloudUploadFormatStore(root: containerRoot)
         let batchCloud = SelectableCloudTranscriptionProvider(
             selected: { settingsBox.cloudTranscriptionProvider },
             openAi: OpenAiTranscriptionProvider(
@@ -338,8 +333,7 @@ final class AppComposition {
                 apiKey: openAiKey,
                 cloudConsent: cloudConsent,
                 diarizationEnabled: diarize,
-                sttPrompt: sttPrompt,
-                formatMemory: uploadFormats
+                sttPrompt: sttPrompt
             ),
             soniox: SonioxTranscriptionProvider(
                 transport: transport,
@@ -347,8 +341,7 @@ final class AppComposition {
                 cloudConsent: cloudConsent,
                 diarizationEnabled: diarize,
                 contextText: sonioxContext,
-                contextTerms: contextTerms,
-                formatMemory: uploadFormats
+                contextTerms: contextTerms
             )
         )
         // The local engine resolves per call from the persisted local-model selection: Apple
@@ -415,8 +408,7 @@ final class AppComposition {
             root: containerRoot,
             settings: settingsBox,
             nowMs: nowMs,
-            log: AppRuntimeLog.runtimeLog,
-            formatMemory: uploadFormats
+            log: AppRuntimeLog.runtimeLog
         )
 
         let transcription = TranscriptionService(

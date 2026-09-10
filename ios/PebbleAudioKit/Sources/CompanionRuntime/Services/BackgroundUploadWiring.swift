@@ -234,12 +234,6 @@ public enum BackgroundUploadWiring {
                     log.write("upload reconcile: \(reset.count) abandoned upload(s) requeued")
                 }
                 return reset
-            },
-            requeueWithoutAttempt: { segmentId in
-                do { _ = try queue.requeueWithoutAttempt(segmentId) } catch {
-                    log.failure("upload requeue after format downgrade", error)
-                }
-                await mirror(segmentId, .pending)
             }
         )
     }
@@ -266,11 +260,7 @@ public enum BackgroundUploadWiring {
         /// Speex spool in the way.
         audioSource: (
             @Sendable (_ segmentId: String, _ format: CloudAudioFormat) async -> SegmentAudio?
-        )? = nil,
-        /// The durable record of which containers each provider has refused. Shares `root` with
-        /// the providers' own store, so the synchronous and background paths learn from each
-        /// other rather than each discovering the same rejection separately.
-        formatMemory: (any CloudUploadFormatMemory)? = nil
+        )? = nil
     ) -> BackgroundCloudUploadCoordinator {
         BackgroundCloudUploadCoordinator(
             uploader: uploader,
@@ -281,7 +271,6 @@ public enum BackgroundUploadWiring {
             bodyDir: bodyDir(root: root),
             nowMs: nowMs,
             cloudPrimary: { settings.cloudIsPrimaryTranscription },
-            formatMemory: formatMemory ?? CloudUploadFormatStore(root: root),
             log: { message in log.write(message) }
         )
     }

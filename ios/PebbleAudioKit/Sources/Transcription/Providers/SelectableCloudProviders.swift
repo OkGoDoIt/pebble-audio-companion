@@ -48,10 +48,10 @@ public final class SelectableCloudTranscriptionProvider: TranscriptionProvider, 
         active() as? any CloudUploadCapable
     }
 
-    /// The active backend's ladder, or WAV alone when nothing can upload — the floor, so a caller
-    /// that resolves against this never picks a format that has no chance of being sent.
-    public var uploadFormatLadder: [CloudAudioFormat] {
-        activeUploadCapable?.uploadFormatLadder ?? [.wav]
+    /// The active backend's container, or WAV when nothing can upload — the floor, so a caller
+    /// reading this never picks a format that has no chance of being sent.
+    public var uploadFormat: CloudAudioFormat {
+        activeUploadCapable?.uploadFormat ?? .wav
     }
 
     public func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {

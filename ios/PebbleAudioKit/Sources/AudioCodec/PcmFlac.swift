@@ -39,10 +39,9 @@ import Foundation
 
 /// Container the cloud upload path assembles a segment's audio into.
 ///
-/// These are the rungs of a LADDER, not a single choice: `CloudUploadFormatPreference` walks
-/// `.oggSpeex` -> `.flac` -> `.wav`, best first, and skips any rung a provider has actually been
-/// observed to reject (`CloudUploadFormatMemory`). WAV is the floor — it is what shipped for
-/// months and what every provider documents — so there is always somewhere to land.
+/// Which one a given path uses is a constant, not a negotiation: `CloudUploadFormats.passthrough`
+/// for a background upload that has the watch's own frames, `.fromPcm` for the synchronous path
+/// that only has decoded PCM. WAV remains the floor every provider documents.
 public enum CloudAudioFormat: String, Sendable, Equatable, CaseIterable, Codable {
     /// Raw PCM16 in a RIFF/WAVE wrapper. 32,000 B/s at 16 kHz; the original behaviour.
     case wav
@@ -77,10 +76,9 @@ public enum CloudAudioFormat: String, Sendable, Equatable, CaseIterable, Codable
     ///
     /// Load-bearing for how a rejection is classified, not cosmetic. Soniox lists `flac`/`wav` and
     /// OpenAI's OpenAPI spec lists both; neither vendor mentions Speex anywhere, so `.oggSpeex` is
-    /// an educated bet on an ffmpeg-shaped ingest. A 4xx on a documented format has to look like a
-    /// format complaint before we believe it; a 4xx on an undocumented one is taken at face value,
-    /// because the container is then the only novel thing in an otherwise unchanged request. See
-    /// `CloudUploadFormatRejection`.
+    /// an educated bet on an ffmpeg-shaped ingest — one settled by posting a real segment to both
+    /// production endpoints (see `CloudUploadFormats.passthrough`). Kept because it is the honest
+    /// label for where the vendor docs stop and our own measurement starts.
     public var isDocumentedByProviders: Bool { self != .oggSpeex }
 }
 

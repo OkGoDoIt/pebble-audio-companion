@@ -27,24 +27,23 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
     /// matching content type, which is what `CloudAudioBody` supplies. Its *prose* guide currently
     /// lists a shorter set that omits both; the spec is what the endpoint validates against, and
     /// neither document says whether `ogg` covers Speex. So the top rung is a bet
-    /// (`OggSpeex`: 4.08% of the WAV, no decode, no re-encode), FLAC below it is documented and
-    /// lossless, and `CloudUploadFormatPreference` learns and remembers a refusal rather than
-    /// making anyone flip a constant by hand.
+    /// (`OggSpeex`: 4.08% of the WAV, no decode, no re-encode) that was settled by posting a real
+    /// segment to the production endpoint (2026-09-08). See `CloudUploadFormats.passthrough`.
     ///
     /// Passthrough also retires this provider's chunker. The largest real segment is 28.9 MB as
     /// WAV, over OpenAI's 25 MB limit, so `transcribe` currently splits the PCM at a fixed byte
     /// boundary — mid-sentence, which OpenAI's own guide warns "can remove context and reduce
     /// accuracy". The same segment is 1.18 MB as Ogg Speex and 11.6 MB as FLAC; on either rung the
     /// split never happens.
-    public static let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    public static let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
-    public var uploadFormatLadder: [CloudAudioFormat] { Self.uploadFormatLadder }
+    public var uploadFormat: CloudAudioFormat { Self.uploadFormat }
 
-    /// The ladder for the synchronous path, which is handed decoded PCM and so cannot package the
-    /// watch's frames.
-    public static let pcmFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.pcmLadder
+    /// The container for the synchronous path, which is handed decoded PCM and so cannot package
+    /// the watch's frames.
+    public static let pcmFormat: CloudAudioFormat = CloudUploadFormats.fromPcm
 
-    /// This backend's identity for keyed state (the durable format memory).
+    /// This backend's identity in stored rows and diagnostics.
     public static let cloudProvider: CloudProvider = .openAi
 
     public let id = "openai"
@@ -65,7 +64,6 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
     /// What the app has learned about which containers OpenAI will read. Consulted by the
     /// SYNCHRONOUS path here; the background path is driven by the coordinator, which owns the
     /// same store.
-    private let formatMemory: any CloudUploadFormatMemory
 
     public init(
         transport: any HttpTransport,
@@ -77,7 +75,6 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
         endpointUrl: String = OpenAiTranscriptionProvider.defaultEndpointUrl,
         modelsUrl: String = OpenAiTranscriptionProvider.defaultModelsUrl,
         maxUploadBytes: Int = OpenAiTranscriptionProvider.defaultMaxUploadBytes,
-        formatMemory: any CloudUploadFormatMemory = NoCloudUploadFormatMemory()
     ) {
         precondition(
             maxUploadBytes > Self.wavHeaderBytes,
@@ -92,13 +89,6 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
         self.endpointUrl = endpointUrl
         self.modelsUrl = modelsUrl
         self.maxUploadBytes = maxUploadBytes
-        self.formatMemory = formatMemory
-    }
-
-    /// The best rung the synchronous path may use right now.
-    private func pcmUploadFormat() -> CloudAudioFormat {
-        CloudUploadFormatPreference.resolve(
-            ladder: Self.pcmFormatLadder, rejected: formatMemory.rejectedFormats(Self.cloudProvider))
     }
 
     public func isAvailable() async -> Bool {
@@ -214,63 +204,34 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
                 "WAV upload chunk \(Self.wavHeaderBytes + pcm.count) exceeds \(maxUploadBytes) byte limit"
             )
         }
-        // One downgrade is possible on this path (FLAC -> WAV) and it is taken inline: a container
-        // OpenAI will not read is not a reason to fail audio we are holding right now.
-        var format = pcmUploadFormat()
-        while true {
-            let audio = CloudAudioBody.encode(pcm: pcm, sampleRateHz: sampleRateHz, format: format)
-            let (fields, filePart) = requestParts(audio: audio, name: "segment-\(chunkIndex)")
-            let boundary = "PebbleAudioKit-\(UUID().uuidString)"
-            let (body, contentType) = MultipartBody.encode(
-                boundary: boundary, textFields: fields, file: filePart
+        // This path receives DECODED PCM, so passthrough is not available to it: it sends FLAC,
+        // which OpenAI documents.
+        let audio = CloudAudioBody.encode(
+            pcm: pcm, sampleRateHz: sampleRateHz, format: Self.pcmFormat)
+        let (fields, filePart) = requestParts(audio: audio, name: "segment-\(chunkIndex)")
+        let boundary = "PebbleAudioKit-\(UUID().uuidString)"
+        let (body, contentType) = MultipartBody.encode(
+            boundary: boundary, textFields: fields, file: filePart
+        )
+        let response = try await transport.execute(
+            HttpTransportRequest(
+                method: "POST",
+                url: endpointUrl,
+                headers: [
+                    "Authorization": "Bearer \(key)",
+                    "Content-Type": contentType,
+                ],
+                body: body
             )
-            let response = try await transport.execute(
-                HttpTransportRequest(
-                    method: "POST",
-                    url: endpointUrl,
-                    headers: [
-                        "Authorization": "Bearer \(key)",
-                        "Content-Type": contentType,
-                    ],
-                    body: body
-                )
+        )
+        guard response.status == 200 else {
+            throw TranscriptionError.transcriptionFailed(
+                "OpenAI transcription failed (\(response.status)): \(response.text.prefix(240))",
+                underlying: CloudFormatComplaint(
+                    httpStatus: response.status, evidence: response.text)
             )
-            if response.status != 200 {
-                if let next = downgrade(
-                    from: audio.format, httpStatus: response.status, body: response.text)
-                {
-                    format = next
-                    continue
-                }
-                throw TranscriptionError.transcriptionFailed(
-                    "OpenAI transcription failed (\(response.status)): \(response.text.prefix(240))",
-                    underlying: CloudFormatComplaint(
-                        httpStatus: response.status, evidence: response.text)
-                )
-            }
-            formatMemory.noteSuccess(Self.cloudProvider)
-            return try parseChunk(body: response.body, offsetMs: chunkStartMs)
         }
-    }
-
-    /// Records a container OpenAI has refused and returns the next rung, or nil when this response
-    /// was not about the container (or there is nowhere left to fall).
-    private func downgrade(
-        from format: CloudAudioFormat, httpStatus: Int, body: String
-    ) -> CloudAudioFormat? {
-        guard
-            CloudUploadFormatRejection.isFormatRejection(
-                format: format, httpStatus: httpStatus, body: body),
-            let next = CloudUploadFormatPreference.next(
-                after: format, ladder: Self.pcmFormatLadder,
-                rejected: formatMemory.rejectedFormats(Self.cloudProvider))
-        else { return nil }
-        formatMemory.recordRejection(
-            CloudFormatRejectionRecord(
-                format: format, httpStatus: httpStatus, evidence: body,
-                recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000)),
-            provider: Self.cloudProvider)
-        return next
+        return try parseChunk(body: response.body, offsetMs: chunkStartMs)
     }
 
     /// The multipart text fields + file part shared by the synchronous path and `uploadPlan`.

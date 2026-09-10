@@ -12,10 +12,11 @@ import Foundation
 //   them. Both numbers are measured on this user's own library. Uncompressed WAV is 115 MB per
 //   hour of audio (32,000 B/s at 16 kHz — 141 MB/day, 12.38 GB over 88 days). The watch's own
 //   Speex frames repackaged are a deterministic 4.08% of that: **4.7 MB per hour**. FLAC — the
-//   fallback rung for a provider that cannot read them — measured 29-34% on four real segments,
-//   mean 31%: **about 35 MB per hour**, and content-dependent because it actually compresses.
-//   Both are stated, because which one applies depends on the provider and the person should not
-//   be told only the flattering half. See `OggSpeex` and `CloudUploadFormatPreference`.
+//   container the synchronous path uses, since it only ever has decoded PCM — measured 29-34% on
+//   four real segments, mean 31%: **about 35 MB per hour**, and content-dependent because it
+//   actually compresses. Both are stated, because which one applies depends on which path ran and
+//   the person should not be told only the flattering half. See `OggSpeex` and
+//   `CloudUploadFormats`.
 // - The reassurance is the load-bearing half: on Wi-Fi Only nothing is dropped, only delayed.
 //   Without that sentence the setting reads as a choice between data and transcripts, which
 //   would be false and would push people to the expensive answer for the wrong reason.

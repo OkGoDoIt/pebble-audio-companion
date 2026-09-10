@@ -42,7 +42,7 @@ import Testing
         )
 
         // PT moved container choice out of the provider and onto the ladder
-        // (`CloudUploadFormatPreference`), so the FLAC rung is now built by the caller and handed
+        // (`CloudUploadFormats`), so the FLAC rung is now built by the caller and handed
         // over; what this asserts — the bytes on the wire decode to the identical samples — is
         // unchanged.
         let body = CloudAudioBody.encode(wav: wav, sampleRateHz: Self.rate, format: .flac)
@@ -102,16 +102,17 @@ import Testing
         #expect(head.contains("Content-Type: audio/flac"))
     }
 
-    @Test func theFormatIsAPerProviderLadder() {
-        // DU kept this as a single reversible constant per provider. PT turned it into an ordered
-        // ladder with a learned downgrade, because the top rung (Ogg Speex passthrough) is not
-        // documented by either vendor and "flip a constant by hand after a user's uploads start
-        // failing" is not a recovery plan. FLAC stays on it, as the documented middle rung.
-        #expect(SonioxTranscriptionProvider.uploadFormatLadder == [.oggSpeex, .flac, .wav])
-        #expect(OpenAiTranscriptionProvider.uploadFormatLadder == [.oggSpeex, .flac, .wav])
+    @Test func theFormatIsAPerProviderConstant() {
+        // A constant per provider, established by measurement against both production endpoints
+        // (2026-09-08) and changed by a commit, not by a phone. It was briefly a runtime ladder
+        // with a learned downgrade; that mechanism misread a billing outage as a container
+        // rejection and durably retired Ogg Speex, so the decision moved back into the source.
+        // See `CloudUploadFormats`.
+        #expect(SonioxTranscriptionProvider.uploadFormat == .oggSpeex)
+        #expect(OpenAiTranscriptionProvider.uploadFormat == .oggSpeex)
         // The synchronous path is handed decoded PCM and so can never package frames.
-        #expect(SonioxTranscriptionProvider.pcmFormatLadder == [.flac, .wav])
-        #expect(OpenAiTranscriptionProvider.pcmFormatLadder == [.flac, .wav])
+        #expect(SonioxTranscriptionProvider.pcmFormat == .flac)
+        #expect(OpenAiTranscriptionProvider.pcmFormat == .flac)
         #expect(CloudAudioFormat.wav.contentType == "audio/wav")
         #expect(CloudAudioFormat.flac.contentType == "audio/flac")
         #expect(CloudAudioFormat.oggSpeex.contentType == "audio/ogg")

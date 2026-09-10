@@ -33,10 +33,11 @@ import Foundation
 //
 // THE ONE THING THAT IS NOT PROVEN is whether the transcription providers' demuxers accept Speex
 // inside Ogg. Both list `ogg` as a container and neither names a codec; ffmpeg has had a native
-// Speex decoder since 5.0, and Soniox says it auto-detects formats from the header, so the odds are
-// good — but "good odds" is not a contract. That is why nothing here is unconditional: see
-// `CloudUploadFormatPreference`, which walks Ogg Speex -> FLAC -> WAV and durably remembers a
-// provider that has actually rejected a format. A rejection costs one HTTP 400 and one requeue.
+// Speex decoder since 5.0, and Soniox says it auto-detects formats from the header — so the bet was
+// settled by measurement rather than left to odds: both providers were posted a real watch segment
+// and both accepted it (2026-09-08). `CloudUploadFormats` records that result as a constant. If a
+// provider ever changes its mind the upload fails visibly and a human changes the constant; the
+// app does not renegotiate the container at runtime.
 //
 // WHAT IS DELIBERATELY NOT DONE: gaps are not encoded as granule discontinuities. The corpus has
 // 7,867 sequence gaps (0.042% of frames), and the WAV path has always simply concatenated the

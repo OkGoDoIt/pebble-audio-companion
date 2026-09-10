@@ -28,18 +28,18 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
     /// Ogg Speex is the watch's own frames repackaged — 4.08% of the WAV, no decode, no re-encode
     /// (`OggSpeex`). Soniox lists `ogg` among the formats it "automatically detects" and says
     /// nothing about codecs (https://soniox.com/docs/stt/async/async-transcription), so this is an
-    /// educated bet rather than a documented guarantee; FLAC below it IS documented, is lossless,
-    /// and is still a 63% saving. `CloudUploadFormatPreference` handles the rest: the coordinator
-    /// walks this ladder and durably skips anything Soniox has actually refused.
-    public static let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    /// educated bet on the docs alone — so it was settled by measurement against the production
+    /// endpoint instead (2026-09-08). See `CloudUploadFormats.passthrough` for that evidence and
+    /// for why this is a constant rather than something the app renegotiates at runtime.
+    public static let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
-    public var uploadFormatLadder: [CloudAudioFormat] { Self.uploadFormatLadder }
+    public var uploadFormat: CloudAudioFormat { Self.uploadFormat }
 
-    /// The ladder for the synchronous path, which is handed decoded PCM and so cannot package the
-    /// watch's frames.
-    public static let pcmFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.pcmLadder
+    /// The container for the synchronous path, which is handed decoded PCM and so cannot package
+    /// the watch's frames.
+    public static let pcmFormat: CloudAudioFormat = CloudUploadFormats.fromPcm
 
-    /// This backend's identity for keyed state (the durable format memory).
+    /// This backend's identity in stored rows and diagnostics.
     public static let cloudProvider: CloudProvider = .soniox
 
     static let segmentGapMs: Int64 = 800
@@ -63,7 +63,6 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
     /// What the app has learned about which containers Soniox will read. Consulted by the
     /// SYNCHRONOUS path here (the background path is driven by the coordinator, which owns the
     /// same store), and written to when this path is the one that discovers a rejection.
-    private let formatMemory: any CloudUploadFormatMemory
     /// Injectable so tests can poll without real delays.
     private let sleep: @Sendable (Int64) async throws -> Void
 
@@ -80,7 +79,6 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         pollIntervalMs: Int64 = SonioxTranscriptionProvider.defaultPollIntervalMs,
         maxPollAttempts: Int = SonioxTranscriptionProvider.defaultMaxPollAttempts,
         maxUploadBytes: Int = SonioxTranscriptionProvider.defaultMaxUploadBytes,
-        formatMemory: any CloudUploadFormatMemory = NoCloudUploadFormatMemory(),
         sleep: @escaping @Sendable (Int64) async throws -> Void = { ms in
             try await Task.sleep(nanoseconds: UInt64(max(0, ms)) * 1_000_000)
         }
@@ -97,7 +95,6 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         self.pollIntervalMs = pollIntervalMs
         self.maxPollAttempts = maxPollAttempts
         self.maxUploadBytes = maxUploadBytes
-        self.formatMemory = formatMemory
         self.sleep = sleep
     }
 
@@ -120,49 +117,19 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
 
         let pcm = try await collectPcm(pcmChunks: pcmChunks)
 
-        // This path receives DECODED PCM, so passthrough is not available to it and the ladder
-        // starts at FLAC. One downgrade is possible (FLAC -> WAV) and it is taken inline rather
-        // than by failing the segment: a container Soniox will not read is not a reason to make
-        // the user wait out a backoff for audio we are holding right now.
-        var format = CloudUploadFormatPreference.resolve(
-            ladder: Self.pcmFormatLadder, rejected: formatMemory.rejectedFormats(Self.cloudProvider))
-        while true {
-            let audio = CloudAudioBody.encode(pcm: pcm, sampleRateHz: sampleRateHz, format: format)
-            do {
-                let fileId = try await uploadFile(key: key, audio: audio)
-                do {
-                    let result = try await transcribeUploadedFile(key: key, fileId: fileId)
-                    await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
-                    formatMemory.noteSuccess(Self.cloudProvider)
-                    return result
-                } catch {
-                    await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
-                    throw error
-                }
-            } catch {
-                guard let next = downgrade(after: error, from: format) else { throw error }
-                format = next
-            }
+        // This path receives DECODED PCM, so passthrough is not available to it: it sends FLAC,
+        // which Soniox documents.
+        let audio = CloudAudioBody.encode(
+            pcm: pcm, sampleRateHz: sampleRateHz, format: Self.pcmFormat)
+        let fileId = try await uploadFile(key: key, audio: audio)
+        do {
+            let result = try await transcribeUploadedFile(key: key, fileId: fileId)
+            await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
+            return result
+        } catch {
+            await deleteQuietly(key: key, url: "\(baseUrl)/v1/files/\(fileId)")
+            throw error
         }
-    }
-
-    /// Records a container Soniox has refused and returns the next rung, or nil when this failure
-    /// was not about the container (or there is nowhere left to fall).
-    private func downgrade(after error: Error, from format: CloudAudioFormat) -> CloudAudioFormat? {
-        if case TranscriptionError.noSpeechDetected = error { return nil }
-        guard let complaint = CloudUploadFormatRejection.complaint(in: error),
-            CloudUploadFormatRejection.isFormatRejection(
-                format: format, httpStatus: complaint.httpStatus, body: complaint.evidence),
-            let next = CloudUploadFormatPreference.next(
-                after: format, ladder: Self.pcmFormatLadder,
-                rejected: formatMemory.rejectedFormats(Self.cloudProvider))
-        else { return nil }
-        formatMemory.recordRejection(
-            CloudFormatRejectionRecord(
-                format: format, httpStatus: complaint.httpStatus, evidence: complaint.evidence,
-                recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000)),
-            provider: Self.cloudProvider)
-        return next
     }
 
     /// Create -> poll -> fetch -> map for an already-uploaded file; always best-effort deletes
@@ -445,8 +412,8 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
 
     /// Every failed Soniox response, with its status and body preserved as a
     /// `CloudFormatComplaint` alongside the rendered message. The message is what the user's
-    /// diagnostics show; the complaint is what `CloudUploadFormatRejection` reasons about, and
-    /// keeping both means the upload coordinator never has to parse a sentence to find a status.
+    /// diagnostics show; the complaint carries the status and body structurally, so the upload
+    /// coordinator never has to parse a sentence to find a status.
     private func failure(stage: String, status: Int, body: String) -> TranscriptionError {
         .transcriptionFailed(
             "Soniox \(stage) failed (\(status)): \(body.prefix(240))",

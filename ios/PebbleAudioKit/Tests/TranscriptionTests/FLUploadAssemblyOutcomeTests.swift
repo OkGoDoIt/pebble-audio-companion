@@ -64,7 +64,7 @@ private final class PlanControlledProvider: TranscriptionProvider, CloudUploadCa
         throw AssertionError("not used")
     }
 
-    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
     func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         guard plans else { return nil }

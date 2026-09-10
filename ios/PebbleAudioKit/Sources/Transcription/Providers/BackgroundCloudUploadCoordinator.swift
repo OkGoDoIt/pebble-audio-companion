@@ -58,11 +58,9 @@ public struct SegmentAudio: Sendable {
         onFallback: ((Error) -> Void)? = nil
     ) -> CloudAudioBody {
         if let packaged { return packaged }
-        let fromPcm =
-            format == .oggSpeex
-            ? (CloudUploadFormatPreference.next(
-                after: .oggSpeex, ladder: CloudUploadFormatPreference.ladder) ?? .wav)
-            : format
+        // Speex cannot be produced from decoded PCM, so a passthrough request that arrives here
+        // with no packaged body falls to the PCM container.
+        let fromPcm = format == .oggSpeex ? CloudUploadFormats.fromPcm : format
         return CloudAudioBody.encode(
             wav: wav, sampleRateHz: sampleRateHz, format: fromPcm, onFallback: onFallback)
     }
@@ -125,12 +123,6 @@ public actor BackgroundCloudUploadCoordinator {
         public var resetAbandonedUploads:
             @Sendable (_ inFlight: Set<String>, _ graceMs: Int64) async -> [String]
 
-        /// Returns a task to Pending WITHOUT counting the attempt, for an upload that failed for a
-        /// reason that says nothing about the segment — today, only a container the provider will
-        /// not read. Defaults to `markFailed(retryable:)`, which still retries the audio but does
-        /// spend an attempt; the real wiring supplies `TranscriptionQueue.requeueWithoutAttempt`.
-        public var requeueWithoutAttempt: (@Sendable (_ segmentId: String) async -> Void)?
-
         public init(
             pendingSegmentIds: @escaping @Sendable () async -> [String],
             uploadingSegmentIds: @escaping @Sendable () async -> Set<String>,
@@ -142,8 +134,7 @@ public actor BackgroundCloudUploadCoordinator {
                 async -> Void,
             markFailed: @escaping @Sendable (String, String, Bool) async -> Void,
             markNoSpeech: @escaping @Sendable (String) async -> Void,
-            resetAbandonedUploads: @escaping @Sendable (Set<String>, Int64) async -> [String],
-            requeueWithoutAttempt: (@Sendable (String) async -> Void)? = nil
+            resetAbandonedUploads: @escaping @Sendable (Set<String>, Int64) async -> [String]
         ) {
             self.pendingSegmentIds = pendingSegmentIds
             self.uploadingSegmentIds = uploadingSegmentIds
@@ -154,7 +145,6 @@ public actor BackgroundCloudUploadCoordinator {
             self.markFailed = markFailed
             self.markNoSpeech = markNoSpeech
             self.resetAbandonedUploads = resetAbandonedUploads
-            self.requeueWithoutAttempt = requeueWithoutAttempt
         }
     }
 
@@ -174,10 +164,7 @@ public actor BackgroundCloudUploadCoordinator {
     /// nothing on it would read. See `SegmentAudio`.
     private let audioSource:
         @Sendable (_ segmentId: String, _ format: CloudAudioFormat) async -> SegmentAudio?
-    /// What the app has learned about each provider's appetite for containers.
-    private let formatMemory: any CloudUploadFormatMemory
-    /// Diagnostics sink for a decision the user never sees: which container a segment went up in,
-    /// and why one stopped being offered.
+    /// Diagnostics sink for a decision the user never sees: which container a segment went up in.
     private let log: @Sendable (String) -> Void
     private let bodyDir: URL
     private let nowMs: @Sendable () -> Int64
@@ -205,7 +192,6 @@ public actor BackgroundCloudUploadCoordinator {
         cloudPrimary: @escaping @Sendable () -> Bool,
         maxConcurrentUploads: Int = BackgroundCloudUploadCoordinator.defaultMaxConcurrentUploads,
         silenceFloorRms: Double? = SegmentEnergy.provableSilenceFloorRms,
-        formatMemory: any CloudUploadFormatMemory = NoCloudUploadFormatMemory(),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.uploader = uploader
@@ -213,7 +199,6 @@ public actor BackgroundCloudUploadCoordinator {
         self.jobStore = jobStore
         self.queue = queue
         self.audioSource = audioSource
-        self.formatMemory = formatMemory
         self.log = log
         self.bodyDir = bodyDir
         self.nowMs = nowMs
@@ -305,12 +290,8 @@ public actor BackgroundCloudUploadCoordinator {
         guard await cloudProvider.isAvailable() else { return }
         var budget = max(0, maxConcurrentUploads - (await queue.uploadingSegmentIds()).count)
         if budget == 0 { return }
-        // Resolved once per pass, not per segment: it is the same answer for every segment going
-        // to the same provider, and it is what the audio source is told to produce.
-        let provider = cloudProvider.selectedProvider()
-        let format = CloudUploadFormatPreference.resolve(
-            ladder: capable.uploadFormatLadder,
-            rejected: formatMemory.rejectedFormats(provider))
+        // A constant for this provider, and what the audio source is told to produce.
+        let format = capable.uploadFormat
         for segmentId in await queue.pendingSegmentIds() {
             if budget == 0 { break }
             guard let audio = await audioSource(segmentId, format) else {
@@ -450,23 +431,9 @@ public actor BackgroundCloudUploadCoordinator {
         guard let job = jobStore.load(jobId: outcome.jobId) else { return }
         deleteBody(job) // the transport is done with the body file either way
         guard outcome.isSuccess else {
-            // A container the provider will not read is not a failed segment — it is the same
-            // segment, addressed wrongly. Learn it, refund the attempt, and let the next pipeline
-            // pass send the identical audio one rung down.
-            if await downgradedFormat(
-                job,
-                httpStatus: outcome.httpStatus,
-                body: outcome.responseBody,
-                providerAnswered: outcome.error == nil)
-            {
-                return
-            }
             await fail(job, outcome.error ?? "upload failed (\(outcome.httpStatus))")
             return
         }
-        // Deliberately NOT `noteSuccess` here. For Soniox a 2xx means the bytes were stored, not
-        // that they were readable — the transcode happens in the control plane. A transcript is
-        // the only proof the container worked, so that is where success is recorded.
         guard let capable = cloudProvider.capable(job.provider) else {
             await fail(job, "cloud provider \(job.provider.rawValue) unavailable")
             return
@@ -509,95 +476,13 @@ public actor BackgroundCloudUploadCoordinator {
         if error is CancellationError { return }
         if case TranscriptionError.noSpeechDetected = error {
             // Real speech-free audio, not a container problem: the provider read the file.
-            formatMemory.noteSuccess(job.provider)
             await noSpeech(job)
-            return
-        }
-        // Soniox accepts the file first and only transcodes it in the control plane, so a Speex
-        // rejection from that provider arrives HERE rather than as an upload status. Every failed
-        // control-plane response carries a `CloudFormatComplaint` with its status and body, so the
-        // same classifier judges it; a local failure (a timeout, a malformed response) carries
-        // none and is not treated as evidence about the container either way.
-        let complaint = CloudUploadFormatRejection.complaint(in: error)
-        if await downgradedFormat(
-            job,
-            httpStatus: complaint?.httpStatus ?? 0,
-            body: complaint?.evidence ?? "",
-            providerAnswered: complaint != nil)
-        {
             return
         }
         await fail(job, errorMessage(error) ?? fallbackMessage)
     }
 
-    /// Whether this failure was (or should be treated as) the provider refusing the container.
-    /// When it is: the rejection is learned durably, the job record is dropped, and the segment
-    /// goes back to Pending with its attempt refunded.
-    private func downgradedFormat(
-        _ job: CloudUploadJob,
-        httpStatus: Int,
-        body: String,
-        providerAnswered: Bool
-    ) async -> Bool {
-        // Old job records (written before the format was tracked) carry no format; they are FLAC
-        // or WAV by construction, and there is nothing safe to conclude about a container we did
-        // not record. Leave them on the ordinary failure path.
-        guard let format = job.uploadFormat, format != .wav else { return false }
-        let ladder =
-            cloudProvider.capable(job.provider)?.uploadFormatLadder
-            ?? CloudUploadFormatPreference.ladder
-        guard CloudUploadFormatPreference.next(after: format, ladder: ladder) != nil else {
-            return false
-        }
-        // Never evidence about the bytes: a dead radio, a backend outage, a bad key, a rate limit,
-        // a missing endpoint, a body that was simply too big. Not even counted towards the
-        // backstop, because an unrelated failure that repeats would otherwise accumulate into a
-        // downgrade all on its own.
-        guard providerAnswered,
-            CloudUploadFormatRejection.couldConcernThePayload(httpStatus: httpStatus)
-        else { return false }
-
-        let reason: String
-        if CloudUploadFormatRejection.isFormatRejection(
-            format: format, httpStatus: httpStatus, body: body)
-        {
-            reason = httpStatus > 0 ? "HTTP \(httpStatus)" : "provider reported a decode failure"
-        } else if formatMemory.noteInconclusiveFailure(job.provider, format: format) {
-            reason =
-                "\(CloudUploadFormatStore.consecutiveFailuresBeforeDowngrade) consecutive "
-                + "unexplained provider failures"
-        } else {
-            return false
-        }
-
-        formatMemory.recordRejection(
-            CloudFormatRejectionRecord(
-                format: format, httpStatus: httpStatus,
-                evidence: body.isEmpty ? reason : body, recordedAtMs: nowMs()),
-            provider: job.provider)
-        let fallback = CloudUploadFormatPreference.resolve(
-            ladder: ladder, rejected: formatMemory.rejectedFormats(job.provider))
-        log(
-            "\(job.provider.rawValue) will not take \(format.rawValue) (\(reason)); "
-                + "uploads now use \(fallback.rawValue), \(job.jobId) requeued")
-        // Reached from `reconcile` as well as from an upload outcome, and only the latter has
-        // already dropped the staged body.
-        deleteBody(job)
-        jobStore.delete(jobId: job.jobId)
-        if let requeue = queue.requeueWithoutAttempt {
-            await requeue(job.jobId)
-        } else {
-            // No refund hook wired: still retry the audio rather than lose it, at the cost of one
-            // attempt from the ladder.
-            await queue.markFailed(
-                job.jobId, "upload format \(format.rawValue) rejected; retrying", true)
-        }
-        return true
-    }
-
     private func complete(_ job: CloudUploadJob, _ result: TranscriptionResult) async {
-        // A transcript is the only proof the container was readable end to end.
-        formatMemory.noteSuccess(job.provider)
         // Durability order: transcript save BEFORE marking the task complete. Background uploads
         // are always cloud-primary, so provenance is honest RemoteOnly.
         await queue.saveTranscript(job.jobId, result, .remoteOnly)

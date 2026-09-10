@@ -12,13 +12,9 @@ import Foundation
 ///  - upload-then-control-plane (Soniox): the upload returns a file handle; the small
 ///    create/poll/fetch control plane runs later in an awake window -> `.needsControlPlane`.
 public protocol CloudUploadCapable: Sendable {
-    /// Containers this provider is willing to be offered, best first.
-    ///
-    /// The COORDINATOR walks this, not the provider, because the ladder position depends on what
-    /// the app has durably learned about the provider (`CloudUploadFormatMemory`) and on what the
-    /// spool can actually supply for this segment — neither of which a provider knows. See
-    /// `CloudUploadFormatPreference`.
-    var uploadFormatLadder: [CloudAudioFormat] { get }
+    /// The container this provider is sent, decided once by measurement rather than at runtime.
+    /// See `CloudUploadFormats`.
+    var uploadFormat: CloudAudioFormat { get }
 
     /// The initial background upload (endpoint, headers, multipart parts) for an already-packaged
     /// body, or nil if this provider cannot currently background-upload (e.g. no key / consent /

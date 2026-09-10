@@ -56,7 +56,7 @@ private final class FakeOpenAi: TranscriptionProvider, CloudUploadCapable, @unch
         throw AssertionError("not used")
     }
 
-    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
     func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(
@@ -88,7 +88,7 @@ private final class FakeSoniox: TranscriptionProvider, CloudUploadCapable, @unch
         throw AssertionError("not used")
     }
 
-    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
     func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(

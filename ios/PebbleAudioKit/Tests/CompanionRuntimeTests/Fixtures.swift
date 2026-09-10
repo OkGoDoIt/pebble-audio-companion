@@ -183,7 +183,7 @@ final class FakeCloudUploadBackend: TranscriptionProvider, CloudUploadCapable, @
         TranscriptionResult(text: "unused", providerId: id, modelUsed: "m")
     }
 
-    let uploadFormatLadder: [CloudAudioFormat] = CloudUploadFormatPreference.ladder
+    let uploadFormat: CloudAudioFormat = CloudUploadFormats.passthrough
 
     func uploadPlan(audio: CloudAudioBody, sampleRateHz: Int) async -> CloudUploadPlan? {
         CloudUploadPlan(
