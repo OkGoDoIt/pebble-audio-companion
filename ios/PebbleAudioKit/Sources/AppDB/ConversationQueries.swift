@@ -79,6 +79,10 @@ public struct ConversationListRow: Equatable, Sendable {
     /// Authoritative-pass attempts already spent (`EnrichmentWorker.maxAttempts` bounds them).
     /// Lets the UI tell "still working on it" apart from "it tried and gave up".
     public var annotationFinalAttempts: Int
+    /// At least one member finished with a transcript that has words in it. A conversation whose
+    /// every member ended as no-speech has nothing for the enrichment pass to read, so it will
+    /// never get a title — and must not be counted as waiting for one.
+    public var hasSpeech: Bool
 
     /// Public so callers outside the kit can build one. Without it the memberwise initializer is
     /// internal, and the app layer's mappers from this type into its display models (Today's
@@ -100,7 +104,8 @@ public struct ConversationListRow: Equatable, Sendable {
         openFollowUpCount: Int = 0,
         dateKey: String = "",
         hasAnnotation: Bool = false,
-        annotationFinalAttempts: Int = 0
+        annotationFinalAttempts: Int = 0,
+        hasSpeech: Bool = true
     ) {
         self.id = id
         self.title = title
@@ -118,6 +123,7 @@ public struct ConversationListRow: Equatable, Sendable {
         self.dateKey = dateKey
         self.hasAnnotation = hasAnnotation
         self.annotationFinalAttempts = annotationFinalAttempts
+        self.hasSpeech = hasSpeech
     }
 
     public var durationMs: Int64 { max(0, endMs - startMs) }
@@ -129,7 +135,7 @@ public struct ConversationListRow: Equatable, Sendable {
     /// "waiting": counting it made Diagnostics say "54 waiting" all afternoon for work that was
     /// never going to happen.
     public var awaitingAnnotation: Bool {
-        !hasAnnotation && lifecycle == .complete
+        !hasAnnotation && lifecycle == .complete && hasSpeech
             && annotationFinalAttempts < AnnotationPolicy.maxFinalAttempts
     }
 
@@ -359,7 +365,8 @@ public struct ConversationQueries: Sendable {
                 openFollowUpCount: counts.open,
                 dateKey: prelim.keys[0],
                 hasAnnotation: !(title ?? "").isEmpty || !(summary ?? "").isEmpty,
-                annotationFinalAttempts: row["finalAttempts"] ?? 0
+                annotationFinalAttempts: row["finalAttempts"] ?? 0,
+                hasSpeech: (memberStates[id] ?? []).contains { $0.segment == .complete }
             )
         }
     }
