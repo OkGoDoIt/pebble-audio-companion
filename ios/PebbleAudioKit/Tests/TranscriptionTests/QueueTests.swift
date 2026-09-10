@@ -318,6 +318,6 @@ import Testing
 
     @Test func everyKindHasAnAnswer() {
         // A new kind must be classified deliberately, not inherit a default.
-        #expect(TranscriptionFailureKind.allCases.count == 13)
+        #expect(TranscriptionFailureKind.allCases.count == 14)
     }
 }

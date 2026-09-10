@@ -65,7 +65,7 @@ public enum ProcessingFallbackCause: String, Sendable, Equatable, CaseIterable {
             return .notAvailable
         case .noConnection:
             return .noConnection
-        case .keyRejected, .keyNotPermitted, .rateLimited:
+        case .keyRejected, .keyNotPermitted, .rateLimited, .accountOutOfFunds:
             return .notAccepted
         case .providerTrouble, .providerRefusedAudio, .timedOut, .recordingTooLong,
             .localEngineFailed, .audioUnreadable, .unknown:

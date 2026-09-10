@@ -18,8 +18,15 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     case keyRejected
     /// 403 — a real key without permission for this API.
     case keyNotPermitted
-    /// 429 — throttled, or the account is out of credit.
+    /// 429 — throttled. Busy, not broke: see `accountOutOfFunds`.
     case rateLimited
+    /// The provider's account has no money left. 402, or a body that says so in words.
+    ///
+    /// Split out of `providerTrouble` after a real outage (2026-09-10): a Soniox balance ran dry
+    /// and every surface told the user "the provider had trouble on its side", which is both
+    /// wrong and the opposite of actionable — this is the one failure in the list the user can
+    /// fix completely, in a minute, from their provider's billing page.
+    case accountOutOfFunds
     /// 5xx, or the provider reported an error of its own. Nothing here is the user's to fix.
     case providerTrouble
     /// The provider took the audio but never returned a usable handle for it.
@@ -58,8 +65,8 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     /// failed and stay visible in Diagnostics, which is the honest outcome.
     public var isWorthRevisiting: Bool {
         switch self {
-        case .keyRejected, .keyNotPermitted, .rateLimited, .providerTrouble, .timedOut,
-            .noConnection, .modelMissing, .localEngineFailed, .notConfigured, .unknown:
+        case .keyRejected, .keyNotPermitted, .rateLimited, .accountOutOfFunds, .providerTrouble,
+            .timedOut, .noConnection, .modelMissing, .localEngineFailed, .notConfigured, .unknown:
             return true
         case .recordingTooLong, .audioUnreadable, .providerRefusedAudio:
             return false
@@ -82,12 +89,18 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
         // the line says.
         if text.contains("provider unavailable") { return .notConfigured }
 
+        // Money before status. A dry account reaches us as 402 (Soniox realtime), as a statusless
+        // control-plane message (Soniox async), and as a 429 with billing wording (OpenAI) — three
+        // codes for one cause, so the WORDS decide and the status only confirms.
+        if Self.readsAsOutOfFunds(text) { return .accountOutOfFunds }
+
         // An HTTP status the provider gave us is the most specific thing available, and it maps
         // onto the same advice the key check already gives for the same code.
         if let status = httpStatus(in: message) {
             switch status {
             case 401: return .keyRejected
             case 403: return .keyNotPermitted
+            case 402: return .accountOutOfFunds
             case 429: return .rateLimited
             case 408, 504: return .timedOut
             case 413: return .recordingTooLong
@@ -130,6 +143,19 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
             return .noConnection
         }
         return .unknown
+    }
+
+    /// Wording that means the account is out of money rather than out of patience. Matched
+    /// against the whole stored message, since the provider's own body is spliced into it.
+    static let outOfFundsPhrases = [
+        "balance exhausted", "add funds", "autopay", "insufficient funds", "insufficient balance",
+        "insufficient credit", "out of credit", "no credits", "credit balance",
+        "exceeded your current quota", "quota exceeded", "billing details", "payment required",
+        "payment method",
+    ]
+
+    static func readsAsOutOfFunds(_ lowercasedText: String) -> Bool {
+        outOfFundsPhrases.contains { lowercasedText.contains($0) }
     }
 
     /// Prefix `storedFailureMessage` uses for a `URLError`; also what `classify` looks for.

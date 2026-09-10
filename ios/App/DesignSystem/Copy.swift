@@ -304,7 +304,10 @@ enum Copy {
     enum TranscriptionFailure {
         static let keyRejected = "The provider didn’t accept your key. Check it in Transcription & AI."
         static let keyNotPermitted = "Your key isn’t allowed to use this API. Check its permissions."
-        static let rateLimited = "The provider was busy, or the account is out of credit."
+        static let rateLimited = "The provider was busy. It will try again."
+        static let accountOutOfFunds =
+            "Your transcription account is out of credit. Add funds and this picks up where it "
+            + "left off."
         static let providerTrouble = "The provider had trouble on its side."
         static let providerRefusedAudio = "The provider didn’t accept the recording."
         static let timedOut = "The provider took too long to answer."
@@ -335,6 +338,7 @@ enum Copy {
             static let keyRejected = "key not accepted"
             static let keyNotPermitted = "key not permitted"
             static let rateLimited = "provider busy"
+            static let accountOutOfFunds = "out of credit"
             static let providerTrouble = "provider trouble"
             static let providerRefusedAudio = "upload refused"
             static let timedOut = "timed out"

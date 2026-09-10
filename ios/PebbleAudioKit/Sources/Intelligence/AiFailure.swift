@@ -41,8 +41,11 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     case keyRejected
     /// 403 — a real key without permission for this model.
     case keyNotPermitted
-    /// 429 — throttled, or the account is out of credit.
+    /// 429 — throttled. Busy, not broke: see `accountOutOfFunds`.
     case rateLimited
+    /// The provider's account has no money left. The one kind on this axis the user can fix
+    /// completely, in a minute, from their provider's billing page.
+    case accountOutOfFunds
     /// 5xx, or the provider reported an error of its own. Nothing here is the user's to fix.
     case providerTrouble
     /// The provider accepted the job and never finished it.
@@ -209,6 +212,7 @@ public struct AiFailure: Sendable, Equatable {
         case .keyRejected: return .keyRejected
         case .keyNotPermitted: return .keyNotPermitted
         case .rateLimited: return .rateLimited
+        case .accountOutOfFunds: return .accountOutOfFunds
         case .providerTrouble, .providerRefusedAudio: return .providerTrouble
         case .timedOut: return .timedOut
         case .noConnection: return .noConnection

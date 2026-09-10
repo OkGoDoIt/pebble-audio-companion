@@ -37,8 +37,9 @@ extension Copy {
         static let keyNotPermitted =
             "Your OpenAI key does not have access to this model. Pick another in "
             + "Transcription & AI."
-        static let rateLimited =
-            "OpenAI is rate limiting this account, or it is out of credit. Try again later."
+        static let rateLimited = "OpenAI is rate limiting this account. Try again later."
+        static let accountOutOfFunds =
+            "Your OpenAI account is out of credit. Add funds and this picks up where it left off."
         static let providerTrouble =
             "OpenAI had a problem with this request. Nothing here is yours to fix — try again."
         static let timedOut = "The request took too long and was given up on. Try again."
@@ -87,6 +88,7 @@ extension AiFailureKind {
         case .keyRejected: return Copy.AiFailure.keyRejected
         case .keyNotPermitted: return Copy.AiFailure.keyNotPermitted
         case .rateLimited: return Copy.AiFailure.rateLimited
+        case .accountOutOfFunds: return Copy.AiFailure.accountOutOfFunds
         case .providerTrouble: return Copy.AiFailure.providerTrouble
         case .timedOut: return Copy.AiFailure.timedOut
         case .noConnection: return Copy.AiFailure.noConnection
