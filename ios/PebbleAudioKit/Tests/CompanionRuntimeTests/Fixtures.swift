@@ -113,11 +113,17 @@ final class RecordingLifecycle: LocalTranscriptionLifecycle, @unchecked Sendable
 final class RecordingLossNotifier: LossNotifier, @unchecked Sendable {
     private let lock = NSLock()
     private var _events: [LossEvent] = []
+    private var _watchOffNotices = 0
 
     var events: [LossEvent] { lock.withLock { _events } }
+    var watchOffNotices: Int { lock.withLock { _watchOffNotices } }
 
     func notifyAudioMissed(_ event: LossEvent) async {
         lock.withLock { _events.append(event) }
+    }
+
+    func notifyCaptureStoppedOnWatch() async {
+        lock.withLock { _watchOffNotices += 1 }
     }
 }
 

@@ -40,12 +40,23 @@ public struct LossEvent: Sendable, Equatable {
 /// something to say. It deep-links to `companion://today`.
 public protocol LossNotifier: Sendable {
     func notifyAudioMissed(_ event: LossEvent) async
+    /// The watch reported background audio OFF while the person's intent is to record. The
+    /// watch does this on its own after a fault loop (three restarts without a healthy
+    /// session), and nothing the app can send will turn it back on without the person: on
+    /// 2026-09-09 that was two hours of silence, an app opened twice to a status nobody had
+    /// been told about, and a Start tap that fixed it in a second.
+    func notifyCaptureStoppedOnWatch() async
+}
+
+extension LossNotifier {
+    public func notifyCaptureStoppedOnWatch() async {}
 }
 
 /// A `LossNotifier` that does nothing — the default when the app has not wired notifications.
 public struct NoopLossNotifier: LossNotifier {
     public init() {}
     public func notifyAudioMissed(_ event: LossEvent) async {}
+    public func notifyCaptureStoppedOnWatch() async {}
 }
 
 /// Q9 trigger mechanics (plan 6.10), evaluated retroactively at gap-persist time.
@@ -103,6 +114,13 @@ public actor LossEventEvaluator {
 
     /// Call once per persisted gap, AFTER the gap is durable in `meta` (so the visible-loss
     /// classifier sees the full gap list). Returns the event that fired, if any.
+    /// Forwards the watch's own decision to stop; not subject to the loss threshold, which is
+    /// about gaps in audio that is otherwise flowing. Once per transition (the caller's job).
+    public func watchTurnedCaptureOff() async {
+        guard captureIsActive() else { return }
+        await notifier.notifyCaptureStoppedOnWatch()
+    }
+
     @discardableResult
     public func gapPersisted(
         meta: SegmentMeta,

@@ -83,6 +83,19 @@ actor UserNotificationLossNotifier: LossNotifier {
     static let routeUserInfoKey = "route"
     static var routeURLString: String { Route.today(date: nil).url.absoluteString }
 
+    func notifyCaptureStoppedOnWatch() async {
+        // Same opt-in gate as the loss alert, and the same permission rule: never prompt off the
+        // back of an event. Not rate-limited with the loss alert — this is a different fact, it
+        // happens once per stand-down, and the person can act on it immediately.
+        guard isEnabled else { return }
+        guard await hasPermission() else { return }
+        await scheduler.schedule(
+            title: Copy.Notifications.watchOffTitle,
+            body: Copy.Notifications.watchOffBody,
+            userInfo: [Self.routeUserInfoKey: Self.routeURLString]
+        )
+    }
+
     func notifyAudioMissed(_ event: LossEvent) async {
         // Opt-in gate first: when the alert is off the app must be completely silent, and in
         // particular must never prompt for notification permission off the back of a gap.

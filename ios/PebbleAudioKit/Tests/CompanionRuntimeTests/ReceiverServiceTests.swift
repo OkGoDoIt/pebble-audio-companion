@@ -68,6 +68,37 @@ import WireProtocol
         #expect(fixture.link.resyncCount == 0)
     }
 
+    // The watch turned background audio off by itself (a fault-loop stand-down) at 20:01 on
+    // 2026-09-09 and the app sat in denied(3) for two hours, retrying an authorization that can
+    // never succeed and telling nobody. Once per entry into that state, the person is told.
+    @Test func theWatchTurningItselfOffWhileRecordingIsWantedIsAnnouncedOnce() async throws {
+        let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: .active))
+        await fixture.receiver.start()
+        fixture.receiver.state.value = .streaming(streamId: 7)
+        #expect(fixture.lossNotifier.watchOffNotices == 0)
+
+        fixture.receiver.state.value = .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+        #expect(await waitUntil { fixture.lossNotifier.watchOffNotices == 1 })
+
+        // The session keeps re-trying: authorizing -> denied again is the same fact, not news.
+        fixture.receiver.state.value = .authorizing
+        fixture.receiver.state.value = .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+        #expect(!(await waitUntil { fixture.lossNotifier.watchOffNotices > 1 }))
+
+        // Recording came back and the watch went off again: that is news.
+        fixture.receiver.state.value = .streaming(streamId: 8)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        fixture.receiver.state.value = .denied(statusRaw: Int(AuthStatus.deniedDisabled.rawValue))
+        #expect(await waitUntil { fixture.lossNotifier.watchOffNotices == 2 })
+
+        // A mismatch denial is a different problem and says nothing about the watch's switch.
+        fixture.receiver.state.value = .streaming(streamId: 9)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        fixture.receiver.state.value = .denied(statusRaw: Int(AuthStatus.deniedMismatch.rawValue))
+        #expect(!(await waitUntil { fixture.lossNotifier.watchOffNotices > 2 }))
+        await fixture.receiver.stop()
+    }
+
     @Test func armingWhileDeniedDisabledResyncsTheLink() async throws {
         let fixture = try RuntimeFixture()
         // The watch refused because Background Audio is off there: without a resync the new

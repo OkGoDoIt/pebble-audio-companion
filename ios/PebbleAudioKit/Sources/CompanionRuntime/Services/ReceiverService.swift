@@ -102,6 +102,10 @@ public actor ReceiverService {
     private var storeRecovered: Bool
     /// Watches the session state so residency tracks the watch's stream.
     private var residencyFollower: Task<Void, Never>?
+    /// Fires the "watch turned background audio off" notice once per entry into that state.
+    private var watchOffFollower: Task<Void, Never>?
+    private var watchOffNoticed = false
+    private let lossEvaluator: LossEventEvaluator?
     /// Invalidates a pending residency release when the stream comes back first.
     private var residencyGeneration: UInt64 = 0
 
@@ -134,6 +138,7 @@ public actor ReceiverService {
         intent.set(initialIntent)
         let armed = ArmedFlag()
         self.storeRecovered = !sessionWaitsForStoreRecovery
+        self.lossEvaluator = lossEvaluator
 
         self.link = link
         self.store = store
@@ -247,9 +252,38 @@ public actor ReceiverService {
         // already protected.
         syncResidency()
         startResidencyFollower()
+        startWatchOffFollower()
         link.connect()
         sessionWanted = true
         startSessionIfReady()
+    }
+
+    /// The watch saying "disabled" while the person wants recording is the one link state the
+    /// app cannot fix by itself: the watch stood down after a fault loop, or someone turned it
+    /// off on the wrist. Re-authorizing (which the session keeps doing) can never succeed, so
+    /// the person has to be told, once, the moment it happens — not discover it hours later.
+    private func startWatchOffFollower() {
+        guard watchOffFollower == nil else { return }
+        let states = session.state.stream()
+        watchOffFollower = Task { [weak self] in
+            for await state in states {
+                guard let self else { return }
+                await self.noteWatchOff(state)
+            }
+        }
+    }
+
+    private func noteWatchOff(_ state: ReceiverSessionState) async {
+        guard state.deniedStatus == .deniedDisabled else {
+            if state.isStreaming || state == .authorized { watchOffNoticed = false }
+            return
+        }
+        guard !watchOffNoticed, intentBox.value == .active else { return }
+        watchOffNoticed = true
+        log.write(
+            "watch reports background audio OFF while recording is wanted — it stood down or was "
+                + "turned off on the wrist; only a Start tap (or the watch) turns it back on")
+        await lossEvaluator?.watchTurnedCaptureOff()
     }
 
     /// The runtime's statement that `SegmentStore.recover()` has run. A `start()` that arrived
@@ -363,6 +397,8 @@ public actor ReceiverService {
         residencyFollower?.cancel()
         residencyFollower = nil
         residency?.setWanted(false)
+        watchOffFollower?.cancel()
+        watchOffFollower = nil
         sessionWanted = false
         sessionTask?.cancel()
         sessionTask = nil

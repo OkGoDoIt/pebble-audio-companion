@@ -1117,6 +1117,11 @@ enum Copy {
     // ─────────────────────────────────────────────────────────────────────────
     enum Notifications {
         static let lossTitle = "Some audio was missed"
+        /// The watch stood down (fault loop) or was switched off on the wrist while recording
+        /// was wanted. Deep-links to Today, where Start turns it back on.
+        static let watchOffTitle = "Your watch stopped recording"
+        static let watchOffBody =
+            "Your Pebble turned background audio off. Open the app and tap Start to turn it back on."
         /// e.g. duration "20 minutes". Deep-links to Today.
         static func lossBody(duration: String) -> String {
             "Your Pebble couldn’t reach this phone for about \(duration) — audio in that window is missing."
