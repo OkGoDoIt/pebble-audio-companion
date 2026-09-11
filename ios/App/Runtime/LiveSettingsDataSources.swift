@@ -172,10 +172,27 @@ final class LiveStorageStatsSource: StorageStatsSource {
     /// never re-read it and the free-space line was frozen at whatever it said on first draw.
     private(set) var freeSpace = "—"
 
+    /// Whether the Storage screen is on screen. The BYTE sweep — a stat of every log file in the
+    /// spool — runs only while it is; the count is a length of an in-memory index and is kept
+    /// fresh regardless, because the main Settings screen shows it.
+    ///
+    /// This source exists from launch, and it used to run the full sweep on every library tick
+    /// whether or not anyone could see the number: measured 2026-09-11 at 1.3 CPU-s per 90 s,
+    /// backgrounded, on a charger, sizing every file for a screen that was not open. An
+    /// off-screen source records that it is stale and does nothing; appearing refreshes once.
+    @ObservationIgnored private var isVisible = false
+    @ObservationIgnored private var staleWhileHidden = true
+
     init(composition: AppComposition) {
         self.composition = composition
         refresh()
         observe()
+    }
+
+    func setVisible(_ visible: Bool) {
+        isVisible = visible
+        guard visible, staleWhileHidden else { return }
+        refresh()
     }
 
     /// The three moments the numbers move: a library write (a segment closed, a conversation
@@ -202,9 +219,16 @@ final class LiveStorageStatsSource: StorageStatsSource {
 
     func refresh() {
         let composition = self.composition
+        let sweepBytes = isVisible
+        if !sweepBytes { staleWhileHidden = true } else { staleWhileHidden = false }
         Task { [weak self] in
             let store = composition.store
             let metas = await store.listSegments()
+            guard sweepBytes else {
+                guard let self else { return }
+                if recordingCount != metas.count { recordingCount = metas.count }
+                return
+            }
             var bytes: Int64 = 0
             for meta in metas { bytes += await store.logSizeBytes(meta.segmentId) }
             guard let self else { return }

@@ -143,6 +143,10 @@ struct SettingsStorageScreen: View {
             SettingsFooter(text: Copy.Settings.Storage.footer)
         }
         .navigationTitle(Copy.Settings.Storage.title)
+        // The byte sweep only runs while this screen is being looked at; see
+        // `LiveStorageStatsSource.setVisible`.
+        .onAppear { storage.setVisible(true) }
+        .onDisappear { storage.setVisible(false) }
     }
 
     // MARK: Privacy

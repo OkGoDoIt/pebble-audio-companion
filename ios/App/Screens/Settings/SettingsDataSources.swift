@@ -79,6 +79,8 @@ protocol StorageStatsSource: AnyObject {
     /// much of the limit is used without re-deriving it from a display string.
     var recordingsBytes: Int64 { get }
     var freeSpace: String { get }
+    /// The byte sweep runs only while the Storage screen is visible; see `LiveStorageStatsSource`.
+    func setVisible(_ visible: Bool)
     func deleteAllRecordings()
     /// Writes WAV copies of every closed recording. Returns how many files were written.
     func exportAllAudio() async -> Int
@@ -101,6 +103,8 @@ final class MockStorageStatsSource: StorageStatsSource {
         else { return "—" }
         return ByteCountFormatter.string(fromByteCount: capacity, countStyle: .file)
     }
+
+    func setVisible(_ visible: Bool) {}
 
     func deleteAllRecordings() {
         recordingCount = 0
