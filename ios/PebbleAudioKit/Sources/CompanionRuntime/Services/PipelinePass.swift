@@ -46,10 +46,10 @@ public struct PipelineSteps: Sendable {
     /// it every time and `RetentionService` decides whether anything actually runs. Returns true
     /// when it deleted something.
     public var enforceRetentionIfDue: @Sendable () async -> Bool
-    /// Rebuilds the conversation grouping the whole UI reads. Returns whether the persisted
-    /// grouping changed — false means every input it is derived from (segments, their
-    /// transcription states, pauses, the open segment, the user's overrides, the semantic
-    /// verdicts) is exactly as it was last pass.
+    /// Rebuilds the conversation grouping the whole UI reads. Returns whether its STRUCTURE
+    /// changed — a conversation appeared, gained or lost a member, a member's transcription
+    /// state moved, or a conversation went live or closed. The live conversation's extent
+    /// advancing while the watch records is not a structural change.
     public var regroup: @Sendable () async throws -> Bool
     /// Returns the conversation ids whose annotation changed.
     public var enrich: @Sendable () async throws -> [String]

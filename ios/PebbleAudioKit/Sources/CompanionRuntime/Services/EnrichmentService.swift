@@ -147,11 +147,14 @@ public actor EnrichmentService {
     /// The grouping stage: rebuild `conversations` / `conversation_segments` from the segment
     /// metas and the pause journal. Every pass, unconditionally, independent of the AI layer —
     /// this is what makes a segment visible as soon as it closes.
-    /// Returns whether the persisted grouping changed — false means every input the grouping
-    /// is derived from is exactly as it was, which the pipeline uses to skip the AI stages.
+    /// Returns whether the grouping's STRUCTURE changed — membership, a member's state, or a
+    /// conversation going live or closed. False means nothing the AI stages read has moved,
+    /// which the pipeline uses to skip them. The live conversation's extent creeping forward
+    /// while the watch records is deliberately not a change here: it is written, but it is not
+    /// news to a title, a follow-up or a recap.
     @discardableResult
     public func regroupPass() async throws -> Bool {
-        try await regroupDetailed().changed
+        try await regroupDetailed().structureChanged
     }
 
     /// True while `followUpPass` is inside the worker.

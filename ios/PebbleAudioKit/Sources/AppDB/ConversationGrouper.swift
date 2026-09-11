@@ -328,22 +328,36 @@ public enum ConversationGrouper {
     /// missing queue row (see the `v2` migration).
     /// Persists the grouping — and writes NOTHING when it already matches what is stored.
     ///
-    /// Returns whether anything was written. This used to delete and re-insert every row on
+    /// Returns what, if anything, was written. This used to delete and re-insert every row on
     /// every call, which on a phone meant the whole grouping was rewritten every 5 s, identical
     /// or not. Every `ValueObservation` on these tables — the Library, Today, the Settings
     /// storage line, the widget snapshot — fired on each rewrite and refetched, so a pipeline
     /// pass that found nothing to do still cost the app a full refresh of every screen's data,
     /// 12 times a minute, for as long as the phone sat on a charger. A rebuild that changes
     /// nothing must write nothing (the 2026-09-09 rule, one layer down).
+    ///
+    /// The two halves of the answer are kept apart because they mean different things to the
+    /// stages behind the regroup. `wrote` is the DB's view: rows differed and were replaced.
+    /// `structureChanged` is the AI layer's view: a conversation appeared, gained or lost a
+    /// member, a member's transcription state moved, or a conversation went live or closed. The
+    /// live conversation's extent (`endMs`) advances on every pass while the watch is recording,
+    /// so `wrote` is true almost always; nothing the AI stages read has changed when that is the
+    /// only difference.
+    public struct ApplyOutcome: Equatable, Sendable {
+        public var wrote: Bool
+        public var structureChanged: Bool
+    }
+
     @discardableResult
     public static func apply(
         _ conversations: [GroupedConversation],
         segmentStates: [String: TranscriptionState] = [:],
         in db: Database
-    ) throws -> Bool {
-        if try storedImage(db) == image(of: conversations, segmentStates: segmentStates) {
-            return false
-        }
+    ) throws -> ApplyOutcome {
+        let stored = try storedImage(db)
+        let next = image(of: conversations, segmentStates: segmentStates)
+        if stored == next { return ApplyOutcome(wrote: false, structureChanged: false) }
+        let structureChanged = structure(of: stored) != structure(of: next)
         try db.execute(sql: "DELETE FROM conversation_segments")
         try db.execute(sql: "DELETE FROM conversations")
         for convo in conversations {
@@ -370,12 +384,24 @@ public enum ConversationGrouper {
                 )
             }
         }
-        return true
+        return ApplyOutcome(wrote: true, structureChanged: structureChanged)
     }
 
     /// Exactly the columns `apply` writes, in the order it writes them, so equality means
     /// "the write would be a no-op" and nothing else.
     private typealias StoredImage = [[String?]]
+
+    /// The image with the extent columns (startMs, endMs) blanked — what is left is the
+    /// membership and states, which is what `structureChanged` compares.
+    private static func structure(of image: StoredImage) -> StoredImage {
+        image.map { row in
+            guard row.first == "c" else { return row }
+            var r = row
+            r[2] = nil
+            r[3] = nil
+            return r
+        }
+    }
 
     private static func image(
         of conversations: [GroupedConversation], segmentStates: [String: TranscriptionState]
@@ -462,14 +488,18 @@ public enum ConversationGrouper {
         /// segment, overrides and verdicts) produced exactly what was already stored, and
         /// nothing was written.
         public var changed: Bool
+        /// Whether the membership, a member's state, or a live/closed state changed — as
+        /// opposed to only the live conversation's extent creeping forward. See `ApplyOutcome`.
+        public var structureChanged: Bool
 
         public init(
             conversations: [GroupedConversation], candidates: [BoundaryCandidate],
-            changed: Bool = true
+            changed: Bool = true, structureChanged: Bool = true
         ) {
             self.conversations = conversations
             self.candidates = candidates
             self.changed = changed
+            self.structureChanged = structureChanged
         }
     }
 
@@ -514,7 +544,7 @@ public enum ConversationGrouper {
                     fallbackTimeZoneID: fallbackTimeZoneID, previous: previous,
                     evidence: evidence, overrides: overrides, policy: policy,
                     semanticSplits: semanticSplits)
-            let changed = try apply(
+            let outcome = try apply(
                 final.conversations,
                 segmentStates: Dictionary(
                     segments.map { ($0.segmentId, $0.transcriptionState) },
@@ -524,7 +554,7 @@ public enum ConversationGrouper {
             )
             return RebuiltGrouping(
                 conversations: final.conversations, candidates: probe.candidates,
-                changed: changed)
+                changed: outcome.wrote, structureChanged: outcome.structureChanged)
         }
     }
 

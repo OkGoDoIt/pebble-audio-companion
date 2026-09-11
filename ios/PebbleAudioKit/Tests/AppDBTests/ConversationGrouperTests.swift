@@ -227,6 +227,35 @@ import WireProtocol
             segments: [a, bDone], pauses: [], openSegmentId: "b", fallbackTimeZoneID: "UTC",
             db: db)
         #expect(!fifth.changed)
+        #expect(!fifth.structureChanged)
+    }
+
+    // While the watch records, the live conversation's extent advances on every rebuild. That
+    // is a write — the UI reads it — but it is not news to a title, a follow-up or a recap, and
+    // it must not be what keeps the AI stages running twelve times a minute on a charger.
+    @Test func aCreepingLiveExtentIsWrittenButIsNotAStructuralChange() async throws {
+        let db = try AppDatabase.inMemory()
+        let a = makeSegment(
+            id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(10))
+        var live = makeSegment(
+            id: "b", stream: 2, startTimeMs: t0 + minutesMs(60),
+            durationSamples: minutesSamples(2))
+        _ = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, live], pauses: [], openSegmentId: "b", fallbackTimeZoneID: "UTC", db: db)
+
+        // Thirty seconds of audio arrive: same members, same states, a longer live extent.
+        live = makeSegment(
+            id: "b", stream: 2, startTimeMs: t0 + minutesMs(60),
+            durationSamples: minutesSamples(2) + 16_000 * 30)
+        let grown = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, live], pauses: [], openSegmentId: "b", fallbackTimeZoneID: "UTC", db: db)
+        #expect(grown.changed, "the extent is persisted")
+        #expect(!grown.structureChanged, "but nothing the AI stages read has moved")
+
+        // The segment closing IS structural, and so is a new member arriving.
+        let closed = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, live], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC", db: db)
+        #expect(closed.structureChanged)
     }
 
     @Test func previousGroupingKeepsIdStableWhenFirstMemberIsDeleted() {
