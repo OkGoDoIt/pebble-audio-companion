@@ -398,7 +398,16 @@ public struct PipelinePass: Sendable {
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.
-        if try await stage(.liveLocal, fallback: false, heavy: true, steps.liveLocalPass) {
+        //
+        //     Foreground only. The preview is the Recording-now screen's; on battery the
+        //     background branch above already skips it, and on a charger it was the thing that
+        //     kept the loop at a 1 s cadence all night — it does work on every pass while the
+        //     watch streams, so every pass reported `processed`, and in RemoteFirst that work
+        //     was a FLAC encode and a Soniox call per chunk, for text nobody could see. Foreground
+        //     entry wakes the loop and the preview catches up.
+        if try await stage(
+            .liveLocal, fallback: false, heavy: true, when: foreground, steps.liveLocalPass)
+        {
             processed = true
         }
 

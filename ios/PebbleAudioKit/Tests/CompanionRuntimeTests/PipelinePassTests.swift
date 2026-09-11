@@ -616,6 +616,22 @@ final class Recorder: @unchecked Sendable {
         #expect(calls.calls == ["recap", "recap"])
     }
 
+    @Test("the live preview itself is a foreground stage")
+    func backgroundDoesNotTranscribeTheLivePreview() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.liveLocalPass = { calls.record("liveLocal"); return true }
+        }
+        let sleep = try await pass.run()
+        #expect(calls.calls.isEmpty)
+        #expect(recorder.stages.contains(.liveLocal), "announced, so the order is intact")
+        // ...and with nothing having done work, the loop idles instead of spinning at 1 s.
+        #expect(sleep == PipelinePacing.idleMs)
+    }
+
     @Test("the 5 s live-preview cadence is a foreground cadence")
     func backgroundDoesNotFollowTheOpenSegmentEveryFiveSeconds() async throws {
         let clock = TestClock()
