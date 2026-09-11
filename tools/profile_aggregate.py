@@ -10,6 +10,7 @@ recorded_s = float(sys.argv[2]) if len(sys.argv) > 2 else 45.0
 frames = {}      # id -> (name, binary)
 bins = {}        # id -> name
 bts = {}         # id -> [frame ids]
+tagged = {}      # tagged-backtrace id -> backtrace id (rows reference the TAGGED element by ref)
 threads = {}     # id -> fmt
 weights = {}     # id -> int
 rows = []        # (thread_fmt, weight, [frame ids], state)
@@ -28,6 +29,13 @@ for ev, el in ET.iterparse(path, events=('end',)):
         for f in el.findall('frame'):
             ids.append(f.get('id') or f.get('ref'))
         bts[el.get('id')] = ids
+    elif tag == 'tagged-backtrace' and el.get('id'):
+        # xctrace emits each distinct stack ONCE, as `<tagged-backtrace id=N><backtrace id=M>…`,
+        # and every later sample of the same stack as a bare `<tagged-backtrace ref="N"/>`. Not
+        # resolving the ref silently dropped ~70% of samples from every summary before 2026-09-11.
+        bt = el.find('backtrace')
+        if bt is not None:
+            tagged[el.get('id')] = bt.get('id') or bt.get('ref')
     elif tag == 'thread' and el.get('id'):
         threads[el.get('id')] = el.get('fmt')
     elif tag == 'weight' and el.get('id'):
@@ -44,6 +52,8 @@ for ev, el in ET.iterparse(path, events=('end',)):
             bt = tb.find('backtrace')
             if bt is not None:
                 ids = bts.get(bt.get('id') or bt.get('ref'), [])
+            elif tb.get('ref'):
+                ids = bts.get(tagged.get(tb.get('ref'), ''), [])
         rows.append((thf, wv, ids, stv))
         el.clear()
 total = sum(r[1] for r in rows)
