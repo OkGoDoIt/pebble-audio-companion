@@ -326,11 +326,24 @@ public enum ConversationGrouper {
     /// `segmentStates` mirrors each member's own `SegmentMeta.transcriptionState` into the
     /// derived table so the lifecycle aggregation can trust a durable transcript over a
     /// missing queue row (see the `v2` migration).
+    /// Persists the grouping — and writes NOTHING when it already matches what is stored.
+    ///
+    /// Returns whether anything was written. This used to delete and re-insert every row on
+    /// every call, which on a phone meant the whole grouping was rewritten every 5 s, identical
+    /// or not. Every `ValueObservation` on these tables — the Library, Today, the Settings
+    /// storage line, the widget snapshot — fired on each rewrite and refetched, so a pipeline
+    /// pass that found nothing to do still cost the app a full refresh of every screen's data,
+    /// 12 times a minute, for as long as the phone sat on a charger. A rebuild that changes
+    /// nothing must write nothing (the 2026-09-09 rule, one layer down).
+    @discardableResult
     public static func apply(
         _ conversations: [GroupedConversation],
         segmentStates: [String: TranscriptionState] = [:],
         in db: Database
-    ) throws {
+    ) throws -> Bool {
+        if try storedImage(db) == image(of: conversations, segmentStates: segmentStates) {
+            return false
+        }
         try db.execute(sql: "DELETE FROM conversation_segments")
         try db.execute(sql: "DELETE FROM conversations")
         for convo in conversations {
@@ -357,6 +370,64 @@ public enum ConversationGrouper {
                 )
             }
         }
+        return true
+    }
+
+    /// Exactly the columns `apply` writes, in the order it writes them, so equality means
+    /// "the write would be a no-op" and nothing else.
+    private typealias StoredImage = [[String?]]
+
+    private static func image(
+        of conversations: [GroupedConversation], segmentStates: [String: TranscriptionState]
+    ) -> StoredImage {
+        var out: StoredImage = []
+        for convo in conversations {
+            out.append([
+                "c", convo.id, String(convo.startMs), String(convo.endMs), convo.timeZoneID,
+                convo.isLive ? "live" : "closed", convo.startReason?.rawValue,
+            ])
+            for (ordinal, segmentId) in convo.memberSegmentIds.enumerated() {
+                out.append([
+                    "s", convo.id, segmentId, String(ordinal), segmentStates[segmentId]?.rawValue,
+                ])
+            }
+        }
+        return out
+    }
+
+    private static func storedImage(_ db: Database) throws -> StoredImage {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, startMs, endMs, timezone, state, startReason FROM conversations
+                ORDER BY startMs, id
+                """)
+        let memberRows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT conversationId, segmentId, ordinal, transcriptionState
+                FROM conversation_segments ORDER BY conversationId, ordinal
+                """)
+        var members: [String: [[String?]]] = [:]
+        for row in memberRows {
+            let conversationId: String = row["conversationId"]
+            members[conversationId, default: []].append([
+                "s", conversationId, row["segmentId"], String(row["ordinal"] as Int),
+                row["transcriptionState"],
+            ])
+        }
+        var out: StoredImage = []
+        for row in rows {
+            let id: String = row["id"]
+            let startMs: Int64 = row["startMs"]
+            let endMs: Int64? = row["endMs"]
+            out.append([
+                "c", id, String(startMs), String(endMs ?? startMs), row["timezone"],
+                row["state"], row["startReason"],
+            ])
+            out.append(contentsOf: members[id] ?? [])
+        }
+        return out
     }
 
     /// Group + persist in one write. Reads the previous grouping from the DB first so ids stay
@@ -386,10 +457,19 @@ public enum ConversationGrouper {
     public struct RebuiltGrouping: Equatable, Sendable {
         public var conversations: [GroupedConversation]
         public var candidates: [BoundaryCandidate]
+        /// Whether the persisted grouping differs from before this rebuild — false means the
+        /// inputs the grouping is derived from (segments, their states, pauses, the open
+        /// segment, overrides and verdicts) produced exactly what was already stored, and
+        /// nothing was written.
+        public var changed: Bool
 
-        public init(conversations: [GroupedConversation], candidates: [BoundaryCandidate]) {
+        public init(
+            conversations: [GroupedConversation], candidates: [BoundaryCandidate],
+            changed: Bool = true
+        ) {
             self.conversations = conversations
             self.candidates = candidates
+            self.changed = changed
         }
     }
 
@@ -434,7 +514,7 @@ public enum ConversationGrouper {
                     fallbackTimeZoneID: fallbackTimeZoneID, previous: previous,
                     evidence: evidence, overrides: overrides, policy: policy,
                     semanticSplits: semanticSplits)
-            try apply(
+            let changed = try apply(
                 final.conversations,
                 segmentStates: Dictionary(
                     segments.map { ($0.segmentId, $0.transcriptionState) },
@@ -443,7 +523,8 @@ public enum ConversationGrouper {
                 in: d
             )
             return RebuiltGrouping(
-                conversations: final.conversations, candidates: probe.candidates)
+                conversations: final.conversations, candidates: probe.candidates,
+                changed: changed)
         }
     }
 

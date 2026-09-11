@@ -185,6 +185,50 @@ import WireProtocol
         #expect(memberCount == 3)
     }
 
+    // The write that fired every observer in the app twelve times a minute. Pinned on the DB's
+    // own change counter, not on the return value alone: `total_changes` is what GRDB's
+    // observations react to, so "no rows changed" is the fact that actually matters.
+    @Test func anUnchangedRebuildWritesNothing() async throws {
+        let db = try AppDatabase.inMemory()
+        let a = makeSegment(
+            id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(10))
+        let b = makeSegment(
+            id: "b", stream: 2, startTimeMs: t0 + minutesMs(60),
+            durationSamples: minutesSamples(4))
+        func totalChanges() async throws -> Int {
+            try await db.reader.read { try Int.fetchOne($0, sql: "SELECT total_changes()") ?? -1 }
+        }
+
+        let first = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, b], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC", db: db)
+        #expect(first.changed)
+
+        let before = try await db.writer.write { try Int.fetchOne($0, sql: "SELECT total_changes()") ?? -1 }
+        let second = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, b], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC", db: db)
+        let after = try await db.writer.write { try Int.fetchOne($0, sql: "SELECT total_changes()") ?? -1 }
+        #expect(!second.changed)
+        #expect(after == before, "an identical rebuild must not touch a row")
+        #expect(second.conversations == first.conversations)
+
+        // A member's transcription state is part of what is stored, so it counts as a change.
+        var bDone = b
+        bDone.transcriptionState = .complete
+        let third = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, bDone], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            db: db)
+        #expect(third.changed)
+        // And so does a segment becoming the open one.
+        let fourth = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, bDone], pauses: [], openSegmentId: "b", fallbackTimeZoneID: "UTC",
+            db: db)
+        #expect(fourth.changed)
+        let fifth = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, bDone], pauses: [], openSegmentId: "b", fallbackTimeZoneID: "UTC",
+            db: db)
+        #expect(!fifth.changed)
+    }
+
     @Test func previousGroupingKeepsIdStableWhenFirstMemberIsDeleted() {
         let a = makeSegment(
             id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(10))
