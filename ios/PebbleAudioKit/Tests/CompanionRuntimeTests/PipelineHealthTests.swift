@@ -36,7 +36,10 @@ import Testing
                 calls.record("enqueue")
                 throw TestFailure()
             }
-            steps.regroup = { calls.record("regroup") }
+            steps.regroup = {
+                calls.record("regroup")
+                return true
+            }
             steps.liveLocalPass = {
                 calls.record("live")
                 return false
@@ -94,6 +97,7 @@ import Testing
         let pass = pass(clock: clock, health: health) { steps in
             steps.regroup = {
                 if fail.flag { throw TestFailure() }
+                return true
             }
         }
 

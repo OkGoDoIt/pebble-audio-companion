@@ -636,7 +636,9 @@ final class AppComposition {
 
         let recap = RecapService(
             engine: DailyRecapEngine(
-                listSegments: { files.listSegments() },
+                // The store's cached index, not `files.listSegments()`, which parses every
+                // sidecar off disk each call — measured at 2.4 CPU-s per 90 s on a charger.
+                listSegments: { await store.listSegments() },
                 // Collapsed, like every other model input (see `TranscriptCleanup.swift`): a
                 // day containing one looped recording would otherwise hand the recap 12 000
                 // words of the same sentence and get a day summarised around it.

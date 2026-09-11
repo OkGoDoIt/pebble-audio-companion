@@ -133,11 +133,11 @@ public actor SegmentStore: SegmentSink {
     // --- paths --------------------------------------------------------------------------------
 
     private func logURL(_ segmentId: String) -> URL {
-        segmentsDir.appendingPathComponent("\(segmentId)\(Self.logSuffix)")
+        segmentsDir.appendingPathComponent("\(segmentId)\(Self.logSuffix)", isDirectory: false)
     }
 
     private func metaURL(_ segmentId: String) -> URL {
-        segmentsDir.appendingPathComponent("\(segmentId)\(Self.metaSuffix)")
+        segmentsDir.appendingPathComponent("\(segmentId)\(Self.metaSuffix)", isDirectory: false)
     }
 
     // --- SegmentSink --------------------------------------------------------------------------

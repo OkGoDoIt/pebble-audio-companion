@@ -46,8 +46,11 @@ public struct PipelineSteps: Sendable {
     /// it every time and `RetentionService` decides whether anything actually runs. Returns true
     /// when it deleted something.
     public var enforceRetentionIfDue: @Sendable () async -> Bool
-    /// Rebuilds the conversation grouping the whole UI reads.
-    public var regroup: @Sendable () async throws -> Void
+    /// Rebuilds the conversation grouping the whole UI reads. Returns whether the persisted
+    /// grouping changed — false means every input it is derived from (segments, their
+    /// transcription states, pauses, the open segment, the user's overrides, the semantic
+    /// verdicts) is exactly as it was last pass.
+    public var regroup: @Sendable () async throws -> Bool
     /// Returns the conversation ids whose annotation changed.
     public var enrich: @Sendable () async throws -> [String]
     public var donate: @Sendable ([String]) async -> Void
@@ -98,7 +101,7 @@ public struct PipelineSteps: Sendable {
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
         drainQueue: @escaping @Sendable () async throws -> Bool = { false },
         enforceRetentionIfDue: @escaping @Sendable () async -> Bool = { false },
-        regroup: @escaping @Sendable () async throws -> Void = {},
+        regroup: @escaping @Sendable () async throws -> Bool = { true },
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
         extractFollowUps: @escaping @Sendable () async throws -> Bool = { false },
@@ -162,6 +165,46 @@ public enum PipelinePacing {
     public static let modelIdleTimeoutMs: Int64 = 30_000
     /// Cap on segments transcribed per background catch-up burst.
     public static let catchUpMaxSegments = 10
+    /// How often the daily recap is reconsidered while backgrounded. It is a summary of the
+    /// day; nobody is reading it while the app is not open, and the next foreground pass runs
+    /// it regardless.
+    public static let backgroundRecapIntervalMs: Int64 = 15 * 60_000
+}
+
+/// What the previous pass learned that the next one needs, so a pass can tell "nothing has
+/// changed since I last found nothing to do" from "I have not looked yet".
+///
+/// The AI stages — enrich, follow-ups, recap — each start by re-deriving their whole work list
+/// from the library: every conversation's membership, every transcript's version, every day's
+/// fingerprint. That is O(library) per pass, and on a charger the pass runs every few seconds.
+/// It found nothing to do on almost every one of them: measured 2026-09-11, 10.5 of 21 CPU-s
+/// per 90 s were those stages confirming that a library nobody had touched was still the same.
+/// The grouping stage already computes the one fact needed to skip them — whether ITS inputs
+/// changed — so this carries it, plus whether the AI stages themselves left work behind.
+///
+/// Foreground passes never consult it: the person is looking, the live title and the Today
+/// card are expected to follow the conversation as it happens, and that freshness is what the
+/// foreground cadence is for.
+public final class PipelinePassMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _aiStagesLeftWork = true
+    private var _lastBackgroundRecapAtMs: Int64?
+
+    public init() {}
+
+    /// True after a pass in which enrich or follow-ups actually wrote something — their per-pass
+    /// budget means a backlog drains over several passes, and an unchanged grouping must not
+    /// stall that drain.
+    var aiStagesLeftWork: Bool {
+        get { lock.withLock { _aiStagesLeftWork } }
+        set { lock.withLock { _aiStagesLeftWork = newValue } }
+    }
+
+    /// Nil until the first backgrounded recap has run.
+    var lastBackgroundRecapAtMs: Int64? {
+        get { lock.withLock { _lastBackgroundRecapAtMs } }
+        set { lock.withLock { _lastBackgroundRecapAtMs = newValue } }
+    }
 }
 
 /// Runs one pass and reports how long to sleep before the next one.
@@ -178,16 +221,19 @@ public struct PipelinePass: Sendable {
     private let clock: RuntimeClock
     private let onStage: @Sendable (PipelineStage) -> Void
     private let health: PipelineHealthMonitor?
+    private let memory: PipelinePassMemory
 
     public init(
         steps: PipelineSteps,
         clock: RuntimeClock,
         health: PipelineHealthMonitor? = nil,
+        memory: PipelinePassMemory = PipelinePassMemory(),
         onStage: @escaping @Sendable (PipelineStage) -> Void = { _ in }
     ) {
         self.steps = steps
         self.clock = clock
         self.health = health
+        self.memory = memory
         self.onStage = onStage
     }
 
@@ -201,10 +247,14 @@ public struct PipelinePass: Sendable {
         _ stage: PipelineStage,
         fallback: Value,
         heavy: Bool = false,
+        when due: Bool = true,
         _ body: () async throws -> Value
     ) async throws -> Value {
         onStage(stage)
         if let health, !health.shouldRun(stage) { return fallback }
+        // Nothing for this stage to look at has changed since it last found nothing. Announced
+        // like every other skip; not a failure, because nothing failed.
+        if !due { return fallback }
         // Model work waits for the phone to cool down. Announced like every other skip, so the
         // stage order the tests assert on is unchanged; not recorded as a failure, because
         // nothing failed.
@@ -294,12 +344,23 @@ public struct PipelinePass: Sendable {
         //    shows the open one as live. It used to be the first line of `enrich`, which meant
         //    a long AI backfill froze the user's entire view of reality while recording
         //    continued.
-        try await stage(.regroup, fallback: (), steps.regroup)
+        //    A thrown regroup reports "changed", so a grouping that could not be rebuilt never
+        //    silences the stages behind it.
+        let groupingChanged = try await stage(.regroup, fallback: true, steps.regroup)
+
+        // 7-10 run only when there is something new for them to see. In the FOREGROUND that is
+        //      always: the person is looking, and the live title and Today card are expected to
+        //      follow the conversation as it happens. Backgrounded, the only readers are the
+        //      widget and Spotlight, and the grouping stage has just established whether a
+        //      single input changed. See `PipelinePassMemory`.
+        let foreground = steps.isForeground()
+        let aiStagesDue = foreground || groupingChanged || memory.aiStagesLeftWork
 
         // 7/8. Titles + summaries, then search/Spotlight donation of exactly what changed.
         //      BOUNDED per pass: the backlog drains over many passes rather than holding this
         //      one open for minutes.
-        let enriched = try await stage(.enrich, fallback: [], heavy: true, steps.enrich)
+        let enriched = try await stage(
+            .enrich, fallback: [], heavy: true, when: aiStagesDue, steps.enrich)
         try await stage(.donate, fallback: ()) {
             guard !enriched.isEmpty else { return }
             processed = true
@@ -309,13 +370,31 @@ public struct PipelinePass: Sendable {
 
         // 9. Follow-up extraction over finished conversations (plan Part 4.5) — after enrich,
         //    on the same durable transcripts, and bounded the same way.
-        if try await stage(.followUps, fallback: false, heavy: true, steps.extractFollowUps) {
+        let followUpsWrote = try await stage(
+            .followUps, fallback: false, heavy: true, when: aiStagesDue, steps.extractFollowUps)
+        if followUpsWrote {
             processed = true
             await steps.onDiagnosticsDirty()
         }
+        if aiStagesDue {
+            memory.aiStagesLeftWork = !enriched.isEmpty || followUpsWrote
+        }
 
-        // 10. Daily recap (its own debounce decides whether anything actually runs).
-        try await stage(.recap, fallback: (), heavy: true, steps.refreshRecap)
+        // 10. Daily recap (its own debounce decides whether anything actually runs). A summary of
+        //     the day that nobody reads while the app is closed: backgrounded, it is reconsidered
+        //     on a long interval and only once the grouping has changed since.
+        let recapDue: Bool
+        if foreground {
+            recapDue = true
+        } else {
+            recapDue =
+                aiStagesDue
+                && memory.lastBackgroundRecapAtMs.map {
+                    clock.nowMs - $0 >= PipelinePacing.backgroundRecapIntervalMs
+                } ?? true
+        }
+        try await stage(.recap, fallback: (), heavy: true, when: recapDue, steps.refreshRecap)
+        if recapDue, !foreground { memory.lastBackgroundRecapAtMs = clock.nowMs }
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.
@@ -348,7 +427,12 @@ public struct PipelinePass: Sendable {
 
     private func sleepMs(processed: Bool) async throws -> Int64 {
         if processed { return PipelinePacing.afterWorkMs }
-        if await steps.isFollowingOpenSegment() { return PipelinePacing.followingOpenSegmentMs }
+        // The 5 s cadence exists so the live preview FEELS live. Backgrounded — which on a
+        // charger is where this loop spends its nights — nobody is watching the preview, and
+        // the idle cadence is what a segment that closes every 15 minutes actually needs.
+        if steps.isForeground(), await steps.isFollowingOpenSegment() {
+            return PipelinePacing.followingOpenSegmentMs
+        }
         guard let retryAtMs = try await steps.nextRetryAtMs() else { return PipelinePacing.idleMs }
         let delta = retryAtMs - clock.nowMs
         return min(max(delta, PipelinePacing.minRetryMs), PipelinePacing.idleMs)

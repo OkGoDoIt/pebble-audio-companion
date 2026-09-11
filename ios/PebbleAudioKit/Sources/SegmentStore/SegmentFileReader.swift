@@ -23,11 +23,12 @@ public struct SegmentFileReader: Sendable {
     private var segmentsDir: URL { root.appendingPathComponent("segments", isDirectory: true) }
 
     private func metaURL(_ segmentId: String) -> URL {
-        segmentsDir.appendingPathComponent(segmentId + SegmentStore.metaSuffix)
+        // `isDirectory: false` skips Foundation's per-call "is this a directory?" disk probe.
+        segmentsDir.appendingPathComponent(segmentId + SegmentStore.metaSuffix, isDirectory: false)
     }
 
     private func logURL(_ segmentId: String) -> URL {
-        segmentsDir.appendingPathComponent(segmentId + SegmentStore.logSuffix)
+        segmentsDir.appendingPathComponent(segmentId + SegmentStore.logSuffix, isDirectory: false)
     }
 
     public func readMeta(_ segmentId: String) -> SegmentMeta? {

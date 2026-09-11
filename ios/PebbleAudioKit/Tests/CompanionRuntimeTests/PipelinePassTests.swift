@@ -144,7 +144,10 @@ import Testing
         let recorder = StageRecorder()
         let calls = CallRecorder()
         let pass = pass(clock: clock, recorder: recorder) { steps in
-            steps.regroup = { calls.record("regroup") }
+            steps.regroup = {
+                calls.record("regroup")
+                return true
+            }
             steps.enrich = {
                 calls.record("enrich")
                 throw CancellationError()
@@ -194,7 +197,10 @@ import Testing
                 calls.record("retention")
                 return true
             }
-            steps.regroup = { calls.record("regroup") }
+            steps.regroup = {
+                calls.record("regroup")
+                return true
+            }
             steps.onDiagnosticsDirty = { calls.record("diagnostics") }
         }
 
@@ -310,7 +316,10 @@ import Testing
         let calls = CallRecorder()
         let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
         var steps = PipelineSteps()
-        steps.regroup = { calls.record("pass") }
+        steps.regroup = {
+                calls.record("pass")
+                return true
+            }
         steps.nextRetryAtMs = { throw TestFailure() }
         let loop = PipelineLoop(
             pass: PipelinePass(steps: steps, clock: clock, health: health),
@@ -339,7 +348,10 @@ import Testing
         let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
         var steps = PipelineSteps()
         steps.reconsiderDisabled = { throw TestFailure() }
-        steps.regroup = { calls.record("regroup") }
+        steps.regroup = {
+                calls.record("regroup")
+                return true
+            }
         let loop = PipelineLoop(
             pass: PipelinePass(steps: steps, clock: clock, health: health),
             wake: WakeChannel(),
@@ -368,6 +380,11 @@ final class Recorder: @unchecked Sendable {
     var flag: Bool {
         get { lock.withLock { _flag } }
         set { lock.withLock { _flag = newValue } }
+    }
+    private var _count = 0
+    var count: Int {
+        get { lock.withLock { _count } }
+        set { lock.withLock { _count = newValue } }
     }
 }
 
@@ -399,7 +416,10 @@ final class Recorder: @unchecked Sendable {
             calls.record("liveLocal")
             return true
         }
-        steps.regroup = { calls.record("regroup") }
+        steps.regroup = {
+                calls.record("regroup")
+                return true
+            }
         steps.enforceRetentionIfDue = {
             calls.record("retention")
             return false
@@ -447,5 +467,169 @@ final class Recorder: @unchecked Sendable {
         _ = try await pass.run()
 
         #expect(calls.calls.contains("drain"))
+    }
+}
+
+// The charger-time pass. Measured 2026-09-11 on a phone on a desk charger: the pass ran every
+// 5 s, and on each one the AI stages re-derived their whole work list from the library to find
+// nothing to do — 10.5 of 21 CPU-s per 90 s — while the BLE keepalive under all that starved
+// and dropped the link. The grouping stage already knows whether a single input changed; when
+// it says no, the stages behind it have nothing new to look at.
+@Suite struct PipelinePassChangeGateTests {
+
+    private func chargerPass(
+        clock: TestClock, recorder: StageRecorder, memory: PipelinePassMemory,
+        configure: (inout PipelineSteps) -> Void
+    ) -> PipelinePass {
+        var steps = PipelineSteps()
+        steps.isForeground = { false }
+        steps.backgroundWorkDecision = { .run }
+        configure(&steps)
+        return PipelinePass(
+            steps: steps, clock: clock, memory: memory, onStage: { recorder.record($0) })
+    }
+
+    @Test("an unchanged grouping skips the AI stages, announced but not run")
+    func unchangedGroupingSkipsAiStages() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.regroup = { calls.record("regroup"); return false }
+            steps.enrich = { calls.record("enrich"); return [] }
+            steps.extractFollowUps = { calls.record("followUps"); return false }
+            steps.refreshRecap = { calls.record("recap") }
+        }
+
+        // First pass: nothing is known yet, so the stages run and settle.
+        _ = try await pass.run()
+        #expect(calls.calls == ["regroup", "enrich", "followUps", "recap"])
+        calls.reset()
+
+        // Second pass, nothing changed: the grouping runs (it is what decides), the rest do not.
+        _ = try await pass.run()
+        #expect(calls.calls == ["regroup"])
+        // ...but the ORDER contract is intact — every stage is still announced.
+        #expect(recorder.stages.filter { $0 == .enrich }.count == 2)
+        #expect(recorder.stages.filter { $0 == .followUps }.count == 2)
+        #expect(recorder.stages.filter { $0 == .recap }.count == 2)
+    }
+
+    @Test("a changed grouping runs them again")
+    func changedGroupingRunsAiStages() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let changed = Recorder()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.regroup = { changed.flag }
+            steps.enrich = { calls.record("enrich"); return [] }
+            steps.extractFollowUps = { calls.record("followUps"); return false }
+        }
+        changed.flag = false
+        _ = try await pass.run()
+        _ = try await pass.run()
+        #expect(calls.calls == ["enrich", "followUps"], "settled after the first pass")
+        calls.reset()
+
+        changed.flag = true  // a segment closed, a transcript landed, a pause was journaled…
+        _ = try await pass.run()
+        #expect(calls.calls == ["enrich", "followUps"])
+    }
+
+    @Test("a backlog keeps draining across passes even when the grouping is unchanged")
+    func leftoverWorkKeepsTheStagesRunning() async throws {
+        // Enrich is budgeted per pass. A library with 40 untitled conversations and a budget of
+        // 3 must not stop after the first 3 just because no segment closed in between.
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let remaining = Recorder()
+        remaining.count = 3
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.regroup = { false }
+            steps.enrich = {
+                calls.record("enrich")
+                guard remaining.count > 0 else { return [] }
+                remaining.count -= 1
+                return ["conv-\(remaining.count)"]
+            }
+        }
+        for _ in 0..<6 { _ = try await pass.run() }
+        // Three passes wrote a title each, the fourth found nothing and settled, and the two
+        // after that were skipped.
+        #expect(calls.calls.count == 4)
+    }
+
+    @Test("a thrown regroup never silences the stages behind it")
+    func thrownRegroupCountsAsChanged() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.regroup = { throw TestFailure() }
+            steps.enrich = { calls.record("enrich"); return [] }
+        }
+        _ = try await pass.run()
+        _ = try await pass.run()
+        #expect(calls.calls == ["enrich", "enrich"])
+    }
+
+    @Test("the foreground never consults the gate")
+    func foregroundAlwaysRunsAiStages() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        var steps = PipelineSteps()
+        steps.isForeground = { true }
+        steps.regroup = { false }
+        steps.enrich = { calls.record("enrich"); return [] }
+        steps.refreshRecap = { calls.record("recap") }
+        let pass = PipelinePass(
+            steps: steps, clock: clock, memory: memory, onStage: { recorder.record($0) })
+        for _ in 0..<3 { _ = try await pass.run() }
+        #expect(calls.calls.filter { $0 == "enrich" }.count == 3)
+        #expect(calls.calls.filter { $0 == "recap" }.count == 3)
+    }
+
+    @Test("the recap is reconsidered on a long interval while backgrounded")
+    func backgroundRecapIsPaced() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.regroup = { true }  // something changes every pass
+            steps.refreshRecap = { calls.record("recap") }
+        }
+        _ = try await pass.run()
+        await clock.advance(by: 60_000)
+        _ = try await pass.run()
+        #expect(calls.calls == ["recap"], "a minute later is too soon")
+        await clock.advance(by: PipelinePacing.backgroundRecapIntervalMs)
+        _ = try await pass.run()
+        #expect(calls.calls == ["recap", "recap"])
+    }
+
+    @Test("the 5 s live-preview cadence is a foreground cadence")
+    func backgroundDoesNotFollowTheOpenSegmentEveryFiveSeconds() async throws {
+        let clock = TestClock()
+        let recorder = StageRecorder()
+        let memory = PipelinePassMemory()
+        let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.isFollowingOpenSegment = { true }
+        }
+        #expect(try await pass.run() == PipelinePacing.idleMs)
+
+        var steps = PipelineSteps()
+        steps.isForeground = { true }
+        steps.isFollowingOpenSegment = { true }
+        let foreground = PipelinePass(steps: steps, clock: clock, memory: memory)
+        #expect(try await foreground.run() == PipelinePacing.followingOpenSegmentMs)
     }
 }

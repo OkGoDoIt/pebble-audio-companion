@@ -92,7 +92,7 @@ import Testing
         let stages = StageRecorder()
         let steps = PipelineSteps(
             isForeground: { false },
-            regroup: {},
+            regroup: { true },
             backgroundWorkDecision: { .hold(reason: .tooHot) }
         )
         let pass = PipelinePass(steps: steps, clock: TestClock(), onStage: { stages.record($0) })
@@ -108,7 +108,7 @@ import Testing
     /// ...and a foreground pass does regroup, so the fix has somewhere to land.
     @Test func aForegroundPassRegroups() async throws {
         let stages = StageRecorder()
-        let steps = PipelineSteps(isForeground: { true }, regroup: {})
+        let steps = PipelineSteps(isForeground: { true }, regroup: { true })
         let pass = PipelinePass(steps: steps, clock: TestClock(), onStage: { stages.record($0) })
 
         _ = try await pass.run()

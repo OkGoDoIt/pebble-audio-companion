@@ -203,7 +203,9 @@ public struct DailyRecapStore: Sendable {
 public actor DailyRecapEngine {
     public typealias RunAi = @Sendable (AiRunRequest) async throws -> RoutedAiResult
 
-    private let listSegments: @Sendable () -> [SegmentMeta]
+    /// Async so the production wiring can answer from `SegmentStore`'s in-memory index rather
+    /// than parsing every sidecar off disk on each refresh.
+    private let listSegments: @Sendable () async -> [SegmentMeta]
     private let transcriptTextOf: @Sendable (String) -> String?
     private let store: DailyRecapStore
     /// Nil = no AI configured; refresh passes are no-ops (mirrors the KMP nil router).
@@ -241,7 +243,7 @@ public actor DailyRecapEngine {
     }
 
     public init(
-        listSegments: @escaping @Sendable () -> [SegmentMeta],
+        listSegments: @escaping @Sendable () async -> [SegmentMeta],
         transcriptTextOf: @escaping @Sendable (String) -> String?,
         store: DailyRecapStore,
         run: RunAi?,
@@ -363,7 +365,7 @@ public actor DailyRecapEngine {
 
     private func performRefresh() async throws {
         guard let run else { return }
-        let segments = listSegments().filter { !$0.isOpen }
+        let segments = await listSegments().filter { !$0.isOpen }
         var byDay: [String: [SegmentMeta]] = [:]
         for meta in segments {
             byDay[dayKey(of: meta), default: []].append(meta)

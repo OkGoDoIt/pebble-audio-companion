@@ -147,8 +147,11 @@ public actor EnrichmentService {
     /// The grouping stage: rebuild `conversations` / `conversation_segments` from the segment
     /// metas and the pause journal. Every pass, unconditionally, independent of the AI layer —
     /// this is what makes a segment visible as soon as it closes.
-    public func regroupPass() async throws {
-        _ = try await regroup()
+    /// Returns whether the persisted grouping changed — false means every input the grouping
+    /// is derived from is exactly as it was, which the pipeline uses to skip the AI stages.
+    @discardableResult
+    public func regroupPass() async throws -> Bool {
+        try await regroupDetailed().changed
     }
 
     /// True while `followUpPass` is inside the worker.
@@ -247,6 +250,10 @@ public actor EnrichmentService {
     /// derived, so the answer improves as evidence lands instead of being guessed early.
     @discardableResult
     public func regroup() async throws -> [GroupedConversation] {
+        try await regroupDetailed().conversations
+    }
+
+    private func regroupDetailed() async throws -> ConversationGrouper.RebuiltGrouping {
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
         let pauses: [PauseInterval]
@@ -265,7 +272,7 @@ public actor EnrichmentService {
         )
         cachedGrouping = rebuilt.conversations
         cachedBoundaryCandidates = rebuilt.candidates
-        return rebuilt.conversations
+        return rebuilt
     }
 
     /// One pass of the OPTIONAL semantic boundary review: asks the model about the joins the

@@ -91,7 +91,9 @@ public final class FileTranscriptStore: Sendable {
     }
 
     private func transcriptURL(_ segmentId: String) -> URL {
-        transcriptsDir.appendingPathComponent("\(segmentId)\(Self.suffix)")
+        // `isDirectory: false` matters: without it Foundation asks the file system whether the
+        // path is a directory on every call, and this is called once per transcript per pass.
+        transcriptsDir.appendingPathComponent("\(segmentId)\(Self.suffix)", isDirectory: false)
     }
 
     @discardableResult
