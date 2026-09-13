@@ -630,14 +630,20 @@ public actor CompanionRuntime {
         let foreground = self.foreground
         let log = self.log
         let retention = self.retention
+        let health = self.health
         return PipelineSteps(
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
             releaseModel: { reason in await env.transcription.releaseModel(reason) },
             reconsiderDisabled: { try await env.transcription.reconsiderDisabled() },
             enqueueClosedSegments: { try await env.transcription.enqueueClosedSegments() },
+            // Each drained task is progress for the loop watchdog: a backlog of a dozen
+            // segments is one stage that legitimately runs for many minutes.
             drainQueue: {
-                try await env.transcription.drainQueue { await env.diagnostics.refresh() }
+                try await env.transcription.drainQueue {
+                    health.progressed()
+                    await env.diagnostics.refresh()
+                }
             },
             // Self-paced inside the service: normally an interval check and nothing else. This is
             // what makes "Keep audio" take effect while the app is open instead of at the next

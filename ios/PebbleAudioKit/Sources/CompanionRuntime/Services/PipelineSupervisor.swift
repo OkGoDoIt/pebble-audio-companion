@@ -83,9 +83,12 @@ public actor PipelineSupervisor {
         let current = health.health
 
         if current.passIsStalled(nowMs: now) {
-            // The pass has been in flight past every plausible duration. Whatever it is waiting
-            // on is not coming back on its own.
-            log.write("pipeline pass wedged; restarting the loop")
+            // The pass has gone without progress past every plausible duration. Whatever it is
+            // waiting on is not coming back on its own. Name the stage: the log is the only
+            // witness to which call it was.
+            let stage = current.inFlightStage?.rawValue ?? "between stages"
+            let quiet = (current.msWithoutProgress(nowMs: now) ?? 0) / 1000
+            log.write("pipeline pass wedged in \(stage) (\(quiet)s without progress); restarting the loop")
             await restartLoop()
             health.loopRestarted()
             actions.append("restart-loop")

@@ -188,6 +188,67 @@ import Testing
         #expect(health.health.passIsStalled(nowMs: clock.nowMs + PipelineHealth.passStallMs + 1) == false)
     }
 
+    // The watchdog cut down the first full pass after a backlog twelve times between 09-09 and
+    // 09-12: a pass over a dozen closed segments is one drain stage that legitimately runs for
+    // many minutes, and the old rule judged the pass START. Each drained task is progress.
+    @Test func aLongDrainThatKeepsFinishingTasksIsNotStalled() async throws {
+        let clock = TestClock()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+
+        health.passStarted()
+        health.stageStarted(.drainQueue)
+        // Three stall-lengths of drain, one task finishing every two minutes.
+        var elapsed: Int64 = 0
+        while elapsed < 3 * PipelineHealth.passStallMs {
+            await clock.advance(by: 120_000)
+            elapsed += 120_000
+            health.progressed()
+            #expect(health.health.passIsStalled(nowMs: clock.nowMs) == false)
+        }
+        #expect(health.health.inFlightStage == .drainQueue)
+
+        // The moment the tasks stop finishing, the clock counts from the last one.
+        #expect(health.health.passIsStalled(nowMs: clock.nowMs + PipelineHealth.passStallMs) == false)
+        #expect(health.health.passIsStalled(nowMs: clock.nowMs + PipelineHealth.passStallMs + 1))
+        #expect(
+            health.health.msWithoutProgress(nowMs: clock.nowMs + PipelineHealth.passStallMs + 1)
+                == PipelineHealth.passStallMs + 1)
+    }
+
+    @Test func enteringAStageIsProgressAndNamesTheStall() async throws {
+        let clock = TestClock()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+
+        health.passStarted()
+        await clock.advance(by: PipelineHealth.passStallMs - 1_000)
+        health.stageStarted(.enrich)
+        // Nearly a stall-length in, but the stage boundary reset the clock.
+        #expect(health.health.passIsStalled(nowMs: clock.nowMs + 2_000) == false)
+        #expect(health.health.passIsStalled(nowMs: clock.nowMs + PipelineHealth.passStallMs + 1))
+        #expect(health.health.inFlightStage == .enrich)
+
+        // A completed pass is not in flight, and carries no stage.
+        health.passCompleted()
+        #expect(health.health.inFlightStage == nil)
+        #expect(health.health.msWithoutProgress(nowMs: clock.nowMs + PipelineHealth.passStallMs + 1) == nil)
+    }
+
+    @Test func thePassAnnouncesEachStageToTheMonitor() async throws {
+        let clock = TestClock()
+        let health = monitor(clock)
+        let seen = Box<[PipelineStage?]>([])
+        let pass = pass(clock: clock, health: health) { steps in
+            steps.regroup = {
+                seen.mutate { $0.append(health.health.inFlightStage) }
+                return true
+            }
+        }
+        _ = try await pass.run()
+        #expect(seen.value == [.regroup])
+        #expect(health.health.inFlightStage == nil)
+        #expect(health.health.lastProgressAtMs == clock.nowMs)
+    }
+
     @Test func healthOnlyPublishesWhatAScreenWouldRedrawFor() async throws {
         // B17: this struct is observed by the UI, and a healthy pass touches every stage's
         // `lastSuccessAtMs` every second. Publishing that would make it a reload key.
@@ -205,6 +266,9 @@ import Testing
         health.succeeded(.regroup)
         await clock.advance(by: 1_000)
         health.succeeded(.regroup)
+        // Progress is touched several times a pass and on every drained task; never a redraw.
+        health.stageStarted(.drainQueue)
+        health.progressed()
         await TestClock.settle()
         #expect(received.value.count == 1)
 
@@ -236,10 +300,13 @@ private final class Box<Value>: @unchecked Sendable {
         let clock = TestClock()
         let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
         let restarts = Counter()
+        let lines = Box<[String]>([])
         let supervisor = PipelineSupervisor(
-            health: health, clock: clock, restartLoop: { restarts.increment() })
+            health: health, clock: clock, restartLoop: { restarts.increment() },
+            log: RuntimeLog { line in lines.mutate { $0.append(line) } })
 
         health.passStarted()
+        health.stageStarted(.recap)
         #expect(await supervisor.tick().isEmpty)
 
         // Ticking at its real cadence: the process is awake the whole time, the pass never ends.
@@ -254,6 +321,8 @@ private final class Box<Value>: @unchecked Sendable {
         #expect(actions == ["restart-loop"])
         #expect(restarts.count == 1)
         #expect(health.health.loopRestarts == 1)
+        // The log is the only witness to WHICH call it was.
+        #expect(lines.value.first?.hasPrefix("pipeline pass wedged in recap (") == true)
 
         // The replacement loop starts a pass, which clears the stall.
         health.passStarted()

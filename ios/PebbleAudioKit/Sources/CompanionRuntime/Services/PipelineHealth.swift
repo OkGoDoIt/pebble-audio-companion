@@ -66,6 +66,14 @@ public struct PipelineHealth: Sendable, Equatable {
     /// Last time a pass began. A pass that starts and never completes is a wedged stage, which
     /// looks nothing like a pass that is failing fast and needs a different response.
     public var lastPassStartedAtMs: Int64?
+    /// Last time the pass in flight showed it was getting somewhere: a stage began or ended, or
+    /// the drain finished one task. The stall rule judges THIS, not the pass start — a pass over
+    /// a night's backlog legitimately runs for many minutes, and the watchdog used to cut it
+    /// down mid-segment every time (twelve times between 09-09 and 09-12), throwing away an
+    /// upload Soniox had already billed for and starting the same segment over.
+    public var lastProgressAtMs: Int64?
+    /// The stage the in-flight pass is inside, so a stall can be named.
+    public var inFlightStage: PipelineStage?
     /// Passes abandoned by a throw that stage isolation did not contain (cancellation aside).
     public var abandonedPasses: Int
     /// Times the loop itself has been restarted by the watchdog.
@@ -75,12 +83,16 @@ public struct PipelineHealth: Sendable, Equatable {
         stages: [PipelineStage: StageHealth] = [:],
         lastPassCompletedAtMs: Int64? = nil,
         lastPassStartedAtMs: Int64? = nil,
+        lastProgressAtMs: Int64? = nil,
+        inFlightStage: PipelineStage? = nil,
         abandonedPasses: Int = 0,
         loopRestarts: Int = 0
     ) {
         self.stages = stages
         self.lastPassCompletedAtMs = lastPassCompletedAtMs
         self.lastPassStartedAtMs = lastPassStartedAtMs
+        self.lastProgressAtMs = lastProgressAtMs
+        self.inFlightStage = inFlightStage
         self.abandonedPasses = abandonedPasses
         self.loopRestarts = loopRestarts
     }
@@ -108,13 +120,29 @@ public struct PipelineHealth: Sendable, Equatable {
         failingStages.filter { self[$0].isPersistentlyFailing }
     }
 
-    /// True when the loop has not finished a pass within `passStallMs`. Only meaningful while
-    /// the pass is supposed to be running at all (foreground); the caller knows that, this does
-    /// not.
+    /// True while a pass is in flight and nothing in it has moved for `stallMs`. Only meaningful
+    /// while the process is awake; the supervisor re-bases the clock after a suspension.
     public func passIsStalled(nowMs: Int64, stallMs: Int64 = PipelineHealth.passStallMs) -> Bool {
+        guard passIsInFlight else { return false }
+        return nowMs - stallClockStartMs > stallMs
+    }
+
+    /// A pass has started and not (yet) completed.
+    public var passIsInFlight: Bool {
         guard let started = lastPassStartedAtMs else { return false }
-        guard let completed = lastPassCompletedAtMs else { return nowMs - started > stallMs }
-        return completed < started && nowMs - started > stallMs
+        guard let completed = lastPassCompletedAtMs else { return true }
+        return completed < started
+    }
+
+    /// Where the stall clock counts from: the last sign of progress, or the pass start.
+    private var stallClockStartMs: Int64 {
+        max(lastPassStartedAtMs ?? 0, lastProgressAtMs ?? 0)
+    }
+
+    /// How long the in-flight pass has gone without progress. Nil when no pass is in flight.
+    public func msWithoutProgress(nowMs: Int64) -> Int64? {
+        guard passIsInFlight else { return nil }
+        return nowMs - stallClockStartMs
     }
 
     /// The steps that turn recorded audio into words. Failing here means transcripts stop
@@ -135,9 +163,15 @@ public struct PipelineHealth: Sendable, Equatable {
     /// Consecutive failures before a stage's trouble is called persistent.
     public static let persistentFailureThreshold = 3
 
-    /// How long a pass may be in flight before the loop is presumed wedged. Well past the
-    /// slowest legitimate pass (a bounded enrichment bite over a cold model).
-    public static let passStallMs: Int64 = 180_000
+    /// How long a pass may go WITHOUT PROGRESS before the loop is presumed wedged. Progress is a
+    /// stage boundary or one drained task, so the bound only has to clear the slowest single unit
+    /// of work, not the slowest pass: a Soniox transcription is an upload on a 60 s-idle
+    /// `URLSession` followed by up to 150 polls at 2 s (`SonioxTranscriptionProvider`), about six
+    /// minutes worst case; a local Parakeet pass over a full 15-minute segment is a couple of
+    /// minutes on a cold model. Ten minutes clears both with room, and the things this exists
+    /// to catch — a provider call with no timeout, a mutex held by a task that is gone — are
+    /// still caught, seven minutes later than before.
+    public static let passStallMs: Int64 = 600_000
 }
 
 /// Records stage outcomes, paces retries of a failing stage, and publishes the result.
@@ -209,6 +243,7 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
     public func succeeded(_ stage: PipelineStage) {
         let now = nowMs()
         update { health in
+            health.lastProgressAtMs = now
             var entry = health[stage]
             entry.lastSuccessAtMs = now
             entry.consecutiveFailures = 0
@@ -224,6 +259,7 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
         var delay: Int64 = 0
         var count = 0
         update { health in
+            health.lastProgressAtMs = now
             var entry = health[stage]
             entry.lastFailureAtMs = now
             entry.consecutiveFailures += 1
@@ -241,12 +277,35 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
 
     public func passStarted() {
         let now = nowMs()
-        update { $0.lastPassStartedAtMs = now }
+        update { health in
+            health.lastPassStartedAtMs = now
+            health.lastProgressAtMs = now
+            health.inFlightStage = nil
+        }
     }
 
     public func passCompleted() {
         let now = nowMs()
-        update { $0.lastPassCompletedAtMs = now }
+        update { health in
+            health.lastPassCompletedAtMs = now
+            health.inFlightStage = nil
+        }
+    }
+
+    /// The pass is entering `stage`. Progress, and the name a stall is reported under.
+    public func stageStarted(_ stage: PipelineStage) {
+        let now = nowMs()
+        update { health in
+            health.inFlightStage = stage
+            health.lastProgressAtMs = now
+        }
+    }
+
+    /// Something inside the current stage finished — one drained task, one poll answered. The
+    /// drain calls this per task so a long backlog never reads as a wedged pass.
+    public func progressed() {
+        let now = nowMs()
+        update { $0.lastProgressAtMs = now }
     }
 
     /// The process was suspended while a pass was in flight: none of the wall-clock time since
@@ -257,9 +316,9 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
     public func passRebasedAfterSuspension() {
         let now = nowMs()
         update { health in
-            guard let started = health.lastPassStartedAtMs else { return }
-            if let completed = health.lastPassCompletedAtMs, completed >= started { return }
+            guard health.passIsInFlight else { return }
             health.lastPassStartedAtMs = now
+            health.lastProgressAtMs = now
         }
     }
 

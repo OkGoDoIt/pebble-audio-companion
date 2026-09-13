@@ -251,6 +251,7 @@ public struct PipelinePass: Sendable {
         _ body: () async throws -> Value
     ) async throws -> Value {
         onStage(stage)
+        health?.stageStarted(stage)
         if let health, !health.shouldRun(stage) { return fallback }
         // Nothing for this stage to look at has changed since it last found nothing. Announced
         // like every other skip; not a failure, because nothing failed.
