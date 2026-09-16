@@ -9,6 +9,7 @@ import Receiver
 import SearchKit
 import SegmentStore
 import StatusUI
+import SwiftUI
 import Transcription
 import UIKit
 import WireProtocol
@@ -1162,14 +1163,17 @@ final class AppComposition {
         Task { [lifecycle] in await lifecycle.handle(.restorationRelaunch) }
     }
 
-    /// A scene is on screen. The one unambiguous statement in the whole launch that a person is
+    /// A scene is ACTIVE. The one unambiguous statement in the whole launch that a person is
     /// looking at this app — and therefore the thing that decides foreground, rather than a launch
     /// option or `UIApplication.shared.applicationState`, both of which lie here (21 of the 22
     /// process starts in the 2026-09-08 flight recorder were labelled `(foreground)` and ALSO
     /// carried the Core Bluetooth restoration key, including plainly headless 30-minute wakes).
+    /// "A window exists" is NOT that statement — see `SceneForegroundRule` for the launch behind
+    /// the lock screen that taught the difference.
     ///
-    /// Called from `PebbleAudioApp` on the root view's first appearance and on every
-    /// `scenePhase == .active`. Costs one actor hop when nothing is wrong — `setForeground` is a
+    /// Reached through `noteScenePhase(_:)` from `PebbleAudioApp`, on the root view's first
+    /// appearance and on every phase change, whenever the phase is `.active`. Costs one actor hop
+    /// when nothing is wrong — `setForeground` is a
     /// transition guard and returns immediately when the runtime is already foreground — so it
     /// adds no timer, no poll and no per-frame work. When something IS wrong it is the whole
     /// repair: without it, a launch mis-labelled headless leaves the pipeline taking its
@@ -1190,10 +1194,45 @@ final class AppComposition {
         shared?.applySceneActive()
     }
 
+    /// The scene phase, from the app's root: `.active` promotes, `.background` demotes,
+    /// `.inactive` says nothing. Called on the root view's first appearance and on every change.
+    /// `SceneForegroundRule` holds the reasoning; the short version is that a window can exist
+    /// with nobody looking at it (a launch on a locked phone), and only the scene phase says
+    /// which it is — in both directions.
+    static func noteScenePhase(_ phase: ScenePhase) {
+        switch SceneForegroundRule.foreground(for: phase) {
+        case true?: noteSceneActive()
+        case false?: noteSceneBackground()
+        case nil: break
+        }
+    }
+
+    /// The scene went to (or was born in) the background. Idempotent with the
+    /// `didEnterBackground` path in `AppLifecycleCoordinator` — `setForeground` is a transition
+    /// guard on both objects — but that path only fires after the app has been ACTIVE, and a
+    /// process launched behind the lock screen never is. Without this nothing could ever demote
+    /// a runtime that `.task` had promoted on the strength of the window alone.
+    static func noteSceneBackground() {
+        if !sceneHasBeenActive, !sceneBackgroundNoted {
+            sceneBackgroundNoted = true
+            AppRuntimeLog.shared.record(
+                "launch cause: a window exists but its scene is in the background (launched behind"
+                    + " the lock screen?) — staying headless")
+        }
+        shared?.applySceneBackground()
+    }
+
+    private static var sceneBackgroundNoted = false
+
     private func applySceneActive() {
         receiver.clearLaunchedInBackground()
         gattLink.setForeground(true)
         Task { [runtime] in await runtime.setForeground(true) }
+    }
+
+    private func applySceneBackground() {
+        gattLink.setForeground(false)
+        Task { [runtime] in await runtime.setForeground(false) }
     }
 
     // MARK: - Background processing

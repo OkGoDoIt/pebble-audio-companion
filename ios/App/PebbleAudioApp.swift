@@ -130,19 +130,22 @@ struct PebbleAudioApp: App {
                     nativeSurfaces.handle(userActivity: activity)
                 }
                 .task {
-                    // A window exists. This is the earliest moment anything in the process can
-                    // say so, and it is the only statement that is never wrong — see
-                    // `AppComposition.noteSceneActive()`. It must come before the surfaces work
-                    // because it is what un-wedges a launch iOS mis-labelled as headless.
-                    AppComposition.noteSceneActive()
+                    // A window exists — but only an ACTIVE scene means a person is looking at it,
+                    // and that is what decides foreground (see `SceneForegroundRule`). A launch on
+                    // a locked phone builds this view with the scene in `.background`; promoting
+                    // on the window alone left the runtime in its foreground shape for the life
+                    // of the process on 2026-09-16. This must come before the surfaces work
+                    // because it is also what un-wedges a launch iOS mis-labelled as headless.
+                    // The surfaces work itself is NOT gated: a Control Center request in the
+                    // mailbox should be applied by whichever launch gets here first.
+                    AppComposition.noteScenePhase(scenePhase)
                     nativeSurfaces.start { route in router.navigate(to: route) }
                     await nativeSurfaces.handleForeground()
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    AppComposition.noteScenePhase(phase)
                     switch phase {
-                    case .active:
-                        AppComposition.noteSceneActive()
-                        Task { await nativeSurfaces.handleForeground() }
+                    case .active: Task { await nativeSurfaces.handleForeground() }
                     case .background: nativeSurfaces.handleBackground()
                     default: break
                     }
