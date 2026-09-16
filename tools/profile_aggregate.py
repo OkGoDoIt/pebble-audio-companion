@@ -36,6 +36,13 @@ for ev, el in ET.iterparse(path, events=('end',)):
         bt = el.find('backtrace')
         if bt is not None:
             tagged[el.get('id')] = bt.get('id') or bt.get('ref')
+        else:
+            # Xcode 27's export drops the inner <backtrace> and puts the <frame>s straight under
+            # <tagged-backtrace id=N> (still leaf first). Treat N as the backtrace id.
+            ids = [f.get('id') or f.get('ref') for f in el.findall('frame')]
+            if ids:
+                bts[el.get('id')] = ids
+                tagged[el.get('id')] = el.get('id')
     elif tag == 'thread' and el.get('id'):
         threads[el.get('id')] = el.get('fmt')
     elif tag == 'weight' and el.get('id'):
@@ -54,6 +61,8 @@ for ev, el in ET.iterparse(path, events=('end',)):
                 ids = bts.get(bt.get('id') or bt.get('ref'), [])
             elif tb.get('ref'):
                 ids = bts.get(tagged.get(tb.get('ref'), ''), [])
+            elif tb.get('id'):
+                ids = bts.get(tb.get('id'), [])   # Xcode 27 shape, first occurrence of a stack
         rows.append((thf, wv, ids, stv))
         el.clear()
 total = sum(r[1] for r in rows)
