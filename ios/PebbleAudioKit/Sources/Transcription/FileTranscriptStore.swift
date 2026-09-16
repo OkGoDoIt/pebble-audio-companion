@@ -121,13 +121,18 @@ public final class FileTranscriptStore: Sendable {
     /// A cheap identity for the transcript file: its size and modification time, or "absent".
     /// One `stat`, no read. Anything derived from the decoded transcript can be memoised
     /// against this and recomputed only when the file actually changes.
+    ///
+    /// Literally one `stat(2)`. It used to be `FileManager.attributesOfItem(atPath:)`, which is
+    /// not: Foundation also lists and reads every extended attribute and runs the file through
+    /// `CFURLCopyResourcePropertiesForKeys`. The AI stages call this for every member of every
+    /// conversation on every pass, and on 2026-09-16 that was 3.3 s of a 5.2 s profile — 64 % of
+    /// the app's CPU — confirming that a library nobody had touched was still the same.
     public func version(_ segmentId: String) -> String {
-        let url = transcriptURL(segmentId)
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        else { return "absent" }
-        let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
-        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return "\(size)@\(modified)"
+        var status = stat()
+        guard stat(transcriptURL(segmentId).path, &status) == 0 else { return "absent" }
+        let modified =
+            Double(status.st_mtimespec.tv_sec) + Double(status.st_mtimespec.tv_nsec) / 1e9
+        return "\(status.st_size)@\(modified)"
     }
 
     /// Just the turn timings, for callers that need to know WHERE speech was and not what was

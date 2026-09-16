@@ -80,6 +80,22 @@ import Testing
         #expect(store.list().isEmpty)
     }
 
+    // `version` is the identity the AI stages memoise a whole library against, on every pass.
+    // Pinned: stable while the file is untouched, "absent" for no file, and different once the
+    // file is rewritten with other content — the three facts the memo caches depend on.
+    @Test func versionIsStableAbsentOrChanged() throws {
+        let store = store(try makeTempRoot("transcripts"))
+        #expect(store.version("seg-1") == "absent")
+
+        try store.save("seg-1", result: routed("hello world"))
+        let first = store.version("seg-1")
+        #expect(first != "absent")
+        #expect(store.version("seg-1") == first)
+
+        try store.save("seg-1", result: routed("hello world, and then some more of it"))
+        #expect(store.version("seg-1") != first)
+    }
+
     @Test func loadOfMissingSegmentIsNull() throws {
         #expect(store(try makeTempRoot("transcripts")).load("seg-missing") == nil)
     }
