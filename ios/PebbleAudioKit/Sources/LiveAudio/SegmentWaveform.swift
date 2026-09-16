@@ -47,8 +47,9 @@ public struct SegmentWaveform: Sendable, Equatable {
 /// linearly onto it; missing audio is shown as gap markers at the position where it occurred
 /// (the ux plan's "scrubber with gap markers"), not as fake silent time.
 ///
-/// Not thread-safe (same as the Kotlin class): one owner drives it.
-public final class SegmentWaveformBuilder {
+/// An actor, which is what "one owner drives it" (the Kotlin original's rule) means here: the
+/// cache below is its state, and `LiveAudioService` reaches it from its own actor.
+public actor SegmentWaveformBuilder {
     private let decoder: LiveFrameDecoder?
     private let frameDurationMs: Int64
     private let maxBars: Int
@@ -77,7 +78,7 @@ public final class SegmentWaveformBuilder {
 
     public func build(
         meta: SegmentMeta,
-        framesProvider: () -> [FrameRecord]
+        framesProvider: @Sendable () -> [FrameRecord]
     ) async -> SegmentWaveform {
         if let cached = cachedValue, cachedSegmentId == meta.segmentId {
             let delta = meta.frameCount - cachedFrameCount

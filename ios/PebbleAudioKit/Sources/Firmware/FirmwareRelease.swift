@@ -187,7 +187,7 @@ public struct FirmwareRelease: Sendable, Equatable, Identifiable, Codable {
         try c.encode(version.raw, forKey: .version)
         try c.encode(board, forKey: .board)
         if let publishedAt {
-            try c.encode(FirmwareFeed.iso8601.string(from: publishedAt), forKey: .publishedAt)
+            try c.encode(FirmwareFeed.iso8601.format(publishedAt), forKey: .publishedAt)
         }
         if !notes.isEmpty { try c.encode(notes, forKey: .notes) }
         try c.encode(assetURL.absoluteString, forKey: .url)
@@ -291,22 +291,17 @@ public struct FirmwareFeed: Sendable, Equatable {
 
     // MARK: Dates
 
-    static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
+    // Format STYLES, not formatters: `Date.ISO8601FormatStyle` is a `Sendable` value, where an
+    // `ISO8601DateFormatter` held in a static is shared mutable state to the compiler. The default
+    // style is exactly `.withInternetDateTime` (date, time, "Z" or an offset).
+    static let iso8601 = Date.ISO8601FormatStyle()
 
-    private static let iso8601Fractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
+    private static let iso8601Fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
     /// GitHub stamps release dates without fractional seconds; other generators add them.
     /// A date that parses under neither is dropped, not defaulted to "now" — a wrong date would
     /// make a stale release look fresh.
     static func date(fromISO8601 text: String) -> Date? {
-        iso8601.date(from: text) ?? iso8601Fractional.date(from: text)
+        (try? iso8601.parse(text)) ?? (try? iso8601Fractional.parse(text))
     }
 }

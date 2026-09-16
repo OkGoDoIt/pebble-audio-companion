@@ -10,18 +10,35 @@ import WireProtocol
 // fast: no decode, no transcription, just forwarding whole protocol messages into streams.
 // Failure classification uses CBError/CBATTError DOMAINS/CODES, never localized strings.
 
+/// A `CBUUID` that may be shared between threads.
+///
+/// `CBUUID` is an immutable value object (Core Bluetooth documents it as such and it conforms to
+/// `NSCopying` by returning itself), but the framework has not marked it `Sendable`, so a static
+/// constant of it is "shared mutable state" to the compiler. This is the one place that says
+/// otherwise; everything built on it is checked normally. `==` against a `CBUUID` keeps the
+/// delegate code reading as it always did.
+public struct GattUUID: @unchecked Sendable, Hashable {
+    public let raw: CBUUID
+    public init(string: String) { raw = CBUUID(string: string) }
+
+    public static func == (lhs: CBUUID, rhs: GattUUID) -> Bool { lhs == rhs.raw }
+    public static func == (lhs: GattUUID, rhs: CBUUID) -> Bool { lhs.raw == rhs }
+    /// `switch characteristic.uuid { case AudioCompanionGattIds.dataCharacteristicUUID: … }`.
+    public static func ~= (pattern: GattUUID, value: CBUUID) -> Bool { pattern.raw == value }
+}
+
 public enum AudioCompanionGattIds {
     public static let restoreIdentifier = "audio-companion-central"
 
-    public static let pebblePairingServiceUUID = CBUUID(string: "FED9")
-    public static let deviceInformationServiceUUID = CBUUID(string: "180A")
-    public static let batteryServiceUUID = CBUUID(string: "180F")
+    public static let pebblePairingServiceUUID = GattUUID(string: "FED9")
+    public static let deviceInformationServiceUUID = GattUUID(string: "180A")
+    public static let batteryServiceUUID = GattUUID(string: "180F")
     /// Battery Level (org.bluetooth.characteristic.battery_level): one byte, 0-100.
-    public static let batteryLevelCharacteristicUUID = CBUUID(string: "2A19")
-    public static let serviceUUID = CBUUID(string: ProtocolConstants.serviceUUID)
-    public static let infoCharacteristicUUID = CBUUID(string: ProtocolConstants.infoCharacteristicUUID)
-    public static let controlCharacteristicUUID = CBUUID(string: ProtocolConstants.controlCharacteristicUUID)
-    public static let dataCharacteristicUUID = CBUUID(string: ProtocolConstants.dataCharacteristicUUID)
+    public static let batteryLevelCharacteristicUUID = GattUUID(string: "2A19")
+    public static let serviceUUID = GattUUID(string: ProtocolConstants.serviceUUID)
+    public static let infoCharacteristicUUID = GattUUID(string: ProtocolConstants.infoCharacteristicUUID)
+    public static let controlCharacteristicUUID = GattUUID(string: ProtocolConstants.controlCharacteristicUUID)
+    public static let dataCharacteristicUUID = GattUUID(string: ProtocolConstants.dataCharacteristicUUID)
 }
 
 public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @unchecked Sendable {
@@ -550,8 +567,8 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         let connected = connectedPeripherals(
             manager,
             serviceUUIDs: [
-                AudioCompanionGattIds.serviceUUID,
-                AudioCompanionGattIds.pebblePairingServiceUUID,
+                AudioCompanionGattIds.serviceUUID.raw,
+                AudioCompanionGattIds.pebblePairingServiceUUID.raw,
             ]
         )
         if let existing = connected.first(where: { $0.isLikelyPebble }) ?? connected.first {
@@ -572,8 +589,8 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
         let namedPebble = connectedPeripherals(
             manager,
             serviceUUIDs: [
-                AudioCompanionGattIds.deviceInformationServiceUUID,
-                AudioCompanionGattIds.batteryServiceUUID,
+                AudioCompanionGattIds.deviceInformationServiceUUID.raw,
+                AudioCompanionGattIds.batteryServiceUUID.raw,
             ]
         ).first { $0.isLikelyPebble }
         if let namedPebble {
@@ -584,8 +601,8 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
             hasPendingConnect = true
             manager.scanForPeripherals(
                 withServices: [
-                    AudioCompanionGattIds.serviceUUID,
-                    AudioCompanionGattIds.pebblePairingServiceUUID,
+                    AudioCompanionGattIds.serviceUUID.raw,
+                    AudioCompanionGattIds.pebblePairingServiceUUID.raw,
                 ],
                 options: nil
             )
@@ -1138,12 +1155,12 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
         peripheral.delegate = self
         rememberPeripheral(peripheral)
         enterConnecting("connected, discovering services")
-        peripheral.discoverServices(Self.discoveredServiceUUIDs)
+        peripheral.discoverServices(Self.discoveredServiceUUIDs.map(\.raw))
     }
 
     /// The companion service, plus the watch's standard Battery Service for the battery
     /// telemetry. Battery is best-effort: its absence changes nothing below.
-    private static let discoveredServiceUUIDs: [CBUUID] = [
+    private static let discoveredServiceUUIDs: [GattUUID] = [
         AudioCompanionGattIds.serviceUUID,
         AudioCompanionGattIds.batteryServiceUUID,
     ]
@@ -1238,7 +1255,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         // moved. `enterConnecting` re-arms the watchdog so a rediscovery that stalls is not a new
         // way to sit at "Connecting" forever.
         enterConnecting("services changed, rediscovering", automatic: automaticConnect)
-        peripheral.discoverServices(Self.discoveredServiceUUIDs)
+        peripheral.discoverServices(Self.discoveredServiceUUIDs.map(\.raw))
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -1258,9 +1275,9 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         log("didDiscoverServices ok; discovering characteristics")
         peripheral.discoverCharacteristics(
             [
-                AudioCompanionGattIds.infoCharacteristicUUID,
-                AudioCompanionGattIds.controlCharacteristicUUID,
-                AudioCompanionGattIds.dataCharacteristicUUID,
+                AudioCompanionGattIds.infoCharacteristicUUID.raw,
+                AudioCompanionGattIds.controlCharacteristicUUID.raw,
+                AudioCompanionGattIds.dataCharacteristicUUID.raw,
             ],
             for: service
         )
@@ -1270,7 +1287,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
             $0.uuid == AudioCompanionGattIds.batteryServiceUUID
         }) {
             peripheral.discoverCharacteristics(
-                [AudioCompanionGattIds.batteryLevelCharacteristicUUID], for: battery
+                [AudioCompanionGattIds.batteryLevelCharacteristicUUID.raw], for: battery
             )
         }
     }

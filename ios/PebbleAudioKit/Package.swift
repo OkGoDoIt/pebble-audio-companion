@@ -4,7 +4,7 @@
 // test suites are the behavioral spec; spec/fixtures are the wire contract.
 import PackageDescription
 
-let swiftSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
+let swiftSettings: [SwiftSetting] = [.swiftLanguageMode(.v6)]
 
 let package = Package(
     name: "PebbleAudioKit",

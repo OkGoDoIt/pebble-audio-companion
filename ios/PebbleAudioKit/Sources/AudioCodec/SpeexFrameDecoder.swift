@@ -99,7 +99,11 @@ public final class SpeexFrameDecoder: Sendable {
     /// Streaming variant mirroring the KMP `Flow<ByteArray> -> Flow<ByteArray>` shape: consumes
     /// frames as they arrive (e.g. the live-audio path) and yields bounded PCM chunks. A frame
     /// that fails to decode finishes the stream with `AudioCodecError.transcriptionFailed`.
-    public func decode<S: AsyncSequence>(
+    ///
+    /// `S: Sendable`: the sequence is consumed inside the stream's own task, so it crosses an
+    /// isolation boundary; every caller passes an `AsyncStream` or `AsyncThrowingStream`, which
+    /// are `Sendable` for a `Sendable` element.
+    public func decode<S: AsyncSequence & Sendable>(
         frames: S,
         pcmChunkBytes: Int = SpeexFrameDecoder.defaultPcmChunkBytes
     ) -> AsyncThrowingStream<Data, Error> where S.Element == Data {
