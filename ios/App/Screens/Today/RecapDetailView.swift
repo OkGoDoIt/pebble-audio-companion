@@ -102,17 +102,20 @@ struct RecapDetailView: View {
     /// Bullet text with trailing citation chips — [n] after the statement, rendered as
     /// small tint chips (11/600 on 12% fill).
     private func citedText(_ bullet: RecapBullet) -> Text {
-        var result = Text(bullet.text)
-            .font(AppFont.subBody)
-            .foregroundStyle(Tokens.label)
+        // One attributed string rather than a chain of `Text` concatenations (the `+` operator
+        // on `Text` is deprecated in iOS 26); the chips were already attributed runs.
+        var result = AttributedString(bullet.text)
+        result.font = AppFont.subBody
+        result.foregroundColor = Tokens.label
         for number in bullet.citations {
             var chip = AttributedString(" \(number) ")
             chip.font = .system(size: 11, weight: .semibold)
             chip.foregroundColor = Tokens.tint
             chip.backgroundColor = Tokens.tintFill12
-            result = result + Text(" ") + Text(chip)
+            result.append(AttributedString(" "))
+            result.append(chip)
         }
-        return result
+        return Text(result)
     }
 }
 

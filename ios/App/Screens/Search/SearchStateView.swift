@@ -109,9 +109,9 @@ struct SearchStateView: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Tokens.tint)
-                (Text(Copy.Ask.title).font(AppFont.rowTitle).foregroundColor(Tokens.tint)
-                    + Text(" about “\(model.trimmedQuery)”")
-                    .font(AppFont.callout).foregroundColor(Tokens.label))
+                Text(
+                    "\(Text(Copy.Ask.title).font(AppFont.rowTitle).foregroundStyle(Tokens.tint))\(Text(" about “\(model.trimmedQuery)”").font(AppFont.callout).foregroundStyle(Tokens.label))"
+                )
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")

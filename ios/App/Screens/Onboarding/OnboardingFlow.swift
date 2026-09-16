@@ -96,9 +96,11 @@ private struct OnboardingConnectView: View {
         Button {
             showFirmwareGuide = true
         } label: {
-            (Text(Copy.Onboarding.connectFootnote).foregroundStyle(Tokens.meta)
-                + Text(" ")
-                + Text(Copy.FirmwareGuidance.howToInstall).foregroundStyle(Tokens.tint))
+            // Two runs in one label, by interpolating styled `Text` — the `+` operator on
+            // `Text` is deprecated in iOS 26.
+            Text(
+                "\(Text(Copy.Onboarding.connectFootnote).foregroundStyle(Tokens.meta)) \(Text(Copy.FirmwareGuidance.howToInstall).foregroundStyle(Tokens.tint))"
+            )
                 .font(AppFont.footnote)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
