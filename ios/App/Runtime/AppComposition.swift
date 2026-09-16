@@ -1168,7 +1168,14 @@ final class AppComposition {
     /// ledger the tests assert on. Idempotent: the restoration callback and the application-state
     /// check in `PebbleAudioApp` can both fire for one launch, and the second is not news.
     func handleRestorationRelaunch(reason: String) {
-        guard !restorationHandled else { return }
+        guard !restorationHandled else {
+            // The second signal for the same launch. Not acted on, but recorded: it is the only
+            // evidence in the flight recorder that this path fires at all when the other one
+            // got there first (2026-09-16: the application-state check beat the restoration
+            // callback's main-actor hop on every launch behind the lock screen).
+            AppRuntimeLog.shared.record("launch cause: also \(reason)")
+            return
+        }
         restorationHandled = true
         // NOT the same claim as "iOS started us headless" — see `noteSceneActive()` and the
         // `launchedHeadless` comment in `PebbleAudioApp`. A scene that has already come up wins.
