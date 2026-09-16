@@ -80,7 +80,12 @@ struct PebbleAudioApp: App {
     @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var router = AppRouter()
-    @State private var settings = AppSettings()
+    // No inline default on `settings` or `nativeSurfaces`: `init` supplies both. Since Xcode 27
+    // `@State` is a macro, and a property that has an inline initial value keeps it — the value
+    // assigned in `init` is silently discarded (TN3211). With `= AppSettings()` here, the views
+    // read one `AppSettings` while the runtime was bootstrapped with another: a toggle in the
+    // UI wrote defaults but never reached the runtime's settings box or woke the pipeline.
+    @State private var settings: AppSettings
     /// Widget/Control Center/Siri/Spotlight/notification plumbing (plan 6.8).
     @State private var nativeSurfaces: NativeSurfaceCoordinator
 
