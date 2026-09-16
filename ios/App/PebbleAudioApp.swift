@@ -13,41 +13,32 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
             LossNotificationRouter.shared.prepare()
             // Did iOS start us without a user? Receive-only is applied before the receiver starts.
             //
-            // `.bluetoothCentrals` is the documented signal and still works, but it is deprecated
-            // as of iOS 26 (the compiler says so, and this app targets 26) — Apple's replacement
-            // guidance is to reinstantiate the central from its restore identifier at launch and
-            // let `willRestoreState` speak for itself, which is what this app already does. So the
-            // launch option is now one of THREE signals rather than the only one:
+            // Two signals, neither trustworthy alone, and the correction made where the truth is:
             //
-            //   1. the launch option, while it still exists;
+            //   1. `willRestoreState` — the link reports it (`AppComposition.noteStateRestored`)
+            //      the instant Core Bluetooth restores the central, usually before this method
+            //      even runs. It replaced the `bluetoothCentrals` launch option, deprecated in
+            //      iOS 26 with exactly this guidance: reinstantiate the central from its restore
+            //      identifier at launch and let `willRestoreState` speak for itself. Like the
+            //      option, it over-fires: iOS restores state on ANY launch that has some,
+            //      including a person tapping the icon (21 of the 22 process starts in the
+            //      2026-09-08 flight recorder, including a foreground launch that left Today and
+            //      Library with no live conversation for a whole healthy recording).
             //   2. the application state, which covers every other headless start — a
             //      BGProcessing window, a background URLSession completion, a widget or Siri
-            //      invocation — none of which set the option at all;
-            //   3. `willRestoreState` itself, which reports through the link (see
-            //      `AppComposition.handleRestorationRelaunch`).
+            //      invocation — none of which restore any Bluetooth state. MEASURED to read
+            //      `.active` on plainly headless wakes (all 22 starts on 2026-09-08), so it
+            //      rarely fires, but when it does it is right.
             //
             // Getting this wrong is not cosmetic: the flag is what keeps a background wake from
             // loading a transcription model and running the whole foreground pipeline on the
-            // tightest memory budget iOS ever gives us.
-            //
-            // MEASURED, and neither signal is trustworthy on its own. In the 2026-09-08 flight
-            // recorder all 22 process starts recorded `applicationState == .active`, including
-            // the 05:35/06:07/06:37/07:07 wakes that were plainly headless — so signal (2) never
-            // fires, and signal (1) is the only one that catches a background launch at all. But
-            // (1) over-fires in the other direction: iOS supplies the key to ANY launch with Core
-            // Bluetooth state to restore, and 21 of those 22 starts carried it, including the
-            // 18:51:48 foreground launch after an install-over that left Today and Library with
-            // no live conversation for the whole of a healthy recording.
-            //
-            // So this stays deliberately conservative — assume headless, because being wrong that
-            // way is cheap — and the correction is made where the truth actually is: the root
-            // view's first appearance, through `AppComposition.noteSceneActive()`. A guess about
-            // why the process exists must never outlive a window the person can see.
-            let launchedHeadless =
-                options?[.bluetoothCentrals] != nil
-                || application.applicationState == .background
-            if launchedHeadless {
-                AppComposition.shared?.handleRestorationRelaunch()
+            // tightest memory budget iOS ever gives us. So this stays deliberately conservative —
+            // assume headless, because being wrong that way is cheap — and the correction is made
+            // where the truth actually is: the scene phase, through `AppComposition.noteScenePhase`.
+            // A guess about why the process exists must never outlive a window the person can see.
+            if application.applicationState == .background {
+                AppComposition.shared?.handleRestorationRelaunch(
+                    reason: "started in the background")
             }
         }
         return true
@@ -56,7 +47,7 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         handleEventsForBackgroundURLSession identifier: String,
-        completionHandler: @escaping () -> Void
+        completionHandler: @escaping @Sendable () -> Void
     ) {
         MainActor.assumeIsolated {
             guard let composition = AppComposition.shared else {
@@ -98,7 +89,7 @@ struct PebbleAudioApp: App {
         // data sources from the mock world to the live one. Built here (not in `.task`) so the
         // lifecycle observers exist before the first `didBecomeActive` notification fires.
         MainActor.assumeIsolated {
-            AppComposition.bootstrap(settings: settings, nativeSurfaces: surfaces)
+            _ = AppComposition.bootstrap(settings: settings, nativeSurfaces: surfaces)
         }
     }
 

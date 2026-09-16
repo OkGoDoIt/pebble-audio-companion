@@ -695,6 +695,9 @@ final class AppComposition {
         // screen a person can read on the phone said "Nothing logged yet" during the exact
         // failure it exists for, because the adapter only ever wrote to NSLog.
         gattLink.logSink = AppRuntimeLog.receiverLog
+        // Wired before the central exists: `willRestoreState` is the first delegate callback and
+        // can land within a millisecond of `prepareForRestoration()`.
+        gattLink.onStateRestored = { AppComposition.noteStateRestored() }
         gattLink.prepareForRestoration()
 
         // The `audio` background mode's other half. Without it the app is suspended between Core
@@ -1064,6 +1067,8 @@ final class AppComposition {
         // `didBecomeActive`) is born into a process whose window is ALREADY on screen, and
         // `scenePhase` will not change again to say so. Carry the fact across.
         if Self.sceneHasBeenActive { applySceneActive() }
+        // Likewise a restoration that reported before `shared` existed — see `noteStateRestored`.
+        if Self.stateWasRestored { handleRestorationRelaunch(reason: "Core Bluetooth state restoration") }
     }
 
     /// A line a minute, for as long as the process is alive.
@@ -1124,7 +1129,7 @@ final class AppComposition {
     /// without ever calling it, and calling it immediately lets the system re-suspend us before
     /// the finished uploads have been delivered.
     func handleBackgroundUrlSessionEvents(
-        identifier: String, completionHandler: @escaping () -> Void
+        identifier: String, completionHandler: @escaping @Sendable () -> Void
     ) {
         guard identifier == BackgroundUploadWiring.sessionIdentifier else {
             // Not our session — nothing here can drain it, so release the system immediately.
@@ -1138,20 +1143,41 @@ final class AppComposition {
         Task { [lifecycle] in await lifecycle.handle(.backgroundUrlSessionEvents) }
     }
 
-    /// Core Bluetooth relaunched us in the background: receive-only, before anything starts.
+    /// Core Bluetooth restored this process's central: iOS relaunched us for the watch.
+    ///
+    /// Reported by the link from `willRestoreState`, on its own queue, at a moment `shared` may
+    /// not exist yet — the central is created inside `init`, before `bootstrap` publishes the
+    /// graph — so it is latched and `install()` checks the latch, exactly as `sceneHasBeenActive`
+    /// is handled. The hop to the main actor is what makes the two orderings equivalent: either
+    /// this lands first (latch set, `shared` nil, `install()` acts on the latch) or `install()`
+    /// runs first (latch clear, then this lands and acts on `shared`). One call either way.
+    nonisolated static func noteStateRestored() {
+        Task { @MainActor in
+            stateWasRestored = true
+            shared?.handleRestorationRelaunch(reason: "Core Bluetooth state restoration")
+        }
+    }
+
+    private static var stateWasRestored = false
+    private var restorationHandled = false
+
+    /// iOS started us without a user: receive-only, before anything starts.
     ///
     /// The flag is set SYNCHRONOUSLY here — see `ReceiverService.markLaunchedInBackground()`. The
     /// lifecycle event still runs, for the rest of the transition and for the handled-events
-    /// ledger the tests assert on.
-    func handleRestorationRelaunch() {
+    /// ledger the tests assert on. Idempotent: the restoration callback and the application-state
+    /// check in `PebbleAudioApp` can both fire for one launch, and the second is not news.
+    func handleRestorationRelaunch(reason: String) {
+        guard !restorationHandled else { return }
+        restorationHandled = true
         // NOT the same claim as "iOS started us headless" — see `noteSceneActive()` and the
         // `launchedHeadless` comment in `PebbleAudioApp`. A scene that has already come up wins.
         guard !Self.sceneHasBeenActive else {
-            AppRuntimeLog.shared.record("launch cause: Core Bluetooth state restoration (visible)")
+            AppRuntimeLog.shared.record("launch cause: \(reason) (visible)")
             receiver.clearLaunchedInBackground()
             return
         }
-        AppRuntimeLog.shared.record("launch cause: Core Bluetooth state restoration")
+        AppRuntimeLog.shared.record("launch cause: \(reason)")
         receiver.markLaunchedInBackground()
         // The link's give-up watchdog must not be armed for a wake nobody is watching (see
         // `CoreBluetoothAudioGattLink.setForeground`). `install()` seeds it from

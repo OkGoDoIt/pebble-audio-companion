@@ -216,6 +216,15 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// returning and the cooperative pool getting round to persisting the frame.
     public var onInboundNotification: @Sendable () -> Void = {}
 
+    /// Called on the delegate queue when iOS relaunched this process to restore the central's
+    /// state — `willRestoreState`, whether or not it carries a peripheral. The launch-side truth
+    /// about a Core Bluetooth wake: the `bluetoothCentrals` launch option that used to carry it
+    /// is deprecated in iOS 26, and Apple's guidance is exactly this — reinstantiate the central
+    /// from its restore identifier and let `willRestoreState` speak. Set BEFORE
+    /// `prepareForRestoration()`; the callback can arrive within a millisecond of the central
+    /// being created.
+    public var onStateRestored: @Sendable () -> Void = {}
+
     /// Every Core Bluetooth transition, with a stable, greppable tag. This is the only place the
     /// adapter logs; it stays out of the data hot path (notifications are not logged per-frame).
     private func log(_ message: String) {
@@ -1063,6 +1072,7 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         if centralManager == nil { centralManager = central }
         guard central === centralManager else { return }
+        onStateRestored()
         let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]
         guard let restored = peripherals?.first else { return }
         log("willRestoreState restored peripheral \(restored.identifier.uuidString) (\(peripherals?.count ?? 0) total)")
