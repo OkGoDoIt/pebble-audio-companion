@@ -291,6 +291,29 @@ public actor ReceiverService {
     public func markStoreRecovered() {
         storeRecovered = true
         startSessionIfReady()
+        // Hands the startup hold (`holdResidencyThroughStartup`) back to the stream rule: kept if
+        // the session is already streaming, otherwise released after the usual grace — long
+        // enough for the STREAM_START that follows authorization within a second or two.
+        syncResidency()
+    }
+
+    /// Holds residency from process start until the stream rule can take over.
+    ///
+    /// The one exception to "residency follows the stream" (`syncResidency`), and a bounded one.
+    /// Recovery runs BEFORE the receiver, and on a headless launch nothing else keeps the process
+    /// awake while it does: there is no stream until the receiver starts, and the ~10 s Core
+    /// Bluetooth wake budget is refreshed only by notifications — which stop the moment the watch
+    /// has nothing to send. On 2026-09-15 iOS suspended a restoration relaunch mid-recovery for
+    /// fifteen minutes (the watch was rebooting, so no notification came to wake us) and the
+    /// flight recorder read it as a 1,047 s recovery; the 63 s and 51 s launches in the same week
+    /// were the same shape. Capture being active is the evidence the relaunch itself rests on —
+    /// we died streaming, or iOS woke us for the watch — so that is what the hold is taken on.
+    /// `markStoreRecovered` then re-syncs against the real session state, which keeps the hold
+    /// while streaming and otherwise schedules the ordinary grace release.
+    public func holdResidencyThroughStartup() {
+        guard intentBox.value == .active, residency != nil else { return }
+        residencyGeneration &+= 1
+        residency?.setWanted(true)
     }
 
     private func startSessionIfReady() {

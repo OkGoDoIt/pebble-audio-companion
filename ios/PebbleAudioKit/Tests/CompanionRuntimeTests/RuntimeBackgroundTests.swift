@@ -1,5 +1,6 @@
 import CompanionRuntime
 import Foundation
+import Receiver
 import Testing
 
 // Port of `app/src/commonTest/.../AudioCompanionRuntimeBackgroundTest.kt` — all 5 cases, same
@@ -145,6 +146,52 @@ import Testing
 
         await fixture.receiver.stop()
         #expect(fixture.residency.state.value == .notNeeded)
+    }
+
+    // The one bounded exception to "residency follows the stream": the launch itself. Recovery
+    // runs before the receiver, and on a headless launch nothing else keeps the process awake
+    // while it does — iOS suspended one such launch mid-recovery for fifteen minutes on
+    // 2026-09-15. So `start()` holds residency on the strength of capture being active, and hands
+    // it to the stream rule the moment recovery is done: kept while streaming, otherwise released
+    // after the ordinary grace.
+    @Test func theLaunchHoldsResidencyThroughRecoveryAndThenLetsTheStreamRuleDecide() async throws {
+        let fixture = try RuntimeFixture()
+        #expect(fixture.residency.state.value == .notNeeded)
+
+        await fixture.receiver.holdResidencyThroughStartup()
+        #expect(fixture.residency.state.value == .held, "recovery must not run without residency")
+
+        // Recovery done, no stream: the hold survives the grace window and no longer...
+        await fixture.receiver.markStoreRecovered()
+        #expect(fixture.residency.state.value == .held)
+        await fixture.clock.advance(by: 21_000)
+        #expect(
+            await waitUntil({ fixture.residency.state.value == .notNeeded }),
+            "with nothing streaming after recovery, the launch hold must be released"
+        )
+        await fixture.receiver.stop()
+    }
+
+    @Test func theLaunchHoldIsKeptWhenTheStreamArrivesInsideTheGrace() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.receiver.holdResidencyThroughStartup()
+        #expect(fixture.residency.state.value == .held)
+
+        try await fixture.beginStreaming()
+        #expect(await waitUntil({ fixture.receiver.state.value.isStreaming }))
+        await fixture.clock.advance(by: 21_000)
+        // Never released, never thrashed: the stream took the hold over.
+        #expect(fixture.residency.state.value == .held)
+        await fixture.receiver.stop()
+    }
+
+    @Test func aLaunchWithCaptureOffOrPausedHoldsNothing() async throws {
+        for intent in [CaptureIntent.off, .paused] {
+            let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: intent))
+            await fixture.receiver.holdResidencyThroughStartup()
+            #expect(fixture.residency.state.value == .notNeeded, "\(intent)")
+            await fixture.receiver.stop()
+        }
     }
 
     @Test func aPausedWatchDoesNotHoldResidency() async throws {

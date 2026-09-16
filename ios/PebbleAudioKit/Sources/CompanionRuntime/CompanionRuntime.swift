@@ -185,6 +185,9 @@ public actor CompanionRuntime {
         // It cannot prompt the watch: only an explicit enable request does that (plan 4.2).
         if environment.settings.captureIntent != .off {
             environment.receiver.dialLink()
+            // Residency before recovery, so a headless launch is not suspended in the middle of
+            // it — see `ReceiverService.holdResidencyThroughStartup`.
+            await environment.receiver.holdResidencyThroughStartup()
         }
         let startedAtMs = clock.nowMs
         var lastStepMs = startedAtMs
