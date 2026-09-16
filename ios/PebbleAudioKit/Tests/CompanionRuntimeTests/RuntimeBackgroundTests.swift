@@ -158,7 +158,7 @@ import Testing
         let fixture = try RuntimeFixture()
         #expect(fixture.residency.state.value == .notNeeded)
 
-        await fixture.receiver.holdResidencyThroughStartup()
+        fixture.receiver.holdResidencyThroughStartup()
         #expect(fixture.residency.state.value == .held, "recovery must not run without residency")
 
         // Recovery done, no stream: the hold survives the grace window and no longer...
@@ -174,7 +174,7 @@ import Testing
 
     @Test func theLaunchHoldIsKeptWhenTheStreamArrivesInsideTheGrace() async throws {
         let fixture = try RuntimeFixture()
-        await fixture.receiver.holdResidencyThroughStartup()
+        fixture.receiver.holdResidencyThroughStartup()
         #expect(fixture.residency.state.value == .held)
 
         try await fixture.beginStreaming()
@@ -188,7 +188,7 @@ import Testing
     @Test func aLaunchWithCaptureOffOrPausedHoldsNothing() async throws {
         for intent in [CaptureIntent.off, .paused] {
             let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: intent))
-            await fixture.receiver.holdResidencyThroughStartup()
+            fixture.receiver.holdResidencyThroughStartup()
             #expect(fixture.residency.state.value == .notNeeded, "\(intent)")
             await fixture.receiver.stop()
         }

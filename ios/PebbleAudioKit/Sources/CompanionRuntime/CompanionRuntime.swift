@@ -186,8 +186,11 @@ public actor CompanionRuntime {
         if environment.settings.captureIntent != .off {
             environment.receiver.dialLink()
             // Residency before recovery, so a headless launch is not suspended in the middle of
-            // it — see `ReceiverService.holdResidencyThroughStartup`.
-            await environment.receiver.holdResidencyThroughStartup()
+            // it — see `ReceiverService.holdResidencyThroughStartup`. Detached: activating the
+            // audio session takes up to 1.6 s on the phone, and neither recovery nor the receiver
+            // waits for that; it lands in parallel, well inside the wake budget.
+            let receiver = environment.receiver
+            Task.detached(priority: .userInitiated) { receiver.holdResidencyThroughStartup() }
         }
         let startedAtMs = clock.nowMs
         var lastStepMs = startedAtMs

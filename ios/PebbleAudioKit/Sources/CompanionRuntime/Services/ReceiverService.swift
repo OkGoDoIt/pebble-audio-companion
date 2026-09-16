@@ -310,10 +310,15 @@ public actor ReceiverService {
     /// we died streaming, or iOS woke us for the watch — so that is what the hold is taken on.
     /// `markStoreRecovered` then re-syncs against the real session state, which keeps the hold
     /// while streaming and otherwise schedules the ordinary grace release.
-    public func holdResidencyThroughStartup() {
-        guard intentBox.value == .active, residency != nil else { return }
-        residencyGeneration &+= 1
-        residency?.setWanted(true)
+    ///
+    /// `nonisolated`, and synchronous: activating the audio session took 1.6 s on the phone on
+    /// 2026-09-16, and on the actor that would have queued `markStoreRecovered` — the session
+    /// start — behind it. `BackgroundResidency` is thread-safe, and the only actor state the
+    /// stream rule touches (`residencyGeneration`) has no pending release to invalidate this
+    /// early in a launch. The runtime calls this from a detached task.
+    public nonisolated func holdResidencyThroughStartup() {
+        guard intentBox.value == .active, let residency else { return }
+        residency.setWanted(true)
     }
 
     private func startSessionIfReady() {
