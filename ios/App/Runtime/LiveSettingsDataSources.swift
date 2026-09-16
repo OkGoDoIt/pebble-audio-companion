@@ -562,7 +562,7 @@ final class LiveAboutYouSource: AboutYouSource {
     }
 
     /// Read-modify-write of the personal context, off the main actor. False when it failed.
-    private func writeContext(_ body: @escaping (inout PersonalContext) -> Void) async -> Bool {
+    private func writeContext(_ body: @escaping @Sendable (inout PersonalContext) -> Void) async -> Bool {
         let store = composition.personalContext
         return await withCheckedContinuation { continuation in
             contextWrites.async {

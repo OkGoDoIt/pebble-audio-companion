@@ -44,7 +44,7 @@ protocol CaptureRequestingIntent: AppIntent {}
 
 // Every capture intent declares
 //
-//     static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+//     static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 //
 // performed in the background, may continue into the foreground when the app turns out to be
 // the only way to act. Spelled out on each type as a stored literal because
@@ -86,12 +86,12 @@ enum CaptureDeliveryOutcome {
 
 /// Pause capture. Idempotent — pausing an already-paused watch is a no-op with the same answer.
 struct PauseCaptureIntent: AppIntent, CaptureRequestingIntent {
-    static var title: LocalizedStringResource = "Pause Capture"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Pause Capture"
+    static let description = IntentDescription(
         "Stops capturing audio from your Pebble."
     )
     /// Never yanks the user into the app unless the app turns out to be the only way to act.
-    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         switch await deliver(.paused) {
@@ -108,11 +108,11 @@ struct PauseCaptureIntent: AppIntent, CaptureRequestingIntent {
 /// Resume capture — including from `off`, which goes through the app's normal Start path (it
 /// arms exactly one on-watch enable prompt and then dials the link).
 struct ResumeCaptureIntent: AppIntent, CaptureRequestingIntent {
-    static var title: LocalizedStringResource = "Resume Capture"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Resume Capture"
+    static let description = IntentDescription(
         "Starts capturing audio from your Pebble again."
     )
-    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         switch await deliver(.active) {
@@ -133,9 +133,9 @@ struct ResumeCaptureIntent: AppIntent, CaptureRequestingIntent {
 /// round is fixing. `.paused` is now reserved for a DELIBERATE, temporary pause: the app's
 /// "Pause for…" menu, and `PauseCaptureIntent` below, which says "Pause" on the tin.
 struct ToggleCaptureIntent: SetValueIntent, CaptureRequestingIntent {
-    static var title: LocalizedStringResource = "Toggle Capture"
-    static var description = IntentDescription("Turns capture from your Pebble on or off.")
-    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+    static let title: LocalizedStringResource = "Toggle Capture"
+    static let description = IntentDescription("Turns capture from your Pebble on or off.")
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     /// True = capturing, false = off.
     @Parameter(title: "Capturing")

@@ -137,10 +137,12 @@ final class CaptureIntentAcknowledgementTests: XCTestCase {
 
     func testWaitSucceedsOnceTheAppConsumesTheRequest() async {
         CaptureIntentBridge.request(.active, in: defaults, notify: false)
-        let defaults = self.defaults!
+        // The consuming "app" runs on another task: it opens the suite by name rather than
+        // sharing the instance, because `UserDefaults` is not marked `Sendable`.
+        let suite = suiteName
         Task {
             try? await Task.sleep(nanoseconds: 30_000_000)
-            CaptureIntentBridge.consume(.active, in: defaults)
+            CaptureIntentBridge.consume(.active, in: UserDefaults(suiteName: suite)!)
         }
 
         let applied = await CaptureIntentBridge.waitForApply(

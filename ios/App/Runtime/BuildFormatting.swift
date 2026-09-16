@@ -33,10 +33,10 @@ enum BuildFormatting {
     /// build made outside a git checkout; both mean "there is no stamp to show".
     private static func date(fromISO8601 value: String) -> Date? {
         guard value != "unknown" else { return nil }
-        return iso8601.date(from: value)
+        return try? iso8601.parse(value)
     }
 
-    private static let iso8601 = ISO8601DateFormatter()
+    private static let iso8601 = Date.ISO8601FormatStyle()
 
     /// The device's own locale and time zone: this is read by a person holding the phone, not
     /// parsed by anything, so it should look like every other date iOS shows them.

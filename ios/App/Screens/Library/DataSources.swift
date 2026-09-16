@@ -642,11 +642,10 @@ enum TimeFmt {
         return formatter
     }()
 
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
+    /// A format style (a `Sendable` value), not a `RelativeDateTimeFormatter` held in a static.
+    /// `.numeric` is what the formatter's default `dateTimeStyle` produced: "2 hr. ago".
+    private static let relativeStyle = Date.RelativeFormatStyle(
+        presentation: .numeric, unitsStyle: .abbreviated)
 
     /// "9:12 AM"
     static func time(_ date: Date) -> String { timeFormatter.string(from: date) }
@@ -663,7 +662,7 @@ enum TimeFmt {
 
     /// "2h ago"
     static func relative(_ date: Date) -> String {
-        relativeFormatter.localizedString(for: date, relativeTo: Date())
+        relativeStyle.format(date)
     }
 
     /// "4:01" / "18:12" / "1:03:09" — player timecodes.

@@ -29,11 +29,18 @@ enum NoteMarkdown {
         }
     }
 
-    private static let headingPattern = /^(#{1,6})\s+(.*)$/
-    private static let bulletPattern = /^([ \t]*)([-*+])\s+(.*)$/
-    private static let orderedPattern = /^([ \t]*)(\d{1,3})[.)]\s+(.*)$/
-    private static let quotePattern = /^[ \t]*>\s?(.*)$/
-    private static let rulePattern = /^[ \t]*([-*_])(\s*\1){2,}\s*$/
+    /// A regex literal holds no custom components, so one instance can serve every thread;
+    /// `Regex` is not marked `Sendable` only because in general it can hold some. Compiling the
+    /// five per call would cost a few milliseconds on every answer render, and that is the trade.
+    private struct SharedRegex<Output>: @unchecked Sendable {
+        let regex: Regex<Output>
+    }
+
+    private static let headingPattern = SharedRegex(regex: /^(#{1,6})\s+(.*)$/)
+    private static let bulletPattern = SharedRegex(regex: /^([ \t]*)([-*+])\s+(.*)$/)
+    private static let orderedPattern = SharedRegex(regex: /^([ \t]*)(\d{1,3})[.)]\s+(.*)$/)
+    private static let quotePattern = SharedRegex(regex: /^[ \t]*>\s?(.*)$/)
+    private static let rulePattern = SharedRegex(regex: /^[ \t]*([-*_])(\s*\1){2,}\s*$/)
 
     /// Splits model text into renderable blocks. Every source line stays its own block: notes
     /// are line-oriented (one bullet per line) and re-flowing them would merge items the model
@@ -63,23 +70,23 @@ enum NoteMarkdown {
             }
 
             if trimmed.isEmpty { continue }
-            if trimmed.wholeMatch(of: rulePattern) != nil {
+            if trimmed.wholeMatch(of: rulePattern.regex) != nil {
                 blocks.append(.rule)
-            } else if let match = trimmed.wholeMatch(of: headingPattern) {
+            } else if let match = trimmed.wholeMatch(of: headingPattern.regex) {
                 let body = String(match.output.2).trimmingCharacters(in: .whitespaces)
                 let level = match.output.1.count
                 // "###" alone is a separator the model forgot to fill in; drop it.
                 if !body.isEmpty { blocks.append(.heading(level: level, text: trailingHashes(body))) }
-            } else if let match = line.wholeMatch(of: bulletPattern) {
+            } else if let match = line.wholeMatch(of: bulletPattern.regex) {
                 blocks.append(
                     .bullet(depth: depth(String(match.output.1)), text: String(match.output.3)))
-            } else if let match = line.wholeMatch(of: orderedPattern) {
+            } else if let match = line.wholeMatch(of: orderedPattern.regex) {
                 blocks.append(
                     .ordered(
                         depth: depth(String(match.output.1)),
                         marker: "\(match.output.2).",
                         text: String(match.output.3)))
-            } else if let match = line.wholeMatch(of: quotePattern) {
+            } else if let match = line.wholeMatch(of: quotePattern.regex) {
                 blocks.append(.quote(text: String(match.output.1)))
             } else {
                 blocks.append(.paragraph(text: trimmed))

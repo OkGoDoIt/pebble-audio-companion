@@ -193,13 +193,20 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         return Route.parse(url)
     }
 
-    func userNotificationCenter(
+    // Both delegate methods are `nonisolated`: UserNotifications documents no thread for them,
+    // so nothing here assumes one. The response is reduced to a `Route` (a value) on the caller's
+    // thread and only that crosses to the main actor, where the router state lives.
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         guard let route = Self.route(for: response.notification.request.content.userInfo) else {
             return
         }
+        await deliver(route)
+    }
+
+    private func deliver(_ route: Route) {
         if let handler {
             handler(route)
         } else {
@@ -207,7 +214,7 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {

@@ -53,7 +53,7 @@ extension WatchPairingSource {
 struct OnboardingDataSources {
     var pairing: any WatchPairingSource
 
-    static var current = OnboardingDataSources(pairing: MockWatchPairingSource())
+    @MainActor static var current = OnboardingDataSources(pairing: MockWatchPairingSource())
 }
 
 /// Preview/staging double: a beat of searching, a beat of confirm-on-watch, then `nextOutcome`.

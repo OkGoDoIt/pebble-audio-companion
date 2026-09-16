@@ -12,8 +12,8 @@ import Foundation
 
 /// A conversation, as Siri/Shortcuts sees it.
 struct ConversationEntity: AppEntity, Identifiable {
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Conversation")
-    static var defaultQuery = ConversationEntityQuery()
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Conversation")
+    static let defaultQuery = ConversationEntityQuery()
 
     var id: String
     /// Human title ("Coffee with Dana") — never a raw id.
@@ -52,8 +52,8 @@ enum AskScopeAppEnum: String, AppEnum {
     case last7Days
     case everything
 
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Scope")
-    static var caseDisplayRepresentations: [AskScopeAppEnum: DisplayRepresentation] = [
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Scope")
+    static let caseDisplayRepresentations: [AskScopeAppEnum: DisplayRepresentation] = [
         .today: "Today",
         .yesterday: "Yesterday",
         .last7Days: "Last 7 days",
@@ -73,13 +73,13 @@ enum AskScopeAppEnum: String, AppEnum {
 
 /// "Ask Pebble Audio what I said about the roadmap."
 struct AskCompanionIntent: AppIntent {
-    static var title: LocalizedStringResource = "Ask About My Recordings"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Ask About My Recordings"
+    static let description = IntentDescription(
         "Opens Ask with your question, scoped the way you asked for it."
     )
     /// Ask has to be visible: the scope pill and the citations are the honesty of the feature,
     /// so this intent opens the app rather than answering silently.
-    static var supportedModes: IntentModes = .foreground
+    static let supportedModes: IntentModes = .foreground
 
     @Parameter(title: "Question", requestValueDialog: "What would you like to ask?")
     var question: String

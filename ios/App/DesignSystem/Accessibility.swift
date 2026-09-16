@@ -31,6 +31,9 @@ extension View {
     }
 }
 
+// Main-actor: `UIAccessibility` and the feedback generators are UI-thread APIs, and every caller
+// is a view or a view model.
+@MainActor
 enum Motion {
     /// For imperative `withAnimation` call sites — `nil` disables the animation.
     static func animation(_ animation: Animation) -> Animation? {
@@ -47,6 +50,7 @@ enum Motion {
 
 /// Restrained haptics: capture transport, destructive confirmation, check-off, Ask send.
 /// Never on navigation or scrolling — this app is meant to feel calm.
+@MainActor
 enum Haptics {
     static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
         #if !targetEnvironment(macCatalyst)

@@ -761,11 +761,14 @@ extension LiveWorld: AskDataSource {
 
         let whenLabels = Dictionary(
             ordered.map { ($0.segmentId, $0.timeLabel) }, uniquingKeysWith: { first, _ in first })
-        func render(_ batch: [CitableExcerpt]) -> String {
+        // A frozen copy: the map above filled `gapSummaries` as a `var`, and a `@Sendable`
+        // function may only capture values that no longer change.
+        let frozenGapSummaries = gapSummaries
+        @Sendable func render(_ batch: [CitableExcerpt]) -> String {
             composition.askRetriever.formatForPrompt(
                 stretches: batch,
                 whenLabel: { whenLabels[$0.segmentId] ?? nil },
-                gapSummary: { gapSummaries[$0] ?? nil })
+                gapSummary: { frozenGapSummaries[$0] ?? nil })
         }
 
         let header = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
@@ -817,7 +820,7 @@ extension LiveWorld: AskDataSource {
         question: String,
         header: String,
         threadContext: String?,
-        render: @escaping ([CitableExcerpt]) -> String
+        render: @escaping @Sendable ([CitableExcerpt]) -> String
     ) async throws -> String {
         let total = plan.batches.count
         // Bounded concurrency: the batches are independent, but firing a dozen large uploads at

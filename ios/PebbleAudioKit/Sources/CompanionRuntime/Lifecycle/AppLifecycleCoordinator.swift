@@ -241,7 +241,9 @@ public enum BackgroundTaskPolicy {
             tokens.removeAll()
         }
 
-        deinit {
+        // `isolated`: the observer lives on the main actor and so does its teardown, which is
+        // what lets a deinit read main-actor state at all.
+        isolated deinit {
             let observers = tokens
             let center = NotificationCenter.default
             observers.forEach(center.removeObserver)
