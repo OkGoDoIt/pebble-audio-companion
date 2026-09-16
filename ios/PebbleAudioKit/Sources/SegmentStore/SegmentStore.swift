@@ -53,6 +53,10 @@ public struct SegmentStoreConfig: Sendable {
 ///   record shape as the firmware spool and the STREAM_DATA frame entry.
 /// - `segments/<segment_id>.meta.json` — written via temp file + atomic rename.
 /// - `quarantine/` — orphan files swept aside by `recover()`.
+/// - `segments_index.json` — the recovery index: every sidecar as `recover()` last left it, with
+///   the size and modification time of the sidecar and the size of its log. The next launch
+///   trusts an entry only while both files are exactly as recorded, and reads everything else.
+///   A cache, never the truth: absent, unreadable or stale, recovery reads the sidecars.
 ///
 /// Single-writer: one receiver session drives it, matching ReceiverSession's sequential
 /// message handling; the actor serializes cross-task reads.
@@ -620,11 +624,20 @@ public actor SegmentStore: SegmentSink {
         return built
     }
 
+    /// Read-only. Trusts the recovery index for every segment whose files are exactly as it
+    /// recorded them and reads the sidecars of the rest; never writes anything.
     private func buildIndexFromDisk() -> [String: SegmentMeta] {
         guard fm.fileExists(atPath: segmentsDir.path) else { return [:] }
+        let scan = scanSegmentsDirectory()
+        let cached = loadRecoveryIndex()
         var map: [String: SegmentMeta] = [:]
-        for url in listDirectory(segmentsDir) where url.lastPathComponent.hasSuffix(Self.metaSuffix) {
-            let id = String(url.lastPathComponent.dropLast(Self.metaSuffix.count))
+        for (id, stamp) in scan.metas {
+            if let entry = cached?.entries[id], entry.metaStamp == stamp,
+                entry.logBytes == scan.logs[id]
+            {
+                map[id] = entry.meta
+                continue
+            }
             if let meta = readMetaFromDisk(id) {
                 map[id] = withNormalizedGaps(meta)
             }
@@ -740,71 +753,111 @@ public actor SegmentStore: SegmentSink {
             try closeSegment(reason: .interrupted)
         }
         guard fm.fileExists(atPath: segmentsDir.path) else { return }
-        let entries = listDirectory(segmentsDir)
 
+        // ONE pass over the directory, and the sidecars of unchanged segments are not read at all.
+        //
+        // This used to read and decode every sidecar three times — the reconcile loop,
+        // `normalizeGapSidecars`, then `buildIndexFromDisk` — and `stat` every log through
+        // `attributesOfItem`. It is the one step the receiver waits for on every launch, while the
+        // watch's ~6 s spool has nobody to send to; over the phone's 1,344 segments it measured
+        // 0.6 s on a Mac and 1.6-3.7 s on the phone when nothing else was wrong. Now: one directory
+        // listing that carries sizes and modification dates, and the recovery index written by the
+        // previous launch. A segment whose sidecar and log are byte-for-byte as that index recorded
+        // them, and which was closed then, cannot need reconciling — its meta comes from the index.
+        // Everything else (a new segment, the one open at the crash, anything rewritten since, a
+        // launch with no index) is read and repaired exactly as before.
+        let scan = scanSegmentsDirectory()
         // Leftover atomic-write temps: the final file either exists (rename happened) or the
         // write never completed; either way the temp is garbage.
-        for tmp in entries where tmp.lastPathComponent.hasSuffix(".tmp") {
-            try removeIfExists(tmp)
-        }
+        for tmp in scan.temps { try removeIfExists(tmp) }
 
-        let logs = entries.filter { $0.lastPathComponent.hasSuffix(Self.logSuffix) }
-        for logFile in logs {
-            let segmentId = String(logFile.lastPathComponent.dropLast(Self.logSuffix.count))
-            guard let meta = readMetaFromDisk(segmentId) else {
-                try quarantine(logFile)
+        let cached = loadRecoveryIndex()
+        var index: [String: SegmentMeta] = [:]
+        var entries: [String: RecoveryIndex.Entry] = [:]
+        var trusted = 0
+
+        for id in scan.logs.keys.sorted() {
+            let logBytes = scan.logs[id]!
+            guard let stamp = scan.metas[id] else {
+                try quarantine(logURL(id))
                 continue
             }
-            let logBytes = logSizeBytes(segmentId)
-            if !needsRecoveryParse(meta, logBytes: logBytes) {
+            if let entry = cached?.entries[id], entry.meta.closeReason != nil,
+                entry.metaStamp == stamp, entry.logBytes == logBytes
+            {
+                index[id] = entry.meta
+                entries[id] = entry
+                trusted += 1
                 continue
             }
-            let bytes = [UInt8]((try? Data(contentsOf: logFile)) ?? Data())
-            let parsed = parseRecords(bytes)
-            if parsed.validBytes < bytes.count {
-                // Truncate at the first bad record via temp + atomic rename.
-                let tmp = segmentsDir.appendingPathComponent("\(segmentId)\(Self.logSuffix).tmp")
-                try Data(bytes[0..<parsed.validBytes]).write(to: tmp)
-                try atomicMove(from: tmp, to: logFile)
+            guard let meta = readMetaFromDisk(id) else {
+                try quarantine(logURL(id))
+                continue
             }
-            try reconcileMeta(meta, records: parsed.records, logBytes: Int64(parsed.validBytes))
+            var reconciled = meta
+            var finalLogBytes = logBytes
+            if needsRecoveryParse(meta, logBytes: logBytes) {
+                let logFile = logURL(id)
+                let bytes = [UInt8]((try? Data(contentsOf: logFile)) ?? Data())
+                let parsed = parseRecords(bytes)
+                if parsed.validBytes < bytes.count {
+                    // Truncate at the first bad record via temp + atomic rename.
+                    let tmp = segmentsDir.appendingPathComponent("\(id)\(Self.logSuffix).tmp")
+                    try Data(bytes[0..<parsed.validBytes]).write(to: tmp)
+                    try atomicMove(from: tmp, to: logFile)
+                }
+                finalLogBytes = Int64(parsed.validBytes)
+                reconciled = reconciledMeta(meta, records: parsed.records, logBytes: finalLogBytes)
+            }
+            reconciled = withNormalizedGaps(reconciled)
+            var metaStamp = stamp
+            if reconciled != meta {
+                try writeMetaAtomically(reconciled)
+                metaStamp = stampOf(metaURL(id)) ?? stamp
+            }
+            index[id] = reconciled
+            entries[id] = RecoveryIndex.Entry(
+                meta: reconciled, metaStamp: metaStamp, logBytes: finalLogBytes)
         }
-        try removePhantomSidecars(logs: Set(logs.map { $0.lastPathComponent }))
-        try normalizeGapSidecars()
-        // Build the authoritative index once, after all reconcile-writes, so subsequent reads
-        // (diagnostics, UI, RESUME continuation) never touch disk.
-        metaIndex = buildIndexFromDisk()
-    }
 
-    /// Drops sidecars that describe nothing at all.
-    ///
-    /// A meta is written BEFORE its log is created, so a crash between the two leaves a sidecar
-    /// with no log — and the real device had three. They are not harmless: they appear in
-    /// `listSegments`, so the Library shows a recording with no audio, and until the caller
-    /// filtered on `frameCount` they were enqueued for transcription, where the task could only
-    /// fail, exhaust its retries and sit in Diagnostics forever.
-    ///
-    /// Only the ones recording ZERO frames are removed, which is provably lossless — the sidecar
-    /// describes no audio, so there is nothing to lose. A sidecar that claims frames whose log has
-    /// gone is a genuine loss and is deliberately KEPT: the audio is already gone, and deleting
-    /// the record of it would turn a visible gap into a silent one, which this product does not do.
-    private func removePhantomSidecars(logs: Set<String>) throws {
-        for url in listDirectory(segmentsDir)
-        where url.lastPathComponent.hasSuffix(Self.metaSuffix) {
-            let segmentId = String(url.lastPathComponent.dropLast(Self.metaSuffix.count))
-            guard !logs.contains("\(segmentId)\(Self.logSuffix)") else { continue }
-            guard let meta = readMetaFromDisk(segmentId), meta.frameCount == 0 else { continue }
-            try removeIfExists(url)
-        }
-    }
-
-    private func normalizeGapSidecars() throws {
-        for url in listDirectory(segmentsDir) where url.lastPathComponent.hasSuffix(Self.metaSuffix) {
-            let segmentId = String(url.lastPathComponent.dropLast(Self.metaSuffix.count))
-            guard let meta = readMetaFromDisk(segmentId) else { continue }
+        // Sidecars with no log. A meta is written BEFORE its log is created, so a crash between
+        // the two leaves a sidecar describing nothing — and the real device had three. They are
+        // not harmless: they appear in `listSegments`, so the Library shows a recording with no
+        // audio, and until the caller filtered on `frameCount` they were enqueued for
+        // transcription, where the task could only fail, exhaust its retries and sit in
+        // Diagnostics forever.
+        //
+        // Only the ones recording ZERO frames are removed, which is provably lossless — the
+        // sidecar describes no audio, so there is nothing to lose. A sidecar that claims frames
+        // whose log has gone is a genuine loss and is deliberately KEPT: the audio is already
+        // gone, and deleting the record of it would turn a visible gap into a silent one, which
+        // this product does not do.
+        for id in scan.metas.keys.sorted() where scan.logs[id] == nil {
+            let stamp = scan.metas[id]!
+            if let entry = cached?.entries[id], entry.logBytes == nil, entry.metaStamp == stamp {
+                index[id] = entry.meta
+                entries[id] = entry
+                trusted += 1
+                continue
+            }
+            guard let meta = readMetaFromDisk(id) else { continue }
+            if meta.frameCount == 0 {
+                try removeIfExists(metaURL(id))
+                continue
+            }
             let normalized = withNormalizedGaps(meta)
-            if normalized != meta { try writeMetaAtomically(normalized) }
+            var metaStamp = stamp
+            if normalized != meta {
+                try writeMetaAtomically(normalized)
+                metaStamp = stampOf(metaURL(id)) ?? stamp
+            }
+            index[id] = normalized
+            entries[id] = RecoveryIndex.Entry(meta: normalized, metaStamp: metaStamp, logBytes: nil)
         }
+
+        metaIndex = index
+        log("recover: \(index.count) segment(s), \(trusted) from the index, \(index.count - trusted) read")
+        saveRecoveryIndex(RecoveryIndex(entries: entries))
     }
 
     private func needsRecoveryParse(_ meta: SegmentMeta, logBytes: Int64) -> Bool {
@@ -818,7 +871,8 @@ public actor SegmentStore: SegmentSink {
             || meta.logBytes != logBytes
     }
 
-    private func reconcileMeta(_ meta: SegmentMeta, records: [FrameRecord], logBytes: Int64) throws {
+    /// The sidecar a log's records say it should be. Pure; the caller writes it if it differs.
+    private func reconciledMeta(_ meta: SegmentMeta, records: [FrameRecord], logBytes: Int64) -> SegmentMeta {
         var reconciled = meta
         // min/max, not first/last: gap refills make the on-disk record order non-monotonic.
         reconciled.firstSequence = records.map(\.sequence).min()
@@ -834,7 +888,97 @@ public actor SegmentStore: SegmentSink {
         // window keys off closedAtMs, and a crash-interrupted segment must be able to
         // reattach when the watch re-announces after the app relaunches.
         reconciled.closedAtMs = meta.closedAtMs ?? nowMs()
-        if reconciled != meta { try writeMetaAtomically(reconciled) }
+        return reconciled
+    }
+
+    // --- the recovery index -------------------------------------------------------------------
+
+    /// A file's size and modification time, the two facts one directory listing yields for free
+    /// and that together say "nobody has written this since". Microseconds: `Date` cannot carry a
+    /// 2026 timestamp to the nanosecond, and the value only ever has to equal itself.
+    struct FileStamp: Codable, Equatable, Sendable {
+        var bytes: Int64
+        var modifiedUs: Int64
+    }
+
+    /// What `recover()` leaves behind for the next launch. See the layout note at the top.
+    struct RecoveryIndex: Codable, Sendable {
+        static let currentVersion = 1
+        var version = RecoveryIndex.currentVersion
+        var entries: [String: Entry]
+
+        struct Entry: Codable, Sendable {
+            /// The sidecar as recovery last left it (reconciled and gap-normalized).
+            var meta: SegmentMeta
+            var metaStamp: FileStamp
+            /// The log's size when the entry was recorded; nil for a sidecar whose log is gone.
+            var logBytes: Int64?
+        }
+    }
+
+    struct DirectoryScan {
+        /// Segment id -> log size.
+        var logs: [String: Int64] = [:]
+        /// Segment id -> sidecar stamp.
+        var metas: [String: FileStamp] = [:]
+        var temps: [URL] = []
+    }
+
+    private var recoveryIndexURL: URL { root.appendingPathComponent("segments_index.json") }
+
+    /// One listing, with the attributes the index is validated against. This is the whole of the
+    /// per-file I/O a launch pays for a segment nothing has touched.
+    private func scanSegmentsDirectory() -> DirectoryScan {
+        var scan = DirectoryScan()
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        let entries =
+            (try? fm.contentsOfDirectory(
+                at: segmentsDir, includingPropertiesForKeys: keys, options: [])) ?? []
+        for url in entries {
+            let name = url.lastPathComponent
+            if name.hasSuffix(".tmp") {
+                scan.temps.append(url)
+            } else if name.hasSuffix(Self.logSuffix) {
+                let id = String(name.dropLast(Self.logSuffix.count))
+                scan.logs[id] = stampOf(url)?.bytes ?? 0
+            } else if name.hasSuffix(Self.metaSuffix) {
+                let id = String(name.dropLast(Self.metaSuffix.count))
+                if let stamp = stampOf(url) { scan.metas[id] = stamp }
+            }
+        }
+        return scan
+    }
+
+    private func stampOf(_ url: URL) -> FileStamp? {
+        guard
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+            let bytes = values.fileSize
+        else { return nil }
+        let modified = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+        return FileStamp(bytes: Int64(bytes), modifiedUs: Int64((modified * 1_000_000).rounded()))
+    }
+
+    private func loadRecoveryIndex() -> RecoveryIndex? {
+        guard let data = try? Data(contentsOf: recoveryIndexURL),
+            let index = try? JSONDecoder().decode(RecoveryIndex.self, from: data),
+            index.version == RecoveryIndex.currentVersion
+        else { return nil }
+        return index
+    }
+
+    /// Best effort: a cache that fails to write costs the next launch a full read, nothing more.
+    private func saveRecoveryIndex(_ index: RecoveryIndex) {
+        do {
+            let tmp = root.appendingPathComponent("segments_index.json.tmp")
+            let encoder = JSONEncoder()
+            // Deterministic bytes: the same library produces the same file, so the migration
+            // importer's idempotency check (a byte-for-byte snapshot of the root) holds.
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(index).write(to: tmp)
+            try atomicMove(from: tmp, to: recoveryIndexURL)
+        } catch {
+            log("recover: could not write the recovery index: \(error)")
+        }
     }
 
     /// What a quarantine sweep found.

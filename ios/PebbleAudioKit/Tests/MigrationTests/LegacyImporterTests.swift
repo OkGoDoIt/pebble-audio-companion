@@ -356,6 +356,11 @@ import Transcription
         }
         var after = try fileSnapshot(env.root)
         after["/\(LegacyImporter.markerFileName)"] = nil
+        // The recovery index is a cache of the sidecars' sizes and modification times, not data:
+        // the import rewrites sidecars after the store's `recover()` has recorded them, so the
+        // index is expected to differ between runs and the next launch re-reads what changed.
+        snapshot["/segments_index.json"] = nil
+        after["/segments_index.json"] = nil
         #expect(after == snapshot)
         #expect(try queue.all() == tasksBefore)
         #expect(env.keychain.string(for: .receiverId) == keychainId)
