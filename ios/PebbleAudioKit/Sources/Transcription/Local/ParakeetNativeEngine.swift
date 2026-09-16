@@ -155,7 +155,9 @@ public enum ParakeetEngineFactory {
                     )
                 }
                 guard status >= 0 else { throw ParakeetEngineError.nativeFailure(Self.lastError()) }
-                return String(cString: buffer)
+                // The C side NUL-terminates inside the buffer; decode up to that byte.
+                let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                return String(decoding: bytes, as: UTF8.self)
             }
         }
 
@@ -171,7 +173,7 @@ public enum ParakeetEngineFactory {
 
         // MARK: - Plumbing
 
-        private func onQueue<T>(_ body: @escaping () throws -> T) async throws -> T {
+        private func onQueue<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     do {
