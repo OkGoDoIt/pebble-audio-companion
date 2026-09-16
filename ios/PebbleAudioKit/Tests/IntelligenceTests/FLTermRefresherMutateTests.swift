@@ -66,7 +66,7 @@ private final class WriteRecorder: @unchecked Sendable {
                 router: AiModeRouter(local: FixedAiProvider(), remote: nil, mode: { .localOnly })
             ),
             nowMs: { 1_000 },
-            mutate: routeThroughMutate ? { recorder.mutate($0) } : nil,
+            mutate: routeThroughMutate ? { @Sendable in recorder.mutate($0) } : nil,
             log: { _ in }
         )
     }

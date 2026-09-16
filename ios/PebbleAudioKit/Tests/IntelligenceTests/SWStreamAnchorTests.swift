@@ -114,7 +114,7 @@ private func swLossGap(
     /// booked against the eighteen-minute recording that was open when it began; only the part
     /// that overlaps the recording is the recording's loss, and the rest belongs to the hole
     /// BETWEEN recordings, which the timeline already shows.
-    @Test func aWatchdogOutageIsNotThisRecordingsWholeLoss() {
+    @Test func aWatchdogOutageIsNotThisRecordingsWholeLoss() throws {
         let meta = swSegment(
             id: "seg-outage", streamBirthMs: 1_788_193_700_000, startedSecondsIntoStream: 0,
             heldSeconds: 1_080,
@@ -123,7 +123,7 @@ private func swLossGap(
                 swLossGap(
                     afterSeconds: 1_020, lastingSeconds: 14_400, firstSampleIndex: 16_320_000)
             ])
-        let summary = try? #require(askGapSummary(meta))
+        let summary = try #require(askGapSummary(meta))
         // A minute of overlap, not four hours.
         #expect(summary == "1 gap, about 1 min missing; answer may be incomplete for this segment.")
         // And never more than the recording claims to be long — the property the raw form

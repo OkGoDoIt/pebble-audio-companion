@@ -62,17 +62,20 @@ final class TestClock: ReceiverClock, @unchecked Sendable {
         let target = lock.withLock { _now + ms }
         while true {
             await Self.settle()
-            let next: Sleeper?
-            lock.lock()
-            if let index = sleepers.indices.min(by: { sleepers[$0].deadline < sleepers[$1].deadline }),
-               sleepers[index].deadline <= target {
+            // `withLock`, not lock()/unlock(): the bare pair is unavailable from an async
+            // context (a suspension between the two would hold the lock across it). Nothing
+            // here suspends, so the scoped form says the same thing and is checkable.
+            let next: Sleeper? = lock.withLock {
+                guard
+                    let index = sleepers.indices.min(by: {
+                        sleepers[$0].deadline < sleepers[$1].deadline
+                    }),
+                    sleepers[index].deadline <= target
+                else { return nil }
                 let sleeper = sleepers.remove(at: index)
                 _now = max(_now, sleeper.deadline)
-                next = sleeper
-            } else {
-                next = nil
+                return sleeper
             }
-            lock.unlock()
             guard let sleeper = next else { break }
             sleeper.continuation.resume()
         }

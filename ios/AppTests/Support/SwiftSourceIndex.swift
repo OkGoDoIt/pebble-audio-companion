@@ -85,7 +85,7 @@ enum SwiftSource {
     static func sanitize(_ source: String) -> String {
         var out = ""
         out.reserveCapacity(source.count)
-        var chars = Array(source)
+        let chars = Array(source)
         var index = 0
 
         func matches(_ literal: String, at position: Int) -> Bool {

@@ -153,12 +153,14 @@ import Testing
     /// to get it right or a person's own follow-ups start being curated and aged out.
     @Test func originIsBackfilledFromTheIdShape() async throws {
         try await withUpgradedDatabase { db in
+            // Decoded inside the read: a GRDB `Row` is not `Sendable`, and must not cross the
+            // boundary out of the reader's closure.
             let byOrigin = try await db.reader.read { db in
                 try Row.fetchAll(
-                    db, sql: "SELECT origin, COUNT(*) AS n FROM follow_ups GROUP BY origin")
+                    db, sql: "SELECT origin, COUNT(*) AS n FROM follow_ups GROUP BY origin"
+                ).map { ($0["origin"] as String, $0["n"] as Int) }
             }
-            let counts = Dictionary(
-                uniqueKeysWithValues: byOrigin.map { ($0["origin"] as String, $0["n"] as Int) })
+            let counts = Dictionary(uniqueKeysWithValues: byOrigin)
             #expect(counts["ai"] == 55)
             #expect(counts["user"] == 1)
         }

@@ -39,7 +39,7 @@ import WireProtocol
         #expect(filtered.loops[0].turnCount == 39)
     }
 
-    @Test func suppressedLoopReadsAsQuietAndSaysWhatItStandsFor() {
+    @Test func suppressedLoopReadsAsQuietAndSaysWhatItStandsFor() throws {
         var segments = [TranscriptSegment(text: "Right, I'll head off then.", startMs: 0, endMs: 2_000)]
         for index in 0..<120 {
             let start = Int64(5_000 + index * 1_000)
@@ -57,10 +57,10 @@ import WireProtocol
             suppressedLoops: filtered.loops)
 
         let pauses = items.compactMap(\.asPause)
-        let quiet = try? #require(pauses.first { $0.suppressedRepeats > 0 })
-        #expect(quiet?.missing == false)  // never conflated with lost audio
-        #expect(quiet?.label.contains("quiet for") == true)
-        #expect(quiet?.label.contains("repeated lines hidden") == true)
+        let quiet = try #require(pauses.first { $0.suppressedRepeats > 0 })
+        #expect(quiet.missing == false)  // never conflated with lost audio
+        #expect(quiet.label.contains("quiet for"))
+        #expect(quiet.label.contains("repeated lines hidden"))
         // And nothing anywhere claims audio went missing.
         #expect(!pauses.contains { $0.missing })
     }

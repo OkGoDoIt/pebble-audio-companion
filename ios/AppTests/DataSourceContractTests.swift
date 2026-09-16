@@ -192,7 +192,7 @@ struct DataSourceContractTests {
 
     /// The footer under a saved note names the cited moments. The live path built it as `""`
     /// while `MockWorld` supplied the real line, so every real note had a blank footer.
-    @Test func momentsNameTheCitedSegmentsInTimeOrder() {
+    @Test func momentsNameTheCitedSegmentsInTimeOrder() throws {
         let base = Date(timeIntervalSince1970: 1_756_000_000)
         let label = LiveWorld.momentsLabel(
             [
@@ -207,9 +207,9 @@ struct DataSourceContractTests {
         #expect(label.contains(TimeFmt.time(base)))
         #expect(label.contains(TimeFmt.time(base.addingTimeInterval(900))))
         // Time order, not citation order.
-        let early = try? #require(label.range(of: TimeFmt.time(base)))
-        let late = try? #require(label.range(of: TimeFmt.time(base.addingTimeInterval(900))))
-        if let early, let late { #expect(early.lowerBound < late.lowerBound) }
+        let early = try #require(label.range(of: TimeFmt.time(base)))
+        let late = try #require(label.range(of: TimeFmt.time(base.addingTimeInterval(900))))
+        #expect(early.lowerBound < late.lowerBound)
     }
 
     /// An Ask answer drawn from a whole archive can cite dozens of conversations. Spelling every
