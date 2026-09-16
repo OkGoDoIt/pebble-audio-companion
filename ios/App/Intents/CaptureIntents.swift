@@ -29,32 +29,37 @@ import Foundation
 // `appintentsmetadataprocessor` extracts them at build time and rejects constants, so these
 // cannot be routed through `Copy` — the one sanctioned exception to the single string catalog.
 
-// `ForegroundContinuableIntent` is unavailable in app extensions, so the escalation exists only
-// in the app's copy of these types. That is not just a workaround, it matches where each copy
-// runs: Siri and Shortcuts launch the app (in the background) to perform an app intent, and it
-// can then ask to come forward; a widget button and a Control Center toggle are performed
-// inside the widget extension, which has no way to launch anything and must say so plainly.
-#if WIDGET_EXTENSION
-    /// Shared delivery for every capture intent: request → wait for the app to answer.
-    protocol CaptureRequestingIntent: AppIntent {}
+/// Shared delivery for every capture intent: request → wait for the app to answer → escalate
+/// by continuing in the foreground where the system allows it.
+///
+/// One copy for both targets. Whether escalation is possible depends on where the intent is
+/// being performed, and the system says so at run time (`IntentModes.Current`): Siri and
+/// Shortcuts perform an app intent in the app's own process (launched in the background) and
+/// it may continue into the foreground; a widget button or a Control Center toggle is performed
+/// inside the widget extension, which cannot launch anything and must say so plainly. This
+/// replaced `ForegroundContinuableIntent` — deprecated in iOS 26, unavailable in extensions —
+/// and the WIDGET_EXTENSION compile-condition split that existed only to keep it out of the
+/// extension.
+protocol CaptureRequestingIntent: AppIntent {}
 
-    extension CaptureRequestingIntent {
-        /// The extension cannot launch the app. The request stays in the mailbox and will be
-        /// applied the next time the app runs; the caller reports that honestly rather than
-        /// claiming the watch was reached.
-        func escalate() async -> Bool { false }
+// Every capture intent declares
+//
+//     static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+//
+// performed in the background, may continue into the foreground when the app turns out to be
+// the only way to act. Spelled out on each type as a stored literal because
+// `appintentsmetadataprocessor` reads it off the concrete type at build time and rejects a
+// computed property or a shared constant ("must be static, have a compile-time constant value").
+extension CaptureRequestingIntent {
+    /// Asks the system to continue this intent in the foreground; the app applies the
+    /// still-pending request as it activates. False where the current context cannot bring the
+    /// app forward — the request stays in the mailbox and will be applied the next time the app
+    /// runs, and the caller reports that honestly rather than claiming the watch was reached.
+    func escalate() async -> Bool {
+        guard systemContext.currentMode.canContinueInForeground else { return false }
+        return (try? await continueInForeground()) != nil
     }
-#else
-    /// Shared delivery for every capture intent: request → wait for the app to answer →
-    /// escalate by asking the system to continue this intent in the foreground.
-    protocol CaptureRequestingIntent: ForegroundContinuableIntent {}
-
-    extension CaptureRequestingIntent {
-        func escalate() async -> Bool {
-            (try? await requestToContinueInForeground()) != nil
-        }
-    }
-#endif
+}
 
 extension CaptureRequestingIntent {
     /// Posts `intent` and reports whether the app actually took it.
@@ -86,7 +91,7 @@ struct PauseCaptureIntent: AppIntent, CaptureRequestingIntent {
         "Stops capturing audio from your Pebble."
     )
     /// Never yanks the user into the app unless the app turns out to be the only way to act.
-    static var openAppWhenRun: Bool = false
+    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         switch await deliver(.paused) {
@@ -107,7 +112,7 @@ struct ResumeCaptureIntent: AppIntent, CaptureRequestingIntent {
     static var description = IntentDescription(
         "Starts capturing audio from your Pebble again."
     )
-    static var openAppWhenRun: Bool = false
+    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         switch await deliver(.active) {
@@ -130,7 +135,7 @@ struct ResumeCaptureIntent: AppIntent, CaptureRequestingIntent {
 struct ToggleCaptureIntent: SetValueIntent, CaptureRequestingIntent {
     static var title: LocalizedStringResource = "Toggle Capture"
     static var description = IntentDescription("Turns capture from your Pebble on or off.")
-    static var openAppWhenRun: Bool = false
+    static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     /// True = capturing, false = off.
     @Parameter(title: "Capturing")

@@ -79,7 +79,7 @@ struct AskCompanionIntent: AppIntent {
     )
     /// Ask has to be visible: the scope pill and the citations are the honesty of the feature,
     /// so this intent opens the app rather than answering silently.
-    static var openAppWhenRun: Bool = true
+    static var supportedModes: IntentModes = .foreground
 
     @Parameter(title: "Question", requestValueDialog: "What would you like to ask?")
     var question: String
