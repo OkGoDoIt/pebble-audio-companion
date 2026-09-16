@@ -527,7 +527,8 @@ final class LiveAboutYouSource: AboutYouSource {
             // out with every prompt.
             let adopted = ContextImportSettings.adopting(context)
             settings = adopted
-            try? importStore.save(adopted)
+            // `save` hands back what it wrote; `settings` already holds it.
+            _ = try? importStore.save(adopted)
         }
         readAccess()
         observe()
@@ -772,7 +773,7 @@ final class LiveAboutYouSource: AboutYouSource {
     }
 
     private func saveSettings() {
-        try? importStore.save(settings)
+        _ = try? importStore.save(settings)
     }
 
     // MARK: Staying current

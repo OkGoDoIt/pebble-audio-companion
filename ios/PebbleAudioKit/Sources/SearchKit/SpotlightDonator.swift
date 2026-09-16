@@ -250,7 +250,13 @@ extension String {
     /// Production Core Spotlight backend. Donations are searchable on-device only (system
     /// index); tapping a result hands the app the `uniqueIdentifier`, which the deep-link
     /// router resolves via `SpotlightDonation.parse(uniqueIdentifier:)`.
-    public final class CoreSpotlightIndexer: SpotlightIndexing {
+    ///
+    /// An actor because `CSSearchableIndex` is not marked `Sendable` (it is a thread-safe
+    /// Objective-C class the framework has not annotated), and `SpotlightIndexing` is. Isolating
+    /// the handle says the same thing the framework's documentation does, without a
+    /// `@preconcurrency` import that would also silence every future Sendable finding from the
+    /// module. Every protocol method was already `async`, so no call site changed.
+    public actor CoreSpotlightIndexer: SpotlightIndexing {
         public static let domainIdentifier = "dev.audiocompanion.app.search"
 
         private let index: CSSearchableIndex
@@ -259,7 +265,7 @@ extension String {
             self.index = index
         }
 
-        public var isAvailable: Bool { CSSearchableIndex.isIndexingAvailable() }
+        public nonisolated var isAvailable: Bool { CSSearchableIndex.isIndexingAvailable() }
 
         public func donate(_ donations: [SpotlightDonation]) async throws {
             guard CSSearchableIndex.isIndexingAvailable() else { return }

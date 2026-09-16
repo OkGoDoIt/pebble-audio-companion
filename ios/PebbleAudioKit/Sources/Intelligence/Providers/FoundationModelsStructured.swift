@@ -142,7 +142,7 @@ import Foundation
             let candidates = LocalFollowUpSift.candidates(in: body)
             guard !candidates.isEmpty else { return LocalFollowUpSift.extractionJSON([]) }
             let recorded = Self.recordedLine(in: body)
-            let setting = try await classifySetting(body)
+            let setting = await classifySetting(body)
 
             var items: [LocalFollowUpSift.Item] = []
             var seen = Set<String>()
@@ -278,7 +278,7 @@ import Foundation
             // two passes over the same recording to disagree about what somebody promised.
             let response = try await session.respond(
                 to: prompt, generating: type,
-                options: GenerationOptions(sampling: .greedy, maximumResponseTokens: maxTokens))
+                options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens))
             return response.content
         }
 

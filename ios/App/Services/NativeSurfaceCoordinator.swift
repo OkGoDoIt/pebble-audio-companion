@@ -53,9 +53,9 @@ final class NativeSurfaceCoordinator {
     /// the listener. The composition root calls this one; the scene still calls `start`.
     func startCrossProcessListeners() {
         guard darwinObserver == nil else { return }
-        darwinObserver = CaptureIntentBridge.observeDarwinNotifications {
+        darwinObserver = CaptureIntentBridge.observeDarwinNotifications { [weak self] in
             // Darwin callbacks arrive on an arbitrary thread; settings are main-actor state.
-            Task { @MainActor [weak self] in self?.applyPendingCaptureRequest() }
+            Task { @MainActor in self?.applyPendingCaptureRequest() }
         }
         // A request may have been posted while the app was dead.
         applyPendingCaptureRequest()

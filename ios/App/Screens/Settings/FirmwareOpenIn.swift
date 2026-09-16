@@ -83,8 +83,10 @@ private struct FirmwareOpenInAnchor: UIViewControllerRepresentable {
         context.coordinator.present(from: controller, fileURL: fileURL)
     }
 
+    // An isolated conformance: UIKit has not marked this delegate protocol main-actor, but it
+    // only ever calls it there, and the coordinator's state is main-actor state.
     @MainActor
-    final class Coordinator: NSObject, UIDocumentInteractionControllerDelegate {
+    final class Coordinator: NSObject, @MainActor UIDocumentInteractionControllerDelegate {
         var parent: FirmwareOpenInAnchor
         private(set) var isShowing = false
         /// Held for the life of the menu: `UIDocumentInteractionController` is not retained by

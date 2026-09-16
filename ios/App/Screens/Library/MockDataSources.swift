@@ -593,8 +593,8 @@ extension MockWorld: LibraryDataSource {
         AsyncStream { continuation in
             let id = UUID()
             updateContinuations[id] = continuation
-            continuation.onTermination = { _ in
-                Task { @MainActor [weak self] in self?.updateContinuations[id] = nil }
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.updateContinuations[id] = nil }
             }
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Receiver
 import SegmentStore
 import Transcription
@@ -99,8 +100,11 @@ public final class DiagnosticsService: Sendable {
     public let snapshot = StateSubject<RuntimeDiagnostics>(RuntimeDiagnostics())
 
     /// Refreshes performed and snapshots actually published, for the tests that pin the gate.
-    public private(set) var refreshCount = 0
-    public private(set) var publishCount = 0
+    /// Behind a lock: `refresh()` runs on whichever task called it, and this class is `Sendable`.
+    public var refreshCount: Int { counters.withLock { $0.refreshes } }
+    public var publishCount: Int { counters.withLock { $0.publishes } }
+    private struct Counters { var refreshes = 0; var publishes = 0 }
+    private let counters = OSAllocatedUnfairLock(initialState: Counters())
 
     public init(
         store: SegmentStore,
@@ -141,9 +145,9 @@ public final class DiagnosticsService: Sendable {
             transcriptionDeferredInBackground: !isForeground(),
             lastRefreshedAtMs: clock.nowMs
         )
-        refreshCount += 1
+        counters.withLock { $0.refreshes += 1 }
         guard value.contentDiffers(from: snapshot.value) else { return snapshot.value }
-        publishCount += 1
+        counters.withLock { $0.publishes += 1 }
         snapshot.value = value
         return value
     }

@@ -195,7 +195,7 @@ public final class PipelineHealthMonitor: @unchecked Sendable {
     /// that comes back, a key that gets fixed, space that gets freed).
     public static let maxBackoffMs: Int64 = 300_000
 
-    public static func defaultBackoff(consecutiveFailures: Int) -> Int64 {
+    @Sendable public static func defaultBackoff(consecutiveFailures: Int) -> Int64 {
         guard consecutiveFailures > 0 else { return 0 }
         let shift = min(consecutiveFailures - 1, 16)
         return min(baseBackoffMs << shift, maxBackoffMs)

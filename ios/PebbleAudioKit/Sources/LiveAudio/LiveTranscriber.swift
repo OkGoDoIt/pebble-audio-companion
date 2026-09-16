@@ -76,7 +76,8 @@ public actor LiveTranscriber {
     }
 
     /// Default decode path over the vendored Speex codec (matches the KMP default argument).
-    public static func defaultDecodePcm(
+    /// `@Sendable` because it is the default for — and passed as — a `@Sendable` closure.
+    @Sendable public static func defaultDecodePcm(
         meta: SegmentMeta, frames: [FrameRecord]
     ) -> AsyncThrowingStream<Data, Error> {
         let decoder = SpeexFrameDecoder(
