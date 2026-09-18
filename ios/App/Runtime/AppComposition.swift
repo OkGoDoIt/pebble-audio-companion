@@ -1334,6 +1334,7 @@ final class AppComposition {
         // it ever run, and how often" is a question a support log has to answer, and until now
         // only the FAILURE to submit was recorded.
         AppRuntimeLog.shared.record("BGProcessing window opened")
+        TelemetryEvents.pipelineWindow(.backgroundProcessing, open: true)
         // Re-arm first: a window that ends without a follow-up request is the last one iOS ever
         // gives us.
         scheduleBackgroundProcessing()
@@ -1348,11 +1349,13 @@ final class AppComposition {
         let work = Task {
             await lifecycle.handle(.backgroundProcessingStarted)
             AppRuntimeLog.shared.record("BGProcessing window finished")
+            TelemetryEvents.pipelineWindow(.backgroundProcessing, open: false)
             task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
             Task {
                 AppRuntimeLog.shared.record("BGProcessing window expired")
+                TelemetryEvents.pipelineWindow(.backgroundProcessing, open: false)
                 // Expiration cancels OPTIONAL work only — never the receiver, never the intent.
                 await lifecycle.handle(.backgroundProcessingExpired)
                 work.cancel()
@@ -1362,17 +1365,20 @@ final class AppComposition {
 
     private func run(chargingTask task: BGTask) {
         AppRuntimeLog.shared.record("charging catch-up window opened")
+        TelemetryEvents.pipelineWindow(.chargingCatchUp, open: true)
         // Re-arm first: a window that ends without a follow-up request is the last one iOS gives.
         scheduleChargingCatchUp()
         let lifecycle = self.lifecycle
         let work = Task {
             await lifecycle.handle(.chargingCatchUpStarted)
             AppRuntimeLog.shared.record("charging catch-up window finished")
+            TelemetryEvents.pipelineWindow(.chargingCatchUp, open: false)
             task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
             Task {
                 AppRuntimeLog.shared.record("charging catch-up window expired")
+                TelemetryEvents.pipelineWindow(.chargingCatchUp, open: false)
                 await lifecycle.handle(.backgroundProcessingExpired)
                 work.cancel()
             }

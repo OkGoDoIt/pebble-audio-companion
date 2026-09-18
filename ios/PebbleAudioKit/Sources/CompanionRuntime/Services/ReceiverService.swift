@@ -416,9 +416,21 @@ public actor ReceiverService {
 
     /// Re-asserts the audio session after segment playback reconfigured it. Called on foreground
     /// entry, where any playback has ended.
-    public nonisolated func reassertResidencyAfterPlayback() {
+    /// Returns false when the re-assert was skipped because playback holds the session.
+    @discardableResult
+    public nonisolated func reassertResidencyAfterPlayback() -> Bool {
+        // While a recording is actually playing the shared session belongs to playback; flipping
+        // it to the mixable residency category under the running engine would end the playback
+        // the user is listening to (and its Lock Screen controls). The app clears the hold and
+        // re-asserts itself when the listening session ends — see `AppComposition+NowPlaying`.
+        guard !playbackHold.isActive else { return false }
         residency?.reassertAfterForeignSessionUse()
+        return true
     }
+
+    /// Set by the app while a conversation is playing. `nonisolated` on purpose: it is read
+    /// from `reassertResidencyAfterPlayback()` on the lifecycle path, which is nonisolated too.
+    public nonisolated let playbackHold = PlaybackHold()
 
     /// Tears the session down without touching the user's intent or the watch's pause state.
     public func stop() {
@@ -672,4 +684,16 @@ final class ArmedFlag: @unchecked Sendable {
             return was
         }
     }
+}
+
+/// A lock-guarded flag: whether playback currently owns the shared audio session.
+public final class PlaybackHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = false
+
+    public init() {}
+
+    public var isActive: Bool { lock.withLock { active } }
+
+    public func set(_ value: Bool) { lock.withLock { active = value } }
 }
