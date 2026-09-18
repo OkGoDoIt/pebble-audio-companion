@@ -39,12 +39,25 @@ struct NoteEntitySnapshot: Equatable, Sendable {
     var editedAtMs: Int64?
 }
 
-/// A day recap. `text` is nil under `.summaries`/`.off`: the digest IS the transcript-derived
-/// text, and under those settings only the day and its existence are visible.
+/// A day recap. `text` is nil under `.off`. It survives `.summaries` because a recap IS a
+/// summary — of the day, the way a conversation's AI summary is of the conversation — and
+/// that setting promises titles and summaries.
 struct RecapEntitySnapshot: Equatable, Sendable {
     var dateKey: String
     var text: String?
+    /// The condensed form the Today card shows for a long digest, when one exists.
+    var shortText: String?
     var updatedAtMs: Int64
+}
+
+/// What the pipeline still has to do, for the "Catch up now" answer.
+struct PipelineBacklog: Equatable, Sendable {
+    /// Recordings waiting to be transcribed.
+    var queued: Int
+    /// Conversations transcribed but not yet titled and summarised.
+    var awaitingEnrichment: Int
+
+    var isEmpty: Bool { queued == 0 && awaitingEnrichment == 0 }
 }
 
 /// A follow-up, in the shape `FollowUp` already has minus the columns Siri has no use for.
@@ -115,8 +128,9 @@ protocol EntityDataSource: Sendable {
     func reindex(recapDateKeys: [String]) async
     /// Rebuilds the whole index from the database — the same recovery Diagnostics offers.
     func reindexEverything() async
-    /// Wakes the pipeline so a backlog is worked on now. Returns false when no runtime is up.
-    func nudgePipeline() async -> Bool
+    /// Wakes the pipeline so a backlog is worked on now; answers what that backlog is. Nil
+    /// when no runtime is up to wake.
+    func nudgePipeline() async -> PipelineBacklog?
 }
 
 /// The holder the entities and intents read. Defaults to the live graph; tests install a fake.
@@ -313,7 +327,7 @@ struct LiveEntityDataSource: EntityDataSource {
     func recap(dateKey: String) async -> RecapEntitySnapshot? {
         guard let graph = await Self.graph() else { return nil }
         guard let recap = try? await graph.recaps.load(dateKey: dateKey) else { return nil }
-        return Self.snapshot(recap: recap, includeText: graph.visibility.includesText)
+        return Self.snapshot(recap: recap, includeText: graph.visibility.donates)
     }
 
     func recaps(limit: Int) async -> [RecapEntitySnapshot] {
@@ -323,13 +337,14 @@ struct LiveEntityDataSource: EntityDataSource {
             recaps
             .sorted { $0.dateKey > $1.dateKey }
             .prefix(max(0, limit))
-            .map { Self.snapshot(recap: $0, includeText: graph.visibility.includesText) }
+            .map { Self.snapshot(recap: $0, includeText: graph.visibility.donates) }
     }
 
     private static func snapshot(recap: DailyRecap, includeText: Bool) -> RecapEntitySnapshot {
         RecapEntitySnapshot(
             dateKey: recap.dateKey,
             text: includeText ? recap.text : nil,
+            shortText: includeText ? recap.shortText : nil,
             updatedAtMs: recap.updatedAtMs
         )
     }
@@ -456,15 +471,24 @@ struct LiveEntityDataSource: EntityDataSource {
         return (try? await SearchIndexRebuilder(composition: composition).run()) ?? -1
     }
 
-    func nudgePipeline() async -> Bool {
-        guard let graph = await Self.graph() else { return false }
+    func nudgePipeline() async -> PipelineBacklog? {
+        guard let graph = await Self.graph() else { return nil }
         // The wake is what the pipeline loop pacing listens for; the burst is the background
         // shape of the same work (it is a no-op in the foreground, where the loop is already
         // running at foreground pace). Detached so the intent answers now rather than after
-        // ten segments of local transcription.
+        // ten segments of local transcription. The burst deliberately does not consult the
+        // "while charging" policy: the person just asked.
         graph.runtime.notifyConfigChanged()
         let runtime = graph.runtime
         Task.detached(priority: .utility) { await runtime.runCatchUpBurst() }
-        return true
+        let diagnostics = runtime.diagnostics.value
+        AppRuntimeLog.shared.record(
+            "entities  catch up now · queued=\(diagnostics.queuedTranscriptionTasks) "
+                + "enrich=\(diagnostics.conversationsAwaitingEnrichment)"
+        )
+        return PipelineBacklog(
+            queued: diagnostics.queuedTranscriptionTasks,
+            awaitingEnrichment: diagnostics.conversationsAwaitingEnrichment
+        )
     }
 }

@@ -5,9 +5,9 @@ import Foundation
 import Intelligence
 import SearchKit
 
-// A day's recap: named after the day, its content the digest (under `.full`; the digest is
-// written from transcripts, so the two smaller settings keep it inside the app). Ids are
-// `day-<dateKey>`, the same document id the search index uses.
+// A day's recap: named after the day, its content the digest — present unless the visibility
+// setting is off, because a recap is a summary and "titles and summaries" includes it. Ids
+// are `day-<dateKey>`, the same document id the search index uses.
 //
 // Not a `.notes.note`. The plan wanted conversations, saved notes and recaps all on that
 // schema; the metadata processor refuses more than one type per app on one schema
@@ -66,7 +66,7 @@ struct RecapEntity: IndexedEntity {
     init(snapshot: RecapEntitySnapshot, visibility: SystemSearchVisibility) {
         id = Self.id(dateKey: snapshot.dateKey)
         name = EntityMapping.recapTitle(dateKey: snapshot.dateKey)
-        content = EntityMapping.indexedTranscript(snapshot.text, visibility: visibility)
+        content = visibility.donates ? snapshot.text?.nilIfBlank : nil
         let bounds = LogicalDay.bounds(ofDateKey: snapshot.dateKey, timeZoneID: TimeZone.current.identifier)
         creationDate = bounds.map { EntityMapping.date(ms: $0.startMs) }
         modificationDate = EntityMapping.date(ms: snapshot.updatedAtMs)
@@ -80,7 +80,8 @@ struct RecapEntity: IndexedEntity {
         self.init(
             snapshot: RecapEntitySnapshot(
                 dateKey: dateKey,
-                text: donation.textContent,
+                text: donation.textContent ?? donation.contentDescription,
+                shortText: nil,
                 updatedAtMs: donation.contentCreationDateMs
             ),
             visibility: visibility
