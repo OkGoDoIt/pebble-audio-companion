@@ -745,9 +745,8 @@ extension LiveWorld: AskDataSource {
         // as a sweep (`AskCorpusPlanner`), so an answer of "nothing was recorded about that"
         // is backed by having actually read the range.
         let ordered = excerpts.sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
-        let budget = AskBudget.forMode(
-            composition.settings.aiMode, modelId: composition.settings.aiModel,
-            onDeviceMaxInputChars: await onDeviceInputCharsProvider())
+        let budget = await askBudget(
+            mode: composition.settings.aiMode, modelId: composition.settings.aiModel)
         let stretches = citableStretches(
             of: ordered.compactMap { excerpt in
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
@@ -891,14 +890,26 @@ extension LiveWorld: AskDataSource {
     /// Model calls a sweep keeps in flight at once.
     private static let sweepConcurrency = 3
 
-    /// The on-device model's input ceiling, in characters, for `AskBudget.forMode`.
+    /// The budget Ask plans against, sized by the provider that will actually answer.
     ///
-    /// One seam on purpose: the ceiling belongs to the provider (its context window), not to
-    /// this file. Today it is the documented default; the integrator points it at the
-    /// router's own answer (`AiModeRouter.localInputChars()`, workstream B) so a model with a
-    /// larger window is planned for the window it actually has.
-    private func onDeviceInputCharsProvider() async -> Int {
-        OnDeviceAiProvider.defaultMaxInputChars
+    /// The ceiling belongs to the provider (its context window), not to this file: the local
+    /// slot reports its own input ceiling (8,000 characters on a 4,096-token model, twice that
+    /// on the iOS 27 model), and a remote slot that knows its window in tokens (Apple Private
+    /// Cloud Compute) reports it too; OpenAI's window still comes from `AiModels` by model id.
+    /// Each falls back to what Ask always assumed when the router cannot say.
+    private func askBudget(mode: AiProcessingMode, modelId: String?) async -> AskBudget {
+        switch mode {
+        case .localOnly, .localFirst:
+            let local =
+                await composition.aiRouter.localInputChars()
+                ?? OnDeviceAiProvider.defaultMaxInputChars
+            return AskBudget.forMode(mode, modelId: modelId, onDeviceMaxInputChars: local)
+        case .remoteOnly, .remoteFirst:
+            if let tokens = await composition.aiRouter.remoteContextTokens() {
+                return AskBudget.forContext(tokens: tokens)
+            }
+            return AskBudget.forMode(mode, modelId: modelId)
+        }
     }
 
     /// Both index passes' findings for one question, plus what the experiment needs after

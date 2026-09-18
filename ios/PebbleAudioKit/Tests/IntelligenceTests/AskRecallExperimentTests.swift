@@ -209,19 +209,58 @@ struct AskRetrieverRecallTests {
         #expect(!hits.semanticRan)
     }
 
-    /// The two passes overlap in time: the slow one bounds the wait, not their sum.
+    /// The two passes overlap: each one is entered before the other has returned. Proven by
+    /// ordering, not by the clock — a wall-clock bound flaked the moment the host was busy
+    /// building two simulators (342 ms against a 280 ms limit, 2026-09-18) while proving
+    /// nothing a busy machine could not also break for a correct implementation.
     @Test func theTwoPassesOverlap() async {
+        let ledger = OverlapLedger()
         let retriever = AskRetriever(
             search: { _, _ in
-                try? await Task.sleep(for: .milliseconds(150))
+                await ledger.entered(.keyword)
+                await ledger.waitUntilBothEntered()
                 return []
             },
             semantic: { _, _ in
-                try? await Task.sleep(for: .milliseconds(150))
+                await ledger.entered(.semantic)
+                await ledger.waitUntilBothEntered()
                 return []
             })
-        let started = ContinuousClock.now
-        _ = await retriever.recall(query: "q", limit: 1)
-        #expect(ContinuousClock.now - started < .milliseconds(280))
+        // Serial execution would deadlock here: the first pass would wait for the second to be
+        // entered, which never happens. A bounded wait turns that into a plain failure.
+        let finished = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                _ = await retriever.recall(query: "q", limit: 1)
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        #expect(finished, "the two passes did not run concurrently")
+    }
+}
+
+/// Records which passes have started and lets each wait for the other.
+private actor OverlapLedger {
+    enum Pass { case keyword, semantic }
+    private var entered: Set<Pass> = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func entered(_ pass: Pass) {
+        entered.insert(pass)
+        if entered.count == 2 {
+            waiters.forEach { $0.resume() }
+            waiters.removeAll()
+        }
+    }
+
+    func waitUntilBothEntered() async {
+        if entered.count == 2 { return }
+        await withCheckedContinuation { waiters.append($0) }
     }
 }
