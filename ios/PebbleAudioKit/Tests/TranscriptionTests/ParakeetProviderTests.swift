@@ -357,7 +357,7 @@ private func makeProvider(
                 Issue.record("expected providerUnavailable, got \(error)")
                 return
             }
-            #expect(id == "cactus-local")
+            #expect(id == "coreai-local")
         }
         #expect(background.loads.isEmpty)
 
@@ -595,6 +595,8 @@ private func makeProvider(
             pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
         )
         #expect(result.text == "core ai")
+        #expect(result.providerId == "coreai-local")
+        #expect(provider.id == "coreai-local")
         #expect(result.modelUsed == "parakeet-tdt-0.6b-v3-coreai:v1")
         #expect(coreAI.loads.count == 1)
         #expect(cactus.loads.isEmpty)

@@ -304,14 +304,7 @@ final class LiveLocalModelManager: LocalModelManaging {
     }) {
         self.composition = composition
         self.isOnWiFi = isOnWiFi
-        // The shared store is a kit singleton with no way to be told about the app, so it is
-        // told here: where its lines go, and whether the app is on screen — which decides
-        // whether a Core AI model's one-time prepare pass may start (`ParakeetModelStore`).
         AppForegroundProbe.shared.install()
-        Task {
-            await ParakeetModelStore.shared.setLog { AppRuntimeLog.shared.record($0) }
-            await ParakeetModelStore.shared.setForeground { AppForegroundProbe.shared.isForeground }
-        }
         Task { [weak self] in
             for await kitState in await composition.localModel.states() {
                 self?.states[LocalModelCatalog.appleSpeechId] = Self.map(kitState)
@@ -322,7 +315,15 @@ final class LiveLocalModelManager: LocalModelManaging {
                 self?.apply(entries)
             }
         }
-        refresh()
+        // The shared store is a kit singleton with no way to be told about the app, so it is
+        // told here — where its lines go, and whether the app is on screen, which decides
+        // whether a Core AI model's one-time prepare pass may start — BEFORE the first refresh,
+        // in the same task, so a background launch can never refresh an untold store.
+        Task { [weak self] in
+            await ParakeetModelStore.shared.setLog { AppRuntimeLog.shared.record($0) }
+            await ParakeetModelStore.shared.setForeground { AppForegroundProbe.shared.isForeground }
+            self?.refresh()
+        }
     }
 
     func state(for modelId: String) -> LocalModelState {

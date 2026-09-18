@@ -232,8 +232,19 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
 {
     /// Unchanged from the KMP app so provenance on migrated transcripts still resolves.
     public static let providerId = "cactus-local"
+    /// The Core AI runtime's id. Same `-local` suffix, which is what the app reads as
+    /// "on-device"; a different name, because a transcript's provenance should say which
+    /// runtime produced it.
+    public static let coreAIProviderId = "coreai-local"
 
-    public let id = ParakeetTranscriptionProvider.providerId
+    public static func providerId(for runtime: LocalEngineRuntime) -> String {
+        switch runtime {
+        case .cactus: return providerId
+        case .coreAI: return coreAIProviderId
+        }
+    }
+
+    public let id: String
     private let spec: ParakeetModelSpec
     private let location: any ParakeetModelLocating
     private let engine: any ParakeetNativeEngine
@@ -259,6 +270,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() }
     ) {
         self.spec = spec
+        self.id = Self.providerId(for: spec.runtime)
         self.location = location
         self.engine = engine ?? ParakeetEngineFactory.make(runtime: spec.runtime)
         self.temporaryDirectory = temporaryDirectory
