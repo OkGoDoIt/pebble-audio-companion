@@ -94,57 +94,17 @@ import Foundation
         }
         private static let windowCache = WindowCache()
 
+        /// One shared implementation with the Private Cloud Compute bridge — session, options,
+        /// and the translation of Apple's error enums into the kit's own, so `OnDeviceAiProvider`
+        /// can say which thing happened without importing FoundationModels. See
+        /// `AppleModelGeneration` for why that translation covers two generations of the
+        /// framework's vocabulary.
         public func generate(
             instructions: String, prompt: String, maxOutputTokens: Int?
         ) async throws -> String {
-            // A fresh session per generation: the enrichment/recap passes are one-shot and the
-            // runtime releases the model between passes (plan 4.6 model residency).
-            let session = LanguageModelSession(
-                model: Self.companionModel, instructions: instructions)
-            let options: GenerationOptions
-            if let maxOutputTokens, maxOutputTokens > 0 {
-                options = GenerationOptions(maximumResponseTokens: maxOutputTokens)
-            } else {
-                options = GenerationOptions()
-            }
-            do {
-                let response = try await session.respond(to: prompt, options: options)
-                return response.content
-            } catch let error as LanguageModelSession.GenerationError {
-                throw Self.translate(error)
-            }
-        }
-
-        /// Turns Apple's error enum into the kit's own, so `OnDeviceAiProvider` can say which
-        /// thing happened without importing FoundationModels (it builds where the framework does
-        /// not exist).
-        ///
-        /// This mapping is why the reported bug was invisible. Every one of these cases used to
-        /// arrive at the provider as an anonymous `Error` and leave as one sentence, "On-device
-        /// AI generation failed" — the sentence the user was shown for a request that had
-        /// overflowed the context window while they had cloud AI turned on. Measured on this
-        /// machine against a real four-hour recording, the shipped build's 12,000-character
-        /// input threw exactly `exceededContextWindowSize`: "Content contains 4179 tokens, which
-        /// exceeds the maximum allowed context size of 4096."
-        static func translate(
-            _ error: LanguageModelSession.GenerationError
-        ) -> OnDeviceGenerationFailure {
-            switch error {
-            case .exceededContextWindowSize(let context):
-                return .contextWindowExceeded(context.debugDescription)
-            case .guardrailViolation, .refusal:
-                return .contentRefused
-            case .assetsUnavailable:
-                return .assetsUnavailable
-            case .rateLimited, .concurrentRequests:
-                return .busy
-            case .unsupportedLanguageOrLocale:
-                return .unsupportedLanguage
-            case .decodingFailure(let context), .unsupportedGuide(let context):
-                return .other(context.debugDescription)
-            @unknown default:
-                return .other("\(error)")
-            }
+            try await AppleModelGeneration.prose(
+                .onDevice(), instructions: instructions, prompt: prompt,
+                maxOutputTokens: maxOutputTokens)
         }
     }
 #endif
