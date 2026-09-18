@@ -277,12 +277,21 @@ final class AppComposition {
         // Ask's index lookup is a QUESTION, not a search-box query: `.any` so its content words
         // recall on their own instead of every word having to appear in one transcript, and
         // conversations only, because a note or a recap id can never resolve to a recording.
-        askRetriever = AskRetriever { query, limit in
-            let hits =
-                (try? index.search(
-                    query, limit: limit, kinds: [.conversation], mode: .any)) ?? []
-            return hits.map { AskIndexHit(id: $0.id, score: Float($0.score)) }
-        }
+        // The semantic pass ranks the same donations through Core Spotlight; the planner may
+        // only ever rescue a batch with it (`AskRecallPolicy.keywordFirst`), and it is capped so
+        // the OS ranks a shortlist rather than the archive.
+        let semanticRecall = CoreSpotlightSemanticRecall(log: { AppRuntimeLog.shared.record($0) })
+        askRetriever = AskRetriever(
+            search: { query, limit in
+                let hits =
+                    (try? index.search(
+                        query, limit: limit, kinds: [.conversation], mode: .any)) ?? []
+                return hits.map { AskIndexHit(id: $0.id, score: Float($0.score)) }
+            },
+            semantic: { query, limit in
+                await semanticRecall.rank(query: query, limit: min(limit, 200))
+                    .map { AskIndexHit(id: $0.id, score: Float($0.score)) }
+            })
 
         let queue = TranscriptionQueue(database: database, nowMs: nowMs)
         self.queue = queue

@@ -32,9 +32,48 @@ public struct AskRetriever: Sendable {
     public typealias Search = @Sendable (String, Int) async -> [AskIndexHit]
 
     private let search: Search?
+    /// The semantic pass over the same conversations (Core Spotlight, in production). Nil
+    /// keeps every caller that predates it — and every test — exactly as it was: `retrieve`
+    /// never consults it, only `recall` does.
+    private let semantic: Search?
 
-    public init(search: Search? = nil) {
+    public init(search: Search? = nil, semantic: Search? = nil) {
         self.search = search
+        self.semantic = semantic
+    }
+
+    /// Whether a semantic pass is wired at all. Diagnostics says so when it is not, rather
+    /// than reporting zero semantic hits as if the index had been asked.
+    public var hasSemanticRecall: Bool { semantic != nil }
+
+    /// What both passes found for one query.
+    public struct RecallHits: Equatable, Sendable {
+        public var keyword: [AskIndexHit]
+        public var semantic: [AskIndexHit]
+        /// False when the semantic pass was not run (not wired, or switched off by the
+        /// caller) — distinct from running and finding nothing.
+        public var semanticRan: Bool
+
+        public init(keyword: [AskIndexHit], semantic: [AskIndexHit], semanticRan: Bool) {
+            self.keyword = keyword
+            self.semantic = semantic
+            self.semanticRan = semanticRan
+        }
+    }
+
+    /// Both index passes for `query`, run concurrently: the keyword pass costs a few
+    /// milliseconds, the semantic one has its own hard deadline, and Ask waits for the slower
+    /// of the two rather than the sum. Pure retrieval — no model call, which is what lets the
+    /// Diagnostics replay run every recent question through it.
+    public func recall(
+        query: String, limit: Int, includeSemantic: Bool = true
+    ) async -> RecallHits {
+        let semanticSearch = includeSemantic ? semantic : nil
+        async let keyword = search?(query, limit) ?? []
+        async let semantic = semanticSearch?(query, limit) ?? []
+        return RecallHits(
+            keyword: await keyword, semantic: await semantic,
+            semanticRan: semanticSearch != nil)
     }
 
     public struct RetrievedChunk: Equatable, Sendable {
