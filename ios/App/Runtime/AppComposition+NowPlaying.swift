@@ -29,7 +29,7 @@ extension AppComposition {
         // NOT an end: re-asserting a mixable session while paused would drop the Lock Screen
         // item the resume is about to come from.
         let receiver = self.receiver
-        PlayerModel.onActivity = { activity in
+        PlayerModel.observeActivity { activity in
             if activity == .ended { receiver.reassertResidencyAfterPlayback() }
         }
     }

@@ -108,8 +108,8 @@ struct NowPlayingPublishingTests {
     @Test("the engine's seek-before-start is neither a pause nor an end")
     func preStartSeekIsIgnored() {
         var seen: [PlaybackActivity] = []
-        PlayerModel.onActivity = { seen.append($0) }
-        defer { PlayerModel.onActivity = nil }
+        PlayerModel.observeActivity { seen.append($0) }
+        defer { PlayerModel.removeAllActivityObservers() }
 
         let (model, publisher, _) = makeModel(atMs: 30_000)
         model.play()
@@ -304,8 +304,8 @@ struct NowPlayingPublishingTests {
     @Test("the activity hook reports transitions only")
     func activityTransitions() {
         var seen: [PlaybackActivity] = []
-        PlayerModel.onActivity = { seen.append($0) }
-        defer { PlayerModel.onActivity = nil }
+        PlayerModel.observeActivity { seen.append($0) }
+        defer { PlayerModel.removeAllActivityObservers() }
 
         let (model, _, _) = makeModel()
         #expect(seen.isEmpty, "configuring a fresh model is not a transition")
@@ -324,11 +324,26 @@ struct NowPlayingPublishingTests {
         #expect(!PlayerModel.isListening)
     }
 
+    @Test("two observers both hear every transition")
+    func observersAreAList() {
+        var first: [PlaybackActivity] = []
+        var second: [PlaybackActivity] = []
+        PlayerModel.observeActivity { first.append($0) }
+        PlayerModel.observeActivity { second.append($0) }
+        defer { PlayerModel.removeAllActivityObservers() }
+
+        let (model, _, _) = makeModel()
+        model.play()
+        model.stop()
+        #expect(first == [.playing, .ended])
+        #expect(second == [.playing, .ended])
+    }
+
     @Test("the end of the audio is an end, and a pause is not")
     func endOfAudioIsAnEnd() {
         var seen: [PlaybackActivity] = []
-        PlayerModel.onActivity = { seen.append($0) }
-        defer { PlayerModel.onActivity = nil }
+        PlayerModel.observeActivity { seen.append($0) }
+        defer { PlayerModel.removeAllActivityObservers() }
 
         let (model, _, _) = makeModel()
         model.play()

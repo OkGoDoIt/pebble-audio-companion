@@ -144,7 +144,7 @@ struct PlayerCard: View {
 
 // MARK: - Model
 
-/// The transitions `PlayerModel.onActivity` reports. `.ended` is the end of a listening
+/// The transitions `PlayerModel.observeActivity` reports. `.ended` is the end of a listening
 /// session — stopped, the screen left, or the audio ran out — as distinct from `.paused`, after
 /// which the item stays on the Lock Screen and a resume is one press away.
 enum PlaybackActivity: Equatable, Sendable {
@@ -260,9 +260,15 @@ final class PlayerModel {
     static let seekPublishCoalesceMs = 250
 
     /// Whether a conversation is being played, for the parts of the app that live outside this
-    /// screen: the telemetry state reporter and the residency re-assert (see
-    /// `AppComposition+NowPlaying.swift`). Fires on transitions only.
-    static var onActivity: (@MainActor (PlaybackActivity) -> Void)?
+    /// screen: the residency re-assert (`AppComposition+NowPlaying.swift`) and the telemetry
+    /// state reporter. Fires on transitions only. A list, not a slot: two subscribers must not
+    /// have to know about each other.
+    static func observeActivity(_ observer: @escaping @MainActor (PlaybackActivity) -> Void) {
+        activityObservers.append(observer)
+    }
+    /// Tests only: the observers are process-wide.
+    static func removeAllActivityObservers() { activityObservers.removeAll() }
+    private static var activityObservers: [@MainActor (PlaybackActivity) -> Void] = []
     /// True from the first play of a listening session until it ends — through pauses. What
     /// the lifecycle coordinator should consult before re-asserting the residency session on
     /// `didEnterBackground`: while this is true the shared audio session belongs to playback.
@@ -270,7 +276,7 @@ final class PlayerModel {
 
     private static func report(_ activity: PlaybackActivity) {
         isListening = activity != .ended
-        onActivity?(activity)
+        for observer in activityObservers { observer(activity) }
     }
 
     var speedLabel: String {
