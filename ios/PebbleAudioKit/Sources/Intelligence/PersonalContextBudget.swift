@@ -117,6 +117,13 @@ public enum PersonalContextBudget {
     /// So a 2,000-character grounding block is not free: it costs about 1,100 characters of
     /// the user's actual conversation. That is the whole argument for spending the block on
     /// names rather than prose.
+    ///
+    /// This is the iOS 26 window, and the floor. iOS 27's model reports 8,192 through
+    /// `SystemLanguageModel.contextSize`, and `OnDeviceAiProvider` budgets each request against
+    /// whatever `OnDeviceLanguageModel.contextWindowTokens()` says rather than this constant
+    /// (`OnDeviceContextBudget.windowTokens` is the same floor, kept where the arithmetic is).
+    /// The argument above does not weaken with a wider window — the grounding block still
+    /// costs exactly its own length in conversation — it just bites at twice the size.
     public static let onDeviceContextWindowTokens = 4_096
 
     // MARK: - The AI grounding block

@@ -269,17 +269,13 @@ import Foundation
             to prompt: String, instructions: String, generating type: Content.Type,
             maxTokens: Int
         ) async throws -> Content {
-            // Same content-filter setting as the text path — see
-            // `FoundationModelsLanguageModel.companionModel`. Extraction is where a refusal is
-            // most invisible: the person just gets no follow-ups from that recording.
-            let session = LanguageModelSession(
-                model: FoundationModelsLanguageModel.companionModel, instructions: instructions)
-            // Greedy, not sampled: this is extraction, not prose. Sampling only adds a way for
-            // two passes over the same recording to disagree about what somebody promised.
-            let response = try await session.respond(
-                to: prompt, generating: type,
-                options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens))
-            return response.content
+            // Same content-filter setting as the text path — `AppleModelSessions.onDevice()`
+            // opens every session on `companionModel`. Extraction is where a refusal is most
+            // invisible: the person just gets no follow-ups from that recording.
+            try await AppleModelGeneration.respond(
+                .onDevice(), to: prompt, instructions: instructions, generating: type,
+                maxTokens: maxTokens
+            ).content
         }
 
         /// The rendered conversation with anything above its `Recorded:` header removed.

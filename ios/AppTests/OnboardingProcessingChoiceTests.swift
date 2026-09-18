@@ -357,4 +357,106 @@ struct OnboardingProcessingChoiceTests {
         #expect(onPhone.transcriptsPlace == .onPhone)
         #expect(onPhone.aiPlace == .onPhone)
     }
+
+    // MARK: - The cloud sub-choice (iOS 27): Apple Private Cloud Compute needs no key
+
+    /// The remote provider rides on the plan; the default keeps every existing answer exactly
+    /// as it was, key hand-off included.
+    @Test func theDefaultRemoteIsOpenAiAndAsksForItsKey() {
+        let plan = ProcessingPlan.plan(for: .cloud, transcripts: .inCloud, ai: .inCloud)
+        #expect(plan.remoteAiProvider == .openAi)
+        #expect(plan.needsAiKey)
+    }
+
+    /// Choosing Apple's cloud for the AI asks for NO AI key. With local transcripts there is no
+    /// key screen at all — onboarding finishes on Continue.
+    @Test func applePrivateCloudWithLocalTranscriptsNeedsNoKeyScreen() {
+        let settings = makeSettings()
+        let model = makeModel()
+        model.phase = .transcripts
+        model.choice = .mixed
+        model.transcriptsPlace = .onPhone
+        model.aiPlace = .inCloud
+        model.remoteAiProvider = .applePrivateCloud
+        model.continueFromProcessing(settings: settings)
+
+        #expect(!model.plan.needsAiKey)
+        #expect(!model.plan.needsAnyKey)
+        #expect(settings.onboardingComplete)
+        #expect(settings.aiMode == .remoteFirst)
+        #expect(settings.remoteAiProvider == .applePrivateCloud)
+        #expect(settings.remoteAiDestination == Copy.Privacy.applePrivateCloud)
+    }
+
+    /// Full cloud with Apple's AI still needs a transcription key, and only that.
+    @Test func applePrivateCloudWithCloudTranscriptsAsksOnlyForATranscriptionKey() {
+        let settings = makeSettings()
+        let model = makeModel()
+        model.phase = .transcripts
+        model.choice = .cloud
+        model.remoteAiProvider = .applePrivateCloud
+        model.continueFromProcessing(settings: settings)
+
+        #expect(model.phase == .cloudKey)
+        #expect(model.plan.needsTranscriptionKey)
+        #expect(!model.plan.needsAiKey)
+        #expect(settings.remoteAiProvider == .applePrivateCloud)
+    }
+
+    /// AI on the phone was never asked which cloud, so the stored provider is left alone.
+    @Test func onPhoneAiDoesNotTouchTheRemoteProvider() {
+        let settings = makeSettings()
+        settings.remoteAiProvider = .applePrivateCloud
+        let model = makeModel()
+        model.phase = .transcripts
+        model.choice = .onPhone
+        model.remoteAiProvider = .openAi  // the view model's default, never shown
+        model.continueFromProcessing(settings: settings)
+
+        #expect(settings.remoteAiProvider == .applePrivateCloud)
+    }
+
+    /// The stance previewed under the card, with the pending provider, is the one the settings
+    /// produce after the write — for both remotes.
+    @Test func previewedStanceMatchesTheWrittenOneForBothRemotes() {
+        for remote in RemoteAiProvider.allCases {
+            let settings = makeSettings()
+            let plan = ProcessingPlan.plan(
+                for: .mixed, transcripts: .onPhone, ai: .inCloud, remoteAi: remote)
+            let previewed = settings.privacyStance(
+                transcriptionMode: plan.transcriptionMode, aiMode: plan.aiMode,
+                remoteAiProvider: plan.remoteAiProvider)
+            let model = makeModel()
+            model.phase = .transcripts
+            model.choice = .mixed
+            model.transcriptsPlace = .onPhone
+            model.aiPlace = .inCloud
+            model.remoteAiProvider = remote
+            model.continueFromProcessing(settings: settings)
+            #expect(previewed == settings.privacyStance, "\(remote)")
+            #expect(previewed.headline.contains(Copy.Privacy.remoteAiName(for: remote)))
+        }
+    }
+
+    /// A re-run that changes only the remote provider keeps the stored modes verbatim — the
+    /// provider is not a mode and must not collapse `.localFirst` onto `.remoteFirst`.
+    @Test func changingOnlyTheRemoteProviderKeepsTheStoredModes() {
+        let settings = makeSettings()
+        settings.transcriptionMode = .localOnly
+        settings.aiMode = .localFirst
+        settings.transcriptsConfigured = true
+        settings.remoteAiProvider = .openAi
+
+        let model = makeModel()
+        model.seed(from: settings)
+        #expect(model.remoteAiProvider == .openAi)
+        model.remoteAiProvider = .applePrivateCloud
+        model.continueFromProcessing(settings: settings)
+
+        #expect(settings.transcriptionMode == .localOnly)
+        #expect(settings.aiMode == .localFirst)
+        #expect(settings.remoteAiProvider == .applePrivateCloud)
+        // …and Local-first AI with Apple's cloud needs no key, so the flow finished.
+        #expect(settings.onboardingComplete)
+    }
 }

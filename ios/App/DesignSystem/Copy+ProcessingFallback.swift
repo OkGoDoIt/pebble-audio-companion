@@ -134,9 +134,9 @@ extension Copy.Privacy {
         switch cause {
         case .notAvailable:
             return "the \(engine) is not available on this iPhone."
-        case .failed, .noConnection, .notAccepted:
-            // The last three are cloud-shaped causes; on the local path only `.failed` is
-            // really reachable, and lumping them together beats inventing three sentences for
+        case .failed, .noConnection, .notAccepted, .usageLimit:
+            // The last four are cloud-shaped causes; on the local path only `.failed` is
+            // really reachable, and lumping them together beats inventing four sentences for
             // states that cannot happen.
             return "the \(engine) could not finish the last one."
         }
@@ -153,6 +153,9 @@ extension Copy.Privacy {
             return "the provider turned the last request down — check the key and the account."
         case .failed:
             return "the last request failed."
+        case .usageLimit:
+            // Only Apple Private Cloud Compute produces this; nothing to check, nothing to pay.
+            return Copy.Privacy.usageLimitCause
         }
     }
 }

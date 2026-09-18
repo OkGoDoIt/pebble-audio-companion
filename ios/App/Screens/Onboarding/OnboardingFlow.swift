@@ -434,6 +434,16 @@ private struct OnboardingProcessingView: View {
                 }
             }
             if isSelected {
+                // iOS 27: which cloud writes the notes, directly under the card that chose the
+                // cloud. Only where the AI axis actually goes there — a mix with AI on the
+                // phone has nothing to pick.
+                if OnboardingRemoteAiChoice.isOffered,
+                    model.appliedPlan(with: settings).aiMode.usesCloudProvider
+                {
+                    OnboardingRemoteAiChoice(selection: $model.remoteAiProvider)
+                        .padding(.horizontal, 4)
+                        .transition(Motion.transition(.opacity.combined(with: .move(edge: .top))))
+                }
                 // `appliedPlan`, not `plan`: on a re-run where nothing has been changed the
                 // modes that will actually be written are the stored ones, and the stance under
                 // the card has to describe those — a `.localFirst` install must not be told

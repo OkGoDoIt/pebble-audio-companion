@@ -547,16 +547,33 @@ final class AppComposition {
 
         // --- AI ------------------------------------------------------------------------------
 
+        // The remote slot is a switch on `remoteAiProvider`, re-read per call: OpenAI with the
+        // person's key, or (iOS 27) Apple Private Cloud Compute — same consent gate, no key.
+        // On iOS 26 the PCC provider is simply absent, and a setting that names it fails
+        // closed rather than quietly sending to OpenAI. See `RemoteAiProviderSwitch`.
+        let applePrivateCloud: AiProvider? = {
+            guard #available(iOS 27.0, *) else { return nil }
+            return ApplePrivateCloudAiProvider(
+                model: ApplePrivateCloudModel(),
+                remoteConsent: { settingsBox.remoteAiEnabled },
+                grounding: aiGrounding,
+                log: { AppRuntimeLog.shared.record($0) }
+            )
+        }()
         let aiRouter = AiModeRouter(
             local: OnDeviceAiProvider(
                 model: FoundationModelsLanguageModel(), grounding: aiGrounding
             ),
-            remote: OpenAiChatAiProvider(
-                transport: transport,
-                apiKey: openAiKey,
-                remoteConsent: { settingsBox.remoteAiEnabled },
-                model: { settingsBox.aiModel },
-                grounding: aiGrounding
+            remote: RemoteAiProviderSwitch(
+                selected: { settingsBox.remoteAiProvider },
+                openAi: OpenAiChatAiProvider(
+                    transport: transport,
+                    apiKey: openAiKey,
+                    remoteConsent: { settingsBox.remoteAiEnabled },
+                    model: { settingsBox.aiModel },
+                    grounding: aiGrounding
+                ),
+                applePrivateCloud: applePrivateCloud
             ),
             mode: { settingsBox.aiMode },
             // AI failures had no home. The device's `diagnostics/companion.log` carried link,

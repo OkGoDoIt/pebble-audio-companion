@@ -188,17 +188,24 @@ extension AppSettings {
     /// on, and the same two `AppSettings.cloudTranscriptionDestination` /
     /// `remoteAiDestination` use. That is deliberate: this must not become a second rule about
     /// when data leaves, only a second set of *inputs* to the one rule about how to say it.
+    ///
+    /// `remoteAiProvider` is the pending remote choice (iOS 27 offers Apple Private Cloud
+    /// Compute beside OpenAI); it defaults to the stored one, so a caller that is not changing
+    /// it reads exactly what `privacyStance` would say after the write.
     func privacyStance(
-        transcriptionMode: TranscriptionMode, aiMode: AiProcessingMode
+        transcriptionMode: TranscriptionMode, aiMode: AiProcessingMode,
+        remoteAiProvider: RemoteAiProvider? = nil
     ) -> Copy.Privacy.Stance {
         let modes = RuntimeSettingsSnapshot(transcriptionMode: transcriptionMode, aiMode: aiMode)
+        let remote = remoteAiProvider ?? self.remoteAiProvider
         return Copy.Privacy.stance(
             for: Copy.Privacy.StanceInputs(
                 transcriptionMode: transcriptionMode,
                 aiMode: aiMode,
                 cloudTranscriptionDestination: modes.cloudTranscriptionEnabled
                     ? cloudTranscriptionProvider.displayName : nil,
-                remoteAiDestination: modes.remoteAiEnabled ? Copy.Privacy.remoteAi : nil
+                remoteAiDestination: modes.remoteAiEnabled
+                    ? Copy.Privacy.remoteAiName(for: remote) : nil
             )
         )
     }

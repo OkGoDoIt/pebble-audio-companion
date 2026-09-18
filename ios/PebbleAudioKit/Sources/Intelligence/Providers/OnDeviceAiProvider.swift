@@ -53,6 +53,31 @@ public protocol OnDeviceLanguageModel: Sendable {
         prompt: String,
         maxOutputTokens: Int?
     ) async throws -> String
+
+    // Two more requirements-with-defaults, for the same dispatch reason as the pair above. Both
+    // exist because the window stopped being a constant: Apple's model reports 4,096 tokens on
+    // iOS 26 and 8,192 on iOS 27, and a budget that assumed the smaller one would refuse — on
+    // every iOS 27 phone, forever — the top half of what the model can actually read.
+
+    /// The model's context window in tokens, input and output together. The default is the
+    /// measured iOS 26 floor (`OnDeviceContextBudget.windowTokens`); a model that knows better
+    /// says so, and the provider sizes every prose request from the answer.
+    func contextWindowTokens() async -> Int
+
+    /// What `text` costs in this model's own tokens, or nil when the model cannot say — then
+    /// callers estimate at `AskBudget.charsPerToken`, which is deliberately pessimistic. A real
+    /// count admits what the estimate would have cut: measured here, ordinary English runs
+    /// near five characters per token against the estimate's three.
+    func tokenCount(for text: String) async -> Int?
+}
+
+extension OnDeviceLanguageModel {
+    /// Default: the iOS 26 window. Every conformer that predates the requirement — and every
+    /// test double — keeps exactly the budget it had.
+    public func contextWindowTokens() async -> Int { OnDeviceContextBudget.windowTokens }
+
+    /// Default: no count, so the caller estimates.
+    public func tokenCount(for text: String) async -> Int? { nil }
 }
 
 /// What the OS model hit, for the cases worth telling the user apart.
@@ -86,7 +111,7 @@ public enum OnDeviceGenerationFailure: Error, Sendable, Equatable {
 /// Fail-closed: when no model is injected (platform unsupported / bridge not registered) or
 /// the model reports anything other than `.available`, the provider is unavailable and rows
 /// fall back to transcript snippets — it never blocks devices that lack on-device AI.
-public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
+public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unchecked Sendable {
     /// On-device context windows are small; keep input well under the budget. Titles/
     /// summaries care about the gist, so a generous-but-bounded slice of a long transcript
     /// is fine.
@@ -102,6 +127,10 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
     /// It is no longer what an ordinary request is sized by — see `OnDeviceContextBudget`, which
     /// derives that from the template's own output need and the grounding block actually in
     /// force, so a 200-token title and a 900-token long-form summary stop sharing one number.
+    ///
+    /// It is the figure for the 4,096-token window it was measured against. A planner should
+    /// read `onDeviceInputChars()`, which scales it to the window the model in front of it
+    /// actually reports (16,000 on iOS 27), rather than this constant.
     public static let defaultMaxInputChars = 8_000
 
     /// The fallback output cap, for a caller that pins one explicitly. Per-template budgets come
@@ -181,8 +210,9 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
             userContent = AiTranscriptFormatting.buildUserContent(
                 request, maxInputChars: shape.maxInputChars)
         } else {
-            userContent = try fitProseInput(
-                request, instructions: instructions, outputTokens: outputTokens)
+            userContent = try await fitProseInput(
+                request, model: activeModel, instructions: instructions,
+                outputTokens: outputTokens)
         }
         let text: String
         do {
@@ -221,9 +251,15 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
 
     // MARK: - Sizing one prose request
 
-    /// The transcript body for a prose call, sized to what is genuinely left of the 4,096-token
+    /// The transcript body for a prose call, sized to what is genuinely left of the model's
     /// window once this template's instructions, this launch's grounding block and this
     /// template's answer are paid for.
+    ///
+    /// The window is the model's own (`contextWindowTokens()` — 4,096 on iOS 26, 8,192 on
+    /// iOS 27), and where the model can count tokens the decision is made on a real count of
+    /// the real prompt rather than on characters divided by three. The estimate stays as the
+    /// fallback, and as the floor a count can never push a request below: the ratio is
+    /// deliberately pessimistic, so anything it admits a count admits too.
     ///
     /// Throws rather than truncating in the two cases where truncating would produce something
     /// worse than nothing:
@@ -237,25 +273,58 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
     /// Both say so in the message, because "this recording is longer than the on-device model
     /// can hold, use cloud AI" is actionable and "On-device AI generation failed" is not.
     private func fitProseInput(
-        _ request: AiRunRequest, instructions: String, outputTokens: Int
-    ) throws -> String {
+        _ request: AiRunRequest, model: OnDeviceLanguageModel, instructions: String,
+        outputTokens: Int
+    ) async throws -> String {
+        let window = await model.contextWindowTokens()
         let budget = OnDeviceContextBudget.forRequest(
             outputTokens: outputTokens,
             systemPromptChars: instructions.count,
             // `instructions` already carries the grounding block, so it is not counted twice.
-            groundingChars: 0
+            groundingChars: 0,
+            windowTokens: window
         )
         guard budget.fits else {
             throw AiError.providerFailed(
                 "\"\(request.prompt.title)\" is \(Self.tooLongSentence)"
-                    + " Its instructions and answer alone need more than the 4,096-token window."
+                    + " Its instructions and answer alone need more than the "
+                    + "\(Self.formatted(window))-token window."
             )
         }
-        let ceiling = min(maxInputChars ?? budget.inputChars, budget.inputChars)
+        let estimatedCeiling = min(maxInputChars ?? budget.inputChars, budget.inputChars)
         // Built once at full length so the decision below is made on the real size. This is a
         // string concatenation over transcript text the caller already holds in memory — no
         // decode, no read, no second pass over the database.
         let full = AiTranscriptFormatting.buildUserContent(request, maxInputChars: Int.max)
+        guard full.count > estimatedCeiling else { return full }
+
+        // The estimate says it does not fit. Before believing that, ask the model — a real count
+        // of the instructions (once) and of the body (once) is two cheap calls, and the answer
+        // is often "it fits after all": the estimate charges three characters a token and the
+        // model spends closer to five. A count is only ever allowed to ADMIT more; a caller's
+        // pinned `maxInputChars` still caps it.
+        var ceiling = estimatedCeiling
+        if let instructionTokens = await model.tokenCount(for: instructions),
+            let bodyTokens = await model.tokenCount(for: full), bodyTokens > 0
+        {
+            let room = OnDeviceContextBudget.inputTokens(
+                windowTokens: window, outputTokens: outputTokens,
+                instructionTokens: instructionTokens)
+            if bodyTokens <= room {
+                if let pinned = maxInputChars, full.count > pinned {
+                    ceiling = pinned
+                } else {
+                    return full
+                }
+            } else {
+                // Proportional, with the framework's own margin kept back, and never below what
+                // the estimate already guaranteed. This is the truncated size; nothing measures
+                // it again, because a prompt that tokenizes unevenly enough to break a 5% margin
+                // is one the estimate below would already have cut deeper.
+                let measured = full.count * room / bodyTokens * 95 / 100
+                ceiling = min(maxInputChars ?? measured, max(measured, estimatedCeiling))
+            }
+        }
         guard full.count > ceiling else { return full }
         guard !OnDeviceTemplateBudget.readsWholeConversation(templateId: request.prompt.id) else {
             throw AiError.providerFailed(
@@ -266,6 +335,40 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
         }
         return AiTranscriptFormatting.buildUserContent(request, maxInputChars: ceiling)
     }
+
+    /// "4,096" — the way the window has always been written in these messages. Spelled out
+    /// rather than left to a `NumberFormatter`, whose POSIX locale drops the grouping comma.
+    static func formatted(_ tokens: Int) -> String {
+        let digits = Array(String(max(0, tokens)))
+        var out = ""
+        for (offset, digit) in digits.enumerated() {
+            if offset > 0, (digits.count - offset) % 3 == 0 { out.append(",") }
+            out.append(digit)
+        }
+        return out
+    }
+
+    // MARK: - What a planner may count on
+
+    /// Characters of transcript one prose call may be handed, for planning done before any
+    /// request exists — `AskBudget.forMode` sizes a whole-archive read against it.
+    ///
+    /// `defaultMaxInputChars` scaled to the model's window: 8,000 at the 4,096-token floor,
+    /// 16,000 at iOS 27's 8,192. A caller-pinned `maxInputChars` still wins. Scaling the
+    /// measured number rather than re-deriving one keeps iOS 26 at exactly the figure that was
+    /// binary-searched against the real model, and gives a wider window the same proportion of
+    /// headroom for grounding, instructions and the answer.
+    public func onDeviceInputChars() async -> Int {
+        let window = await model?.contextWindowTokens() ?? OnDeviceContextBudget.windowTokens
+        let scaled = Self.defaultMaxInputChars * window / OnDeviceContextBudget.windowTokens
+        return min(maxInputChars ?? scaled, scaled)
+    }
+
+    // MARK: AiInputWindowReporting
+
+    public func inputChars() async -> Int? { await onDeviceInputChars() }
+
+    public func contextTokens() async -> Int? { await model?.contextWindowTokens() }
 
     // MARK: - Saying what actually happened
 

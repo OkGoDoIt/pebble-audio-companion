@@ -27,8 +27,17 @@ struct SettingsTranscriptionScreen: View {
         TranscriptionAiRowPlan(
             transcriptionMode: settings.transcriptionMode,
             aiMode: settings.aiMode,
-            cloudTranscriptionProvider: settings.cloudTranscriptionProvider
+            cloudTranscriptionProvider: settings.cloudTranscriptionProvider,
+            remoteAiProvider: settings.remoteAiProvider,
+            applePrivateCloudOffered: Self.applePrivateCloudOffered
         )
+    }
+
+    /// Whether this OS has Apple Private Cloud Compute to offer. A plain availability check —
+    /// the setting decides what is chosen, this only decides whether the choice is drawn.
+    private static var applePrivateCloudOffered: Bool {
+        if #available(iOS 27.0, *) { return true }
+        return false
     }
 
     /// Whether anything on this phone can transcribe right now: the chosen engine, or the Apple
@@ -67,6 +76,10 @@ struct SettingsTranscriptionScreen: View {
         let rows = rowPlan
         let aiReadiness = OnDeviceAiReadiness.current
         let localReadiness = localTranscriptionReadiness
+        // Same idea for Apple's cloud model: its framework object is `Observable` too, so
+        // signing in, or the day's allowance coming back, redraws the row on its own.
+        let cloudReadiness = rows.showsApplePrivateCloud ? ApplePrivateCloudReadiness.current : .unsupportedOs
+        let cloudQuota = rows.showsApplePrivateCloud ? ApplePrivateCloudReadiness.quota : .unknown
 
         SettingsScroll {
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.transcriptionSection)
@@ -188,6 +201,39 @@ struct SettingsTranscriptionScreen: View {
                         showsChevron: false
                     )
                 }
+                // What "remote" means on this axis. Present wherever the OS offers Apple
+                // Private Cloud Compute, and wherever the setting already names it — a person
+                // must always be able to switch back (see `showsRemoteModelChoice`).
+                if rows.showsRemoteModelChoice {
+                    SettingsPushRow(
+                        title: Copy.Settings.TranscriptionAI.remoteModel,
+                        value: Copy.Settings.TranscriptionAI.remoteModelName(
+                            settings.remoteAiProvider)
+                    ) {
+                        ChoiceScreen(
+                            title: Copy.Settings.TranscriptionAI.remoteModel,
+                            options: RemoteAiProvider.allCases.map {
+                                .init(
+                                    value: $0,
+                                    label: Copy.Settings.TranscriptionAI.remoteModelName($0))
+                            },
+                            selection: $settings.remoteAiProvider,
+                            footer: Copy.Settings.TranscriptionAI.remoteModelFooter
+                        )
+                    }
+                }
+                // Apple's cloud model is not a picker either — there is one — so, like "On this
+                // phone", it is a readiness row: signed in and answering, or one of the four
+                // reasons it is not, with today's allowance folded in when it is the only news.
+                if rows.showsApplePrivateCloud {
+                    SettingsRow(
+                        title: Copy.Settings.TranscriptionAI.applePrivateCloudRow,
+                        value: Copy.Settings.TranscriptionAI.applePrivateCloudValue(
+                            cloudReadiness, quota: cloudQuota),
+                        valueColor: applePrivateCloudValueColor(cloudReadiness, quota: cloudQuota),
+                        showsChevron: false
+                    )
+                }
                 if rows.showsCloudModel {
                     SettingsPushRow(
                         title: Copy.Settings.TranscriptionAI.cloudModel,
@@ -211,9 +257,26 @@ struct SettingsTranscriptionScreen: View {
                 }
             }
             if let note = Copy.Settings.TranscriptionAI.onDeviceAiNote(
-                mode: settings.aiMode, readiness: aiReadiness
+                mode: settings.aiMode, readiness: aiReadiness,
+                remoteName: Copy.Privacy.remoteAiName(for: settings.remoteAiProvider)
             ) {
                 SettingsFooter(text: note)
+            }
+            // The allowance and the build are facts, stated once under the card — never an
+            // alert. When Apple offers a way to ask for more, that is one plain row.
+            if rows.showsApplePrivateCloud,
+                let note = Copy.Settings.TranscriptionAI.applePrivateCloudNote(
+                    mode: settings.aiMode, readiness: cloudReadiness, quota: cloudQuota)
+            {
+                SettingsFooter(text: note)
+            }
+            if rows.showsApplePrivateCloud, ApplePrivateCloudReadiness.canRequestMore {
+                ListCard {
+                    TintActionRow(
+                        title: Copy.Settings.TranscriptionAI.requestHigherAllowance,
+                        action: { ApplePrivateCloudReadiness.requestMore() }
+                    )
+                }
             }
 
             // Probes the cloud TRANSCRIPTION backend only (see `showsTestConnection`), so it is
@@ -309,6 +372,24 @@ struct SettingsTranscriptionScreen: View {
     private func onDeviceAiValueColor(_ readiness: OnDeviceAiReadiness) -> Color {
         if readiness.isReady { return Tokens.meta }
         return settings.aiMode == .localOnly ? Tokens.attention : Tokens.meta
+    }
+
+    // MARK: Apple Private Cloud row
+
+    /// The same restraint as the on-device row: attention only where the outcome changes. In
+    /// Remote only nothing else writes, so "not ready" or "used up" is a fact the person has
+    /// to know; in the two "first" modes the on-device model carries the work meanwhile.
+    private func applePrivateCloudValueColor(
+        _ readiness: ApplePrivateCloudReadiness, quota: ApplePrivateCloudQuotaState
+    ) -> Color {
+        let blocked: Bool
+        if readiness.isReady {
+            if case .usedUp = quota { blocked = true } else { blocked = false }
+        } else {
+            blocked = true
+        }
+        guard blocked else { return Tokens.meta }
+        return settings.aiMode == .remoteOnly ? Tokens.attention : Tokens.meta
     }
 
     // MARK: Key rows

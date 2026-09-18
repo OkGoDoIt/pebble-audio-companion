@@ -68,6 +68,27 @@ struct AFAiFailureCopyTests {
         #expect(Set(sentences).count == AiFailureKind.allCases.count)
     }
 
+    /// Apple Private Cloud Compute's allowance: named as Apple's, never as OpenAI's, and it says
+    /// the on-device model is unaffected — the two things a person would otherwise wonder.
+    @Test func aUsedUpAllowanceIsToldAsApples() {
+        let reason = NoteJobCenter.reason(
+            for: AiError.providerFailed(
+                "Apple Private Cloud Compute has reached its daily usage limit."))
+        #expect(reason == Copy.AiFailure.usageLimit)
+        #expect(reason.contains("Apple Private Cloud Compute"))
+        #expect(!reason.contains("OpenAI"))
+        #expect(!reason.contains("funds"))
+    }
+
+    /// A cloud refusal does not borrow the on-device sentence.
+    @Test func aCloudRefusalIsNotToldAsTheOnDeviceOne() {
+        let reason = NoteJobCenter.reason(
+            for: AiError.providerFailed(
+                "Apple Private Cloud Compute declined to work on this request."))
+        #expect(reason == Copy.AiFailure.cloudContentRefused)
+        #expect(!reason.lowercased().contains("on-device"))
+    }
+
     /// The one a person is most likely to hit on a long recording has to name both ways out.
     @Test func theTooLongSentenceNamesWhatToDo() {
         #expect(Copy.AiFailure.tooLongForDevice.contains("cloud AI"))

@@ -52,6 +52,17 @@ public enum ProcessingFallbackCause: String, Sendable, Equatable, CaseIterable {
     case notAccepted
     /// It ran and failed.
     case failed
+    /// A per-person allowance that resets on its own — Apple Private Cloud Compute's daily
+    /// limit. Distinct from `notAccepted` because there is nothing to check and nothing to
+    /// pay: it comes back by itself, and the sentence has to say so instead of sending someone
+    /// to look at a key.
+    case usageLimit
+
+    /// The literal the AI provider puts in its message when the allowance is used up, and the
+    /// literal `classify` reads back. One copy, here, so the message and the classifier cannot
+    /// drift apart. Deliberately not the word "quota": `TranscriptionFailureKind` reads
+    /// "quota exceeded" as an account out of money, which this is not.
+    public static let usageLimitMarker = "daily usage limit"
 
     /// Classifies the error message the preferred path failed with.
     ///
@@ -60,6 +71,7 @@ public enum ProcessingFallbackCause: String, Sendable, Equatable, CaseIterable {
     /// router too, because those three shapes are provider-agnostic. Anything unrecognised is
     /// `.failed`, never a guess.
     public static func classify(_ message: String?) -> ProcessingFallbackCause {
+        if let message, message.lowercased().contains(usageLimitMarker) { return .usageLimit }
         switch TranscriptionFailureKind.classify(message) {
         case .notConfigured, .modelMissing:
             return .notAvailable

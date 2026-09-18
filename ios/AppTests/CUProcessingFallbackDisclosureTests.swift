@@ -148,6 +148,20 @@ struct CUProcessingFallbackDisclosureTests {
         #expect(only.map(\.id) == ["transcription"])
     }
 
+    // MARK: - Apple Private Cloud Compute's allowance
+
+    /// A used-up allowance is a quality event told plainly: no key to check, and it says the
+    /// limit resets rather than sending the person to an account page.
+    @Test func aUsedUpAllowanceSaysItComesBack() throws {
+        let only = notices(
+            ai: ProcessingFallback(direction: .cloudToLocal, cause: .usageLimit),
+            remoteAi: Copy.Privacy.applePrivateCloud)
+        let text = try #require(only.first?.text)
+        #expect(text.hasPrefix("AI is running on this iPhone right now"))
+        #expect(text.contains("allowance"))
+        #expect(!text.contains("key"))
+    }
+
     // MARK: - Every combination produces a sentence, not an empty string
 
     @Test func everyReachableCombinationHasWords() {

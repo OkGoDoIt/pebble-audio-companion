@@ -64,8 +64,12 @@ extension Copy.Settings.TranscriptionAI {
     /// in Remote first — where OpenAI is the primary path, the row's own value already says the
     /// fallback is missing, and a sentence about a fallback would be the loudest thing on a card
     /// that is working.
+    ///
+    /// `remoteName` is whichever remote provider is configured — OpenAI, or on iOS 27 Apple
+    /// Private Cloud Compute — so the Local-first sentence names where the text actually goes.
     static func onDeviceAiNote(
-        mode: AiProcessingMode, readiness: OnDeviceAiReadiness
+        mode: AiProcessingMode, readiness: OnDeviceAiReadiness,
+        remoteName: String = Copy.Privacy.remoteAi
     ) -> String? {
         guard mode.usesOnDeviceModel, !readiness.isReady else { return nil }
         switch mode {
@@ -93,9 +97,9 @@ extension Copy.Settings.TranscriptionAI {
             // wording — "unavailable" would be true today and wrong tomorrow.
             return readiness == .preparing
                 ? "Until Apple Intelligence is ready, every summary, note and answer is written "
-                    + "by \(Copy.Privacy.remoteAi)."
+                    + "by \(remoteName)."
                 : "With Apple Intelligence unavailable, every summary, note and answer is "
-                    + "written by \(Copy.Privacy.remoteAi)."
+                    + "written by \(remoteName)."
         case .remoteFirst, .remoteOnly:
             return nil
         }

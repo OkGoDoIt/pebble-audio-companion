@@ -71,6 +71,12 @@ struct TranscriptionAiRowPlan: Equatable {
     /// Which backend the transcription half would upload to. Only meaningful when
     /// `transcriptionMode.usesCloudProvider`.
     var cloudTranscriptionProvider: CloudProvider
+    /// What the AI half's "remote" is: OpenAI (the person's key) or Apple Private Cloud
+    /// Compute (iOS 27; no key). Only meaningful when `aiMode.usesCloudProvider`.
+    var remoteAiProvider: RemoteAiProvider = .openAi
+    /// Whether this OS offers Private Cloud Compute at all (`#available(iOS 27)`). Decides
+    /// whether the choice is drawn, never what the setting is.
+    var applePrivateCloudOffered: Bool = false
 
     // ── Transcription card ───────────────────────────────────────────────────
 
@@ -100,15 +106,34 @@ struct TranscriptionAiRowPlan: Equatable {
     /// something — including `remoteFirst`, where it is the fallback.
     var showsOnDeviceAi: Bool { aiMode.usesOnDeviceModel }
 
+    /// Transcript text can reach Apple Private Cloud Compute in this configuration.
+    var usesApplePrivateCloud: Bool {
+        aiMode.usesCloudProvider && remoteAiProvider == .applePrivateCloud
+    }
+
+    /// "Remote model" — OpenAI or Apple Private Cloud Compute. Drawn wherever the OS offers the
+    /// choice, and ALSO wherever the setting already names Private Cloud Compute on an OS that
+    /// does not: a person must always be able to switch back, and a hidden row would leave a
+    /// fail-closed provider with no way out.
+    var showsRemoteModelChoice: Bool {
+        aiMode.usesCloudProvider
+            && (applePrivateCloudOffered || remoteAiProvider == .applePrivateCloud)
+    }
+
     /// "Cloud model" (the row that used to be called "Model"). It picks the OpenAI model, so it
-    /// means nothing in AI Local only.
-    var showsCloudModel: Bool { aiMode.usesCloudProvider }
+    /// means nothing in AI Local only — and nothing when the remote is Apple's, which has one.
+    var showsCloudModel: Bool { aiMode.usesCloudProvider && remoteAiProvider == .openAi }
+
+    /// The Apple Private Cloud readiness row: present exactly where text can reach it.
+    var showsApplePrivateCloud: Bool { usesApplePrivateCloud }
 
     /// The AI half's key row, or nil. Nil ALSO when the transcription half is already showing
     /// the OpenAI key: one setting, one row — the same key rendered twice on one screen invites
-    /// the reader to wonder which of them is which.
+    /// the reader to wonder which of them is which. And nil when the remote is Apple's, which
+    /// authenticates with nobody.
     var aiKey: CloudProvider? {
-        guard aiMode.usesCloudProvider, transcriptionKey != .openAi else { return nil }
+        guard aiMode.usesCloudProvider, remoteAiProvider == .openAi, transcriptionKey != .openAi
+        else { return nil }
         return .openAi
     }
 
@@ -120,7 +145,7 @@ struct TranscriptionAiRowPlan: Equatable {
     var providersInUse: Set<CloudProvider> {
         var used: Set<CloudProvider> = []
         if let transcriptionKey { used.insert(transcriptionKey) }
-        if aiMode.usesCloudProvider { used.insert(.openAi) }
+        if aiMode.usesCloudProvider, remoteAiProvider == .openAi { used.insert(.openAi) }
         return used
     }
 
@@ -137,7 +162,9 @@ struct TranscriptionAiRowPlan: Equatable {
 
     /// Nothing at all reaches a service. The same condition `Copy.Privacy.Stance.isFullyLocal`
     /// reports on Storage & Privacy — read the stance for the wording, this is only the switch.
-    var isFullyLocal: Bool { providersInUse.isEmpty }
+    /// Apple Private Cloud Compute holds no key, so it is not in `providersInUse`, but text does
+    /// leave the phone for it: never "fully local".
+    var isFullyLocal: Bool { providersInUse.isEmpty && !usesApplePrivateCloud }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
