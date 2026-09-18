@@ -139,6 +139,14 @@ struct LocalModelOption: Identifiable, Hashable {
     /// Bytes fetched on install; nil for an engine iOS already ships.
     let downloadBytes: Int64?
     var isRecommended = false
+    /// The native runtime a downloadable model runs on. Decides whether THIS phone can run it
+    /// at all (Core AI needs iOS 27 and a device build); Apple Speech is `.cactus` by default
+    /// only because the field is meaningless for it.
+    var runtime: LocalEngineRuntime = .cactus
+
+    /// True when this build, on this OS, has an engine for the model — false is the Core AI
+    /// entry on iOS 26 or a simulator, where the row shows "needs iOS 27" and cannot be chosen.
+    var canRunHere: Bool { !isDownloadable || ParakeetEngineFactory.isSupported(runtime) }
 
     /// Compact identity for the Settings row, e.g. "Parakeet TDT 0.6B".
     var compactName: String {
@@ -173,7 +181,8 @@ extension LocalModelOption {
             shortLabel: spec.shortLabel,
             description: spec.modelDescription,
             downloadBytes: spec.downloadBytes,
-            isRecommended: spec.recommended
+            isRecommended: spec.recommended,
+            runtime: spec.runtime
         )
     }
 }
@@ -268,7 +277,12 @@ final class MockLocalModelManager: LocalModelManaging {
     private var states: [String: LocalModelState] = [LocalModelCatalog.appleSpeechId: .installed]
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
-    func state(for modelId: String) -> LocalModelState { states[modelId] ?? .notInstalled }
+    func state(for modelId: String) -> LocalModelState {
+        // Same rule as the live source: a model this build cannot run is unavailable, however
+        // the preview would like to animate it.
+        if let option = model(modelId), !option.canRunHere { return .unavailable }
+        return states[modelId] ?? .notInstalled
+    }
 
     func refresh() {}
 

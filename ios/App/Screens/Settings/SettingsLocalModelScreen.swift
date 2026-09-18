@@ -1,4 +1,5 @@
 import SwiftUI
+import Transcription
 
 /// Settings · Transcription & AI → **Local model** (pushed).
 ///
@@ -100,6 +101,27 @@ struct SettingsLocalModelScreen: View {
                     TintActionRow(title: "Debug: simulate failed download") {
                         model.debugFailDownload(settings.localTranscriptionModelId)
                     }
+                    // The quiet-audio boost experiment (`ParakeetQuietAudioBoost`): an App
+                    // Group key, not a setting, and only reachable from a Debug build.
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Copy.CoreAI.debugBoostTitle)
+                                .font(AppFont.callout)
+                                .foregroundStyle(Tokens.label)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(Copy.CoreAI.debugBoostSubtitle)
+                                .font(AppFont.footnote)
+                                .foregroundStyle(Tokens.meta)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 10)
+                        Toggle(Copy.CoreAI.debugBoostTitle, isOn: $boostQuietAudio)
+                            .labelsHidden()
+                            .tint(Tokens.good)
+                    }
+                    .onChange(of: boostQuietAudio) { _, enabled in
+                        ParakeetQuietAudioBoost.setEnabled(enabled)
+                    }
                 }
             #endif
         }
@@ -109,8 +131,15 @@ struct SettingsLocalModelScreen: View {
         .task { model.refresh() }
     }
 
+    #if DEBUG
+        @State private var boostQuietAudio = ParakeetQuietAudioBoost.isEnabled()
+    #endif
+
     /// The fallback fact, worded for whether anything is being done about it right now.
     private func fallbackNotice(_ option: LocalModelOption) -> String {
+        // A model this phone cannot run at all: "tap it to download" would be an invitation
+        // to something that cannot finish, so say what would actually change things.
+        guard option.canRunHere else { return Copy.CoreAI.unavailableNotice(option.compactName) }
         let busy = model.state(for: option.id).isBusy
         // Apple Speech stands in only when iOS actually has a speech model for this phone's
         // language. `fallsBackToAppleSpeech` answers "would the kit fall back?", not "would the
@@ -263,7 +292,12 @@ private struct LocalModelRow: View {
             // The failure and its Try Again live on the line below, together.
             EmptyView()
         case .unavailable:
-            stateText(Copy.Settings.TranscriptionAI.unavailable, color: Tokens.meta)
+            // Apple Speech: no model for this language. A Core AI model: the OS is too old (or
+            // this is a simulator) — a different reason, and one worth naming.
+            stateText(
+                option.canRunHere ? Copy.Settings.TranscriptionAI.unavailable : Copy.CoreAI.needsIOS27,
+                color: Tokens.meta
+            )
         }
     }
 
@@ -286,7 +320,10 @@ private struct LocalModelRow: View {
         case .installing: parts.append(Copy.Settings.TranscriptionAI.installing)
         case .installed: parts.append(Copy.Settings.TranscriptionAI.installedValue)
         case .failed: parts.append(Copy.Settings.TranscriptionAI.downloadFailed)
-        case .unavailable: parts.append(Copy.Settings.TranscriptionAI.unavailable)
+        case .unavailable:
+            parts.append(
+                option.canRunHere ? Copy.Settings.TranscriptionAI.unavailable : Copy.CoreAI.needsIOS27
+            )
         }
         if isSelected { parts.append(Copy.Settings.TranscriptionAI.inUse) }
         return parts.joined(separator: ", ")

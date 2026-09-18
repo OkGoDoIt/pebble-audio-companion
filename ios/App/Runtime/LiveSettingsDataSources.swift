@@ -304,6 +304,14 @@ final class LiveLocalModelManager: LocalModelManaging {
     }) {
         self.composition = composition
         self.isOnWiFi = isOnWiFi
+        // The shared store is a kit singleton with no way to be told about the app, so it is
+        // told here: where its lines go, and whether the app is on screen — which decides
+        // whether a Core AI model's one-time prepare pass may start (`ParakeetModelStore`).
+        AppForegroundProbe.shared.install()
+        Task {
+            await ParakeetModelStore.shared.setLog { AppRuntimeLog.shared.record($0) }
+            await ParakeetModelStore.shared.setForeground { AppForegroundProbe.shared.isForeground }
+        }
         Task { [weak self] in
             for await kitState in await composition.localModel.states() {
                 self?.states[LocalModelCatalog.appleSpeechId] = Self.map(kitState)
@@ -317,7 +325,12 @@ final class LiveLocalModelManager: LocalModelManaging {
         refresh()
     }
 
-    func state(for modelId: String) -> LocalModelState { states[modelId] ?? .notInstalled }
+    func state(for modelId: String) -> LocalModelState {
+        // A runtime this build cannot run (Core AI below iOS 27 / on a simulator) is unavailable
+        // whatever the disk says: offering it would offer something that can never run.
+        if let option = model(modelId), !option.canRunHere { return .unavailable }
+        return states[modelId] ?? .notInstalled
+    }
 
     func refresh() {
         let composition = self.composition
@@ -337,6 +350,8 @@ final class LiveLocalModelManager: LocalModelManaging {
             downloadAppleSpeech(modelId)
             return
         }
+        // The row is disabled for these; a stale persisted selection can still ask.
+        guard model(modelId)?.canRunHere ?? false else { return }
         // Wi-Fi is a promise this screen makes in writing next to a 430 MB–1.2 GB number. The
         // downloader refuses an expensive network anyway, but refusing it here means the row
         // says "waiting for Wi-Fi" instead of "download failed" for something that is not
@@ -436,7 +451,10 @@ final class LiveLocalModelManager: LocalModelManaging {
         case .notInstalled: return .notInstalled
         case .downloading:
             return .downloading(progress: state.fractionCompleted ?? 0)
-        case .installing: return .installing
+        // The Core AI prepare pass (specialization, seconds of CPU after the unpack) reads as
+        // the same "finishing up" the unpack does: real work, full bar, no second number, still
+        // cancellable. The row's state set is shared with screens this file does not own.
+        case .installing, .preparing: return .installing
         case .installed: return .installed
         case .failed: return .failed
         }

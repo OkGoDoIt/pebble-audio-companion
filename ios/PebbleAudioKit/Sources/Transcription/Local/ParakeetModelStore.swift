@@ -180,7 +180,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     private let inboxDirectory: URL?
     private let preparer: @Sendable (LocalEngineRuntime) -> any ParakeetModelPreparing
     private let supportedRuntimes: Set<LocalEngineRuntime>
-    private let isForeground: @Sendable () -> Bool
+    private var isForeground: @Sendable () -> Bool
     private var log: @Sendable (String) -> Void = { _ in }
 
     private var stateById: [String: ParakeetInstallState] = [:]
@@ -224,6 +224,13 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     /// its runtime log in; unset, nothing is recorded.
     public func setLog(_ log: @escaping @Sendable (String) -> Void) {
         self.log = log
+    }
+
+    /// The foreground signal `refresh()` consults before starting a prepare pass. The app wires
+    /// its own probe into the shared store; the initializer's default (`{ true }`) is for
+    /// callers that construct their own store and know they are on screen.
+    public func setForeground(_ isForeground: @escaping @Sendable () -> Bool) {
+        self.isForeground = isForeground
     }
 
     /// The archive `refresh()` would install for `spec`, when one is waiting in the inbox.
