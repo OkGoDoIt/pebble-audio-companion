@@ -55,3 +55,137 @@ extension Copy.Privacy {
     /// allowance is what stopped it. Present tense, no key to check.
     static let usageLimitCause = "the cloud model's daily allowance is used up until it resets."
 }
+
+// ─── Settings · Transcription & AI ───────────────────────────────────────────
+
+extension Copy.Settings.TranscriptionAI {
+    /// The row that picks what "remote" means on the AI axis. "Remote" rather than "cloud"
+    /// because that is the word the AI modes use ("Remote first"), and because the two options
+    /// are both clouds.
+    static let remoteModel = "Remote model"
+
+    /// The readiness row's title when the remote is Apple's. Short form here, the way the
+    /// on-device row is "On this phone"; the full name is in the footer and the stance.
+    static let applePrivateCloudRow = "Apple Private Cloud"
+
+    /// The name of each option on the Remote model screen.
+    static func remoteModelName(_ provider: RemoteAiProvider) -> String {
+        switch provider {
+        case .openAi: return Copy.Privacy.remoteAi
+        case .applePrivateCloud: return Copy.Privacy.applePrivateCloud
+        }
+    }
+
+    /// The Remote model screen's footer: the trade, attributed where it is a claim.
+    static let remoteModelFooter =
+        "OpenAI uses your own key and account. Apple Private Cloud Compute needs no key: "
+        + "Apple runs the model on its own servers, which it says keep nothing after the request, "
+        + "and each person gets a daily allowance."
+
+    /// The readiness row's value — lowercase, in the register of "not set" and "ready" above it.
+    /// The allowance is folded in only when the model is otherwise ready: "used up" on a phone
+    /// that cannot use it at all would be two facts fighting for one line.
+    static func applePrivateCloudValue(
+        _ readiness: ApplePrivateCloudReadiness, quota: ApplePrivateCloudQuotaState
+    ) -> String {
+        switch readiness {
+        case .ready:
+            switch quota {
+            case .usedUp: return "daily allowance used up"
+            case .nearlyUsedUp: return "ready · near today's allowance"
+            case .fine, .unknown: return "ready"
+            }
+        case .notSupported: return "not supported here"
+        case .notReady: return "not ready"
+        case .notEnabledForThisBuild: return "not available for this build"
+        case .unsupportedOs: return "needs iOS 27"
+        }
+    }
+
+    /// One line under the AI card about Private Cloud Compute, or nil when nothing needs saying.
+    ///
+    /// Present only where the mode depends on it, and only for the states that change what the
+    /// person gets. The allowance line is a sentence with a time, never an alert; the build line
+    /// is a plain fact about this build. In Remote first the on-device model carries the work
+    /// meanwhile, and the sentence says so rather than leaving a person to wonder whether
+    /// anything is being written.
+    static func applePrivateCloudNote(
+        mode: AiProcessingMode,
+        readiness: ApplePrivateCloudReadiness,
+        quota: ApplePrivateCloudQuotaState
+    ) -> String? {
+        guard mode.usesCloudProvider else { return nil }
+        let meanwhile: String
+        switch mode {
+        case .remoteOnly:
+            meanwhile = "Summaries, notes and answers wait until it is."
+        case .remoteFirst, .localFirst:
+            meanwhile = "Apple Intelligence on this iPhone writes them meanwhile."
+        case .localOnly:
+            return nil
+        }
+        switch readiness {
+        case .ready:
+            switch quota {
+            case .usedUp(let resetsAt):
+                let when = resetsAt.map { " It comes back \(Self.resetPhrase($0))." } ?? ""
+                return "Apple Private Cloud Compute's daily allowance is used up.\(when) "
+                    + meanwhile
+            case .nearlyUsedUp:
+                return "Apple Private Cloud Compute is close to today's allowance."
+            case .fine, .unknown:
+                return nil
+            }
+        case .notSupported:
+            return "Apple Private Cloud Compute doesn't run on this iPhone. " + meanwhile
+        case .notReady:
+            return "Apple Private Cloud Compute isn't ready — it needs Apple Intelligence on "
+                + "and an Apple Account signed in. " + meanwhile
+        case .notEnabledForThisBuild:
+            return "This build of the app isn't enabled for Apple Private Cloud Compute. "
+                + meanwhile
+        case .unsupportedOs:
+            return "Apple Private Cloud Compute needs iOS 27. " + meanwhile
+        }
+    }
+
+    /// The button under the note when Apple offers a way to ask for more.
+    static let requestHigherAllowance = "Ask Apple for a higher allowance"
+
+    /// "at 9:00 AM" today, or "tomorrow at 9:00 AM", in the phone's own zone. Kept relative
+    /// because the row is read now, not filed.
+    static func resetPhrase(_ date: Date, now: Date = Date(), calendar: Calendar = .current)
+        -> String
+    {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(time)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now),
+            calendar.isDate(date, inSameDayAs: tomorrow)
+        {
+            return "tomorrow at \(time)"
+        }
+        return "on \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+// ─── Onboarding · the cloud sub-choice ───────────────────────────────────────
+
+extension Copy.OnboardingProcessing {
+    /// The small header over the two options under "In the cloud". A label, not a question:
+    /// the question was answered by the card.
+    static let remoteModelChoice = "Notes & AI by"
+
+    /// Verified: `OpenAiChatAiProvider` needs the person's key and consent, nothing else.
+    static let remoteOpenAiBody = "Your own key and account."
+
+    /// Verified: `ApplePrivateCloudAiProvider` needs consent and no key; the allowance is
+    /// `PrivateCloudComputeLanguageModel.quotaUsage`'s, per person; the retention claim is
+    /// Apple's and is attributed to Apple.
+    static let remoteApplePrivateCloudBody =
+        "No key. Apple's servers, which Apple says keep nothing. A daily allowance."
+
+    /// The "In the cloud" AI card's body once the sub-choice exists beneath it: it can no longer
+    /// name OpenAI as the writer.
+    static let aiInCloudBodyWithChoice =
+        "A cloud model writes summaries, notes, follow-ups and answers. Pick which below."
+}

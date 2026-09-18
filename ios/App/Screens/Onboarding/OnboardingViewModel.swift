@@ -152,6 +152,10 @@ struct ProcessingPlan: Equatable {
     /// False only for "Later": the Q14 question is still unanswered, which is what Today's
     /// "Transcripts are off" card and the widget both read.
     var transcriptsConfigured: Bool
+    /// What "in the cloud" means for the AI axis: OpenAI (the person's key) or, on iOS 27,
+    /// Apple Private Cloud Compute (no key). Written only when the AI axis is in the cloud;
+    /// meaningless otherwise, and left at whatever the settings already hold.
+    var remoteAiProvider: RemoteAiProvider = .openAi
 
     /// The same predicates the PROVIDERS are gated on, so "does this need a key" cannot drift
     /// away from "does this actually call out".
@@ -161,8 +165,9 @@ struct ProcessingPlan: Equatable {
 
     /// Cloud transcription is reachable, so a Soniox **or** OpenAI key is wanted.
     var needsTranscriptionKey: Bool { modes.cloudTranscriptionEnabled }
-    /// Remote AI is reachable, and `OpenAiChatAiProvider` is the only provider it routes to.
-    var needsAiKey: Bool { modes.remoteAiEnabled }
+    /// Remote AI is reachable AND it is OpenAI — Apple Private Cloud Compute authenticates with
+    /// nobody, so choosing it asks for no key at all.
+    var needsAiKey: Bool { modes.remoteAiEnabled && remoteAiProvider == .openAi }
     var needsAnyKey: Bool { needsTranscriptionKey || needsAiKey }
 
     /// Whether the on-device-AI price list applies (no follow-ups, summaries only where Apple
@@ -183,23 +188,28 @@ struct ProcessingPlan: Equatable {
     /// in the pipeline is gated on it — so the modes are what actually decide, and an
     /// undecided person must be in the configuration that cannot send.
     static func plan(
-        for choice: ProcessingChoice, transcripts: ProcessingPlace, ai: ProcessingPlace
+        for choice: ProcessingChoice, transcripts: ProcessingPlace, ai: ProcessingPlace,
+        remoteAi: RemoteAiProvider = .openAi
     ) -> ProcessingPlan {
         switch choice {
         case .onPhone:
             return ProcessingPlan(
-                transcriptionMode: .localOnly, aiMode: .localOnly, transcriptsConfigured: true)
+                transcriptionMode: .localOnly, aiMode: .localOnly, transcriptsConfigured: true,
+                remoteAiProvider: remoteAi)
         case .cloud:
             return ProcessingPlan(
-                transcriptionMode: .remoteFirst, aiMode: .remoteFirst, transcriptsConfigured: true)
+                transcriptionMode: .remoteFirst, aiMode: .remoteFirst, transcriptsConfigured: true,
+                remoteAiProvider: remoteAi)
         case .later:
             return ProcessingPlan(
-                transcriptionMode: .localOnly, aiMode: .localOnly, transcriptsConfigured: false)
+                transcriptionMode: .localOnly, aiMode: .localOnly, transcriptsConfigured: false,
+                remoteAiProvider: remoteAi)
         case .mixed:
             return ProcessingPlan(
                 transcriptionMode: transcripts.transcriptionMode,
                 aiMode: ai.aiMode,
-                transcriptsConfigured: true)
+                transcriptsConfigured: true,
+                remoteAiProvider: remoteAi)
         }
     }
 }
@@ -241,6 +251,9 @@ final class OnboardingViewModel {
     /// "Set separately" starts from what they already picked instead of an unrelated default.
     var transcriptsPlace: ProcessingPlace = .inCloud
     var aiPlace: ProcessingPlace = .inCloud
+    /// The cloud AI sub-choice (iOS 27 only shows it). OpenAI by default — what every install
+    /// before it was using, and the one that keeps the key hand-off exactly as it was.
+    var remoteAiProvider: RemoteAiProvider = .openAi
     /// Which screen the key hand-off must return to (B15: back names the actual parent step).
     private(set) var keyReturnPhase: Phase = .transcripts
     /// The card the person opened the two-axis screen from, and the axes it was seeded with, so
@@ -253,7 +266,8 @@ final class OnboardingViewModel {
     /// the stance and the on-device-AI note), by the key hand-off (to ask for what is needed),
     /// and by `continueFromProcessing` (to apply it).
     var plan: ProcessingPlan {
-        ProcessingPlan.plan(for: choice, transcripts: transcriptsPlace, ai: aiPlace)
+        ProcessingPlan.plan(
+            for: choice, transcripts: transcriptsPlace, ai: aiPlace, remoteAi: remoteAiProvider)
     }
 
     let source: WatchPairingSource
@@ -405,6 +419,7 @@ final class OnboardingViewModel {
         choice = seededChoice
         transcriptsPlace = transcripts
         aiPlace = ai
+        remoteAiProvider = settings.remoteAiProvider
         seededAnswer = SeededAnswer(
             transcripts: transcripts,
             ai: ai,
@@ -439,12 +454,17 @@ final class OnboardingViewModel {
     /// exactly `cloudTranscriptionEnabled` / `remoteAiEnabled`, so the card the person is
     /// looking at still states where their data goes correctly. This is what makes the sentence
     /// underneath it, and the provider keys asked for after it, describe the real modes too.
+    ///
+    /// The remote provider is always the pending one: it is not a mode, the cards do not
+    /// collapse it, and changing only it on a re-run must not turn a stored `.localFirst` into
+    /// `.remoteFirst` — so it rides alongside the stored modes rather than counting as a touch.
     func appliedPlan(with settings: AppSettings) -> ProcessingPlan {
         guard answerIsUntouched else { return plan }
         return ProcessingPlan(
             transcriptionMode: settings.transcriptionMode,
             aiMode: settings.aiMode,
-            transcriptsConfigured: plan.transcriptsConfigured
+            transcriptsConfigured: plan.transcriptsConfigured,
+            remoteAiProvider: plan.remoteAiProvider
         )
     }
 
@@ -498,6 +518,11 @@ final class OnboardingViewModel {
         settings.transcriptionMode = plan.transcriptionMode
         settings.aiMode = plan.aiMode
         settings.transcriptsConfigured = plan.transcriptsConfigured
+        // Only when the AI axis is in the cloud: that is the only screen that offered the
+        // choice, and a person who kept AI on the phone was never asked.
+        if plan.aiMode.usesCloudProvider {
+            settings.remoteAiProvider = plan.remoteAiProvider
+        }
 
         // Ask only for keys this combination will actually use. A local-transcripts + cloud-AI
         // setup needs OpenAI and nothing else; both-local needs no key screen at all.

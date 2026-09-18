@@ -53,9 +53,18 @@ struct OnboardingProcessingDetailView: View {
                             ),
                             inCloud: (
                                 Copy.OnboardingProcessing.aiInCloud,
-                                Copy.OnboardingProcessing.aiInCloudBody
+                                OnboardingRemoteAiChoice.isOffered
+                                    ? Copy.OnboardingProcessing.aiInCloudBodyWithChoice
+                                    : Copy.OnboardingProcessing.aiInCloudBody
                             )
-                        )
+                        ) {
+                            // iOS 27: which cloud, under the option that chose one.
+                            if OnboardingRemoteAiChoice.isOffered, model.aiPlace == .inCloud {
+                                OnboardingRemoteAiChoice(selection: $model.remoteAiProvider)
+                                    .transition(
+                                        Motion.transition(.opacity.combined(with: .move(edge: .top))))
+                            }
+                        }
 
                         // The payoff: the exact stance these two answers add up to, restated the
                         // instant either of them changes. `appliedPlan` because on a re-run
@@ -71,7 +80,7 @@ struct OnboardingProcessingDetailView: View {
                     .frame(minHeight: proxy.size.height, alignment: .top)
                     .motionAware(
                         .snappy(duration: 0.25),
-                        value: ModePair(model.transcriptsPlace, model.aiPlace)
+                        value: ModePair(model.transcriptsPlace, model.aiPlace, model.remoteAiProvider)
                     )
                 }
                 .scrollBounceBehavior(.basedOnSize)
@@ -89,11 +98,12 @@ struct OnboardingProcessingDetailView: View {
     /// One axis: a section header and its two places. `OptionCard` is the same control the three
     /// presets use, so a person arriving here is not learning a second selection idiom.
     @ViewBuilder
-    private func axis(
+    private func axis<UnderCloud: View>(
         header: String,
         selection: Binding<ProcessingPlace>,
         onPhone: (title: String, body: String),
-        inCloud: (title: String, body: String)
+        inCloud: (title: String, body: String),
+        @ViewBuilder underCloud: () -> UnderCloud = { EmptyView() }
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(header)
@@ -114,6 +124,8 @@ struct OnboardingProcessingDetailView: View {
                 subtitle: inCloud.body,
                 isSelected: selection.wrappedValue == .inCloud
             ) { selection.wrappedValue = .inCloud }
+
+            underCloud()
         }
     }
 
@@ -121,9 +133,11 @@ struct OnboardingProcessingDetailView: View {
     private struct ModePair: Equatable {
         let transcripts: ProcessingPlace
         let ai: ProcessingPlace
-        init(_ transcripts: ProcessingPlace, _ ai: ProcessingPlace) {
+        let remoteAi: RemoteAiProvider
+        init(_ transcripts: ProcessingPlace, _ ai: ProcessingPlace, _ remoteAi: RemoteAiProvider) {
             self.transcripts = transcripts
             self.ai = ai
+            self.remoteAi = remoteAi
         }
     }
 }
@@ -144,7 +158,8 @@ struct OnboardingConsequences: View {
 
     private var stance: Copy.Privacy.Stance {
         settings.privacyStance(
-            transcriptionMode: plan.transcriptionMode, aiMode: plan.aiMode
+            transcriptionMode: plan.transcriptionMode, aiMode: plan.aiMode,
+            remoteAiProvider: plan.remoteAiProvider
         )
     }
 
