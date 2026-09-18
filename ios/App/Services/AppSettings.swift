@@ -594,9 +594,11 @@ extension AppSettings {
     }
 
     /// The provider transcripts (and the About You context) reach on remote AI runs, or nil in
-    /// AI "Local only" — same gate as `OpenAiChatAiProvider`'s consent closure.
+    /// AI "Local only" — same gate as `OpenAiChatAiProvider`'s consent closure. WHICH provider
+    /// is `remoteAiProvider`: OpenAI, or (iOS 27) Apple Private Cloud Compute — named in full,
+    /// because "text goes to Apple" would also describe the on-device model.
     var remoteAiDestination: String? {
-        modes.remoteAiEnabled ? Copy.Privacy.remoteAi : nil
+        modes.remoteAiEnabled ? Copy.Privacy.remoteAiName(for: remoteAiProvider) : nil
     }
 
     /// e.g. "Soniox and OpenAI" — every destination this configuration sends to, or nil when

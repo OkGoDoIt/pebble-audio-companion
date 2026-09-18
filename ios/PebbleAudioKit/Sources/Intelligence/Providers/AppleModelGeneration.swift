@@ -92,7 +92,9 @@ import Foundation
             }
         }
 
-        /// Guided generation into a `@Generable` shape.
+        /// Guided generation into a `@Generable` shape. The whole response, so a caller that
+        /// wants the JSON the parsers read (`rawContent.jsonString`) has it as well as the
+        /// typed content.
         ///
         /// Greedy, not sampled: this is extraction, not prose. Sampling only adds a way for two
         /// passes over the same recording to disagree about what somebody promised.
@@ -100,7 +102,7 @@ import Foundation
             _ sessions: AppleModelSessions,
             to prompt: String, instructions: String, generating type: Content.Type,
             maxTokens: Int
-        ) async throws -> Content {
+        ) async throws -> LanguageModelSession.Response<Content> {
             let session = sessions.open(instructions)
             let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens)
             do {
@@ -108,11 +110,9 @@ import Foundation
                     return try await session.respond(
                         to: prompt, generating: type, options: options,
                         contextOptions: ContextOptions(
-                            includeSchemaInPrompt: true, reasoningLevel: reasoning.level)
-                    ).content
+                            includeSchemaInPrompt: true, reasoningLevel: reasoning.level))
                 }
                 return try await session.respond(to: prompt, generating: type, options: options)
-                    .content
             } catch {
                 throw translate(error) ?? error
             }

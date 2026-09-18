@@ -67,6 +67,14 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     case contentRefused
     /// The provider answered, with nothing in it.
     case emptyAnswer
+    /// Apple Private Cloud Compute's per-person daily allowance is used up. Not `rateLimited`
+    /// (that is throttling, and it clears in minutes) and not `accountOutOfFunds` (there is
+    /// nothing to pay): it comes back by itself, and the on-device model is not affected.
+    case usageLimit
+    /// Apple Private Cloud Compute's content filter declined this material. Its own case
+    /// because `contentRefused`'s sentence names the on-device model, and a refusal from
+    /// Apple's cloud told in those words would be the wrong-provider headline again.
+    case cloudContentRefused
     /// Something we have no better word for. The honest answer, not a guess.
     case unknown
 }
@@ -133,6 +141,12 @@ public struct AiFailure: Sendable, Equatable {
         /// model would not run, and there is one switch the person can flip.
         public static let lowPower = "Low Power Mode is on"
         public static let deviceGenerationFailed = "on-device AI generation failed"
+        /// `ApplePrivateCloudAiProvider` throws messages containing this. The literal is owned
+        /// by `ProcessingFallbackCause` so the fallback disclosure reads the same one.
+        public static let usageLimit = ProcessingFallbackCause.usageLimitMarker
+        /// Also `ApplePrivateCloudAiProvider`'s. Not a superstring of `contentRefused`, and
+        /// checked before it, so the two cannot be confused.
+        public static let cloudContentRefused = "declined to work on this request"
     }
 
     // MARK: - Classification
@@ -163,6 +177,10 @@ public struct AiFailure: Sendable, Equatable {
             case .providerUnavailable:
                 return .notConfigured
             case .providerFailed(let message, let underlying):
+                // The Private Cloud Compute markers first: before the shared taxonomy, which
+                // would read a limit as a rate limit or — worse — as an account out of money,
+                // and before the on-device markers, whose sentences name the wrong provider.
+                if let specific = cloudKind(in: message) { return specific }
                 if let specific = onDeviceKind(in: message) { return specific }
                 let classified = fromTranscriptionTaxonomy(message)
                 if classified != .unknown { return classified }
@@ -179,6 +197,14 @@ public struct AiFailure: Sendable, Equatable {
         }
         if let carried = error as? AiFallbackFailure { return kind(of: carried.error) }
         return .unknown
+    }
+
+    /// `ApplePrivateCloudAiProvider`'s literals.
+    private static func cloudKind(in message: String) -> AiFailureKind? {
+        let text = message.lowercased()
+        if text.contains(Marker.usageLimit.lowercased()) { return .usageLimit }
+        if text.contains(Marker.cloudContentRefused.lowercased()) { return .cloudContentRefused }
+        return nil
     }
 
     /// The on-device literals. Checked BEFORE the shared taxonomy: "the on-device model is not

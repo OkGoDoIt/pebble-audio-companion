@@ -111,7 +111,7 @@ public enum OnDeviceGenerationFailure: Error, Sendable, Equatable {
 /// Fail-closed: when no model is injected (platform unsupported / bridge not registered) or
 /// the model reports anything other than `.available`, the provider is unavailable and rows
 /// fall back to transcript snippets — it never blocks devices that lack on-device AI.
-public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
+public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unchecked Sendable {
     /// On-device context windows are small; keep input well under the budget. Titles/
     /// summaries care about the gist, so a generous-but-bounded slice of a long transcript
     /// is fine.
@@ -363,6 +363,12 @@ public final class OnDeviceAiProvider: AiProvider, @unchecked Sendable {
         let scaled = Self.defaultMaxInputChars * window / OnDeviceContextBudget.windowTokens
         return min(maxInputChars ?? scaled, scaled)
     }
+
+    // MARK: AiInputWindowReporting
+
+    public func inputChars() async -> Int? { await onDeviceInputChars() }
+
+    public func contextTokens() async -> Int? { await model?.contextWindowTokens() }
 
     // MARK: - Saying what actually happened
 

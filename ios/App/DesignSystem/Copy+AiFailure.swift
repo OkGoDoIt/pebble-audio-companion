@@ -37,7 +37,9 @@ extension Copy {
         static let keyNotPermitted =
             "Your OpenAI key does not have access to this model. Pick another in "
             + "Transcription & AI."
-        static let rateLimited = "OpenAI is rate limiting this account. Try again later."
+        /// Provider-neutral since Apple Private Cloud Compute joined OpenAI in the remote slot:
+        /// both throttle, and this is the one cloud sentence both can land on.
+        static let rateLimited = "The cloud provider is rate limiting this account. Try again later."
         static let accountOutOfFunds =
             "Your OpenAI account is out of credit. Add funds and this picks up where it left off."
         static let providerTrouble =
@@ -97,6 +99,9 @@ extension AiFailureKind {
         case .tooLongForDevice: return Copy.AiFailure.tooLongForDevice
         case .contentRefused: return Copy.AiFailure.contentRefused
         case .emptyAnswer: return Copy.AiFailure.emptyAnswer
+        // Apple Private Cloud Compute's two — see `Copy+ApplePrivateCloud.swift`.
+        case .usageLimit: return Copy.AiFailure.usageLimit
+        case .cloudContentRefused: return Copy.AiFailure.cloudContentRefused
         case .unknown: return Copy.AiFailure.unknown
         }
     }

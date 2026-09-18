@@ -300,6 +300,27 @@ public final class AiModeRouter: @unchecked Sendable {
     }
 }
 
+// MARK: - What each slot can be handed
+
+extension AiModeRouter {
+    /// Characters of transcript the LOCAL slot may be handed in one call — what
+    /// `AskBudget.forMode(_:modelId:onDeviceMaxInputChars:)` should be given for the two local
+    /// modes. Nil when there is no local provider, or it cannot say; the caller then uses
+    /// `OnDeviceAiProvider.defaultMaxInputChars`, exactly as before. See `AiInputWindowReporting`.
+    public func localInputChars() async -> Int? {
+        guard let reporting = local as? AiInputWindowReporting else { return nil }
+        return await reporting.inputChars()
+    }
+
+    /// The REMOTE slot's context window in tokens — what `AskBudget.forContext(tokens:)` should
+    /// be given for the two remote modes when it is non-nil. Nil when the remote provider is
+    /// OpenAI (its window comes from `AiModels` by model id, as today), or there is none.
+    public func remoteContextTokens() async -> Int? {
+        guard let reporting = remote as? AiInputWindowReporting else { return nil }
+        return await reporting.contextTokens()
+    }
+}
+
 extension Error {
     /// Errors a First mode must re-throw instead of falling back: cancellation and explicit
     /// consent failures.

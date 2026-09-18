@@ -274,7 +274,8 @@ import Foundation
             // invisible: the person just gets no follow-ups from that recording.
             try await AppleModelGeneration.respond(
                 .onDevice(), to: prompt, instructions: instructions, generating: type,
-                maxTokens: maxTokens)
+                maxTokens: maxTokens
+            ).content
         }
 
         /// The rendered conversation with anything above its `Recorded:` header removed.
