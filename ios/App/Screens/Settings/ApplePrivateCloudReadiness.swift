@@ -19,8 +19,8 @@ enum ApplePrivateCloudReadiness: Equatable, CaseIterable {
     case notSupported
     /// `systemNotReady` — signed out, still setting up, or Apple Intelligence off.
     case notReady
-    /// The framework said ready and a request failed for want of the entitlement. About this
-    /// build, not this phone; learned from `ApplePrivateCloudBuildStatus`.
+    /// This binary was not signed with the entitlement, so it may not send a request at all.
+    /// About this build, not this phone; read from `ApplePrivateCloudBuildStatus`.
     case notEnabledForThisBuild
     /// iOS 26: the model does not exist here.
     case unsupportedOs
@@ -39,7 +39,9 @@ enum ApplePrivateCloudQuotaState: Equatable {
 
 extension ApplePrivateCloudReadiness {
     /// A snapshot, never cached. Readiness can change between draws (sign-in, Apple
-    /// Intelligence toggled), and the build fact can only become true.
+    /// Intelligence toggled). The build fact is checked FIRST, and when it says no the
+    /// framework is not asked: its `availability` reads "available" in exactly the build whose
+    /// first request would trap the process (see `ApplePrivateCloudEntitlement`).
     static var current: ApplePrivateCloudReadiness {
         if ApplePrivateCloudBuildStatus.shared.isKnownNotEnabled { return .notEnabledForThisBuild }
         #if canImport(FoundationModels)
@@ -60,8 +62,10 @@ extension ApplePrivateCloudReadiness {
         return .unsupportedOs
     }
 
-    /// Today's allowance. `.unknown` on iOS 26, where there is nothing to read.
+    /// Today's allowance. `.unknown` on iOS 26, where there is nothing to read — and in a build
+    /// that may not use the model, where the framework is not asked anything at all.
     static var quota: ApplePrivateCloudQuotaState {
+        if ApplePrivateCloudBuildStatus.shared.isKnownNotEnabled { return .unknown }
         #if canImport(FoundationModels)
             if #available(iOS 27.0, *) {
                 let usage = ApplePrivateCloudFrameworkModel.shared.quotaUsage
@@ -80,6 +84,7 @@ extension ApplePrivateCloudReadiness {
 
     /// Whether Apple offers a way to ask for a higher limit right now.
     static var canRequestMore: Bool {
+        if ApplePrivateCloudBuildStatus.shared.isKnownNotEnabled { return false }
         #if canImport(FoundationModels)
             if #available(iOS 27.0, *) {
                 return ApplePrivateCloudFrameworkModel.shared.quotaUsage.limitIncreaseSuggestion
@@ -91,6 +96,7 @@ extension ApplePrivateCloudReadiness {
 
     /// Presents Apple's own limit-increase flow. A no-op when there is nothing to show.
     static func requestMore() {
+        if ApplePrivateCloudBuildStatus.shared.isKnownNotEnabled { return }
         #if canImport(FoundationModels)
             if #available(iOS 27.0, *) {
                 ApplePrivateCloudFrameworkModel.shared.quotaUsage.limitIncreaseSuggestion?.show()

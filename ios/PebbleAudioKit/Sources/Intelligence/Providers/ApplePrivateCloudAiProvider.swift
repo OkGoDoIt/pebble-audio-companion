@@ -23,9 +23,10 @@ public enum ApplePrivateCloudAvailability: Sendable, Equatable {
     case deviceNotEligible
     /// `systemNotReady` — signed out, still setting up, or Apple Intelligence off.
     case systemNotReady
-    /// The framework said ready and a request then failed the way a process without the
-    /// `com.apple.developer.private-cloud-compute` entitlement fails. Learned from a failed
-    /// request, never read from the framework — see `ApplePrivateCloudBuildStatus`.
+    /// This binary was not signed with the `com.apple.developer.private-cloud-compute`
+    /// entitlement, so it may not send a request at all — on iOS 27 the framework traps on the
+    /// first one rather than throwing. Read from the embedded provisioning profile before any
+    /// request, never learned from one — see `ApplePrivateCloudBuildStatus`.
     case notEnabledForThisBuild
     /// An OS that predates the model (iOS 26). Never a crash, never a changed behaviour there.
     case unsupported
@@ -65,8 +66,10 @@ public enum ApplePrivateCloudFailure: Error, Sendable, Equatable {
     case networkFailure(String)
     /// Apple's service could not take the request right now.
     case serviceUnavailable(String)
-    /// The shape a process without the entitlement gets: `LanguageModelError` code -1 over
-    /// `ModelManagerError 1046`. Not transient, and about this binary, not this request.
+    /// The shape a process without the entitlement gets ON macOS: `LanguageModelError` code -1
+    /// over `ModelManagerError 1046`. Not transient, and about this binary, not this request.
+    /// (iOS 27 traps instead of throwing, which is why the provider checks the entitlement
+    /// before any request and this case is the belt to that brace.)
     case notEnabledForThisBuild(String)
     /// The model ran and said something specific — the same vocabulary the on-device path uses.
     case generation(OnDeviceGenerationFailure)
@@ -101,26 +104,38 @@ public protocol ApplePrivateCloudLanguageModel: Sendable {
     ) async throws -> String
 }
 
-/// What a failed request taught this process about the binary it is running in.
+/// Whether the binary this process is running in may use Private Cloud Compute.
 ///
 /// `PrivateCloudComputeLanguageModel.availability` reads `.available` whether or not the process
-/// carries the managed entitlement; the missing entitlement only shows up when a request fails
-/// (measured on macOS 27: `LanguageModelError -1` over `ModelManagerError 1046`). The fact is
-/// about the build, so it is remembered for the life of the process: `isAvailable()` answers
-/// false from then on and a "first" mode goes straight to its fallback instead of paying a
-/// doomed round trip per job, and the Settings row can say "not available for this build"
-/// rather than "ready". One shared instance by default; tests inject their own.
+/// carries the managed entitlement, and on iOS 27 the first request without it does not fail,
+/// it TRAPS (measured on the 27.0 simulator: `FoundationModels/ErrorConversion.swift:140: Fatal
+/// error: Missing entitlement`). So the answer is read from the embedded provisioning profile
+/// once, before any request — `ApplePrivateCloudEntitlement` — and everything downstream
+/// treats "not entitled" as "not available for this build": `isAvailable()` is false, a
+/// "first" mode goes straight to its fallback, the Settings row says so, and no session is
+/// ever opened. macOS throws instead of trapping; a request that fails that way is remembered
+/// too (`markNotEnabled`), as a belt to the brace. One shared instance by default; tests inject
+/// their own.
 public final class ApplePrivateCloudBuildStatus: @unchecked Sendable {
-    public static let shared = ApplePrivateCloudBuildStatus()
+    public static let shared = ApplePrivateCloudBuildStatus(
+        entitled: ApplePrivateCloudEntitlement.isGranted(in: .main))
 
     private let lock = NSLock()
-    private var _notEnabled = false
+    private let entitled: Bool
+    private var _learnedNotEnabled = false
 
-    public init() {}
+    /// - Parameter entitled: what the signature granted. Tests say `true` to reach the model.
+    public init(entitled: Bool) {
+        self.entitled = entitled
+    }
 
-    public var isKnownNotEnabled: Bool { lock.withLock { _notEnabled } }
+    /// The signature's answer, read once.
+    public var isEntitled: Bool { entitled }
 
-    public func markNotEnabled() { lock.withLock { _notEnabled = true } }
+    /// Not entitled, or a request already failed the entitlement way (macOS).
+    public var isKnownNotEnabled: Bool { !entitled || lock.withLock { _learnedNotEnabled } }
+
+    public func markNotEnabled() { lock.withLock { _learnedNotEnabled = true } }
 }
 
 /// `AiProvider` over Apple Private Cloud Compute.
@@ -145,6 +160,9 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
     private let grounding: @Sendable () -> String?
     private let buildStatus: ApplePrivateCloudBuildStatus
     private let log: @Sendable (String) -> Void
+    /// The "not enabled for this build" line is written once per process, not once per job:
+    /// a Remote-first backlog would otherwise write it 145 times.
+    private let loggedBuildRefusal = OnceFlag()
 
     /// - Parameters:
     ///   - model: nil on an OS without the model; the provider is then simply unavailable.
@@ -177,16 +195,22 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         return await model.availability()
     }
 
+    /// Nil in a build that may not use the model: nothing about its allowance is worth reading,
+    /// and not reading is the safer side of a framework that traps on the unentitled.
     public func quota() async -> ApplePrivateCloudQuota? {
-        await model?.quota()
+        guard let model, !buildStatus.isKnownNotEnabled else { return nil }
+        return await model.quota()
     }
 
     // MARK: AiInputWindowReporting
 
     public func inputChars() async -> Int? { nil }
 
+    /// The measured constant in a build that may not use the model — the planner still gets a
+    /// window to size against, and the framework is not asked.
     public func contextTokens() async -> Int? {
         guard let model else { return nil }
+        guard !buildStatus.isKnownNotEnabled else { return Self.defaultContextTokens }
         return await model.contextWindowTokens()
     }
 
@@ -196,7 +220,18 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         guard remoteConsent() else {
             throw AiError.consentRequired(providerId: id)
         }
-        guard let model, !buildStatus.isKnownNotEnabled else {
+        guard let model else {
+            throw AiError.providerUnavailable(providerId: id)
+        }
+        // Before touching the framework. This is the guard that keeps the process alive on
+        // iOS 27 — see `ApplePrivateCloudEntitlement` — so it comes before availability, which
+        // reads `.available` in exactly the build that would trap.
+        guard !buildStatus.isKnownNotEnabled else {
+            if loggedBuildRefusal.claim() {
+                log(
+                    "apple pcc: not enabled for this build (no "
+                        + "\(ApplePrivateCloudEntitlement.key) in the signature); no request sent")
+            }
             throw AiError.providerUnavailable(providerId: id)
         }
         guard await model.availability() == .available else {
@@ -317,6 +352,19 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
 
     private static func iso(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+
+    /// A latch that opens exactly once.
+    private final class OnceFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+        func claim() -> Bool {
+            lock.withLock {
+                if claimed { return false }
+                claimed = true
+                return true
+            }
+        }
     }
 
     private func buildInstructions(_ systemPrompt: String) -> String {

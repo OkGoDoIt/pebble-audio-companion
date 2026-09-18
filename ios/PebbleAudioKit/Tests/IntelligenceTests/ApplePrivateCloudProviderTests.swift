@@ -110,7 +110,7 @@ struct ApplePrivateCloudProviderTests {
     private func provider(
         _ model: FakePrivateCloudModel?,
         consent: Bool = true,
-        status: ApplePrivateCloudBuildStatus = ApplePrivateCloudBuildStatus(),
+        status: ApplePrivateCloudBuildStatus = ApplePrivateCloudBuildStatus(entitled: true),
         grounding: String? = nil,
         log: LogSink = LogSink()
     ) -> ApplePrivateCloudAiProvider {
@@ -147,7 +147,7 @@ struct ApplePrivateCloudProviderTests {
     }
 
     @Test func readinessReportsWhatTheModelSaysUntilABuildFailureCorrectsIt() async {
-        let status = ApplePrivateCloudBuildStatus()
+        let status = ApplePrivateCloudBuildStatus(entitled: true)
         let ready = provider(FakePrivateCloudModel(), status: status)
         #expect(await ready.availability() == .available)
         #expect(await provider(nil).availability() == .unsupported)
@@ -157,6 +157,35 @@ struct ApplePrivateCloudProviderTests {
         status.markNotEnabled()
         #expect(await ready.availability() == .notEnabledForThisBuild)
         #expect(await ready.isAvailable() == false)
+    }
+
+    /// THE guard for iOS 27, where a request without the entitlement traps the process instead
+    /// of throwing: a build the signature did not entitle never reaches the model at all — not
+    /// for a request, not for its quota, not for its window — and says so once in the log.
+    @Test func anUnentitledBuildNeverTouchesTheModel() async throws {
+        let log = LogSink()
+        let model = FakePrivateCloudModel()
+        let status = ApplePrivateCloudBuildStatus(entitled: false)
+        let provider = provider(model, status: status, log: log)
+
+        #expect(status.isKnownNotEnabled)
+        #expect(await provider.isAvailable() == false)
+        #expect(await provider.availability() == .notEnabledForThisBuild)
+        #expect(await provider.quota() == nil)
+        #expect(await provider.contextTokens() == ApplePrivateCloudAiProvider.defaultContextTokens)
+        for _ in 0..<3 {
+            do {
+                _ = try await provider.run(request())
+                Issue.record("expected providerUnavailable")
+            } catch AiError.providerUnavailable(let id) {
+                #expect(id == "apple-pcc")
+            }
+        }
+        #expect(model.proseCalls == 0)
+        #expect(model.structuredCalls == 0)
+        let refusals = log.lines.filter { $0.contains("not enabled for this build") }
+        #expect(refusals.count == 1)
+        #expect(refusals.first?.contains("no request sent") == true)
     }
 
     // MARK: Naming the failures
@@ -218,7 +247,7 @@ struct ApplePrivateCloudProviderTests {
     /// job, and Settings can say why.
     @Test func aMissingEntitlementIsRememberedForTheBuild() async throws {
         let log = LogSink()
-        let status = ApplePrivateCloudBuildStatus()
+        let status = ApplePrivateCloudBuildStatus(entitled: true)
         let model = FakePrivateCloudModel(
             failure: ApplePrivateCloudFailure.notEnabledForThisBuild(
                 "LanguageModelError -1 > ModelManagerError 1046"))
@@ -385,7 +414,9 @@ struct ApplePrivateCloudProviderTests {
                 maxOutputTokens: Int?
             ) async throws -> String { "" }
         }
-        let provider = ApplePrivateCloudAiProvider(model: Empty(), remoteConsent: { true })
+        let provider = ApplePrivateCloudAiProvider(
+            model: Empty(), remoteConsent: { true },
+            buildStatus: ApplePrivateCloudBuildStatus(entitled: true))
         do {
             _ = try await provider.run(request())
             Issue.record("expected a failure")

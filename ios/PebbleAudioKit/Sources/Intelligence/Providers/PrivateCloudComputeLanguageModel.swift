@@ -14,11 +14,14 @@ import Foundation
     public final class ApplePrivateCloudModel: ApplePrivateCloudLanguageModel {
         public let id = "apple-private-cloud-compute"
 
-        private let model: PrivateCloudComputeLanguageModel
+        /// Created on first use, not at composition: a build that may not use the model never
+        /// constructs the framework object at all (`ApplePrivateCloudAiProvider` refuses before
+        /// it reaches here), and the app's Settings screen keeps its own instance to observe.
+        private let slot = ModelSlot()
 
-        public init() {
-            model = PrivateCloudComputeLanguageModel()
-        }
+        public init() {}
+
+        private var model: PrivateCloudComputeLanguageModel { slot.model }
 
         /// Light reasoning on every call. Recap, summaries and Ask answers are extraction
         /// over supplied text, where thinking longer buys latency and quota, not accuracy;
@@ -183,6 +186,19 @@ import Foundation
                 out.append(contentsOf: underlyingChain(of: underlying))
             }
             return out
+        }
+
+        private final class ModelSlot: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: PrivateCloudComputeLanguageModel?
+            var model: PrivateCloudComputeLanguageModel {
+                lock.withLock {
+                    if let stored { return stored }
+                    let made = PrivateCloudComputeLanguageModel()
+                    stored = made
+                    return made
+                }
+            }
         }
 
         private final class WindowCache: @unchecked Sendable {
