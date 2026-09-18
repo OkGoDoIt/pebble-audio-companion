@@ -4,6 +4,7 @@ import Receiver
 import Transcription
 import Intelligence
 import CompanionRuntime
+import SearchKit
 
 // The user-facing setting types come from the kit — `Receiver.CaptureIntent` (the plan-6.1
 // tri-state the session consumes directly) and `Transcription.CloudProvider` (whose raw
@@ -95,7 +96,9 @@ final class AppSettings {
                 retentionMaxBytes: retentionMaxBytes,
                 transcriptsConfigured: transcriptsConfigured,
                 backgroundCatchUp: backgroundCatchUp,
-                cloudUploadNetwork: cloudUploadNetwork
+                cloudUploadNetwork: cloudUploadNetwork,
+                remoteAiProvider: remoteAiProvider,
+                systemSearchVisibility: systemSearchVisibility
             )
         )
         onRuntimeSettingsChanged?()
@@ -193,6 +196,37 @@ final class AppSettings {
             defaults.set(aiMode.rawValue, forKey: Keys.aiMode)
             mirrorToRuntime()
         }
+    }
+
+    /// What the AI router's "remote" slot is: OpenAI with the user's key (historical), or Apple's
+    /// Private Cloud Compute (iOS 27; no key, daily quota). The four `aiMode`s are unchanged —
+    /// this only decides where "remote" goes, exactly as `cloudTranscriptionProvider` does for
+    /// transcription. Persisted so the choice survives; absent key => OpenAI, which is what every
+    /// existing install was using.
+    var remoteAiProvider: RemoteAiProvider {
+        didSet {
+            defaults.set(remoteAiProvider.rawValue, forKey: Keys.remoteAiProvider)
+            mirrorToRuntime()
+        }
+    }
+
+    /// How much of each recording the OS search index (Spotlight / Siri) may see. Absent key =>
+    /// `.full`, the historical behaviour, so nothing an existing install could already find in
+    /// Spotlight disappears on update. See `SystemSearchVisibility`.
+    var systemSearchVisibility: SystemSearchVisibility {
+        didSet {
+            defaults.set(systemSearchVisibility.rawValue, forKey: Keys.systemSearchVisibility)
+            mirrorToRuntime()
+        }
+    }
+
+    /// Whether Ask may add Spotlight's semantic ranking to its keyword ranking when a question's
+    /// scope is too large to read whole and something has to be left out. Additive by design
+    /// (a keyword match is never displaced by it); the switch exists so the two rankings can be
+    /// compared on real questions. Absent key => on. App-side only: the Ask flow reads it on
+    /// the main actor, nothing in the runtime does.
+    var askSemanticRecallEnabled: Bool {
+        didSet { defaults.set(askSemanticRecallEnabled, forKey: Keys.askSemanticRecall) }
     }
 
     var aiModel: String {
@@ -401,6 +435,15 @@ final class AppSettings {
             defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) ?? .soniox
         aiMode = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) ?? .remoteFirst
         aiModel = defaults.string(forKey: Keys.aiModel) ?? "gpt-5.6-luna"
+        remoteAiProvider =
+            defaults.string(forKey: Keys.remoteAiProvider).flatMap(RemoteAiProvider.init)
+            ?? .default
+        systemSearchVisibility =
+            defaults.string(forKey: Keys.systemSearchVisibility)
+            .flatMap(SystemSearchVisibility.init) ?? .default
+        // Absent key => on (`bool(forKey:)` would read false).
+        askSemanticRecallEnabled =
+            (defaults.object(forKey: Keys.askSemanticRecall) as? Bool) ?? true
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
         onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
         let storedRetention = defaults.integer(forKey: Keys.retentionDays)
@@ -469,6 +512,19 @@ final class AppSettings {
             aiMode = stored
         }
         if let stored = defaults.string(forKey: Keys.aiModel) { aiModel = stored }
+        if let stored = defaults.string(forKey: Keys.remoteAiProvider)
+            .flatMap(RemoteAiProvider.init)
+        {
+            remoteAiProvider = stored
+        }
+        if let stored = defaults.string(forKey: Keys.systemSearchVisibility)
+            .flatMap(SystemSearchVisibility.init)
+        {
+            systemSearchVisibility = stored
+        }
+        if let stored = defaults.object(forKey: Keys.askSemanticRecall) as? Bool {
+            askSemanticRecallEnabled = stored
+        }
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
         let storedRetention = defaults.integer(forKey: Keys.retentionDays)
         if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
@@ -512,6 +568,9 @@ final class AppSettings {
         static let retentionMaxBytes = "retention_max_bytes"
         static let transcriptsConfigured = "transcripts_configured"
         static let lossAlerts = "loss_alerts_enabled"
+        static let remoteAiProvider = "remote_ai_provider"
+        static let systemSearchVisibility = "system_search_visibility"
+        static let askSemanticRecall = "ask_semantic_recall"
     }
 }
 

@@ -1025,6 +1025,13 @@ final class AppComposition {
         today.start()
         startHeartbeat()
 
+        // iOS 27 surfaces and telemetry. Each lives in its own `AppComposition+<Feature>.swift`
+        // extension so the workstreams that own them never edit this function; every one of
+        // them is a no-op below the OS version that has the framework.
+        installEntitySurfaces()
+        installNowPlaying()
+        installTelemetry()
+
         // The device conditions the catch-up policy judges on. Pushed into the shared foreground
         // state (which the pass closures already read synchronously) and the pipeline woken on
         // every change, so plugging in starts the backlog clearing within seconds rather than

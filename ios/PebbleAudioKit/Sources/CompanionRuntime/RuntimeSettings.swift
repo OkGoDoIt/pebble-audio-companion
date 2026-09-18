@@ -1,6 +1,7 @@
 import Foundation
 import Intelligence
 import Receiver
+import SearchKit
 import Transcription
 
 // The settings truth table (plan Part 4.6). Everything here is WIRED — no placebo controls.
@@ -35,12 +36,20 @@ public protocol RuntimeSettings: Sendable {
     /// Which networks segment audio may be uploaded over. Defaulted so callers that do not care
     /// need not declare it. See `CloudUploadNetworkPolicy`.
     var cloudUploadNetwork: CloudUploadNetwork { get }
+    /// Which remote model the AI router's remote slot is (OpenAI with the user's key, or Apple's
+    /// Private Cloud Compute). Defaulted so callers that do not care need not declare it.
+    var remoteAiProvider: RemoteAiProvider { get }
+    /// How much of each recording the OS search index may see. Defaulted so callers that do not
+    /// care need not declare it. See `SystemSearchVisibility`.
+    var systemSearchVisibility: SystemSearchVisibility { get }
 }
 
 extension RuntimeSettings {
     public var retentionMaxBytes: Int64 { RuntimeSettingsDefaults.retentionMaxBytes }
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
+    public var remoteAiProvider: RemoteAiProvider { .default }
+    public var systemSearchVisibility: SystemSearchVisibility { .default }
 
     // --- Derived semantics (Part 4.6) ---------------------------------------------------------
 
@@ -156,6 +165,8 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     // that have no such value; a box that HAS one must forward it.
     public var backgroundCatchUp: BackgroundCatchUp { value.backgroundCatchUp }
     public var cloudUploadNetwork: CloudUploadNetwork { value.cloudUploadNetwork }
+    public var remoteAiProvider: RemoteAiProvider { value.remoteAiProvider }
+    public var systemSearchVisibility: SystemSearchVisibility { value.systemSearchVisibility }
 }
 
 /// Plain value mirror of the truth table.
@@ -173,6 +184,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var transcriptsConfigured: Bool
     public var backgroundCatchUp: BackgroundCatchUp
     public var cloudUploadNetwork: CloudUploadNetwork
+    public var remoteAiProvider: RemoteAiProvider
+    public var systemSearchVisibility: SystemSearchVisibility
 
     public init(
         captureIntent: CaptureIntent = .off,
@@ -187,7 +200,9 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         retentionMaxBytes: Int64 = RuntimeSettingsDefaults.retentionMaxBytes,
         transcriptsConfigured: Bool = false,
         backgroundCatchUp: BackgroundCatchUp = .whileCharging,
-        cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default
+        cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default,
+        remoteAiProvider: RemoteAiProvider = .default,
+        systemSearchVisibility: SystemSearchVisibility = .default
     ) {
         self.captureIntent = captureIntent
         self.transcriptionMode = transcriptionMode
@@ -202,5 +217,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.transcriptsConfigured = transcriptsConfigured
         self.backgroundCatchUp = backgroundCatchUp
         self.cloudUploadNetwork = cloudUploadNetwork
+        self.remoteAiProvider = remoteAiProvider
+        self.systemSearchVisibility = systemSearchVisibility
     }
 }
