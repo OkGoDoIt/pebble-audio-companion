@@ -430,6 +430,9 @@ struct ConversationScreen: View {
                 id: conversationId)
         }
         player.configure(playerDisplay, atMs: atMs, id: conversationId, engine: engine)
+        // The Lock Screen / Control Center item, named the way the header names it.
+        player.nowPlaying = AppComposition.shared?.nowPlaying
+        player.describe(title: display.title, subtitle: display.metaLine)
         // The scrubber names clock times, so it needs the same media->wall mapping the transcript
         // already carries on every turn, in the same recorded zone the stamps use (Q16).
         player.wallTimeZone = display.timeZone
