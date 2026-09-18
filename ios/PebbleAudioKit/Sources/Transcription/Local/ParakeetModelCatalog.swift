@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 
 // Port of `app/src/commonMain/.../LocalTranscriptionModels.kt` — the downloadable on-device
@@ -7,8 +8,12 @@ import Foundation
 // `local_transcription_model`, the byte counts are what the download row promises before a
 // ~700 MB transfer, and `installDirectoryName` decides whether an already-downloaded model is
 // found or re-fetched. `Tests/TranscriptionTests/ParakeetCatalogTests.swift` pins all of it.
+//
+// Since the iOS 27 build-out the catalog also carries the Core AI export of the same Parakeet
+// checkpoint (`runtime: .coreAI`), which installs and is selected through the same rows but runs
+// on `CoreAIParakeetEngine` and needs a one-time prepare step after extraction.
 
-/// One downloadable Parakeet (Cactus-Compute conversion) speech model.
+/// One downloadable Parakeet speech model (a Cactus-Compute conversion or a Core AI export).
 public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     public let id: String
     /// Full name for the Settings row ("Parakeet TDT 0.6B, high quality").
@@ -27,6 +32,9 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     /// Archive size in bytes, for the "this will download N GB" copy and progress totals.
     public let downloadBytes: Int64
     public let recommended: Bool
+    /// The native runtime that loads this model. Decides the engine, the install marker and
+    /// version file names, and whether a prepare step follows extraction.
+    public let runtime: LocalEngineRuntime
 
     public init(
         id: String,
@@ -40,7 +48,8 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         modelNameForProvenance: String,
         modelVersionForProvenance: String,
         downloadBytes: Int64,
-        recommended: Bool = false
+        recommended: Bool = false,
+        runtime: LocalEngineRuntime = .cactus
     ) {
         self.id = id
         self.displayName = displayName
@@ -54,24 +63,78 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         self.modelVersionForProvenance = modelVersionForProvenance
         self.downloadBytes = downloadBytes
         self.recommended = recommended
+        self.runtime = runtime
     }
 
-    /// The Hugging Face archive URL (`{base}/{repository}/resolve/{revision}/{archivePath}`).
-    public var downloadURL: URL {
+    /// The Hugging Face archive URL (`{base}/{repository}/resolve/{revision}/{archivePath}`)
+    /// as the catalog states it.
+    public var catalogDownloadURL: URL {
         URL(
             string:
                 "\(ParakeetModelCatalog.huggingFaceBase)/\(repository)/resolve/\(revision)/\(archivePath)"
         )!
     }
 
+    /// The URL the store actually downloads from: `catalogDownloadURL` unless the App Group
+    /// defaults carry `local_model_url_override.<id>` (a development affordance for serving an
+    /// archive from a LAN HTTP server; nothing in the app writes the key).
+    public var downloadURL: URL {
+        downloadURL(resolvingOverride: ParakeetModelCatalog.downloadURLOverride)
+    }
+
+    /// `downloadURL` with the override lookup injected, so the rule is testable without
+    /// touching the real defaults suite. An override that is not a usable absolute URL is
+    /// ignored rather than turned into a download that can only fail.
+    public func downloadURL(resolvingOverride override: (_ modelId: String) -> String?) -> URL {
+        guard let raw = override(id)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty, let url = URL(string: raw), url.scheme != nil, url.host != nil
+        else { return catalogDownloadURL }
+        return url
+    }
+
     /// Provenance string recorded on every transcript this model produces.
     public var modelUsed: String { "\(modelNameForProvenance):\(modelVersionForProvenance)" }
+
+    /// The file whose presence means "the archive unpacked": what the runtime itself needs first.
+    public var installMarkerFileName: String {
+        switch runtime {
+        case .cactus: return "config.txt"
+        case .coreAI: return "metadata.json"
+        }
+    }
+
+    /// Written after a successful extraction with the spec revision it was installed from.
+    public var versionFileName: String {
+        switch runtime {
+        case .cactus: return ".cactus_version"
+        case .coreAI: return ".coreai_version"
+        }
+    }
+
+    /// True when the model needs a foreground prepare pass (Core AI's specialization) before
+    /// its first use; `preparedMarkerFileName` records that it has happened.
+    public var requiresPreparation: Bool { runtime == .coreAI }
+
+    /// Written next to the version file once the prepare pass completed.
+    public var preparedMarkerFileName: String { ".prepared" }
 }
 
 public enum ParakeetModelCatalog {
     public static let huggingFaceBase = "https://huggingface.co"
     /// The int8 TDT model — the one the old app shipped as the default download.
     public static let defaultModelId = "parakeet-tdt-0.6b-v3-int8"
+    /// The Core AI export of the same checkpoint — the iOS 27 experiment.
+    public static let coreAIModelId = "parakeet-tdt-0.6b-v3-coreai"
+
+    /// App Group defaults key prefix for a per-model download URL override; see
+    /// `ParakeetModelSpec.downloadURL`.
+    public static let downloadURLOverrideKeyPrefix = "local_model_url_override."
+
+    /// The override for `modelId` from the App Group defaults, or nil.
+    public static func downloadURLOverride(for modelId: String) -> String? {
+        UserDefaults(suiteName: AppDatabase.appGroupIdentifier)?
+            .string(forKey: downloadURLOverrideKeyPrefix + modelId)
+    }
 
     public static let all: [ParakeetModelSpec] = [
         ParakeetModelSpec(
@@ -118,6 +181,29 @@ public enum ParakeetModelCatalog {
             modelNameForProvenance: "parakeet-ctc-1.1b-int8",
             modelVersionForProvenance: "v1.14",
             downloadBytes: 1_184_422_635
+        ),
+        // The Core AI export (apple/coreai-models `export.py --streaming`, float16, 150-frame
+        // window) of the same Parakeet TDT v3 checkpoint. NOT published anywhere yet: the
+        // repository/archive path below is a placeholder under a clearly-named path, and until a
+        // release exists the model is installed from `Documents/models-inbox/<id>.zip` (Files) or
+        // from a URL override — see `ParakeetModelStore` and `downloadURL`. The byte count is the
+        // measured size of the exported bundle; the ~1.1 GB specialization cache Core AI writes
+        // on first load comes on top and is what the description warns about.
+        ParakeetModelSpec(
+            id: coreAIModelId,
+            displayName: "Parakeet TDT 0.6B · Core AI",
+            shortLabel: "iOS 27 experiment",
+            modelDescription: "The same Parakeet model on Apple's Core AI runtime, to compare "
+                + "against the built-in engine. iPhone with iOS 27 only. Downloads 1.2 GB and "
+                + "uses about 1.1 GB more the first time it runs.",
+            repository: "pebble-audio-companion/parakeet-tdt-0.6b-v3-coreai-UNPUBLISHED",
+            revision: "v1",
+            archivePath: "bundles/parakeet-tdt-0.6b-v3_float16_streaming150.zip",
+            installDirectoryName: "parakeet-tdt-0.6b-v3-coreai",
+            modelNameForProvenance: "parakeet-tdt-0.6b-v3-coreai",
+            modelVersionForProvenance: "v1",
+            downloadBytes: 1_256_158_119,
+            runtime: .coreAI
         ),
     ]
 

@@ -64,6 +64,27 @@ let package = Package(
                 .linkedLibrary("z", .when(platforms: [.iOS])),
             ]
         ),
+        // Vendored apple/coreai-models `CoreAISpeech` (Parakeet TDT on Apple's Core AI runtime),
+        // see Sources/CoreAISpeechVendored/VENDORING.md. Not a package dependency: upstream
+        // declares iOS 27 as its floor and this kit deploys to 26. The framework only exists in
+        // the iOS 27 device SDK and the macOS 27 SDK, so every vendored file is
+        // `#if canImport(CoreAI)` and the module is empty on the simulator; the linker weak-links
+        // CoreAI on its own because every declaration in it is `@available(iOS 27)`, so no
+        // linker flag is needed (and none is allowed: `unsafeFlags` would make the package
+        // unusable as a dependency).
+        .target(
+            name: "CoreAISpeechVendored",
+            dependencies: ["CAccelerateBLAS"],
+            exclude: ["LICENSE", "VENDORING.md"],
+            swiftSettings: swiftSettings
+        ),
+        // `cblas_sgemv` for the vendored mel front end, in C with ACCELERATE_NEW_LAPACK so the
+        // deprecated legacy header is never imported into Swift (see caccelerate_blas.h).
+        .target(
+            name: "CAccelerateBLAS",
+            cSettings: [.define("ACCELERATE_NEW_LAPACK", to: "1")],
+            linkerSettings: [.linkedFramework("Accelerate")]
+        ),
         .target(name: "WireProtocol", swiftSettings: swiftSettings),
         // Custom-firmware distribution: the release feed, version ordering, checksum
         // verification and the hand-off record. Depends on nothing else in the kit on purpose —
@@ -79,7 +100,10 @@ let package = Package(
         ),
         .target(
             name: "Transcription",
-            dependencies: ["WireProtocol", "SegmentStore", "AudioCodec", "AppDB", "CCactus"],
+            dependencies: [
+                "WireProtocol", "SegmentStore", "AudioCodec", "AppDB", "CCactus",
+                "CoreAISpeechVendored",
+            ],
             swiftSettings: swiftSettings
         ),
         // StatusUI: Ask's per-segment gap note is the SAME status vocabulary the Library row
@@ -131,6 +155,14 @@ let package = Package(
         .testTarget(name: "StatusUITests", dependencies: ["StatusUI"], swiftSettings: swiftSettings),
         .testTarget(name: "AppDBTests", dependencies: ["AppDB"], swiftSettings: swiftSettings),
         .testTarget(name: "TranscriptionTests", dependencies: ["Transcription"], swiftSettings: swiftSettings),
+        // Runs the vendored engine against a real exported bundle when `PEBBLE_COREAI_BUNDLE` is
+        // set (macOS 27 has Core AI); skips otherwise. Depends on Transcription too, so the same
+        // run also drives `CoreAIParakeetEngine` end to end.
+        .testTarget(
+            name: "CoreAISpeechVendoredTests",
+            dependencies: ["CoreAISpeechVendored", "Transcription", "AudioCodec"],
+            swiftSettings: swiftSettings
+        ),
         .testTarget(
             name: "AudioCodecTests", dependencies: ["AudioCodec"],
             resources: [.copy("Fixtures")], swiftSettings: swiftSettings
