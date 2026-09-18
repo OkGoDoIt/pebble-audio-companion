@@ -356,7 +356,12 @@ final class AppComposition {
         )
         // The local engine resolves per call from the persisted local-model selection: Apple
         // SpeechAnalyzer (the default, with the id read as its language) or a downloaded
-        // Parakeet model.
+        // Parakeet model — on Cactus, or (iOS 27) on Core AI.
+        //
+        // `isForeground` is UIKit's application state (`AppForegroundProbe`), not
+        // `RuntimeForegroundState`: that object is created further down this initializer, and
+        // the question here is only whether a cold Core AI specialization may start now.
+        AppForegroundProbe.shared.install()
         let localBatch = SelectableLocalTranscriptionProvider(
             selected: { settingsBox.localTranscriptionModelId },
             // Hand Apple's engine the same About You terms the two cloud providers already get.
@@ -373,7 +378,8 @@ final class AppComposition {
                             personalContext.load())
                     }
                 )
-            }
+            },
+            isForeground: { AppForegroundProbe.shared.isForeground }
         )
         let router = TranscriptionModeRouter(
             local: localBatch,

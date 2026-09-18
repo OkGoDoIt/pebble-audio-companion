@@ -7,9 +7,19 @@ import Foundation
 //   • URL is `https://huggingface.co/{repository}/resolve/{revision}/{archivePath}`.
 //   • The archive streams to a FILE, never through memory (an in-memory version blew up on the
 //     ~700 MB archive and reported no progress).
-//   • "Installed" means `config.txt` exists AND `.cactus_version` records THIS spec's revision.
+//   • "Installed" means the runtime's marker file exists (`config.txt` for Cactus,
+//     `metadata.json` for Core AI) AND the version file (`.cactus_version` / `.coreai_version`)
+//     records THIS spec's revision.
 //   • Cancellation and failure leave no partial install behind.
 //   • Downloading is always an explicit user action — transcription never triggers one.
+//
+// Two additions for the Core AI runtime (iOS 27):
+//   • An archive can also arrive through Files: `refresh()` looks for
+//     `Documents/models-inbox/<id>.zip`, installs it through the same extractor, and consumes
+//     the zip. An archive that wraps the bundle in one top-level folder is hoisted.
+//   • A Core AI model is `.preparing` (busy) between extraction and the one-time foreground
+//     specialization pass; only after that pass writes `.prepared` is it `.installed`. The pass
+//     is never started while the app is in the background.
 
 /// Install state of one downloadable model — what the Settings row renders.
 public enum ParakeetInstallState: Equatable, Sendable {
@@ -17,15 +27,19 @@ public enum ParakeetInstallState: Equatable, Sendable {
     case downloading(receivedBytes: Int64, totalBytes: Int64)
     /// Archive downloaded; unpacking (no meaningful byte progress).
     case installing
+    /// Unpacked; the runtime's one-time prepare pass (Core AI specialization) has not completed.
+    /// Busy while the pass runs, and reported the same way while it waits for the foreground.
+    case preparing
     case installed
     case failed(message: String)
 
     public var isInstalled: Bool { self == .installed }
 
-    /// A download or extraction is in flight, so the row shows progress and a Cancel action.
+    /// A download, extraction or prepare pass is in flight, so the row shows progress and a
+    /// Cancel action.
     public var isBusy: Bool {
         switch self {
-        case .downloading, .installing: return true
+        case .downloading, .installing, .preparing: return true
         case .notInstalled, .installed, .failed: return false
         }
     }
@@ -75,13 +89,21 @@ public protocol ParakeetModelStoring: Sendable {
 public protocol ParakeetModelLocating: Sendable {
     /// The install directory, or nil when this model is not installed. Never downloads.
     func installedModelPath(for spec: ParakeetModelSpec) -> URL?
+    /// True when the runtime's one-time prepare pass has completed for an installed model (or
+    /// the runtime needs none). A provider must not start that pass in the background.
+    func isPrepared(_ spec: ParakeetModelSpec) -> Bool
+}
+
+extension ParakeetModelLocating {
+    /// Runtimes without a prepare step are always prepared; fakes inherit this.
+    public func isPrepared(_ spec: ParakeetModelSpec) -> Bool { true }
 }
 
 /// Disk layout of the model cache (`Caches/models/{installDirectoryName}`).
 public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
-    /// Written after a successful extraction; holds the spec revision it was installed from.
+    /// The Cactus version file — see `ParakeetModelSpec.versionFileName` for the per-runtime rule.
     public static let versionFileName = ".cactus_version"
-    /// The file Cactus itself needs — its presence is what "extracted successfully" means.
+    /// The file Cactus itself needs — see `ParakeetModelSpec.installMarkerFileName`.
     public static let configFileName = "config.txt"
 
     public let modelsDirectory: URL
@@ -100,21 +122,21 @@ public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
         modelsDirectory.appendingPathComponent(spec.installDirectoryName, isDirectory: true)
     }
 
-    /// Installed = the model unpacked (`config.txt`) AND the recorded revision matches the
-    /// spec. A revision bump therefore reads as "not installed" and re-downloads.
+    /// Installed = the model unpacked (the runtime's marker file) AND the recorded revision
+    /// matches the spec. A revision bump therefore reads as "not installed" and re-downloads.
     public func isInstalled(_ spec: ParakeetModelSpec) -> Bool {
         let root = directory(for: spec)
         let manager = FileManager.default
         guard
             manager.fileExists(
-                atPath: root.appendingPathComponent(Self.configFileName).path
+                atPath: root.appendingPathComponent(spec.installMarkerFileName).path
             )
         else { return false }
         return recordedVersion(for: spec) == spec.revision
     }
 
     public func recordedVersion(for spec: ParakeetModelSpec) -> String? {
-        let url = directory(for: spec).appendingPathComponent(Self.versionFileName)
+        let url = directory(for: spec).appendingPathComponent(spec.versionFileName)
         guard let data = try? Data(contentsOf: url),
             let text = String(data: data, encoding: .utf8)
         else { return nil }
@@ -123,6 +145,15 @@ public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
 
     public func installedModelPath(for spec: ParakeetModelSpec) -> URL? {
         isInstalled(spec) ? directory(for: spec) : nil
+    }
+
+    /// The `.prepared` marker, present once the prepare pass ran for this install. Written last
+    /// by the store, after the version file, so it can never outrun the files it vouches for.
+    public func isPrepared(_ spec: ParakeetModelSpec) -> Bool {
+        guard spec.requiresPreparation else { return true }
+        return FileManager.default.fileExists(
+            atPath: directory(for: spec).appendingPathComponent(spec.preparedMarkerFileName).path
+        )
     }
 }
 
@@ -146,21 +177,67 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     private let downloader: any ParakeetArchiveDownloading
     private let extractor: any ParakeetArchiveExtracting
     private let temporaryDirectory: URL
+    private let inboxDirectory: URL?
+    private let preparer: @Sendable (LocalEngineRuntime) -> any ParakeetModelPreparing
+    private let supportedRuntimes: Set<LocalEngineRuntime>
+    private var isForeground: @Sendable () -> Bool
+    private var log: @Sendable (String) -> Void = { _ in }
 
     private var stateById: [String: ParakeetInstallState] = [:]
     private var installs: [String: Task<Void, Never>] = [:]
     private var observers: [UUID: AsyncStream<[ParakeetModelEntry]>.Continuation] = [:]
 
+    /// `Documents/models-inbox`, the folder Files exposes (`UIFileSharingEnabled`) where an
+    /// archive can be dropped for `refresh()` to install.
+    public static var defaultInboxDirectory: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("models-inbox", isDirectory: true)
+    }
+
+    /// Runtimes this build can run, from the engine factory. A model of any other runtime is
+    /// neither downloaded nor picked up from the inbox.
+    public static var runtimesSupportedHere: Set<LocalEngineRuntime> {
+        Set(LocalEngineRuntime.allCases.filter { ParakeetEngineFactory.isSupported($0) })
+    }
+
     public init(
         location: ParakeetModelLocation = ParakeetModelLocation(),
         downloader: (any ParakeetArchiveDownloading)? = nil,
         extractor: any ParakeetArchiveExtracting = ZipArchiveExtractor(),
-        temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+        inboxDirectory: URL? = ParakeetModelStore.defaultInboxDirectory,
+        preparer: (@Sendable (LocalEngineRuntime) -> any ParakeetModelPreparing)? = nil,
+        supportedRuntimes: Set<LocalEngineRuntime>? = nil,
+        isForeground: @escaping @Sendable () -> Bool = { true }
     ) {
         self.location = location
         self.downloader = downloader ?? URLSessionArchiveDownloader()
         self.extractor = extractor
         self.temporaryDirectory = temporaryDirectory
+        self.inboxDirectory = inboxDirectory
+        self.preparer = preparer ?? { ParakeetEngineFactory.makePreparer(runtime: $0) }
+        self.supportedRuntimes = supportedRuntimes ?? ParakeetModelStore.runtimesSupportedHere
+        self.isForeground = isForeground
+    }
+
+    /// Where the store's one-line records go (house style: lowercase `key=value`). The app wires
+    /// its runtime log in; unset, nothing is recorded.
+    public func setLog(_ log: @escaping @Sendable (String) -> Void) {
+        self.log = log
+    }
+
+    /// The foreground signal `refresh()` consults before starting a prepare pass. The app wires
+    /// its own probe into the shared store; the initializer's default (`{ true }`) is for
+    /// callers that construct their own store and know they are on screen.
+    public func setForeground(_ isForeground: @escaping @Sendable () -> Bool) {
+        self.isForeground = isForeground
+    }
+
+    /// The archive `refresh()` would install for `spec`, when one is waiting in the inbox.
+    public nonisolated func inboxArchive(for spec: ParakeetModelSpec) -> URL? {
+        guard let inboxDirectory else { return nil }
+        let url = inboxDirectory.appendingPathComponent("\(spec.id).zip")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     // MARK: - Reading
@@ -174,11 +251,34 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         return resolvedState(spec)
     }
 
+    /// Re-reads the disk, and starts the work the disk asks for: an archive waiting in the
+    /// inbox is installed; an unpacked Core AI model that was never prepared is prepared — but
+    /// only in the foreground, because the specialization pass is seconds of CPU and a burst of
+    /// memory that a background wake must not spend.
     public func refresh() -> [ParakeetModelEntry] {
-        for spec in ParakeetModelCatalog.all where !(stateById[spec.id]?.isBusy ?? false) {
+        for spec in ParakeetModelCatalog.all where installs[spec.id] == nil {
+            // The state is set here, not by the task: the rows this call returns must already
+            // say what has been started.
+            if let archive = inboxArchive(for: spec), supportedRuntimes.contains(spec.runtime),
+                !location.isInstalled(spec)
+            {
+                set(spec.id, .installing)
+                start(spec) { await self.performInstall(spec, archive: archive) }
+                continue
+            }
+            if location.isInstalled(spec), !location.isPrepared(spec),
+                supportedRuntimes.contains(spec.runtime), isForeground()
+            {
+                if case .failed = stateById[spec.id] { continue }  // wait for an explicit retry
+                set(spec.id, .preparing)
+                start(spec) { await self.performPrepare(spec) }
+                continue
+            }
             // Keep a failure message visible until the user retries or the install succeeds.
-            if case .failed = stateById[spec.id], !location.isInstalled(spec) { continue }
-            stateById[spec.id] = location.isInstalled(spec) ? .installed : .notInstalled
+            if case .failed = stateById[spec.id], !(location.isInstalled(spec) && location.isPrepared(spec)) {
+                continue
+            }
+            stateById[spec.id] = resolvedState(spec)
         }
         publish()
         return entries()
@@ -204,20 +304,52 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     @discardableResult
     public func install(_ modelId: String) async -> ParakeetInstallState {
         guard let spec = ParakeetModelCatalog.spec(id: modelId) else { return .notInstalled }
-        if location.isInstalled(spec) {
-            set(spec.id, .installed)
-            return .installed
-        }
         if let running = installs[spec.id] {
             await running.value
             return resolvedState(spec)
         }
+        guard supportedRuntimes.contains(spec.runtime) else {
+            // The rows never offer this, but a stale selection can still ask.
+            set(spec.id, .failed(message: Self.unsupportedRuntimeMessage))
+            return resolvedState(spec)
+        }
+        if location.isInstalled(spec) {
+            if location.isPrepared(spec) {
+                set(spec.id, .installed)
+                return .installed
+            }
+            // Unpacked but never prepared (an interrupted or failed pass): prepare only.
+            return await run(spec) { await self.performPrepare(spec) }
+        }
+        if let archive = inboxArchive(for: spec) {
+            return await run(spec) { await self.performInstall(spec, archive: archive) }
+        }
         set(spec.id, .downloading(receivedBytes: 0, totalBytes: spec.downloadBytes))
-        let task = Task { await self.performInstall(spec) }
-        installs[spec.id] = task
-        await task.value
-        installs[spec.id] = nil
+        return await run(spec) { await self.performInstall(spec, archive: nil) }
+    }
+
+    /// Runs `work` as the one install task for `spec` and reports the state it ended in.
+    private func run(
+        _ spec: ParakeetModelSpec, _ work: @escaping @Sendable () async -> Void
+    ) async -> ParakeetInstallState {
+        start(spec, work)
+        await installs[spec.id]?.value
         return resolvedState(spec)
+    }
+
+    /// Starts `work` as the install task for `spec` (fire and forget — `refresh()`'s callers
+    /// watch `states()`), clearing the slot when it ends.
+    private func start(_ spec: ParakeetModelSpec, _ work: @escaping @Sendable () async -> Void) {
+        guard installs[spec.id] == nil else { return }
+        // Inherits the actor, so the slot is cleared on the actor once the work ends.
+        installs[spec.id] = Task {
+            await work()
+            self.finished(spec.id)
+        }
+    }
+
+    private func finished(_ modelId: String) {
+        installs[modelId] = nil
     }
 
     public func cancel(_ modelId: String) {
@@ -234,55 +366,132 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         return .notInstalled
     }
 
-    private func performInstall(_ spec: ParakeetModelSpec) async {
+    /// Download (unless `archive` names one already on disk — the inbox path), extract, record
+    /// the revision, then run the runtime's prepare pass.
+    private func performInstall(_ spec: ParakeetModelSpec, archive inboxArchive: URL?) async {
         let target = location.directory(for: spec)
-        let archive = temporaryDirectory.appendingPathComponent("cactus_download_\(spec.id).zip")
+        let downloaded = temporaryDirectory.appendingPathComponent("cactus_download_\(spec.id).zip")
+        let archive = inboxArchive ?? downloaded
         let manager = FileManager.default
+        // The staged download is cleaned up either way; an inbox archive is consumed either
+        // way too — a corrupt one must not be retried on every refresh.
         defer { try? manager.removeItem(at: archive) }
         do {
-            try? manager.removeItem(at: archive)
-            try manager.createDirectory(
-                at: archive.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            let expected = spec.downloadBytes
-            try await downloader.download(from: spec.downloadURL, to: archive) {
-                [weak self] received, total in
-                guard let self else { return }
-                // A server that omits Content-Length reports total 0/-1; fall back to the
-                // catalog size so the bar still moves against a sane denominator.
-                let denominator = total > 1024 ? total : expected
-                Task { await self.advanceProgress(spec.id, received: received, total: denominator) }
+            if inboxArchive == nil {
+                try? manager.removeItem(at: archive)
+                try manager.createDirectory(
+                    at: archive.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                let expected = spec.downloadBytes
+                try await downloader.download(from: spec.downloadURL, to: archive) {
+                    [weak self] received, total in
+                    guard let self else { return }
+                    // A server that omits Content-Length reports total 0/-1; fall back to the
+                    // catalog size so the bar still moves against a sane denominator.
+                    let denominator = total > 1024 ? total : expected
+                    Task { await self.advanceProgress(spec.id, received: received, total: denominator) }
+                }
+                try Task.checkCancellation()
+            } else {
+                log("local model install source=inbox id=\(spec.id)")
             }
-            try Task.checkCancellation()
             set(spec.id, .installing)
             try? manager.removeItem(at: target)
             try manager.createDirectory(at: target, withIntermediateDirectories: true)
             try extractor.extract(archiveAt: archive, into: target)
             try Task.checkCancellation()
+            try Self.hoistSingleWrapperDirectory(in: target, marker: spec.installMarkerFileName)
+            guard manager.fileExists(atPath: target.appendingPathComponent(spec.installMarkerFileName).path)
+            else { throw ZipExtractionError.corruptArchive("no \(spec.installMarkerFileName) in archive") }
             // Version file LAST: it is what makes the install count as installed, so a partial
             // extraction can never be mistaken for a complete one.
             try Data(spec.revision.utf8).write(
-                to: target.appendingPathComponent(ParakeetModelLocation.versionFileName)
+                to: target.appendingPathComponent(spec.versionFileName)
             )
-            set(spec.id, .installed)
+            log("local model installed id=\(spec.id) runtime=\(spec.runtime.rawValue)")
         } catch {
             try? manager.removeItem(at: target)
             // A cancelled install is not a failure: it leaves no message and no partial dir.
             if Self.isCancellation(error) || Task.isCancelled {
                 set(spec.id, .notInstalled)
             } else {
+                log("local model install failed id=\(spec.id) error=\(error)")
+                set(spec.id, .failed(message: Self.message(for: error)))
+            }
+            return
+        }
+        guard spec.requiresPreparation else {
+            set(spec.id, .installed)
+            return
+        }
+        await performPrepare(spec)
+    }
+
+    /// The runtime's one-time pass over an unpacked model (Core AI: load + warm, which writes
+    /// the specialization cache), then the `.prepared` marker. A failure keeps the files — the
+    /// next attempt is a prepare, not a re-download — except a cancel, which removes them like
+    /// any cancelled install.
+    private func performPrepare(_ spec: ParakeetModelSpec) async {
+        let target = location.directory(for: spec)
+        set(spec.id, .preparing)
+        do {
+            try Task.checkCancellation()
+            try await preparer(spec.runtime).prepare(spec: spec, directory: target)
+            try Task.checkCancellation()
+            try Data("prepared".utf8).write(
+                to: target.appendingPathComponent(spec.preparedMarkerFileName)
+            )
+            log("local model prepared id=\(spec.id)")
+            set(spec.id, .installed)
+        } catch {
+            if Self.isCancellation(error) || Task.isCancelled {
+                try? FileManager.default.removeItem(at: target)
+                set(spec.id, .notInstalled)
+            } else {
+                log("local model prepare failed id=\(spec.id) error=\(error)")
                 set(spec.id, .failed(message: Self.message(for: error)))
             }
         }
+    }
+
+    /// An archive that wraps the bundle in one top-level folder (`zip -r name.zip bundle/`)
+    /// extracts to `target/bundle/<marker>`; move that folder's contents up so the model lives
+    /// at `target/<marker>` like a flat archive's would. Anything else is left alone.
+    static func hoistSingleWrapperDirectory(in target: URL, marker: String) throws {
+        let manager = FileManager.default
+        if manager.fileExists(atPath: target.appendingPathComponent(marker).path) { return }
+        let children = try manager.contentsOfDirectory(
+            at: target, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        )
+        guard children.count == 1, let wrapper = children.first,
+            (try? wrapper.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+            manager.fileExists(atPath: wrapper.appendingPathComponent(marker).path)
+        else { return }
+        for item in try manager.contentsOfDirectory(at: wrapper, includingPropertiesForKeys: nil) {
+            try manager.moveItem(at: item, to: target.appendingPathComponent(item.lastPathComponent))
+        }
+        try manager.removeItem(at: wrapper)
     }
 
     static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
+    static let unsupportedRuntimeMessage = "This model needs iOS 27 on an iPhone."
+
     static func message(for error: Error) -> String {
         if error is ZipExtractionError {
             return "The download finished but the model couldn't be unpacked. Try again."
+        }
+        if let engine = error as? ParakeetEngineError {
+            switch engine {
+            case .unsupportedPlatform:
+                return unsupportedRuntimeMessage
+            case .insufficientMemory:
+                return "Not enough memory to prepare the model right now. Close other apps and try again."
+            case .modelLoadFailed, .nativeFailure:
+                return "The model couldn't be prepared. Try again."
+            }
         }
         return "The download didn't finish. Check your connection and try again."
     }
@@ -290,10 +499,13 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     // MARK: - State plumbing
 
     private func resolvedState(_ spec: ParakeetModelSpec) -> ParakeetInstallState {
-        if let known = stateById[spec.id], known.isBusy { return known }
-        if location.isInstalled(spec) { return .installed }
+        if let known = stateById[spec.id], known.isBusy, installs[spec.id] != nil { return known }
+        let installed = location.isInstalled(spec)
+        if installed, location.isPrepared(spec) { return .installed }
         if let known = stateById[spec.id], case .failed = known { return known }
-        return .notInstalled
+        // Unpacked, never prepared, nothing running: still not usable, and `refresh()` (in the
+        // foreground) is what starts the pass.
+        return installed ? .preparing : .notInstalled
     }
 
     /// Progress arrives on the URLSession delegate queue and reaches the actor through a hop,

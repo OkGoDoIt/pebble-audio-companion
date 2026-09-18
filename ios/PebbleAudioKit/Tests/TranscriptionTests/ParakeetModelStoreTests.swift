@@ -161,7 +161,13 @@ private let spec = ParakeetModelCatalog.byId(ParakeetModelCatalog.defaultModelId
             location: ParakeetModelLocation(modelsDirectory: root),
             downloader: downloader,
             extractor: extractor,
-            temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true)
+            temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
+            // Never the real `Documents/models-inbox` of whoever runs the tests.
+            inboxDirectory: root.appendingPathComponent("inbox", isDirectory: true),
+            // Since the runtime gate (2026-09-18) the store refuses runtimes this build cannot
+            // run, and the macOS host has no Cactus engine. These tests are about the install
+            // state machine, not that gate (`ParakeetModelStoreCoreAITests` covers it).
+            supportedRuntimes: [.cactus]
         )
     }
 

@@ -12,6 +12,11 @@ import Foundation
 //
 // The implementations live in the iOS-only `CactusBinary` xcframework, so the whole native
 // engine is `#if os(iOS)`; `swift test` (macOS) sees only the seam and its fakes.
+//
+// The same seam has a second implementation since the iOS 27 build-out: `CoreAIParakeetEngine`
+// (its own file), which runs the Core AI export of the same checkpoint. `ParakeetEngineFactory
+// .make(runtime:)` picks by `ParakeetModelSpec.runtime`; the plain `make()` below is still the
+// Cactus engine.
 
 // NOT ported: a streaming (`StreamingTranscriptionProvider`) flavor over
 // `cactus_stream_transcribe_start/process/stop`. The header does not say whether the JSON each
@@ -21,7 +26,8 @@ import Foundation
 // so there is nothing to gain from a guess. Revisit with real device output to read from.
 
 public enum ParakeetEngineError: Error, Equatable, Sendable {
-    /// No Cactus binary on this platform (macOS host builds, previews).
+    /// No engine for this runtime on this platform (no Cactus binary on macOS host builds and
+    /// previews; no Core AI below iOS 27 or on a simulator).
     case unsupportedPlatform
     case modelLoadFailed(String)
     case nativeFailure(String)
@@ -32,7 +38,8 @@ public enum ParakeetEngineError: Error, Equatable, Sendable {
 /// The native speech-to-text engine behind `ParakeetTranscriptionProvider`. A protocol so the
 /// provider's audio handling and error mapping are testable without the 700 MB model.
 public protocol ParakeetNativeEngine: Sendable {
-    /// False when no Cactus binary is linked — the provider then reports `providerUnavailable`.
+    /// False when this build cannot run the engine here (no Cactus binary linked, no Core AI
+    /// framework) — the provider then reports `providerUnavailable`.
     var isSupported: Bool { get }
 
     /// Loads the model at `path` (a no-op when `identity` matches the loaded one).
@@ -49,7 +56,7 @@ public protocol ParakeetNativeEngine: Sendable {
     func release() async
 }
 
-/// Engine used where no Cactus slice exists.
+/// Engine used where the runtime cannot run (no Cactus slice, no Core AI).
 public struct UnsupportedParakeetEngine: ParakeetNativeEngine {
     public init() {}
     public var isSupported: Bool { false }
@@ -63,7 +70,8 @@ public struct UnsupportedParakeetEngine: ParakeetNativeEngine {
     public func release() async {}
 }
 
-/// The engine the app runs with: `UnsupportedParakeetEngine` off-device.
+/// The engines the app runs with: `UnsupportedParakeetEngine` wherever a runtime cannot run.
+/// `make()` is the Cactus engine; `make(runtime:)` (CoreAIParakeetEngine.swift) covers both.
 public enum ParakeetEngineFactory {
     public static func make() -> any ParakeetNativeEngine {
         #if os(iOS)
