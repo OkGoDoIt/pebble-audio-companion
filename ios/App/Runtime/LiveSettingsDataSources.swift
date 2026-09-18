@@ -1179,6 +1179,11 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     /// the life of the process apart from the "ago" half, which is recomputed on every refresh.
     private(set) var buildInfo = BuildFormatting.describe(
         builtAtISO8601: BuildInfo.builtAtISO8601, revision: BuildInfo.gitRevision, nowMs: 0)
+    /// The Ask recall experiment (`AskRecallLedgerHolder`), re-read on every refresh — the
+    /// ledger is a few kilobytes of JSON in the App Group defaults.
+    private(set) var askRecallRecords: [AskRecallCheckRow] = []
+    private(set) var askRecallSemanticAvailable = false
+    private(set) var askRecallReplay: AskRecallReplayState = .idle
 
     /// Whether the Diagnostics screen is on screen. NOTHING below runs while it is not.
     ///
@@ -1195,6 +1200,15 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     init(composition: AppComposition) {
         self.composition = composition
         let runtime = composition.runtime
+        #if DEBUG
+            // The "Check meaning search" probe, run at launch when asked for by environment so
+            // a simulator or device run can be judged from its console without a finger on
+            // the screen: `SIMCTL_CHILD_ASK_RECALL_PROBE=1 xcrun simctl launch --console …`.
+            // The verdict is the `ask recall probe:` line. DEBUG only, like the row.
+            if ProcessInfo.processInfo.environment["ASK_RECALL_PROBE"] == "1" {
+                Task { _ = await AskRecallSemanticProbe.run() }
+            }
+        #endif
         Task { [weak self] in
             for await _ in runtime.diagnostics.stream() { await self?.refreshIfVisible() }
         }
@@ -1274,6 +1288,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         buildInfo = BuildFormatting.describe(
             builtAtISO8601: BuildInfo.builtAtISO8601, revision: BuildInfo.gitRevision,
             nowMs: composition.clock.nowMs)
+        askRecallRecords = Self.recallRows(AskRecallLedgerHolder.shared.records())
+        askRecallSemanticAvailable = composition.askRetriever.hasSemanticRecall
         // Built from the values already in hand. NEVER through `runtime.supportReport()`: that
         // refreshes diagnostics, which publishes, which would bring us straight back here.
         let report = SupportReport(
@@ -1403,6 +1419,61 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         } catch {
             AppRuntimeLog.shared.record("search    index rebuild failed: \(error)")
             indexRebuild = .failed
+        }
+    }
+
+    /// Every recent Ask question through both index passes over the whole library, so recall
+    /// can be judged on real questions against real recordings. Retrieval only: no model call,
+    /// nothing answered, nothing saved. Foreground and awaited, like the index rebuild.
+    func replayAskRecall() async {
+        guard askRecallReplay != .running else { return }
+        askRecallReplay = .running
+        let composition = self.composition
+        do {
+            let questions = try await composition.askHistory
+                .recent(limit: AskRecallLedger.defaultCapacity).map(\.question)
+            let retriever = composition.askRetriever
+            let library = composition.runtime.library
+            let rows = await AskRecallReplay.run(
+                questions: questions,
+                limit: Self.replayLimit,
+                recall: { await retriever.recall(query: $0, limit: $1) },
+                title: { id in
+                    guard let detail = try? await library.conversation(id: id) else { return nil }
+                    // The neutral label Search and the donator use for an unenriched one.
+                    return detail.row.title ?? "Conversation"
+                })
+            AppRuntimeLog.shared.record(
+                "ask recall replay: questions=\(rows.count) "
+                    + "fts=\(rows.reduce(0) { $0 + $1.keyword }) "
+                    + "semantic=\(rows.reduce(0) { $0 + $1.semantic }) "
+                    + "both=\(rows.reduce(0) { $0 + $1.both }) "
+                    + "semantic-ran=\(rows.allSatisfy(\.semanticRan))")
+            askRecallReplay = .done(rows)
+        } catch {
+            AppRuntimeLog.shared.record("ask recall replay failed: \(error)")
+            askRecallReplay = .failed
+        }
+    }
+
+    /// Hits per pass per replayed question — a shortlist, the same order of size the planner
+    /// is handed for a large question.
+    private static let replayLimit = 40
+
+    /// The ledger's records as rows: when, the question, the counts. Newest first, as stored.
+    static func recallRows(_ records: [AskRecallRecord]) -> [AskRecallCheckRow] {
+        records.map { record in
+            let date = Date(timeIntervalSince1970: Double(record.atMs) / 1000)
+            return AskRecallCheckRow(
+                id: "\(record.atMs)",
+                when: Copy.Settings.Diagnostics.AskRecall.when(
+                    day: TimeFmt.dayLabel(for: date), time: TimeFmt.time(date)),
+                question: record.question,
+                detail: Copy.Settings.Diagnostics.AskRecall.recordDetail(
+                    keptBatches: record.keptBatches, packedBatches: record.packedBatches,
+                    keyword: record.keyword, semantic: record.semantic, both: record.both,
+                    rescued: record.semanticOnlyKept, lost: record.keywordOnlyDropped,
+                    semanticRan: record.semanticRan))
         }
     }
 

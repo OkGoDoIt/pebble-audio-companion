@@ -744,6 +744,26 @@ enum IndexRebuildState: Equatable {
     case failed
 }
 
+/// One recorded Ask recall experiment as the Diagnostics screen shows it: when, the question
+/// in the user's own words (clipped), and what the two passes found.
+struct AskRecallCheckRow: Identifiable, Equatable {
+    let id: String
+    /// "Sep 18 · 3:12 PM"
+    let when: String
+    let question: String
+    /// `Copy.Settings.Diagnostics.AskRecall.recordDetail` — counts only.
+    let detail: String
+}
+
+/// Where the DEBUG replay of recent questions has got to. `.done` carries one row per
+/// question so the result stays on screen.
+enum AskRecallReplayState: Equatable {
+    case idle
+    case running
+    case done([AskRecallReplayRow])
+    case failed
+}
+
 @MainActor
 protocol DiagnosticsSource: AnyObject {
     var receiverStatus: String { get }
@@ -792,6 +812,17 @@ protocol DiagnosticsSource: AnyObject {
     /// The app's own CPU watchdog: set when this process has been spending more than its budget
     /// while in the background. Nil is the calm case and the row is absent.
     var powerAlert: String? { get }
+    /// The Ask recall experiment's newest records, newest first. Empty until a question's
+    /// range overflowed what one answer can read — the ordinary library is read whole and
+    /// never gets there, and an empty card says so rather than showing zeros.
+    var askRecallRecords: [AskRecallCheckRow] { get }
+    /// Whether a semantic (meaning) pass is wired at all. False is reported as such, never as
+    /// "meaning found nothing".
+    var askRecallSemanticAvailable: Bool { get }
+    /// The DEBUG replay of recent questions through both passes, and a way to start one.
+    /// Retrieval only: no model call, nothing answered, nothing saved.
+    var askRecallReplay: AskRecallReplayState { get }
+    func replayAskRecall() async
     /// The screen says when it is on screen. A live source does nothing while it is not: the
     /// counters it keeps are re-read from every sidecar and the whole log file, and a source
     /// that refreshes for a screen nobody is looking at is how a feedback loop went unnoticed
@@ -824,6 +855,56 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     func rebuildSearchIndex() async {
         indexRebuild = .running
         indexRebuild = .done(Copy.Settings.Diagnostics.rebuildIndexDone(recentSegments.count))
+    }
+
+    /// The artboard case: one question that overflowed the ceiling, with a rescue.
+    var askRecallRecords: [AskRecallCheckRow] = [
+        .init(
+            id: "1", when: Copy.Settings.Diagnostics.AskRecall.when(day: "Sep 18", time: "3:12 PM"),
+            question: "Did the plumber ever quote for the boiler?",
+            detail: Copy.Settings.Diagnostics.AskRecall.recordDetail(
+                keptBatches: 12, packedBatches: 31, keyword: 9, semantic: 7, both: 4,
+                rescued: 2, lost: 1, semanticRan: true))
+    ]
+    var askRecallSemanticAvailable = true
+    var askRecallReplay: AskRecallReplayState = .idle
+
+    /// The replay over the mock world: each recent mock question against the mock library.
+    /// The mock search is a whole-string match, so the keyword pass searches the question's
+    /// content words; the meaning pass is the same list with the first hit swapped for one
+    /// only it found, so the artboard shows an overlap and an exclusive find on each side.
+    func replayAskRecall() async {
+        askRecallReplay = .running
+        let world = MockWorld.shared
+        let questions = (try? await world.recentThreads())?.flatMap { $0.turns.map(\.question) }
+            ?? []
+        let rows = await AskRecallReplay.run(
+            questions: questions, limit: 20,
+            recall: { question, limit in
+                var seen = Set<String>()
+                var hits: [AskIndexHit] = []
+                let words = question.lowercased()
+                    .split { !$0.isLetter }
+                    .map(String.init)
+                    .filter { $0.count > 3 }
+                for word in words {
+                    let found = (try? await world.search(query: word, scope: .everything))?
+                        .conversations ?? []
+                    for hit in found where hits.count < limit && seen.insert(hit.id).inserted {
+                        hits.append(AskIndexHit(id: hit.id, score: 1))
+                    }
+                }
+                let meaning = Array(hits.dropFirst()) + hits.prefix(1).map {
+                    AskIndexHit(id: "\($0.id)-meaning", score: 1)
+                }
+                return AskRetriever.RecallHits(keyword: hits, semantic: meaning, semanticRan: true)
+            },
+            title: { id in
+                id.hasSuffix("-meaning")
+                    ? "Coffee with Dana"
+                    : world.conversations.first { $0.id == id }?.title
+            })
+        askRecallReplay = .done(rows)
     }
 
     var recentSegments: [DiagnosticSegment] = [

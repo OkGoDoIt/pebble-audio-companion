@@ -140,6 +140,26 @@ struct SettingsDiagnosticsScreen: View {
                 }
             }
 
+            // What Ask kept and what it left out, the last few times a question was too large
+            // to read in full — and whether the meaning search added anything the keyword
+            // search missed. It is a claim about the product ("meaning can only add"), so it
+            // is shown with its evidence rather than asserted. DEBUG builds can replay every
+            // recent question through both searches to judge recall on real recordings.
+            SettingsSectionHeader(title: Copy.Settings.Diagnostics.AskRecall.header)
+            ListCard {
+                AskRecallRecordsRows(
+                    records: diagnostics.askRecallRecords,
+                    semanticAvailable: diagnostics.askRecallSemanticAvailable
+                )
+                #if DEBUG
+                AskRecallReplayRows(state: diagnostics.askRecallReplay) {
+                    await diagnostics.replayAskRecall()
+                }
+                AskRecallProbeRow()
+                #endif
+            }
+            SettingsFooter(text: Copy.Settings.Diagnostics.AskRecall.footer)
+
             ListCard {
                 ShareLink(item: diagnostics.supportReportText) {
                     HStack {
@@ -365,6 +385,200 @@ private struct WatchLinkRow: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// The newest recall experiments: the question, when, and the outcome line beneath. Empty is
+/// a sentence, not a zero — most libraries are read whole and never produce a record.
+///
+/// The newest few are inline; the rest of the ledger sits behind a push, so a screen that is
+/// read on the day something is wrong is not twenty rows of numbers.
+private struct AskRecallRecordsRows: View {
+    let records: [AskRecallCheckRow]
+    let semanticAvailable: Bool
+
+    /// Rows shown inline before the push to the full ledger.
+    static let inlineCount = 5
+
+    var body: some View {
+        if records.isEmpty {
+            SettingsRow(
+                title: Copy.Settings.Diagnostics.AskRecall.row,
+                value: semanticAvailable
+                    ? Copy.Settings.Diagnostics.AskRecall.noRecords
+                    : Copy.Settings.Diagnostics.AskRecall.semanticUnavailable,
+                showsChevron: false
+            )
+        } else {
+            ForEach(records.prefix(Self.inlineCount)) { record in
+                AskRecallRecordRow(record: record)
+            }
+            if records.count > Self.inlineCount {
+                SettingsPushRow(
+                    title: Copy.Settings.Diagnostics.AskRecall.row,
+                    value: "\(records.count)"
+                ) {
+                    AskRecallLedgerScreen(records: records)
+                }
+            }
+        }
+    }
+}
+
+/// One recorded question: the question and when it was asked, then the outcome in full. The
+/// same stacked shape as a failed transcription — the detail is the point of the row and a
+/// trailing value would truncate it.
+private struct AskRecallRecordRow: View {
+    let record: AskRecallCheckRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(record.question)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                    .lineLimit(2)
+                Spacer(minLength: 10)
+                Text(record.when)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Text(record.detail)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The whole ledger, newest first.
+private struct AskRecallLedgerScreen: View {
+    let records: [AskRecallCheckRow]
+
+    var body: some View {
+        SettingsScroll {
+            ListCard {
+                ForEach(records) { record in
+                    AskRecallRecordRow(record: record)
+                }
+            }
+            SettingsFooter(text: Copy.Settings.Diagnostics.AskRecall.footer)
+        }
+        .navigationTitle(Copy.Settings.Diagnostics.AskRecall.row)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+#if DEBUG
+/// "Replay recent questions": tinted because it does something, disabled while it runs, and
+/// the per-question results stay on screen underneath so they can be read against the library.
+private struct AskRecallReplayRows: View {
+    let state: AskRecallReplayState
+    let run: () async -> Void
+
+    var body: some View {
+        TintActionRow(
+            title: state == .running
+                ? Copy.Settings.Diagnostics.AskRecall.replayBusy
+                : Copy.Settings.Diagnostics.AskRecall.replay,
+            subtitle: Copy.Settings.Diagnostics.AskRecall.replaySubtitle,
+            action: { Task { await run() } }
+        ) {
+            if state == .running { ProgressView().controlSize(.small) }
+        }
+        .disabled(state == .running)
+
+        switch state {
+        case .idle, .running:
+            EmptyView()
+        case .failed:
+            Text(Copy.Settings.Diagnostics.AskRecall.replayFailed)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+        case .done(let rows):
+            if rows.isEmpty {
+                Text(Copy.Settings.Diagnostics.AskRecall.replayNothing)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+            }
+            ForEach(rows) { row in
+                AskRecallReplayResultRow(row: row)
+            }
+        }
+    }
+}
+
+/// "Check meaning search": does the OS rank this app's donations by meaning on THIS device?
+/// Donates two probe conversations, asks a paraphrase, removes them, and says which it was.
+/// The verdict stays on the row; the same line goes to the detailed log.
+private struct AskRecallProbeRow: View {
+    @State private var running = false
+    @State private var verdict: AskRecallSemanticProbe.Verdict?
+
+    var body: some View {
+        TintActionRow(
+            title: running
+                ? Copy.Settings.Diagnostics.AskRecall.probeBusy
+                : Copy.Settings.Diagnostics.AskRecall.probe,
+            subtitle: verdict?.line ?? Copy.Settings.Diagnostics.AskRecall.probeSubtitle,
+            action: {
+                guard !running else { return }
+                running = true
+                Task {
+                    verdict = await AskRecallSemanticProbe.run()
+                    running = false
+                }
+            }
+        ) {
+            if running { ProgressView().controlSize(.small) }
+        }
+        .disabled(running)
+    }
+}
+
+private struct AskRecallReplayResultRow: View {
+    let row: AskRecallReplayRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(row.question)
+                .font(AppFont.callout)
+                .foregroundStyle(Tokens.label)
+                .lineLimit(2)
+            Text(
+                Copy.Settings.Diagnostics.AskRecall.replayDetail(
+                    keyword: row.keyword, semantic: row.semantic, both: row.both,
+                    semanticRan: row.semanticRan)
+            )
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.secondaryBody)
+            if !row.semanticOnlyTitles.isEmpty {
+                Text(
+                    Copy.Settings.Diagnostics.AskRecall.onlyMeaningFound + " "
+                        + row.semanticOnlyTitles.joined(separator: " · ")
+                )
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.meta)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if !row.keywordOnlyTitles.isEmpty {
+                Text(
+                    Copy.Settings.Diagnostics.AskRecall.onlyKeywordFound + " "
+                        + row.keywordOnlyTitles.joined(separator: " · ")
+                )
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.meta)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+#endif
 
 /// Rebuild Search Index. Tinted because it DOES something, disabled while it runs, and it keeps
 /// the result on screen afterwards — a repair that finishes invisibly leaves the person who ran

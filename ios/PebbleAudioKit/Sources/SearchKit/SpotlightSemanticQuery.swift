@@ -162,12 +162,15 @@ final class SemanticRecallCollector: @unchecked Sendable {
     public actor CoreSpotlightSemanticRecall: SemanticRecall {
         public static let defaultTimeout: Duration = .milliseconds(1_500)
 
-        private let domainIdentifier: String
+        private let domainIdentifier: String?
         private let timeout: Duration
         private let log: (@Sendable (String) -> Void)?
 
+        /// `domainIdentifier` nil drops the domain filter — for the DEBUG probe that tells a
+        /// broken filter from an index that cannot be queried at all; production always
+        /// filters.
         public init(
-            domainIdentifier: String = CoreSpotlightIndexer.domainIdentifier,
+            domainIdentifier: String? = CoreSpotlightIndexer.domainIdentifier,
             timeout: Duration = CoreSpotlightSemanticRecall.defaultTimeout,
             log: (@Sendable (String) -> Void)? = nil
         ) {
@@ -200,9 +203,11 @@ final class SemanticRecallCollector: @unchecked Sendable {
             let context = CSUserQueryContext()
             // The unique identifier is on the item itself; no attributes need fetching.
             context.fetchAttributes = []
-            context.filterQueries = [
-                SpotlightSemanticQuery.filterQuery(domainIdentifier: domainIdentifier)
-            ]
+            if let domainIdentifier {
+                context.filterQueries = [
+                    SpotlightSemanticQuery.filterQuery(domainIdentifier: domainIdentifier)
+                ]
+            }
             context.enableRankedResults = true
             context.disableSemanticSearch = false
             context.maxResultCount = limit
@@ -212,6 +217,7 @@ final class SemanticRecallCollector: @unchecked Sendable {
 
             let collector = SemanticRecallCollector()
             let started = ContinuousClock.now
+            let log = self.log
             // Detached: the actor must not be held while the OS streams results in, and the
             // sequence is `Sendable` so nothing isolated crosses into the task.
             let producer = Task.detached(priority: .userInitiated) {
@@ -221,8 +227,13 @@ final class SemanticRecallCollector: @unchecked Sendable {
                         if collector.append(item.item.uniqueIdentifier) >= limit { break }
                     }
                 } catch {
-                    // Cancelled (ours, after the deadline) or an invalid query: either way the
-                    // partial list stands and the failure is reported by count, below.
+                    // Cancelled (ours, after the deadline) or a query the index refused:
+                    // either way the partial list stands. Named, because an invalid query
+                    // would otherwise look exactly like an index with nothing in it.
+                    if !Task.isCancelled {
+                        log?("ask semantic: query failed \((error as NSError).domain) "
+                            + "\((error as NSError).code)")
+                    }
                 }
                 collector.finish(timedOut: false)
             }
