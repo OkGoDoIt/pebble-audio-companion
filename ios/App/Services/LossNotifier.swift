@@ -1,3 +1,4 @@
+import AppIntents
 import CompanionRuntime
 import Foundation
 import UserNotifications
@@ -12,8 +13,11 @@ import UserNotifications
 //      people to deny it.
 //   2. The rate limit is defended HERE too, in App Group defaults, so it survives a process
 //      relaunch (the evaluator's in-memory limiter resets when the app is jetsammed).
-//   3. The tap route: `companion://today`, carried in userInfo and parsed by the same
-//      `Route.parse` the URL scheme uses (no second navigation path).
+//   3. The tap route, carried in userInfo and parsed by the same `Route.parse` the URL scheme
+//      uses (no second navigation path): the conversation the gap fell in when the segment
+//      resolves to one, `companion://today` when it does not. On iOS 27 the notification also
+//      carries that conversation's App Intents entity id, so Siri can act on "this" from the
+//      notification.
 
 /// The UNUserNotificationCenter seam — a protocol so the notifier is testable without the
 /// notification daemon, and so previews/simulators can no-op cleanly.
@@ -21,7 +25,10 @@ protocol LossNotificationScheduling: Sendable {
     func authorizationStatus() async -> UNAuthorizationStatus
     /// Shows the system prompt. Returns whether we may post.
     func requestAuthorization() async -> Bool
-    func schedule(title: String, body: String, userInfo: [String: String]) async
+    /// `conversationId` is the conversation the notification is about, when there is one; the
+    /// system scheduler turns it into the notification's entity id on iOS 27.
+    func schedule(title: String, body: String, userInfo: [String: String], conversationId: String?)
+        async
 }
 
 struct SystemLossNotificationScheduler: LossNotificationScheduling {
@@ -35,13 +42,20 @@ struct SystemLossNotificationScheduler: LossNotificationScheduling {
         (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
-    func schedule(title: String, body: String, userInfo: [String: String]) async {
+    func schedule(
+        title: String, body: String, userInfo: [String: String], conversationId: String?
+    ) async {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.userInfo = userInfo
         content.sound = .default
         content.interruptionLevel = .active
+        if #available(iOS 27, *), let conversationId {
+            content.appEntityIdentifiers = [
+                EntityIdentifier(for: ConversationEntity.self, identifier: conversationId)
+            ]
+        }
         let request = UNNotificationRequest(
             identifier: "loss-\(UUID().uuidString)", content: content, trigger: nil
         )
@@ -62,6 +76,9 @@ actor UserNotificationLossNotifier: LossNotifier {
     private let scheduler: any LossNotificationScheduling
     private let defaults: UserDefaults
     private let now: @Sendable () -> Int64
+    /// The conversation a segment belongs to, or nil when it cannot be resolved (no runtime
+    /// up, a segment not yet grouped). Injected so tests can answer without a database.
+    private let conversationId: @Sendable (String) async -> String?
 
     /// The Q9 alert is OPT-IN (default off). Read at fire time rather than captured at
     /// construction so toggling it in Settings takes effect immediately.
@@ -72,16 +89,34 @@ actor UserNotificationLossNotifier: LossNotifier {
     init(
         scheduler: any LossNotificationScheduling = SystemLossNotificationScheduler(),
         defaults: UserDefaults = SharedAppGroup.defaults,
-        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+        conversationId: @escaping @Sendable (String) async -> String? =
+            UserNotificationLossNotifier.liveConversationId
     ) {
         self.scheduler = scheduler
         self.defaults = defaults
         self.now = now
+        self.conversationId = conversationId
+    }
+
+    /// The production resolver: the live library's segment → conversation hop. Reads the
+    /// runtime off the main actor and answers nil when no composition is up.
+    private static let liveConversationId: @Sendable (String) async -> String? = { segmentId in
+        guard let library = await MainActor.run(body: { AppComposition.shared?.runtime.library })
+        else { return nil }
+        return try? await library.conversationId(ofSegment: segmentId)
     }
 
     /// The route a tap opens. Kept as a string in userInfo so the payload stays plist-simple.
     static let routeUserInfoKey = "route"
     static var routeURLString: String { Route.today(date: nil).url.absoluteString }
+
+    /// Where a loss notification lands: the conversation the gap fell in when it is known,
+    /// Today (which shows the gap on the coverage strip) when it is not.
+    static func routeURLString(conversationId: String?) -> String {
+        guard let conversationId else { return routeURLString }
+        return Route.conversation(id: conversationId, atMs: nil).url.absoluteString
+    }
 
     func notifyCaptureStoppedOnWatch() async {
         // Same opt-in gate as the loss alert, and the same permission rule: never prompt off the
@@ -92,7 +127,8 @@ actor UserNotificationLossNotifier: LossNotifier {
         await scheduler.schedule(
             title: Copy.Notifications.watchOffTitle,
             body: Copy.Notifications.watchOffBody,
-            userInfo: [Self.routeUserInfoKey: Self.routeURLString]
+            userInfo: [Self.routeUserInfoKey: Self.routeURLString],
+            conversationId: nil
         )
     }
 
@@ -108,6 +144,11 @@ actor UserNotificationLossNotifier: LossNotifier {
         // gaps during one bad afternoon becomes a storm of prompts.
         defaults.set(NSNumber(value: nowMs), forKey: Self.lastFiredKey)
 
+        // The gap's conversation, when the segment has been grouped into one. A segment that
+        // is still open (the B21 deferral has already been applied by the evaluator) or a
+        // runtime that is not up answers nil, and the tap goes to Today as it always did.
+        let conversationId = event.segmentId.isEmpty ? nil : await conversationId(event.segmentId)
+
         await scheduler.schedule(
             title: Copy.Notifications.lossTitle,
             // "…couldn't reach this phone for about {duration} — audio in that window is
@@ -115,7 +156,8 @@ actor UserNotificationLossNotifier: LossNotifier {
             body: Copy.Notifications.lossBody(
                 duration: DurationPhrase.approximate(ms: event.durationMs)
             ),
-            userInfo: [Self.routeUserInfoKey: Self.routeURLString]
+            userInfo: [Self.routeUserInfoKey: Self.routeURLString(conversationId: conversationId)],
+            conversationId: conversationId
         )
     }
 

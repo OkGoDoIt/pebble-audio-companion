@@ -1,4 +1,5 @@
 import Foundation
+import os
 #if canImport(CoreSpotlight)
     import CoreSpotlight
     import UniformTypeIdentifiers
@@ -75,6 +76,52 @@ public protocol SpotlightIndexing: Sendable {
     func removeAll() async throws
 }
 
+/// What the SYSTEM index may hold of a donation at a given `SystemSearchVisibility`.
+///
+/// A pure function so the rule is testable without Core Spotlight, and so it is written down
+/// once: the app's own FTS index is never gated (in-app search always has the full text —
+/// `SpotlightDonator.donate` upserts it before this runs), this is about what leaves the
+/// sandbox for Spotlight and, on iOS 27, Siri's semantic index.
+public enum SpotlightVisibilityGate {
+    public struct Outcome: Equatable, Sendable {
+        /// Donations to index, already trimmed to what the setting allows.
+        public var index: [SpotlightDonation]
+        /// Unique identifiers to DELETE instead — the setting says these documents may not
+        /// exist in the system index, so a donation becomes a removal of whatever an earlier,
+        /// more permissive pass left there.
+        public var remove: [String]
+
+        public init(index: [SpotlightDonation], remove: [String]) {
+            self.index = index
+            self.remove = remove
+        }
+    }
+
+    public static func apply(
+        _ visibility: SystemSearchVisibility, to donations: [SpotlightDonation]
+    ) -> Outcome {
+        switch visibility {
+        case .off:
+            return Outcome(index: [], remove: donations.map(\.uniqueIdentifier))
+        case .summaries:
+            // Titles, summaries (`contentDescription`), tags and dates survive; the transcript
+            // or note body (`textContent`) does not. A recap's `contentDescription` is the
+            // first 500 characters of the digest — a summary of the day, which is what this
+            // setting promises to keep.
+            return Outcome(
+                index: donations.map { donation in
+                    var trimmed = donation
+                    trimmed.textContent = nil
+                    return trimmed
+                },
+                remove: []
+            )
+        case .full:
+            return Outcome(index: donations, remove: [])
+        }
+    }
+}
+
 /// Maps enriched app content into index documents and donates them to both search backends:
 /// the persistent FTS index (in-app Search) and Core Spotlight (system search). Called after
 /// enrichment/recap/notes writes — never from BLE callbacks.
@@ -86,6 +133,11 @@ public final class SpotlightDonator: Sendable {
         self.index = index
         self.spotlight = spotlight
     }
+
+    /// The system-index backend, so the app can configure it AFTER construction: the
+    /// composition builds the indexer before the settings that gate it and the entity model
+    /// that annotates it are wired (see `CoreSpotlightIndexer.configure`).
+    public var systemIndex: any SpotlightIndexing { spotlight }
 
     // MARK: - Deep links (plan 6.8 routes)
 
@@ -259,17 +311,65 @@ extension String {
     public actor CoreSpotlightIndexer: SpotlightIndexing {
         public static let domainIdentifier = "dev.audiocompanion.app.search"
 
+        /// Called with every item about to be indexed, so the app can attach its App Intents
+        /// entity to it (`CSSearchableItem.associateAppEntity`). Spotlight then shows ONE
+        /// result per document and Siri sees the entity behind it. The donation is the
+        /// already-gated one — what the hook is handed is exactly what the index receives.
+        public typealias AssociationHook = @Sendable (CSSearchableItem, SpotlightDonation) -> Void
+
+        /// Everything the app may set after construction, behind one lock: the composition
+        /// builds this indexer before the settings box and the entity model exist, and a
+        /// donation can already be in flight from another task when `configure` runs.
+        private struct Configuration {
+            var visibility: @Sendable () -> SystemSearchVisibility = { .default }
+            var associate: AssociationHook?
+            var purgeEntities: (@Sendable () async -> Void)?
+        }
+
         private let index: CSSearchableIndex
+        private let configuration = OSAllocatedUnfairLock(initialState: Configuration())
 
         public init(index: CSSearchableIndex = .default()) {
             self.index = index
+        }
+
+        /// Installs the visibility rule and the optional entity hooks. Synchronous and
+        /// nonisolated on purpose: the app calls it from its main-actor composition, and the
+        /// next donation on any task sees the new configuration.
+        ///
+        /// - `visibility`: read on EVERY pass, so a Settings change takes effect on the next
+        ///   donation rather than at the next launch.
+        /// - `associate`: the iOS 27 entity association (nil below iOS 27, or in tests).
+        /// - `purgeEntities`: run by `removeAll()` after the domain is emptied, for anything the
+        ///   entity layer indexed under its own type rather than this domain.
+        public nonisolated func configure(
+            visibility: @escaping @Sendable () -> SystemSearchVisibility,
+            associate: AssociationHook? = nil,
+            purgeEntities: (@Sendable () async -> Void)? = nil
+        ) {
+            configuration.withLock {
+                $0.visibility = visibility
+                $0.associate = associate
+                $0.purgeEntities = purgeEntities
+            }
         }
 
         public nonisolated var isAvailable: Bool { CSSearchableIndex.isIndexingAvailable() }
 
         public func donate(_ donations: [SpotlightDonation]) async throws {
             guard CSSearchableIndex.isIndexingAvailable() else { return }
-            let items = donations.map { donation -> CSSearchableItem in
+            let (visibility, associate) = configuration.withLock { ($0.visibility(), $0.associate) }
+            let gated = SpotlightVisibilityGate.apply(visibility, to: donations)
+
+            // `.off` turns each donation into a removal: an earlier pass under a more
+            // permissive setting may have left the document there, and "off" has to mean the
+            // system index holds nothing of ours, not merely that we stopped adding to it.
+            if !gated.remove.isEmpty {
+                try await index.deleteSearchableItems(withIdentifiers: gated.remove)
+            }
+            guard !gated.index.isEmpty else { return }
+
+            let items = gated.index.map { donation -> CSSearchableItem in
                 let attributes = CSSearchableItemAttributeSet(contentType: .text)
                 attributes.title = donation.title
                 attributes.contentDescription = donation.contentDescription
@@ -287,6 +387,7 @@ extension String {
                     domainIdentifier: Self.domainIdentifier,
                     attributeSet: attributes
                 )
+                associate?(item, donation)
                 return item
             }
             try await index.indexSearchableItems(items)
@@ -302,6 +403,12 @@ extension String {
             try await index.deleteSearchableItems(
                 withDomainIdentifiers: [Self.domainIdentifier]
             )
+            // The entity associations live on the items just deleted; this covers anything the
+            // entity layer may have indexed under its own type (a system-driven reindex, say)
+            // so a flip to "off" leaves nothing of ours behind under either name.
+            if let purge = configuration.withLock({ $0.purgeEntities }) {
+                await purge()
+            }
         }
     }
 #endif

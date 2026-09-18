@@ -1,5 +1,6 @@
 import Foundation
 import Intelligence
+import SearchKit
 import Transcription
 
 // The privacy stance for Settings · Storage & Privacy, plus that screen's destructive
@@ -197,7 +198,7 @@ extension Copy.Privacy {
     // MARK: The part that never changes
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Four sentences, each one checked against the code before it was written here.
+    /// Five sentences, each one checked against the code before it was written here.
     ///
     /// 1. Verified: the only package dependency is GRDB (a local SQLite wrapper); there is no
     ///    analytics, crash-reporting or attribution SDK; the entitlements file contains App
@@ -214,6 +215,12 @@ extension Copy.Privacy {
     /// 4. Verified: nothing in the tree sets `isExcludedFromBackup`, so the spool, the database
     ///    and the transcripts are in the phone's normal backups. Saying so is not a warning —
     ///    it is the difference between "on this phone" and "only on this phone".
+    /// 5. Verified: the only system index written is `CSSearchableIndex.default()` (Core
+    ///    Spotlight, an on-device index by Apple's documentation), every write to it goes
+    ///    through `CoreSpotlightIndexer`, and that indexer applies `SystemSearchVisibility` on
+    ///    every pass (`SpotlightVisibilityGate`) — so what it holds is exactly what the row on
+    ///    this screen says. The sentence stops at the index: what Siri does with an index it is
+    ///    allowed to read is Apple's policy, not this app's, and is not claimed here.
     ///
     /// Deliberately ABSENT: any sentence of the form "nothing else ever phones home". The app
     /// bundles a third-party speech engine for the downloadable models and that binary carries
@@ -229,6 +236,8 @@ extension Copy.Privacy {
             + "only ever shared if you send them yourself from Diagnostics.",
         "Recordings, transcripts and notes are stored in this app on your iPhone, and are "
             + "included in the iPhone's usual backups.",
+        "Spotlight's index of your recordings is kept on this iPhone by iOS. What goes into "
+            + "it — nothing, titles and summaries, or everything — is your choice on this screen.",
     ]
 
     /// Required by the UX plan §17: the app must say what deletion can and cannot reach.
@@ -278,4 +287,34 @@ extension Copy.Settings.Storage {
         "Every recording, transcript, note and follow-up on this iPhone is deleted. This cannot "
         + "be undone. Recording itself is not turned off."
     static let deleteAllConfirm = "Delete All Recordings"
+
+    // ─── "Siri & Spotlight can see" ───────────────────────────────────────────
+    //
+    // The one privacy CONTROL on the screen. It decides what the app hands the system's search
+    // index — which Spotlight searches and, on iOS 27, Siri reasons over. Written so the row
+    // reads as a plain statement of fact in every position ("Siri & Spotlight can see ·
+    // Everything") and the picker explains each choice once, without alarm.
+
+    static let systemSearch = "Siri & Spotlight can see"
+
+    static func systemSearchLabel(_ visibility: SystemSearchVisibility) -> String {
+        switch visibility {
+        case .off: return "Off"
+        case .summaries: return "Titles and summaries"
+        case .full: return "Everything"
+        }
+    }
+
+    /// Under the row on the Storage & Privacy screen.
+    static let systemSearchFooter =
+        "The search index is kept on this iPhone by iOS, never on a server. Spotlight searches "
+        + "it, and on iOS 27 Siri answers from it. Search inside the app always has the full "
+        + "text, whatever you choose here."
+
+    /// Under the three choices.
+    static let systemSearchChoiceFooter =
+        "Off keeps everything out of the system index. Titles and summaries shares each "
+        + "conversation's title, AI summary, tags and dates, note titles, and each day's recap. "
+        + "Everything also shares transcripts and note bodies, so Spotlight and Siri can match "
+        + "the words that were said. Changing this rewrites the index."
 }
