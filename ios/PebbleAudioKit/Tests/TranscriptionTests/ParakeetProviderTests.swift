@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 import Testing
 
@@ -12,13 +13,17 @@ import Testing
 
 private struct FakeLocation: ParakeetModelLocating {
     var path: URL?
+    /// Whether the one-time prepare pass has run (only asked for `requiresPreparation` specs).
+    var prepared = true
     func installedModelPath(for spec: ParakeetModelSpec) -> URL? { path }
+    func isPrepared(_ spec: ParakeetModelSpec) -> Bool { prepared }
 }
 
 private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var loadCalls: [String] = []
     private var wavCalls: [String] = []
+    private var wavPeaks: [Int] = []
     private var responseIndex = 0
 
     let supported: Bool
@@ -43,6 +48,8 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     var isSupported: Bool { supported }
     var loads: [String] { lock.withLock { loadCalls } }
     var transcribedWavs: [String] { lock.withLock { wavCalls } }
+    /// Loudest sample of each staged WAV, read while the file still exists.
+    var stagedPeaks: [Int] { lock.withLock { wavPeaks } }
 
     func load(modelPath: String, identity: String) async throws {
         if let loadFailure { throw loadFailure }
@@ -51,8 +58,11 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
 
     func transcribe(wavPath: String) async throws -> String {
         if let transcribeFailure { throw transcribeFailure }
+        let peak = (try? Data(contentsOf: URL(fileURLWithPath: wavPath)))
+            .map { ParakeetQuietAudioBoost.peak(of: $0.dropFirst(PcmWav.headerBytes)) } ?? -1
         return lock.withLock {
             wavCalls.append(wavPath)
+            wavPeaks.append(peak)
             let response = responses[min(responseIndex, responses.count - 1)]
             responseIndex += 1
             return response
@@ -114,14 +124,21 @@ private func makeTemp() throws -> URL {
 
 private let defaultSpec = ParakeetModelCatalog.byId(ParakeetModelCatalog.defaultModelId)
 
+private let coreAISpec = ParakeetModelCatalog.byId(ParakeetModelCatalog.coreAIModelId)
+
 private func makeProvider(
-    installed: Bool = true, engine: FakeEngine, temp: URL
+    installed: Bool = true, engine: FakeEngine, temp: URL, spec: ParakeetModelSpec = defaultSpec,
+    prepared: Bool = true, foreground: Bool = true, boost: Bool = false
 ) -> ParakeetTranscriptionProvider {
     ParakeetTranscriptionProvider(
-        spec: defaultSpec,
-        location: FakeLocation(path: installed ? temp.appendingPathComponent("model") : nil),
+        spec: spec,
+        location: FakeLocation(
+            path: installed ? temp.appendingPathComponent("model") : nil, prepared: prepared
+        ),
         engine: engine,
-        temporaryDirectory: temp
+        temporaryDirectory: temp,
+        isForeground: { foreground },
+        boostQuietAudio: { boost }
     )
 }
 
@@ -319,6 +336,74 @@ private func makeProvider(
         await provider.releaseModelIfIdle(nowMs: 10_000_000, idleTimeoutMs: 1_000)
         #expect(engine.releases == 1)
     }
+
+    /// A Core AI model that has not had its foreground prepare pass is not started cold from a
+    /// background pass: `providerUnavailable` (so the router may fall back), and the engine is
+    /// never touched. In the foreground, or once prepared, it runs.
+    @Test func anUnpreparedCoreAIModelIsUnavailableInTheBackgroundOnly() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let background = FakeEngine()
+        let provider = makeProvider(
+            engine: background, temp: temp, spec: coreAISpec, prepared: false, foreground: false
+        )
+        // `isAvailable` is about the install, not the moment — the fallback decision is per call.
+        #expect(await provider.isAvailable())
+        do {
+            _ = try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+            Issue.record("expected providerUnavailable")
+        } catch let error as TranscriptionError {
+            guard case .providerUnavailable(let id) = error else {
+                Issue.record("expected providerUnavailable, got \(error)")
+                return
+            }
+            #expect(id == "cactus-local")
+        }
+        #expect(background.loads.isEmpty)
+
+        let foreground = FakeEngine()
+        _ = try await makeProvider(
+            engine: foreground, temp: temp, spec: coreAISpec, prepared: false, foreground: true
+        ).transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(foreground.loads.count == 1)
+
+        let prepared = FakeEngine()
+        _ = try await makeProvider(
+            engine: prepared, temp: temp, spec: coreAISpec, prepared: true, foreground: false
+        ).transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(prepared.loads.count == 1)
+        #expect(prepared.loads.first?.hasSuffix("#parakeet-tdt-0.6b-v3-coreai:v1") == true)
+
+        // The rule is Core AI's: an unprepared flag on a Cactus spec means nothing.
+        let cactus = FakeEngine()
+        _ = try await makeProvider(
+            engine: cactus, temp: temp, spec: defaultSpec, prepared: false, foreground: false
+        ).transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(cactus.loads.count == 1)
+    }
+
+    /// With the boost switch on, the WAV the engine reads peaks at −3 dBFS; off, it is the
+    /// audio as recorded.
+    @Test func theQuietAudioBoostReachesTheStagedWav() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        // A quiet tone: peak 300 clears the voice gate (240) but sits ~40 dB under full scale.
+        var quiet = [Int16]()
+        for index in 0..<(sampleRate * 800 / 1_000) {
+            quiet.append(Int16(300 * sin(Double(index) * 2 * Double.pi * 440 / Double(sampleRate))))
+        }
+        let audio = quiet.withUnsafeBufferPointer { Data(buffer: $0) }
+
+        let plain = FakeEngine()
+        _ = try await makeProvider(engine: plain, temp: temp, boost: false)
+            .transcribe(pcmChunks: chunks(audio), sampleRateHz: sampleRate)
+        #expect(plain.stagedPeaks == [300])
+
+        let boosted = FakeEngine()
+        _ = try await makeProvider(engine: boosted, temp: temp, boost: true)
+            .transcribe(pcmChunks: chunks(audio), sampleRateHz: sampleRate)
+        #expect(boosted.stagedPeaks == [23_197])
+    }
 }
 
 @Suite struct ParakeetPcmTests {
@@ -475,15 +560,106 @@ private func makeProvider(
 
     @Test func releasingForwardsToTheSharedCactusEngine() async {
         let engine = FakeEngine()
+        let coreAI = FakeEngine()
         let provider = SelectableLocalTranscriptionProvider(
             selected: { "parakeet-tdt-0.6b-v3-int8" },
             location: FakeLocation(path: nil),
             engine: engine,
+            coreAIEngine: coreAI,
             makeAppleSpeech: { StubProvider(id: "apple-\($0.identifier)") }
         )
         await provider.releaseModel(reason: "memory warning")
+        // Both runtimes' engines, because either could be holding a model.
         #expect(engine.releases == 1)
+        #expect(coreAI.releases == 1)
     }
+
+    /// The spec's runtime picks the engine: a Core AI selection runs on the Core AI engine and
+    /// never touches Cactus, and its availability is judged by THAT engine — so a build without
+    /// Core AI reports "not supported here" for it while Cactus models still run.
+    @Test func theSpecsRuntimePicksTheEngine() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let cactus = FakeEngine()
+        let coreAI = FakeEngine(responses: [#"{"text":"core ai","segments":[{"start":0.5,"end":1.0,"text":"core ai"}]}"#])
+        let selection = SelectionBox(value: ParakeetModelCatalog.coreAIModelId)
+        let provider = SelectableLocalTranscriptionProvider(
+            selected: { selection.value },
+            location: FakeLocation(path: temp),
+            engine: cactus,
+            coreAIEngine: coreAI,
+            makeAppleSpeech: { StubProvider(id: "apple-\($0.identifier)") }
+        )
+        #expect(provider.resolution == .parakeet(coreAISpec))
+        let result = try await provider.transcribe(
+            pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+        )
+        #expect(result.text == "core ai")
+        #expect(result.modelUsed == "parakeet-tdt-0.6b-v3-coreai:v1")
+        #expect(coreAI.loads.count == 1)
+        #expect(cactus.loads.isEmpty)
+
+        let noCoreAI = SelectableLocalTranscriptionProvider(
+            selected: { selection.value },
+            location: FakeLocation(path: temp),
+            engine: cactus,
+            coreAIEngine: FakeEngine(supported: false),
+            makeAppleSpeech: { StubProvider(id: "apple-\($0.identifier)") }
+        )
+        #expect(
+            noCoreAI.resolution
+                == .parakeetUnavailable(spec: coreAISpec, reason: .notSupportedOnThisDevice)
+        )
+        #expect(noCoreAI.id.hasPrefix("apple-"))
+        selection.value = "parakeet-tdt-0.6b-v3-int8"
+        #expect(noCoreAI.resolution == .parakeet(defaultSpec))
+    }
+}
+
+@Suite struct ParakeetEngineFactoryTests {
+    /// The runtime gate is a compile-time + OS-version fact; pin what THIS host reports so a
+    /// change in the `#if` shows up here.
+    @Test func coreAISupportFollowsTheSdkAndTheOsVersion() {
+        #if canImport(CoreAI) && !targetEnvironment(simulator)
+            if #available(iOS 27, macOS 27, *) {
+                #expect(ParakeetEngineFactory.isSupported(.coreAI))
+                #expect(ParakeetEngineFactory.make(runtime: .coreAI).isSupported)
+                #expect(ParakeetEngineFactory.makePreparer(runtime: .coreAI) is CoreAIModelPreparer)
+            } else {
+                #expect(ParakeetEngineFactory.isSupported(.coreAI) == false)
+            }
+        #else
+            #expect(ParakeetEngineFactory.isSupported(.coreAI) == false)
+            #expect(ParakeetEngineFactory.make(runtime: .coreAI) is UnsupportedParakeetEngine)
+            #expect(ParakeetEngineFactory.makePreparer(runtime: .coreAI) is UnsupportedModelPreparation)
+        #endif
+        #expect(ParakeetEngineFactory.makePreparer(runtime: .cactus) is NoModelPreparation)
+        #expect(ParakeetEngineFactory.isSupported(.cactus) == ParakeetEngineFactory.make().isSupported)
+    }
+
+    @Test func unsupportedPreparationRefusesWithThePlatformError() async {
+        await #expect(throws: ParakeetEngineError.unsupportedPlatform) {
+            try await UnsupportedModelPreparation().prepare(spec: coreAISpec, directory: URL(fileURLWithPath: "/tmp"))
+        }
+    }
+
+    #if canImport(CoreAI)
+        /// The JSON the Core AI engine hands the provider parses back to the same segments.
+        @Test func coreAIResponseJsonRoundTripsThroughTheProviderParser() {
+            guard #available(iOS 27, macOS 27, *) else { return }
+            let json = CoreAIParakeetEngine.encode([
+                .init(start: 1.92, end: 6.72, text: "We don't"),
+                .init(start: 10.56, end: 17.28, text: "True is uh eight points"),
+            ])
+            let parsed = ParakeetNativeResponse.parse(json)
+            #expect(parsed.text == "We don't True is uh eight points")
+            #expect(parsed.segments.map(\.text) == ["We don't", "True is uh eight points"])
+            #expect(parsed.segments.map(\.startMs) == [1_920, 10_560])
+            #expect(parsed.segments.map(\.endMs) == [6_720, 17_280])
+            #expect(parsed.words.isEmpty)
+            #expect(ParakeetNativeResponse.parse(CoreAIParakeetEngine.encode([])).text == "")
+        }
+    #endif
 }
 
 private final class SelectionBox: @unchecked Sendable {

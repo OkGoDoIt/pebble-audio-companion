@@ -239,20 +239,32 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     private let engine: any ParakeetNativeEngine
     private let temporaryDirectory: URL
     private let nowMs: @Sendable () -> Int64
+    private let isForeground: @Sendable () -> Bool
+    private let boostQuietAudio: @Sendable () -> Bool
     private let lastUsedMs = LastUsed()
 
+    /// - Parameters:
+    ///   - engine: the native engine for `spec.runtime`; the factory's when nil.
+    ///   - isForeground: whether the app is on screen. A Core AI model whose one-time
+    ///     specialization pass has not completed (`location.isPrepared`) is `providerUnavailable`
+    ///     in the background rather than started cold inside a background pass.
+    ///   - boostQuietAudio: the `ParakeetQuietAudioBoost` switch, read per chunk.
     public init(
         spec: ParakeetModelSpec,
         location: any ParakeetModelLocating = ParakeetModelLocation(),
         engine: (any ParakeetNativeEngine)? = nil,
         temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
+        isForeground: @escaping @Sendable () -> Bool = { true },
+        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() }
     ) {
         self.spec = spec
         self.location = location
-        self.engine = engine ?? ParakeetEngineFactory.make()
+        self.engine = engine ?? ParakeetEngineFactory.make(runtime: spec.runtime)
         self.temporaryDirectory = temporaryDirectory
         self.nowMs = nowMs
+        self.isForeground = isForeground
+        self.boostQuietAudio = boostQuietAudio
     }
 
     public var modelSpec: ParakeetModelSpec { spec }
@@ -265,6 +277,13 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         pcmChunks: AsyncThrowingStream<Data, Error>, sampleRateHz: Int
     ) async throws -> TranscriptionResult {
         guard engine.isSupported, let modelPath = location.installedModelPath(for: spec) else {
+            throw TranscriptionError.providerUnavailable(providerId: id)
+        }
+        // A cold Core AI load writes ~1.1 GB of specialization cache and takes seconds of CPU
+        // at a memory peak — foreground work with a visible "finishing up" row, never something
+        // a background wake spends its budget on. `providerUnavailable`, not a failure: the
+        // router may fall back and the queue retries once the app is up.
+        if spec.requiresPreparation, !location.isPrepared(spec), !isForeground() {
             throw TranscriptionError.providerUnavailable(providerId: id)
         }
         let raw = temporaryDirectory.appendingPathComponent("cactus_stt-\(UUID().uuidString).raw")
@@ -320,10 +339,14 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         }
 
         var pieces: [ParakeetNativeResponse] = []
+        let boost = boostQuietAudio()
         for range in ranges {
             try Task.checkCancellation()
             do {
-                try Self.writeWav(from: source, range: range, to: wav, sampleRateHz: sampleRateHz)
+                let gain = boost ? try Self.boostGain(from: source, range: range) : 1
+                try Self.writeWav(
+                    from: source, range: range, to: wav, sampleRateHz: sampleRateHz, gain: gain
+                )
             } catch {
                 throw TranscriptionError.transcriptionFailed(
                     "failed to stage local audio", underlying: error
@@ -409,9 +432,18 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         return bytes
     }
 
-    /// Writes one range of the raw spool out as a mono 16-bit WAV, copied in bounded chunks.
+    /// The `ParakeetQuietAudioBoost` gain for one range: its peak, read in bounded chunks.
+    static func boostGain(from source: FileHandle, range: PcmSpeechRange) throws -> Double {
+        var peak = 0
+        try forEachChunk(of: source, range: range) { peak = max(peak, ParakeetQuietAudioBoost.peak(of: $0)) }
+        return ParakeetQuietAudioBoost.gain(forPeak: peak)
+    }
+
+    /// Writes one range of the raw spool out as a mono 16-bit WAV, copied in bounded chunks,
+    /// with `gain` applied to every sample on the way (1 copies the bytes as they are).
     static func writeWav(
-        from source: FileHandle, range: PcmSpeechRange, to destination: URL, sampleRateHz: Int
+        from source: FileHandle, range: PcmSpeechRange, to destination: URL, sampleRateHz: Int,
+        gain: Double = 1
     ) throws {
         let manager = FileManager.default
         try? manager.removeItem(at: destination)
@@ -423,13 +455,22 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         try out.write(
             contentsOf: PcmWav.headerMono16(pcmSizeBytes: range.byteLength, sampleRateHz: sampleRateHz)
         )
+        try forEachChunk(of: source, range: range) { chunk in
+            try out.write(contentsOf: ParakeetQuietAudioBoost.apply(gain, to: chunk))
+        }
+    }
+
+    /// Reads `range` of the spool in 64 KiB pieces (sample-aligned, since the range is).
+    private static func forEachChunk(
+        of source: FileHandle, range: PcmSpeechRange, _ body: (Data) throws -> Void
+    ) throws {
         try source.seek(toOffset: UInt64(range.startByte))
         var remaining = range.byteLength
         while remaining > 0 {
             guard let chunk = try source.read(upToCount: min(remaining, 64 * 1024)),
                 !chunk.isEmpty
             else { break }
-            try out.write(contentsOf: chunk)
+            try body(chunk)
             remaining -= chunk.count
         }
     }

@@ -69,7 +69,8 @@ public enum LocalEngineResolution: Equatable, Sendable {
 public enum LocalEngineUnavailableReason: Equatable, Sendable {
     /// The weights are not on this phone — a download in Settings fixes it.
     case notInstalled
-    /// No Cactus slice in this build, so no Parakeet model can ever run here.
+    /// This build, on this OS, has no engine for the model's runtime: no Cactus slice, or a
+    /// Core AI model below iOS 27 / on a simulator. No download would fix it.
     case notSupportedOnThisDevice
 }
 
@@ -78,32 +79,53 @@ public enum LocalEngineUnavailableReason: Equatable, Sendable {
 /// persisted selection — so changing the Settings picker takes effect immediately, exactly like
 /// `SelectableCloudTranscriptionProvider` does for the cloud backends.
 ///
-/// One Cactus engine is shared across every Parakeet model: switching models reloads it in
-/// place instead of leaving a second multi-hundred-MB model resident.
+/// One engine per runtime is shared across every Parakeet model of that runtime: switching
+/// models reloads it in place instead of leaving a second multi-hundred-MB model resident.
 public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
     LocalTranscriptionLifecycle, @unchecked Sendable
 {
     private let selected: @Sendable () -> String
     private let location: any ParakeetModelLocating
-    private let engine: any ParakeetNativeEngine
+    private let engines: [LocalEngineRuntime: any ParakeetNativeEngine]
     private let makeAppleSpeech: @Sendable (Locale) -> any TranscriptionProvider
+    private let isForeground: @Sendable () -> Bool
+    private let boostQuietAudio: @Sendable () -> Bool
 
     private let lock = NSLock()
     private var appleByLocale: [String: any TranscriptionProvider] = [:]
     private var parakeetById: [String: ParakeetTranscriptionProvider] = [:]
 
+    /// - Parameters:
+    ///   - engine: the Cactus engine (the factory's when nil).
+    ///   - coreAIEngine: the Core AI engine (the factory's when nil — `UnsupportedParakeetEngine`
+    ///     wherever Core AI cannot run, which is what makes `resolution` say so).
+    ///   - isForeground / boostQuietAudio: handed to every `ParakeetTranscriptionProvider`; see
+    ///     its initializer.
     public init(
         selected: @escaping @Sendable () -> String,
         location: any ParakeetModelLocating = ParakeetModelLocation(),
         engine: (any ParakeetNativeEngine)? = nil,
+        coreAIEngine: (any ParakeetNativeEngine)? = nil,
         makeAppleSpeech: @escaping @Sendable (Locale) -> any TranscriptionProvider = {
             SpeechAnalyzerProvider(locale: $0)
-        }
+        },
+        isForeground: @escaping @Sendable () -> Bool = { true },
+        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() }
     ) {
         self.selected = selected
         self.location = location
-        self.engine = engine ?? ParakeetEngineFactory.make()
+        self.engines = [
+            .cactus: engine ?? ParakeetEngineFactory.make(runtime: .cactus),
+            .coreAI: coreAIEngine ?? ParakeetEngineFactory.make(runtime: .coreAI),
+        ]
         self.makeAppleSpeech = makeAppleSpeech
+        self.isForeground = isForeground
+        self.boostQuietAudio = boostQuietAudio
+    }
+
+    /// The engine that runs models of `runtime`.
+    public func engine(for runtime: LocalEngineRuntime) -> any ParakeetNativeEngine {
+        engines[runtime] ?? UnsupportedParakeetEngine()
     }
 
     public var choice: LocalTranscriptionEngineChoice {
@@ -120,7 +142,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         case .appleSpeech(let locale):
             return .appleSpeech(locale: locale)
         case .parakeet(let spec):
-            guard engine.isSupported else {
+            guard engine(for: spec.runtime).isSupported else {
                 return .parakeetUnavailable(spec: spec, reason: .notSupportedOnThisDevice)
             }
             guard location.installedModelPath(for: spec) != nil else {
@@ -157,7 +179,8 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
             defer { lock.unlock() }
             if let existing = parakeetById[spec.id] { return existing }
             let created = ParakeetTranscriptionProvider(
-                spec: spec, location: location, engine: engine
+                spec: spec, location: location, engine: engine(for: spec.runtime),
+                isForeground: isForeground, boostQuietAudio: boostQuietAudio
             )
             parakeetById[spec.id] = created
             return created
@@ -176,10 +199,12 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
 
     // MARK: - LocalTranscriptionLifecycle
 
-    /// Drops the resident Parakeet model. Apple Speech has no long-lived handle to release
+    /// Drops the resident Parakeet model(s). Apple Speech has no long-lived handle to release
     /// (its analyzer sessions are per-transcription), so this is Parakeet-only by nature.
     public func releaseModel(reason: String) async {
-        await engine.release()
+        for runtime in LocalEngineRuntime.allCases {
+            await engine(for: runtime).release()
+        }
     }
 
     public func releaseModelIfIdle(nowMs: Int64, idleTimeoutMs: Int64) async {
