@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import SearchKit
 
 // The Shortcuts-facing "get" intents: they run in the app's own process against the database
 // and answer without bringing the app forward. Each one goes through `EntityDataSources`, so
@@ -57,30 +58,39 @@ struct GetTodaysRecapIntent: AppIntent {
     )
     static let supportedModes: IntentModes = .background
 
+    /// What the intent returns and what Siri says — pure, so it is testable on its own.
+    struct Answer: Equatable {
+        /// The recap text, or "" when there is none to give.
+        var value: String
+        /// The spoken/shown line: the condensed recap when there is one, else the recap, else
+        /// why there is nothing.
+        var spoken: String
+    }
+
+    static func answer(recap: RecapEntitySnapshot?, visibility: SystemSearchVisibility) -> Answer {
+        guard visibility.donates else {
+            // The setting is the person's own; the answer says which one, not "no recap".
+            return Answer(
+                value: "",
+                spoken: "Siri & Spotlight can see is set to Off, so recaps stay in the app.")
+        }
+        guard let text = recap?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !text.isEmpty
+        else {
+            return Answer(
+                value: "",
+                spoken: "No recap yet. One is written once today's conversations are transcribed.")
+        }
+        let short = recap?.shortText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Answer(value: text, spoken: (short?.isEmpty == false ? short : nil) ?? text)
+    }
+
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
         let source = await EntityDataSources.current
         let visibility = await source.visibility()
-        guard visibility.donates else {
-            // The setting is the person's own; the answer says which one, not "no recap".
-            return .result(
-                value: "",
-                dialog: "Siri & Spotlight can see is set to Off, so recaps stay in the app."
-            )
-        }
-        let today = await source.todayDateKey()
-        guard let recap = await source.recap(dateKey: today),
-            let text = recap.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
-        else {
-            return .result(
-                value: "",
-                dialog: "No recap yet. One is written once today's conversations are transcribed."
-            )
-        }
-        let spoken = recap.shortText?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .result(
-            value: text,
-            dialog: IntentDialog(stringLiteral: (spoken?.isEmpty == false ? spoken : nil) ?? text)
-        )
+        let recap = await source.recap(dateKey: await source.todayDateKey())
+        let answer = Self.answer(recap: recap, visibility: visibility)
+        return .result(value: answer.value, dialog: IntentDialog(stringLiteral: answer.spoken))
     }
 }
 
@@ -133,15 +143,14 @@ struct ProcessNowIntent: AppIntent {
     static let supportedModes: IntentModes = .background
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let backlog = await EntityDataSources.current.nudgePipeline() else {
-            // No runtime came up in this process — say so rather than claim work started.
-            return .result(dialog: "Pebble Audio is not running. Open it to catch up.")
-        }
+        let backlog = await EntityDataSources.current.nudgePipeline()
         return .result(dialog: IntentDialog(stringLiteral: Self.dialog(for: backlog)))
     }
 
-    /// One sentence, counts included, and "nothing waiting" said plainly.
-    static func dialog(for backlog: PipelineBacklog) -> String {
+    /// One sentence, counts included, "nothing waiting" said plainly — and, with no runtime
+    /// up in this process, said so rather than claiming work started.
+    static func dialog(for backlog: PipelineBacklog?) -> String {
+        guard let backlog else { return "Pebble Audio is not running. Open it to catch up." }
         if backlog.isEmpty { return "Nothing is waiting. Everything recorded so far is done." }
         var parts: [String] = []
         if backlog.queued > 0 {
