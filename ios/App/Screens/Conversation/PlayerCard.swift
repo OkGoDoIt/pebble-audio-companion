@@ -195,6 +195,11 @@ final class PlayerModel {
     private var engine: (any ConversationPlayback)?
     private var configuredId: String?
     private var observation: Task<Void, Never>?
+    /// True between `play()` and the engine's first `playing` update. The engine seeks before
+    /// it starts and reports that seek as `playing: false` at the target — which is neither a
+    /// pause nor the audio running out, and used to read as both: the docked player let go and
+    /// the Lock Screen item was torn down and rebuilt a quarter of a second after every play.
+    private var awaitingEngineStart = false
     private var ticker: Task<Void, Never>?
     /// Media position -> wall clock, as (mediaMs, wall) anchors in ascending media order.
     ///
@@ -258,6 +263,15 @@ final class PlayerModel {
     /// screen: the telemetry state reporter and the residency re-assert (see
     /// `AppComposition+NowPlaying.swift`). Fires on transitions only.
     static var onActivity: (@MainActor (PlaybackActivity) -> Void)?
+    /// True from the first play of a listening session until it ends — through pauses. What
+    /// the lifecycle coordinator should consult before re-asserting the residency session on
+    /// `didEnterBackground`: while this is true the shared audio session belongs to playback.
+    private(set) static var isListening = false
+
+    private static func report(_ activity: PlaybackActivity) {
+        isListening = activity != .ended
+        onActivity?(activity)
+    }
 
     var speedLabel: String {
         switch speed {
@@ -321,21 +335,32 @@ final class PlayerModel {
     /// position-only tick moves the scrubber and the transcript highlight and nothing else.
     func apply(progress update: PlaybackProgress) {
         let wasPlaying = playing
+        let hadPosition = positionMs
         let hadDuration = durationMs
+        if update.durationMs > 0 { durationMs = update.durationMs }
+        if awaitingEngineStart, !update.playing {
+            // The engine's seek-before-start: take the position, keep the play the person
+            // just pressed.
+            positionMs = update.positionMs
+            playhead.update(mediaMs: update.positionMs, playing: playing)
+            if hadDuration != durationMs { publishNowPlaying() }
+            return
+        }
+        awaitingEngineStart = false
         playing = update.playing
         positionMs = update.positionMs
-        if update.durationMs > 0 { durationMs = update.durationMs }
         // Running off the end rewinds to zero and stops: that is the session ending, not a
-        // pause, so the docked player lets go too — and so does the Lock Screen.
-        let ended = !update.playing && update.positionMs == 0 && hasStarted
+        // pause, so the docked player lets go too — and so does the Lock Screen. A pause is
+        // told apart from it by where the audio was: the end comes after it has moved.
+        let ended = wasPlaying && !update.playing && update.positionMs == 0 && hadPosition > 0
         if ended { hasStarted = false }
         playhead.update(mediaMs: update.positionMs, playing: update.playing)
         if ended {
             clearNowPlaying()
-            Self.onActivity?(.ended)
+            Self.report(.ended)
         } else if wasPlaying != update.playing {
             publishNowPlaying()
-            Self.onActivity?(update.playing ? .playing : .paused)
+            Self.report(update.playing ? .playing : .paused)
         } else if hadDuration != durationMs {
             // The engine's first update carries the duration the display only estimated.
             publishNowPlaying()
@@ -354,13 +379,14 @@ final class PlayerModel {
         hasStarted = true
         cancelEngagementLapse()
         if let engine {
+            awaitingEngineStart = true
             engine.play(fromMs: positionMs)
         } else {
             simulate()
         }
         playhead.update(mediaMs: positionMs, playing: true)
         publishNowPlaying()
-        if !wasPlaying { Self.onActivity?(.playing) }
+        if !wasPlaying { Self.report(.playing) }
     }
 
     /// Seek there and make sure it is running — the one move behind "play from here", whether
@@ -373,6 +399,7 @@ final class PlayerModel {
     func pause() {
         let wasPlaying = playing
         playing = false
+        awaitingEngineStart = false
         ticker?.cancel()
         ticker = nil
         engine?.pause()
@@ -380,7 +407,7 @@ final class PlayerModel {
         startEngagementLapse()
         // Paused, not gone: the Lock Screen keeps the item so the resume can come from there.
         publishNowPlaying()
-        if wasPlaying { Self.onActivity?(.paused) }
+        if wasPlaying { Self.report(.paused) }
     }
 
     /// Let engagement lapse if play is not pressed again. Re-armed from scratch on every pause,
@@ -406,6 +433,7 @@ final class PlayerModel {
         let wasEngaged = hasStarted
         playing = false
         hasStarted = false
+        awaitingEngineStart = false
         cancelEngagementLapse()
         ticker?.cancel()
         ticker = nil
@@ -414,7 +442,7 @@ final class PlayerModel {
         engine?.stop()
         playhead.clear()
         clearNowPlaying()
-        if wasEngaged { Self.onActivity?(.ended) }
+        if wasEngaged { Self.report(.ended) }
     }
 
     /// 1× → 1.5× → 2× → 1× (mockup 2.6).

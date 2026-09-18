@@ -105,6 +105,37 @@ struct NowPlayingPublishingTests {
         #expect(publisher.published.count == 2)
     }
 
+    @Test("the engine's seek-before-start is neither a pause nor an end")
+    func preStartSeekIsIgnored() {
+        var seen: [PlaybackActivity] = []
+        PlayerModel.onActivity = { seen.append($0) }
+        defer { PlayerModel.onActivity = nil }
+
+        let (model, publisher, _) = makeModel(atMs: 30_000)
+        model.play()
+        // What `SegmentPlaybackController.seekTo` reports before `play` has started the loop.
+        model.apply(progress: PlaybackProgress(playing: false, positionMs: 30_000, durationMs: 0))
+        #expect(model.playing, "the play the person pressed stands")
+        #expect(model.isEngaged)
+        #expect(publisher.published.count == 1)
+        #expect(publisher.clears == 0)
+        // Then the loop starts: still the same state, still nothing new to publish.
+        model.apply(progress: PlaybackProgress(playing: true, positionMs: 30_000, durationMs: 0))
+        #expect(publisher.published.count == 1)
+        #expect(seen == [.playing])
+    }
+
+    @Test("a pause at the very start is a pause, not the end")
+    func pauseAtZeroIsAPause() {
+        let (model, publisher, _) = makeModel()
+        model.play()
+        tick(model, toMs: 0)
+        tick(model, toMs: 0, playing: false)
+        #expect(model.isEngaged)
+        #expect(publisher.clears == 0)
+        #expect(publisher.last?.playing == false)
+    }
+
     @Test("a seek publishes once, at the new position")
     func seekPublishesOnce() {
         let (model, publisher, _) = makeModel()
@@ -278,14 +309,19 @@ struct NowPlayingPublishingTests {
 
         let (model, _, _) = makeModel()
         #expect(seen.isEmpty, "configuring a fresh model is not a transition")
+        // `isListening` is process-wide and an earlier test may have left a model playing, so
+        // it is asserted after transitions rather than before them.
         model.play()
         model.play()
+        #expect(PlayerModel.isListening)
         model.pause()
         model.pause()
+        #expect(PlayerModel.isListening, "a pause is still a listening session")
         model.play()
         model.stop()
         model.stop()
         #expect(seen == [.playing, .paused, .playing, .ended])
+        #expect(!PlayerModel.isListening)
     }
 
     @Test("the end of the audio is an end, and a pause is not")
