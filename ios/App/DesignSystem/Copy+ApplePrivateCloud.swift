@@ -59,11 +59,11 @@ extension Copy.Privacy {
 // ─── Settings · Transcription & AI ───────────────────────────────────────────
 
 extension Copy.Settings.TranscriptionAI {
-    /// The row that picks what "remote" means on the AI axis. "Remote" rather than "cloud"
-    /// because that is the word the AI modes use ("Remote first"), and because the two options
-    /// are both clouds. "Provider", not "model": the model (GPT-5.6 Luna…) is the OpenAI row
-    /// below this one, and the two words were being read as the same thing.
-    static let remoteModel = "Remote provider"
+    /// The row that picks which cloud the AI axis uses. The same words as the transcription
+    /// card's "Cloud provider" (Soniox / OpenAI) so the two cards read as one system, and
+    /// "cloud" on purpose: Apple Private Cloud Compute is Apple's cloud, not this phone.
+    /// "Provider", not "model": the model (GPT-5.6 Luna…) is the OpenAI row below this one.
+    static let remoteModel = "Cloud provider"
 
     /// The readiness row's title when the remote is Apple's. Short form here, the way the
     /// on-device row is "On this phone"; the full name is in the footer and the stance.
@@ -79,12 +79,11 @@ extension Copy.Settings.TranscriptionAI {
 
     /// The Remote model screen's footer: the trade, attributed where it is a claim.
     static let remoteModelFooter =
-        "AI can run in three places: on this phone (Apple's built-in model, always local), "
-        + "on Apple Private Cloud Compute, or at OpenAI. The Mode row decides whether the phone "
-        + "or the remote goes first; this row picks which remote. OpenAI uses your own key and "
-        + "account, and the model you choose below. Apple Private Cloud Compute needs no key: "
-        + "Apple runs its model on its own servers, which it says keep nothing after the "
-        + "request, and each person gets a daily allowance."
+        "AI runs in one of two places: on this phone (Apple's built-in model), or in the cloud. "
+        + "The Mode row decides which goes first; this row picks which cloud. OpenAI uses your "
+        + "own key and account, and the model you choose below. Apple Private Cloud Compute is "
+        + "Apple's cloud: no key, Apple runs its model on its own servers, which it says keep "
+        + "nothing after the request, and each person gets a daily allowance."
 
     /// The readiness row's value — lowercase, in the register of "not set" and "ready" above it.
     /// The allowance is folded in only when the model is otherwise ready: "used up" on a phone

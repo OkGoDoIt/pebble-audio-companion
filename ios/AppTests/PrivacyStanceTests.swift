@@ -192,7 +192,9 @@ struct PrivacyStanceTests {
         #expect(settings.aiMode == .remoteFirst)
         #expect(stance.qualifiers.count == 2)
         #expect(stance.qualifiers[0].contains("Cloud first"))
-        #expect(stance.qualifiers[1].contains("Remote first"))
+        // "Cloud first" since 2026-09-18: the AI axis uses the transcription axis's word, so
+        // Apple Private Cloud Compute is never read as anything but cloud.
+        #expect(stance.qualifiers[1].contains("Cloud first"))
     }
 
     // MARK: - Invariants across every configuration

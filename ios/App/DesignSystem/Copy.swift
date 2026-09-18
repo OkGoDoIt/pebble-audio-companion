@@ -800,13 +800,17 @@ enum Copy {
             static func keyRow(provider: String) -> String { "\(provider) key" }
 
             static let cloudFirst = "Cloud first"
-            static let remoteFirst = "Remote first"
+            /// The AI axis used to say "Remote first" while transcription said "Cloud first".
+            /// With Apple Private Cloud Compute as one of the AI providers the split became a
+            /// stance question — "is Apple's cloud local?" — so both axes now use one word:
+            /// there are two places, on this phone or in the cloud, and PCC is in the cloud.
+            static let remoteFirst = "Cloud first"
             static let localOnly = "Local only"
             // Natural extensions of the approved mode vocabulary (the enums have four cases;
             // the artboards show three labels).
             static let localFirst = "Local first"
             static let cloudOnly = "Cloud only"
-            static let remoteOnly = "Remote only"
+            static let remoteOnly = "Cloud only"
             static let savedInKeychain = "saved in Keychain"
             /// Key-row value before any key exists (matches the "not installed" register).
             static let notSet = "not set"

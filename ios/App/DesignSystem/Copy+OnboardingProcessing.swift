@@ -48,7 +48,7 @@ extension Copy {
         /// it is the difference people actually notice.
         static let cloudBody =
             "The most accurate transcripts, with speaker names, and every AI feature works. "
-            + "You add a provider key."
+            + "You add a key for each provider that needs one."
 
         static let laterTitle = "Later"
         /// Verified: "Later" leaves `transcriptsConfigured` false, and both Today's status card

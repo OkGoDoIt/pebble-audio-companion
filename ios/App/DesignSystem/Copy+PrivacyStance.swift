@@ -189,7 +189,7 @@ extension Copy.Privacy {
             return "AI is set to Local first, so most of it runs on this iPhone. Text still goes "
                 + "to \(destination) when the on-device model cannot do a job."
         case .remoteFirst:
-            return "AI is set to Remote first, so \(destination) does the work; the on-device "
+            return "AI is set to Cloud first, so \(destination) does the work; the on-device "
                 + "model is the fallback when that fails."
         }
     }
