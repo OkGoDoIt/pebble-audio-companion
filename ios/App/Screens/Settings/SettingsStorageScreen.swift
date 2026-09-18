@@ -1,3 +1,4 @@
+import SearchKit
 import StatusUI
 import SwiftUI
 
@@ -35,6 +36,26 @@ struct SettingsStorageScreen: View {
         @Bindable var settings = settings
         SettingsScroll {
             stanceCard
+
+            // The one privacy control: what the system's search index is given. Directly
+            // under the stance because it is the same question — where does the text go —
+            // with an answer the person sets rather than reads.
+            ListCard {
+                SettingsPushRow(
+                    title: Copy.Settings.Storage.systemSearch,
+                    value: Copy.Settings.Storage.systemSearchLabel(settings.systemSearchVisibility)
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Settings.Storage.systemSearch,
+                        options: SystemSearchVisibility.allCases.reversed().map {
+                            .init(value: $0, label: Copy.Settings.Storage.systemSearchLabel($0))
+                        },
+                        selection: $settings.systemSearchVisibility,
+                        footer: Copy.Settings.Storage.systemSearchChoiceFooter
+                    )
+                }
+            }
+            SettingsFooter(text: Copy.Settings.Storage.systemSearchFooter)
 
             ListCard {
                 SettingsRow(
