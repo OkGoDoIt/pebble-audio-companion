@@ -75,6 +75,8 @@ struct ConversationScreen: View {
             }
         }
         .onDisappear { player.stop() }
+        // iOS 27 on-screen awareness: the open conversation, as the scene's activity (no-op below 27).
+        .conversationEntityAwareness(id: conversationId)
         .sheet(item: $model.renameTurn) { turn in
             SpeakerRenameSheet(conversationId: conversationId, turn: turn) {
                 Task { await load() }

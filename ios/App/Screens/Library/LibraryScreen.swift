@@ -247,6 +247,8 @@ private struct ConversationRowView: View {
                 content.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // iOS 27 on-screen awareness: this row IS that conversation (no-op below 27).
+            .conversationRowEntity(id: row.id)
         }
     }
 
