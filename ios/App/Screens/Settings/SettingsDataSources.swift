@@ -143,6 +143,9 @@ struct LocalModelOption: Identifiable, Hashable {
     /// at all (Core AI needs iOS 27 and a device build); Apple Speech is `.cactus` by default
     /// only because the field is meaningless for it.
     var runtime: LocalEngineRuntime = .cactus
+    /// True when nothing is hosted for this model yet: the row offers the Files inbox, not a
+    /// download arrow, and says so.
+    var isImportOnly = false
 
     /// True when this build, on this OS, has an engine for the model — false is the Core AI
     /// entry on iOS 26 or a simulator, where the row shows "needs iOS 27" and cannot be chosen.
@@ -182,7 +185,8 @@ extension LocalModelOption {
             description: spec.modelDescription,
             downloadBytes: spec.downloadBytes,
             isRecommended: spec.recommended,
-            runtime: spec.runtime
+            runtime: spec.runtime,
+            isImportOnly: !spec.hasDownloadSource
         )
     }
 }

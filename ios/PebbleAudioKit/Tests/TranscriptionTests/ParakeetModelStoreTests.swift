@@ -202,6 +202,35 @@ private let spec = ParakeetModelCatalog.byId(ParakeetModelCatalog.defaultModelId
         )
     }
 
+    /// A model nothing is hosted for must not start a download that can only end in an HTTP
+    /// error: without an inbox archive the install fails at once, naming the Files path.
+    @Test func anUnpublishedModelWithoutAnInboxArchiveAsksForAnImport() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unpublished = try #require(ParakeetModelCatalog.all.first { !$0.published })
+        #expect(!unpublished.hasDownloadSource(resolvingOverride: { _ in nil }))
+        #expect(unpublished.hasDownloadSource(resolvingOverride: { _ in "http://mac.local/m.zip" }))
+        let downloader = FakeDownloader()
+        let store = ParakeetModelStore(
+            location: ParakeetModelLocation(modelsDirectory: root),
+            downloader: downloader,
+            extractor: FakeExtractor(),
+            temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
+            inboxDirectory: root.appendingPathComponent("inbox", isDirectory: true),
+            supportedRuntimes: [unpublished.runtime]
+        )
+
+        let state = await store.install(unpublished.id)
+
+        guard case .failed(let message) = state else {
+            Issue.record("expected a failure, got \(state)")
+            return
+        }
+        #expect(message.contains("models-inbox"))
+        #expect(message.contains("\(unpublished.id).zip"))
+        #expect(downloader.requestedURLs.isEmpty, "no download may be attempted")
+    }
+
     @Test func installOnAnAlreadyInstalledModelDoesNotDownload() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

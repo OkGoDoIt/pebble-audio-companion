@@ -215,6 +215,13 @@ private struct LocalModelRow: View {
                         .foregroundStyle(Tokens.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
+                    if option.isImportOnly, state != .installed, !state.isBusy {
+                        Text(Copy.CoreAI.importHint(option.id))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.meta)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -272,7 +279,8 @@ private struct LocalModelRow: View {
     private var accessory: some View {
         switch state {
         case .notInstalled:
-            Image(systemName: "arrow.down.circle")
+            // An import-only model has no download to offer; the glyph says "bring a file".
+            Image(systemName: option.isImportOnly ? "square.and.arrow.down" : "arrow.down.circle")
                 .font(.system(size: 17, weight: .regular))
                 .foregroundStyle(Tokens.tint)
                 .accessibilityHidden(true)

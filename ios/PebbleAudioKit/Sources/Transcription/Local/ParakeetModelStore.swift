@@ -324,6 +324,12 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         if let archive = inboxArchive(for: spec) {
             return await run(spec) { await self.performInstall(spec, archive: archive) }
         }
+        guard spec.hasDownloadSource else {
+            // Nothing is hosted for this model yet: the only way in is the Files inbox, and a
+            // download attempt would end in an HTTP error that says nothing useful.
+            set(spec.id, .failed(message: Self.importRequiredMessage(spec)))
+            return resolvedState(spec)
+        }
         set(spec.id, .downloading(receivedBytes: 0, totalBytes: spec.downloadBytes))
         return await run(spec) { await self.performInstall(spec, archive: nil) }
     }
@@ -478,6 +484,11 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     }
 
     static let unsupportedRuntimeMessage = "This model needs iOS 27 on an iPhone."
+
+    static func importRequiredMessage(_ spec: ParakeetModelSpec) -> String {
+        "No download is published for this model yet. Put \(spec.id).zip in Files › On My "
+            + "iPhone › Pebble Audio › models-inbox, then choose the model again."
+    }
 
     static func message(for error: Error) -> String {
         if error is ZipExtractionError {

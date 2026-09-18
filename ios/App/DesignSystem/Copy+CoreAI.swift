@@ -22,6 +22,13 @@ extension Copy {
                 + "Choose another model to change that."
         }
 
+        /// Under the description of a model nothing is hosted for yet: how it actually gets
+        /// onto the phone. Names the exact Files path because there is no button to press.
+        static func importHint(_ id: String) -> String {
+            "Not downloadable yet. To try it, put \(id).zip in Files › On My iPhone › "
+                + "Pebble Audio › models-inbox and choose the model."
+        }
+
         /// Debug-only row on the local-model screen: the quiet-audio boost experiment
         /// (`ParakeetQuietAudioBoost`). Never shipped as a setting.
         static let debugBoostTitle = "Debug: boost quiet audio for local models"

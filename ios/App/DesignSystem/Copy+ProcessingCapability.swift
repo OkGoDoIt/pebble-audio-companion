@@ -35,7 +35,9 @@ extension Copy.Settings.TranscriptionAI {
     /// modes it sat two rows below "Local model" with no way to tell them apart — which is
     /// exactly what was reported. The pair now reads "Local model" / "Cloud model": the same
     /// noun, and the word that distinguishes them comes first in both.
-    static let cloudModel = "Cloud model"
+    /// Renamed again with the second remote provider: the row only ever picks an OpenAI model,
+    /// and beside "Remote provider" the word "Cloud" no longer said which cloud.
+    static let cloudModel = "OpenAI model"
 
     /// The AI card's readiness row. "On this phone" rather than "On-device model" — the same
     /// vocabulary `Copy.OnboardingProcessing.aiOnPhone` uses for this axis, and the person chose

@@ -35,6 +35,10 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     /// The native runtime that loads this model. Decides the engine, the install marker and
     /// version file names, and whether a prepare step follows extraction.
     public let runtime: LocalEngineRuntime
+    /// Whether an archive is actually hosted at `catalogDownloadURL`. False for a model that
+    /// exists only as an import (`Documents/models-inbox/<id>.zip`) or a LAN override until a
+    /// release is published — the store must never start a download that can only fail.
+    public let published: Bool
 
     public init(
         id: String,
@@ -49,7 +53,8 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         modelVersionForProvenance: String,
         downloadBytes: Int64,
         recommended: Bool = false,
-        runtime: LocalEngineRuntime = .cactus
+        runtime: LocalEngineRuntime = .cactus,
+        published: Bool = true
     ) {
         self.id = id
         self.displayName = displayName
@@ -64,6 +69,7 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         self.downloadBytes = downloadBytes
         self.recommended = recommended
         self.runtime = runtime
+        self.published = published
     }
 
     /// The Hugging Face archive URL (`{base}/{repository}/resolve/{revision}/{archivePath}`)
@@ -80,6 +86,16 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     /// archive from a LAN HTTP server; nothing in the app writes the key).
     public var downloadURL: URL {
         downloadURL(resolvingOverride: ParakeetModelCatalog.downloadURLOverride)
+    }
+
+    /// Whether the store may attempt a download at all: a published archive, or a LAN override
+    /// during development. Otherwise the only way in is the Files inbox.
+    public var hasDownloadSource: Bool {
+        hasDownloadSource(resolvingOverride: ParakeetModelCatalog.downloadURLOverride)
+    }
+
+    public func hasDownloadSource(resolvingOverride override: (_ modelId: String) -> String?) -> Bool {
+        published || downloadURL(resolvingOverride: override) != catalogDownloadURL
     }
 
     /// `downloadURL` with the override lookup injected, so the rule is testable without
@@ -204,7 +220,8 @@ public enum ParakeetModelCatalog {
             modelNameForProvenance: "parakeet-tdt-0.6b-v3-coreai",
             modelVersionForProvenance: "v1",
             downloadBytes: 1_256_163_783,
-            runtime: .coreAI
+            runtime: .coreAI,
+            published: false
         ),
     ]
 
