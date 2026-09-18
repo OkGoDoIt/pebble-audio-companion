@@ -1,0 +1,168 @@
+{
+  "environment" : {
+    "applicationBuildVersion" : "1",
+    "bundleIdentifier" : "dev.audiocompanion.app",
+    "deviceType" : "iPhone18,3",
+    "hasExceededStateLimit" : false,
+    "includesMultipleApplicationVersions" : false,
+    "isTestFlightApp" : false,
+    "latestApplicationVersion" : "2.0.0",
+    "lowPowerModeEnabled" : false,
+    "osVersion" : {
+      "buildNumber" : "25A5300",
+      "number" : "27.0",
+      "platform" : "iOS"
+    },
+    "platformArchitecture" : "arm64e",
+    "regionFormat" : "US"
+  },
+  "intervalEntries" : [
+    {
+      "duration" : {
+        "unit" : "s",
+        "value" : 86400
+      },
+      "states" : [
+
+      ],
+      "values" : [
+        {
+          "cpuTimeMetric" : {
+            "value" : {
+              "unit" : "s",
+              "value" : 402.75
+            }
+          }
+        },
+        {
+          "cpuInstructionsCountMetric" : {
+            "value" : 987654321
+          }
+        },
+        {
+          "foregroundTerminationMetric" : {
+            "abnormalTerminationCount" : 0,
+            "badAccessTerminationCount" : 0,
+            "illegalInstructionTerminationCount" : 0,
+            "memoryLimitTerminationCount" : 0,
+            "normalTerminationCount" : 2,
+            "watchdogTerminationCount" : 0
+          }
+        },
+        {
+          "backgroundTerminationMetric" : {
+            "abnormalTerminationCount" : 1,
+            "badAccessTerminationCount" : 0,
+            "fileLockTerminationCount" : 0,
+            "highCPUTerminationCount" : 0,
+            "illegalInstructionTerminationCount" : 0,
+            "memoryLimitTerminationCount" : 2,
+            "normalTerminationCount" : 0,
+            "systemPressureTerminationCount" : 0,
+            "taskTimeoutTerminationCount" : 0,
+            "watchdogTerminationCount" : 0
+          }
+        }
+      ]
+    }
+  ],
+  "stateEntries" : [
+    {
+      "state" : {
+        "domain" : "dev.audiocompanion.app.activity",
+        "duration" : {
+          "unit" : "s",
+          "value" : 43200
+        },
+        "label" : "capturing-bg",
+        "stableMetadata" : {
+
+        }
+      },
+      "values" : [
+        {
+          "cpuTimeMetric" : {
+            "value" : {
+              "unit" : "s",
+              "value" : 312.5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "state" : {
+        "domain" : "dev.audiocompanion.app.activity",
+        "duration" : {
+          "unit" : "min",
+          "value" : 30
+        },
+        "label" : "idle-fg",
+        "stableMetadata" : {
+
+        }
+      },
+      "values" : [
+        {
+          "cpuTimeMetric" : {
+            "value" : {
+              "unit" : "ms",
+              "value" : 40250
+            }
+          }
+        }
+      ]
+    },
+    {
+      "state" : {
+        "domain" : "dev.audiocompanion.app.activity",
+        "duration" : {
+          "unit" : "s",
+          "value" : 5400
+        },
+        "label" : "pipeline-bg",
+        "stableMetadata" : {
+
+        }
+      },
+      "values" : [
+        {
+          "cpuTimeMetric" : {
+            "value" : {
+              "unit" : "s",
+              "value" : 50
+            }
+          }
+        }
+      ]
+    },
+    {
+      "state" : {
+        "domain" : "com.example.other-app.domain",
+        "duration" : {
+          "unit" : "s",
+          "value" : 600
+        },
+        "label" : "not-ours",
+        "stableMetadata" : {
+
+        }
+      },
+      "values" : [
+        {
+          "cpuTimeMetric" : {
+            "value" : {
+              "unit" : "s",
+              "value" : 999
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "timeRange" : {
+    "begin" : "2026-09-17T00:00:00Z",
+    "end" : "2026-09-18T00:00:00Z"
+  },
+  "version" : "2.0.0"
+}
