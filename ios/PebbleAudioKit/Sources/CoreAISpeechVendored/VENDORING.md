@@ -50,10 +50,21 @@ referenced by `CoreAISpeech`.
 ## Correctness check
 
 `Tests/CoreAISpeechVendoredTests` transcribes real watch recordings through this copy and
-asserts the text is byte-identical to what the upstream `speech-recognizer --stream` CLI (with
-swift-transformers) produced for the same bundle. It needs the env var `PEBBLE_COREAI_BUNDLE`
-pointing at a streaming export and `PEBBLE_COREAI_FIXTURES` at a directory of `<name>.wav` +
-`<name>.hyp.txt` pairs; without them it records a skip.
+asserts the text is byte-identical to what the upstream `speech-recognizer` CLI (with
+swift-transformers) produced for the same bundle. Environment variables:
+
+- `PEBBLE_COREAI_BUNDLE` — a `--streaming` export directory (required for the suite to run).
+- `PEBBLE_COREAI_FIXTURES` — a directory with `wavs/<name>.wav` and
+  `results/<prefix><name>.hyp.txt` (+ `.out` for the segment timestamps); required.
+- `PEBBLE_COREAI_HYP_PREFIX` — the streaming results prefix, default `f16stream_`.
+- `PEBBLE_COREAI_STATIC_BUNDLE` / `PEBBLE_COREAI_STATIC_HYP_PREFIX` (default `f16s45_`) — a
+  static export and its offline CLI outputs, for the engine's offline path; optional.
+- `PEBBLE_COREAI_ARCHIVE` — the zip that is pushed to a phone, for the end-to-end inbox install
+  test (our ZIP reader, wrapper hoist, real prepare pass); optional.
+
+Without the required variables the suite records a skip, so plain `swift test` stays green.
+The DSP loops are slow in a Debug build (the 900 s clip takes minutes); the numbers are the
+same, only the wait differs.
 
 ## Re-vendoring
 

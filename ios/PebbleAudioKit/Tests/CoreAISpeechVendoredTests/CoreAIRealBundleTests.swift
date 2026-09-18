@@ -19,6 +19,14 @@ private enum Env {
     static let bundle = ProcessInfo.processInfo.environment["PEBBLE_COREAI_BUNDLE"]
     static let fixtures = ProcessInfo.processInfo.environment["PEBBLE_COREAI_FIXTURES"]
     static let prefix = ProcessInfo.processInfo.environment["PEBBLE_COREAI_HYP_PREFIX"] ?? "f16stream_"
+    /// The zip the integrator pushes to the phone (`Documents/models-inbox/<id>.zip`), for the
+    /// end-to-end install test; optional.
+    static let archive = ProcessInfo.processInfo.environment["PEBBLE_COREAI_ARCHIVE"]
+    /// A static (non-streaming) export, for the engine's offline path; optional. Its CLI
+    /// outputs are `results/<staticPrefix><name>.hyp.txt`.
+    static let staticBundle = ProcessInfo.processInfo.environment["PEBBLE_COREAI_STATIC_BUNDLE"]
+    static let staticPrefix =
+        ProcessInfo.processInfo.environment["PEBBLE_COREAI_STATIC_HYP_PREFIX"] ?? "f16s45_"
     static var isConfigured: Bool { bundle != nil && fixtures != nil }
 }
 
@@ -30,7 +38,7 @@ private struct Fixture {
     /// `[start – end] text` lines from the CLI's `.out`, when that file is present.
     let segments: [(start: Double, end: Double, text: String)]?
 
-    static func all() throws -> [Fixture] {
+    static func all(prefix: String = Env.prefix) throws -> [Fixture] {
         guard let root = Env.fixtures else { return [] }
         let wavs = URL(fileURLWithPath: root).appendingPathComponent("wavs")
         let results = URL(fileURLWithPath: root).appendingPathComponent("results")
@@ -38,11 +46,11 @@ private struct Fixture {
             .filter { $0.hasSuffix(".wav") }.sorted()
         return try names.compactMap { file in
             let name = String(file.dropLast(4))
-            let hypURL = results.appendingPathComponent("\(Env.prefix)\(name).hyp.txt")
+            let hypURL = results.appendingPathComponent("\(prefix)\(name).hyp.txt")
             guard FileManager.default.fileExists(atPath: hypURL.path) else { return nil }
             let hyp = try String(contentsOf: hypURL, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let outURL = results.appendingPathComponent("\(Env.prefix)\(name).out")
+            let outURL = results.appendingPathComponent("\(prefix)\(name).out")
             let segments = (try? String(contentsOf: outURL, encoding: .utf8)).map(parseSegments)
             return Fixture(name: name, wav: wavs.appendingPathComponent(file), hyp: hyp, segments: segments)
         }
@@ -56,6 +64,17 @@ private struct Fixture {
             else { return nil }
             return (start, end, String(match.3))
         }
+    }
+}
+
+/// The end-to-end install test must never reach for the network.
+private struct NeverDownload: ParakeetArchiveDownloading {
+    func download(
+        from url: URL, to destination: URL,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
+        Issue.record("the inbox install downloaded \(url)")
+        throw CancellationError()
     }
 }
 
@@ -184,6 +203,95 @@ private struct Fixture {
             let shortest = try #require(fixtures.first { $0.name != longest.name } ?? fixtures.first)
             let json = try await engine.transcribe(wavPath: shortest.wav.path)
             #expect(ParakeetNativeResponse.parse(json).text == shortest.hyp)
+            await engine.release()
+        }
+
+        /// The whole install path on the real archive: inbox zip → our ZIP reader → wrapper
+        /// folder hoisted → version file → the real Core AI prepare pass → `.prepared` → a
+        /// transcription through the provider with the installed model. This is what happens
+        /// on the phone after `devicectl device copy to`, minus the phone.
+        @Test(.enabled(if: Env.archive != nil, "set PEBBLE_COREAI_ARCHIVE"))
+        func theRealArchiveInstallsFromTheInboxAndTranscribes() async throws {
+            guard #available(macOS 27, iOS 27, *) else { return }
+            let archive = URL(fileURLWithPath: try #require(Env.archive))
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("coreai-inbox-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let inbox = root.appendingPathComponent("inbox", isDirectory: true)
+            try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+            let spec = ParakeetModelCatalog.byId(ParakeetModelCatalog.coreAIModelId)
+            // A hard link: the store consumes the inbox copy, the original stays.
+            try FileManager.default.linkItem(
+                at: archive, to: inbox.appendingPathComponent("\(spec.id).zip")
+            )
+            let location = ParakeetModelLocation(
+                modelsDirectory: root.appendingPathComponent("models", isDirectory: true)
+            )
+            let store = ParakeetModelStore(
+                location: location,
+                downloader: NeverDownload(),
+                extractor: ZipArchiveExtractor(),
+                temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
+                inboxDirectory: inbox,
+                supportedRuntimes: [.coreAI],
+                isForeground: { true }
+            )
+            let started = ContinuousClock.now
+            let state = await store.install(spec.id)
+            print("real archive install took \(ContinuousClock.now - started)")
+            #expect(state == .installed)
+            let dir = location.directory(for: spec)
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("metadata.json").path))
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("processor/tokenizer.json").path))
+            #expect(location.recordedVersion(for: spec) == spec.revision)
+            #expect(location.isPrepared(spec))
+            #expect(FileManager.default.fileExists(atPath: inbox.appendingPathComponent("\(spec.id).zip").path) == false)
+
+            // Now the provider path, exactly as the pipeline drives it, on the shortest fixture.
+            let fixture = try #require(try Fixture.all().min { $0.hyp.count < $1.hyp.count })
+            let wav = try Data(contentsOf: fixture.wav)
+            let pcm = wav.dropFirst(44)
+            let provider = ParakeetTranscriptionProvider(spec: spec, location: location)
+            #expect(await provider.isAvailable())
+            let result = try await provider.transcribe(
+                pcmChunks: AsyncThrowingStream { continuation in
+                    var offset = pcm.startIndex
+                    while offset < pcm.endIndex {
+                        let end = min(offset + 32_000, pcm.endIndex)
+                        continuation.yield(pcm[offset..<end])
+                        offset = end
+                    }
+                    continuation.finish()
+                },
+                sampleRateHz: 16_000
+            )
+            #expect(result.providerId == "coreai-local")
+            #expect(result.modelUsed == spec.modelUsed)
+            #expect(!result.text.isEmpty)
+            #expect(!result.segments.isEmpty)
+            print("provider text: \(result.text)")
+            await provider.releaseModel(reason: "test")
+        }
+
+        /// The engine's OFFLINE path, on a static export: text only, one segment spanning the
+        /// audio, byte-identical to the CLI's non-streaming run of the same bundle. A clip longer
+        /// than the traced window is truncated by the encoder the same way on both sides.
+        @Test(.enabled(if: Env.staticBundle != nil, "set PEBBLE_COREAI_STATIC_BUNDLE"))
+        func staticExportMatchesTheUpstreamCLIOffline() async throws {
+            guard #available(macOS 27, iOS 27, *) else { return }
+            let engine = CoreAIParakeetEngine()
+            try await engine.load(modelPath: try #require(Env.staticBundle), identity: "static")
+            let fixtures = try Fixture.all(prefix: Env.staticPrefix)
+            #expect(!fixtures.isEmpty, "no \(Env.staticPrefix)<name>.hyp.txt beside the wavs")
+            for fixture in fixtures {
+                let parsed = ParakeetNativeResponse.parse(try await engine.transcribe(wavPath: fixture.wav.path))
+                #expect(parsed.text == fixture.hyp, "\(fixture.name): offline text differs from the CLI")
+                #expect(parsed.segments.count == (fixture.hyp.isEmpty ? 0 : 1))
+                if let segment = parsed.segments.first {
+                    #expect(segment.startMs == 0)
+                    #expect(segment.text == fixture.hyp)
+                }
+            }
             await engine.release()
         }
 

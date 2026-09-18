@@ -81,7 +81,7 @@ import Testing
             installDirectoryName: "parakeet-tdt-0.6b-v3-coreai",
             modelName: "parakeet-tdt-0.6b-v3-coreai",
             modelVersion: "v1",
-            downloadBytes: 1_256_158_119,
+            downloadBytes: 1_256_163_783,
             recommended: false,
             runtime: .coreAI
         ),

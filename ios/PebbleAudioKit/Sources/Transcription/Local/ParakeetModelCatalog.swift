@@ -187,8 +187,9 @@ public enum ParakeetModelCatalog {
         // repository/archive path below is a placeholder under a clearly-named path, and until a
         // release exists the model is installed from `Documents/models-inbox/<id>.zip` (Files) or
         // from a URL override — see `ParakeetModelStore` and `downloadURL`. The byte count is the
-        // measured size of the exported bundle; the ~1.1 GB specialization cache Core AI writes
-        // on first load comes on top and is what the description warns about.
+        // measured size of a stored (`zip -0`) archive of the exported bundle; the ~1.1 GB
+        // specialization cache Core AI writes on first load comes on top and is what the
+        // description warns about.
         ParakeetModelSpec(
             id: coreAIModelId,
             displayName: "Parakeet TDT 0.6B · Core AI",
@@ -202,7 +203,7 @@ public enum ParakeetModelCatalog {
             installDirectoryName: "parakeet-tdt-0.6b-v3-coreai",
             modelNameForProvenance: "parakeet-tdt-0.6b-v3-coreai",
             modelVersionForProvenance: "v1",
-            downloadBytes: 1_256_158_119,
+            downloadBytes: 1_256_163_783,
             runtime: .coreAI
         ),
     ]
