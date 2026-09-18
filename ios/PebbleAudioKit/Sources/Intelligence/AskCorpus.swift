@@ -161,17 +161,75 @@ public struct AskCorpusPlan: Equatable, Sendable {
     /// A single batch is the ordinary case and needs no synthesis pass.
     public let batches: [[CitableExcerpt]]
     public let coverage: AskCoverage
+    /// How many batches the scope packed into BEFORE the sweep ceiling dropped any. Equal to
+    /// `batches.count` whenever nothing was dropped; the difference is what the recall
+    /// experiment reports as sacrificed.
+    public let packedBatches: Int
 
-    public init(batches: [[CitableExcerpt]], coverage: AskCoverage) {
+    public init(batches: [[CitableExcerpt]], coverage: AskCoverage, packedBatches: Int? = nil) {
         self.batches = batches
         self.coverage = coverage
+        self.packedBatches = max(batches.count, packedBatches ?? batches.count)
     }
 
     public var isSinglePass: Bool { batches.count <= 1 }
     public var stretches: [CitableExcerpt] { batches.flatMap { $0 } }
 }
 
+/// What is known about a segment's bearing on the question, from two independent sources.
+///
+/// `keyword` is the FTS index (bm25 over title, summary, tags and transcript words) — exactly
+/// the signal the planner has always ranked on. `semantic` is Core Spotlight's ranking of the
+/// same donated transcripts, which can find a conversation whose relevance is not in its
+/// wording. Both are "higher is more relevant" and zero means "no evidence", but their scales
+/// are unrelated: a bm25 rank and a rank-derived fraction. `AskRecallPolicy` says how they
+/// combine; this type only carries them.
+public struct AskRelevance: Equatable, Sendable {
+    public var keyword: Double
+    public var semantic: Double
+
+    public init(keyword: Double = 0, semantic: Double = 0) {
+        self.keyword = keyword
+        self.semantic = semantic
+    }
+
+    /// No evidence from either source.
+    public static let none = AskRelevance()
+}
+
+/// How the two relevance signals decide which batches survive past the sweep ceiling.
+///
+/// The product rule is that the semantic signal is ADDITIVE: it may only ever rescue a
+/// conversation, never cost one that keyword evidence would have kept. `keywordFirst` is that
+/// rule made precise. `blended` exists to be compared against it on real questions (the
+/// Diagnostics replay), not to ship as the default.
+public enum AskRecallPolicy: String, CaseIterable, Codable, Sendable {
+    /// Lexicographic: keyword score first — exactly the ranking Ask has always used — then
+    /// semantic score, then recency. Provably never worse than keyword-only: the batches with
+    /// the top keyword scores are kept regardless of what semantic says; semantic decides only
+    /// among batches keyword could not tell apart (which, when keyword found nothing at all,
+    /// is every batch — and that is the case this exists for).
+    case keywordFirst
+    /// Each signal normalised to its own best batch, then the larger of the two, then recency.
+    /// A batch that only semantic vouches for can outrank one keyword vouches for.
+    case blended
+}
+
 public enum AskCorpusPlanner {
+    /// Plan how to read `stretches` (chronological, already numbered) under `budget`, with a
+    /// single keyword relevance signal. Identical to the two-signal form with `semantic = 0`
+    /// under `.keywordFirst` — kept so every caller and test that predates the semantic signal
+    /// keeps its exact behaviour.
+    public static func plan(
+        stretches: [CitableExcerpt],
+        budget: AskBudget,
+        relevance: (String) -> Double = { _ in 0 }
+    ) -> AskCorpusPlan {
+        plan(
+            stretches: stretches, budget: budget,
+            relevance: { AskRelevance(keyword: relevance($0)) }, policy: .keywordFirst)
+    }
+
     /// Plan how to read `stretches` (chronological, already numbered) under `budget`.
     ///
     /// `relevance` scores a segment id for the question and is consulted ONLY when the scope
@@ -181,7 +239,8 @@ public enum AskCorpusPlanner {
     public static func plan(
         stretches: [CitableExcerpt],
         budget: AskBudget,
-        relevance: (String) -> Double = { _ in 0 }
+        relevance: (String) -> AskRelevance,
+        policy: AskRecallPolicy = .keywordFirst
     ) -> AskCorpusPlan {
         let inScope = distinctSegments(stretches)
         guard !stretches.isEmpty, budget.transcriptChars > 0 else {
@@ -192,25 +251,17 @@ public enum AskCorpusPlanner {
         }
 
         var batches = pack(stretches, limit: budget.transcriptChars)
+        let packed = batches.count
 
         // Beyond the sweep ceiling something has to go. Drop whole batches by their best
         // relevance — a batch is a contiguous run of days, so dropping one loses a period the
         // answer can name rather than scattering holes through every day.
         if batches.count > budget.maxBatches {
-            let ranked = batches.enumerated()
-                .sorted { lhs, rhs in
-                    let l = score(lhs.element, relevance)
-                    let r = score(rhs.element, relevance)
-                    if l != r { return l > r }
-                    // Nothing to choose between them on relevance: prefer the recent one. A
-                    // question asked today is far more often about this month than about the
-                    // first week of the archive.
-                    return lhs.offset > rhs.offset
-                }
-                .prefix(budget.maxBatches)
-                .map(\.offset)
-                .sorted()
-            batches = ranked.map { batches[$0] }
+            let kept = survivingBatches(
+                scores: batches.map { score($0, relevance) },
+                keep: budget.maxBatches,
+                policy: policy)
+            batches = kept.map { batches[$0] }
         }
 
         return AskCorpusPlan(
@@ -218,7 +269,58 @@ public enum AskCorpusPlanner {
             coverage: AskCoverage(
                 conversationsRead: distinctSegments(batches.flatMap { $0 }),
                 conversationsInScope: inScope,
-                passes: max(1, batches.count)))
+                passes: max(1, batches.count)),
+            packedBatches: packed)
+    }
+
+    /// Which `keep` of the scored batches survive, as ascending offsets (chronological order
+    /// is never disturbed). `scores[i]` is batch `i`'s score; batch `i` is older than batch
+    /// `i + 1`.
+    ///
+    /// Under `.keywordFirst` a batch with a higher keyword score always outranks one with a
+    /// lower, whatever the semantic scores say; among equal keyword scores the higher semantic
+    /// score wins; among equal both, the RECENT batch — a question asked today is far more
+    /// often about this month than about the first week of the archive.
+    public static func survivingBatches(
+        scores: [AskRelevance], keep: Int, policy: AskRecallPolicy
+    ) -> [Int] {
+        guard keep > 0 else { return [] }
+        guard scores.count > keep else { return Array(scores.indices) }
+        let ranked: [Int]
+        switch policy {
+        case .keywordFirst:
+            ranked = scores.indices.sorted { lhs, rhs in
+                let l = scores[lhs]
+                let r = scores[rhs]
+                if l.keyword != r.keyword { return l.keyword > r.keyword }
+                if l.semantic != r.semantic { return l.semantic > r.semantic }
+                return lhs > rhs
+            }
+        case .blended:
+            // Each signal against its own best batch, so neither scale dominates the other.
+            let bestKeyword = scores.map(\.keyword).max() ?? 0
+            let bestSemantic = scores.map(\.semantic).max() ?? 0
+            func blended(_ score: AskRelevance) -> Double {
+                max(
+                    bestKeyword > 0 ? score.keyword / bestKeyword : 0,
+                    bestSemantic > 0 ? score.semantic / bestSemantic : 0)
+            }
+            ranked = scores.indices.sorted { lhs, rhs in
+                let l = blended(scores[lhs])
+                let r = blended(scores[rhs])
+                if l != r { return l > r }
+                // The same blended score can come from either signal; keyword evidence is the
+                // one every existing answer rests on, so it breaks the tie before recency.
+                if scores[lhs].keyword != scores[rhs].keyword {
+                    return scores[lhs].keyword > scores[rhs].keyword
+                }
+                if scores[lhs].semantic != scores[rhs].semantic {
+                    return scores[lhs].semantic > scores[rhs].semantic
+                }
+                return lhs > rhs
+            }
+        }
+        return ranked.prefix(keep).sorted()
     }
 
     /// Chronological packing. Order is never disturbed: the model reads the archive forwards,
@@ -261,19 +363,26 @@ public enum AskCorpusPlanner {
     /// header and the blank line between stretches.
     static let stretchOverheadChars = 80
 
-    private static func score(_ batch: [CitableExcerpt], _ relevance: (String) -> Double) -> Double {
+    /// A batch's score on each signal, from its distinct segments' scores on that signal.
+    static func score(
+        _ batch: [CitableExcerpt], _ relevance: (String) -> AskRelevance
+    ) -> AskRelevance {
         var seen = Set<String>()
-        var total: Double = 0
-        var best: Double = 0
+        var keyword = (total: 0.0, best: 0.0)
+        var semantic = (total: 0.0, best: 0.0)
         for stretch in batch where seen.insert(stretch.segmentId).inserted {
             let value = relevance(stretch.segmentId)
-            total += value
-            best = max(best, value)
+            keyword.total += value.keyword
+            keyword.best = max(keyword.best, value.keyword)
+            semantic.total += value.semantic
+            semantic.best = max(semantic.best, value.semantic)
         }
         // Sum finds the batch that is broadly on-topic; the best single hit keeps a batch that
         // holds one decisive conversation from losing to a batch that is vaguely related
-        // throughout.
-        return total + best
+        // throughout. The same shape on both signals, computed separately — they are never
+        // added to each other here.
+        return AskRelevance(
+            keyword: keyword.total + keyword.best, semantic: semantic.total + semantic.best)
     }
 
     private static func distinctSegments(_ stretches: [CitableExcerpt]) -> Int {

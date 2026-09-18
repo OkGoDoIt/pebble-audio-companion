@@ -746,18 +746,29 @@ extension LiveWorld: AskDataSource {
         // is backed by having actually read the range.
         let ordered = excerpts.sorted { ($0.startTimeMs ?? 0) < ($1.startTimeMs ?? 0) }
         let budget = AskBudget.forMode(
-            composition.settings.aiMode, modelId: composition.settings.aiModel)
+            composition.settings.aiMode, modelId: composition.settings.aiModel,
+            onDeviceMaxInputChars: await onDeviceInputCharsProvider())
         let stretches = citableStretches(
             of: ordered.compactMap { excerpt in
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
             },
             metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }))
+        // Two signals, one rule: keyword evidence ranks exactly as it always has, and the
+        // semantic pass may only rescue a batch keyword could not tell apart from its
+        // neighbours (`AskRecallPolicy.keywordFirst`). Nil when the scope will be read whole
+        // or swept in full — then there is nothing to rank and nothing is asked of either index.
+        let recall = await recallSignals(
+            question: question, priorTurns: priorTurns, excerpts: ordered, budget: budget)
+        let policy = AskRecallPolicy.keywordFirst
         let plan = AskCorpusPlanner.plan(
             stretches: stretches,
             budget: budget,
-            relevance: await relevanceScores(
-                question: question, priorTurns: priorTurns, excerpts: ordered,
-                gapSummaries: gapSummaries, budget: budget))
+            relevance: recall?.signals.relevance ?? { _ in .none },
+            policy: policy)
+        if let recall {
+            recordRecallExperiment(
+                question: question, recall: recall, plan: plan, policy: policy, nowMs: nowMs)
+        }
 
         let whenLabels = Dictionary(
             ordered.map { ($0.segmentId, $0.timeLabel) }, uniquingKeysWith: { first, _ in first })
@@ -880,46 +891,90 @@ extension LiveWorld: AskDataSource {
     /// Model calls a sweep keeps in flight at once.
     private static let sweepConcurrency = 3
 
-    /// Keyword relevance per segment, used ONLY to choose which batches survive when a range is
-    /// too large even to sweep. The index keys on conversation ids (`conv-<firstMember>`), so
-    /// hits are expanded to their member segments before they can match an excerpt — comparing
-    /// the two namespaces directly is what silently disabled retrieval entirely.
-    private func relevanceScores(
+    /// The on-device model's input ceiling, in characters, for `AskBudget.forMode`.
+    ///
+    /// One seam on purpose: the ceiling belongs to the provider (its context window), not to
+    /// this file. Today it is the documented default; the integrator points it at the
+    /// router's own answer (`AiModeRouter.localInputChars()`, workstream B) so a model with a
+    /// larger window is planned for the window it actually has.
+    private func onDeviceInputCharsProvider() async -> Int {
+        OnDeviceAiProvider.defaultMaxInputChars
+    }
+
+    /// Both index passes' findings for one question, plus what the experiment needs after
+    /// the plan is made.
+    private struct RecallSignals {
+        let signals: AskRecallSignals
+        /// Conversation id → its in-scope segment ids.
+        let members: [String: [String]]
+        let semanticRan: Bool
+        let ms: Int
+    }
+
+    /// Relevance per segment, used ONLY to choose which batches survive when a range is too
+    /// large even to sweep. Both indexes key on conversation ids (`conv-<firstMember>`), so
+    /// hits are expanded to their member segments before they can match an excerpt —
+    /// comparing the two namespaces directly is what silently disabled retrieval entirely.
+    ///
+    /// The keyword pass is the FTS index, exactly as before; the semantic pass is Core
+    /// Spotlight's ranking of the same transcripts, run concurrently when the setting allows
+    /// it. Nil when the scope does not overflow the ceiling.
+    private func recallSignals(
         question: String,
         priorTurns: [AskEntry],
         excerpts: [TranscriptExcerpt],
-        gapSummaries: [String: String?],
         budget: AskBudget
-    ) async -> (String) -> Double {
+    ) async -> RecallSignals? {
         // The scoring only matters when the scope overflows the sweep ceiling; skip both the
-        // membership walk and the index round-trip entirely when it plainly does not — which
+        // membership walk and the index round-trips entirely when it plainly does not — which
         // is every ordinary library.
         let totalChars = excerpts.reduce(0) { $0 + $1.text.count }
-        guard totalChars > budget.transcriptChars * budget.maxBatches else { return { _ in 0 } }
+        guard totalChars > budget.transcriptChars * budget.maxBatches else { return nil }
 
-        // `conv-<id>` hits have to be resolved to member segments before they can match an
-        // excerpt. Built up front so the retriever's expansion closure stays synchronous.
-        var built: [String: [String]] = [:]
+        var members: [String: [String]] = [:]
         for excerpt in excerpts {
             guard let conversationId = try? await composition.runtime.library
                 .conversationId(ofSegment: excerpt.segmentId)
             else { continue }
-            built[conversationId, default: []].append(excerpt.segmentId)
+            members[conversationId, default: []].append(excerpt.segmentId)
         }
-        // `let` so the expansion closure captures an immutable snapshot rather than a mutable
-        // dictionary it could race with.
-        let members = built
 
-        let chunks = await composition.askRetriever.retrieve(
+        let started = ContinuousClock.now
+        // Ask for more hits than segments: one index document is a CONVERSATION, which
+        // expands to however many member segments it has, and hits outside the scope drop
+        // out on resolution rather than shrinking the result.
+        let hits = await composition.askRetriever.recall(
             query: askRetrievalQuery(question: question, priorTurns: priorTurns),
-            excerpts: excerpts,
-            gapSummaries: gapSummaries,
-            maxChunks: excerpts.count,
-            segmentIdsForHit: { members[$0] ?? [$0] })
-        let scores = Dictionary(
-            chunks.map { ($0.segmentId, Double($0.score)) },
-            uniquingKeysWith: { first, _ in first })
-        return { scores[$0] ?? 0 }
+            limit: excerpts.count * 2,
+            includeSemantic: composition.settings.askSemanticRecallEnabled)
+        let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
+        return RecallSignals(
+            signals: AskRecallSignals.resolve(
+                keyword: hits.keyword, semantic: hits.semantic,
+                members: members, scope: Set(excerpts.map(\.segmentId))),
+            members: members,
+            semanticRan: hits.semanticRan,
+            ms: ms)
+    }
+
+    /// Writes the experiment down: one log line, and the record the Diagnostics screen shows.
+    /// Counts only in the log; the record carries the clipped question and no transcript text.
+    private func recordRecallExperiment(
+        question: String, recall: RecallSignals, plan: AskCorpusPlan,
+        policy: AskRecallPolicy, nowMs: Int64
+    ) {
+        let record = AskRecallExperiment.measure(
+            atMs: nowMs,
+            question: question,
+            signals: recall.signals,
+            members: recall.members,
+            keptSegmentIds: Set(plan.stretches.map(\.segmentId)),
+            plan: plan,
+            policy: policy,
+            ms: recall.ms,
+            semanticRan: recall.semanticRan)
+        AppRuntimeLog.shared.record(record.logLine)
+        AskRecallLedgerHolder.shared.append(record)
     }
 
     private func save(
