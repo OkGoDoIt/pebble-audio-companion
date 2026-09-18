@@ -144,6 +144,15 @@ struct PlayerCard: View {
 
 // MARK: - Model
 
+/// The transitions `PlayerModel.onActivity` reports. `.ended` is the end of a listening
+/// session — stopped, the screen left, or the audio ran out — as distinct from `.paused`, after
+/// which the item stays on the Lock Screen and a resume is one press away.
+enum PlaybackActivity: Equatable, Sendable {
+    case playing
+    case paused
+    case ended
+}
+
 @MainActor
 @Observable
 final class PlayerModel {
@@ -226,6 +235,30 @@ final class PlayerModel {
     /// Pending un-dock of a paused player. See `isEngaged`.
     private var engagementLapse: Task<Void, Never>?
 
+    // MARK: Now Playing
+
+    /// The system media surfaces (Lock Screen, Control Center, CarPlay, headphone buttons).
+    /// Set by the screen from the composition; nil in previews, tests and the demo world's
+    /// previews. Everything published through it is a STATE CHANGE — play, pause, seek, rate,
+    /// content — never the position tick: the surfaces extrapolate the playhead themselves.
+    var nowPlaying: (any NowPlayingPublishing)?
+    /// What the surfaces call this conversation. Set by `describe(title:subtitle:)` on every
+    /// load, because a rename lands while the audio may still be playing.
+    private(set) var nowPlayingTitle = ""
+    private(set) var nowPlayingSubtitle = ""
+    /// Open while a burst of seeks is being coalesced. A scrubber drag seeks on every gesture
+    /// frame; the first seek publishes at once and the rest fold into one trailing publish.
+    private var seekPublishWindow: Task<Void, Never>?
+    private var seekPublishPending = false
+    /// How long a seek burst is coalesced for. Long enough to cover a drag's frame cadence,
+    /// short enough that the Lock Screen catches up before the finger has fully lifted.
+    static let seekPublishCoalesceMs = 250
+
+    /// Whether a conversation is being played, for the parts of the app that live outside this
+    /// screen: the telemetry state reporter and the residency re-assert (see
+    /// `AppComposition+NowPlaying.swift`). Fires on transitions only.
+    static var onActivity: (@MainActor (PlaybackActivity) -> Void)?
+
     var speedLabel: String {
         switch speed {
         case 1.5: return "1.5×"
@@ -279,14 +312,33 @@ final class PlayerModel {
         observation = Task { [weak self] in
             for await update in engine.progress() {
                 guard let self, !Task.isCancelled else { return }
-                self.playing = update.playing
-                self.positionMs = update.positionMs
-                if update.durationMs > 0 { self.durationMs = update.durationMs }
-                // Running off the end rewinds to zero and stops: that is the session ending,
-                // not a pause, so the docked player lets go too.
-                if !update.playing, update.positionMs == 0 { self.hasStarted = false }
-                self.playhead.update(mediaMs: update.positionMs, playing: update.playing)
+                self.apply(progress: update)
             }
+        }
+    }
+
+    /// One engine update. Ten a second while playing, so what it publishes onward is gated: a
+    /// position-only tick moves the scrubber and the transcript highlight and nothing else.
+    func apply(progress update: PlaybackProgress) {
+        let wasPlaying = playing
+        let hadDuration = durationMs
+        playing = update.playing
+        positionMs = update.positionMs
+        if update.durationMs > 0 { durationMs = update.durationMs }
+        // Running off the end rewinds to zero and stops: that is the session ending, not a
+        // pause, so the docked player lets go too — and so does the Lock Screen.
+        let ended = !update.playing && update.positionMs == 0 && hasStarted
+        if ended { hasStarted = false }
+        playhead.update(mediaMs: update.positionMs, playing: update.playing)
+        if ended {
+            clearNowPlaying()
+            Self.onActivity?(.ended)
+        } else if wasPlaying != update.playing {
+            publishNowPlaying()
+            Self.onActivity?(update.playing ? .playing : .paused)
+        } else if hadDuration != durationMs {
+            // The engine's first update carries the duration the display only estimated.
+            publishNowPlaying()
         }
     }
 
@@ -297,6 +349,7 @@ final class PlayerModel {
     func play() {
         guard durationMs > 0 else { return }
         if positionMs >= durationMs { positionMs = 0 }
+        let wasPlaying = playing
         playing = true
         hasStarted = true
         cancelEngagementLapse()
@@ -306,6 +359,8 @@ final class PlayerModel {
             simulate()
         }
         playhead.update(mediaMs: positionMs, playing: true)
+        publishNowPlaying()
+        if !wasPlaying { Self.onActivity?(.playing) }
     }
 
     /// Seek there and make sure it is running — the one move behind "play from here", whether
@@ -316,12 +371,16 @@ final class PlayerModel {
     }
 
     func pause() {
+        let wasPlaying = playing
         playing = false
         ticker?.cancel()
         ticker = nil
         engine?.pause()
         playhead.update(mediaMs: positionMs, playing: false)
         startEngagementLapse()
+        // Paused, not gone: the Lock Screen keeps the item so the resume can come from there.
+        publishNowPlaying()
+        if wasPlaying { Self.onActivity?(.paused) }
     }
 
     /// Let engagement lapse if play is not pressed again. Re-armed from scratch on every pause,
@@ -344,6 +403,7 @@ final class PlayerModel {
     /// Leaving the screen has to end the audio — a conversation that keeps playing from a
     /// screen the user popped is the kind of thing this app can never do.
     func stop() {
+        let wasEngaged = hasStarted
         playing = false
         hasStarted = false
         cancelEngagementLapse()
@@ -353,16 +413,27 @@ final class PlayerModel {
         observation = nil
         engine?.stop()
         playhead.clear()
+        clearNowPlaying()
+        if wasEngaged { Self.onActivity?(.ended) }
     }
 
     /// 1× → 1.5× → 2× → 1× (mockup 2.6).
     func cycleSpeed() {
         switch speed {
-        case 1: speed = 1.5
-        case 1.5: speed = 2
-        default: speed = 1
+        case 1: setSpeed(1.5)
+        case 1.5: setSpeed(2)
+        default: setSpeed(1)
         }
+    }
+
+    /// A speed the player offers (`NowPlayingSkip.rates`); anything else is ignored rather than
+    /// handed to a rate unit that would honour it.
+    func setSpeed(_ value: Double) {
+        guard NowPlayingSkip.rates.contains(value), value != speed else { return }
+        speed = value
         engine?.setSpeed(speed)
+        // A rate change is exactly what the surfaces cannot extrapolate through.
+        if hasStarted { publishNowPlaying() }
     }
 
     func seek(fraction: Double) {
@@ -379,6 +450,72 @@ final class PlayerModel {
         // Scrubbing a paused player is still using it, so it earns its grace again — otherwise
         // the strip could vanish mid-drag, taking the scrubber out from under the finger.
         if !playing, hasStarted { startEngagementLapse() }
+        // A seek is a discontinuity the surfaces cannot extrapolate through — but only once
+        // there is something published; the deep link's `?t=` lands before play is pressed.
+        if hasStarted { publishNowPlayingAfterSeek() }
+    }
+
+    // MARK: - Now Playing
+
+    /// What the surfaces show above the controls. Called on every load, so a rename reaches
+    /// the Lock Screen while the audio is still playing.
+    func describe(title: String, subtitle: String) {
+        guard title != nowPlayingTitle || subtitle != nowPlayingSubtitle else { return }
+        nowPlayingTitle = title
+        nowPlayingSubtitle = subtitle
+        if hasStarted { publishNowPlaying() }
+    }
+
+    /// A command from a system surface. Each one is the same move the card would make.
+    func handle(_ command: NowPlayingCommand) {
+        switch command {
+        case .play: play()
+        case .pause: pause()
+        case .togglePlayPause: togglePlay()
+        case .skipForward(let seconds): seek(positionMs: positionMs + Int64(seconds * 1000))
+        case .skipBackward(let seconds): seek(positionMs: positionMs - Int64(seconds * 1000))
+        case .seek(let seconds): seek(positionMs: Int64(seconds * 1000))
+        case .changeRate(let rate): setSpeed(rate)
+        }
+    }
+
+    private func publishNowPlaying() {
+        guard let nowPlaying, let configuredId, durationMs > 0 else { return }
+        // Re-bound on every publish: the publisher is shared by every conversation screen on
+        // the stack, and commands belong to whichever one is actually playing.
+        nowPlaying.onCommand = { [weak self] command in self?.handle(command) }
+        nowPlaying.publish(
+            NowPlayingItem(
+                id: configuredId, title: nowPlayingTitle, subtitle: nowPlayingSubtitle,
+                duration: Double(durationMs) / 1000),
+            NowPlayingPlayback(
+                playing: playing, rate: speed, elapsed: Double(positionMs) / 1000))
+    }
+
+    /// Leading edge at once, trailing edge once: a drag seeks on every gesture frame, and each
+    /// publish is an XPC round trip to the media server.
+    private func publishNowPlayingAfterSeek() {
+        guard seekPublishWindow == nil else {
+            seekPublishPending = true
+            return
+        }
+        publishNowPlaying()
+        seekPublishWindow = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.seekPublishCoalesceMs))
+            guard let self, !Task.isCancelled else { return }
+            self.seekPublishWindow = nil
+            if self.seekPublishPending {
+                self.seekPublishPending = false
+                if self.hasStarted { self.publishNowPlaying() }
+            }
+        }
+    }
+
+    private func clearNowPlaying() {
+        seekPublishWindow?.cancel()
+        seekPublishWindow = nil
+        seekPublishPending = false
+        nowPlaying?.clear()
     }
 
     /// The demo/preview stand-in: no audio exists in the mock world, so the scrubber moves on
