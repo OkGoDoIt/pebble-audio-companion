@@ -42,24 +42,28 @@ extension ApplePrivateCloudReadiness {
     /// Intelligence toggled). The build fact is checked FIRST, and when it says no the
     /// framework is not asked: its `availability` reads "available" in exactly the build whose
     /// first request would trap the process (see `ApplePrivateCloudEntitlement`).
+    ///
+    /// The OS comes before the build: on iOS 26 the model does not exist whatever the signature
+    /// says, and "needs iOS 27" is the only true sentence — the same order the provider's own
+    /// `availability()` uses (no model → `.unsupported`).
     static var current: ApplePrivateCloudReadiness {
+        guard #available(iOS 27.0, *) else { return .unsupportedOs }
         if ApplePrivateCloudBuildStatus.shared.isKnownNotEnabled { return .notEnabledForThisBuild }
         #if canImport(FoundationModels)
-            if #available(iOS 27.0, *) {
-                switch ApplePrivateCloudFrameworkModel.shared.availability {
-                case .available:
-                    return .ready
-                case .unavailable(.deviceNotEligible):
-                    return .notSupported
-                case .unavailable(.systemNotReady):
-                    return .notReady
-                case .unavailable:
-                    // A reason Apple adds later: not ready, and no claim about why.
-                    return .notReady
-                }
+            switch ApplePrivateCloudFrameworkModel.shared.availability {
+            case .available:
+                return .ready
+            case .unavailable(.deviceNotEligible):
+                return .notSupported
+            case .unavailable(.systemNotReady):
+                return .notReady
+            case .unavailable:
+                // A reason Apple adds later: not ready, and no claim about why.
+                return .notReady
             }
+        #else
+            return .unsupportedOs
         #endif
-        return .unsupportedOs
     }
 
     /// Today's allowance. `.unknown` on iOS 26, where there is nothing to read — and in a build

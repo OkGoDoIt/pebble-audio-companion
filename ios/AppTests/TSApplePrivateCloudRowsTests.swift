@@ -205,12 +205,17 @@ struct TSApplePrivateCloudRowsTests {
         #expect(apple?.contains("OpenAI") == false)
     }
 
-    /// On this host the framework's readiness reads without throwing whatever the OS is; the
-    /// exact value depends on the machine and is not pinned.
-    @Test("readiness and quota can be read on this host")
-    func readinessReads() {
-        _ = ApplePrivateCloudReadiness.current
-        _ = ApplePrivateCloudReadiness.quota
-        _ = ApplePrivateCloudReadiness.canRequestMore
+    /// The OS comes before the build, and the build before the framework: on iOS 26 the row
+    /// says "needs iOS 27" whatever the signature says; on iOS 27 this unentitled test bundle
+    /// is told about the build, and the framework is never asked.
+    @Test("readiness is the OS first, then the build, then the framework")
+    func readinessOrder() {
+        if #available(iOS 27.0, *) {
+            #expect(ApplePrivateCloudReadiness.current == .notEnabledForThisBuild)
+        } else {
+            #expect(ApplePrivateCloudReadiness.current == .unsupportedOs)
+        }
+        #expect(ApplePrivateCloudReadiness.quota == .unknown)
+        #expect(!ApplePrivateCloudReadiness.canRequestMore)
     }
 }
