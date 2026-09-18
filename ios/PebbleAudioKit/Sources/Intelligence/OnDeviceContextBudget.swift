@@ -38,9 +38,16 @@ import Foundation
 
 /// The on-device window, and what one request is allowed to take of it.
 public struct OnDeviceContextBudget: Sendable, Equatable {
-    /// Apple Foundation Models' context window. Measured, not documented: the framework reports
-    /// it in the `exceededContextWindowSize` error text ("the maximum allowed context size of
-    /// 4096") and the binary search above agrees with it.
+    /// Apple Foundation Models' context window ON iOS 26 — the floor, and the default a model
+    /// that cannot report its own is budgeted against. Measured, not documented: the framework
+    /// reports it in the `exceededContextWindowSize` error text ("the maximum allowed context
+    /// size of 4096") and the binary search above agrees with it.
+    ///
+    /// No longer the only number. iOS 27's `SystemLanguageModel.contextSize` reports 8,192 (the
+    /// same error there reads "exceeds the maximum allowed context size of 8192"), and
+    /// `OnDeviceLanguageModel.contextWindowTokens()` carries whatever the model says into
+    /// `forRequest(windowTokens:)`. Everything in the comment above about the ratio and the
+    /// safety margin holds at either size; only the window moved.
     public static let windowTokens = 4_096
 
     /// Held back from the window. Covers the framing the framework adds around instructions and
@@ -72,11 +79,14 @@ public struct OnDeviceContextBudget: Sendable, Equatable {
     ///   - groundingChars: the About You block prepended to them, measured at call time — a
     ///     person with a long bio and 24 known names pays 1,600 characters here, and a person
     ///     with grounding switched off pays none.
+    ///   - windowTokens: the model's whole window, from `OnDeviceLanguageModel
+    ///     .contextWindowTokens()`. Defaults to the iOS 26 floor.
     public static func forRequest(
         outputTokens: Int,
         systemPromptChars: Int,
         groundingChars: Int,
-        charsPerToken: Int = AskBudget.charsPerToken
+        charsPerToken: Int = AskBudget.charsPerToken,
+        windowTokens: Int = OnDeviceContextBudget.windowTokens
     ) -> OnDeviceContextBudget {
         let usableTokens = max(0, windowTokens - safetyTokens - outputTokens)
         let promptChars = systemPromptChars + groundingChars
@@ -86,6 +96,15 @@ public struct OnDeviceContextBudget: Sendable, Equatable {
             outputTokens: outputTokens,
             fits: inputChars >= minimumInputChars
         )
+    }
+
+    /// The same arithmetic in the model's own tokens, for a model that can count them: what is
+    /// left for transcript once the answer, the safety margin and the instructions (grounding
+    /// included, already measured) are paid for. Zero, never negative.
+    public static func inputTokens(
+        windowTokens: Int, outputTokens: Int, instructionTokens: Int
+    ) -> Int {
+        max(0, windowTokens - safetyTokens - outputTokens - instructionTokens)
     }
 }
 

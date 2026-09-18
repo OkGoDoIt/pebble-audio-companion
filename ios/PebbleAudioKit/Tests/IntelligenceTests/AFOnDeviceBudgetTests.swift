@@ -23,15 +23,33 @@ private final class AFRecordingModel: OnDeviceLanguageModel, @unchecked Sendable
     private var _prompt: String?
     private var _instructions: String?
     private var _maxOutputTokens: Int?
+    private var _countCalls = 0
     private let failure: Error?
+    /// The window this fake reports; the default is the protocol's default (the iOS 26 floor).
+    private let window: Int?
+    /// Characters per token the fake's counter charges, or nil for a model that cannot count.
+    private let charsPerToken: Int?
 
-    init(failure: Error? = nil) { self.failure = failure }
+    init(failure: Error? = nil, window: Int? = nil, charsPerToken: Int? = nil) {
+        self.failure = failure
+        self.window = window
+        self.charsPerToken = charsPerToken
+    }
 
     var prompt: String? { lock.withLock { _prompt } }
     var instructions: String? { lock.withLock { _instructions } }
     var maxOutputTokens: Int? { lock.withLock { _maxOutputTokens } }
+    var countCalls: Int { lock.withLock { _countCalls } }
 
     func availability() async -> OnDeviceAvailability { .available }
+
+    func contextWindowTokens() async -> Int { window ?? OnDeviceContextBudget.windowTokens }
+
+    func tokenCount(for text: String) async -> Int? {
+        lock.withLock { _countCalls += 1 }
+        guard let charsPerToken else { return nil }
+        return max(1, text.count / charsPerToken)
+    }
 
     func generate(instructions: String, prompt: String, maxOutputTokens: Int?) async throws
         -> String
@@ -193,6 +211,157 @@ struct AFOnDeviceBudgetTests {
         } catch {
             #expect(AiFailure.classify(error).kind == .tooLongForDevice)
         }
+    }
+
+    // MARK: The window comes from the model
+
+    /// The arithmetic scales with the window and nothing else changes: the same request against
+    /// iOS 27's 8,192 gets exactly the extra tokens' worth of characters.
+    @Test func aWiderWindowBuysExactlyItsExtraTokensOfInput() {
+        let floor = OnDeviceContextBudget.forRequest(
+            outputTokens: 512, systemPromptChars: 1_000, groundingChars: 700)
+        let wide = OnDeviceContextBudget.forRequest(
+            outputTokens: 512, systemPromptChars: 1_000, groundingChars: 700, windowTokens: 8_192)
+
+        #expect(wide.inputChars - floor.inputChars == 4_096 * AskBudget.charsPerToken)
+        // The default is the floor, so every caller that did not say gets the iOS 26 budget.
+        #expect(
+            floor
+                == OnDeviceContextBudget.forRequest(
+                    outputTokens: 512, systemPromptChars: 1_000, groundingChars: 700,
+                    windowTokens: OnDeviceContextBudget.windowTokens))
+    }
+
+    /// THE point of the change: an Extended summary that the 4,096-token model refuses is
+    /// accepted whole — no truncation marker — by the 8,192-token one.
+    @Test func an8192TokenModelAdmitsWhatThe4096OneRejects() async throws {
+        // Under the wider budget, over the narrower one: about 7,600 characters of transcript
+        // against a ceiling of ~5,900 at the floor and ~18,200 at 8,192.
+        let chars = 7_600
+        let floorModel = AFRecordingModel(window: 4_096)
+        do {
+            _ = try await OnDeviceAiProvider(model: floorModel)
+                .run(request(AiPromptTemplates.extendedSummary, chars: chars))
+            Issue.record("expected the 4,096-token model to refuse")
+        } catch {
+            #expect(AiFailure.classify(error).kind == .tooLongForDevice)
+        }
+
+        let wideModel = AFRecordingModel(window: 8_192)
+        _ = try await OnDeviceAiProvider(model: wideModel)
+            .run(request(AiPromptTemplates.extendedSummary, chars: chars))
+        let prompt = try #require(wideModel.prompt)
+        #expect(!prompt.contains("transcript truncated for length"))
+    }
+
+    /// A conformer that predates the requirement — every existing test double — is budgeted
+    /// exactly as before: the protocol default IS the floor.
+    @Test func aModelThatDoesNotSayGetsTheFloor() async throws {
+        struct Silent: OnDeviceLanguageModel {
+            let id = "silent"
+            func availability() async -> OnDeviceAvailability { .available }
+            func generate(instructions: String, prompt: String, maxOutputTokens: Int?)
+                async throws -> String
+            { "ok" }
+        }
+        let model = Silent()
+        #expect(await model.contextWindowTokens() == OnDeviceContextBudget.windowTokens)
+        #expect(await model.tokenCount(for: "anything") == nil)
+        #expect(
+            await OnDeviceAiProvider(model: model).onDeviceInputChars()
+                == OnDeviceAiProvider.defaultMaxInputChars)
+    }
+
+    /// The failure message names the window it was measured against, not a number that stopped
+    /// being true on iOS 27.
+    @Test func theRefusalNamesTheModelsOwnWindow() async throws {
+        let enormous = AiPromptTemplate(
+            id: "af-enormous", title: "Enormous",
+            systemPrompt: String(repeating: "instruction ", count: 2_400),
+            userPrompt: "Go.")
+        let provider = OnDeviceAiProvider(model: AFRecordingModel(window: 8_192))
+        do {
+            _ = try await provider.run(request(enormous, chars: 2_000))
+            Issue.record("expected a failure")
+        } catch AiError.providerFailed(let message, _) {
+            #expect(message.contains("8,192-token window"))
+            #expect(!message.contains("4,096"))
+        }
+    }
+
+    @Test func theWindowIsWrittenWithItsGroupingComma() {
+        #expect(OnDeviceAiProvider.formatted(4_096) == "4,096")
+        #expect(OnDeviceAiProvider.formatted(8_192) == "8,192")
+        #expect(OnDeviceAiProvider.formatted(32_768) == "32,768")
+        #expect(OnDeviceAiProvider.formatted(999) == "999")
+        #expect(OnDeviceAiProvider.formatted(1_000_000) == "1,000,000")
+    }
+
+    // MARK: A real count beats the estimate
+
+    /// The estimate charges three characters a token; a model that counts five admits a body
+    /// the estimate would have truncated — whole, with no marker.
+    @Test func aRealTokenCountAdmitsWhatTheEstimateWouldHaveCut() async throws {
+        // ~12,000 characters: past the estimate's ceiling for this template (~10,400 with no
+        // grounding), well inside the window at five characters a token (2,400 tokens).
+        let estimating = AFRecordingModel()
+        _ = try await OnDeviceAiProvider(model: estimating)
+            .run(request(SegmentAnnotationPrompt.template, chars: 12_000))
+        #expect(try #require(estimating.prompt).contains("transcript truncated for length"))
+
+        let counting = AFRecordingModel(charsPerToken: 5)
+        _ = try await OnDeviceAiProvider(model: counting)
+            .run(request(SegmentAnnotationPrompt.template, chars: 12_000))
+        #expect(!(try #require(counting.prompt).contains("transcript truncated for length")))
+        // Instructions once, body once. Not per-candidate, not per-retry.
+        #expect(counting.countCalls == 2)
+    }
+
+    /// When the count agrees it does not fit, the cut is proportional to the count — and never
+    /// deeper than the estimate already guaranteed.
+    @Test func aRealTokenCountTruncatesProportionally() async throws {
+        let counting = AFRecordingModel(charsPerToken: 5)
+        _ = try await OnDeviceAiProvider(model: counting)
+            .run(request(SegmentAnnotationPrompt.template, chars: 60_000))
+        let prompt = try #require(counting.prompt)
+        #expect(prompt.contains("transcript truncated for length"))
+        // Room ≈ (4096 − 96 − 200 − instructions) tokens × 5 chars × 0.95 — comfortably more
+        // than the estimate's ~10,400, and comfortably under the 60,000 offered.
+        #expect(prompt.count > 12_000)
+        #expect(prompt.count < 20_000)
+    }
+
+    /// A count that says "fits" is still not allowed past a caller's pinned ceiling.
+    @Test func aPinnedInputCapStillWinsOverACount() async throws {
+        let counting = AFRecordingModel(charsPerToken: 5)
+        _ = try await OnDeviceAiProvider(model: counting, maxInputChars: 3_000)
+            .run(request(SegmentAnnotationPrompt.template, chars: 12_000))
+        let prompt = try #require(counting.prompt)
+        #expect(prompt.contains("transcript truncated for length"))
+        #expect(prompt.count < 3_400)
+    }
+
+    /// The whole point of counting is admitting more, never less: a count can only ever
+    /// ENLARGE the estimate's ceiling. A body the estimate admits is sent without counting.
+    @Test func aBodyTheEstimateAdmitsIsNotCounted() async throws {
+        let counting = AFRecordingModel(charsPerToken: 5)
+        _ = try await OnDeviceAiProvider(model: counting)
+            .run(request(SegmentAnnotationPrompt.template, chars: 2_000))
+        #expect(counting.countCalls == 0)
+    }
+
+    /// The Ask planner's ceiling follows the window: the measured 8,000 at the floor, double at
+    /// iOS 27's window, and a pinned cap still wins.
+    @Test func thePlannerCeilingScalesWithTheWindow() async throws {
+        #expect(await OnDeviceAiProvider(model: AFRecordingModel()).onDeviceInputChars() == 8_000)
+        #expect(
+            await OnDeviceAiProvider(model: AFRecordingModel(window: 8_192)).onDeviceInputChars()
+                == 16_000)
+        #expect(
+            await OnDeviceAiProvider(model: AFRecordingModel(window: 8_192), maxInputChars: 5_000)
+                .onDeviceInputChars() == 5_000)
+        // No model at all: the constant, so a planner never divides by a missing window.
+        #expect(await OnDeviceAiProvider(model: nil).onDeviceInputChars() == 8_000)
     }
 
     // MARK: Naming what the model hit
