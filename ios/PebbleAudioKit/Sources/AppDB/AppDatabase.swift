@@ -1,59 +1,117 @@
 import Foundation
 import GRDB
 
-/// The app's SQLite database, living in the App Group container so widgets and intents can
-/// read it (plan Part 6.5 / 6.8). Tables split into AUTHORITATIVE (user-authored — tag edits,
+/// The app's SQLite database. Tables split into AUTHORITATIVE (user-authored — tag edits,
 /// follow-up done state, ask history, notes, people, pause intervals, custom templates) and
 /// DERIVED (rebuildable from segment files + re-run AI — conversations, annotations, recaps,
 /// coverage, transcription queue, search index). A rebuild-on-corruption path may only drop
 /// the derived set.
+///
+/// It lives in the APP'S OWN container, next to the segment store — not in the App Group. It
+/// used to (plan Part 6.5 / 6.8, "so widgets and intents can read it"), but nothing outside this
+/// process ever opened it: the widget extension links nothing from the kit and renders the
+/// coverage snapshot JSON, and every App Intent runs in the app's process. What the shared
+/// location DID do was expose the app to `0xDEAD10CC` — iOS kills, with that code, any app it
+/// suspends while it holds a lock on a file in a shared container, and a `DatabasePool` in WAL
+/// mode holds POSIX locks for the length of every write. The regroup pass was caught exactly so
+/// on 2026-09-18 09:58 (crash report: thread on `GRDB.DatabasePool.writer` inside
+/// `ConversationGrouper.rebuildDetailed`, SIGKILL, RUNNINGBOARD 0xdead10cc) the moment residency
+/// lapsed under a pipeline pass. In the app's own container a lock held across suspension is
+/// simply held; the kill rule does not apply. `relocateLegacyDatabaseIfNeeded` brings an existing
+/// database across once.
 public struct AppDatabase: Sendable {
     public let writer: any DatabaseWriter
 
     public static let appGroupIdentifier = "group.dev.audiocompanion"
 
-    /// Resolves the database URL inside the App Group container (falls back to Application
-    /// Support when the group is unavailable, e.g. in unit tests on macOS).
+    /// Where the database lives now: `<Application Support>/audio-companion/db/companion.sqlite`,
+    /// under the same root the segment store, transcripts and flight recorder use — so the
+    /// deploy script's backup of that directory covers it too, which the App Group copy never
+    /// was. Creates the directory.
     public static func defaultDatabaseURL() throws -> URL {
-        let base: URL
-        if let group = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: appGroupIdentifier
-        ) {
-            base = group
-        } else {
-            base = try FileManager.default.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: true
-            )
-        }
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        ).appendingPathComponent("audio-companion", isDirectory: true)
         let dir = base.appendingPathComponent("db", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("companion.sqlite")
     }
 
+    /// Where it lived until 2026-09-19: `<App Group>/db/companion.sqlite`. Nil when this
+    /// process has no App Group (unit tests on macOS).
+    public static func legacyAppGroupDatabaseURL() -> URL? {
+        FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        )?.appendingPathComponent("db", isDirectory: true).appendingPathComponent("companion.sqlite")
+    }
+
+    public enum Relocation: Equatable, Sendable {
+        /// Nothing at the old location, or the new one already exists (a previous launch did it).
+        case notNeeded
+        /// The database was moved across, with `walFrames` WAL frames folded into it first.
+        case moved(walFrames: Int)
+    }
+
+    /// One-time move of the database from the App Group container to `to`, the app's own
+    /// container. Call it BEFORE `open(at:)`, which would otherwise create an empty database at
+    /// the new path and leave the real one behind.
+    ///
+    /// Safe against dying half way: the old database is opened and fully checkpointed
+    /// (`TRUNCATE`, so its `-wal` is empty) and closed before the single `rename` of the main
+    /// file, which is atomic within the container volume. A process killed before the rename
+    /// leaves everything where it was and this runs again next launch; killed after it, the only
+    /// leftovers are an empty `-wal`/`-shm` pair that the next launch removes. A database already
+    /// present at `to` is never overwritten, whatever remains at `from`.
+    @discardableResult
+    public static func relocateLegacyDatabaseIfNeeded(
+        from legacy: URL? = legacyAppGroupDatabaseURL(),
+        to destination: URL
+    ) throws -> Relocation {
+        let fm = FileManager.default
+        guard let legacy else { return .notNeeded }
+        if fm.fileExists(atPath: destination.path) {
+            // A moved-away main file can leave its (empty) sidecars behind; a main file still
+            // there is left alone, sidecars included, rather than half-deleted.
+            if !fm.fileExists(atPath: legacy.path) { removeSidecars(of: legacy) }
+            return .notNeeded
+        }
+        guard fm.fileExists(atPath: legacy.path) else { return .notNeeded }
+
+        // Fold the WAL into the main file so the rename carries everything. Opening it here also
+        // recovers a WAL left by a process that died mid-write, exactly as an ordinary open would.
+        var config = Configuration()
+        config.foreignKeysEnabled = true
+        let pool = try DatabasePool(path: legacy.path, configuration: config)
+        let frames = try pool.writeWithoutTransaction { db in
+            try db.checkpoint(.truncate).walFrameCount
+        }
+        try pool.close()
+
+        try fm.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.moveItem(at: legacy, to: destination)
+        removeSidecars(of: legacy)
+        return .moved(walFrames: frames)
+    }
+
+    /// The `-wal` and `-shm` files SQLite keeps beside a WAL-mode database. Only ever called for
+    /// a main file that has been moved away or superseded, so what they hold is empty.
+    private static func removeSidecars(of url: URL) {
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: url.path + suffix)
+            try? FileManager.default.removeItem(at: sidecar)
+        }
+    }
+
     public static func open(at url: URL) throws -> AppDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
-        // NOT setting `observesSuspensionNotifications` is deliberate.
-        //
-        // 0xDEAD10CC: this database lives in the App Group container and is a `DatabasePool`, so
-        // it runs in WAL mode and holds POSIX file locks on the `.sqlite`, `-wal` and `-shm`
-        // files, and iOS kills — with that exception code — any app suspended while holding a lock
-        // on a file in a shared container. GRDB's mitigation is to suspend the database when the
-        // app backgrounds.
-        //
-        // That mitigation is wrong for THIS app. A suspended GRDB database throws
-        // SQLITE_INTERRUPT/SQLITE_ABORT from every write — its own documentation: "All database
-        // operations may throw ... except reads in WAL mode" — and this app's whole purpose is to
-        // keep writing while backgrounded. It now holds an audio session precisely so that iOS
-        // does NOT suspend it, so suspending the database on background entry would silently break
-        // the background recording that residency exists to enable.
-        //
-        // The exposure is correspondingly small: we are not suspended while capture is on. The
-        // real structural fix, if this ever bites, is to move `companion.sqlite` out of the App
-        // Group into the app's own container — the widget reads a separate snapshot file, not this
-        // database — which removes the shared-container lock rather than trading it for failed
-        // writes.
+        // `observesSuspensionNotifications` stays off on purpose. GRDB's suspension makes every
+        // write throw SQLITE_INTERRUPT/SQLITE_ABORT while the app is backgrounded, and this app's
+        // whole purpose is to keep writing while backgrounded. It was only ever a mitigation for
+        // 0xDEAD10CC, which applies to shared containers; the database no longer lives in one
+        // (see the type comment).
         let pool = try DatabasePool(path: url.path, configuration: config)
         let db = AppDatabase(writer: pool)
         try db.migrate()

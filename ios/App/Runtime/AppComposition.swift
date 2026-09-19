@@ -223,7 +223,37 @@ final class AppComposition {
                 as? String ?? "?"
         )
 
-        let database = try AppDatabase.open(at: AppDatabase.defaultDatabaseURL())
+        // The database moved out of the App Group on 2026-09-19 (0xDEAD10CC — see
+        // `AppDatabase`). An existing one is brought across before `open` could create an empty
+        // one in its place. If the move itself fails the old location is used for this launch,
+        // said out loud, and tried again next time: a launch that cannot open its database
+        // records nothing, and that is the worse outcome.
+        let databaseURL = try AppDatabase.defaultDatabaseURL()
+        let legacyDatabaseURL = AppDatabase.legacyAppGroupDatabaseURL()
+        let database: AppDatabase
+        do {
+            switch try AppDatabase.relocateLegacyDatabaseIfNeeded(
+                from: legacyDatabaseURL, to: databaseURL)
+            {
+            case .notNeeded:
+                break
+            case .moved(let walFrames):
+                AppRuntimeLog.shared.record(
+                    "database moved from the App Group into the app container "
+                        + "(\(walFrames) WAL frames folded in first)")
+            }
+            database = try AppDatabase.open(at: databaseURL)
+        } catch let error {
+            // Only while the old file is still where it was: a move that completed and then
+            // failed to open is a real failure, not something to paper over with a fresh,
+            // empty database in the old place.
+            guard let legacyDatabaseURL,
+                FileManager.default.fileExists(atPath: legacyDatabaseURL.path)
+            else { throw error }
+            AppRuntimeLog.shared.record(
+                "database move failed, opening it where it was: \(error)")
+            database = try AppDatabase.open(at: legacyDatabaseURL)
+        }
         self.database = database
         // The store's log is the ONLY explanation of why a RESUME reattach failed and a
         // recording was split into a new Library row. Without it the segment-churn question is
