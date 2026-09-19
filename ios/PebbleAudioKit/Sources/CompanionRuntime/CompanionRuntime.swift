@@ -646,9 +646,18 @@ public actor CompanionRuntime {
             reconsiderDisabled: { try await env.transcription.reconsiderDisabled() },
             enqueueClosedSegments: { try await env.transcription.enqueueClosedSegments() },
             // Each drained task is progress for the loop watchdog: a backlog of a dozen
-            // segments is one stage that legitimately runs for many minutes.
+            // segments is one stage that legitimately runs for many minutes. Backgrounded, the
+            // drain only carries on while the charger policy that admitted the pass still
+            // holds — unplugging mid-backlog ends it at the next segment, not at the end.
             drainQueue: {
-                try await env.transcription.drainQueue {
+                try await env.transcription.drainQueue(
+                    shouldContinue: {
+                        foreground.value
+                            || BackgroundWorkPolicy.decide(
+                                env.settings.backgroundCatchUp, foreground.devicePower
+                            ).isRun
+                    }
+                ) {
                     health.progressed()
                     await env.diagnostics.refresh()
                 }

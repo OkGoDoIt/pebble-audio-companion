@@ -153,9 +153,17 @@ public actor TranscriptionService {
     }
 
     /// Drains the queue to exhaustion under the processing mutex. Returns true when at least one
-    /// task advanced. `onAdvance` fires per task so diagnostics stay live during a long drain.
+    /// task advanced. `onAdvance` fires per task so diagnostics stay live during a long drain,
+    /// and `shouldContinue` is asked before each task after the first: a drain that was allowed
+    /// to start (the phone was on a charger) stops at the next task boundary once it no longer
+    /// is. On 2026-09-18 a 21-segment local backlog kept a pass at 22 CPU-s/min for eight
+    /// minutes after the cable came out, because the charger policy was only read at the top
+    /// of the pass.
     @discardableResult
-    public func drainQueue(onAdvance: @Sendable () async -> Void = {}) async throws -> Bool {
+    public func drainQueue(
+        shouldContinue: @Sendable () -> Bool = { true },
+        onAdvance: @Sendable () async -> Void = {}
+    ) async throws -> Bool {
         guard !draining else { return false }
         draining = true
         defer { draining = false }
@@ -163,6 +171,7 @@ public actor TranscriptionService {
         while try await processor.processNext() != nil {
             processed = true
             await onAdvance()
+            guard shouldContinue() else { break }
         }
         return processed
     }
