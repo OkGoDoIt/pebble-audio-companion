@@ -164,12 +164,16 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
     }
 }
 
+// The Core AI entry is `published: false` (1e74c22): the store refuses to download it and asks
+// for a Files-inbox import instead. Every install below therefore starts from an inbox archive —
+// the download path is covered by the Cactus entry and by `ParakeetModelStoreTests`.
 @Suite struct ParakeetModelStoreCoreAITests {
-    @Test func installDownloadsExtractsPreparesAndOnlyThenIsInstalled() async throws {
+    @Test func installUnpacksPreparesAndOnlyThenIsInstalled() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let preparer = FakePreparer()
         let store = makeStore(root: root, preparer: preparer)
+        _ = try dropInInbox(root, id: coreAI.id)
         let stream = await store.states()
         let observed = Task {
             var seen: [ParakeetInstallState] = []
@@ -217,6 +221,7 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
             root: root, downloader: downloader,
             preparer: FakePreparer(failure: ParakeetEngineError.insufficientMemory(availableMb: 300, requiredMb: 700))
         )
+        let zip = try dropInInbox(root, id: coreAI.id)
         let state = await store.install(coreAI.id)
         #expect(state == .failed(message: "Not enough memory to prepare the model right now. Close other apps and try again."))
         let location = ParakeetModelLocation(modelsDirectory: root.appendingPathComponent("models"))
@@ -225,10 +230,12 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         // A refresh keeps the failure (no silent restart of a pass that just failed).
         #expect(await store.refresh().first { $0.id == coreAI.id }?.state == state)
 
-        // The retry goes straight to preparing: no second download.
+        // The retry goes straight to preparing: the archive was consumed by the first install
+        // and nothing asks the network for another.
+        #expect(FileManager.default.fileExists(atPath: zip.path) == false)
         let retry = makeStore(root: root, downloader: downloader)
         #expect(await retry.install(coreAI.id) == .installed)
-        #expect(downloader.requestedURLs.count == 1)
+        #expect(downloader.requestedURLs.isEmpty)
     }
 
     @Test func aModelLoadFailureHasItsOwnMessage() async throws {
@@ -237,6 +244,7 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         let store = makeStore(
             root: root, preparer: FakePreparer(failure: ParakeetEngineError.modelLoadFailed("bad graph"))
         )
+        _ = try dropInInbox(root, id: coreAI.id)
         #expect(await store.install(coreAI.id) == .failed(message: "The model couldn't be prepared. Try again."))
     }
 
@@ -244,6 +252,7 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = makeStore(root: root, preparer: FakePreparer(gate: Gate()))
+        _ = try dropInInbox(root, id: coreAI.id)
         let install = Task { await store.install(coreAI.id) }
         try await waitUntil("prepare to start") { await store.state(of: coreAI.id) == .preparing }
         await store.cancel(coreAI.id)
@@ -308,6 +317,7 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         let store = makeStore(
             root: root, extractor: FakeExtractor(wrapper: "parakeet-tdt-0.6b-v3_float16_streaming150")
         )
+        _ = try dropInInbox(root, id: coreAI.id)
         #expect(await store.install(coreAI.id) == .installed)
         let dir = ParakeetModelLocation(modelsDirectory: root.appendingPathComponent("models"))
             .directory(for: coreAI)
@@ -396,7 +406,8 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = makeStore(root: root)
-        _ = await store.install(coreAI.id)
+        _ = try dropInInbox(root, id: coreAI.id)
+        #expect(await store.install(coreAI.id) == .installed)
         #expect(await store.uninstall(coreAI.id) == .notInstalled)
         let location = ParakeetModelLocation(modelsDirectory: root.appendingPathComponent("models"))
         #expect(location.isInstalled(coreAI) == false)
