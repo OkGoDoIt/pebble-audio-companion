@@ -220,6 +220,27 @@ import WireProtocol
         #expect(fixture.runtime.captureIntent == .off)
     }
 
+    /// The recorder names the surface behind every transition. Without this, a recording that
+    /// stops reads identically whether a switch was flipped or the app stopped on its own
+    /// (2026-09-19 12:17:27), and those need opposite fixes.
+    @Test func everyIntentTransitionNamesItsSurfaceInTheLog() async throws {
+        let fixture = try RuntimeFixture(
+            settings: RuntimeSettingsSnapshot(captureIntent: .off)
+        )
+        await fixture.runtime.applyExternalCaptureIntent(.active, source: .settingsSwitch)
+        await fixture.runtime.setCaptureIntent(.paused, source: .intent)
+        await fixture.runtime.setCaptureIntent(.paused, source: .liveScreen)  // no change: silent
+        await fixture.runtime.applyExternalCaptureIntent(.off, source: .forgetWatch)
+
+        let transitions = fixture.receiverLog.lines.filter { $0.hasPrefix("capture intent ") }
+        #expect(
+            transitions == [
+                "capture intent off -> active, asked by Settings switch",
+                "capture intent active -> paused, asked by Control Center / widget / Siri",
+                "capture intent paused -> off, asked by Forget Watch",
+            ])
+    }
+
     // MARK: - The Settings "Background audio" master switch
 
     // The switch wrote `AppSettings.captureIntent` and nothing else, which made it lie in both

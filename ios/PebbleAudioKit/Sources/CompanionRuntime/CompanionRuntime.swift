@@ -371,9 +371,9 @@ public actor CompanionRuntime {
     // --- user-facing operations -------------------------------------------------------------------
 
     /// Explicit Start (status card, Settings): arm the one-shot watch prompt, then apply intent.
-    public func startCapture() async {
+    public func startCapture(source: PauseSource = .statusCard) async {
         await environment.receiver.armWatchEnableRequest()
-        await environment.receiver.applyCaptureIntent(.active)
+        await environment.receiver.applyCaptureIntent(.active, source: source)
         // Setting the intent only tells the SESSION what to want; the session observes the link
         // rather than dialling it, so without this the watch is never actually contacted and the
         // screen waits forever. "Start Recording" is an explicit user gesture, so it connects —
@@ -393,12 +393,14 @@ public actor CompanionRuntime {
     /// instead of dialling it, so an intent that merely set the preference left the watch
     /// uncontacted and the toggle looking broken. This is the same fix Today's Start button
     /// needed, shared rather than re-derived.
-    public func applyExternalCaptureIntent(_ intent: CaptureIntent) async {
+    public func applyExternalCaptureIntent(
+        _ intent: CaptureIntent, source: PauseSource = .intent
+    ) async {
         switch intent {
         case .active:
-            await startCapture()
+            await startCapture(source: source)
         case .paused, .off:
-            await setCaptureIntent(intent, source: .intent)
+            await setCaptureIntent(intent, source: source)
         }
     }
 

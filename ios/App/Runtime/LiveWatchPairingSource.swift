@@ -53,7 +53,7 @@ final class LiveWatchPairingSource: WatchPairingSource {
         guard let previous = composition.settings.takeOnboardingCaptureRestore() else { return }
         composition.settings.captureIntent = previous
         CaptureController.reloadWidgetSurfaces()
-        await composition.runtime.setCaptureIntent(previous)
+        await composition.runtime.setCaptureIntent(previous, source: .onboarding)
     }
 
     private func run(_ continuation: AsyncStream<PairingUpdate>.Continuation) async {

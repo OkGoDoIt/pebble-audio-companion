@@ -180,7 +180,7 @@ struct SettingsScreen: View {
     /// running on someone who had just switched recording off.
     private var captureController: CaptureController {
         CaptureController(settings: settings) { intent in
-            sources.capture.applyCaptureIntent(intent)
+            sources.capture.applyCaptureIntent(intent, source: .settingsSwitch)
         }
     }
 

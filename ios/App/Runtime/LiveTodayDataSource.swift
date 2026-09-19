@@ -192,7 +192,7 @@ final class LiveTodayDataSource {
         // `App/Services/CapturePauseSchedule.swift`.
         CapturePauseResolver.resolveIfDue(settings: composition.settings, nowMs: nowMs) {
             [weak self] intent in
-            self?.applyCaptureIntent(intent)
+            self?.applyCaptureIntent(intent, source: .schedule)
             // An auto-resume is the one capture change nobody taps, so it is the one the widget
             // is most likely to be looking at when it happens.
             CaptureController.reloadWidgetSurfaces()
@@ -870,10 +870,10 @@ extension LiveTodayDataSource: CaptureControlling {
     /// receiver's intent, dial the link) and `.off` through `setCaptureIntent` (stop receiving,
     /// close any open pause interval). The caller has already written `AppSettings.captureIntent`
     /// — same order as Today's Start and the Control Center intent — so the row flips at once.
-    func applyCaptureIntent(_ intent: CaptureIntent) {
+    func applyCaptureIntent(_ intent: CaptureIntent, source: PauseSource) {
         let composition = self.composition
         Task {
-            await composition.runtime.applyExternalCaptureIntent(intent)
+            await composition.runtime.applyExternalCaptureIntent(intent, source: source)
             await self.refresh()
         }
     }

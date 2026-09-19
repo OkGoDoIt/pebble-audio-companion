@@ -179,7 +179,7 @@ struct SettingsWatchScreen: View {
         // receiver holding its own `.active` — and an open pause interval open forever, so
         // coverage went on rendering the rest of the day as paused.
         settings.captureIntent = .off
-        capture.applyCaptureIntent(.off)
+        capture.applyCaptureIntent(.off, source: .forgetWatch)
         // …and the two surfaces outside this process, which read the App Group and are never
         // told it changed. A forgotten watch that leaves the Home Screen widget and the Control
         // Center toggle saying "Recording" is the worst version of that staleness: it is the one

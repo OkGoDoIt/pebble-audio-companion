@@ -532,6 +532,11 @@ public actor ReceiverService {
         // the app looks fine in the foreground and stops recording the moment it is backgrounded.
         syncResidency()
         guard previous != intent else { return }
+        // Every transition names its surface. On 2026-09-19 a recording stopped at 12:17:27 with
+        // nothing in the recorder but the receiver's own teardown; which control asked for it was
+        // unanswerable, and "the app stopped on its own" and "a switch was flipped" need opposite
+        // fixes.
+        log.write("capture intent \(previous) -> \(intent), asked by \(source.label)")
 
         switch intent {
         case .active:

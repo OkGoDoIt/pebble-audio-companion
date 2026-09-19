@@ -447,6 +447,9 @@ final class RuntimeFixture: @unchecked Sendable {
     /// The background upload transport (only driven when `withBackgroundUploads` is set).
     let uploads = RecordingBackgroundUploader()
 
+    /// Everything the receiver wrote to its log, in order.
+    let receiverLog = RecordedLog()
+
     init(
         settings: RuntimeSettingsSnapshot = RuntimeSettingsSnapshot(captureIntent: .active),
         withLossNotifier: Bool = true,
@@ -514,7 +517,8 @@ final class RuntimeFixture: @unchecked Sendable {
             pauseJournal: pauseJournal,
             lossEvaluator: withLossNotifier ? evaluator : nil,
             residency: residency,
-            onCoverageTrigger: { await coverageRelay.fire($0) }
+            onCoverageTrigger: { await coverageRelay.fire($0) },
+            log: receiverLog.runtimeLog
         )
         let uploadCoordinator: BackgroundCloudUploadCoordinator? =
             withBackgroundUploads
@@ -768,4 +772,16 @@ func waitUntil(
         waited += 1
     }
     return await condition()
+}
+
+/// A `RuntimeLog` that keeps what was written, for tests that assert on the flight recorder.
+final class RecordedLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var lines: [String] { lock.withLock { stored } }
+
+    var runtimeLog: RuntimeLog {
+        RuntimeLog { [self] line in lock.withLock { stored.append(line) } }
+    }
 }

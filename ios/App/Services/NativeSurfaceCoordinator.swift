@@ -40,7 +40,7 @@ final class NativeSurfaceCoordinator {
     /// toggle appears to do nothing. This is the same defect fixed for Today's Start button in
     /// `aa2a934`; the intent path now shares that fix instead of re-implementing it.
     private static func liveApply(_ intent: CaptureIntent) async {
-        await AppComposition.shared?.runtime.applyExternalCaptureIntent(intent)
+        await AppComposition.shared?.runtime.applyExternalCaptureIntent(intent, source: .intent)
     }
 
     /// Installs the cross-process listeners. Safe to call repeatedly; installs once.

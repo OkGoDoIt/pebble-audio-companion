@@ -303,9 +303,38 @@ public struct PauseInterval: Equatable, Sendable {
     }
 }
 
-/// Where a pause was initiated from (schema comment in AppDatabase.swift).
+/// Which surface asked for a capture change. Stored as the `source` of a pause-journal row
+/// (schema comment in AppDatabase.swift) and written to the flight recorder with every intent
+/// transition — the 2026-09-19 12:17 stop could not be attributed to any control because the
+/// recorder only ever saw the receiver's side of it.
 public enum PauseSource: String, Sendable {
-    case statusCard, liveScreen, intent
+    /// Today's capture switch (its status card no longer offers Stop; the switch is the control).
+    case statusCard
+    /// The live conversation screen's Stop.
+    case liveScreen
+    /// Control Center, a widget button, Siri or a Shortcut, via the App Group mailbox.
+    case intent
+    /// Settings › the "Background audio" switch.
+    case settingsSwitch
+    /// Settings › Watch › Forget: capture off as part of dropping the binding.
+    case forgetWatch
+    /// Onboarding's provisional Connect being undone (Cancel, or an abandoned run).
+    case onboarding
+    /// A timed pause coming due — the one change nobody taps.
+    case schedule
+
+    /// The words the flight recorder uses.
+    public var label: String {
+        switch self {
+        case .statusCard: return "Today switch"
+        case .liveScreen: return "Live screen Stop"
+        case .intent: return "Control Center / widget / Siri"
+        case .settingsSwitch: return "Settings switch"
+        case .forgetWatch: return "Forget Watch"
+        case .onboarding: return "onboarding cancelled"
+        case .schedule: return "pause schedule"
+        }
+    }
 }
 
 public struct CustomTemplate: Equatable, Sendable {

@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import Intelligence
 import Observation
@@ -26,8 +27,9 @@ protocol CaptureControlling: AnyObject {
     /// `.active` arms the one-shot on-watch enable prompt and dials the link; `.off` stops the
     /// receiver and closes any open pause interval, so coverage reads "off" rather than a pause
     /// that never ended. Call it AFTER writing `AppSettings.captureIntent`, so the row flips at
-    /// once rather than waiting on a watch that may not be in range.
-    func applyCaptureIntent(_ intent: CaptureIntent)
+    /// once rather than waiting on a watch that may not be in range. `source` names the surface
+    /// in the flight recorder and the pause journal.
+    func applyCaptureIntent(_ intent: CaptureIntent, source: PauseSource)
 }
 
 /// Previews and `-demo-data`: records what was asked for, since there is no runtime to ask.
@@ -36,7 +38,9 @@ protocol CaptureControlling: AnyObject {
 final class MockCaptureControl: CaptureControlling {
     private(set) var applied: [CaptureIntent] = []
 
-    func applyCaptureIntent(_ intent: CaptureIntent) { applied.append(intent) }
+    func applyCaptureIntent(_ intent: CaptureIntent, source: PauseSource) {
+        applied.append(intent)
+    }
 }
 
 // MARK: - Watch
