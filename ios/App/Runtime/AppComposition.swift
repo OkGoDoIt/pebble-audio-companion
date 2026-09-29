@@ -629,7 +629,13 @@ final class AppComposition {
                     apiKey: openAiKey,
                     remoteConsent: { settingsBox.remoteAiEnabled },
                     model: { settingsBox.aiModel },
-                    grounding: aiGrounding
+                    grounding: aiGrounding,
+                    // The SAME hold the transcription side uses: one OpenAI account, one key. A
+                    // 402 or a rejected key from either side stops both, and the AI stage's
+                    // probe or a transcription success lifts it for both.
+                    accountHold: cloudHold,
+                    nowMs: nowMs,
+                    log: { AppRuntimeLog.shared.record($0) }
                 ),
                 applePrivateCloud: applePrivateCloud
             ),
@@ -722,7 +728,10 @@ final class AppComposition {
             // full library — just to discard it.
             speechTimingsOf: { transcripts.loadSpeechTimings($0) },
             clock: clock,
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            // For the held-AI-account probe's schedule: opening the app is when a person who
+            // just topped up is looking.
+            isForeground: { AppForegroundProbe.shared.isForeground }
         )
 
         let recap = RecapService(

@@ -115,6 +115,15 @@ public final class EnrichmentWorker: @unchecked Sendable {
         case generate(excerpts: [TranscriptExcerpt], combinedLength: Int, isFinal: Bool)
     }
 
+    /// Checks a held cloud AI account when its schedule says to (see
+    /// `OpenAiChatAiProvider.probeHeldAccountIfDue`). Runs at the top of the AI stage, BEFORE the
+    /// availability check below — a held account is exactly what makes the router unavailable,
+    /// so this is the one place that can notice it has been topped up. Cheap and silent when
+    /// nothing is held, which is always the ordinary case.
+    public func probeHeldAccountIfDue(foreground: Bool) async {
+        _ = await router?.probeHeldRemoteAccountIfDue(foreground: foreground)
+    }
+
     /// Annotates conversations that are due for a live refresh or a final pass.
     /// `transcriptOf` returns the durable transcript of a closed segment; `liveTextOf`
     /// returns the rolling live preview of a still-open segment. Returns the conversation ids

@@ -10,7 +10,18 @@ import Transcription
 /// Fail-closed: transcripts leave the phone only when the user has enabled remote AI consent
 /// and provided an API key; otherwise the provider reports unavailable and refuses to run.
 /// Input is durable transcript text only — never audio, never live BLE data.
-public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
+///
+/// It also refuses while the ACCOUNT has told us to stop. The key and the account are the same
+/// ones the OpenAI transcription provider uses, so this consults the same `CloudAccountHold`
+/// the transcription side does (the 2026-09-23 Soniox outage is that type's story): a 402 or
+/// insufficient-quota answer, or a rejected key (401), puts `.openAi` on hold, and while it is
+/// held `isAvailable()` is false and nothing is sent — Remote first uses the on-device model,
+/// Remote only parks, and the title backlog, the live refresh every 45 s, the boundary reviews
+/// and multi-megabyte Ask sweeps stop paying full price to be told no. A 403 does NOT hold on
+/// this side: for AI it can be one model the key may not use, not the account.
+public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining, AiAccountProbing,
+    @unchecked Sendable
+{
     public static let defaultEndpointUrl = "https://api.openai.com/v1/responses"
     public static let defaultModel = AiModels.defaultModelId
     public static let defaultReasoningEffort = "low"
@@ -20,6 +31,15 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
     /// START, so the newest transcripts were the ones dropped.
     public static let defaultMaxInputChars =
         AiModels.conservativeContextTokens * AskBudget.charsPerToken
+    /// How long a 429 without a usable `Retry-After` keeps the provider unavailable.
+    public static let defaultRateLimitBackoffMs: Int64 = 30_000
+    /// A `Retry-After` longer than this is capped: an hour is already long enough that a
+    /// Remote-first user is better served by the on-device model in the meantime, and a header
+    /// is a request, not a promise.
+    public static let maxRateLimitBackoffMs: Int64 = 60 * 60_000
+    /// The probe's answer budget: the smallest the API accepts. The probe asks only whether the
+    /// account will pay for a response at all.
+    static let probeMaxOutputTokens = 16
 
     public let id = "openai-chat"
 
@@ -34,6 +54,16 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
     private let maxInputChars: @Sendable () -> Int
     private let grounding: @Sendable () -> String?
     private let reasoningEffort: String
+    /// The hold shared with the transcription side. Nil in tests that do not care, and then
+    /// nothing is ever held.
+    private let accountHold: CloudAccountHold?
+    private let nowMs: @Sendable () -> Int64
+    private let log: @Sendable (String) -> Void
+
+    private let lock = NSLock()
+    /// Set by a 429: nothing is sent before this.
+    private var rateLimitedUntilMs: Int64?
+    private var probing = false
 
     public init(
         transport: HttpTransport,
@@ -43,7 +73,10 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         endpointUrl: String = OpenAiChatAiProvider.defaultEndpointUrl,
         maxInputChars: (@Sendable () -> Int)? = nil,
         grounding: @escaping @Sendable () -> String? = { nil },
-        reasoningEffort: String = OpenAiChatAiProvider.defaultReasoningEffort
+        reasoningEffort: String = OpenAiChatAiProvider.defaultReasoningEffort,
+        accountHold: CloudAccountHold? = nil,
+        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.transport = transport
         self.apiKey = apiKey
@@ -54,13 +87,46 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
             maxInputChars ?? { AiModels.byId(model()).contextTokens * AskBudget.charsPerToken }
         self.grounding = grounding
         self.reasoningEffort = reasoningEffort
+        self.accountHold = accountHold
+        self.nowMs = nowMs
+        self.log = log
     }
 
     public func isAvailable() async -> Bool {
         guard remoteConsent() else { return false }
-        guard let key = apiKey() else { return false }
-        return !key.isBlank
+        guard let key = apiKey(), !key.isBlank else { return false }
+        return await unavailabilityReason() == nil
     }
+
+    // MARK: AiUnavailabilityExplaining
+
+    /// Why the provider is unavailable although consent and a key are in place: the account is
+    /// on hold, or a 429 asked us to wait. Worded so the router and the copy classify it as the
+    /// refusal it is, not as "not configured".
+    public func unavailabilityReason() async -> String? {
+        if let hold = accountHold?.active(for: .openAi) { return Self.pausedMessage(hold) }
+        if let until = lock.withLock({ rateLimitedUntilMs }), until > nowMs() {
+            return "OpenAI is rate limiting this account (429); nothing is sent before "
+                + Self.iso(until)
+        }
+        return nil
+    }
+
+    /// What a held account says instead of sending anything: our own words with the status in
+    /// parentheses, so `TranscriptionFailureKind.classify` reads the hold's own kind back.
+    static func pausedMessage(_ hold: CloudAccountHold.Hold) -> String {
+        switch hold.kind {
+        case .keyRejected:
+            return "OpenAI did not accept the API key (401); no AI request is sent until it changes"
+        case .keyNotPermitted:
+            return "OpenAI key is not permitted (403); no AI request is sent until it changes"
+        default:
+            return "OpenAI is out of credit (402); no AI request is sent until the account is "
+                + "topped up"
+        }
+    }
+
+    // MARK: Running one request
 
     public func run(_ request: AiRunRequest) async throws -> AiProviderResult {
         guard remoteConsent() else {
@@ -68,6 +134,12 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         }
         guard let key = apiKey(), !key.isBlank else {
             throw AiError.providerUnavailable(providerId: id)
+        }
+        // Nothing is sent to an account that has said no, or before a 429's `Retry-After`. The
+        // router never gets here in that state (`isAvailable()` is false); a direct caller gets
+        // the reason instead of a request.
+        if let reason = await unavailabilityReason() {
+            throw AiError.providerFailed(reason)
         }
 
         let requestedModel = request.metadata[AiRunRequest.modelKey]
@@ -115,10 +187,14 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
                 body: body
             ))
         guard response.status == 200 else {
+            noteRefusal(response)
             throw AiError.providerFailed(
                 "OpenAI responses request failed (\(response.status)): "
                     + String(response.text.prefix(240)))
         }
+        // The account took a request: whatever held it — here or on the transcription side —
+        // no longer applies. A no-op when nothing is held.
+        accountHold?.noteSuccess(provider: .openAi)
         let parsed = try decodeResponse(response.body)
         // A response cut off at the ceiling is not a shorter note, it is a note that stops
         // mid-sentence — and handing that back as finished is exactly the silent wrong answer
@@ -138,6 +214,135 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
             outputTokens: parsed.usage?.outputTokens,
             inputTruncated: fitted.truncated
         )
+    }
+
+    // MARK: - Refusals that are about the account, not the request
+
+    /// A non-200 answer: put the account on hold when it refused the ACCOUNT, and honour a
+    /// 429's `Retry-After` when it only asked us to slow down.
+    private func noteRefusal(_ response: HttpTransportResponse) {
+        if let kind = Self.accountRefusal(status: response.status, body: response.text) {
+            if accountHold?.trip(kind, provider: .openAi) == true {
+                log(
+                    "ai: openai refused the account (\(kind.rawValue)); no AI request is sent to "
+                        + "it until a check succeeds (first in "
+                        + "\(CloudAccountHold.firstProbeDelayMs / 60_000) min) or the key changes")
+            }
+            return
+        }
+        guard response.status == 429 else { return }
+        let waitMs = min(
+            Self.retryAfterMs(response, nowMs: nowMs()) ?? Self.defaultRateLimitBackoffMs,
+            Self.maxRateLimitBackoffMs)
+        let until = nowMs() + max(0, waitMs)
+        lock.withLock { rateLimitedUntilMs = max(rateLimitedUntilMs ?? 0, until) }
+        log("ai: openai is rate limiting (429); nothing is sent for \(max(0, waitMs) / 1000) s")
+    }
+
+    /// The account-level refusals that hold: out of money (402, or the insufficient-quota
+    /// wording OpenAI sends with a 429) and a rejected key (401). A 403 is deliberately absent —
+    /// see the type's comment. Classified over the WHOLE body, not the 240 bytes the thrown
+    /// message keeps.
+    static func accountRefusal(status: Int, body: String) -> TranscriptionFailureKind? {
+        if body.lowercased().contains("insufficient_quota") { return .accountOutOfFunds }
+        switch TranscriptionFailureKind.classify(
+            "OpenAI responses request failed (\(status)): \(body)")
+        {
+        case .accountOutOfFunds: return .accountOutOfFunds
+        case .keyRejected: return .keyRejected
+        default: return nil
+        }
+    }
+
+    /// OpenAI's `retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, in ms.
+    static func retryAfterMs(_ response: HttpTransportResponse, nowMs: Int64) -> Int64? {
+        if let raw = response.header("retry-after-ms"),
+            let ms = Double(raw.trimmingCharacters(in: .whitespaces))
+        {
+            return Int64(ms)
+        }
+        guard let raw = response.header("retry-after")?.trimmingCharacters(in: .whitespaces)
+        else { return nil }
+        if let seconds = Double(raw) { return Int64(seconds * 1_000) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: raw) else { return nil }
+        return Int64(date.timeIntervalSince1970 * 1_000) - nowMs
+    }
+
+    // MARK: AiAccountProbing
+
+    /// One minimal Responses request past the hold — "ok", sixteen tokens of answer — on the
+    /// hold's own schedule (15 minutes doubling to 6 hours, and from the foreground at most every
+    /// 10 minutes). It is the cheapest request that can say whether the account will pay for a
+    /// response, which a key check cannot: `GET /v1/models` answers 200 for an empty account. A
+    /// success lifts the hold, and the hold's lift handler wakes everything it parked.
+    public func probeHeldAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
+        guard remoteConsent(), let hold = accountHold,
+            hold.isProbeDue(provider: .openAi, foreground: foreground)
+        else { return nil }
+        let claimed: Bool = lock.withLock {
+            if probing { return false }
+            probing = true
+            return true
+        }
+        guard claimed else { return nil }
+        defer { lock.withLock { probing = false } }
+
+        let outcome = await probeAccount()
+        switch outcome {
+        case .accepted:
+            hold.noteSuccess(provider: .openAi)
+        case .refused(let kind):
+            if !hold.trip(kind, provider: .openAi) {
+                hold.recordRefusedProbe(provider: .openAi, kind: kind)
+            }
+            let next = hold.active(for: .openAi).map { ($0.nextProbeAtMs - nowMs()) / 60_000 }
+            log(
+                "ai: openai account check: still refused (\(kind.rawValue)); next check in "
+                    + "\(next ?? 0) min")
+        case .inconclusive(let why):
+            hold.recordInconclusiveProbe(provider: .openAi)
+            log("ai: openai account check inconclusive: \(why)")
+        }
+        return outcome
+    }
+
+    /// The probe itself, with no hold bookkeeping.
+    func probeAccount() async -> CloudAccountProbeOutcome {
+        guard let key = apiKey(), !key.isBlank else { return .inconclusive("no key") }
+        let payload: [String: Any] = [
+            "model": model(),
+            "input": "ok",
+            "reasoning": ["effort": reasoningEffort],
+            "max_output_tokens": Self.probeMaxOutputTokens,
+        ]
+        let response: HttpTransportResponse
+        do {
+            let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            response = try await transport.execute(
+                HttpTransportRequest(
+                    method: "POST", url: endpointUrl,
+                    headers: [
+                        "Authorization": "Bearer \(key)", "Content-Type": "application/json",
+                    ],
+                    body: body))
+        } catch is CancellationError {
+            return .inconclusive("cancelled")
+        } catch {
+            return .inconclusive(String(storedFailureMessage(error).prefix(200)))
+        }
+        if response.status == 200 { return .accepted }
+        if let kind = Self.accountRefusal(status: response.status, body: response.text) {
+            return .refused(kind)
+        }
+        return .inconclusive("HTTP \(response.status)")
+    }
+
+    private static func iso(_ ms: Int64) -> String {
+        ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(ms) / 1_000))
     }
 
     private func decodeResponse(_ data: Data) throws -> ResponsesResponse {

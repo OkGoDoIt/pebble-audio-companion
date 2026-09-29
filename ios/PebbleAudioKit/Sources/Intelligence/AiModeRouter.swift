@@ -289,6 +289,15 @@ public final class AiModeRouter: @unchecked Sendable {
             // The rejected key was the only actionable fact in the event and it was the one
             // thing thrown away.
             if let suppressed { throw suppressed }
+            // A provider that is unavailable for a REASON — an account on hold, a 429 still in
+            // force — says so, and the reason is what escapes: "out of credit (402)" is a thing a
+            // person can fix, "no AI provider is available" sends them to a Settings screen where
+            // everything looks configured.
+            if let provider,
+                let reason = await (provider as? AiUnavailabilityExplaining)?.unavailabilityReason()
+            {
+                throw AiError.providerFailed(reason)
+            }
             throw AiError.providerUnavailable(providerId: provider?.id ?? role.rawValue)
         }
         let providerResult: AiProviderResult
@@ -371,6 +380,19 @@ extension AiModeRouter {
     public func remoteContextTokens() async -> Int? {
         guard let reporting = remote as? AiInputWindowReporting else { return nil }
         return await reporting.contextTokens()
+    }
+}
+
+// MARK: - A remote account on hold
+
+extension AiModeRouter {
+    /// Checks the remote provider's held account when its hold says a check is due — and only
+    /// in a mode that can use the cloud at all: a Local-only user's parked OpenAI account is not
+    /// worth a request. Nil when nothing was due. See `OpenAiChatAiProvider.probeHeldAccountIfDue`.
+    @discardableResult
+    public func probeHeldRemoteAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
+        guard mode() != .localOnly, let probing = remote as? AiAccountProbing else { return nil }
+        return await probing.probeHeldAccountIfDue(foreground: foreground)
     }
 }
 
