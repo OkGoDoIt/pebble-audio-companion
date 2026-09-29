@@ -93,6 +93,9 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
     /// away something nobody has looked at, never something somebody has answered.
     public var touchedAtMs: Int64?
     public var origin: FollowUpOrigin
+    /// The model that found it, for an AI item — shown on its provenance card. Nil for an item
+    /// a person wrote, and for rows written before this was recorded.
+    public var model: String?
 
     public init(
         id: String, text: String, done: Bool, sourceConversationId: String?,
@@ -108,7 +111,8 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         snoozedUntilMs: Int64? = nil,
         editedAtMs: Int64? = nil,
         touchedAtMs: Int64? = nil,
-        origin: FollowUpOrigin = .ai
+        origin: FollowUpOrigin = .ai,
+        model: String? = nil
     ) {
         self.id = id
         self.text = text
@@ -128,6 +132,7 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         self.editedAtMs = editedAtMs
         self.touchedAtMs = touchedAtMs
         self.origin = origin
+        self.model = model
     }
 
     public var isArchived: Bool { archivedAtMs != nil }
@@ -673,7 +678,8 @@ public struct FollowUpStore: Sendable {
             snoozedUntilMs: row["snoozedUntilMs"],
             editedAtMs: row["editedAtMs"],
             touchedAtMs: row["touchedAtMs"],
-            origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai)
+            origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai,
+            model: row["model"])
     }
 
     /// Every column, in one place, so `add` and `upsert` cannot drift apart.
@@ -681,8 +687,9 @@ public struct FollowUpStore: Sendable {
         INSERT INTO follow_ups
             (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs,
              quote, why, dueAtMs, priority, sourceStartMs, sourceEndMs,
-             completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, touchedAtMs, origin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, touchedAtMs, origin,
+             model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     private static func arguments(_ item: FollowUp) -> StatementArguments {
@@ -691,6 +698,7 @@ public struct FollowUpStore: Sendable {
             item.createdAtMs, item.quote, item.why, item.dueAtMs, item.priority.rawValue,
             item.sourceStartMs, item.sourceEndMs, item.completedAtMs, item.archivedAtMs,
             item.snoozedUntilMs, item.editedAtMs, item.touchedAtMs, item.origin.rawValue,
+            item.model,
         ]
     }
 
@@ -732,7 +740,8 @@ public struct FollowUpStore: Sendable {
                         sourceConversationId = excluded.sourceConversationId,
                         sourceSegmentId = excluded.sourceSegmentId,
                         sourceStartMs = excluded.sourceStartMs,
-                        sourceEndMs = excluded.sourceEndMs
+                        sourceEndMs = excluded.sourceEndMs,
+                        model = COALESCE(excluded.model, follow_ups.model)
                     """,
                 arguments: Self.arguments(item))
         }

@@ -68,6 +68,9 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
     /// Why curation decided what it decided — the one thing that makes a dropped candidate
     /// auditable instead of a silent disappearance.
     public var reason: String?
+    /// The model that proposed it (`RoutedAiResult.modelUsed`), carried onto the follow-up
+    /// curation keeps, so its provenance can say which model found it.
+    public var model: String?
 
     public init(
         id: String,
@@ -85,7 +88,8 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         state: FollowUpCandidateState = .pending,
         attempts: Int = 0,
         decidedAtMs: Int64? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        model: String? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -103,6 +107,7 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         self.attempts = attempts
         self.decidedAtMs = decidedAtMs
         self.reason = reason
+        self.model = model
     }
 }
 
@@ -127,7 +132,8 @@ public struct FollowUpCandidateStore: Sendable {
             state: FollowUpCandidateState(rawValue: row["state"] ?? "pending") ?? .pending,
             attempts: row["attempts"] ?? 0,
             decidedAtMs: row["decidedAtMs"],
-            reason: row["reason"])
+            reason: row["reason"],
+            model: row["model"])
     }
 
     /// Upsert by id. Ids are content-addressed by the extractor, so re-reading a conversation
@@ -140,20 +146,21 @@ public struct FollowUpCandidateStore: Sendable {
                     INSERT INTO follow_up_candidates
                         (id, conversationId, segmentId, task, quote, why, confidence,
                          dueAtMs, startMs, endMs, createdAtMs, recordedAtMs, state, attempts,
-                         decidedAtMs, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         decidedAtMs, reason, model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task = excluded.task, quote = excluded.quote, why = excluded.why,
                         confidence = excluded.confidence, dueAtMs = excluded.dueAtMs,
                         segmentId = excluded.segmentId, recordedAtMs = excluded.recordedAtMs,
-                        startMs = excluded.startMs, endMs = excluded.endMs
+                        startMs = excluded.startMs, endMs = excluded.endMs,
+                        model = COALESCE(excluded.model, follow_up_candidates.model)
                     """,
                 arguments: [
                     candidate.id, candidate.conversationId, candidate.segmentId, candidate.task,
                     candidate.quote, candidate.why, candidate.confidence.rawValue,
                     candidate.dueAtMs, candidate.startMs, candidate.endMs, candidate.createdAtMs,
                     candidate.recordedAtMs, candidate.state.rawValue, candidate.attempts,
-                    candidate.decidedAtMs, candidate.reason,
+                    candidate.decidedAtMs, candidate.reason, candidate.model,
                 ])
         }
     }

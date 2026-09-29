@@ -163,33 +163,52 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         // extraction and curation do: they are one call per conversation, they decide what a
         // person sees on a list they trust, and the cheapest model reads ambient chatter as
         // commitments. Everything else keeps the single user-chosen model.
-        var payload: [String: Any] = [
-            "model": requestedModel ?? selectedModel,
-            "instructions": instructions,
-            "input": userContent,
-            "reasoning": [
-                "effort": request.metadata[AiRunRequest.reasoningEffortKey] ?? reasoningEffort
-            ],
-            // A ceiling, not a length policy — the prompt asks, this guarantees. Without it an
-            // "extended summary" wrote 5,797 words and took 70 s, which is past the transport's
-            // idle timeout, so the note never arrived at all. See `CloudOutputBudget`.
-            "max_output_tokens": CloudOutputBudget.maxOutputTokens(forTemplateId: request.prompt.id),
-        ]
-        if let textConfig = responseTextConfig(for: request.prompt) {
-            payload["text"] = textConfig
+        //
+        // A key without access to the pinned model gets the person's OWN model for that job,
+        // not nothing: the 403/404 used to fail the call, and on Remote first the router then
+        // handed the job to the on-device model — a silent downgrade from the strongest model
+        // the app uses to the weakest, for exactly the job the stronger one was chosen for.
+        let pinned = requestedModel.flatMap { $0 == selectedModel ? nil : $0 }
+        let textConfig = responseTextConfig(for: request.prompt)
+        let effort = request.metadata[AiRunRequest.reasoningEffortKey] ?? reasoningEffort
+        let outputCap = CloudOutputBudget.maxOutputTokens(forTemplateId: request.prompt.id)
+        let transport = self.transport
+        let endpointUrl = self.endpointUrl
+        func send(_ modelId: String) async throws -> HttpTransportResponse {
+            var payload: [String: Any] = [
+                "model": modelId,
+                "instructions": instructions,
+                "input": userContent,
+                "reasoning": ["effort": effort],
+                // A ceiling, not a length policy — the prompt asks, this guarantees. Without it
+                // an "extended summary" wrote 5,797 words and took 70 s, which is past the
+                // transport's idle timeout, so the note never arrived at all. See
+                // `CloudOutputBudget`.
+                "max_output_tokens": outputCap,
+            ]
+            if let textConfig { payload["text"] = textConfig }
+            let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            return try await transport.execute(
+                HttpTransportRequest(
+                    method: "POST",
+                    url: endpointUrl,
+                    headers: [
+                        "Authorization": "Bearer \(key)",
+                        "Content-Type": "application/json",
+                    ],
+                    body: body
+                ))
         }
-        let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-
-        let response = try await transport.execute(
-            HttpTransportRequest(
-                method: "POST",
-                url: endpointUrl,
-                headers: [
-                    "Authorization": "Bearer \(key)",
-                    "Content-Type": "application/json",
-                ],
-                body: body
-            ))
+        var sentModel = pinned.map { cannotUse($0, key: key) ? selectedModel : $0 } ?? selectedModel
+        var response = try await send(sentModel)
+        if response.status != 200, let pinned, sentModel == pinned,
+            Self.refusesModel(status: response.status, body: response.text)
+        {
+            rememberCannotUse(pinned, key: key, status: response.status, instead: selectedModel,
+                templateId: request.prompt.id)
+            sentModel = selectedModel
+            response = try await send(sentModel)
+        }
         guard response.status == 200 else {
             noteRefusal(response)
             throw AiError.providerFailed(
@@ -213,11 +232,47 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         }
         return AiProviderResult(
             text: text,
-            modelUsed: parsed.model ?? requestedModel ?? selectedModel,
+            modelUsed: parsed.model ?? sentModel,
             inputTokens: parsed.usage?.inputTokens,
             outputTokens: parsed.usage?.outputTokens,
             inputTruncated: fitted.truncated
         )
+    }
+
+    // MARK: - A pinned model this key cannot use
+
+    /// A 403 (not permitted to sample from this model) or a 404 naming the model: the KEY
+    /// cannot use this one model, which says nothing about the account or any other model.
+    static func refusesModel(status: Int, body: String) -> Bool {
+        let text = body.lowercased()
+        if text.contains("model_not_found")
+            || text.contains("does not exist or you do not have access")
+        {
+            return true
+        }
+        return status == 403 || (status == 404 && text.contains("model"))
+    }
+
+    /// Pinned models each key has been refused, by a fingerprint of the key — a new key may
+    /// well be allowed them. In memory: a relaunch costs one refused request per model.
+    private var refusedModels: [String: Set<String>] = [:]
+
+    private func cannotUse(_ model: String, key: String) -> Bool {
+        let fingerprint = RecapCondenser.fingerprint(key)
+        return lock.withLock { refusedModels[fingerprint]?.contains(model) == true }
+    }
+
+    private func rememberCannotUse(
+        _ model: String, key: String, status: Int, instead: String, templateId: String
+    ) {
+        let fingerprint = RecapCondenser.fingerprint(key)
+        let isNew: Bool = lock.withLock {
+            refusedModels[fingerprint, default: []].insert(model).inserted
+        }
+        guard isNew else { return }
+        log(
+            "ai: this OpenAI key cannot use \(model) (\(status)); \(templateId) and every other "
+                + "job that asks for it use \(instead) instead")
     }
 
     // MARK: - Refusals that are about the account, not the request

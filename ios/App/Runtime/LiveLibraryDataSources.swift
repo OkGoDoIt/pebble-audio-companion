@@ -1608,7 +1608,9 @@ extension LiveFollowUps: FollowUpsDataSource {
                 sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] },
                 sourceSegmentId: row.sourceSegmentId,
                 sourceStartMs: row.sourceStartMs,
-                sourceEndMs: row.sourceEndMs)
+                sourceEndMs: row.sourceEndMs,
+                model: row.model,
+                modelName: AiModels.displayName(modelUsed: row.model))
         }
     }
 
@@ -1682,7 +1684,7 @@ extension LiveFollowUps: FollowUpsDataSource {
                 priority: item.priority, sourceStartMs: item.sourceStartMs,
                 sourceEndMs: item.sourceEndMs, completedAtMs: item.completedAtMs,
                 archivedAtMs: item.archivedAtMs, snoozedUntilMs: item.snoozedUntilMs,
-                origin: item.origin))
+                origin: item.origin, model: item.model))
     }
 
     /// The recording, cued to the words that created the item.

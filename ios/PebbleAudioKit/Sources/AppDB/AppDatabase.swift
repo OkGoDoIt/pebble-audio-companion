@@ -503,6 +503,19 @@ public struct AppDatabase: Sendable {
                 t.add(column: "lastAttemptAtMs", .integer)
             }
         }
+        // Which model FOUND an item. Extraction runs on a stronger model than the person's own
+        // choice, and falls back to their model when the key cannot use the stronger one — so
+        // "which model decided this belongs on my list" has more than one answer, and the item's
+        // provenance card is where a person asks it. Nullable: rows written before this, and
+        // rows a person wrote, have none.
+        migrator.registerMigration("v13-follow-up-model") { db in
+            try db.alter(table: "follow_up_candidates") { t in
+                t.add(column: "model", .text)
+            }
+            try db.alter(table: "follow_ups") { t in
+                t.add(column: "model", .text)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

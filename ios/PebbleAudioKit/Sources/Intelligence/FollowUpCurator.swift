@@ -235,7 +235,10 @@ public final class FollowUpCurator: @unchecked Sendable {
             priority: FollowUpCurationParser.priority(decision.priority),
             sourceStartMs: candidate.startMs,
             sourceEndMs: candidate.endMs,
-            origin: .ai)
+            origin: .ai,
+            // The model that FOUND it — the provenance card's answer to "which model decided
+            // this belongs on my list".
+            model: candidate.model)
     }
 
     // MARK: - Prompt body

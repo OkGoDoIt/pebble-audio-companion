@@ -715,7 +715,9 @@ final class LiveTodayDataSource {
                 sourceConversationTitle: row.sourceConversationId.flatMap { titles[$0] },
                 sourceSegmentId: row.sourceSegmentId,
                 sourceStartMs: row.sourceStartMs,
-                sourceEndMs: row.sourceEndMs)
+                sourceEndMs: row.sourceEndMs,
+                model: row.model,
+                modelName: AiModels.displayName(modelUsed: row.model))
         }
     }
 

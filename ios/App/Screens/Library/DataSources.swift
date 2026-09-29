@@ -532,6 +532,11 @@ struct FollowUpItem: Equatable, Identifiable {
     var sourceSegmentId: String?
     var sourceStartMs: Int64?
     var sourceEndMs: Int64?
+    /// The model that found it, as recorded (`FollowUp.model`) — carried so an undone delete
+    /// puts it back — and its display name for the provenance card. Nil for an item a person
+    /// wrote and for rows from before it was recorded.
+    var model: String? = nil
+    var modelName: String? = nil
 
     var isArchived: Bool { archivedAtMs != nil }
 

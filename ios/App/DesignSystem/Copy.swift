@@ -430,6 +430,8 @@ enum Copy {
         }
         static let addedByYou = "You added this."
         static func capturedOn(_ when: String) -> String { "Heard \(when)" }
+        /// The model that proposed the item, on its provenance card.
+        static func foundBy(_ model: String) -> String { "found by \(model)" }
 
         static func snoozedUntil(_ when: String) -> String { "Put off until \(when)" }
         static func overdueBy(_ duration: String) -> String { "\(duration) overdue" }

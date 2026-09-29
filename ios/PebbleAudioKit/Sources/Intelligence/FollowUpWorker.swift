@@ -476,7 +476,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                         "Follow-up extraction did not return the agreed JSON", underlying: nil)
                 }
                 written += try await persist(
-                    parsed, conversation: conversation, parts: parts, timeZone: zone, now: now)
+                    parsed, conversation: conversation, parts: parts, timeZone: zone, now: now,
+                    model: result.modelUsed)
                 if result.isProvisional { provisionalBy = result.providerId }
             }
             // A fallback that read only part of a piece found what was in that part — its
@@ -537,7 +538,8 @@ public final class FollowUpWorker: @unchecked Sendable {
         conversation: EnrichmentConversation,
         parts: [FollowUpSourcePart],
         timeZone: TimeZone,
-        now: Int64
+        now: Int64,
+        model: String?
     ) async throws -> Int {
         var written = 0
         var seen = Set<String>()
@@ -563,7 +565,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                     createdAtMs: now,
                     // When the CONVERSATION happened, which is what "tomorrow" inside it is
                     // relative to. `createdAtMs` is when this pass got round to reading it.
-                    recordedAtMs: parts.first?.startedAtMs))
+                    recordedAtMs: parts.first?.startedAtMs,
+                    model: model))
             written += 1
         }
         return written
