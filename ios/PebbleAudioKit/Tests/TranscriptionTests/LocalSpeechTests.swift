@@ -34,6 +34,11 @@ private final class FakeInventory: SpeechAssetInventorying, @unchecked Sendable 
         releases += 1
         statusValue = .supported
     }
+
+    var reservations = 0
+    func reserve(locale: Locale) async {
+        reservations += 1
+    }
 }
 
 private final class FakeInstall: SpeechAssetInstalling, @unchecked Sendable {
@@ -287,6 +292,32 @@ private struct FakeInstallError: Error {}
 
         #expect(await manager.requestInstall() == .installed)
         #expect(inventory.installationRequests == 0)
+        // ...but the locale is still reserved for this app, once: assets another app or the
+        // system installed are reclaimable until someone reserves them.
+        #expect(inventory.reservations == 1)
+        _ = await manager.refresh()
+        #expect(inventory.reservations == 1)
+    }
+
+    /// A download deferred for Wi-Fi keeps saying so, and starts by itself on the first refresh
+    /// that finds Wi-Fi. It used to fall back to "not installed" and never start.
+    @Test func aWifiDeferredDownloadResumesOnWifi() async {
+        final class Network: @unchecked Sendable { var onWiFi = false }
+        let network = Network()
+        let inventory = FakeInventory(status: .supported)
+        inventory.installRequest = FakeInstall(progressValues: [0.5, 1]) {
+            inventory.statusValue = .installed
+        }
+        let manager = LocalModelManager(
+            inventory: inventory, wifiOnly: { true }, isOnWiFi: { network.onWiFi })
+
+        #expect(await manager.requestInstall() == .waitingForWiFi)
+        #expect(await manager.refresh() == .waitingForWiFi)
+        #expect(inventory.installationRequests == 0)
+
+        network.onWiFi = true
+        #expect(await manager.refresh() == .installed)
+        #expect(inventory.installationRequests == 1)
     }
 
     @Test func nilInstallationRequestMeansAssetsAlreadyPresent() async {

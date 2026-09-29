@@ -32,6 +32,14 @@ public protocol SpeechAssetInventorying: Sendable {
     func installationRequest(for locale: Locale) async throws -> (any SpeechAssetInstalling)?
     /// Releases the locale reservation so the system may reclaim its assets.
     func release(locale: Locale) async
+    /// Claims the locale's assets for this app, so the system keeps them while it uses them.
+    /// Idempotent. Needed even when the assets are already installed: another app (or the
+    /// system) may have put them there, and assets no app has reserved can be reclaimed.
+    func reserve(locale: Locale) async
+}
+
+extension SpeechAssetInventorying {
+    public func reserve(locale: Locale) async {}
 }
 
 /// State shown on the Settings "Local model" row.
@@ -71,6 +79,8 @@ public actor LocalModelManager: LocalModelManaging {
     private var state: LocalModelState = .notInstalled
     private var observers: [UUID: AsyncStream<LocalModelState>.Continuation] = [:]
     private var installing = false
+    /// The locale has been reserved in this process (see `reserveOnce`).
+    private var reserved = false
 
     public init(
         locale: Locale = .current,
@@ -91,6 +101,16 @@ public actor LocalModelManager: LocalModelManaging {
         let mapped = mappedState(await inventory.status(for: locale))
         // Keep a failure message visible until the user retries or the install succeeds.
         if case .failed = state, mapped == .notInstalled { return state }
+        // A download deferred for Wi-Fi resumes on the first refresh that finds Wi-Fi — and
+        // until then keeps saying why it is waiting. It used to be overwritten with a plain
+        // "not installed" by the next refresh, and nothing ever started it again.
+        if state == .waitingForWiFi, mapped == .notInstalled {
+            if !wifiOnly() || isOnWiFi() {
+                return await requestInstall()
+            }
+            return state
+        }
+        if mapped == .installed { await reserveOnce() }
         setState(mapped)
         return state
     }
@@ -102,6 +122,7 @@ public actor LocalModelManager: LocalModelManaging {
             setState(.unsupported)
             return state
         case .installed:
+            await reserveOnce()
             setState(.installed)
             return state
         case .supported, .downloading:
@@ -134,8 +155,17 @@ public actor LocalModelManager: LocalModelManaging {
 
     public func uninstall() async -> LocalModelState {
         await inventory.release(locale: locale)
+        reserved = false
         setState(.notInstalled)
         return state
+    }
+
+    /// Reserves the locale once per process when its assets are already installed — they may
+    /// have been installed by the system or another app, and unreserved assets are reclaimable.
+    private func reserveOnce() async {
+        guard !reserved else { return }
+        reserved = true
+        await inventory.reserve(locale: locale)
     }
 
     public func states() -> AsyncStream<LocalModelState> {
@@ -209,6 +239,12 @@ public actor LocalModelManager: LocalModelManaging {
         public func release(locale: Locale) async {
             let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale) ?? locale
             _ = await AssetInventory.release(reservedLocale: resolved)
+        }
+
+        public func reserve(locale: Locale) async {
+            guard let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
+            else { return }
+            _ = try? await AssetInventory.reserve(locale: resolved)
         }
     }
 
