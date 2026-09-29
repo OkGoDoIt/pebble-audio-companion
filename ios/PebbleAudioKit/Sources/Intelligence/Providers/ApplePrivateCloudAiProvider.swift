@@ -163,6 +163,10 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
     /// The "not enabled for this build" line is written once per process, not once per job:
     /// a Remote-first backlog would otherwise write it 145 times.
     private let loggedBuildRefusal = OnceFlag()
+    private let generationTimeoutMs: Int64
+
+    /// One request's deadline: the AI transport's own figure, so both remotes wait as long.
+    public static let defaultGenerationTimeoutMs = Int64(AiHttpTransport.requestTimeoutSeconds * 1_000)
 
     /// - Parameters:
     ///   - model: nil on an OS without the model; the provider is then simply unavailable.
@@ -173,13 +177,15 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         remoteConsent: @escaping @Sendable () -> Bool,
         grounding: @escaping @Sendable () -> String? = { nil },
         buildStatus: ApplePrivateCloudBuildStatus = .shared,
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        generationTimeoutMs: Int64 = ApplePrivateCloudAiProvider.defaultGenerationTimeoutMs
     ) {
         self.model = model
         self.remoteConsent = remoteConsent
         self.grounding = grounding
         self.buildStatus = buildStatus
         self.log = log
+        self.generationTimeoutMs = generationTimeoutMs
     }
 
     public func isAvailable() async -> Bool {
@@ -263,15 +269,26 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
             ? OnDeviceStructuredShape.forPromptId(request.prompt.id) : nil
 
         let text: String
+        // The same deadline an OpenAI request has (`AiHttpTransport`): a session on Apple's
+        // model has no timer of its own, and one that never answers held the pipeline pass.
+        let deadlineMs = generationTimeoutMs
+        let timedOut: @Sendable () -> Error = {
+            AiError.providerFailed(
+                "\(Self.name) timed out after \(deadlineMs / 1_000) s without finishing")
+        }
         do {
             if let shape {
-                text = try await model.generateStructured(
-                    shape, instructions: instructions, prompt: userContent,
-                    maxOutputTokens: outputTokens)
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await model.generateStructured(
+                        shape, instructions: instructions, prompt: userContent,
+                        maxOutputTokens: outputTokens)
+                }
             } else {
-                text = try await model.generate(
-                    instructions: instructions, prompt: userContent,
-                    maxOutputTokens: outputTokens)
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await model.generate(
+                        instructions: instructions, prompt: userContent,
+                        maxOutputTokens: outputTokens)
+                }
             }
         } catch let error where error is CancellationError || error is AiError {
             throw error

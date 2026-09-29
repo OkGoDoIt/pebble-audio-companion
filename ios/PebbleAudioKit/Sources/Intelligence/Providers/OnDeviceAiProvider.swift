@@ -138,6 +138,15 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// anyway.
     public static let defaultMaxOutputTokens = OnDeviceContextBudget.defaultOutputTokens
 
+    /// How long one prose generation may take. The longest answer this provider asks for is
+    /// 900 tokens (Extended summary), about 45 s on the model; two minutes is a hang, not a
+    /// slow answer.
+    public static let defaultGenerationTimeoutMs: Int64 = 120_000
+    /// How long a structured shape may take in all. The follow-up sift is one short call per
+    /// candidate sentence, so a long conversation is legitimately minutes — but it must finish
+    /// inside the loop watchdog's ten, or the watchdog restarts the whole pipeline over it.
+    public static let defaultStructuredTimeoutMs: Int64 = 480_000
+
     public let id: String
 
     private let model: OnDeviceLanguageModel?
@@ -155,6 +164,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// power still reports `.available` and then fails at generation time. Naming it is the
     /// difference between "something went wrong" and "turn off Low Power Mode".
     private let lowPowerMode: @Sendable () -> Bool
+    private let generationTimeoutMs: Int64
+    private let structuredTimeoutMs: Int64
 
     public init(
         model: OnDeviceLanguageModel?,
@@ -163,13 +174,17 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         grounding: @escaping @Sendable () -> String? = { nil },
         lowPowerMode: @escaping @Sendable () -> Bool = {
             ProcessInfo.processInfo.isLowPowerModeEnabled
-        }
+        },
+        generationTimeoutMs: Int64 = OnDeviceAiProvider.defaultGenerationTimeoutMs,
+        structuredTimeoutMs: Int64 = OnDeviceAiProvider.defaultStructuredTimeoutMs
     ) {
         self.model = model
         self.maxInputChars = maxInputChars
         self.maxOutputTokens = maxOutputTokens
         self.grounding = grounding
         self.lowPowerMode = lowPowerMode
+        self.generationTimeoutMs = generationTimeoutMs
+        self.structuredTimeoutMs = structuredTimeoutMs
         self.id = model?.id ?? "on-device"
     }
 
@@ -217,20 +232,34 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         }
         let userContent = fitted.content
         let text: String
+        let pinnedOutputTokens = maxOutputTokens
+        // A deadline, because an Apple model session has none of its own: a generation that
+        // never returns used to hold the pipeline pass until the loop watchdog restarted the
+        // whole loop. Timing out is an ordinary failure the router falls back from.
+        let deadlineMs = shape == nil ? generationTimeoutMs : structuredTimeoutMs
+        let timedOut: @Sendable () -> Error = {
+            AiError.providerFailed(
+                "On-device AI \(Self.timedOutMarker) after \(deadlineMs / 1_000) s "
+                    + "without finishing")
+        }
         do {
             if let shape {
-                text = try await activeModel.generateStructured(
-                    shape,
-                    instructions: instructions,
-                    prompt: userContent,
-                    maxOutputTokens: maxOutputTokens
-                )
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await activeModel.generateStructured(
+                        shape,
+                        instructions: instructions,
+                        prompt: userContent,
+                        maxOutputTokens: pinnedOutputTokens
+                    )
+                }
             } else {
-                text = try await activeModel.generate(
-                    instructions: instructions,
-                    prompt: userContent,
-                    maxOutputTokens: outputTokens
-                )
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await activeModel.generate(
+                        instructions: instructions,
+                        prompt: userContent,
+                        maxOutputTokens: outputTokens
+                    )
+                }
             }
         } catch let error where error is CancellationError || error is AiError {
             throw error
@@ -388,6 +417,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// "Something went wrong".
     static let tooLongSentence = "\(AiFailure.Marker.tooLongForDevice)."
     static let deviceFailedSentence = "On-device AI generation failed."
+    /// Read by the shared taxonomy ("timed out") as `.timedOut`.
+    static let timedOutMarker = "timed out"
 
     /// Maps the bridge's verdict onto a message that names the cause.
     private func named(_ failure: OnDeviceGenerationFailure) -> AiError {

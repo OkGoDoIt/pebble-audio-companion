@@ -87,6 +87,10 @@ public final class AiModeRouter: @unchecked Sendable {
         } catch is CancellationError {
             // The user stopped it. Not a failure, and not worth a line in a 400-line ring.
             throw CancellationError()
+        } catch _ where Task.isCancelled {
+            // The same, in `URLSession`'s words (`URLError(.cancelled)`): callers check for
+            // `CancellationError`, and a cancelled pass must not be recorded as a cloud failure.
+            throw CancellationError()
         } catch {
             let failure = AiFailure.classify(error)
             record(
@@ -188,6 +192,17 @@ public final class AiModeRouter: @unchecked Sendable {
                 )
             } catch let error where error.isNeverSwallowed {
                 throw error
+            } catch let error
+                where AiInputPolicy.requiresWholeInput(templateId: request.prompt.id)
+                && Self.interruptedInFlight(error)
+            {
+                // A whole-input request — a recap, an Ask over a range, an Extended summary —
+                // that the cloud accepted and then timed out or lost the connection on is not
+                // handed to the on-device model. Its input was sized for the cloud; the phone
+                // would refuse it (`AiInputPolicy`) after doing the work of building it, and a
+                // big request is exactly the one most likely to time out. The cloud's own
+                // failure is the answer, and the caller retries it later.
+                throw error
             } catch {
                 let result = try await runProvider(
                     local, role: .onDevice, request, modeUsed: .localOnly, suppressed: error)
@@ -238,6 +253,19 @@ public final class AiModeRouter: @unchecked Sendable {
     /// Enough of the primary's message to tell a 401 from a 429 from an outage; the full body
     /// runs to kilobytes and the ring holds 400 lines.
     static let fallbackDetailChars = 200
+
+    /// A cloud request that was sent and then did not come back: timed out, lost its
+    /// connection, or cancelled under it (the system suspending the app mid-request).
+    static func interruptedInFlight(_ error: Error) -> Bool {
+        let interrupted: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cancelled]
+        if let urlError = error as? URLError { return interrupted.contains(urlError.code) }
+        if case .providerFailed(_, let underlying)? = error as? AiError,
+            let urlError = underlying as? URLError
+        {
+            return interrupted.contains(urlError.code)
+        }
+        return AiFailure.kind(of: error) == .timedOut
+    }
 
     /// The provider the user's MODE chose — the one whose failure is the headline.
     private static func chosenProviderId(
@@ -419,9 +447,15 @@ extension AiModeRouter {
 extension Error {
     /// Errors a First mode must re-throw instead of falling back: cancellation and explicit
     /// consent failures.
+    ///
+    /// Cancellation includes the shape `URLSession` gives it — `URLError(.cancelled)` rather
+    /// than `CancellationError` — whenever the task running the router has been cancelled. A
+    /// pass cancelled mid-request (the app backgrounded, the loop restarted) used to take that
+    /// for an ordinary cloud failure and start the on-device model on its way out.
     fileprivate var isNeverSwallowed: Bool {
         if self is CancellationError { return true }
         if let aiError = self as? AiError, case .consentRequired = aiError { return true }
+        if Task.isCancelled { return true }
         return false
     }
 }

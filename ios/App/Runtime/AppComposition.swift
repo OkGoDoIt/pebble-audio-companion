@@ -625,7 +625,10 @@ final class AppComposition {
             remote: RemoteAiProviderSwitch(
                 selected: { settingsBox.remoteAiProvider },
                 openAi: OpenAiChatAiProvider(
-                    transport: transport,
+                    // Its own session: `URLSession.shared`'s 60 s idle timer killed every
+                    // non-streaming call that thought longer than a minute (a long Ask, a
+                    // reasoning model). The transcription uploads keep theirs.
+                    transport: AiHttpTransport.make(),
                     apiKey: openAiKey,
                     remoteConsent: { settingsBox.remoteAiEnabled },
                     model: { settingsBox.aiModel },
