@@ -24,6 +24,10 @@ public final class AiModeRouter: @unchecked Sendable {
     ///
     /// Counters and classified kinds only — see `AiFailureLog`. Never transcript text.
     private let log: @Sendable (String) -> Void
+    /// Admits a fallback line the first time and then at most every ten minutes per template and
+    /// cause — the transcription router's discipline, for the same reason: a primary that is
+    /// down is down for every queued job.
+    private let fallbackLogGate: RepeatingLogGate
 
     private let lock = NSLock()
     private var _lastSuccessfulMode: AiProcessingMode?
@@ -48,12 +52,14 @@ public final class AiModeRouter: @unchecked Sendable {
         local: AiProvider?,
         remote: AiProvider?,
         mode: @escaping @Sendable () -> AiProcessingMode,
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        fallbackLogGate: RepeatingLogGate = RepeatingLogGate()
     ) {
         self.local = local
         self.remote = remote
         self.mode = mode
         self.log = log
+        self.fallbackLogGate = fallbackLogGate
     }
 
     public func isAvailable() async -> Bool {
@@ -160,6 +166,10 @@ public final class AiModeRouter: @unchecked Sendable {
             } catch {
                 let result = try await runProvider(
                     remote, role: .cloud, request, modeUsed: .remoteOnly, suppressed: error)
+                noteFallbackAnswered(
+                    request, mode: mode, primary: .onDevice,
+                    primaryId: local?.id ?? AiFailureOrigin.onDevice.rawValue, error: error,
+                    result: result)
                 // Set only where the fallback actually PRODUCED the result — a fallback that
                 // also failed throws above and never reaches here, so a successful fallback's
                 // calm disclosure can never be mistaken for an error.
@@ -181,6 +191,10 @@ public final class AiModeRouter: @unchecked Sendable {
             } catch {
                 let result = try await runProvider(
                     local, role: .onDevice, request, modeUsed: .localOnly, suppressed: error)
+                noteFallbackAnswered(
+                    request, mode: mode, primary: .cloud,
+                    primaryId: remote?.id ?? AiFailureOrigin.cloud.rawValue, error: error,
+                    result: result)
                 return (
                     result,
                     ProcessingFallback(
@@ -189,6 +203,41 @@ public final class AiModeRouter: @unchecked Sendable {
             }
         }
     }
+
+    /// Writes a line when a First mode's fallback ANSWERED — the one outcome that used to leave
+    /// no trace at all.
+    ///
+    /// A failure was always logged (`record`), but a fallback that succeeded wrote nothing: the
+    /// primary's error was reduced to `ProcessingFallback`'s four-way cause and dropped. That is
+    /// the transcription side's ten-day silent-engine failure in AI form — a Remote-first user
+    /// whose cloud calls all failed got every title from the on-device model, and nothing on the
+    /// device said so or why. The line carries the classified kind and a bounded, key-redacted
+    /// prefix of the primary's own message (`AiFailureLog.detail`), never transcript text; it is
+    /// gated per template and cause so a backlog of 145 conversations writes it once, then a
+    /// count.
+    private func noteFallbackAnswered(
+        _ request: AiRunRequest, mode: AiProcessingMode, primary: AiFailureOrigin,
+        primaryId: String, error: Error, result: RoutedAiResult
+    ) {
+        let kind = AiFailure.kind(of: error)
+        guard
+            let repeats = fallbackLogGate.admit(
+                "\(request.prompt.id)|\(primary.rawValue)|\(kind.rawValue)")
+        else { return }
+        let fallback: AiFailureOrigin = primary == .cloud ? .onDevice : .cloud
+        var line =
+            "ai fallback: \(request.prompt.id) mode=\(mode.rawValue) "
+            + "\(primary.rawValue)=\(primaryId) failed (\(kind.rawValue)): "
+            + "\(AiFailureLog.detail(of: error).prefix(Self.fallbackDetailChars)); "
+            + "answered by \(fallback.rawValue)=\(result.providerId)"
+        if result.inputTruncated { line += " from a cut input (provisional)" }
+        if repeats > 0 { line += " [\(repeats) more like it since the last line]" }
+        log(line)
+    }
+
+    /// Enough of the primary's message to tell a 401 from a 429 from an outage; the full body
+    /// runs to kilobytes and the ring holds 400 lines.
+    static let fallbackDetailChars = 200
 
     /// The provider the user's MODE chose — the one whose failure is the headline.
     private static func chosenProviderId(
