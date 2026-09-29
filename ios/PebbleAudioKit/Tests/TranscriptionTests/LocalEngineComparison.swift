@@ -45,6 +45,17 @@ import Testing
                         spec: spec, location: location, engine: CoreAIParakeetEngine.shared,
                         temporaryDirectory: temp, boostQuietAudio: { false })
                 ))
+                // The TDT decoder's per-step graphs on the CPU (`CoreAIParakeetEngine
+                // .decoderOnCPU`): same encoder, same bundle, a different placement.
+                if env["PEBBLE_COREAI_DECODER_CPU"] != nil {
+                    engines.append((
+                        "coreai cpu-decoder",
+                        ParakeetTranscriptionProvider(
+                            spec: spec, location: location,
+                            engine: CoreAIParakeetEngine(decoderOnCPU: true),
+                            temporaryDirectory: temp, boostQuietAudio: { false })
+                    ))
+                }
                 // The `ParakeetQuietAudioBoost` experiment on the same engine and audio.
                 if env["PEBBLE_ENGINE_COMPARE_BOOST"] != nil {
                     engines.append((
@@ -109,6 +120,9 @@ import Testing
                     runs.append((engine.name + " oldgate", engine.provider, gated))
                 }
             }
+            // The first run's words, so every other run can be compared with it directly —
+            // parity between two placements of the same model, independent of the reference.
+            var baseline: [String]?
             for engine in runs {
                 let started = Date()
                 do {
@@ -117,11 +131,15 @@ import Testing
                     let seconds = Date().timeIntervalSince(started)
                     let hypothesis = Self.words(result.text)
                     let wer = Self.wordErrorRate(reference: refWords, hypothesis: hypothesis)
+                    let parity = baseline.map {
+                        " | vs first run \(String(format: "%.1f", Self.wordErrorRate(reference: $0, hypothesis: hypothesis) * 100))%"
+                    } ?? ""
+                    if baseline == nil { baseline = hypothesis }
                     print(
                         "  \(engine.name.padding(toLength: 24, withPad: " ", startingAt: 0)) "
                             + "WER \(String(format: "%5.1f", wer * 100))% | \(hypothesis.count) words"
                             + " | \(String(format: "%.1f", audioSeconds / max(seconds, 0.001)))x realtime"
-                            + " | \"\(result.text.prefix(90))\"")
+                            + parity + " | \"\(result.text.prefix(90))\"")
                 } catch {
                     print("  \(engine.name): \(error)")
                 }

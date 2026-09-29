@@ -43,8 +43,9 @@ public actor SpeechRecognitionModel {
     /// config, so rebuilding it on every transcription is wasted work.
     private let melBasis: MelSpectrogram.Basis
 
-    public init(resourcesAt url: URL) async throws {
-        self.bundle = try await SpeechRecognitionBundle(at: url)
+    // Vendoring addition: `decoderOptions` — see `SpeechRecognitionBundle.init(at:decoderOptions:)`.
+    public init(resourcesAt url: URL, decoderOptions: SpecializationOptions = .default) async throws {
+        self.bundle = try await SpeechRecognitionBundle(at: url, decoderOptions: decoderOptions)
         let encoder: AIModel
         switch bundle.kind {
         case .whisper(let assets):

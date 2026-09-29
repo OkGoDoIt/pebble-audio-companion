@@ -42,6 +42,13 @@ By hand:
 - `SpeechRecognitionModel.cancelStream()` (in `StreamingSession.swift`) is new: it drops a
   running session with `CancellationError` instead of flushing the tail, which is what a
   cancelled transcription needs.
+- `SpeechRecognitionModel.init(resourcesAt:decoderOptions:)` and
+  `SpeechRecognitionBundle.init(at:decoderOptions:)` take a `SpecializationOptions` for a Parakeet
+  TDT bundle's `decoder_step` and `joint` graphs (the encoder keeps the default). Upstream loads
+  all three with the default. The app passes `.cpuOnly`: those graphs run dozens of times per
+  second of audio, and on a phone each Neural Engine dispatch cost more than the work (see
+  `CoreAIParakeetEngine.decoderOnCPU`). Default argument, so every upstream call site is
+  unchanged.
 
 Not copied: `FunctionMap`, `NpyArray`, `ModelStructure`, `ResourceManaging`,
 `ModelIONameResolver`, `FileSize`, the Video/Image/Text helpers, and every CLI tool — none is

@@ -132,8 +132,9 @@ extension ParakeetEngineFactory {
     /// model to drop its session, which is what makes a cancelled `transcribe` return promptly.
     @available(iOS 27, macOS 27, *)
     public final class CoreAIParakeetEngine: ParakeetNativeEngine, @unchecked Sendable {
-        /// The one instance the provider and the store's preparer share.
-        public static let shared = CoreAIParakeetEngine()
+        /// The one instance the provider and the store's preparer share. Its decoder runs on the
+        /// CPU — see `decoderOnCPU`.
+        public static let shared = CoreAIParakeetEngine(decoderOnCPU: true)
 
         /// Process budget (MB) required to LOAD a model. The first load writes the ~1.1 GB
         /// specialization cache and peaks well above the ~200–400 MB steady-state footprint.
@@ -153,7 +154,25 @@ extension ParakeetEngineFactory {
         /// A soft release asked for while the model was busy; honoured when it goes idle.
         private var releaseRequested = false
 
-        public init() {}
+        /// Runs the TDT decoder's two per-step graphs on the CPU instead of the Neural Engine.
+        ///
+        /// Those graphs are tiny (one prediction-network step, one joint) and run once per
+        /// encoder frame or emitted token — dozens of times per second of audio. On the phone each
+        /// Neural Engine request cost ~4 ms of dispatch (2026-09-30: ~250 requests a second in the
+        /// device log while transcribing at 4.2x realtime, against ~50x for the same bundle on a
+        /// Mac), so the decode loop, not the encoder, set the pace. On the CPU the same graphs give
+        /// byte-identical transcripts (`LocalEngineComparison`, `PEBBLE_COREAI_DECODER_CPU`, 3
+        /// segments / 40 min of audio, 0.0% difference) and ran 5–23% faster even on the Mac,
+        /// where Neural Engine dispatch is cheap. The encoder stays on the Neural Engine.
+        private let decoderOnCPU: Bool
+
+        public init(decoderOnCPU: Bool = false) {
+            self.decoderOnCPU = decoderOnCPU
+        }
+
+        /// Where the decoder's per-step graphs are specialized. The encoder always takes Core AI's
+        /// default (the Neural Engine).
+        var decoderOptions: SpecializationOptions { decoderOnCPU ? .cpuOnly : .default }
 
         public var isSupported: Bool {
             #if targetEnvironment(simulator)
@@ -216,7 +235,8 @@ extension ParakeetEngineFactory {
             dropModel()
             let loaded: SpeechRecognitionModel
             do {
-                loaded = try await SpeechRecognitionModel(resourcesAt: url)
+                loaded = try await SpeechRecognitionModel(
+                    resourcesAt: url, decoderOptions: decoderOptions)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {

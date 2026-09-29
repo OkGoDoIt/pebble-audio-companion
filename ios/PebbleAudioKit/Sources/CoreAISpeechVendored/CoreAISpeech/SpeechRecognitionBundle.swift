@@ -63,7 +63,9 @@ public struct SpeechRecognitionBundle: Sendable {
         public let streamingConfig: StreamingConfig?
     }
 
-    public init(at url: URL) async throws {
+    // Vendoring addition: `decoderOptions` places a Parakeet TDT bundle's two small per-step graphs
+    // (`decoder_step`, `joint`) apart from the encoder. See VENDORING.md.
+    public init(at url: URL, decoderOptions: SpecializationOptions = .default) async throws {
         let metadataURL = url.appending(path: "metadata.json")
         if FileManager.default.fileExists(atPath: metadataURL.path) {
             let bundle = try ModelBundle(at: url)
@@ -71,7 +73,8 @@ public struct SpeechRecognitionBundle: Sendable {
             case .speechRecognizer:
                 switch Self.architecture(from: bundle.raw) {
                 case .parakeetTDT:
-                    let assets = try await Self.loadParakeetTDT(bundle: bundle)
+                    let assets = try await Self.loadParakeetTDT(
+                        bundle: bundle, decoderOptions: decoderOptions)
                     self.kind = .parakeetTDT(assets)
                     self.tokenizer = try? await Self.loadParakeetTokenizer(bundleURL: url)
                 case .whisper:
@@ -124,13 +127,16 @@ public struct SpeechRecognitionBundle: Sendable {
             generationConfig: generationConfig, melConfig: .whisper)
     }
 
-    private static func loadParakeetTDT(bundle: ModelBundle) async throws -> ParakeetTDTAssets {
+    private static func loadParakeetTDT(
+        bundle: ModelBundle, decoderOptions: SpecializationOptions
+    ) async throws -> ParakeetTDTAssets {
         let encURL = try bundle.requireModelURL(for: "encoder")
         let stepURL = try bundle.requireModelURL(for: "decoder_step")
         let jointURL = try bundle.requireModelURL(for: "joint")
         let encoder = try await AIModel(contentsOf: encURL)
-        let decoderStep = try await AIModel(contentsOf: stepURL)
-        let joint = try await AIModel(contentsOf: jointURL)
+        // Vendoring change: the per-step graphs take `decoderOptions` (upstream: default).
+        let decoderStep = try await AIModel(contentsOf: stepURL, options: decoderOptions)
+        let joint = try await AIModel(contentsOf: jointURL, options: decoderOptions)
         let config = try ParakeetTDTConfig.decode(fromMetadata: bundle.raw)
 
         // Auto-detect static encoder shape and bake nFrames into the mel config
