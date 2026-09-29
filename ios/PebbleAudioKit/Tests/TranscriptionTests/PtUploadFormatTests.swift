@@ -103,7 +103,7 @@ private final class LadderQueue: @unchecked Sendable {
                     failures.append(message)
                 }
             },
-            markNoSpeech: { [self] id in lock.withLock { states[id] = .noSpeech } },
+            markNoSpeech: { [self] id, _ in lock.withLock { states[id] = .noSpeech } },
             resetAbandonedUploads: { _, _ in [] }
         )
     }

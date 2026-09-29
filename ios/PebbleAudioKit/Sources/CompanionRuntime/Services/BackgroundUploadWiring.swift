@@ -218,8 +218,8 @@ public enum BackgroundUploadWiring {
                 }
                 await mirror(segmentId, .failed)
             },
-            markNoSpeech: { segmentId in
-                do { try queue.markNoSpeech(segmentId) } catch {
+            markNoSpeech: { segmentId, decidedBy in
+                do { try queue.markNoSpeech(segmentId, decidedBy: decidedBy) } catch {
                     log.failure("upload mark no speech", error)
                 }
                 await mirror(segmentId, .noSpeech)

@@ -166,16 +166,26 @@ public actor TranscriptionService {
 
     /// Enqueues every closed, not-yet-transcribed segment. Safe to call repeatedly.
     public func enqueueClosedSegments() async throws {
-        let ids = await store.listSegments()
+        let closed = await store.listSegments()
             // `frameCount > 0` is not fussiness: a segment with no audio cannot produce a
             // transcript, so enqueuing one buys a task that fails, retries its whole ladder, and
             // then sits in Diagnostics as a permanent failure — noise in exactly the list a person
             // reads when something is actually wrong. Segments open and close with no frames
             // routinely (a stream that starts and immediately drops), and three such phantoms were
             // already on the real device.
-            .filter { !$0.isOpen && !$0.isFullyTranscribed && $0.frameCount > 0 }
-            .map(\.segmentId)
-        try processor.enqueueClosedSegments(ids)
+            .filter { !$0.isOpen && $0.frameCount > 0 }
+        // "No speech" verdicts from before they named their author are heard again once — see
+        // `TranscriptionQueue.requeueUnexplainedNoSpeech`. A query that finds nothing after the
+        // first pass, because every verdict reached since carries its author.
+        let requeued = try processor.requeueUnexplainedNoSpeech(
+            among: Set(closed.map(\.segmentId)))
+        if !requeued.isEmpty {
+            log.write(
+                "requeued \(requeued.count) \"no speech\" verdict(s) from before they were "
+                    + "attributed; some were an interrupted model read as silence")
+        }
+        try processor.enqueueClosedSegments(
+            closed.filter { !$0.isFullyTranscribed }.map(\.segmentId))
     }
 
     /// Drains the queue to exhaustion under the processing mutex. Returns true when at least one

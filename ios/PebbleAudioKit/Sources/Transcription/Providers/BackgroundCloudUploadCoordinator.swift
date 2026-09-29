@@ -115,8 +115,8 @@ public actor BackgroundCloudUploadCoordinator {
         /// Marks the task Failed (retryable) with a user-diagnosable message.
         public var markFailed:
             @Sendable (_ segmentId: String, _ message: String, _ retryable: Bool) async -> Void
-        /// Marks the task NoSpeech (terminal, not a failure).
-        public var markNoSpeech: @Sendable (_ segmentId: String) async -> Void
+        /// Marks the task NoSpeech (terminal, not a failure), naming who decided it.
+        public var markNoSpeech: @Sendable (_ segmentId: String, _ decidedBy: String) async -> Void
         /// `FileTranscriptionQueue.resetAbandonedUploads`: Uploading tasks whose job id is NOT in
         /// the transport's in-flight set go back to Pending; returns the reset segment ids.
         /// `graceMs` is a registration grace — see `TranscriptionQueue.resetAbandonedUploads`.
@@ -133,7 +133,7 @@ public actor BackgroundCloudUploadCoordinator {
             markComplete: @escaping @Sendable (String, TranscriptionResult, TranscriptionMode)
                 async -> Void,
             markFailed: @escaping @Sendable (String, String, Bool) async -> Void,
-            markNoSpeech: @escaping @Sendable (String) async -> Void,
+            markNoSpeech: @escaping @Sendable (String, String) async -> Void,
             resetAbandonedUploads: @escaping @Sendable (Set<String>, Int64) async -> [String]
         ) {
             self.pendingSegmentIds = pendingSegmentIds
@@ -311,12 +311,15 @@ public actor BackgroundCloudUploadCoordinator {
             // upload, not the decode this gate needs — the audio source still decodes, streaming,
             // and hands the profile over in `SegmentAudio.energy` so the samples are read once and
             // never assembled.
-            if let silenceFloorRms,
-                audio.energyProfile(floorRms: silenceFloorRms)
-                    .isProvablySilent(floorRms: silenceFloorRms)
-            {
-                await queue.markNoSpeech(segmentId)
-                continue
+            if let silenceFloorRms {
+                let profile = audio.energyProfile(floorRms: silenceFloorRms)
+                if profile.isProvablySilent(floorRms: silenceFloorRms) {
+                    await queue.markNoSpeech(
+                        segmentId,
+                        SegmentEnergy.silenceVerdict(
+                            loudestWindowRms: profile.loudestWindowRms, floorRms: silenceFloorRms))
+                    continue
+                }
             }
             let body = audio.body(for: format)
             guard let plan = await capable.uploadPlan(audio: body, sampleRateHz: audio.sampleRateHz)
@@ -477,9 +480,9 @@ public actor BackgroundCloudUploadCoordinator {
 
     private func handleStepError(_ error: Error, job: CloudUploadJob, fallbackMessage: String) async {
         if error is CancellationError { return }
-        if case TranscriptionError.noSpeechDetected = error {
+        if case TranscriptionError.noSpeechDetected(let reason) = error {
             // Real speech-free audio, not a container problem: the provider read the file.
-            await noSpeech(job)
+            await noSpeech(job, reason: "\(job.provider.rawValue): \(reason)")
             return
         }
         await fail(job, errorMessage(error) ?? fallbackMessage)
@@ -501,8 +504,8 @@ public actor BackgroundCloudUploadCoordinator {
         cloudProvider.noteFailureMessage(message, provider: job.provider)
     }
 
-    private func noSpeech(_ job: CloudUploadJob) async {
-        await queue.markNoSpeech(job.jobId)
+    private func noSpeech(_ job: CloudUploadJob, reason: String) async {
+        await queue.markNoSpeech(job.jobId, reason)
         cleanup(job)
     }
 

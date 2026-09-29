@@ -139,7 +139,7 @@ private final class RecordingQueue: @unchecked Sendable {
                     terminal.insert(id)
                 }
             },
-            markNoSpeech: { [self] id in
+            markNoSpeech: { [self] id, _ in
                 lock.withLock {
                     noSpeech.insert(id)
                     terminal.insert(id)

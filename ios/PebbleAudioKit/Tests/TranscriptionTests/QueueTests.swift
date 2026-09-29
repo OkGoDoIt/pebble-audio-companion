@@ -154,11 +154,55 @@ import Testing
         let q = queue()
         try q.enqueue("seg-1")
         try q.enqueue("seg-2")
-        try q.markNoSpeech("seg-1")
+        try q.markNoSpeech("seg-1", decidedBy: "test")
         try q.markDisabled("seg-2")
         #expect(try q.load("seg-1")?.state == .noSpeech)
         #expect(try q.load("seg-2")?.state == .disabled)
         #expect(try q.nextRunnable() == nil)
+    }
+
+    /// Every verdict reached from 2026-09-30 on names its author; one with none is from before,
+    /// when an interrupted model could settle a whole conversation as silence.
+    @Test func noSpeechVerdictsKeepWhoReachedThem() throws {
+        let q = queue()
+        try q.enqueue("seg-1")
+        try q.markNoSpeech("seg-1", decidedBy: "coreai-local: local model returned no speech")
+        #expect(
+            try q.load("seg-1")?.lastError
+                == "no speech - coreai-local: local model returned no speech")
+    }
+
+    @Test func unattributedNoSpeechWithItsAudioIsHeardAgainOnce() throws {
+        let q = queue()
+        for id in ["old-with-audio", "old-without-audio", "attributed", "complete"] {
+            try q.enqueue(id)
+        }
+        try q.markRunning("old-with-audio")
+        // Verdicts from before provenance: state NoSpeech, no author — as the old code left them.
+        try db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE transcription_tasks SET state = 'NoSpeech', lastError = NULL
+                    WHERE segmentId IN ('old-with-audio', 'old-without-audio')
+                    """)
+        }
+        try q.markNoSpeech("attributed", decidedBy: "silence floor: loudest second -70 dBFS")
+        try q.markComplete(
+            "complete",
+            result: routed("hi"))
+
+        let existing: Set<String> = ["old-with-audio", "attributed", "complete"]
+        #expect(try q.requeueUnexplainedNoSpeech(among: existing) == ["old-with-audio"])
+        let revived = try q.load("old-with-audio")
+        #expect(revived?.state == .pending)
+        #expect(revived?.attempts == 0, "a fresh budget")
+        #expect(try q.load("old-without-audio")?.state == .noSpeech, "nothing left to hear")
+        #expect(try q.load("attributed")?.state == .noSpeech)
+        #expect(try q.load("complete")?.state == .complete)
+
+        // Re-settled with an author, it is never picked up again.
+        try q.markNoSpeech("old-with-audio", decidedBy: "coreai-local: local model returned no speech")
+        #expect(try q.requeueUnexplainedNoSpeech(among: existing).isEmpty)
     }
 
     @Test func recoverOnStart_returnsRunningTasksToPending() throws {

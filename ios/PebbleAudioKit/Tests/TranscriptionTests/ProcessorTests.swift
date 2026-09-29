@@ -199,6 +199,8 @@ private final class OpenAnswers: @unchecked Sendable {
         try await processor.processNext()
 
         #expect(try queue.load("seg-1")?.state == .noSpeech)
+        // The router names the provider that reached the verdict.
+        #expect(try queue.load("seg-1")?.lastError == "no speech - local: silence")
     }
 
     @Test func nonExceptionProviderThrowableIsRecordedAsFailedTask() async throws {

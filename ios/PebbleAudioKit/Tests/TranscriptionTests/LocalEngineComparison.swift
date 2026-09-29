@@ -129,6 +129,68 @@ import Testing
         }
     }
 
+    /// Segments the app settled as `NoSpeech`, heard again by today's Core AI path: how much
+    /// the old verdict hid. `PEBBLE_NOSPEECH_SEGMENTS` names them (same backup root). Prints,
+    /// per segment, whether the retired interior gate found ANY voiced range (none means that
+    /// gate alone decided "no speech") and what the whole-segment path hears now.
+    @Test func noSpeechVerdictsHeardAgain() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let rootPath = env["PEBBLE_ENGINE_COMPARE_ROOT"],
+            let ids = env["PEBBLE_NOSPEECH_SEGMENTS"]?.split(separator: ",").map(String.init),
+            !ids.isEmpty
+        else { return }
+        #if canImport(CoreAI)
+            guard let bundle = env["PEBBLE_COREAI_BUNDLE"], #available(macOS 27, iOS 27, *)
+            else { return }
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            let reader = SegmentFileReader(root: root)
+            let temp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("nospeech-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: temp) }
+            let spec = ParakeetModelCatalog.byId(ParakeetModelCatalog.coreAIModelId)
+            let provider = ParakeetTranscriptionProvider(
+                spec: spec,
+                location: FixedLocation(path: URL(fileURLWithPath: bundle, isDirectory: true)),
+                engine: CoreAIParakeetEngine.shared, temporaryDirectory: temp,
+                boostQuietAudio: { false })
+            var withWords = 0
+            var gateDecided = 0
+            for id in ids {
+                guard let meta = reader.readMeta(id) else {
+                    print("\(id): no audio")
+                    continue
+                }
+                let rate = Int(meta.sampleRateHz)
+                let decoder = SpeexFrameDecoder(
+                    sampleRateHz: rate, bitRateBps: Int(meta.bitRateBps),
+                    frameSamples: meta.frameSamples)
+                let pcm = try decoder.decodeAll(
+                    frames: reader.readFrames(id).map { Data($0.payload) })
+                let seconds = Double(pcm.count / 2) / Double(rate)
+                let ranges = ParakeetPcm.speechRanges(byteCount: pcm.count, sampleRateHz: rate) {
+                    pcm.subdata(in: $0..<min(pcm.count, $0 + $1))
+                }
+                if ranges.isEmpty { gateDecided += 1 }
+                let heard: String
+                do {
+                    let result = try await provider.transcribe(
+                        pcmChunks: Self.stream(pcm), sampleRateHz: rate)
+                    let words = Self.words(result.text)
+                    if words.count >= 5 { withWords += 1 }
+                    heard = "\(words.count) words | \"\(result.text.prefix(110))\""
+                } catch {
+                    heard = "\(error)"
+                }
+                print(
+                    "\(id): \(Int(seconds)) s | old gate ranges \(ranges.count) | now: \(heard)")
+            }
+            print(
+                "summary: \(ids.count) segments, \(gateDecided) had no voiced range under the old "
+                    + "gate, \(withWords) now yield 5+ words")
+        #endif
+    }
+
     /// How long a Core AI load takes from each of `PEBBLE_COREAI_LOAD_TIMING`'s comma-separated
     /// bundle paths, released in between. Answers whether the specialization cache follows the
     /// model's CONTENT or its PATH: load a bundle, move it, load it again — seconds means the

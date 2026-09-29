@@ -557,7 +557,8 @@ public struct LegacyImporter: @unchecked Sendable {
                     ))
             } else {
                 _ = try queue.enqueue(meta.segmentId)
-                _ = try queue.markNoSpeech(meta.segmentId)
+                _ = try queue.markNoSpeech(
+                    meta.segmentId, decidedBy: "imported: settled by the earlier app")
             }
             backfilled += 1
         }

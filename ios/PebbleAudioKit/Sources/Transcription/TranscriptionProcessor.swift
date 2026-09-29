@@ -88,6 +88,16 @@ public final class TranscriptionProcessor: Sendable {
         }
     }
 
+    /// `TranscriptionQueue.requeueUnexplainedNoSpeech`, mirrored to the segment store.
+    @discardableResult
+    public func requeueUnexplainedNoSpeech(among existing: Set<String>) throws -> [String] {
+        let requeued = try queue.requeueUnexplainedNoSpeech(among: existing)
+        for segmentId in requeued {
+            onStateChanged(segmentId, .pending)
+        }
+        return requeued
+    }
+
     public func isTranscriptionAvailable() async -> Bool {
         await router.isAvailable()
     }
@@ -123,8 +133,9 @@ public final class TranscriptionProcessor: Sendable {
 
         // Nothing is sent anywhere — cloud or local — until the audio has been shown to contain
         // something. See `provablySilent` for what "shown" costs and what it is allowed to mean.
-        if try await provablySilent(task.segmentId) {
-            let terminal = try queue.markNoSpeech(task.segmentId)
+        if let loudest = try await provablySilent(task.segmentId) {
+            let terminal = try queue.markNoSpeech(
+                task.segmentId, decidedBy: SegmentEnergy.silenceVerdict(loudestWindowRms: loudest))
             onStateChanged(task.segmentId, .noSpeech)
             return terminal
         }
@@ -158,8 +169,8 @@ public final class TranscriptionProcessor: Sendable {
                 onStateChanged(segmentId, .pending)
             }
             throw error
-        } catch TranscriptionError.noSpeechDetected {
-            let terminal = try queue.markNoSpeech(segmentId)
+        } catch TranscriptionError.noSpeechDetected(let reason) {
+            let terminal = try queue.markNoSpeech(segmentId, decidedBy: reason)
             onStateChanged(segmentId, .noSpeech)
             return terminal
         } catch TranscriptionError.providerUnavailable {
@@ -202,18 +213,21 @@ public final class TranscriptionProcessor: Sendable {
     /// settled-with-no-speech and the transcript view renders the span as quiet rather than as
     /// missing audio. The spool file is untouched; a user-requested re-transcribe requeues it like
     /// any other segment.
-    private func provablySilent(_ segmentId: String) async throws -> Bool {
-        guard let silenceFloorRms else { return false }
+    /// Returns the loudest second's RMS when the segment is provably silent, nil otherwise.
+    private func provablySilent(_ segmentId: String) async throws -> Double? {
+        guard let silenceFloorRms else { return nil }
         do {
             var meter = SegmentEnergyMeter(sampleRateHz: sampleRateHz, floorRms: silenceFloorRms)
             for try await chunk in try await pcmSource(segmentId) {
                 meter.consume(chunk)
             }
-            return meter.finish().isProvablySilent(floorRms: silenceFloorRms)
+            let profile = meter.finish()
+            return profile.isProvablySilent(floorRms: silenceFloorRms)
+                ? profile.loudestWindowRms : nil
         } catch let error where error is CancellationError {
             throw error
         } catch {
-            return false
+            return nil
         }
     }
 }

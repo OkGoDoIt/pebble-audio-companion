@@ -126,6 +126,17 @@ public enum SegmentEnergy {
     /// deleting real speech, so it is not.
     public static let provableSilenceFloorRms: Double = 32
 
+    /// Who settled a segment as silent, and on what number — the NoSpeech task's provenance.
+    public static func silenceVerdict(
+        loudestWindowRms: Double, floorRms: Double = provableSilenceFloorRms
+    ) -> String {
+        func dbfs(_ rms: Double) -> String {
+            String(format: "%.0f", 20 * log10(max(rms, 0.5) / 32_767))
+        }
+        return "silence floor: loudest second \(dbfs(loudestWindowRms)) dBFS, under the "
+            + "\(dbfs(floorRms)) dBFS floor"
+    }
+
     /// Streaming profile over PCM16 mono chunks, in the order a provider would receive them.
     public static func profile(
         pcmChunks: some Sequence<Data>,

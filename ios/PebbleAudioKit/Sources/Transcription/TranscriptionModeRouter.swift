@@ -241,6 +241,10 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
             )
         } catch let error where error is CancellationError {
             throw error
+        } catch TranscriptionError.noSpeechDetected(let reason) {
+            // The verdict names who reached it — the queue keeps that on the NoSpeech task — and
+            // a fallback's "nothing was said" is the answer, whatever the primary's failure was.
+            throw TranscriptionError.noSpeechDetected("\(provider.id): \(reason)")
         } catch {
             guard let suppressed else { throw error }
             throw Self.combining(

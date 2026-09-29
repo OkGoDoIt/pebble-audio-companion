@@ -267,13 +267,57 @@ public final class TranscriptionQueue: Sendable {
         }
     }
 
+    /// Settles a task as "nothing was said", keeping who decided it — the silence floor, or the
+    /// provider in its own words — in `lastError` behind `noSpeechPrefix`. Nothing on screen
+    /// reads `lastError` for anything but a Failed task.
+    ///
+    /// Required, not optional: until 2026-09-30 a NoSpeech row could not say whether the silence
+    /// floor, the on-device model or the cloud had settled it, and some of those verdicts were
+    /// wrong (see `requeueUnexplainedNoSpeech`). A verdict with no author is now exactly what
+    /// marks one from before then.
     @discardableResult
-    public func markNoSpeech(_ segmentId: String) throws -> TranscriptionTask? {
+    public func markNoSpeech(_ segmentId: String, decidedBy: String) throws -> TranscriptionTask? {
         try update(segmentId) { task in
             var next = task
             next.state = .noSpeech
-            next.lastError = nil
+            next.lastError = Self.noSpeechPrefix + decidedBy
             return next
+        }
+    }
+
+    /// Marks a NoSpeech task's `lastError` as a verdict's provenance rather than a failure.
+    public static let noSpeechPrefix = "no speech - "
+
+    /// Puts back to Pending every NoSpeech verdict that has no author — all of them from before
+    /// 2026-09-30 — whose audio is still here (`existing`), with a fresh attempt budget.
+    ///
+    /// Some of those verdicts were wrong, and a NoSpeech task is never looked at again. Until the
+    /// 2026-09-29 lease fix, releasing the on-device model under a running segment made the old
+    /// engines return empty text for every remaining chunk instead of an error, and an all-empty
+    /// segment was settled as "nothing was said": on 09-24 and 09-28, within seconds of the loop
+    /// watchdog restarting a stuck pass, conversations of 1,501, 1,592 and 2,335 words were
+    /// settled that way (re-heard on the Mac from the 2026-09-29 backup; 7 of 16 sampled verdicts
+    /// held 5+ words). Nothing distinguishes those from honest verdicts after the fact, so all of
+    /// them are heard again once: the silence floor re-settles a silent one for the price of a
+    /// decode, and every verdict reached from here on carries its author, so this finds nothing
+    /// the second time.
+    @discardableResult
+    public func requeueUnexplainedNoSpeech(among existing: Set<String>) throws -> [String] {
+        try database.writer.write { db in
+            let matching = try Self.orderedQuery
+                .filter(Column("state") == TaskState.noSpeech.rawValue)
+                .filter(Column("lastError") == nil)
+                .fetchAll(db)
+                .filter { existing.contains($0.segmentId) }
+            for task in matching {
+                var next = task
+                next.state = .pending
+                next.attempts = 0
+                next.retryable = true
+                next.updatedAtMs = nowMs()
+                try next.update(db)
+            }
+            return matching.map(\.segmentId)
         }
     }
 

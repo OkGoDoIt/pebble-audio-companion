@@ -94,7 +94,8 @@ private final class GateFakeProvider: TranscriptionProvider, @unchecked Sendable
         #expect(provider.callCount == 0, "silent audio must not reach a provider at all")
         let task = try queue.load("seg-1")
         #expect(task?.state == .noSpeech, "terminal, and not a failure")
-        #expect(task?.lastError == nil)
+        // Not a failure message: who settled it, and on what number.
+        #expect(task?.lastError?.hasPrefix("no speech - silence floor: loudest second ") == true)
         #expect(task?.attempts == 0, "a gated segment must not burn a retry attempt")
     }
 
@@ -290,7 +291,7 @@ private final class SilenceGateQueue: @unchecked Sendable {
             saveTranscript: { _, _, _ in },
             markComplete: { [self] id, _, _ in lock.withLock { states[id] = .complete } },
             markFailed: { [self] id, _, _ in lock.withLock { states[id] = .failed } },
-            markNoSpeech: { [self] id in lock.withLock { states[id] = .noSpeech } },
+            markNoSpeech: { [self] id, _ in lock.withLock { states[id] = .noSpeech } },
             resetAbandonedUploads: { _, _ in [] }
         )
     }

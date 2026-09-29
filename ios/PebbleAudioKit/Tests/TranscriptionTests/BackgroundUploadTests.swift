@@ -174,7 +174,7 @@ private final class FakeUploadQueue: @unchecked Sendable {
                     retryableFlags[segmentId] = retryable
                 }
             },
-            markNoSpeech: { [self] segmentId in
+            markNoSpeech: { [self] segmentId, _ in
                 lock.withLock { states[segmentId] = .noSpeech }
             },
             resetAbandonedUploads: { [self] inFlight, _ in
