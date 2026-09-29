@@ -262,6 +262,9 @@ private final class Counter: @unchecked Sendable {
         #expect(annotation == nil)
     }
 
+    /// A failure nobody can name spends an attempt (`AiFailureKind.blamesTheInput`), attempts
+    /// are spaced by `AiRetryPolicy.contentRetryMs` rather than spent in three back-to-back
+    /// passes, and a spent budget RESTS instead of being abandoned for the life of the database.
     @Test func failuresAreBoundedToMaxAttempts() async throws {
         let provider = FakeAiProvider(error: FakeFailure(message: "provider down"))
         let worker = worker(provider)
@@ -269,6 +272,7 @@ private final class Counter: @unchecked Sendable {
         for _ in 0..<5 {
             _ = try await worker.enrich(
                 conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
+            clock.advance(byMs: AiRetryPolicy.contentRetryMs)
         }
 
         #expect(provider.runCount == EnrichmentWorker.maxAttempts)
@@ -277,12 +281,18 @@ private final class Counter: @unchecked Sendable {
         #expect(annotation?.lastError == "provider down")
         #expect(annotation?.hasContent == false)
 
-        // Recovery: provider works again, the next pass overwrites the failure record... but
-        // only if attempts allow; bounded retries are intentional, so it stays failed.
+        // The provider works again. The spent budget still rests for its six hours…
         provider.error = nil
         _ = try await worker.enrich(
             conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
         #expect(provider.runCount == EnrichmentWorker.maxAttempts)
+
+        // …and is then tried again, and titled. It used to stay untitled forever.
+        clock.advance(byMs: AiRetryPolicy.exhaustedRetryMs)
+        _ = try await worker.enrich(
+            conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
+        #expect(provider.runCount == EnrichmentWorker.maxAttempts + 1)
+        #expect(try await store.load("conv-seg-1")?.isFinal == true)
     }
 
     private var longLive: String { String(repeating: "a ", count: EnrichmentWorker.liveMinChars) }

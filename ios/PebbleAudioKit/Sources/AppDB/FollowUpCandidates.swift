@@ -159,22 +159,29 @@ public struct FollowUpCandidateStore: Sendable {
     }
 
     /// The curation queue: undecided candidates, best-grounded and newest first, bounded, and
-    /// skipping any that curation has already failed on `maxAttempts` times.
-    public func pending(limit: Int, maxAttempts: Int = Int.max) async throws
-        -> [FollowUpCandidate]
-    {
-        try await db.reader.read { db in
+    /// skipping any that curation has already failed on `maxAttempts` times — until
+    /// `retryAfterMs` has passed since the last of them, when a spent candidate is tried again
+    /// rather than left `pending` forever. `retryAfterMs` nil keeps a spent budget spent.
+    public func pending(
+        limit: Int, maxAttempts: Int = Int.max, retryAfterMs: Int64? = nil,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> [FollowUpCandidate] {
+        // A candidate spent before the attempt time was recorded (NULL) is due at once, once.
+        let restedBefore = retryAfterMs.map { nowMs - $0 } ?? Int64.min
+        return try await db.reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
                     SELECT * FROM follow_up_candidates
-                    WHERE state = 'pending' AND attempts < ?
+                    WHERE state = 'pending'
+                        AND (attempts < ?
+                            OR (? AND (lastAttemptAtMs IS NULL OR lastAttemptAtMs <= ?)))
                     ORDER BY
                         CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                         createdAtMs DESC, id
                     LIMIT ?
                     """,
-                arguments: [maxAttempts, limit]
+                arguments: [maxAttempts, retryAfterMs != nil, restedBefore, limit]
             ).map(Self.candidate(from:))
         }
     }
@@ -187,16 +194,32 @@ public struct FollowUpCandidateStore: Sendable {
     }
 
     /// Records that a curation call was made for these candidates and did not decide them.
-    public func recordAttempt(ids: [String]) async throws {
+    public func recordAttempt(
+        ids: [String], nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
         guard !ids.isEmpty else { return }
         try await db.writer.write { db in
             let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
             try db.execute(
                 sql: """
-                    UPDATE follow_up_candidates SET attempts = attempts + 1
+                    UPDATE follow_up_candidates
+                    SET attempts = attempts + 1, lastAttemptAtMs = ?
                     WHERE id IN (\(placeholders))
                     """,
-                arguments: StatementArguments(ids))
+                arguments: StatementArguments([nowMs] as [any DatabaseValueConvertible])
+                    + StatementArguments(ids))
+        }
+    }
+
+    /// Every undecided candidate's curation budget starts over — the AI configuration changed,
+    /// so a batch the old one could not decide may now be decided.
+    public func resetAttempts() async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_up_candidates SET attempts = 0, lastAttemptAtMs = NULL
+                    WHERE state = 'pending' AND (attempts > 0 OR lastAttemptAtMs IS NOT NULL)
+                    """)
         }
     }
 

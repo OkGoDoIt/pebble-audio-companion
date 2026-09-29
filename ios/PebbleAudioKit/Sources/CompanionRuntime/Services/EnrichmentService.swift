@@ -215,6 +215,18 @@ public actor EnrichmentService {
         return true
     }
 
+    /// Every AI job's retry budget and backoff start over: titles, follow-up extraction and
+    /// curation, and the boundary review. Called when the AI configuration changes — a key, a
+    /// mode, the remote provider or model — and when a held cloud account takes work again,
+    /// because each of those can make a failed job succeed and none of them should wait out a
+    /// six-hour backoff to be noticed.
+    public func resetAiRetryBudgets() async {
+        await worker.resetRetryBudgets()
+        await followUps.resetRetryBudgets()
+        await curator.resetRetryBudgets()
+        await boundaryReviewer?.resetRetryBudgets()
+    }
+
     /// Delete-cascade support: a conversation that no longer exists keeps no extraction
     /// bookkeeping. (Its follow-up ROWS are removed by the per-segment cascade, which is what
     /// their `sourceSegmentId` is for.)

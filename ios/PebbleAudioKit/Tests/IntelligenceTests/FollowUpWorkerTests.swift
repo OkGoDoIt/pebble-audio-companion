@@ -348,6 +348,8 @@ private final class LoadCounter: @unchecked Sendable {
             _ = try await worker.extract(
                 [conversation("conv-1", members: [meta("seg-1")])],
                 transcriptOf: { self.transcript($0) })
+            // Attempts are spaced (`AiRetryPolicy.contentRetryMs`), not spent pass after pass.
+            clock.advance(byMs: AiRetryPolicy.contentRetryMs)
         }
         #expect(provider.runCount == FollowUpWorker.maxAttempts)
         let settled = try await state.load("conv-1")
@@ -408,6 +410,7 @@ private final class LoadCounter: @unchecked Sendable {
             _ = try await worker.extract(
                 [conversation("conv-1", members: [meta("seg-1")])],
                 transcriptOf: { self.transcript($0) })
+            clock.advance(byMs: AiRetryPolicy.contentRetryMs)
         }
         #expect(provider.runCount == FollowUpWorker.maxAttempts)
 

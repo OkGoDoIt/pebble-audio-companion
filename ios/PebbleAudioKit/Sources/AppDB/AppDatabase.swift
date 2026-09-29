@@ -493,6 +493,16 @@ public struct AppDatabase: Sendable {
                 }
             }
         }
+        // When curation last tried a candidate. `attempts` alone made a spent budget permanent:
+        // a candidate that three curation calls failed on stayed `pending` forever, excluded
+        // from every batch, with nothing that would ever pick it up again. With the time of the
+        // last attempt, a spent budget RESTS for six hours and is then tried again
+        // (`FollowUpCandidateStore.pending(limit:maxAttempts:retryAfterMs:nowMs:)`).
+        migrator.registerMigration("v12-follow-up-candidate-retry") { db in
+            try db.alter(table: "follow_up_candidates") { t in
+                t.add(column: "lastAttemptAtMs", .integer)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

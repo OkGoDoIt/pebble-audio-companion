@@ -36,10 +36,15 @@ public final class FollowUpCurator: @unchecked Sendable {
     public static let modelId = FollowUpWorker.modelId
     public static let reasoningEffort = "medium"
 
-    /// Curation calls a batch may cost before its candidates are given up on. Extraction has
+    /// Curation calls that failed ON THE INPUT before a batch's candidates rest. Extraction has
     /// had a budget from the start; without one here, a batch the provider could not answer
     /// stayed pending and — because `pending(limit:)` is deterministic — the identical twelve
     /// candidates were re-sent on every pass, forever, on the expensive model.
+    ///
+    /// Spent budgets used to be permanent too: the candidates stayed `pending`, excluded from
+    /// every batch, with nothing that would ever look at them again. They now rest
+    /// `AiRetryPolicy.exhaustedRetryMs` and are tried again; a failure that was the world's
+    /// (offline, a busy or broke account) spends nothing and pauses curation instead.
     public static let maxAttempts = 3
 
     private let candidates: FollowUpCandidateStore
@@ -48,6 +53,12 @@ public final class FollowUpCurator: @unchecked Sendable {
     private let nowMs: @Sendable () -> Int64
     private let timeZone: @Sendable () -> TimeZone
     private let titleOf: @Sendable (String) async -> String?
+
+    /// After a failure that was not the input's: no curation call before this. In memory — a
+    /// relaunch costs at most one small call, and the batch itself is never charged for it.
+    private let pause = NSLock()
+    private var pausedUntilMs: Int64?
+    private var transientFailures = 0
 
     public init(
         candidates: FollowUpCandidateStore,
@@ -73,16 +84,28 @@ public final class FollowUpCurator: @unchecked Sendable {
         try await followUps.archiveStale(olderThanMs: Self.staleAfterMs, nowMs: nowMs())
     }
 
+    /// Every candidate's curation budget, and any pause, start over — the AI configuration
+    /// changed, so a batch the old one could not decide may now be decided.
+    public func resetRetryBudgets() async {
+        pause.withLock {
+            pausedUntilMs = nil
+            transientFailures = 0
+        }
+        try? await candidates.resetAttempts()
+    }
+
     /// Weighs one batch of pending candidates. Returns the follow-ups newly written.
     @discardableResult
     public func curate() async throws -> [FollowUp] {
         guard let router else { return [] }
+        let now = nowMs()
+        if let until = pause.withLock({ pausedUntilMs }), now < until { return [] }
         let batch = try await candidates.pending(
-            limit: Self.batchSize, maxAttempts: Self.maxAttempts)
+            limit: Self.batchSize, maxAttempts: Self.maxAttempts,
+            retryAfterMs: AiRetryPolicy.exhaustedRetryMs, nowMs: now)
         guard !batch.isEmpty else { return [] }
         guard await router.isAvailable() else { return [] }
 
-        let now = nowMs()
         let open = try await followUps.list(scope: .open, nowMs: now)
         var titles: [String: String] = [:]
         for candidate in batch where titles[candidate.conversationId] == nil {
@@ -94,23 +117,45 @@ public final class FollowUpCurator: @unchecked Sendable {
             batch: batch, open: Array(open.prefix(Self.openContextLimit)), titles: titles,
             now: now)
 
-        // Every path out of the call spends one attempt from the batch's budget, including the
-        // throws: a batch that keeps failing has to stop costing a call every five minutes.
-        try await candidates.recordAttempt(ids: batch.map(\.id))
-        let result = try await router.run(
-            AiRunRequest(
-                requestId: "followup-curation-\(now)",
-                prompt: AiPromptTemplates.followUpCuration,
-                transcripts: [
-                    TranscriptExcerpt(
-                        segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
-                ],
-                metadata: [
-                    AiRunRequest.modelKey: Self.modelId,
-                    AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
-                    AiRunRequest.requiresStructuredOutputKey: "1",
-                ]))
+        // Only a failure on the input spends an attempt from the batch's budget — a batch that
+        // keeps failing on its own content has to stop costing a call every five minutes. A
+        // failure that was the world's pauses curation instead (15 minutes, doubling), and the
+        // batch keeps its budget for when the provider is back.
+        let result: RoutedAiResult
+        do {
+            result = try await router.run(
+                AiRunRequest(
+                    requestId: "followup-curation-\(now)",
+                    prompt: AiPromptTemplates.followUpCuration,
+                    transcripts: [
+                        TranscriptExcerpt(
+                            segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
+                    ],
+                    metadata: [
+                        AiRunRequest.modelKey: Self.modelId,
+                        AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
+                        AiRunRequest.requiresStructuredOutputKey: "1",
+                    ]))
+        } catch let error where error is CancellationError {
+            throw error
+        } catch {
+            if AiRetryPolicy.spendsAttempt(error) {
+                try await candidates.recordAttempt(ids: batch.map(\.id), nowMs: now)
+            } else {
+                pause.withLock {
+                    transientFailures += 1
+                    pausedUntilMs =
+                        now + AiRetryPolicy.transientRetryMs(consecutive: transientFailures)
+                }
+            }
+            throw error
+        }
+        pause.withLock {
+            pausedUntilMs = nil
+            transientFailures = 0
+        }
         guard let decisions = FollowUpCurationParser.parse(raw: result.text) else {
+            try await candidates.recordAttempt(ids: batch.map(\.id), nowMs: now)
             throw AiError.providerFailed(
                 "Follow-up curation did not return the agreed JSON", underlying: nil)
         }
@@ -126,7 +171,14 @@ public final class FollowUpCurator: @unchecked Sendable {
             // A candidate the model did not rule on is DROPPED, not left pending. Leaving it
             // pending would put it back at the front of the very next batch, forever, and a
             // dropped candidate is still visible in Diagnostics with its reason.
+            //
+            // Unless the model never SAW it: a reply drawn from a cut list says nothing about
+            // the candidates past the cut. Those spend an attempt and stay pending.
             guard let decision = byIndex[offset + 1] else {
+                if result.inputTruncated {
+                    try await candidates.recordAttempt(ids: [candidate.id], nowMs: now)
+                    continue
+                }
                 try await candidates.decide(
                     id: candidate.id, state: .dropped,
                     reason: "curation returned no decision", nowMs: now)

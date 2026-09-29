@@ -33,10 +33,16 @@ public struct FollowUpExtractionState: Equatable, Sendable {
     /// True once an extraction completed — including one that found nothing.
     public var settled: Bool
     public var itemCount: Int
-    /// Failed attempts at THIS `sourceCharCount`, so a broken provider cannot spin.
+    /// Failed attempts at THIS `sourceCharCount` that failed ON THE INPUT, so a broken provider
+    /// cannot spin. A failure that was the world's (offline, a broke account) is not counted —
+    /// see `AiRetryPolicy`.
     public var attempts: Int
     public var lastError: String?
     public var updatedAtMs: Int64
+    /// Extraction does not run before this: set by every failure and by a provisional answer.
+    public var nextAttemptAtMs: Int64?
+    /// Consecutive failures that were not the input's fault; drives their backoff.
+    public var transientFailures: Int
 
     public init(
         conversationId: String,
@@ -45,7 +51,9 @@ public struct FollowUpExtractionState: Equatable, Sendable {
         itemCount: Int = 0,
         attempts: Int = 0,
         lastError: String? = nil,
-        updatedAtMs: Int64 = 0
+        updatedAtMs: Int64 = 0,
+        nextAttemptAtMs: Int64? = nil,
+        transientFailures: Int = 0
     ) {
         self.conversationId = conversationId
         self.sourceCharCount = sourceCharCount
@@ -54,6 +62,8 @@ public struct FollowUpExtractionState: Equatable, Sendable {
         self.attempts = attempts
         self.lastError = lastError
         self.updatedAtMs = updatedAtMs
+        self.nextAttemptAtMs = nextAttemptAtMs
+        self.transientFailures = transientFailures
     }
 }
 
@@ -78,6 +88,18 @@ public struct FollowUpExtractionStore: Sendable {
                         updatedAtMs INTEGER NOT NULL DEFAULT 0
                     )
                     """)
+            // The retry bookkeeping `AiRetryPolicy` needs, added in place so a table created by
+            // an earlier build picks it up.
+            let existing = Set(try db.columns(in: "follow_up_extractions").map(\.name))
+            let additions: [(name: String, definition: String)] = [
+                ("nextAttemptAtMs", "INTEGER"),
+                ("transientFailures", "INTEGER NOT NULL DEFAULT 0"),
+            ]
+            for column in additions where !existing.contains(column.name) {
+                try db.execute(
+                    sql: "ALTER TABLE follow_up_extractions ADD COLUMN "
+                        + "\(column.name) \(column.definition)")
+            }
         }
     }
 
@@ -105,18 +127,34 @@ public struct FollowUpExtractionStore: Sendable {
                 sql: """
                     INSERT INTO follow_up_extractions
                         (conversationId, sourceCharCount, settled, itemCount, attempts,
-                         lastError, updatedAtMs)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                         lastError, updatedAtMs, nextAttemptAtMs, transientFailures)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversationId) DO UPDATE SET
                         sourceCharCount = excluded.sourceCharCount,
                         settled = excluded.settled, itemCount = excluded.itemCount,
                         attempts = excluded.attempts, lastError = excluded.lastError,
-                        updatedAtMs = excluded.updatedAtMs
+                        updatedAtMs = excluded.updatedAtMs,
+                        nextAttemptAtMs = excluded.nextAttemptAtMs,
+                        transientFailures = excluded.transientFailures
                     """,
                 arguments: [
                     state.conversationId, state.sourceCharCount, state.settled, state.itemCount,
-                    state.attempts, state.lastError, state.updatedAtMs,
+                    state.attempts, state.lastError, state.updatedAtMs, state.nextAttemptAtMs,
+                    state.transientFailures,
                 ])
+        }
+    }
+
+    /// Every unsettled conversation's budget and backoff start over — the AI configuration
+    /// changed, so what failed may now succeed. Settled conversations stay settled.
+    public func resetRetryBudgets() async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_up_extractions
+                    SET attempts = 0, nextAttemptAtMs = NULL, transientFailures = 0
+                    WHERE settled = 0
+                    """)
         }
     }
 
@@ -145,7 +183,9 @@ public struct FollowUpExtractionStore: Sendable {
             itemCount: row["itemCount"],
             attempts: row["attempts"],
             lastError: row["lastError"],
-            updatedAtMs: row["updatedAtMs"]
+            updatedAtMs: row["updatedAtMs"],
+            nextAttemptAtMs: row["nextAttemptAtMs"],
+            transientFailures: row["transientFailures"] ?? 0
         )
     }
 }
@@ -277,6 +317,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                 last.combined == existing.sourceCharCount
             {
                 if existing.settled { continue }
+                if let next = existing.nextAttemptAtMs, now < next { continue }
                 if existing.attempts >= Self.maxAttempts,
                     now - existing.updatedAtMs < Self.retryAfterMs
                 {
@@ -295,6 +336,8 @@ public final class FollowUpWorker: @unchecked Sendable {
             let fresh = existing.map { $0.sourceCharCount != combined } ?? true
             if let existing, !fresh {
                 if existing.settled { continue }
+                // Waiting out a backoff: a failure or a provisional answer set it.
+                if let next = existing.nextAttemptAtMs, now < next { continue }
                 // Out of attempts, but a provider outage is temporary and a conversation is
                 // not: come back to it after `retryAfterMs` rather than abandoning it forever.
                 if existing.attempts >= Self.maxAttempts,
@@ -321,11 +364,19 @@ public final class FollowUpWorker: @unchecked Sendable {
             calls += 1
             let exhausted = (existing?.attempts ?? 0) >= Self.maxAttempts
             // A cooled-off retry starts the budget over; anything else keeps counting.
-            let attempts = (fresh || exhausted ? 0 : (existing?.attempts ?? 0)) + 1
+            let priorAttempts = fresh || exhausted ? 0 : (existing?.attempts ?? 0)
             proposed += try await run(
-                activeRouter, conversation, parts: parts, combined: combined, attempts: attempts)
+                activeRouter, conversation, parts: parts, combined: combined,
+                priorAttempts: priorAttempts,
+                priorTransientFailures: fresh ? 0 : (existing?.transientFailures ?? 0))
         }
         return proposed
+    }
+
+    /// Every unsettled conversation's budget and backoff start over — the AI configuration
+    /// changed, so a conversation that failed may now be read.
+    public func resetRetryBudgets() async {
+        try? await state.resetRetryBudgets()
     }
 
     // MARK: - Planning
@@ -370,10 +421,12 @@ public final class FollowUpWorker: @unchecked Sendable {
         _ conversation: EnrichmentConversation,
         parts: [FollowUpSourcePart],
         combined: Int,
-        attempts: Int
+        priorAttempts: Int,
+        priorTransientFailures: Int
     ) async throws -> Int {
         let now = nowMs()
         let zone = timeZone()
+        let attempt = priorAttempts + 1
         let context = await contextOf(conversation.conversationId)
         let body = FollowUpTranscriptRenderer.render(
             parts: parts,
@@ -386,7 +439,7 @@ public final class FollowUpWorker: @unchecked Sendable {
         do {
             let result = try await router.run(
                 AiRunRequest(
-                    requestId: "followups-\(conversation.conversationId)-\(attempts)",
+                    requestId: "followups-\(conversation.conversationId)-\(attempt)",
                     prompt: AiPromptTemplates.followUpExtraction,
                     transcripts: [
                         TranscriptExcerpt(
@@ -403,21 +456,49 @@ public final class FollowUpWorker: @unchecked Sendable {
             }
             let written = try await persist(
                 parsed, conversation: conversation, parts: parts, timeZone: zone, now: now)
+            // A fallback that read only part of the conversation found what was in that part —
+            // its quotes are real, so the candidates it wrote stay — but it cannot say the rest
+            // holds nothing. The conversation is NOT settled; it is read again once the
+            // preferred provider can take all of it.
+            let provisional = result.isProvisional
+            let transient = provisional ? priorTransientFailures + 1 : 0
             try await state.save(
                 FollowUpExtractionState(
                     conversationId: conversation.conversationId,
-                    sourceCharCount: combined, settled: true, itemCount: written,
-                    attempts: attempts, updatedAtMs: now))
+                    sourceCharCount: combined, settled: !provisional, itemCount: written,
+                    attempts: priorAttempts,
+                    lastError: provisional
+                        ? "provisional: \(result.providerId) read part of this conversation"
+                        : nil,
+                    updatedAtMs: now,
+                    nextAttemptAtMs: provisional
+                        ? now
+                            + max(
+                                AiRetryPolicy.provisionalRetryMs,
+                                AiRetryPolicy.transientRetryMs(consecutive: transient))
+                        : nil,
+                    transientFailures: transient))
             return written
         } catch let error where error is CancellationError {
             throw error
         } catch {
+            // Only a failure on the input spends an attempt (`AiRetryPolicy`). A revoked key, a
+            // flight or a rate limit used to spend both of them in two passes and cost the
+            // conversation its follow-ups until the six-hour retry.
+            let spends = AiRetryPolicy.spendsAttempt(error)
+            let attempts = spends ? attempt : priorAttempts
+            let transient = spends ? 0 : priorTransientFailures + 1
+            let wait =
+                spends
+                ? (attempts >= Self.maxAttempts ? Self.retryAfterMs : AiRetryPolicy.contentRetryMs)
+                : AiRetryPolicy.transientRetryMs(consecutive: transient)
             try await state.save(
                 FollowUpExtractionState(
                     conversationId: conversation.conversationId,
                     sourceCharCount: combined, settled: false, itemCount: 0,
                     attempts: attempts, lastError: Self.errorMessage(error),
-                    updatedAtMs: now))
+                    updatedAtMs: now, nextAttemptAtMs: now + wait,
+                    transientFailures: transient))
             return 0
         }
     }

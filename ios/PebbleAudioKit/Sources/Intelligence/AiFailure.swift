@@ -84,6 +84,30 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     case unknown
 }
 
+extension AiFailureKind {
+    /// True when the failure is about THIS input — it would fail the same way on the next pass
+    /// with nothing else changed: too long for the model, declined by a content filter, an
+    /// answer with nothing in it, a reply that was not the agreed shape, or something we cannot
+    /// name. Only these may spend a job's attempt budget.
+    ///
+    /// Everything else is the world: no network, a busy or broke account, a model still
+    /// loading, a provider switched off. The enrichment and follow-up budgets used to count
+    /// those too — three attempts, no time between them, nothing that ever reset them — so an
+    /// afternoon offline or one rate-limited minute cost a conversation its title for good.
+    /// Those failures now back off in time instead, and never use up the budget.
+    public var blamesTheInput: Bool {
+        switch self {
+        case .tooLongForDevice, .tooLongForModel, .contentRefused, .cloudContentRefused,
+            .emptyAnswer, .unknown:
+            return true
+        case .notConfigured, .consentRequired, .keyRejected, .keyNotPermitted, .rateLimited,
+            .accountOutOfFunds, .providerTrouble, .timedOut, .noConnection, .modelUnavailable,
+            .modelBusy, .usageLimit:
+            return false
+        }
+    }
+}
+
 /// The fallback provider's own failure, carried under the primary's in
 /// `AiError.providerFailed(_:underlying:)`.
 ///

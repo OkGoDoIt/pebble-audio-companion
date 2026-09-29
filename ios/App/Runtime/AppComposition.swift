@@ -1093,6 +1093,10 @@ final class AppComposition {
         let settingsMirror = settings.runtimeSettings
         let lastRecoveryKey = OSAllocatedUnfairLock(
             initialState: settingsMirror.transcriptionRecoveryKey)
+        // The AI twin (`AiRecoveryKey`): mode, remote provider, model. Only a change in one of
+        // them resets the AI retry budgets — the charger and thermal callbacks that also land
+        // here must not, or every failed title would be retried dozens of times a day.
+        let lastAiRecoveryKey = OSAllocatedUnfairLock(initialState: settingsMirror.aiRecoveryKey)
         settings.onRuntimeSettingsChanged = {
             let now = settingsMirror.transcriptionRecoveryKey
             let changed = lastRecoveryKey.withLock { last -> Bool in
@@ -1100,10 +1104,24 @@ final class AppComposition {
                 return last != now
             }
             runtime.notifyConfigChanged(reviveFailures: changed)
+            let aiNow = settingsMirror.aiRecoveryKey
+            let aiChanged = lastAiRecoveryKey.withLock { last -> Bool in
+                defer { last = aiNow }
+                return last != aiNow
+            }
+            if aiChanged { runtime.notifyAiConfigurationChanged() }
         }
-        settings.onApiKeyChanged = { runtime.notifyConfigChanged(reviveFailures: true) }
-        // A cloud account that takes work again un-parks what its hold parked, now.
-        cloudHold.onLifted { _ in runtime.notifyConfigChanged(reviveFailures: true) }
+        settings.onApiKeyChanged = {
+            runtime.notifyConfigChanged(reviveFailures: true)
+            // The OpenAI key is the AI side's key too.
+            runtime.notifyAiConfigurationChanged()
+        }
+        // A cloud account that takes work again un-parks what its hold parked, now — the
+        // transcription queue AND the AI jobs its hold had been backing off.
+        cloudHold.onLifted { _ in
+            runtime.notifyConfigChanged(reviveFailures: true)
+            runtime.notifyAiConfigurationChanged()
+        }
 
         // The screens' data-source holders, flipped from mocks to the live graph. Onboarding is
         // one of them: without this it would pair against `MockWatchPairingSource` and the first
