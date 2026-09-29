@@ -251,3 +251,158 @@ private final class OutcomeBox: @unchecked Sendable {
         #expect(await router(nil, nil, .remoteFirst).isAvailable() == false)
     }
 }
+
+// MARK: - Both engines, honestly (2026-09-29)
+
+private final class ExplainingProvider: TranscriptionProvider, TranscriptionAvailabilityExplaining,
+    @unchecked Sendable
+{
+    let id = "cloud"
+    let reason: String
+    init(reason: String) { self.reason = reason }
+    func isAvailable() async -> Bool { false }
+    func unavailabilityReason() async -> String? { reason }
+    func transcribe(
+        pcmChunks: AsyncThrowingStream<Data, Error>, sampleRateHz: Int
+    ) async throws -> TranscriptionResult {
+        throw TranscriptionError.providerUnavailable(providerId: id)
+    }
+}
+
+private final class LineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var lines: [String] { lock.withLock { stored } }
+    func append(_ line: String) { lock.withLock { stored.append(line) } }
+}
+
+@Suite struct RouterFallbackHonestyTests {
+    private let pcm: TranscriptionModeRouter.PcmChunksFactory = {
+        pcmStream([Data(count: 320)])
+    }
+
+    private static let localDown = "failed to initialize local model: no ANE program"
+    private static let cloudBroke =
+        "Soniox transcription error: Organization balance exhausted. Please add funds."
+
+    private func message(of error: Error) -> String? {
+        guard case TranscriptionError.transcriptionFailed(let message, _)? =
+            error as? TranscriptionError
+        else { return nil }
+        return message
+    }
+
+    /// The phone's case: Local first, the on-device model broken, the cloud account empty. Both
+    /// reasons are kept, the preferred engine's first, and the reason a surface shows is the
+    /// on-device one — not ten days of "out of credit" for a user who chose on-device.
+    @Test func whenBothFailBothReasonsAreKeptAndThePreferredOneLeads() async {
+        let local = FakeProvider(
+            "local", error: TranscriptionError.transcriptionFailed(Self.localDown))
+        let remote = FakeProvider(
+            "remote", error: TranscriptionError.transcriptionFailed(Self.cloudBroke))
+        do {
+            _ = try await TranscriptionModeRouter(local: local, remote: remote, mode: { .localFirst })
+                .transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+            Issue.record("expected a failure")
+        } catch {
+            let stored = message(of: error)
+            #expect(stored == Self.localDown + " [then cloud: " + Self.cloudBroke + "]")
+            #expect(TranscriptionFailureKind.classify(stored) == .modelMissing)
+            #expect(TranscriptionFailureKind.headline(stored ?? "") == Self.localDown)
+        }
+    }
+
+    /// A fallback that cannot run leaves the primary's failure standing — it used to be replaced
+    /// by the fallback's bare `providerUnavailable`, which parked the task as Disabled and told
+    /// nobody what had actually failed. And an unavailable cloud was never attempted, so cloud
+    /// health hears nothing.
+    @Test func anUnavailableFallbackLeavesThePrimaryFailureStanding() async {
+        let outcomes = OutcomeBox()
+        let local = FakeProvider(
+            "local", error: TranscriptionError.transcriptionFailed(Self.localDown))
+        let remote = FakeProvider("remote", available: false)
+        do {
+            _ = try await TranscriptionModeRouter(
+                local: local, remote: remote, onRemoteOutcome: { outcomes.append($0) },
+                mode: { .localFirst }
+            ).transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+            Issue.record("expected a failure")
+        } catch {
+            #expect(message(of: error) == Self.localDown)
+        }
+        #expect(remote.calls == 0)
+        #expect(outcomes.outcomes.isEmpty)
+
+        // The mirror image: Remote first, cloud failed, on-device unavailable.
+        let cloud = FakeProvider(
+            "remote", error: TranscriptionError.transcriptionFailed(Self.cloudBroke))
+        do {
+            _ = try await TranscriptionModeRouter(
+                local: FakeProvider("local", available: false), remote: cloud,
+                mode: { .remoteFirst }
+            ).transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+            Issue.record("expected a failure")
+        } catch {
+            #expect(message(of: error) == Self.cloudBroke)
+        }
+    }
+
+    /// Nothing usable at all is still `providerUnavailable` — the queue's "park it" signal.
+    @Test func bothUnavailableIsStillProviderUnavailable() async {
+        do {
+            _ = try await TranscriptionModeRouter(
+                local: FakeProvider("local", available: false),
+                remote: FakeProvider("remote", available: false), mode: { .localFirst }
+            ).transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+            Issue.record("expected providerUnavailable")
+        } catch TranscriptionError.providerUnavailable {
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
+    }
+
+    /// A cloud that is unavailable because its account is on hold says so, and the fallback it
+    /// forced is disclosed as "not accepted", not as "not configured".
+    @Test func aHeldCloudExplainsTheFallbackItForced() async throws {
+        let router = TranscriptionModeRouter(
+            local: FakeProvider("local"),
+            remote: ExplainingProvider(reason: "Soniox is out of credit (402)"),
+            mode: { .remoteFirst }
+        )
+        let result = try await router.transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+        #expect(result.providerId == "local")
+        #expect(router.lastFallback?.cause == .notAccepted)
+    }
+
+    /// The fallback is on the flight recorder — once, not once per segment.
+    @Test func aRecurringFallbackIsLoggedOnceNotPerSegment() async throws {
+        let lines = LineBox()
+        let router = TranscriptionModeRouter(
+            local: FakeProvider("local", error: TranscriptionError.transcriptionFailed(Self.localDown)),
+            remote: FakeProvider("remote"),
+            mode: { .localFirst },
+            log: { lines.append($0) }
+        )
+        for _ in 0..<5 {
+            _ = try await router.transcribe(pcmChunks: pcm, sampleRateHz: 16000)
+        }
+        #expect(lines.lines.count == 1)
+        #expect(lines.lines.first?.contains("on-device failed (modelMissing)") == true)
+        #expect(lines.lines.first?.contains("trying cloud") == true)
+    }
+
+    @Test func theLogGateAdmitsOncePerIntervalAndCountsWhatItHeld() {
+        final class Clock: @unchecked Sendable {
+            var ms: Int64 = 0
+        }
+        let clock = Clock()
+        let gate = RepeatingLogGate(intervalMs: 1_000, nowMs: { clock.ms })
+        #expect(gate.admit("a") == 0)
+        #expect(gate.admit("a") == nil)
+        #expect(gate.admit("a") == nil)
+        #expect(gate.admit("b") == 0)
+        clock.ms = 1_000
+        #expect(gate.admit("a") == 2)
+        #expect(gate.admit("a") == nil)
+    }
+}

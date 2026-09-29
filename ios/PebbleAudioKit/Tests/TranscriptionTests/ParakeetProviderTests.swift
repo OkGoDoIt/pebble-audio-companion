@@ -397,8 +397,9 @@ private func makeProvider(
         let provider = makeProvider(
             engine: background, temp: temp, spec: coreAISpec, prepared: false, foreground: false
         )
-        // `isAvailable` is about the install, not the moment — the fallback decision is per call.
-        #expect(await provider.isAvailable())
+        // `isAvailable` answers for NOW, so the queue parks the segment instead of re-decoding
+        // it on every retry just to be refused; `transcribe` still refuses on its own.
+        #expect(await provider.isAvailable() == false)
         do {
             _ = try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
             Issue.record("expected providerUnavailable")
@@ -550,10 +551,12 @@ private func makeProvider(
         #expect(TranscriptionFailureKind.classify(second) == .modelMissing)
         #expect(engine.loadAttempts == 2)
         #expect(spooled() == before)
+        #expect(await provider.isAvailable() == false)
 
         // After the pause the model is tried again — plainly, since the cache was already dropped
         // and `.prepared` withdrawn; there is nothing left to discard.
         clock.advance(ParakeetTranscriptionProvider.loadRetryPauseMs)
+        #expect(await provider.isAvailable())
         _ = await attempt()
         #expect(engine.loadAttempts == 3)
         #expect(engine.discards == 1)

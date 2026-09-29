@@ -80,7 +80,13 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     /// extra for rows written before this taxonomy existed, where `URLError.localizedDescription`
     /// is all the queue kept. Anything unrecognised is `.unknown` rather than a guess.
     public static func classify(_ message: String?) -> TranscriptionFailureKind {
-        guard let message, !message.trimmingCharacters(in: .whitespaces).isEmpty else {
+        // A job whose fallback also failed stores both reasons, the preferred engine's first
+        // (`TranscriptionModeRouter.combining`). The reason is the preferred engine's: the
+        // fallback's words must not decide it — a Local-first user whose on-device model broke
+        // was told for ten days that their cloud account was out of credit.
+        guard let message = message.map(Self.headline),
+            !message.trimmingCharacters(in: .whitespaces).isEmpty
+        else {
             return .unknown
         }
         let text = message.lowercased()
@@ -160,6 +166,16 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
 
     /// Prefix `storedFailureMessage` uses for a `URLError`; also what `classify` looks for.
     static let networkMarker = "network request failed"
+
+    /// Separates a failed job's primary reason from its fallback's: "<primary> [then <role>:
+    /// <fallback>]". Written by `TranscriptionModeRouter.combining`.
+    public static let fallbackMarker = " [then "
+
+    /// The primary reason of a stored message (all of it when there was no fallback).
+    public static func headline(_ message: String) -> String {
+        guard let range = message.range(of: fallbackMarker) else { return message }
+        return String(message[..<range.lowerBound])
+    }
 
     /// The `(401)` in "Soniox poll failed (401): …" — a parenthesised 3-digit HTTP status.
     /// Deliberately narrow: byte counts in "exceeds 104857600 byte limit" are not statuses, and

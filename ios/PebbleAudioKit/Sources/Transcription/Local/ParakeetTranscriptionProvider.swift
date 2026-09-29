@@ -295,8 +295,18 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
 
     public var modelSpec: ParakeetModelSpec { spec }
 
+    /// Whether a segment handed over NOW could be transcribed — not merely whether the model is
+    /// installed. The difference is what the queue parks on: a task that finds no usable
+    /// provider waits as Disabled at no cost and is picked up again once one is, while a task
+    /// sent to a provider that can only refuse it re-decodes its whole segment to learn that on
+    /// every retry. So an unprepared Core AI model in the background, and a model in its
+    /// `loadHold` pause, are unavailable until that changes.
     public func isAvailable() async -> Bool {
-        engine.isSupported && location.installedModelPath(for: spec) != nil
+        guard engine.isSupported, location.installedModelPath(for: spec) != nil else {
+            return false
+        }
+        if spec.requiresPreparation, !location.isPrepared(spec), !isForeground() { return false }
+        return loadHold.reason(nowMs: nowMs()) == nil
     }
 
     public func transcribe(
