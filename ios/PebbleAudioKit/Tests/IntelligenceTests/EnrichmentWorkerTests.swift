@@ -365,6 +365,35 @@ private final class Counter: @unchecked Sendable {
         #expect(provider.runCount == 2)
     }
 
+    /// Inside the 45-second refresh interval a live conversation is decided by the clock alone.
+    /// It used to decode every closed member's transcript on every pass — every five seconds
+    /// while the watch records — before finding the gate closed.
+    @Test func aLiveConversationInsideItsRefreshIntervalOpensNoTranscript() async throws {
+        let provider = FakeAiProvider()
+        let worker = worker(provider)
+        let open = conversations([meta("seg-closed"), meta("seg-open", open: true)], open: true)
+        _ = try await worker.enrich(
+            open, transcriptOf: { transcript($0) }, liveTextOf: { _ in longLive })
+        #expect(provider.runCount == 1)
+
+        let reads = Counter()
+        for _ in 0..<5 {
+            clock.advance(byMs: 5_000)
+            _ = try await worker.enrich(
+                open,
+                transcriptOf: {
+                    reads.increment()
+                    return transcript($0)
+                },
+                liveTextOf: { _ in
+                    reads.increment()
+                    return longLive
+                })
+        }
+        #expect(reads.value == 0)
+        #expect(provider.runCount == 1)
+    }
+
     @Test func finalPassOverridesProvisionalThenStops() async throws {
         let provider = FakeAiProvider()
         let worker = worker(provider)

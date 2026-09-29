@@ -144,6 +144,10 @@ public final class EnrichmentWorker: @unchecked Sendable {
         let now = nowMs()
         var annotated: [String] = []
         var calls = 0
+        // Every annotation in one read. This was one query per conversation per pass — every
+        // finished conversation in the library, every few seconds while a segment is open —
+        // to learn, almost always, that it was already titled.
+        let stored = try await annotations.all()
         // NEWEST FIRST. A migrated library hands this loop a whole backlog at once, and in
         // arrival order the conversation happening RIGHT NOW is last — a migrated user waited
         // for 145 months-old conversations before today's got a title. Recency is the max member
@@ -153,7 +157,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // next boundary instead of running it out.
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
-            let existing = try await annotations.load(conversation.conversationId)
+            let existing = stored[conversation.conversationId]
             let plan = planFor(
                 conversation, existing: existing, transcriptOf: transcriptOf,
                 liveTextOf: liveTextOf, now: now)
@@ -243,6 +247,13 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // A final annotation should never exist while live, but never downgrade it if it
             // does.
             if existing?.isFinal == true { return .none }
+            // The clock first, and only then the transcripts. This used to decode every closed
+            // member of the live conversation — every pass, every five seconds while the watch
+            // records — and only then find the 45-second refresh gate closed. The interval half
+            // of the gate needs nothing but the stored annotation.
+            if let existing, now - existing.updatedAtMs < Self.liveRefreshMinIntervalMs {
+                return .none
+            }
             let excerpts = memberExcerpts(conversation) { member in
                 member.isOpen
                     ? liveTextOf(member.segmentId)

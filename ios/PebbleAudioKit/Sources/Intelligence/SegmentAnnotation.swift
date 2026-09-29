@@ -180,6 +180,19 @@ public struct AnnotationStore: Sendable {
         }
     }
 
+    /// Every annotation, by conversation — one read where a pass used to make one per
+    /// conversation.
+    public func all() async throws -> [String: ConversationAnnotation] {
+        try await db.reader.read { db in
+            var out: [String: ConversationAnnotation] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM annotations") {
+                let annotation = Self.annotation(from: row)
+                out[annotation.conversationId] = annotation
+            }
+            return out
+        }
+    }
+
     public func list() async throws -> [ConversationAnnotation] {
         try await db.reader.read { db in
             try Row.fetchAll(
