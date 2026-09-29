@@ -254,6 +254,12 @@ private struct LocalModelRow: View {
                         .foregroundStyle(Tokens.tint)
                         .buttonStyle(.plain)
                 }
+            // Setting up: real work that runs while the app is open. A full bar and no Cancel —
+            // there is nothing to cancel back to (the files are installed), and the Cancel this
+            // state used to share with the unpack flickered the row to "not installed".
+            case .preparing:
+                ProgressView(value: 1)
+                    .tint(Tokens.tint)
             case .failed:
                 // Same slot the progress bar uses: what went wrong, and the way out of it.
                 HStack(spacing: 12) {
@@ -292,6 +298,8 @@ private struct LocalModelRow: View {
             stateText(Copy.Settings.TranscriptionAI.percent(Int(progress * 100)), color: Tokens.meta)
         case .installing:
             stateText(Copy.Settings.TranscriptionAI.installing, color: Tokens.meta)
+        case .preparing:
+            stateText(Copy.Settings.TranscriptionAI.preparing, color: Tokens.meta)
         case .installed:
             if !isSelected {
                 stateText(Copy.Settings.TranscriptionAI.installedValue, color: Tokens.meta)
@@ -326,6 +334,7 @@ private struct LocalModelRow: View {
         case .downloading(let progress):
             parts.append(Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)))
         case .installing: parts.append(Copy.Settings.TranscriptionAI.installing)
+        case .preparing: parts.append(Copy.Settings.TranscriptionAI.preparingDetail)
         case .installed: parts.append(Copy.Settings.TranscriptionAI.installedValue)
         case .failed: parts.append(Copy.Settings.TranscriptionAI.downloadFailed)
         case .unavailable:

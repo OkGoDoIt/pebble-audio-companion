@@ -448,6 +448,8 @@ struct TSTranscriptionRowVisibilityTests {
             Readiness.resolve(selected: .downloading(progress: 0.4), appleSpeech: .notInstalled)
                 == .preparing)
         #expect(Readiness.resolve(selected: .installing, appleSpeech: .notInstalled) == .preparing)
+        // Installed but not yet set up (Core AI specialization pending): still getting ready.
+        #expect(Readiness.resolve(selected: .preparing, appleSpeech: .notInstalled) == .preparing)
         #expect(
             Readiness.resolve(selected: .notInstalled, appleSpeech: .waitingForWiFi) == .preparing)
         // Nothing installed, nothing coming.

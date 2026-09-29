@@ -452,10 +452,11 @@ final class LiveLocalModelManager: LocalModelManaging {
         case .notInstalled: return .notInstalled
         case .downloading:
             return .downloading(progress: state.fractionCompleted ?? 0)
-        // The Core AI prepare pass (specialization, seconds of CPU after the unpack) reads as
-        // the same "finishing up" the unpack does: real work, full bar, no second number, still
-        // cancellable. The row's state set is shared with screens this file does not own.
-        case .installing, .preparing: return .installing
+        case .installing: return .installing
+        // Unpacked but not set up (the Core AI specialization pass has not run, or its compiled
+        // cache was discarded as stale). Its own state, because it is the one "not ready" case in
+        // which Apple Speech does NOT stand in — the kit waits for this model instead.
+        case .preparing: return .preparing
         case .installed: return .installed
         case .failed: return .failed
         }

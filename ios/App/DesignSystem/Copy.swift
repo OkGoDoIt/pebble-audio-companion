@@ -825,6 +825,11 @@ enum Copy {
             static let waitingForWiFi = "waiting for Wi-Fi"
             /// The archive is here and unpacking. Real work, no byte progress to show.
             static let installing = "finishing up"
+            /// Installed; its one-time setup runs while the app is open, and recordings wait for it.
+            static let preparing = "setting up"
+            /// The row's accessible/longer form of `preparing`.
+            static let preparingDetail = "setting up · recordings wait for it"
+
             /// The engine cannot run on this phone at all (unsupported language).
             static let unavailable = "not available here"
 

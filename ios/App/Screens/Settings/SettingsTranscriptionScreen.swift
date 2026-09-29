@@ -336,6 +336,8 @@ struct SettingsTranscriptionScreen: View {
             return Copy.Settings.TranscriptionAI.downloading(Int(progress * 100))
         case .installing:
             return Copy.Settings.TranscriptionAI.installing
+        case .preparing:
+            return Copy.Settings.TranscriptionAI.preparingDetail
         case .failed:
             return Copy.Settings.TranscriptionAI.downloadFailed
         case .unavailable:

@@ -204,6 +204,11 @@ enum LocalModelState: Equatable {
     /// The archive is down and unpacking. Real work with no byte progress to report — showing
     /// "100%" for the ~20 s a 700 MB model takes to extract would read as a stall.
     case installing
+    /// Installed, but the runtime's one-time setup pass (Core AI specialization) has not run —
+    /// just installed, or its compiled cache went stale and was discarded. It runs the next time
+    /// the app is open; until then recordings WAIT for this model. Apple Speech does not stand
+    /// in (the kit resolves an installed model to itself), so no surface may say it does.
+    case preparing
     case installed
     case failed
     /// This engine cannot run here at all (e.g. Apple Speech has no model for the phone's
@@ -213,7 +218,7 @@ enum LocalModelState: Equatable {
     /// A transfer or an unpack is in flight, so the row shows progress and a Cancel.
     var isBusy: Bool {
         switch self {
-        case .downloading, .installing: return true
+        case .downloading, .installing, .preparing: return true
         case .notInstalled, .waitingForWiFi, .installed, .failed, .unavailable: return false
         }
     }
@@ -248,7 +253,9 @@ extension LocalModelManaging {
     /// selection has to say this rather than name an engine that is not running.
     func fallsBackToAppleSpeech(_ id: String) -> Bool {
         guard let option = model(id), option.isDownloadable else { return false }
-        return state(for: id) != .installed
+        // Installed-but-setting-up is not a fallback: the kit waits for this model.
+        let state = state(for: id)
+        return state != .installed && state != .preparing
     }
 }
 
