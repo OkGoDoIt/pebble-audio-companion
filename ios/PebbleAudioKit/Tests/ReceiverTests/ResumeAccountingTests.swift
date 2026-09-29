@@ -260,11 +260,14 @@ import WireProtocol
         harness.link.pushData(notice(120, 10, .spoolOverflow))
         harness.link.pushData(notice(140, 10, .spoolOverflow))
         harness.link.pushData(start(resume: true))
+        try await harness.push(data(90, 10))  // the rewind re-sends what was never checkpointed
         try await harness.push(data(160, 8))
         try await harness.disconnect()
 
         let segments = await harness.segments()
         #expect(segments.count == 1, "the reattach continues the interrupted recording")
+        #expect(segments.first?.frameCount == 108, "nothing the watch re-sent is stored twice")
+        #expect(await harness.store.readFrames(try #require(segments.first).segmentId).count == 108)
         let gaps = try #require(segments.first).gaps.map {
             "\($0.origin)[\($0.firstMissingSequence),\(UInt64($0.firstMissingSequence) + UInt64($0.missingFrameCount)))"
         }
