@@ -432,7 +432,11 @@ public final class FollowUpWorker: @unchecked Sendable {
         priorTransientFailures: Int
     ) async throws -> (written: Int, calls: Int) {
         let now = nowMs()
-        let zone = timeZone()
+        // The zone the conversation was RECORDED in (Q16), which is what "tomorrow" and "at
+        // nine" inside it mean — and what a due date is the start of. It used to be the
+        // phone's CURRENT zone, so a conversation recorded in Tokyo and read after the flight
+        // home was dated, and its "Friday" resolved, in New York.
+        let zone = Self.recordedZone(of: conversation) ?? timeZone()
         let attempt = priorAttempts + 1
         let context = await contextOf(conversation.conversationId)
         // Every word is read. A conversation longer than one call used to be cut to its last
@@ -570,6 +574,15 @@ public final class FollowUpWorker: @unchecked Sendable {
             written += 1
         }
         return written
+    }
+
+    /// The zone a conversation's audio was recorded in: its first member that says. Nil for
+    /// segments written before the zone was recorded — the caller falls back to the device's.
+    static func recordedZone(of conversation: EnrichmentConversation) -> TimeZone? {
+        conversation.members.lazy
+            .compactMap { $0.recordedTimeZone }
+            .compactMap { TimeZone(identifier: $0) }
+            .first
     }
 
     /// Start of the named day in the capture time zone. A due date is a day, not an instant —

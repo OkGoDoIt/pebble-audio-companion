@@ -705,6 +705,11 @@ final class AppComposition {
                 timeZone: { .current },
                 titleOf: { conversationId in
                     (try? await annotations.load(conversationId))?.title
+                },
+                // The zone the candidate's words were RECORDED in (Q16): the day they were said
+                // and the day they are due are dates there, not wherever the phone is now.
+                recordedZoneOf: { segmentId in
+                    files.readMeta(segmentId)?.recordedTimeZone.flatMap(TimeZone.init(identifier:))
                 }
             ),
             annotations: annotations,

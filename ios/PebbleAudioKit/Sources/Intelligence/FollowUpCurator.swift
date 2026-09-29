@@ -51,8 +51,12 @@ public final class FollowUpCurator: @unchecked Sendable {
     private let followUps: FollowUpStore
     private let router: AiModeRouter?
     private let nowMs: @Sendable () -> Int64
+    /// The device's zone: what "today" is for the person reading the list.
     private let timeZone: @Sendable () -> TimeZone
     private let titleOf: @Sendable (String) async -> String?
+    /// The zone a candidate's recording was made in (by its segment id), which is what the day
+    /// it was said and the day it is due are dates IN. Nil falls back to `timeZone`.
+    private let recordedZoneOf: @Sendable (String) -> TimeZone?
 
     /// After a failure that was not the input's: no curation call before this. In memory — a
     /// relaunch costs at most one small call, and the batch itself is never charged for it.
@@ -66,7 +70,8 @@ public final class FollowUpCurator: @unchecked Sendable {
         router: AiModeRouter?,
         nowMs: @escaping @Sendable () -> Int64,
         timeZone: @escaping @Sendable () -> TimeZone = { .current },
-        titleOf: @escaping @Sendable (String) async -> String? = { _ in nil }
+        titleOf: @escaping @Sendable (String) async -> String? = { _ in nil },
+        recordedZoneOf: @escaping @Sendable (String) -> TimeZone? = { _ in nil }
     ) {
         self.candidates = candidates
         self.followUps = followUps
@@ -74,6 +79,12 @@ public final class FollowUpCurator: @unchecked Sendable {
         self.nowMs = nowMs
         self.timeZone = timeZone
         self.titleOf = titleOf
+        self.recordedZoneOf = recordedZoneOf
+    }
+
+    /// The zone a candidate's words were recorded in, falling back to the device's.
+    func zone(of candidate: FollowUpCandidate) -> TimeZone {
+        candidate.segmentId.flatMap(recordedZoneOf) ?? timeZone()
     }
 
     /// Files away open items that have gone quiet. Runs whether or not AI is configured — it is
@@ -166,7 +177,6 @@ public final class FollowUpCurator: @unchecked Sendable {
         }
 
         var written: [FollowUp] = []
-        let zone = timeZone()
         for (offset, candidate) in batch.enumerated() {
             // A candidate the model did not rule on is DROPPED, not left pending. Leaving it
             // pending would put it back at the front of the very next batch, forever, and a
@@ -186,7 +196,10 @@ public final class FollowUpCurator: @unchecked Sendable {
             }
             switch decision.decision.lowercased() {
             case "keep":
-                let item = followUp(from: candidate, decision: decision, zone: zone, now: now)
+                // The due date is a day in the zone the words were SAID in (Q16), not wherever
+                // the phone happens to be when curation runs.
+                let item = followUp(
+                    from: candidate, decision: decision, zone: zone(of: candidate), now: now)
                 try await followUps.upsertExtracted(item)
                 try await candidates.decide(
                     id: candidate.id, state: .kept, reason: trimmed(decision.reason), nowMs: now)
@@ -273,14 +286,16 @@ public final class FollowUpCurator: @unchecked Sendable {
             // whole date section of the prompt resolves "tomorrow" against this line.
             let recordedMs = candidate.recordedAtMs ?? candidate.createdAtMs
             let recorded = Date(timeIntervalSince1970: Double(recordedMs) / 1000)
-            out += "   recorded: \(dayLabel(recorded))"
+            // In the zone it was recorded in: "tomorrow" said in Tokyo is a Tokyo day.
+            let recordedZone = zone(of: candidate)
+            out += "   recorded: \(dayLabel(recorded, in: recordedZone))"
             if let title = titles[candidate.conversationId], !title.isEmpty {
                 out += " during \"\(title)\""
             }
             out += "\n"
             if let due = candidate.dueAtMs {
-                out +=
-                    "   proposed due: \(dayLabel(Date(timeIntervalSince1970: Double(due) / 1000)))\n"
+                let dueDate = Date(timeIntervalSince1970: Double(due) / 1000)
+                out += "   proposed due: \(dayLabel(dueDate, in: recordedZone))\n"
             }
             out += "   how sure the reader was: \(candidate.confidence.rawValue)\n"
         }
@@ -295,10 +310,10 @@ public final class FollowUpCurator: @unchecked Sendable {
         return Int64(calendar.startOfDay(for: now).timeIntervalSince1970 * 1000)
     }
 
-    private func dayLabel(_ date: Date) -> String {
+    private func dayLabel(_ date: Date, in zone: TimeZone? = nil) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone()
+        formatter.timeZone = zone ?? timeZone()
         formatter.dateFormat = "EEEE, yyyy-MM-dd"
         return formatter.string(from: date)
     }
