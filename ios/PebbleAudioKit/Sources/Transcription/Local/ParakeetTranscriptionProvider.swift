@@ -252,7 +252,18 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     private let nowMs: @Sendable () -> Int64
     private let isForeground: @Sendable () -> Bool
     private let boostQuietAudio: @Sendable () -> Bool
+    private let log: @Sendable (String) -> Void
     private let lastUsedMs = LastUsed()
+    private let loadHold = LoadHold()
+
+    /// How long a model that could not be loaded is left alone before the next attempt.
+    ///
+    /// Without it every queued segment retried the load. On 2026-09-29 that was a Core AI load
+    /// every ~14 s for hours while the phone charged: each one re-read the 1.1 GB encoder, had
+    /// MPSGraph re-materialise its graphs, and spooled the segment's PCM to disk first — 17 GB of
+    /// writes in 50 minutes by the OS's own disk-write report, the phone at `thermal=serious`,
+    /// and not one transcript. A load that fails now costs one attempt per window.
+    static let loadRetryPauseMs: Int64 = 30 * 60_000
 
     /// - Parameters:
     ///   - engine: the native engine for `spec.runtime`; the factory's when nil.
@@ -260,6 +271,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     ///     specialization pass has not completed (`location.isPrepared`) is `providerUnavailable`
     ///     in the background rather than started cold inside a background pass.
     ///   - boostQuietAudio: the `ParakeetQuietAudioBoost` switch, read per chunk.
+    ///   - log: the flight recorder. Only model-load trouble is written — never per segment.
     public init(
         spec: ParakeetModelSpec,
         location: any ParakeetModelLocating = ParakeetModelLocation(),
@@ -267,7 +279,8 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         temporaryDirectory: URL = FileManager.default.temporaryDirectory,
         nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
         isForeground: @escaping @Sendable () -> Bool = { true },
-        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() }
+        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() },
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.spec = spec
         self.id = Self.providerId(for: spec.runtime)
@@ -277,6 +290,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         self.nowMs = nowMs
         self.isForeground = isForeground
         self.boostQuietAudio = boostQuietAudio
+        self.log = log
     }
 
     public var modelSpec: ParakeetModelSpec { spec }
@@ -297,6 +311,13 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         // router may fall back and the queue retries once the app is up.
         if spec.requiresPreparation, !location.isPrepared(spec), !isForeground() {
             throw TranscriptionError.providerUnavailable(providerId: id)
+        }
+        // Checked before the audio is spooled: a model known not to load right now must not cost
+        // a segment's worth of disk writes to find that out again.
+        if let reason = loadHold.reason(nowMs: nowMs()) {
+            throw TranscriptionError.transcriptionFailed(
+                "failed to initialize local model: \(reason) (next attempt after a pause)"
+            )
         }
         let raw = temporaryDirectory.appendingPathComponent("cactus_stt-\(UUID().uuidString).raw")
         let wav = temporaryDirectory.appendingPathComponent("cactus_stt-\(UUID().uuidString).wav")
@@ -340,15 +361,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         ranges: [PcmSpeechRange], source: FileHandle, wav: URL, modelPath: String,
         sampleRateHz: Int
     ) async throws -> TranscriptionResult {
-        do {
-            try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
-        } catch let error as ParakeetEngineError {
-            throw Self.map(error, id: id)
-        } catch {
-            throw TranscriptionError.transcriptionFailed(
-                "failed to initialize local model", underlying: error
-            )
-        }
+        try await loadEngine(modelPath: modelPath)
 
         var pieces: [ParakeetNativeResponse] = []
         let boost = boostQuietAudio()
@@ -400,6 +413,73 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
             segments: pieces.flatMap { $0.segments },
             words: pieces.flatMap { $0.words }
         )
+    }
+
+    /// Loads the model, recovering once from a stale compiled cache.
+    ///
+    /// A model that was PREPARED and now fails to load has not changed on disk — the install
+    /// check just passed — so what broke is the runtime's compiled cache outside it (see
+    /// `CoreAIParakeetEngine.discardCompiledCache` for the case that took the user's on-device
+    /// transcription down for ten days). The recovery:
+    ///
+    /// 1. drop the compiled cache and withdraw `.prepared`, because the next load IS the cold
+    ///    specialization pass the prepare step exists to keep out of the background;
+    /// 2. in the foreground, run that load now and restore `.prepared` when it works;
+    /// 3. in the background, answer `providerUnavailable` — the router falls back, and the
+    ///    unprepared model waits for the app to come forward (or for the store's prepare pass)
+    ///    exactly as a fresh install does.
+    ///
+    /// A load that still fails puts the model in `loadHold` for `loadRetryPauseMs`, so the next
+    /// segments fail in microseconds instead of repeating a multi-gigabyte load each.
+    private func loadEngine(modelPath: String) async throws {
+        let wasPrepared = location.isPrepared(spec)
+        do {
+            try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
+            loadHold.clear()
+            // A cold load that worked IS the specialization pass (this path only runs cold in the
+            // foreground), so the background may use the model again.
+            if spec.requiresPreparation, !wasPrepared { location.setPrepared(spec, true) }
+            return
+        } catch let error as ParakeetEngineError {
+            guard case .modelLoadFailed(let message) = error else { throw Self.map(error, id: id) }
+            guard spec.requiresPreparation, wasPrepared else {
+                holdLoads(message)
+                throw Self.map(error, id: id)
+            }
+            let discarded = await engine.discardCompiledCache(modelPath: modelPath)
+            location.setPrepared(spec, false)
+            log(
+                "local model \(spec.id) failed to load (\(message)); "
+                    + (discarded ? "discarded its compiled cache" : "no compiled cache to discard")
+                    + (isForeground() ? ", rebuilding now" : ", rebuilding when the app is open")
+            )
+        } catch {
+            throw TranscriptionError.transcriptionFailed(
+                "failed to initialize local model", underlying: error
+            )
+        }
+
+        guard isForeground() else { throw TranscriptionError.providerUnavailable(providerId: id) }
+        do {
+            try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
+        } catch let error as ParakeetEngineError {
+            if case .modelLoadFailed(let message) = error {
+                holdLoads(message)
+                log("local model \(spec.id) rebuild failed: \(message)")
+            }
+            throw Self.map(error, id: id)
+        } catch {
+            throw TranscriptionError.transcriptionFailed(
+                "failed to initialize local model", underlying: error
+            )
+        }
+        loadHold.clear()
+        location.setPrepared(spec, true)
+        log("local model \(spec.id) rebuilt its compiled cache and loaded")
+    }
+
+    private func holdLoads(_ message: String) {
+        loadHold.set(reason: message, untilMs: nowMs() + Self.loadRetryPauseMs)
     }
 
     /// Engine failures the pipeline must NOT treat as a provider bug: no binary and a squeezed
@@ -498,6 +578,28 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         let last = lastUsedMs.value
         guard last != 0, now - last >= idleTimeoutMs else { return }
         await releaseModel(reason: "idle \(idleTimeoutMs)ms")
+    }
+}
+
+/// A model load that failed and is not retried until `untilMs`. See `loadRetryPauseMs`.
+final class LoadHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held: (reason: String, untilMs: Int64)?
+
+    /// The failure that is still being waited out at `nowMs`, or nil when a load may be tried.
+    func reason(nowMs: Int64) -> String? {
+        lock.withLock {
+            guard let held, nowMs < held.untilMs else { return nil }
+            return held.reason
+        }
+    }
+
+    func set(reason: String, untilMs: Int64) {
+        lock.withLock { held = (reason, untilMs) }
+    }
+
+    func clear() {
+        lock.withLock { held = nil }
     }
 }
 

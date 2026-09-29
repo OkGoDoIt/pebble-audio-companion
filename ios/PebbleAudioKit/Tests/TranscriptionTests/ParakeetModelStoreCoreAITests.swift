@@ -162,6 +162,27 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         // Cactus never needs preparing.
         #expect(location.isPrepared(cactus))
     }
+
+    /// The provider withdraws `.prepared` when the compiled cache goes stale and restores it after
+    /// the rebuild; neither write may make an uninstalled directory look ready.
+    @Test func setPreparedWritesAndRemovesTheMarkerOnlyForAnInstalledModel() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let location = ParakeetModelLocation(modelsDirectory: root)
+        let dir = location.directory(for: coreAI)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        location.setPrepared(coreAI, true)
+        #expect(location.isPrepared(coreAI) == false)  // not installed: nothing written
+
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("metadata.json"))
+        try Data(coreAI.revision.utf8).write(to: dir.appendingPathComponent(".coreai_version"))
+        location.setPrepared(coreAI, true)
+        #expect(location.isPrepared(coreAI))
+        location.setPrepared(coreAI, false)
+        #expect(location.isPrepared(coreAI) == false)
+        #expect(location.isInstalled(coreAI))  // the model files are untouched
+    }
 }
 
 // The Core AI entry is `published: false` (1e74c22): the store refuses to download it and asks

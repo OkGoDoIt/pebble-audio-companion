@@ -19,6 +19,37 @@ private struct FakeLocation: ParakeetModelLocating {
     func isPrepared(_ spec: ParakeetModelSpec) -> Bool { prepared }
 }
 
+/// A location whose `.prepared` flag the provider can withdraw and restore, as the real one can.
+private final class MutableLocation: ParakeetModelLocating, @unchecked Sendable {
+    let path: URL?
+    private let lock = NSLock()
+    private var flag: Bool
+
+    init(path: URL?, prepared: Bool) {
+        self.path = path
+        self.flag = prepared
+    }
+
+    var prepared: Bool { lock.withLock { flag } }
+    func installedModelPath(for spec: ParakeetModelSpec) -> URL? { path }
+    func isPrepared(_ spec: ParakeetModelSpec) -> Bool { lock.withLock { flag } }
+    func setPrepared(_ spec: ParakeetModelSpec, _ prepared: Bool) { lock.withLock { flag = prepared } }
+}
+
+private final class LogLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var lines: [String] { lock.withLock { stored } }
+    func append(_ line: String) { lock.withLock { stored.append(line) } }
+}
+
+private final class Clock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ms: Int64 = 1_000_000
+    var now: Int64 { lock.withLock { ms } }
+    func advance(_ by: Int64) { lock.withLock { ms += by } }
+}
+
 private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var loadCalls: [String] = []
@@ -29,21 +60,31 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     let supported: Bool
     let responses: [String]
     let loadFailure: ParakeetEngineError?
+    /// How many loads fail with `loadFailure` before loads start succeeding (all, by default).
+    let failingLoads: Int
     let transcribeFailure: ParakeetEngineError?
     private(set) var interrupts = 0
     private(set) var releases = 0
+    private var attempts = 0
+    private var discardCalls = 0
 
     init(
         supported: Bool = true,
         responses: [String] = [#"{"response":"hello there"}"#],
         loadFailure: ParakeetEngineError? = nil,
+        failingLoads: Int = .max,
         transcribeFailure: ParakeetEngineError? = nil
     ) {
         self.supported = supported
         self.responses = responses
         self.loadFailure = loadFailure
+        self.failingLoads = failingLoads
         self.transcribeFailure = transcribeFailure
     }
+
+    /// Every `load` call, including the ones that threw.
+    var loadAttempts: Int { lock.withLock { attempts } }
+    var discards: Int { lock.withLock { discardCalls } }
 
     var isSupported: Bool { supported }
     var loads: [String] { lock.withLock { loadCalls } }
@@ -52,8 +93,17 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     var stagedPeaks: [Int] { lock.withLock { wavPeaks } }
 
     func load(modelPath: String, identity: String) async throws {
-        if let loadFailure { throw loadFailure }
+        let attempt = lock.withLock { () -> Int in
+            attempts += 1
+            return attempts
+        }
+        if let loadFailure, attempt <= failingLoads { throw loadFailure }
         lock.withLock { loadCalls.append("\(modelPath)#\(identity)") }
+    }
+
+    func discardCompiledCache(modelPath: String) async -> Bool {
+        lock.withLock { discardCalls += 1 }
+        return true
     }
 
     func transcribe(wavPath: String) async throws -> String {
@@ -380,6 +430,151 @@ private func makeProvider(
             engine: cactus, temp: temp, spec: defaultSpec, prepared: false, foreground: false
         ).transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
         #expect(cactus.loads.count == 1)
+    }
+
+    // MARK: Stale compiled cache (2026-09-29)
+
+    private func recoveringProvider(
+        engine: FakeEngine, location: MutableLocation, temp: URL, foreground: Bool,
+        spec: ParakeetModelSpec = coreAISpec, clock: Clock = Clock(), log: LogLines = LogLines()
+    ) -> ParakeetTranscriptionProvider {
+        ParakeetTranscriptionProvider(
+            spec: spec, location: location, engine: engine, temporaryDirectory: temp,
+            nowMs: { clock.now }, isForeground: { foreground }, boostQuietAudio: { false },
+            log: { log.append($0) }
+        )
+    }
+
+    /// The case on the user's phone: a prepared Core AI model whose compiled cache iOS evicted
+    /// half of. In the foreground the provider drops the cache, loads cold, and the segment is
+    /// transcribed on the same call — with `.prepared` restored and the recovery on record.
+    @Test func aPreparedModelThatStopsLoadingRebuildsItsCacheInTheForeground() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(loadFailure: .modelLoadFailed("no ANE program"), failingLoads: 1)
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: true)
+        let log = LogLines()
+        let provider = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: true, log: log
+        )
+
+        let result = try await provider.transcribe(
+            pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+        )
+
+        #expect(result.text == "hello there")
+        #expect(engine.discards == 1)
+        #expect(engine.loadAttempts == 2)
+        #expect(location.prepared)
+        #expect(log.lines.contains { $0.contains("discarded its compiled cache") })
+        #expect(log.lines.contains { $0.contains("rebuilt its compiled cache") })
+    }
+
+    /// Backgrounded, the cold rebuild is not started (it is the prepare pass's job, which only
+    /// runs in the foreground): the cache is dropped, `.prepared` is withdrawn, the router gets
+    /// `providerUnavailable` — and every later background segment is refused without the engine
+    /// being touched, instead of re-running the doomed load.
+    @Test func inTheBackgroundTheStaleCacheIsDroppedAndTheRebuildWaitsForTheForeground()
+        async throws
+    {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(loadFailure: .modelLoadFailed("no ANE program"), failingLoads: 1)
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: true)
+        let background = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: false
+        )
+
+        for _ in 0..<3 {
+            do {
+                _ = try await background.transcribe(
+                    pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+                )
+                Issue.record("expected providerUnavailable")
+            } catch let error as TranscriptionError {
+                guard case .providerUnavailable = error else {
+                    Issue.record("expected providerUnavailable, got \(error)")
+                    return
+                }
+            }
+        }
+        #expect(engine.loadAttempts == 1)
+        #expect(engine.discards == 1)
+        #expect(location.prepared == false)
+
+        // The app comes forward: the next segment loads cold and marks the model prepared again.
+        let foreground = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: true
+        )
+        let result = try await foreground.transcribe(
+            pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+        )
+        #expect(result.text == "hello there")
+        #expect(location.prepared)
+    }
+
+    /// A model that will not load even after the rebuild is left alone for a pause: the next
+    /// segments fail at once, without a load attempt and without spooling their audio to disk.
+    @Test func aModelThatStillWillNotLoadIsNotRetriedForEverySegment() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(loadFailure: .modelLoadFailed("no ANE program"))
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: true)
+        let clock = Clock()
+        let provider = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: true, clock: clock
+        )
+
+        func attempt() async -> String? {
+            do {
+                _ = try await provider.transcribe(
+                    pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+                )
+                return nil
+            } catch TranscriptionError.transcriptionFailed(let message, _) {
+                return message
+            } catch {
+                return "unexpected \(error)"
+            }
+        }
+
+        let first = await attempt()
+        #expect(first?.contains("failed to initialize local model") == true)
+        #expect(engine.loadAttempts == 2)
+        #expect(engine.discards == 1)
+
+        let spooled = { (try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? [] }
+        let before = spooled()
+        let second = await attempt()
+        #expect(second?.contains("next attempt after a pause") == true)
+        #expect(TranscriptionFailureKind.classify(second) == .modelMissing)
+        #expect(engine.loadAttempts == 2)
+        #expect(spooled() == before)
+
+        // After the pause the model is tried again — plainly, since the cache was already dropped
+        // and `.prepared` withdrawn; there is nothing left to discard.
+        clock.advance(ParakeetTranscriptionProvider.loadRetryPauseMs)
+        _ = await attempt()
+        #expect(engine.loadAttempts == 3)
+        #expect(engine.discards == 1)
+    }
+
+    /// Cactus has no compiled cache: a load failure is held, never "recovered".
+    @Test func aCactusLoadFailureIsHeldWithoutADiscard() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(loadFailure: .modelLoadFailed("bad weights"))
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: true)
+        let provider = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: true, spec: defaultSpec
+        )
+        for _ in 0..<2 {
+            _ = try? await provider.transcribe(
+                pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate
+            )
+        }
+        #expect(engine.loadAttempts == 1)
+        #expect(engine.discards == 0)
     }
 
     /// With the boost switch on, the WAV the engine reads peaks at −3 dBFS; off, it is the

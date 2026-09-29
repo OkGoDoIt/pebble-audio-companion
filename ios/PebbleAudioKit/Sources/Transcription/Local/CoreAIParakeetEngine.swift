@@ -109,6 +109,7 @@ extension ParakeetEngineFactory {
 }
 
 #if canImport(CoreAI)
+    import CoreAI
     import CoreAISpeechVendored
     #if os(iOS)
         import os
@@ -237,6 +238,35 @@ extension ParakeetEngineFactory {
             interrupt()
             await serial.drain()
             dropModel()
+        }
+
+        /// Deletes this app's Core AI specialization cache, so the next `load` specializes the
+        /// bundle afresh (a cold load: ~1.1 GB of cache written, the same pass the store's
+        /// preparer runs after an install).
+        ///
+        /// Why this exists (2026-09-29): Core AI keeps the specialized model in the app's
+        /// `Library/Caches/coreai-cache`, and that entry points at Neural Engine programs held in
+        /// a SYSTEM cache (`com.apple.aned/…/ModelAssetsCache`). iOS evicted one of those programs
+        /// on the user's phone. Core AI still reported "received a model already specialized in
+        /// the cache", `aned` then failed `open(…) errno=2` on the missing program, and
+        /// `loadFunction` threw — on every load, for ten days, because nothing ever invalidated
+        /// the app-side entry. Deleting it is the only way back that does not need a reinstall.
+        ///
+        /// `deleteAll`, not `deleteEntries(for:)` per graph: this app specializes exactly one
+        /// bundle, and a per-entry delete that missed one graph would leave the same dead
+        /// reference behind. Serialized behind any in-flight operation, and the model is dropped
+        /// first so nothing resident still refers to the entries being deleted.
+        public func discardCompiledCache(modelPath: String) async -> Bool {
+            let discarded: Bool? = try? await serial.run { [self] in
+                dropModel()
+                do {
+                    try AIModelCache.default.deleteAll()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            return discarded ?? false
         }
 
         /// Drops the model unless a transcription is using it right now. The store's preparer

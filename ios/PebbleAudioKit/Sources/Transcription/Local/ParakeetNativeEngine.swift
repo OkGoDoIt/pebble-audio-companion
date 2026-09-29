@@ -54,6 +54,18 @@ public protocol ParakeetNativeEngine: Sendable {
 
     /// Unloads the model and frees its memory.
     func release() async
+
+    /// Throws away whatever the runtime compiled from the model at `modelPath` and cached outside
+    /// the install directory, so the next `load` rebuilds it from the model files. Returns true
+    /// when there was such a cache and it was dropped.
+    ///
+    /// Core AI needs this; Cactus has nothing of the kind (its install directory is all there is).
+    /// See `ParakeetTranscriptionProvider.loadEngine` for when it is called.
+    func discardCompiledCache(modelPath: String) async -> Bool
+}
+
+extension ParakeetNativeEngine {
+    public func discardCompiledCache(modelPath: String) async -> Bool { false }
 }
 
 /// Engine used where the runtime cannot run (no Cactus slice, no Core AI).

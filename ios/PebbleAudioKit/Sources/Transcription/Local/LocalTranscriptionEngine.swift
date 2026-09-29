@@ -90,6 +90,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
     private let makeAppleSpeech: @Sendable (Locale) -> any TranscriptionProvider
     private let isForeground: @Sendable () -> Bool
     private let boostQuietAudio: @Sendable () -> Bool
+    private let log: @Sendable (String) -> Void
 
     private let lock = NSLock()
     private var appleByLocale: [String: any TranscriptionProvider] = [:]
@@ -99,8 +100,8 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
     ///   - engine: the Cactus engine (the factory's when nil).
     ///   - coreAIEngine: the Core AI engine (the factory's when nil — `UnsupportedParakeetEngine`
     ///     wherever Core AI cannot run, which is what makes `resolution` say so).
-    ///   - isForeground / boostQuietAudio: handed to every `ParakeetTranscriptionProvider`; see
-    ///     its initializer.
+    ///   - isForeground / boostQuietAudio / log: handed to every `ParakeetTranscriptionProvider`;
+    ///     see its initializer.
     public init(
         selected: @escaping @Sendable () -> String,
         location: any ParakeetModelLocating = ParakeetModelLocation(),
@@ -110,7 +111,8 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
             SpeechAnalyzerProvider(locale: $0)
         },
         isForeground: @escaping @Sendable () -> Bool = { true },
-        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() }
+        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() },
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.selected = selected
         self.location = location
@@ -121,6 +123,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         self.makeAppleSpeech = makeAppleSpeech
         self.isForeground = isForeground
         self.boostQuietAudio = boostQuietAudio
+        self.log = log
     }
 
     /// The engine that runs models of `runtime`.
@@ -180,7 +183,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
             if let existing = parakeetById[spec.id] { return existing }
             let created = ParakeetTranscriptionProvider(
                 spec: spec, location: location, engine: engine(for: spec.runtime),
-                isForeground: isForeground, boostQuietAudio: boostQuietAudio
+                isForeground: isForeground, boostQuietAudio: boostQuietAudio, log: log
             )
             parakeetById[spec.id] = created
             return created

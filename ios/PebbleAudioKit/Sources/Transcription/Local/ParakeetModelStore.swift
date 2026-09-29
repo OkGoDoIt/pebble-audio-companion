@@ -92,11 +92,17 @@ public protocol ParakeetModelLocating: Sendable {
     /// True when the runtime's one-time prepare pass has completed for an installed model (or
     /// the runtime needs none). A provider must not start that pass in the background.
     func isPrepared(_ spec: ParakeetModelSpec) -> Bool
+    /// Records whether the prepare pass's output is still good. The provider withdraws it when
+    /// the runtime's compiled cache turns out to be stale (so a background pass stops loading a
+    /// model that has to be rebuilt cold) and restores it once a foreground load rebuilt it.
+    /// The only write this read-mostly seam allows: it never touches the model files.
+    func setPrepared(_ spec: ParakeetModelSpec, _ prepared: Bool)
 }
 
 extension ParakeetModelLocating {
     /// Runtimes without a prepare step are always prepared; fakes inherit this.
     public func isPrepared(_ spec: ParakeetModelSpec) -> Bool { true }
+    public func setPrepared(_ spec: ParakeetModelSpec, _ prepared: Bool) {}
 }
 
 /// Disk layout of the model cache (`Caches/models/{installDirectoryName}`).
@@ -154,6 +160,18 @@ public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
         return FileManager.default.fileExists(
             atPath: directory(for: spec).appendingPathComponent(spec.preparedMarkerFileName).path
         )
+    }
+
+    /// Writes or removes the `.prepared` marker — only for an installed model that has a prepare
+    /// step, so it can never make a half-extracted directory look ready.
+    public func setPrepared(_ spec: ParakeetModelSpec, _ prepared: Bool) {
+        guard spec.requiresPreparation, isInstalled(spec) else { return }
+        let marker = directory(for: spec).appendingPathComponent(spec.preparedMarkerFileName)
+        if prepared {
+            try? Data("prepared".utf8).write(to: marker, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: marker)
+        }
     }
 }
 
