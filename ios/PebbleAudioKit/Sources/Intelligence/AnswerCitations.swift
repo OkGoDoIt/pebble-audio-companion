@@ -113,7 +113,7 @@ public func renderedAnswerCitations(
 
 /// Distinct `[n]` numbers in the order they first appear.
 private func citedNumbers(in text: String) -> [Int] {
-    let footnote = regex(#"\[(\d{1,3})]"#)
+    let footnote = regex(#"\[(\d+)]"#)
     let ns = text as NSString
     var seen = Set<Int>()
     var numbers: [Int] = []
@@ -130,10 +130,10 @@ private func citedNumbers(in text: String) -> [Int] {
 
 private struct CitationPatterns {
     let markdownLink = regex(#"\[([^\]\n]*)]\(([^)\n]*)\)"#)
-    let footnote = regex(#"\[(\d{1,3})]"#)
+    let footnote = regex(#"\[(\d+)]"#)
     let segToken = regex(#"seg-[A-Za-z0-9_-]+"#)
     /// Earliest-wins union of every citation shape, scanned left to right across a line.
-    let anyCitation = regex(#"\[[^\]\n]*]\([^)\n]*\)|\[\d{1,3}]|seg-[A-Za-z0-9_-]+"#)
+    let anyCitation = regex(#"\[[^\]\n]*]\([^)\n]*\)|\[\d+]|seg-[A-Za-z0-9_-]+"#)
 }
 
 private func regex(_ pattern: String) -> NSRegularExpression {

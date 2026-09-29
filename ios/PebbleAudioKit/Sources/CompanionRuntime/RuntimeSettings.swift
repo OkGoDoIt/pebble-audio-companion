@@ -77,6 +77,11 @@ extension RuntimeSettings {
         )
     }
 
+    /// The settings whose change could rescue an AI job that failed — see `AiRecoveryKey`.
+    public var aiRecoveryKey: AiRecoveryKey {
+        AiRecoveryKey(aiMode: aiMode, remoteAiProvider: remoteAiProvider, aiModel: aiModel)
+    }
+
     /// The retention policy this settings state implies.
     public var retentionConfig: RetentionConfigInputs {
         RetentionConfigInputs(
@@ -102,6 +107,20 @@ public struct TranscriptionRecoveryKey: Equatable, Sendable {
     public var localTranscriptionModelId: String
     public var cloudTranscriptionProvider: CloudProvider
     public var cloudUploadNetwork: CloudUploadNetwork
+}
+
+/// The settings a failed AI job can be rescued by changing: the mode (which provider runs
+/// first, and whether the cloud may run at all), which remote provider, and which model. (The
+/// OpenAI key is the other rescue; `AppSettings` reports a key write on its own.)
+///
+/// Only a change in one of these resets the AI retry budgets (`AiRetryPolicy`). Anything else
+/// — the charger, the thermal state, the capture switch — must not, for the same reason the
+/// transcription key exists: those change dozens of times a day, and a reset on each of them is
+/// a full retry of every failed job on each.
+public struct AiRecoveryKey: Equatable, Sendable {
+    public var aiMode: AiProcessingMode
+    public var remoteAiProvider: RemoteAiProvider
+    public var aiModel: String
 }
 
 public enum RuntimeSettingsDefaults {

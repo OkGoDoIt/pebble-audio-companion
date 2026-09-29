@@ -63,8 +63,25 @@ extension Copy {
             "On-device AI declined to work on this recording. Cloud AI has different rules."
         static let modelBusy = "On-device AI is busy. Try again in a moment."
 
+        // ── Either cloud model ───────────────────────────────────────────────
+        /// A whole-input request — a day's recap, an Ask over a range — larger than the cloud
+        /// model's window. Refused rather than answered from a slice (`AiInputPolicy`), and the
+        /// sentence says what the reader can change: the model, or how much they ask about.
+        static let tooLongForModel =
+            "This is more than the selected cloud model can read in one go. Ask about a shorter "
+            + "stretch, or choose a model with a larger window in Transcription & AI."
+
         // ── Neither ──────────────────────────────────────────────────────────
         static let emptyAnswer = "The model answered with nothing. Try again."
+        /// The answer ran into the length the model may write and stopped mid-way. It was not
+        /// kept, because a note that stops mid-sentence is not a shorter note.
+        static let outputLimit =
+            "The answer ran longer than the model may write and was cut off, so it wasn't kept. "
+            + "Trying again usually works."
+        /// The cloud model's own refusal, or its filter stopping an answer partway.
+        static let answerRefused =
+            "The cloud model declined to answer this. Nothing here is yours to fix; on-device AI "
+            + "may still manage it."
         static let unknown = "Something went wrong. Detailed Logs in Diagnostics has the detail."
 
         // ── The fallback clause ──────────────────────────────────────────────
@@ -97,8 +114,11 @@ extension AiFailureKind {
         case .modelUnavailable: return Copy.AiFailure.modelUnavailable
         case .modelBusy: return Copy.AiFailure.modelBusy
         case .tooLongForDevice: return Copy.AiFailure.tooLongForDevice
+        case .tooLongForModel: return Copy.AiFailure.tooLongForModel
         case .contentRefused: return Copy.AiFailure.contentRefused
         case .emptyAnswer: return Copy.AiFailure.emptyAnswer
+        case .outputLimit: return Copy.AiFailure.outputLimit
+        case .answerRefused: return Copy.AiFailure.answerRefused
         // Apple Private Cloud Compute's two — see `Copy+ApplePrivateCloud.swift`.
         case .usageLimit: return Copy.AiFailure.usageLimit
         case .cloudContentRefused: return Copy.AiFailure.cloudContentRefused

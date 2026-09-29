@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import GRDB
 import SegmentStore
 import Transcription
 
@@ -148,6 +149,103 @@ enum BoundaryPromptTemplates {
     )
 }
 
+/// Failed asks per boundary candidate, so a reply that cannot be had is not re-sent every pass.
+///
+/// The reviewer used to keep no failure memory at all ("there is no failure state to get stuck
+/// in"), which made a provider that failed — or a model that returned prose, or skipped a gap —
+/// cost a ~20 KB request on EVERY foreground pass, every few seconds, for as long as the app
+/// was open. Now each failed ask backs its candidates off (15 minutes, doubling), and after
+/// `BoundaryReviewer.maxAttempts` they are left alone until the AI configuration changes
+/// (`resetAll`). DERIVED state, created idempotently like `FollowUpExtractionStore`: dropping
+/// the table costs a re-ask and nothing else.
+public struct BoundaryReviewAttempt: Equatable, Sendable {
+    public var segmentId: String
+    public var attempts: Int
+    public var nextAttemptAtMs: Int64
+    public var lastError: String?
+}
+
+public struct BoundaryReviewAttemptStore: Sendable {
+    public let db: AppDatabase
+
+    public init(db: AppDatabase) throws {
+        self.db = db
+        try db.writer.write { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE IF NOT EXISTS boundary_review_attempts (
+                        segmentId TEXT PRIMARY KEY,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        nextAttemptAtMs INTEGER NOT NULL DEFAULT 0,
+                        lastError TEXT
+                    )
+                    """)
+        }
+    }
+
+    public func all() async throws -> [String: BoundaryReviewAttempt] {
+        try await db.reader.read { db in
+            var out: [String: BoundaryReviewAttempt] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM boundary_review_attempts") {
+                let attempt = BoundaryReviewAttempt(
+                    segmentId: row["segmentId"], attempts: row["attempts"],
+                    nextAttemptAtMs: row["nextAttemptAtMs"], lastError: row["lastError"])
+                out[attempt.segmentId] = attempt
+            }
+            return out
+        }
+    }
+
+    /// One more failed ask for each of `segmentIds`, backed off by `backoffMs(attempts)`.
+    public func recordFailure(
+        segmentIds: [String], error: String, nowMs: Int64, backoffMs: (Int) -> Int64
+    ) async throws {
+        guard !segmentIds.isEmpty else { return }
+        let existing = try await all()
+        let rows: [(id: String, attempts: Int, nextAttemptAtMs: Int64)] = segmentIds.map { id in
+            let attempts = (existing[id]?.attempts ?? 0) + 1
+            return (id, attempts, nowMs + backoffMs(attempts))
+        }
+        let reason = String(error.prefix(200))
+        try await db.writer.write { db in
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO boundary_review_attempts
+                            (segmentId, attempts, nextAttemptAtMs, lastError)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(segmentId) DO UPDATE SET
+                            attempts = excluded.attempts,
+                            nextAttemptAtMs = excluded.nextAttemptAtMs,
+                            lastError = excluded.lastError
+                        """,
+                    arguments: [row.id, row.attempts, row.nextAttemptAtMs, reason])
+            }
+        }
+    }
+
+    /// A verdict landed: its candidate owes nothing.
+    public func clear(segmentIds: [String]) async throws {
+        guard !segmentIds.isEmpty else { return }
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM boundary_review_attempts
+                    WHERE segmentId IN (\(databaseQuestionMarks(count: segmentIds.count)))
+                    """,
+                arguments: StatementArguments(segmentIds))
+        }
+    }
+
+    /// Every candidate gets a fresh budget — the AI configuration changed, so a different
+    /// answer is possible.
+    public func resetAll() async throws {
+        try await db.writer.write { db in
+            try db.execute(sql: "DELETE FROM boundary_review_attempts")
+        }
+    }
+}
+
 /// Asks the model about the joins the structural layer could not settle, and caches the answers.
 public final class BoundaryReviewer: @unchecked Sendable {
     /// Candidates carried in one provider call. Enough that a normal backlog clears in a single
@@ -159,10 +257,21 @@ public final class BoundaryReviewer: @unchecked Sendable {
     /// Characters of transcript shown either side of a gap. Two or three turns' worth — the
     /// question is "did this continue", not "summarise the hour".
     public static let contextChars = 700
+    /// Failed asks before a candidate is left alone until the AI configuration changes. The
+    /// grouping stays structural for it meanwhile — which is what it was without the reviewer.
+    public static let maxAttempts = 5
+    /// 15 minutes, doubling: 15 m, 30 m, 1 h, 2 h, then the candidate rests.
+    public static let firstRetryMs: Int64 = 15 * 60_000
+
+    static func retryDelayMs(afterAttempts attempts: Int) -> Int64 {
+        firstRetryMs << Int64(min(max(attempts - 1, 0), 8))
+    }
 
     private let reviews: BoundaryReviewStore
     private let router: AiModeRouter?
     private let nowMs: @Sendable () -> Int64
+    /// Nil only when the table could not be created; the reviewer then behaves as it always did.
+    private let attempts: BoundaryReviewAttemptStore?
 
     public init(
         reviews: BoundaryReviewStore, router: AiModeRouter?,
@@ -171,6 +280,13 @@ public final class BoundaryReviewer: @unchecked Sendable {
         self.reviews = reviews
         self.router = router
         self.nowMs = nowMs
+        self.attempts = try? BoundaryReviewAttemptStore(db: reviews.db)
+    }
+
+    /// Fresh budgets for every candidate: called when the AI configuration changes, because a
+    /// different key, model or mode can answer what the old one could not.
+    public func resetRetryBudgets() async {
+        try? await attempts?.resetAll()
     }
 
     /// Reviews what it can and returns the number of verdicts written. Zero is the normal
@@ -185,8 +301,15 @@ public final class BoundaryReviewer: @unchecked Sendable {
 
         // Newest first, for the same reason enrichment is: a migrated library hands over a
         // whole backlog at once, and the boundary a person is most likely to look at today is
-        // the most recent one.
+        // the most recent one. A candidate whose last asks failed waits out its backoff, and
+        // one that has failed `maxAttempts` times waits for the AI configuration to change.
+        let now = nowMs()
+        let failed = (try? await attempts?.all()) ?? [:]
         let pending = try await reviews.unreviewed(candidates)
+            .filter { candidate in
+                guard let record = failed[candidate.newStartSegmentId] else { return true }
+                return record.attempts < Self.maxAttempts && now >= record.nextAttemptAtMs
+            }
             .sorted { $0.atMs > $1.atMs }
         guard !pending.isEmpty else { return 0 }
 
@@ -227,11 +350,17 @@ public final class BoundaryReviewer: @unchecked Sendable {
         } catch let error where error is CancellationError {
             throw error
         } catch {
-            // A boundary we could not ask about stays where it is. Nothing is recorded, so the
-            // next pass asks again — there is no failure state to get stuck in.
+            // A boundary we could not ask about stays where it is — the recording remains one
+            // conversation, which is what it was. What changed is that the failure is REMEMBERED:
+            // this used to record nothing, so the next pass (seconds later, in the foreground)
+            // re-sent the same ~20 KB, forever. Now each candidate in the batch backs off.
+            await recordFailure(Array(byId.keys), because: storedFailureMessage(error))
             return 0
         }
-        guard let verdicts = BoundaryVerdictParser.parse(raw: result.text) else { return 0 }
+        guard let verdicts = BoundaryVerdictParser.parse(raw: result.text) else {
+            await recordFailure(Array(byId.keys), because: "reply was not the agreed JSON")
+            return 0
+        }
 
         let now = nowMs()
         let rows: [BoundaryReview] = verdicts.compactMap { verdict in
@@ -247,7 +376,19 @@ public final class BoundaryReviewer: @unchecked Sendable {
             )
         }
         try await reviews.save(rows)
+        try? await attempts?.clear(segmentIds: rows.map(\.segmentId))
+        // A candidate the model skipped is as unanswered as one in a failed call, and asking
+        // again on the next pass would get the same reply.
+        let answered = Set(rows.map(\.segmentId))
+        await recordFailure(
+            byId.keys.filter { !answered.contains($0) }, because: "reply omitted this gap")
         return rows.count
+    }
+
+    private func recordFailure(_ segmentIds: [String], because reason: String) async {
+        try? await attempts?.recordFailure(
+            segmentIds: segmentIds, error: reason, nowMs: nowMs(),
+            backoffMs: Self.retryDelayMs(afterAttempts:))
     }
 
     /// One block per candidate: how long the silence was, then the words either side of it.

@@ -262,6 +262,9 @@ private final class Counter: @unchecked Sendable {
         #expect(annotation == nil)
     }
 
+    /// A failure nobody can name spends an attempt (`AiFailureKind.blamesTheInput`), attempts
+    /// are spaced by `AiRetryPolicy.contentRetryMs` rather than spent in three back-to-back
+    /// passes, and a spent budget RESTS instead of being abandoned for the life of the database.
     @Test func failuresAreBoundedToMaxAttempts() async throws {
         let provider = FakeAiProvider(error: FakeFailure(message: "provider down"))
         let worker = worker(provider)
@@ -269,6 +272,7 @@ private final class Counter: @unchecked Sendable {
         for _ in 0..<5 {
             _ = try await worker.enrich(
                 conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
+            clock.advance(byMs: AiRetryPolicy.contentRetryMs)
         }
 
         #expect(provider.runCount == EnrichmentWorker.maxAttempts)
@@ -277,12 +281,18 @@ private final class Counter: @unchecked Sendable {
         #expect(annotation?.lastError == "provider down")
         #expect(annotation?.hasContent == false)
 
-        // Recovery: provider works again, the next pass overwrites the failure record... but
-        // only if attempts allow; bounded retries are intentional, so it stays failed.
+        // The provider works again. The spent budget still rests for its six hours…
         provider.error = nil
         _ = try await worker.enrich(
             conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
         #expect(provider.runCount == EnrichmentWorker.maxAttempts)
+
+        // …and is then tried again, and titled. It used to stay untitled forever.
+        clock.advance(byMs: AiRetryPolicy.exhaustedRetryMs)
+        _ = try await worker.enrich(
+            conversations([meta("seg-1")]), transcriptOf: { transcript($0) })
+        #expect(provider.runCount == EnrichmentWorker.maxAttempts + 1)
+        #expect(try await store.load("conv-seg-1")?.isFinal == true)
     }
 
     private var longLive: String { String(repeating: "a ", count: EnrichmentWorker.liveMinChars) }
@@ -353,6 +363,35 @@ private final class Counter: @unchecked Sendable {
         _ = try await worker.enrich(
             open, transcriptOf: { _ in nil }, liveTextOf: { _ in text(grown) })
         #expect(provider.runCount == 2)
+    }
+
+    /// Inside the 45-second refresh interval a live conversation is decided by the clock alone.
+    /// It used to decode every closed member's transcript on every pass — every five seconds
+    /// while the watch records — before finding the gate closed.
+    @Test func aLiveConversationInsideItsRefreshIntervalOpensNoTranscript() async throws {
+        let provider = FakeAiProvider()
+        let worker = worker(provider)
+        let open = conversations([meta("seg-closed"), meta("seg-open", open: true)], open: true)
+        _ = try await worker.enrich(
+            open, transcriptOf: { transcript($0) }, liveTextOf: { _ in longLive })
+        #expect(provider.runCount == 1)
+
+        let reads = Counter()
+        for _ in 0..<5 {
+            clock.advance(byMs: 5_000)
+            _ = try await worker.enrich(
+                open,
+                transcriptOf: {
+                    reads.increment()
+                    return transcript($0)
+                },
+                liveTextOf: { _ in
+                    reads.increment()
+                    return longLive
+                })
+        }
+        #expect(reads.value == 0)
+        #expect(provider.runCount == 1)
     }
 
     @Test func finalPassOverridesProvisionalThenStops() async throws {

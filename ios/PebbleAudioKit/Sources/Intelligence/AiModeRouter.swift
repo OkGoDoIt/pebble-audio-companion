@@ -24,6 +24,10 @@ public final class AiModeRouter: @unchecked Sendable {
     ///
     /// Counters and classified kinds only — see `AiFailureLog`. Never transcript text.
     private let log: @Sendable (String) -> Void
+    /// Admits a fallback line the first time and then at most every ten minutes per template and
+    /// cause — the transcription router's discipline, for the same reason: a primary that is
+    /// down is down for every queued job.
+    private let fallbackLogGate: RepeatingLogGate
 
     private let lock = NSLock()
     private var _lastSuccessfulMode: AiProcessingMode?
@@ -48,12 +52,14 @@ public final class AiModeRouter: @unchecked Sendable {
         local: AiProvider?,
         remote: AiProvider?,
         mode: @escaping @Sendable () -> AiProcessingMode,
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        fallbackLogGate: RepeatingLogGate = RepeatingLogGate()
     ) {
         self.local = local
         self.remote = remote
         self.mode = mode
         self.log = log
+        self.fallbackLogGate = fallbackLogGate
     }
 
     public func isAvailable() async -> Bool {
@@ -80,6 +86,10 @@ public final class AiModeRouter: @unchecked Sendable {
             return result
         } catch is CancellationError {
             // The user stopped it. Not a failure, and not worth a line in a 400-line ring.
+            throw CancellationError()
+        } catch _ where Task.isCancelled {
+            // The same, in `URLSession`'s words (`URLError(.cancelled)`): callers check for
+            // `CancellationError`, and a cancelled pass must not be recorded as a cloud failure.
             throw CancellationError()
         } catch {
             let failure = AiFailure.classify(error)
@@ -160,6 +170,10 @@ public final class AiModeRouter: @unchecked Sendable {
             } catch {
                 let result = try await runProvider(
                     remote, role: .cloud, request, modeUsed: .remoteOnly, suppressed: error)
+                noteFallbackAnswered(
+                    request, mode: mode, primary: .onDevice,
+                    primaryId: local?.id ?? AiFailureOrigin.onDevice.rawValue, error: error,
+                    result: result)
                 // Set only where the fallback actually PRODUCED the result — a fallback that
                 // also failed throws above and never reaches here, so a successful fallback's
                 // calm disclosure can never be mistaken for an error.
@@ -178,9 +192,24 @@ public final class AiModeRouter: @unchecked Sendable {
                 )
             } catch let error where error.isNeverSwallowed {
                 throw error
+            } catch let error
+                where AiInputPolicy.requiresWholeInput(templateId: request.prompt.id)
+                && Self.interruptedInFlight(error)
+            {
+                // A whole-input request — a recap, an Ask over a range, an Extended summary —
+                // that the cloud accepted and then timed out or lost the connection on is not
+                // handed to the on-device model. Its input was sized for the cloud; the phone
+                // would refuse it (`AiInputPolicy`) after doing the work of building it, and a
+                // big request is exactly the one most likely to time out. The cloud's own
+                // failure is the answer, and the caller retries it later.
+                throw error
             } catch {
                 let result = try await runProvider(
                     local, role: .onDevice, request, modeUsed: .localOnly, suppressed: error)
+                noteFallbackAnswered(
+                    request, mode: mode, primary: .cloud,
+                    primaryId: remote?.id ?? AiFailureOrigin.cloud.rawValue, error: error,
+                    result: result)
                 return (
                     result,
                     ProcessingFallback(
@@ -188,6 +217,54 @@ public final class AiModeRouter: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    /// Writes a line when a First mode's fallback ANSWERED — the one outcome that used to leave
+    /// no trace at all.
+    ///
+    /// A failure was always logged (`record`), but a fallback that succeeded wrote nothing: the
+    /// primary's error was reduced to `ProcessingFallback`'s four-way cause and dropped. That is
+    /// the transcription side's ten-day silent-engine failure in AI form — a Remote-first user
+    /// whose cloud calls all failed got every title from the on-device model, and nothing on the
+    /// device said so or why. The line carries the classified kind and a bounded, key-redacted
+    /// prefix of the primary's own message (`AiFailureLog.detail`), never transcript text; it is
+    /// gated per template and cause so a backlog of 145 conversations writes it once, then a
+    /// count.
+    private func noteFallbackAnswered(
+        _ request: AiRunRequest, mode: AiProcessingMode, primary: AiFailureOrigin,
+        primaryId: String, error: Error, result: RoutedAiResult
+    ) {
+        let kind = AiFailure.kind(of: error)
+        guard
+            let repeats = fallbackLogGate.admit(
+                "\(request.prompt.id)|\(primary.rawValue)|\(kind.rawValue)")
+        else { return }
+        let fallback: AiFailureOrigin = primary == .cloud ? .onDevice : .cloud
+        var line =
+            "ai fallback: \(request.prompt.id) mode=\(mode.rawValue) "
+            + "\(primary.rawValue)=\(primaryId) failed (\(kind.rawValue)): "
+            + "\(AiFailureLog.detail(of: error).prefix(Self.fallbackDetailChars)); "
+            + "answered by \(fallback.rawValue)=\(result.providerId)"
+        if result.inputTruncated { line += " from a cut input (provisional)" }
+        if repeats > 0 { line += " [\(repeats) more like it since the last line]" }
+        log(line)
+    }
+
+    /// Enough of the primary's message to tell a 401 from a 429 from an outage; the full body
+    /// runs to kilobytes and the ring holds 400 lines.
+    static let fallbackDetailChars = 200
+
+    /// A cloud request that was sent and then did not come back: timed out, lost its
+    /// connection, or cancelled under it (the system suspending the app mid-request).
+    static func interruptedInFlight(_ error: Error) -> Bool {
+        let interrupted: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cancelled]
+        if let urlError = error as? URLError { return interrupted.contains(urlError.code) }
+        if case .providerFailed(_, let underlying)? = error as? AiError,
+            let urlError = underlying as? URLError
+        {
+            return interrupted.contains(urlError.code)
+        }
+        return AiFailure.kind(of: error) == .timedOut
     }
 
     /// The provider the user's MODE chose — the one whose failure is the headline.
@@ -240,6 +317,15 @@ public final class AiModeRouter: @unchecked Sendable {
             // The rejected key was the only actionable fact in the event and it was the one
             // thing thrown away.
             if let suppressed { throw suppressed }
+            // A provider that is unavailable for a REASON — an account on hold, a 429 still in
+            // force — says so, and the reason is what escapes: "out of credit (402)" is a thing a
+            // person can fix, "no AI provider is available" sends them to a Settings screen where
+            // everything looks configured.
+            if let provider,
+                let reason = await (provider as? AiUnavailabilityExplaining)?.unavailabilityReason()
+            {
+                throw AiError.providerFailed(reason)
+            }
             throw AiError.providerUnavailable(providerId: provider?.id ?? role.rawValue)
         }
         let providerResult: AiProviderResult
@@ -256,7 +342,11 @@ public final class AiModeRouter: @unchecked Sendable {
             providerId: provider.id,
             modelUsed: providerResult.modelUsed,
             inputTokens: providerResult.inputTokens,
-            outputTokens: providerResult.outputTokens
+            outputTokens: providerResult.outputTokens,
+            inputTruncated: providerResult.inputTruncated,
+            // `suppressed` is set exactly when this provider is standing in for a primary that
+            // failed — the one fact a caller needs to tell provisional work from finished work.
+            viaFallback: suppressed != nil
         )
     }
 
@@ -319,14 +409,69 @@ extension AiModeRouter {
         guard let reporting = remote as? AiInputWindowReporting else { return nil }
         return await reporting.contextTokens()
     }
+
+    /// The same question as `firstCallInputChars` for a STRUCTURED call (follow-up
+    /// extraction). The on-device follow-up sift reads a conversation whole and cuts it itself,
+    /// so the local modes impose nothing; a remote slot that reports its window (Apple Private
+    /// Cloud Compute's 32K tokens, where a four-hour conversation does not fit) is held to it;
+    /// OpenAI's catalog windows are far above any conversation. Nil means "no limit beyond the
+    /// caller's own".
+    public func firstStructuredCallInputChars() async -> Int? {
+        switch mode() {
+        case .localOnly, .localFirst:
+            return nil
+        case .remoteOnly, .remoteFirst:
+            guard let tokens = await remoteContextTokens() else { return nil }
+            return AskBudget.forContext(tokens: tokens).transcriptChars
+        }
+    }
+
+    /// Characters of transcript the provider that runs FIRST in the current mode can be handed
+    /// in one call — what a planner sizes a request by before it exists. The local modes ask
+    /// the on-device slot (`localInputChars`); the remote modes ask the remote slot's window
+    /// (Apple Private Cloud Compute reports one) or, for OpenAI, the catalog's window for
+    /// `remoteModelId`. The same numbers Ask plans against, with the same headroom.
+    ///
+    /// A fallback is NOT sized for: it refuses a whole-input request it cannot read whole
+    /// (`AiInputPolicy`) rather than being handed something it quietly cuts.
+    public func firstCallInputChars(remoteModelId: String?) async -> Int {
+        switch mode() {
+        case .localOnly, .localFirst:
+            return await localInputChars() ?? OnDeviceAiProvider.defaultMaxInputChars
+        case .remoteOnly, .remoteFirst:
+            if let tokens = await remoteContextTokens() {
+                return AskBudget.forContext(tokens: tokens).transcriptChars
+            }
+            return AskBudget.forModel(id: remoteModelId).transcriptChars
+        }
+    }
+}
+
+// MARK: - A remote account on hold
+
+extension AiModeRouter {
+    /// Checks the remote provider's held account when its hold says a check is due — and only
+    /// in a mode that can use the cloud at all: a Local-only user's parked OpenAI account is not
+    /// worth a request. Nil when nothing was due. See `OpenAiChatAiProvider.probeHeldAccountIfDue`.
+    @discardableResult
+    public func probeHeldRemoteAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
+        guard mode() != .localOnly, let probing = remote as? AiAccountProbing else { return nil }
+        return await probing.probeHeldAccountIfDue(foreground: foreground)
+    }
 }
 
 extension Error {
     /// Errors a First mode must re-throw instead of falling back: cancellation and explicit
     /// consent failures.
+    ///
+    /// Cancellation includes the shape `URLSession` gives it — `URLError(.cancelled)` rather
+    /// than `CancellationError` — whenever the task running the router has been cancelled. A
+    /// pass cancelled mid-request (the app backgrounded, the loop restarted) used to take that
+    /// for an ordinary cloud failure and start the on-device model on its way out.
     fileprivate var isNeverSwallowed: Bool {
         if self is CancellationError { return true }
         if let aiError = self as? AiError, case .consentRequired = aiError { return true }
+        if Task.isCancelled { return true }
         return false
     }
 }

@@ -27,9 +27,23 @@ public actor PersonalContextTermRefresher {
     private let nowMs: @Sendable () -> Int64
     private let retryAfterMs: Int64
     private let log: @Sendable (String) -> Void
+    /// Where the failure memory persists; nil keeps it in memory (tests).
+    private let failureFileURL: URL?
 
     private var running = false
-    private var lastFailure: (hash: String, atMs: Int64)?
+    private var lastFailure: Failure?
+
+    /// The last failed extraction for a given profile text, and how many in a row. Persisted:
+    /// in memory it was forgotten on every launch, and iOS launches this app many times a day —
+    /// each launch re-ran the extraction for a model that had just failed it.
+    struct Failure: Codable, Equatable {
+        var hash: String
+        var atMs: Int64
+        var count: Int
+    }
+
+    /// The longest a failed extraction waits before it is tried again.
+    public static let maxRetryAfterMs: Int64 = 6 * 60 * 60 * 1000
 
     /// `log` has no default on purpose: a silenced default is what hid four other seams in this
     /// codebase. Pass `{ _ in }` explicitly if a caller really wants silence.
@@ -40,6 +54,7 @@ public actor PersonalContextTermRefresher {
         nowMs: @escaping @Sendable () -> Int64,
         retryAfterMs: Int64 = 10 * 60 * 1000,
         mutate: (@Sendable ((inout PersonalContext) -> Void) throws -> Void)? = nil,
+        failureFileURL: URL? = nil,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.load = load
@@ -48,7 +63,31 @@ public actor PersonalContextTermRefresher {
         self.extractor = extractor
         self.nowMs = nowMs
         self.retryAfterMs = retryAfterMs
+        self.failureFileURL = failureFileURL
         self.log = log
+        self.lastFailure = failureFileURL.flatMap { url in
+            (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Failure.self, from: $0) }
+        }
+    }
+
+    /// 10 minutes, doubling per failure in a row, to six hours.
+    private func waitMs(afterFailures count: Int) -> Int64 {
+        min(retryAfterMs << Int64(min(max(count - 1, 0), 10)), Self.maxRetryAfterMs)
+    }
+
+    private func recordFailure(hash: String) {
+        let count = lastFailure?.hash == hash ? (lastFailure?.count ?? 0) + 1 : 1
+        let failure = Failure(hash: hash, atMs: nowMs(), count: count)
+        lastFailure = failure
+        guard let failureFileURL, let data = try? JSONEncoder().encode(failure) else { return }
+        try? FileManager.default.createDirectory(
+            at: failureFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: failureFileURL, options: .atomic)
+    }
+
+    private func clearFailure() {
+        lastFailure = nil
+        if let failureFileURL { try? FileManager.default.removeItem(at: failureFileURL) }
     }
 
     /// Brings `derivedTerms` up to date with the pasted profile text. Never throws: a model
@@ -73,7 +112,7 @@ public actor PersonalContextTermRefresher {
         guard context.biasTranscription else { return [] }
         if running { return context.derivedTerms }
         if let failure = lastFailure, failure.hash == hash,
-            nowMs() - failure.atMs < retryAfterMs
+            nowMs() - failure.atMs < waitMs(afterFailures: failure.count)
         {
             return context.derivedTerms
         }
@@ -86,18 +125,21 @@ public actor PersonalContextTermRefresher {
             terms = try await extractor.extract(profileText: context.profileText ?? "")
         } catch {
             // Only cancellation reaches here; the extractor swallows provider failures.
-            lastFailure = (hash, nowMs())
+            recordFailure(hash: hash)
             return context.derivedTerms
         }
         guard !terms.isEmpty else {
             // Either the model is unavailable or it found nothing worth biasing on. Both are
             // retryable, and both are worth a line: "About You produced no terms" is otherwise
             // indistinguishable from "About You is empty".
-            lastFailure = (hash, nowMs())
-            log("personal-context terms: no terms extracted (model unavailable or no proper nouns)")
+            recordFailure(hash: hash)
+            let nextMinutes = waitMs(afterFailures: lastFailure?.count ?? 1) / 60_000
+            log(
+                "personal-context terms: no terms extracted (model unavailable or no proper "
+                    + "nouns); next try in \(nextMinutes) min")
             return context.derivedTerms
         }
-        lastFailure = nil
+        clearFailure()
         persist(terms: terms, hash: hash, expecting: hash)
         return terms
     }

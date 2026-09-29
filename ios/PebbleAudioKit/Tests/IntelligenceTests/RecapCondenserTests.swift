@@ -325,4 +325,88 @@ private let shortDigest = "Quiet morning. You worked through the redesign after 
         try await engine.refreshDigests()
         #expect(try await store.load(dateKey: "2026-08-26")?.shortText == "Short enough.")
     }
+
+    /// The candidate query took the eight newest long days whatever their state, so once eight
+    /// were condensed the older ones were never offered again (09-05, 09-07…09-10 in the backup).
+    @Test func condensedDaysDoNotHideOlderOnesFromTheCondensePass() async throws {
+        let store = DailyRecapStore(db: try AppDatabase.inMemory())
+        let long = String(repeating: "A long afternoon went into the redesign. ", count: 20)
+        for day in 1...10 {
+            let key = String(format: "2026-09-%02d", day)
+            try await store.save(DailyRecap(dateKey: key, text: long + key))
+            if day > 2 {
+                try await store.saveCondensation(
+                    dateKey: key, sourceText: long + key, shortText: "Short.")
+            }
+        }
+        let candidates = try await store.longestFirstCandidates(
+            minCharacters: RecapCondenser.mediumParagraphCharacters,
+            limit: DailyRecapEngine.condensationCandidateDepth)
+        #expect(candidates.map(\.dateKey) == ["2026-09-02", "2026-09-01"])
+    }
+
+    /// End to end: ten long days, the newest eight already condensed — the pass reaches the
+    /// two older ones instead of stopping at the eight it has already done.
+    @Test func theCondensePassReachesOlderLongDays() async throws {
+        let harness = CondenseHarness()
+        let (engine, store) = try makeEngine(harness)
+        for day in 1...10 {
+            let key = String(format: "2026-08-%02d", day)
+            try await store.save(DailyRecap(dateKey: key, text: longDigest(key)))
+            if day > 2 {
+                try await store.saveCondensation(
+                    dateKey: key, sourceText: longDigest(key), shortText: "Short.")
+            }
+        }
+        harness.queueCondenseReply("Short enough.")
+        harness.queueCondenseReply("Short enough.")
+        try await engine.refreshDigests()
+        #expect(try await store.load(dateKey: "2026-08-02")?.shortText == "Short enough.")
+        #expect(try await store.load(dateKey: "2026-08-01")?.shortText == "Short enough.")
+    }
+}
+
+/// The condense prompt used to ask for "about 60 words" with no limit while the acceptance rule
+/// refused anything over `max(520, source / 2)` or 0.75× the source — the model aimed at one
+/// number and was judged against another, and ~43% of condensations were refused.
+@Suite struct RecapCondensePromptTests {
+    @Test func thePromptStatesTheExactCeilingTheAnswerIsJudgedAgainst() {
+        for source in [600, 1_000, 1_900, 4_000] {
+            let ceiling = RecapCondenser.acceptanceCeiling(sourceCharacters: source)
+            let prompt = RecapCondenser.prompt(forSourceCharacters: source)
+            #expect(prompt.systemPrompt.contains("HARD LIMIT: \(ceiling) characters"))
+            #expect(prompt.id == RecapCondenser.prompt.id)
+            // The ceiling IS the acceptance rule: an answer at it is usable, one past it is not.
+            let sourceText = String(repeating: "x", count: source)
+            #expect(
+                RecapCondenser.isUsable(String(repeating: "y", count: ceiling), source: sourceText))
+            #expect(
+                !RecapCondenser.isUsable(
+                    String(repeating: "y", count: ceiling + 1), source: sourceText))
+        }
+    }
+
+    @Test func theCondenseCallCarriesTheCeilingForItsOwnDigest() async throws {
+        let digest = longDigest()
+        let box = RequestBox()
+        _ = try await RecapCondenser.condense(
+            DailyRecap(dateKey: "2026-08-30", text: digest),
+            run: { request in
+                box.set(request)
+                return RoutedAiResult(
+                    text: "Short.", modeUsed: .localOnly, providerId: "fake", modelUsed: nil,
+                    inputTokens: nil, outputTokens: nil)
+            },
+            nowMs: 0)
+        let ceiling = RecapCondenser.acceptanceCeiling(
+            sourceCharacters: RecapCondenser.normalized(digest).count)
+        #expect(box.request?.prompt.systemPrompt.contains("HARD LIMIT: \(ceiling) characters") == true)
+    }
+}
+
+private final class RequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _request: AiRunRequest?
+    var request: AiRunRequest? { lock.withLock { _request } }
+    func set(_ request: AiRunRequest) { lock.withLock { _request = request } }
 }

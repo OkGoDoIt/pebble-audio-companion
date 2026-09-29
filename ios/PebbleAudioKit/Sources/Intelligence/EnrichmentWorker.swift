@@ -37,15 +37,20 @@ public struct EnrichmentConversation: Sendable {
 ///  - **Final/authoritative**: once the conversation is closed and every member is fully
 ///    transcribed, regenerate from the complete durable transcripts and mark the annotation
 ///    final, overriding any provisional. This runs exactly once on success (tagless finals
-///    get one structured backfill) and is bounded to `maxAttempts` final attempts so a broken
-///    provider cannot spin.
+///    get one structured backfill). Failures follow `AiRetryPolicy`: only a failure on the
+///    input spends one of `maxAttempts`, the world's failures back off in time, and a spent
+///    budget rests six hours before one more try — so a broken provider cannot spin, and an
+///    afternoon offline cannot cost a conversation its title for good. A fallback that read
+///    only part of the conversation is shown but kept provisional (`RoutedAiResult
+///    .isProvisional`) until the preferred provider redoes it.
 ///
 /// Runs strictly under the user's AI settings: when no router is configured or the configured
 /// mode has no available provider (e.g. remote consent off), it does nothing and rows fall
 /// back to transcript snippets.
 public final class EnrichmentWorker: @unchecked Sendable {
-    /// Bounds the authoritative final pass so a persistently failing provider cannot spin.
-    /// Shared with the library's "waiting" count, which stops counting at the same number.
+    /// Final-pass failures ON THE INPUT before a conversation rests (`AiRetryPolicy
+    /// .exhaustedRetryMs`). Shared with the library's "waiting" count, which stops counting at
+    /// the same number.
     public static let maxAttempts = AnnotationPolicy.maxFinalAttempts
 
     /// Conversations actually SENT to the provider in one `enrich` call.
@@ -115,6 +120,15 @@ public final class EnrichmentWorker: @unchecked Sendable {
         case generate(excerpts: [TranscriptExcerpt], combinedLength: Int, isFinal: Bool)
     }
 
+    /// Checks a held cloud AI account when its schedule says to (see
+    /// `OpenAiChatAiProvider.probeHeldAccountIfDue`). Runs at the top of the AI stage, BEFORE the
+    /// availability check below — a held account is exactly what makes the router unavailable,
+    /// so this is the one place that can notice it has been topped up. Cheap and silent when
+    /// nothing is held, which is always the ordinary case.
+    public func probeHeldAccountIfDue(foreground: Bool) async {
+        _ = await router?.probeHeldRemoteAccountIfDue(foreground: foreground)
+    }
+
     /// Annotates conversations that are due for a live refresh or a final pass.
     /// `transcriptOf` returns the durable transcript of a closed segment; `liveTextOf`
     /// returns the rolling live preview of a still-open segment. Returns the conversation ids
@@ -130,6 +144,10 @@ public final class EnrichmentWorker: @unchecked Sendable {
         let now = nowMs()
         var annotated: [String] = []
         var calls = 0
+        // Every annotation in one read. This was one query per conversation per pass — every
+        // finished conversation in the library, every few seconds while a segment is open —
+        // to learn, almost always, that it was already titled.
+        let stored = try await annotations.all()
         // NEWEST FIRST. A migrated library hands this loop a whole backlog at once, and in
         // arrival order the conversation happening RIGHT NOW is last — a migrated user waited
         // for 145 months-old conversations before today's got a title. Recency is the max member
@@ -139,7 +157,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // next boundary instead of running it out.
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
-            let existing = try await annotations.load(conversation.conversationId)
+            let existing = stored[conversation.conversationId]
             let plan = planFor(
                 conversation, existing: existing, transcriptOf: transcriptOf,
                 liveTextOf: liveTextOf, now: now)
@@ -194,7 +212,19 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // Older final annotations were title/summary only. Treat tagless finals as due
             // for one structured final pass so library tags backfill automatically.
             if let existing, existing.isFinal, !existing.tags.isEmpty { return .none }
-            if (existing?.finalAttempts ?? 0) >= Self.maxAttempts { return .none }
+            // Waiting out a backoff (`AiRetryPolicy`): a failure, a spent budget or a
+            // provisional answer all set one. This used to be "three final attempts, no time
+            // between them, never reset" — three passes during a flight cost a conversation its
+            // title for good.
+            if let next = existing?.nextAttemptAtMs, now < next { return .none }
+            // A budget spent before backoffs existed rests from its last failure, then gets a
+            // retry, instead of being abandoned forever.
+            if let existing, existing.finalAttempts >= Self.maxAttempts,
+                existing.nextAttemptAtMs == nil,
+                now - existing.updatedAtMs < AiRetryPolicy.exhaustedRetryMs
+            {
+                return .none
+            }
             let key = Self.membershipKey(conversation, transcriptVersionOf: transcriptVersionOf)
             if let key, emptyFinals.contains(conversation.conversationId, key: key) {
                 return .none
@@ -217,6 +247,13 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // A final annotation should never exist while live, but never downgrade it if it
             // does.
             if existing?.isFinal == true { return .none }
+            // The clock first, and only then the transcripts. This used to decode every closed
+            // member of the live conversation — every pass, every five seconds while the watch
+            // records — and only then find the 45-second refresh gate closed. The interval half
+            // of the gate needs nothing but the stored annotation.
+            if let existing, now - existing.updatedAtMs < Self.liveRefreshMinIntervalMs {
+                return .none
+            }
             let excerpts = memberExcerpts(conversation) { member in
                 member.isOpen
                     ? liveTextOf(member.segmentId)
@@ -294,7 +331,8 @@ public final class EnrichmentWorker: @unchecked Sendable {
             return false
         }
         let attempts = (existing?.attempts ?? 0) + 1
-        let finalAttempts = (existing?.finalAttempts ?? 0) + (isFinal ? 1 : 0)
+        let priorFinalAttempts = existing?.finalAttempts ?? 0
+        let now = nowMs()
         do {
             let result = try await activeRouter.run(
                 AiRunRequest(
@@ -304,6 +342,14 @@ public final class EnrichmentWorker: @unchecked Sendable {
                     transcripts: excerpts
                 ))
             let parsed = SegmentAnnotationPrompt.parse(result.text)
+            // A fallback that read only part of a finished conversation wrote a title for its
+            // first stretch. Better than a blank row, so it is SHOWN — but it is provisional:
+            // not final, and the final pass comes back for it once the preferred provider can
+            // read the whole thing (sooner if a held account takes work again, which resets
+            // every backoff). A truncated answer from the provider the mode PREFERS is the best
+            // there will be, and is final like any other.
+            let provisional = isFinal && result.isProvisional
+            let transientFailures = provisional ? (existing?.transientFailures ?? 0) + 1 : 0
             try await annotations.save(
                 ConversationAnnotation(
                     conversationId: conversation.conversationId,
@@ -314,26 +360,59 @@ public final class EnrichmentWorker: @unchecked Sendable {
                     providerId: result.providerId,
                     modelUsed: result.modelUsed,
                     attempts: attempts,
-                    isFinal: isFinal,
+                    lastError: provisional
+                        ? "provisional: \(result.providerId) read part of this conversation"
+                        : nil,
+                    isFinal: isFinal && !provisional,
                     sourceCharCount: combinedLength,
-                    finalAttempts: finalAttempts
+                    finalAttempts: priorFinalAttempts + (isFinal && !provisional ? 1 : 0),
+                    nextAttemptAtMs: provisional
+                        ? now
+                            + max(
+                                AiRetryPolicy.provisionalRetryMs,
+                                AiRetryPolicy.transientRetryMs(consecutive: transientFailures))
+                        : nil,
+                    transientFailures: transientFailures
                 ))
             return true
         } catch let error where error is CancellationError {
             throw error
         } catch {
             // Preserve any existing (provisional) content so the row does not blank out on a
-            // transient failure; record the error and bump the relevant counters. The
-            // interval gate (anchored on updatedAtMs, which the store rewrites here)
-            // throttles live retries.
+            // failure, and record why. The live pass is throttled by its interval gate
+            // (anchored on updatedAtMs, which the store rewrites here). The final pass follows
+            // `AiRetryPolicy`: only a failure on the input spends an attempt; one that was the
+            // world's backs off in time; a spent budget rests six hours and then gets one more
+            // try at a time, never abandoned.
             var record =
                 existing ?? ConversationAnnotation(conversationId: conversation.conversationId)
             record.attempts = attempts
-            record.finalAttempts = finalAttempts
             record.lastError = Self.errorMessage(error)
+            if isFinal {
+                if AiRetryPolicy.spendsAttempt(error) {
+                    record.finalAttempts = priorFinalAttempts + 1
+                    record.transientFailures = 0
+                    record.nextAttemptAtMs =
+                        now
+                        + (record.finalAttempts >= Self.maxAttempts
+                            ? AiRetryPolicy.exhaustedRetryMs : AiRetryPolicy.contentRetryMs)
+                } else {
+                    record.finalAttempts = priorFinalAttempts
+                    record.transientFailures = (existing?.transientFailures ?? 0) + 1
+                    record.nextAttemptAtMs =
+                        now + AiRetryPolicy.transientRetryMs(consecutive: record.transientFailures)
+                }
+            }
             try await annotations.save(record)
             return false
         }
+    }
+
+    /// Every conversation's final-pass budget and backoff start over. Called when the AI
+    /// configuration changes — a key, a mode, a remote provider or model, a held account taking
+    /// work again — because what failed before may now succeed.
+    public func resetRetryBudgets() async {
+        try? await annotations.resetRetryBudgets()
     }
 
     /// Kotlin `e.message ?: e::class.simpleName` equivalent.

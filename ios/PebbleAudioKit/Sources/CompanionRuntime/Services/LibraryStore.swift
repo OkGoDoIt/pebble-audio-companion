@@ -45,6 +45,11 @@ public struct LibraryStore: Sendable {
         try await queries.conversationId(ofSegment: segmentId)
     }
 
+    /// Every segment's conversation, in one read — see `ConversationQueries.conversationIdsBySegment`.
+    public func conversationIdsBySegment() async throws -> [String: String] {
+        try await queries.conversationIdsBySegment()
+    }
+
     public func allTags() async throws -> [TagWithCount] { try await tags.listTags() }
 
     public func openFollowUps() async throws -> [FollowUp] { try await followUps.list(scope: .open) }

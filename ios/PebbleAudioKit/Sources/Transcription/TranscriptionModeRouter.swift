@@ -317,13 +317,17 @@ public protocol TranscriptionAvailabilityExplaining: Sendable {
 
 /// Admits a repeating log line the first time and then at most once per `intervalMs`, reporting
 /// how many repeats it held back in between.
-final class RepeatingLogGate: @unchecked Sendable {
+///
+/// Public because the AI router needs the same discipline for the same reason: a fallback that
+/// happens once happens on every queued job, and a flight-recorder ring of 400 lines cannot hold
+/// 145 copies of one sentence.
+public final class RepeatingLogGate: @unchecked Sendable {
     private let intervalMs: Int64
     private let nowMs: @Sendable () -> Int64
     private let lock = NSLock()
     private var entries: [String: (lastMs: Int64, held: Int)] = [:]
 
-    init(
+    public init(
         intervalMs: Int64 = 10 * 60_000,
         nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
     ) {
@@ -333,7 +337,7 @@ final class RepeatingLogGate: @unchecked Sendable {
 
     /// nil when the line should be held back; otherwise the number of repeats held back since
     /// the key was last admitted.
-    func admit(_ key: String) -> Int? {
+    public func admit(_ key: String) -> Int? {
         let now = nowMs()
         return lock.withLock {
             if let entry = entries[key], now - entry.lastMs < intervalMs {

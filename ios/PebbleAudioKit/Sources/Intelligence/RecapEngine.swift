@@ -135,18 +135,29 @@ public struct DailyRecapStore: Sendable {
         }
     }
 
-    /// Digests long enough to want a condensed form, newest first.
+    /// Digests long enough to want a condensed form and NOT yet condensed for their current
+    /// text, newest first.
     ///
     /// `length()` is SQLite's character count on a TEXT value, so the cheap half of
     /// `RecapCondenser.needsPass` runs in the query and only a handful of rows are decoded.
-    /// The fingerprint half cannot be expressed in SQL, so the caller filters what comes back.
+    ///
+    /// The query used to stop there, and take the eight newest long days whatever their state —
+    /// so once eight recent days had been condensed, the ninth and older were never offered
+    /// again, and the backup had 09-05 and 09-07…09-10 sitting long on their cards for good. The
+    /// fingerprint cannot be computed in SQL, but its SUFFIX is the text's UTF-8 byte count
+    /// (`RecapCondenser.fingerprint`), which can: a row whose stamp ends in a different count
+    /// was stamped for other text and is still owed a pass. The caller's `needsPass` then
+    /// confirms the few that come back.
     public func longestFirstCandidates(minCharacters: Int, limit: Int) async throws -> [DailyRecap]
     {
         try await db.reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT * FROM recaps WHERE length(text) > ?
+                    SELECT * FROM recaps
+                    WHERE length(text) > ?
+                        AND (shortOfHash IS NULL
+                            OR shortOfHash NOT LIKE ('%-' || length(CAST(text AS BLOB))))
                     ORDER BY dateKey DESC LIMIT ?
                     """,
                 arguments: [minCharacters, limit]
@@ -193,6 +204,30 @@ public struct DailyRecapStore: Sendable {
     }
 }
 
+/// A day's recap failed. What the pipeline's `.recap` stage records — the classified kind, never
+/// the provider's own message (an OpenAI 401 body quotes the request and part of the key, and
+/// `PipelineHealthMonitor` writes whatever it is given to the flight recorder). The detail is
+/// in the engine's own log line, key-redacted.
+public struct RecapGenerationFailed: Error, Equatable, CustomStringConvertible {
+    public let dateKey: String
+    public let kind: AiFailureKind
+
+    public init(dateKey: String, kind: AiFailureKind) {
+        self.dateKey = dateKey
+        self.kind = kind
+    }
+
+    public var description: String { "recap for \(dateKey) failed (\(kind.rawValue))" }
+}
+
+extension Array where Element: Hashable {
+    /// First occurrences, in order.
+    func uniquedInOrder() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
 // MARK: - DailyRecapEngine
 
 /// Keeps one rolling AI digest per logical day (5 AM – 5 AM, Q16 recorded-zone) built from
@@ -200,6 +235,16 @@ public struct DailyRecapStore: Sendable {
 /// it — debounced to `minRefreshIntervalMs` — so the Today recap follows the day instead of
 /// freezing on the first conversation of the morning. Runs on a slow interval and after
 /// transcription/enrichment passes (`refreshDigests()` is the post-pass trigger).
+///
+/// A day longer than the first provider can read in one call is recapped MAP-REDUCE: its
+/// recordings are cut, in order, into pieces that fit, each piece is recapped with the same
+/// prompt, and the partial recaps — labelled with the recordings they cover — are recapped once
+/// more into the day's. It used to be one call whatever the day's size, and on 2026-09-22 and 23
+/// that one call reached the on-device model, which read the first ~8,000 of ~232,000 and
+/// ~285,000 characters and wrote a recap of the morning that was saved as covering all 51 and 45
+/// recordings. A day is never saved from an input a provider cut (`AiInputPolicy` refuses the
+/// daily summary rather than cutting it), and a day whose recap FAILED waits out a backoff
+/// instead of being re-sent whole on every pass.
 public actor DailyRecapEngine {
     public typealias RunAi = @Sendable (AiRunRequest) async throws -> RoutedAiResult
 
@@ -228,10 +273,40 @@ public actor DailyRecapEngine {
     /// is where a question about a shipped build gets answered.
     private let log: @Sendable (String) -> Void
     private let sleepMs: @Sendable (Int64) async throws -> Void
+    /// Characters of transcript the provider that runs FIRST can be handed in one call
+    /// (`AiModeRouter.firstCallInputChars`), asked per refresh because the mode and the model
+    /// can change. Nil — or a nil answer — means one call per day whatever its size, as before.
+    private let singleCallCapacityChars: (@Sendable () async -> Int?)?
 
     /// Days whose segment set was fully handled by a previous pass (digest current, or nothing
     /// usable yet). Lets the steady-state pass skip per-day digest/transcript reads entirely.
     private var settledDays: [String: Set<SegmentFingerprint>] = [:]
+
+    /// Days whose last recap attempt FAILED, and when they may be tried again. The debounce
+    /// below is keyed on the last SUCCESS, so without this a day whose provider kept failing
+    /// was re-sent whole on every pass. In memory: a relaunch costs one attempt, not a loop.
+    private var failures: [String: DayFailure] = [:]
+
+    /// Partial recaps of a map-reduce day that is still being built, by day and by the
+    /// fingerprint of the piece they cover. A long day on the on-device model is dozens of
+    /// calls; they are spread over several refreshes (`maxGenerationsPerRefresh` calls each),
+    /// and a piece whose recordings have not changed is never recapped twice.
+    private var partials: [String: [String: PartialRecap]] = [:]
+
+    struct DayFailure: Equatable {
+        var count: Int
+        var nextAttemptAtMs: Int64
+    }
+
+    struct PartialRecap: Equatable {
+        /// "2026-09-22 08:02" — the first recording the piece covers.
+        let from: String
+        /// The last recording's start.
+        let to: String
+        let text: String
+        let providerId: String
+        let modelUsed: String?
+    }
 
     /// Serialization chain: refreshes never overlap (the KMP engine's refresh mutex).
     private var refreshChain: Task<Void, Error>?
@@ -260,8 +335,10 @@ public actor DailyRecapEngine {
         log: @escaping @Sendable (String) -> Void = { _ in },
         sleepMs: @escaping @Sendable (Int64) async throws -> Void = { ms in
             try await Task.sleep(nanoseconds: UInt64(max(0, ms)) * 1_000_000)
-        }
+        },
+        singleCallCapacityChars: (@Sendable () async -> Int?)? = nil
     ) {
+        self.singleCallCapacityChars = singleCallCapacityChars
         self.listSegments = listSegments
         self.transcriptTextOf = transcriptTextOf
         self.store = store
@@ -278,12 +355,30 @@ public actor DailyRecapEngine {
         self.sleepMs = sleepMs
     }
 
-    /// How many day digests one refresh may GENERATE before yielding. Steady state never hits
-    /// this (only the current day is ever due), but a freshly migrated library is due for every
-    /// day it holds — dozens — and this pass runs inline in the processing pass. Bounding it
-    /// keeps one pass from monopolising the pipeline while the backlog drains newest-day-first
-    /// over the following passes; unfinished days stay unsettled, so nothing is skipped.
+    /// How many AI calls one refresh may make before yielding — one per day recapped in a single
+    /// call, one per piece or merge of a map-reduce day. Steady state never hits this (only the
+    /// current day is ever due), but a freshly migrated library is due for every day it holds —
+    /// dozens — and a long day on the on-device model is dozens of calls on its own, and this
+    /// pass runs inline in the processing pass. Bounding it keeps one pass from monopolising the
+    /// pipeline while the backlog drains newest-day-first over the following passes; unfinished
+    /// days stay unsettled (and a map-reduce day keeps its finished pieces), so nothing is
+    /// skipped and nothing is recapped twice.
     public static let defaultMaxGenerationsPerRefresh = 4
+
+    /// The first wait after a day's recap failed; doubles per consecutive failure.
+    public static let firstFailureBackoffMs: Int64 = 30 * 60_000
+    /// Ceiling for that wait.
+    public static let maxFailureBackoffMs: Int64 = 6 * 60 * 60_000
+
+    static func failureBackoffMs(afterFailures count: Int) -> Int64 {
+        min(firstFailureBackoffMs << Int64(min(max(count - 1, 0), 8)), maxFailureBackoffMs)
+    }
+
+    /// Every failed day may be tried again now — the AI configuration changed (a key, a mode, a
+    /// model, a held account taking work again), so a different answer is possible.
+    public func resetFailureBackoff() {
+        failures.removeAll()
+    }
 
     /// Starts the slow 15-minute loop. Idempotent while running.
     public func start() {
@@ -311,15 +406,28 @@ public actor DailyRecapEngine {
     /// Rebuilds any logical-day digest whose segment set changed, then condenses any digest
     /// that came out longer than the Today card can carry. Serialized: concurrent calls queue
     /// behind the in-flight pass instead of interleaving.
-    public func refreshDigests() async throws {
+    ///
+    /// Throws when a day's recap FAILED (`RecapGenerationFailed`), so the pipeline's `.recap`
+    /// stage records it: this used to be swallowed (`try?` in `RecapService`), and Diagnostics
+    /// had no way to know the recap had been failing for days. `onProgress` fires after every
+    /// AI call, so a long map-reduce day is progress to the loop watchdog rather than a wedge.
+    ///
+    /// Honours cancellation: the work runs in a serialization `Task`, which does not inherit the
+    /// caller's cancellation, so a pass that was cancelled (background entry, a loop restart)
+    /// used to wait for a whole day's recap to finish anyway.
+    public func refreshDigests(onProgress: (@Sendable () -> Void)? = nil) async throws {
         let previous = refreshChain
         let task = Task {
             _ = try? await previous?.value
-            try await self.performRefresh()
+            try await self.performRefresh(onProgress: onProgress)
             try await self.performCondensation()
         }
         refreshChain = task
-        try await task.value
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     /// The second pass: a shorter form of any digest that overran, for the Today card.
@@ -363,7 +471,7 @@ public actor DailyRecapEngine {
         }
     }
 
-    private func performRefresh() async throws {
+    private func performRefresh(onProgress: (@Sendable () -> Void)?) async throws {
         guard let run else { return }
         let segments = await listSegments().filter { !$0.isOpen }
         var byDay: [String: [SegmentMeta]] = [:]
@@ -372,15 +480,22 @@ public actor DailyRecapEngine {
         }
         // Newest day first: the current logical day is the user-visible Today recap, and a
         // migration backlog therefore fills in from today backwards.
-        var generated = 0
+        var calls = 0
         for (day, daySegments) in byDay.sorted(by: { $0.key > $1.key }) {
-            if generated >= maxGenerationsPerRefresh { break }
+            if calls >= maxGenerationsPerRefresh { break }
             try Task.checkCancellation()
             let fingerprint = Set(daySegments.map {
                 SegmentFingerprint(segmentId: $0.segmentId, state: $0.transcriptionState)
             })
             if settledDays[day] == fingerprint { continue }
+            // A day whose recap failed waits out its backoff. Skipped, not settled: its
+            // segments have not been handled, and the next pass after the wait tries again.
+            if let failure = failures[day], nowMs() < failure.nextAttemptAtMs { continue }
             if let existing = try await store.load(dateKey: day) {
+                // The debounce FIRST, and only then the transcripts. It used to be the other
+                // way round, so every pass inside the 30-minute window decoded the day's new
+                // recordings to learn something the clock had already decided.
+                if nowMs() - existing.updatedAtMs < minRefreshIntervalMs { continue }
                 let covered = Set(existing.segmentIds)
                 let fresh = daySegments.filter { !covered.contains($0.segmentId) }
                 // Only genuinely new transcript content justifies an AI rerun: segments removed
@@ -394,7 +509,6 @@ public actor DailyRecapEngine {
                     settledDays[day] = fingerprint
                     continue
                 }
-                if nowMs() - existing.updatedAtMs < minRefreshIntervalMs { continue }
             }
             let excerpts = daySegments
                 // Ordered on the same anchor they are bucketed and labelled with. Sorting on
@@ -423,22 +537,278 @@ public actor DailyRecapEngine {
                 settledDays[day] = fingerprint
                 continue
             }
-            let result = try await run(
-                AiRunRequest(
-                    requestId: "digest-\(day)-\(nowMs())",
-                    prompt: prompt,
-                    transcripts: excerpts))
+            let written: PartialRecap
+            do {
+                guard
+                    let recap = try await recapDay(
+                        day, excerpts: excerpts, run: run, calls: &calls, onProgress: onProgress)
+                else {
+                    // A map-reduce day that used up this refresh's calls. Its finished pieces
+                    // are kept; the next refresh carries on from them.
+                    break
+                }
+                written = recap
+            } catch let error where error is CancellationError {
+                throw error
+            } catch {
+                throw noteFailure(day, error)
+            }
             let saved = try await store.save(
                 DailyRecap(
                     dateKey: day,
-                    text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    segmentIds: excerpts.map(\.segmentId),
-                    provider: result.providerId,
-                    model: result.modelUsed))
+                    text: written.text,
+                    // Every recording of the day was read — in one call, or piece by piece.
+                    segmentIds: excerpts.map(\.segmentId).uniquedInOrder(),
+                    provider: written.providerId,
+                    model: written.modelUsed))
             settledDays[day] = fingerprint
-            generated += 1
+            failures[day] = nil
+            partials[day] = nil
             await onRecapSaved(saved)
         }
+    }
+
+    // MARK: - One day
+
+    /// The day's recap: one call when the day fits the first provider, map-reduce when it does
+    /// not. Nil when a map-reduce day ran out of this refresh's calls before it finished.
+    private func recapDay(
+        _ day: String, excerpts: [TranscriptExcerpt], run: RunAi, calls: inout Int,
+        onProgress: (@Sendable () -> Void)?
+    ) async throws -> PartialRecap? {
+        let capacity = await singleCallCapacityChars?()
+        let budget = capacity.map { Self.chunkBudget(capacity: $0, userPrompt: prompt.userPrompt) }
+        guard let budget, Self.renderedChars(excerpts) > budget else {
+            calls += 1
+            let result = try await run(
+                AiRunRequest(
+                    requestId: "digest-\(day)-\(nowMs())", prompt: prompt, transcripts: excerpts))
+            onProgress?()
+            return try Self.partial(result, from: excerpts)
+        }
+
+        // Map: each piece of the day, in order, recapped on its own — unless an earlier
+        // refresh already did it for exactly these recordings.
+        let pieces = Self.chunk(excerpts, budget: budget)
+        var cache = partials[day] ?? [:]
+        var level: [PartialRecap] = []
+        var live: [String: PartialRecap] = [:]
+        for (index, piece) in pieces.enumerated() {
+            let key = Self.fingerprint(piece)
+            if let done = cache[key] {
+                level.append(done)
+                live[key] = done
+                continue
+            }
+            guard calls < maxGenerationsPerRefresh else {
+                partials[day] = live.merging(cache) { kept, _ in kept }
+                return nil
+            }
+            calls += 1
+            let result = try await run(
+                AiRunRequest(
+                    requestId: "digest-\(day)-part-\(index + 1)-of-\(pieces.count)-\(nowMs())",
+                    prompt: prompt, transcripts: piece))
+            onProgress?()
+            let partial = try Self.partial(result, from: piece)
+            cache[key] = partial
+            live[key] = partial
+            level.append(partial)
+        }
+        log("recap \(day): read in \(pieces.count) pieces of up to \(budget) characters")
+
+        // Reduce: the partial recaps, labelled with the recordings they cover, recapped into the
+        // day's — in rounds, if even the partials are more than one call can hold.
+        let merge = Self.mergePrompt(prompt)
+        for round in 0..<Self.maxMergeRounds {
+            let groups = Self.group(level, budget: budget, userPrompt: merge.userPrompt)
+            var next: [PartialRecap] = []
+            for (index, group) in groups.enumerated() {
+                if group.count == 1, groups.count > 1 {
+                    next.append(group[0])
+                    continue
+                }
+                let body = Self.render(group)
+                let key = "merge-\(round)-" + RecapCondenser.fingerprint(body)
+                if let done = cache[key] {
+                    next.append(done)
+                    live[key] = done
+                    continue
+                }
+                guard calls < maxGenerationsPerRefresh else {
+                    partials[day] = live.merging(cache) { kept, _ in kept }
+                    return nil
+                }
+                calls += 1
+                let result = try await run(
+                    AiRunRequest(
+                        requestId: "digest-\(day)-merge-\(round + 1)-\(index + 1)-\(nowMs())",
+                        prompt: merge,
+                        transcripts: [
+                            TranscriptExcerpt(
+                                segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
+                        ]))
+                onProgress?()
+                guard !result.inputTruncated else { throw Self.cutInput(day) }
+                let merged = PartialRecap(
+                    from: group.first?.from ?? "", to: group.last?.to ?? "",
+                    text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    providerId: result.providerId, modelUsed: result.modelUsed)
+                cache[key] = merged
+                live[key] = merged
+                next.append(merged)
+            }
+            if groups.count == 1 { return next.first }
+            level = next
+        }
+        throw AiError.providerFailed(
+            "The recap of \(day) did not come together in \(Self.maxMergeRounds) rounds of merging")
+    }
+
+    /// Rounds of merging before a day is given up on. Each round divides the partials by the
+    /// number that fit one call (dozens), so two is already more than any real day needs.
+    static let maxMergeRounds = 4
+
+    /// The recap of one call's input, refusing one the provider cut: a recap is saved as
+    /// covering every recording it was handed, so it may only be written from all of them.
+    private static func partial(
+        _ result: RoutedAiResult, from excerpts: [TranscriptExcerpt]
+    ) throws -> PartialRecap {
+        guard !result.inputTruncated else {
+            throw cutInput(excerpts.first.flatMap(\.timeLabel) ?? "this day")
+        }
+        return PartialRecap(
+            from: excerpts.first?.timeLabel ?? "", to: excerpts.last?.timeLabel ?? "",
+            text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            providerId: result.providerId, modelUsed: result.modelUsed)
+    }
+
+    private static func cutInput(_ what: String) -> AiError {
+        .providerFailed("The provider read only part of the recordings for \(what); not saved")
+    }
+
+    /// Records a failed day and returns what the caller throws: the day waits out a backoff
+    /// (30 minutes, doubling to 6 hours) and the refresh stops — the days behind it would ask
+    /// the same failing provider the same question. The error the pipeline records is the
+    /// CLASSIFIED one, never the provider's raw body.
+    private func noteFailure(_ day: String, _ error: Error) -> RecapGenerationFailed {
+        let count = (failures[day]?.count ?? 0) + 1
+        let wait = Self.failureBackoffMs(afterFailures: count)
+        failures[day] = DayFailure(count: count, nextAttemptAtMs: nowMs() + wait)
+        let kind = AiFailure.classify(error).kind
+        log(
+            "recap \(day) failed (\(kind.rawValue)); next try in \(wait / 60_000) min — "
+                + AiFailureLog.detail(of: error).prefix(200))
+        return RecapGenerationFailed(dateKey: day, kind: kind)
+    }
+
+    // MARK: - Cutting a day into pieces
+
+    /// Characters of transcript one call's excerpts may add up to: the provider's figure, less
+    /// a tenth for the estimate's error, less the prompt's own instruction line.
+    static func chunkBudget(capacity: Int, userPrompt: String) -> Int {
+        max(1_000, capacity * 9 / 10 - userPrompt.count - 2)
+    }
+
+    /// What `AiTranscriptFormatting` spends on one excerpt beyond its text: the
+    /// "--- Transcript segment <id> (starts <label>) ---" header and the blank line after.
+    static func excerptCost(_ excerpt: TranscriptExcerpt) -> Int {
+        excerpt.text.count + 40 + excerpt.segmentId.count + (excerpt.timeLabel?.count ?? 0)
+    }
+
+    static func renderedChars(_ excerpts: [TranscriptExcerpt]) -> Int {
+        excerpts.reduce(0) { $0 + excerptCost($1) }
+    }
+
+    /// Consecutive pieces of the day, each within `budget`. Order is never disturbed, and a
+    /// single recording longer than a piece is split at word boundaries into parts of its own —
+    /// a fifteen-minute recording is about 13,000 characters, more than the iOS 26 on-device
+    /// model can take at once.
+    static func chunk(_ excerpts: [TranscriptExcerpt], budget: Int) -> [[TranscriptExcerpt]] {
+        var pieces: [[TranscriptExcerpt]] = []
+        var current: [TranscriptExcerpt] = []
+        var used = 0
+        for excerpt in excerpts.flatMap({ split($0, budget: budget) }) {
+            let cost = excerptCost(excerpt)
+            if !current.isEmpty, used + cost > budget {
+                pieces.append(current)
+                current = []
+                used = 0
+            }
+            current.append(excerpt)
+            used += cost
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces
+    }
+
+    /// One recording, as parts that each fit `budget`, cut at whitespace.
+    static func split(_ excerpt: TranscriptExcerpt, budget: Int) -> [TranscriptExcerpt] {
+        let room = max(200, budget - (excerptCost(excerpt) - excerpt.text.count))
+        guard excerpt.text.count > room else { return [excerpt] }
+        var parts: [TranscriptExcerpt] = []
+        var rest = Substring(excerpt.text)
+        while !rest.isEmpty {
+            var cut = rest.index(rest.startIndex, offsetBy: room, limitedBy: rest.endIndex)
+                ?? rest.endIndex
+            if cut < rest.endIndex,
+                let space = rest[rest.startIndex..<cut].lastIndex(where: { $0.isWhitespace }),
+                rest.distance(from: rest.startIndex, to: space) > room / 2
+            {
+                cut = space
+            }
+            let text = rest[rest.startIndex..<cut].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                parts.append(
+                    TranscriptExcerpt(
+                        segmentId: excerpt.segmentId, text: text,
+                        startTimeMs: excerpt.startTimeMs, endTimeMs: excerpt.endTimeMs,
+                        timeLabel: excerpt.timeLabel))
+            }
+            rest = rest[cut...].drop(while: { $0.isWhitespace })
+        }
+        return parts
+    }
+
+    /// Identifies a piece by the recordings and the words in it, so a piece recapped by an
+    /// earlier refresh is reused and a piece that changed is not.
+    static func fingerprint(_ piece: [TranscriptExcerpt]) -> String {
+        RecapCondenser.fingerprint(
+            piece.map { "\($0.segmentId)\u{1}\($0.text)" }.joined(separator: "\u{2}"))
+    }
+
+    // MARK: - Merging
+
+    /// The same daily-summary template — so the same output budget and the same whole-input
+    /// rule apply — asked to combine partial recaps instead of reading transcripts.
+    static func mergePrompt(_ base: AiPromptTemplate) -> AiPromptTemplate {
+        AiPromptTemplate(
+            id: base.id, title: base.title, systemPrompt: base.systemPrompt,
+            userPrompt: "These are recaps of consecutive parts of this one day, in order, each "
+                + "labelled with the recordings it covers. Combine them into a single recap of "
+                + "the whole day under the same rules. Do not mention the parts.")
+    }
+
+    static func render(_ group: [PartialRecap]) -> String {
+        group.map { "Recordings from \($0.from) to \($0.to):\n\($0.text)" }
+            .joined(separator: "\n\n")
+    }
+
+    /// Consecutive partials, grouped so each group's rendering fits `budget`.
+    static func group(
+        _ level: [PartialRecap], budget: Int, userPrompt: String
+    ) -> [[PartialRecap]] {
+        var groups: [[PartialRecap]] = []
+        var current: [PartialRecap] = []
+        for partial in level {
+            if !current.isEmpty, render(current + [partial]).count + userPrompt.count > budget {
+                groups.append(current)
+                current = []
+            }
+            current.append(partial)
+        }
+        if !current.isEmpty { groups.append(current) }
+        return groups
     }
 
     private func zoneID(of meta: SegmentMeta) -> String {

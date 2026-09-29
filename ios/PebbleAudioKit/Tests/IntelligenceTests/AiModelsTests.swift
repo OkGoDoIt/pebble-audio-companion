@@ -45,4 +45,42 @@ import Testing
             #expect(ids.contains(AiModels.byId(legacy).id), "\(legacy) must map into the catalog")
         }
     }
+
+    // MARK: Naming the model that wrote something
+
+    /// `byId` is for the setting and falls back to the default; used on a RECORD it named the
+    /// phone's recaps, Private Cloud Compute's, and every dated OpenAI id "GPT-5.6 Luna".
+    @Test func aRecordIsNamedByTheModelThatWroteItNeverTheDefault() {
+        #expect(
+            AiModels.displayName(modelUsed: "apple-foundation-models", providerId: nil)
+                == "On-device Apple model")
+        #expect(
+            AiModels.displayName(modelUsed: "apple-private-cloud-compute", providerId: "apple-pcc")
+                == "Apple Private Cloud Compute")
+        #expect(AiModels.displayName(modelUsed: nil, providerId: "apple-pcc")
+            == "Apple Private Cloud Compute")
+        // A dated snapshot of a catalog model is that model.
+        #expect(AiModels.displayName(modelUsed: "gpt-5.6-luna-2026-09-01") == "GPT-5.6 Luna")
+        #expect(AiModels.displayName(modelUsed: "gpt-5.6-terra") == "GPT-5.6 Terra")
+        // One we do not know is shown as recorded — not as Luna.
+        #expect(
+            AiModels.displayName(modelUsed: "gpt-5.4-mini-2026-03-17")
+                == "gpt-5.4-mini-2026-03-17")
+        #expect(AiModels.displayName(modelUsed: nil) == nil)
+        #expect(AiModels.displayName(modelUsed: "  ") == nil)
+        for id in ["apple-foundation-models", "apple-private-cloud-compute", "gpt-5.4-mini-2026-03-17"] {
+            #expect(AiModels.displayName(modelUsed: id) != AiModels.default.displayName)
+        }
+    }
+
+    /// What is SENT for a stored setting: a legacy id becomes the model Settings maps it to, and
+    /// a model somebody chose that the catalog does not list is sent as chosen.
+    @Test func aStoredModelIdIsResolvedBeforeItIsSent() {
+        #expect(AiModels.resolvedModelId("gpt-5.4-mini") == "gpt-5.6-luna")
+        #expect(AiModels.resolvedModelId("gpt-5.5") == "gpt-5.6-sol")
+        #expect(AiModels.resolvedModelId("gpt-5.6-terra") == "gpt-5.6-terra")
+        #expect(AiModels.resolvedModelId("") == AiModels.defaultModelId)
+        #expect(AiModels.resolvedModelId(nil) == AiModels.defaultModelId)
+        #expect(AiModels.resolvedModelId("gpt-6-preview") == "gpt-6-preview")
+    }
 }

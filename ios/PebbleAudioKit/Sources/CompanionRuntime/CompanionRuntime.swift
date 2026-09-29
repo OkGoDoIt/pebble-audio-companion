@@ -176,6 +176,19 @@ public actor CompanionRuntime {
         Task { await environment.transcription.reconsiderAfterConfigurationChange() }
     }
 
+    /// Something that could rescue a failed AI job changed — an `AiRecoveryKey` setting, the
+    /// OpenAI key, or a held cloud account taking work again. Every AI retry budget and backoff
+    /// starts over (`AiRetryPolicy`), then the pipeline wakes to use them.
+    public nonisolated func notifyAiConfigurationChanged() {
+        let environment = self.environment
+        let wake = self.wake
+        Task {
+            await environment.enrichment.resetAiRetryBudgets()
+            await environment.recap.resetFailureBackoff()
+            wake.signal()
+        }
+    }
+
     // --- lifecycle -----------------------------------------------------------------------------
 
     /// Startup: run the recovery order (which runs the legacy import first), start the receiver
@@ -686,7 +699,7 @@ public actor CompanionRuntime {
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
             extractFollowUps: { try await env.enrichment.followUpPass() },
-            refreshRecap: { await env.recap.refresh() },
+            refreshRecap: { try await env.recap.refresh(onProgress: { health.progressed() }) },
             liveLocalPass: { try await env.live.localLivePass() },
             liveCloudPrune: { await env.live.cloudLivePrune() },
             exportWavIfEnabled: { try await env.live.exportWavIfEnabled() },

@@ -68,8 +68,16 @@ public struct AskBudget: Equatable, Sendable {
     /// The budget for the provider that will actually answer, which is not always the remote
     /// one. On-device models hold a few thousand characters, not a few million: planning a
     /// whole-archive read for a LocalFirst user would have the provider truncate it to a
-    /// fraction while the prompt still claimed to have been shown everything. Sized to the
-    /// provider that runs FIRST, so a fallback can only ever be handed less than it can take.
+    /// fraction while the prompt still claimed to have been shown everything.
+    ///
+    /// Sized to the provider that runs FIRST — and that is all it can promise. This used to say
+    /// "so a fallback can only ever be handed less than it can take", which is false in exactly
+    /// the case that matters: on Remote first the plan is sized for a million-token cloud model,
+    /// and when that call fails the router hands the same plan to the on-device model, whose
+    /// window is a few thousand characters. It used to cut it and answer "ALL … in full" from
+    /// the first pages. What makes that safe now is not this budget but `AiInputPolicy`: every
+    /// Ask template refuses an input it cannot read whole, so the fallback fails honestly and
+    /// the person sees the cloud's error instead of a confident answer from a slice.
     public static func forMode(
         _ mode: AiProcessingMode,
         modelId: String?,
@@ -99,21 +107,42 @@ public struct AskBudget: Equatable, Sendable {
 /// What the answer was actually allowed to read. Carried into the prompt so the model cannot
 /// overclaim, and shown to the user so a partial answer never looks complete.
 public struct AskCoverage: Equatable, Sendable {
-    /// Conversations whose transcripts reached the model.
+    /// What the counts count. They used to be SEGMENTS labelled "conversations": a question
+    /// asked about one conversation of 29 recordings was stored as "Everything · 29
+    /// conversations read". The planner counts conversations when it is told which conversation
+    /// each recording belongs to, and otherwise says "recordings" — the honest word for what it
+    /// can see.
+    public enum Unit: String, Sendable, Equatable {
+        case conversation
+        case recording
+    }
+
+    /// Units read in full — every stretch of them reached the model. (The field keeps its
+    /// historical name: it is what `ask_history` stores.)
     public let conversationsRead: Int
-    /// Conversations the scope contains.
+    /// Units the scope contains.
     public let conversationsInScope: Int
     /// Model calls the answer was built from (1 = single pass, >1 = a sweep).
     public let passes: Int
+    public let unit: Unit
+    /// Set by the planner: true exactly when nothing it packed was dropped. Stored rather than
+    /// inferred from the counts, because a recording split across two batches could otherwise
+    /// count as "read" with half of it missing — and "ALL … in full" would be a lie.
+    private let everythingRead: Bool?
 
-    public init(conversationsRead: Int, conversationsInScope: Int, passes: Int) {
+    public init(
+        conversationsRead: Int, conversationsInScope: Int, passes: Int,
+        unit: Unit = .conversation, complete: Bool? = nil
+    ) {
         self.conversationsRead = conversationsRead
         self.conversationsInScope = conversationsInScope
         self.passes = max(1, passes)
+        self.unit = unit
+        self.everythingRead = complete
     }
 
     /// True when every conversation in scope was read. Only then may an answer say "nothing".
-    public var isComplete: Bool { conversationsRead >= conversationsInScope }
+    public var isComplete: Bool { everythingRead ?? (conversationsRead >= conversationsInScope) }
 
     public var conversationsSkipped: Int {
         max(0, conversationsInScope - conversationsRead)
@@ -124,14 +153,14 @@ public struct AskCoverage: Equatable, Sendable {
     public var promptLine: String {
         if isComplete {
             return "COVERAGE: you are being shown ALL \(conversationsInScope) "
-                + "\(Self.noun(conversationsInScope)) in this range, in full. If something is "
+                + "\(noun(conversationsInScope)) in this range, in full. If something is "
                 + "not here, it was not recorded — you may say so plainly."
         }
         return "COVERAGE: you are being shown \(conversationsRead) of "
-            + "\(conversationsInScope) \(Self.noun(conversationsInScope)) in this range — "
-            + "\(conversationsSkipped) could not be included. Answer from what is here, and "
-            + "say that you could not read the whole range rather than claiming something is "
-            + "absent from it."
+            + "\(conversationsInScope) \(noun(conversationsInScope)) in this range in full — "
+            + "\(conversationsSkipped) could not be included whole. Answer from what is here, "
+            + "and say that you could not read the whole range rather than claiming something "
+            + "is absent from it."
     }
 
     /// The line the user sees under the answer. Nil when coverage was complete and
@@ -139,18 +168,21 @@ public struct AskCoverage: Equatable, Sendable {
     public var displayNote: String? {
         guard !isComplete else { return nil }
         return "Read \(conversationsRead) of \(conversationsInScope) "
-            + "\(Self.noun(conversationsInScope)) — this range was too large to read in full."
+            + "\(noun(conversationsInScope)) — this range was too large to read in full."
     }
 
     /// Appended to the stored scope description, so Recent says how much each answer saw.
     public var scopeSuffix: String {
         isComplete
-            ? "\(conversationsRead) \(Self.noun(conversationsRead)) read"
-            : "\(conversationsRead) of \(conversationsInScope) \(Self.noun(conversationsInScope)) read"
+            ? "\(conversationsInScope) \(noun(conversationsInScope)) read"
+            : "\(conversationsRead) of \(conversationsInScope) \(noun(conversationsInScope)) read"
     }
 
-    static func noun(_ count: Int) -> String {
-        count == 1 ? "conversation" : "conversations"
+    func noun(_ count: Int) -> String {
+        switch unit {
+        case .conversation: return count == 1 ? "conversation" : "conversations"
+        case .recording: return count == 1 ? "recording" : "recordings"
+        }
     }
 }
 
@@ -223,11 +255,13 @@ public enum AskCorpusPlanner {
     public static func plan(
         stretches: [CitableExcerpt],
         budget: AskBudget,
-        relevance: (String) -> Double = { _ in 0 }
+        relevance: (String) -> Double = { _ in 0 },
+        conversationOf: ((String) -> String?)? = nil
     ) -> AskCorpusPlan {
         plan(
             stretches: stretches, budget: budget,
-            relevance: { AskRelevance(keyword: relevance($0)) }, policy: .keywordFirst)
+            relevance: { AskRelevance(keyword: relevance($0)) }, policy: .keywordFirst,
+            conversationOf: conversationOf)
     }
 
     /// Plan how to read `stretches` (chronological, already numbered) under `budget`.
@@ -236,18 +270,26 @@ public enum AskCorpusPlanner {
     /// cannot be swept inside `budget.maxBatches` — that is, it decides what to sacrifice, never
     /// what to read. Whenever the scope fits, relevance is irrelevant by construction, which is
     /// exactly the property that makes "nothing was recorded about that" trustworthy.
+    ///
+    /// `conversationOf` maps a segment id to its conversation. With it the coverage counts
+    /// CONVERSATIONS; without it, recordings — and says so. It used to count segments and call
+    /// them conversations.
     public static func plan(
         stretches: [CitableExcerpt],
         budget: AskBudget,
         relevance: (String) -> AskRelevance,
-        policy: AskRecallPolicy = .keywordFirst
+        policy: AskRecallPolicy = .keywordFirst,
+        conversationOf: ((String) -> String?)? = nil
     ) -> AskCorpusPlan {
-        let inScope = distinctSegments(stretches)
+        let unit: AskCoverage.Unit = conversationOf == nil ? .recording : .conversation
+        let unitOf: (String) -> String = { conversationOf?($0) ?? $0 }
+        let inScope = distinctUnits(stretches, unitOf)
         guard !stretches.isEmpty, budget.transcriptChars > 0 else {
             return AskCorpusPlan(
                 batches: [],
                 coverage: AskCoverage(
-                    conversationsRead: 0, conversationsInScope: inScope, passes: 1))
+                    conversationsRead: 0, conversationsInScope: inScope, passes: 1, unit: unit,
+                    complete: stretches.isEmpty))
         }
 
         var batches = pack(stretches, limit: budget.transcriptChars)
@@ -267,9 +309,12 @@ public enum AskCorpusPlanner {
         return AskCorpusPlan(
             batches: batches,
             coverage: AskCoverage(
-                conversationsRead: distinctSegments(batches.flatMap { $0 }),
+                conversationsRead: unitsReadInFull(
+                    kept: batches.flatMap { $0 }, all: stretches, unitOf),
                 conversationsInScope: inScope,
-                passes: max(1, batches.count)),
+                passes: max(1, batches.count),
+                unit: unit,
+                complete: batches.count == packed),
             packedBatches: packed)
     }
 
@@ -385,9 +430,23 @@ public enum AskCorpusPlanner {
             keyword: keyword.total + keyword.best, semantic: semantic.total + semantic.best)
     }
 
-    private static func distinctSegments(_ stretches: [CitableExcerpt]) -> Int {
+    private static func distinctUnits(
+        _ stretches: [CitableExcerpt], _ unitOf: (String) -> String
+    ) -> Int {
         var seen = Set<String>()
-        for stretch in stretches { seen.insert(stretch.segmentId) }
+        for stretch in stretches { seen.insert(unitOf(stretch.segmentId)) }
         return seen.count
+    }
+
+    /// Units every one of whose stretches was kept. A conversation — or a recording — that a
+    /// dropped batch cut through is not "read".
+    private static func unitsReadInFull(
+        kept: [CitableExcerpt], all: [CitableExcerpt], _ unitOf: (String) -> String
+    ) -> Int {
+        var total: [String: Int] = [:]
+        for stretch in all { total[unitOf(stretch.segmentId), default: 0] += 1 }
+        var read: [String: Int] = [:]
+        for stretch in kept { read[unitOf(stretch.segmentId), default: 0] += 1 }
+        return read.filter { total[$0.key] == $0.value }.count
     }
 }

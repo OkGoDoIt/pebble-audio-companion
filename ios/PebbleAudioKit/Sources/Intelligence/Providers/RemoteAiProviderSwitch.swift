@@ -1,4 +1,5 @@
 import Foundation
+import Transcription
 
 /// The AI router's remote slot when there is more than one thing "remote" can mean.
 ///
@@ -13,7 +14,8 @@ import Foundation
 /// that names Private Cloud Compute on an OS without it (`applePrivateCloud: nil`) is
 /// UNAVAILABLE, never quietly OpenAI. Sending transcripts to a provider the person did not
 /// choose is the one thing this slot exists to make impossible.
-public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting, @unchecked Sendable
+public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting,
+    AiUnavailabilityExplaining, AiAccountProbing, @unchecked Sendable
 {
     private let selected: @Sendable () -> RemoteAiProvider
     private let openAi: AiProvider
@@ -70,5 +72,22 @@ public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting, @
     public func contextTokens() async -> Int? {
         guard let reporting = current as? AiInputWindowReporting else { return nil }
         return await reporting.contextTokens()
+    }
+
+    // MARK: AiUnavailabilityExplaining / AiAccountProbing
+
+    /// The selected provider's own reason, when it has one. Only the provider the setting names
+    /// is asked: an OpenAI hold says nothing about Apple's cloud and must not be reported for it.
+    public func unavailabilityReason() async -> String? {
+        guard let explaining = current as? AiUnavailabilityExplaining else { return nil }
+        return await explaining.unavailabilityReason()
+    }
+
+    /// Probes the selected provider's held account, if it has one. An OpenAI hold is not probed
+    /// while Private Cloud Compute is the remote: nothing would be sent to OpenAI anyway, and a
+    /// probe is a request.
+    public func probeHeldAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
+        guard let probing = current as? AiAccountProbing else { return nil }
+        return await probing.probeHeldAccountIfDue(foreground: foreground)
     }
 }

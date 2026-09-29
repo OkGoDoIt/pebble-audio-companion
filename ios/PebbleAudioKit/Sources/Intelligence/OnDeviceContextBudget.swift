@@ -155,16 +155,14 @@ public enum OnDeviceTemplateBudget {
 
     /// Templates whose answer is a lie if the transcript was truncated.
     ///
-    /// Only Extended summary. Its instructions are "walk through every distinct subject in
-    /// sequence", "do not stop partway — go to the end of the transcript", and the note is
-    /// titled "the full account" on screen. Handing it the first 5,000 characters of a
-    /// four-hour recording and printing what comes back would be the app's most confident lie:
-    /// a complete-looking account of 3% of a day, with citations, that never mentions the other
-    /// 97%.
-    ///
-    /// Everything else summarizes or extracts from what it was given, and `buildUserContent`
-    /// already appends "[transcript truncated for length]" so the model knows it saw a slice.
+    /// This used to be Extended summary alone, on the reasoning that everything else
+    /// "summarizes or extracts from what it was given". The daily recap and Ask proved that
+    /// wrong in production: both claim the whole of their input (a recap is saved as covering
+    /// every recording of the day; Ask's prompt says "you are being shown ALL … in full"), and
+    /// a fallback that read the first 3% of either produced a confident answer about all of it.
+    /// The list now lives in `AiInputPolicy`, shared by every provider, so the on-device model
+    /// and the two cloud ones cannot disagree about which answers may be drawn from a slice.
     public static func readsWholeConversation(templateId id: String) -> Bool {
-        id == "extended-summary"
+        AiInputPolicy.requiresWholeInput(templateId: id)
     }
 }

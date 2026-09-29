@@ -138,6 +138,15 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// anyway.
     public static let defaultMaxOutputTokens = OnDeviceContextBudget.defaultOutputTokens
 
+    /// How long one prose generation may take. The longest answer this provider asks for is
+    /// 900 tokens (Extended summary), about 45 s on the model; two minutes is a hang, not a
+    /// slow answer.
+    public static let defaultGenerationTimeoutMs: Int64 = 120_000
+    /// How long a structured shape may take in all. The follow-up sift is one short call per
+    /// candidate sentence, so a long conversation is legitimately minutes — but it must finish
+    /// inside the loop watchdog's ten, or the watchdog restarts the whole pipeline over it.
+    public static let defaultStructuredTimeoutMs: Int64 = 480_000
+
     public let id: String
 
     private let model: OnDeviceLanguageModel?
@@ -155,6 +164,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// power still reports `.available` and then fails at generation time. Naming it is the
     /// difference between "something went wrong" and "turn off Low Power Mode".
     private let lowPowerMode: @Sendable () -> Bool
+    private let generationTimeoutMs: Int64
+    private let structuredTimeoutMs: Int64
 
     public init(
         model: OnDeviceLanguageModel?,
@@ -163,13 +174,17 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         grounding: @escaping @Sendable () -> String? = { nil },
         lowPowerMode: @escaping @Sendable () -> Bool = {
             ProcessInfo.processInfo.isLowPowerModeEnabled
-        }
+        },
+        generationTimeoutMs: Int64 = OnDeviceAiProvider.defaultGenerationTimeoutMs,
+        structuredTimeoutMs: Int64 = OnDeviceAiProvider.defaultStructuredTimeoutMs
     ) {
         self.model = model
         self.maxInputChars = maxInputChars
         self.maxOutputTokens = maxOutputTokens
         self.grounding = grounding
         self.lowPowerMode = lowPowerMode
+        self.generationTimeoutMs = generationTimeoutMs
+        self.structuredTimeoutMs = structuredTimeoutMs
         self.id = model?.id ?? "on-device"
     }
 
@@ -201,34 +216,50 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         let instructions = buildInstructions(request.prompt.systemPrompt)
         let outputTokens =
             maxOutputTokens ?? OnDeviceTemplateBudget.outputTokens(forTemplateId: request.prompt.id)
-        let userContent: String
+        let fitted: AiInputPolicy.Fitted
         if let shape {
             // A structured shape does its own chunking and filtering, so it is handed the
             // conversation whole. Truncating one is how a loop that closes in the last ten
             // minutes of a recording comes back looking open. It never sends this body to the
-            // model in one piece, so the window budget below does not apply to it.
-            userContent = AiTranscriptFormatting.buildUserContent(
-                request, maxInputChars: shape.maxInputChars)
+            // model in one piece, so the window budget below does not apply to it — but its own
+            // ceiling can still cut, and a cut is reported like any other.
+            fitted = try AiInputPolicy.fit(
+                request, maxInputChars: shape.maxInputChars, modelName: "on-device AI")
         } else {
-            userContent = try await fitProseInput(
+            fitted = try await fitProseInput(
                 request, model: activeModel, instructions: instructions,
                 outputTokens: outputTokens)
         }
+        let userContent = fitted.content
         let text: String
+        let pinnedOutputTokens = maxOutputTokens
+        // A deadline, because an Apple model session has none of its own: a generation that
+        // never returns used to hold the pipeline pass until the loop watchdog restarted the
+        // whole loop. Timing out is an ordinary failure the router falls back from.
+        let deadlineMs = shape == nil ? generationTimeoutMs : structuredTimeoutMs
+        let timedOut: @Sendable () -> Error = {
+            AiError.providerFailed(
+                "On-device AI \(Self.timedOutMarker) after \(deadlineMs / 1_000) s "
+                    + "without finishing")
+        }
         do {
             if let shape {
-                text = try await activeModel.generateStructured(
-                    shape,
-                    instructions: instructions,
-                    prompt: userContent,
-                    maxOutputTokens: maxOutputTokens
-                )
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await activeModel.generateStructured(
+                        shape,
+                        instructions: instructions,
+                        prompt: userContent,
+                        maxOutputTokens: pinnedOutputTokens
+                    )
+                }
             } else {
-                text = try await activeModel.generate(
-                    instructions: instructions,
-                    prompt: userContent,
-                    maxOutputTokens: outputTokens
-                )
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await activeModel.generate(
+                        instructions: instructions,
+                        prompt: userContent,
+                        maxOutputTokens: outputTokens
+                    )
+                }
             }
         } catch let error where error is CancellationError || error is AiError {
             throw error
@@ -246,7 +277,35 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         guard !trimmed.isEmpty else {
             throw AiError.providerFailed("On-device AI returned an empty completion")
         }
-        return AiProviderResult(text: trimmed, modelUsed: activeModel.id)
+        // An answer that filled its whole output budget stopped where the budget ran out, not
+        // where the answer ended: the framework returns it without saying so. It was kept as
+        // finished — a summary cut mid-sentence, a recap missing its evening. OpenAI's cut has
+        // been refused since `CloudOutputBudget`; this is the same rule for the phone. (Not for
+        // a structured shape, which is many small calls assembled into JSON.)
+        if shape == nil,
+            await Self.filledItsBudget(trimmed, cap: outputTokens, model: activeModel)
+        {
+            throw AiError.providerFailed(
+                "On-device AI \(AiFailure.Marker.outputLimit) for \(request.prompt.id)")
+        }
+        return AiProviderResult(
+            text: trimmed, modelUsed: activeModel.id, inputTruncated: fitted.truncated)
+    }
+
+    /// Whether `text` used the whole output budget, i.e. was cut off. The model's own count
+    /// when it can give one; otherwise a conservative guess — long enough to be at the cap at
+    /// three characters a token AND ending mid-sentence — so a finished answer is not refused.
+    static func filledItsBudget(
+        _ text: String, cap: Int, model: OnDeviceLanguageModel
+    ) async -> Bool {
+        // A token is at least a character, so a reply shorter than the cap in characters cannot
+        // have filled it — and the ordinary answer costs no count at all.
+        guard cap > 0, text.count >= cap else { return false }
+        if let used = await model.tokenCount(for: text) {
+            return used >= cap - 2
+        }
+        let endsASentence = text.last.map { ".!?\"”')]".contains($0) } ?? false
+        return text.count >= cap * AskBudget.charsPerToken && !endsASentence
     }
 
     // MARK: - Sizing one prose request
@@ -266,16 +325,20 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     ///
     ///  • the fixed costs alone leave less room than `minimumInputChars`, so whatever we sent
     ///    would be a note about the first two minutes of a recording; and
-    ///  • the template `readsWholeConversation` (Extended summary) and the conversation does not
-    ///    fit — a "full account" of the first 3% of a four-hour day, written confidently and
-    ///    with citations, is the most convincing wrong thing this app could produce.
+    ///  • the template needs its whole input (`AiInputPolicy.requiresWholeInput` — Extended
+    ///    summary, the daily recap, Ask and both halves of its sweep) and the input does not
+    ///    fit. A "full account" of the first 3% of a four-hour day, written confidently and
+    ///    with citations, is the most convincing wrong thing this app could produce; a day's
+    ///    recap of its first hour, saved as covering 51 recordings, was the same lie on Today
+    ///    (2026-09-22, 09-23).
     ///
     /// Both say so in the message, because "this recording is longer than the on-device model
     /// can hold, use cloud AI" is actionable and "On-device AI generation failed" is not.
+    /// Anything else that has to be cut is cut, and the result says it was (`truncated`).
     private func fitProseInput(
         _ request: AiRunRequest, model: OnDeviceLanguageModel, instructions: String,
         outputTokens: Int
-    ) async throws -> String {
+    ) async throws -> AiInputPolicy.Fitted {
         let window = await model.contextWindowTokens()
         let budget = OnDeviceContextBudget.forRequest(
             outputTokens: outputTokens,
@@ -296,7 +359,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         // string concatenation over transcript text the caller already holds in memory — no
         // decode, no read, no second pass over the database.
         let full = AiTranscriptFormatting.buildUserContent(request, maxInputChars: Int.max)
-        guard full.count > estimatedCeiling else { return full }
+        let whole = AiInputPolicy.Fitted(content: full, truncated: false, fullChars: full.count)
+        guard full.count > estimatedCeiling else { return whole }
 
         // The estimate says it does not fit. Before believing that, ask the model — a real count
         // of the instructions (once) and of the body (once) is two cheap calls, and the answer
@@ -314,7 +378,7 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
                 if let pinned = maxInputChars, full.count > pinned {
                     ceiling = pinned
                 } else {
-                    return full
+                    return whole
                 }
             } else {
                 // Proportional, with the framework's own margin kept back, and never below what
@@ -325,15 +389,18 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
                 ceiling = min(maxInputChars ?? measured, max(measured, estimatedCeiling))
             }
         }
-        guard full.count > ceiling else { return full }
-        guard !OnDeviceTemplateBudget.readsWholeConversation(templateId: request.prompt.id) else {
+        guard full.count > ceiling else { return whole }
+        guard !AiInputPolicy.requiresWholeInput(templateId: request.prompt.id) else {
             throw AiError.providerFailed(
                 "This recording is \(Self.tooLongSentence)"
                     + " It would fit about \(ceiling) of its \(full.count) characters,"
                     + " and \"\(request.prompt.title)\" has to read all of it."
             )
         }
-        return AiTranscriptFormatting.buildUserContent(request, maxInputChars: ceiling)
+        return AiInputPolicy.Fitted(
+            content: AiTranscriptFormatting.buildUserContent(request, maxInputChars: ceiling),
+            truncated: true,
+            fullChars: full.count)
     }
 
     /// "4,096" — the way the window has always been written in these messages. Spelled out
@@ -377,6 +444,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     /// "Something went wrong".
     static let tooLongSentence = "\(AiFailure.Marker.tooLongForDevice)."
     static let deviceFailedSentence = "On-device AI generation failed."
+    /// Read by the shared taxonomy ("timed out") as `.timedOut`.
+    static let timedOutMarker = "timed out"
 
     /// Maps the bridge's verdict onto a message that names the cause.
     private func named(_ failure: OnDeviceGenerationFailure) -> AiError {

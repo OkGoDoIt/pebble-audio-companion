@@ -31,9 +31,17 @@ public struct ConversationAnnotation: Equatable, Sendable {
     /// Length of the combined transcript text last summarized; drives the live-refresh
     /// growth gate.
     public var sourceCharCount: Int
-    /// Final-pass attempts only, so a broken provider cannot spin the authoritative pass
-    /// forever.
+    /// Final-pass attempts that failed ON THE INPUT (`AiFailureKind.blamesTheInput`), so a
+    /// conversation the model genuinely cannot title stops costing calls. A failure that was the
+    /// world's — offline, a broke or busy account — does not count (see `AiRetryPolicy`).
     public var finalAttempts: Int
+    /// The final pass does not run before this. Set by every failure (a short wait for one on
+    /// the input, a doubling one for one that was the world's, six hours once the budget is
+    /// spent) and by a provisional answer; nil when nothing is owed. Reset by an AI
+    /// configuration change.
+    public var nextAttemptAtMs: Int64?
+    /// Consecutive final-pass failures that were NOT the input's fault; drives their backoff.
+    public var transientFailures: Int
 
     public init(
         conversationId: String,
@@ -48,8 +56,12 @@ public struct ConversationAnnotation: Equatable, Sendable {
         lastError: String? = nil,
         isFinal: Bool = false,
         sourceCharCount: Int = 0,
-        finalAttempts: Int = 0
+        finalAttempts: Int = 0,
+        nextAttemptAtMs: Int64? = nil,
+        transientFailures: Int = 0
     ) {
+        self.nextAttemptAtMs = nextAttemptAtMs
+        self.transientFailures = transientFailures
         self.conversationId = conversationId
         self.title = title
         self.summary = summary
@@ -101,6 +113,11 @@ public struct AnnotationStore: Sendable {
                 ("modelUsed", "TEXT"),
                 ("attempts", "INTEGER NOT NULL DEFAULT 0"),
                 ("lastError", "TEXT"),
+                // The retry bookkeeping `AiRetryPolicy` needs (2026-09-29): when the final pass
+                // may run again, and how many failures in a row were the world's rather than the
+                // input's.
+                ("nextAttemptAtMs", "INTEGER"),
+                ("transientFailures", "INTEGER NOT NULL DEFAULT 0"),
             ]
             for column in additions where !existing.contains(column.name) {
                 try db.execute(
@@ -122,8 +139,8 @@ public struct AnnotationStore: Sendable {
                 sql: """
                     INSERT INTO annotations (conversationId, title, summary, tagsJson, isFinal,
                         sourceCharCount, finalAttempts, updatedAtMs, modeUsed, providerId,
-                        modelUsed, attempts, lastError)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        modelUsed, attempts, lastError, nextAttemptAtMs, transientFailures)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversationId) DO UPDATE SET
                         title = excluded.title, summary = excluded.summary,
                         tagsJson = excluded.tagsJson, isFinal = excluded.isFinal,
@@ -131,13 +148,16 @@ public struct AnnotationStore: Sendable {
                         finalAttempts = excluded.finalAttempts,
                         updatedAtMs = excluded.updatedAtMs, modeUsed = excluded.modeUsed,
                         providerId = excluded.providerId, modelUsed = excluded.modelUsed,
-                        attempts = excluded.attempts, lastError = excluded.lastError
+                        attempts = excluded.attempts, lastError = excluded.lastError,
+                        nextAttemptAtMs = excluded.nextAttemptAtMs,
+                        transientFailures = excluded.transientFailures
                     """,
                 arguments: [
                     toStore.conversationId, toStore.title, toStore.summary, tagsJson,
                     toStore.isFinal, toStore.sourceCharCount, toStore.finalAttempts,
                     toStore.updatedAtMs, toStore.modeUsed?.rawValue, toStore.providerId,
                     toStore.modelUsed, toStore.attempts, toStore.lastError,
+                    toStore.nextAttemptAtMs, toStore.transientFailures,
                 ]
             )
             // `tagsJson` is the PROPOSAL; the Library's chips, tag filter, row/detail pills and
@@ -157,6 +177,19 @@ public struct AnnotationStore: Sendable {
                 db, sql: "SELECT * FROM annotations WHERE conversationId = ?",
                 arguments: [conversationId]
             ).map(Self.annotation(from:))
+        }
+    }
+
+    /// Every annotation, by conversation — one read where a pass used to make one per
+    /// conversation.
+    public func all() async throws -> [String: ConversationAnnotation] {
+        try await db.reader.read { db in
+            var out: [String: ConversationAnnotation] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM annotations") {
+                let annotation = Self.annotation(from: row)
+                out[annotation.conversationId] = annotation
+            }
+            return out
         }
     }
 
@@ -182,6 +215,22 @@ public struct AnnotationStore: Sendable {
         }
     }
 
+    /// Every conversation's final-pass budget and backoff start over — the AI configuration
+    /// changed (a key, a mode, a model, a held account taking work again), so what failed may
+    /// now succeed. Content is untouched: a provisional title stays on screen until the final
+    /// pass replaces it.
+    public func resetRetryBudgets() async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE annotations SET finalAttempts = 0, nextAttemptAtMs = NULL,
+                        transientFailures = 0
+                    WHERE finalAttempts > 0 OR nextAttemptAtMs IS NOT NULL
+                        OR transientFailures > 0
+                    """)
+        }
+    }
+
     static func annotation(from row: Row) -> ConversationAnnotation {
         let tagsJson: String? = row["tagsJson"]
         let tags =
@@ -200,7 +249,9 @@ public struct AnnotationStore: Sendable {
             lastError: row["lastError"],
             isFinal: row["isFinal"],
             sourceCharCount: row["sourceCharCount"],
-            finalAttempts: row["finalAttempts"]
+            finalAttempts: row["finalAttempts"],
+            nextAttemptAtMs: row["nextAttemptAtMs"],
+            transientFailures: row["transientFailures"] ?? 0
         )
     }
 }

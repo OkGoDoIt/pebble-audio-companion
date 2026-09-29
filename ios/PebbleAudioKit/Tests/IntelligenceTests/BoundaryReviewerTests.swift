@@ -167,20 +167,101 @@ private func router(_ provider: ScriptedBoundaryProvider) -> AiModeRouter {
     @Test func aFailedOrUnparseableCallLeavesTheRecordingWhole() async throws {
         let reviews = try store()
         let provider = ScriptedBoundaryProvider(response: "", error: Boom())
+        let clock = TestWallClock(ms: 0)
         let reviewer = BoundaryReviewer(
-            reviews: reviews, router: router(provider), nowMs: { 0 })
+            reviews: reviews, router: router(provider), nowMs: { clock.now })
         let read: (BoundaryCandidate) -> BoundaryReviewContext? = {
             BoundaryReviewer.context(for: $0, transcriptOf: { transcript($0, texts[$0] ?? "") })
         }
         #expect(try await reviewer.review(candidates: [candidate("a")], contextFor: read) == 0)
-        // Nothing recorded ⇒ nothing stuck: the next pass asks again.
+        // No verdict ⇒ the recording stays whole, and the candidate is still unreviewed.
         #expect(try await reviews.all().isEmpty)
         #expect(try await reviews.unreviewed([candidate("a")]).count == 1)
 
+        // Asked again once its backoff has passed — not on the very next pass.
+        clock.advance(byMs: BoundaryReviewer.firstRetryMs)
         provider.error = nil
         provider.response = "I think the second one is a new conversation, probably."
         #expect(try await reviewer.review(candidates: [candidate("a")], contextFor: read) == 0)
+        #expect(provider.runCount == 2)
         #expect(try await reviews.all().isEmpty)
+    }
+
+    /// The failure memory this used to lack. A provider that fails — or a model that answers in
+    /// prose — cost a ~20 KB request on every foreground pass, every few seconds.
+    @Test func aFailedAskIsNotResentOnEveryPass() async throws {
+        let reviews = try store()
+        let provider = ScriptedBoundaryProvider(response: "", error: Boom())
+        let clock = TestWallClock(ms: 1_000_000)
+        let reviewer = BoundaryReviewer(
+            reviews: reviews, router: router(provider), nowMs: { clock.now })
+        let read: (BoundaryCandidate) -> BoundaryReviewContext? = {
+            BoundaryReviewer.context(for: $0, transcriptOf: { transcript($0, texts[$0] ?? "") })
+        }
+        for _ in 0..<10 {
+            _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+            clock.advance(byMs: 5_000)
+        }
+        #expect(provider.runCount == 1)
+
+        // 15 minutes, then 30: the backoff doubles.
+        clock.advance(byMs: BoundaryReviewer.firstRetryMs)
+        _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+        #expect(provider.runCount == 2)
+        clock.advance(byMs: BoundaryReviewer.firstRetryMs)
+        _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+        #expect(provider.runCount == 2)
+        clock.advance(byMs: BoundaryReviewer.firstRetryMs)
+        _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+        #expect(provider.runCount == 3)
+    }
+
+    /// After `maxAttempts` the candidate rests — the grouping stays structural — until the AI
+    /// configuration changes and a different model might answer.
+    @Test func aCandidateThatKeepsFailingRestsUntilTheConfigurationChanges() async throws {
+        let reviews = try store()
+        let provider = ScriptedBoundaryProvider(response: "", error: Boom())
+        let clock = TestWallClock(ms: 0)
+        let reviewer = BoundaryReviewer(
+            reviews: reviews, router: router(provider), nowMs: { clock.now })
+        let read: (BoundaryCandidate) -> BoundaryReviewContext? = {
+            BoundaryReviewer.context(for: $0, transcriptOf: { transcript($0, texts[$0] ?? "") })
+        }
+        for _ in 0..<(BoundaryReviewer.maxAttempts + 3) {
+            _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+            clock.advance(byMs: 24 * 60 * 60_000)
+        }
+        #expect(provider.runCount == BoundaryReviewer.maxAttempts)
+
+        await reviewer.resetRetryBudgets()
+        _ = try await reviewer.review(candidates: [candidate("a")], contextFor: read)
+        #expect(provider.runCount == BoundaryReviewer.maxAttempts + 1)
+    }
+
+    /// A reply that answers one gap and skips another: the answered one is stored, the skipped
+    /// one backs off rather than being re-asked on the next pass.
+    @Test func aGapTheReplyOmittedBacksOff() async throws {
+        let reviews = try store()
+        let provider = ScriptedBoundaryProvider(
+            response: #"{"boundaries":[{"id":"a","newConversation":false}]}"#)
+        let clock = TestWallClock(ms: 0)
+        let reviewer = BoundaryReviewer(
+            reviews: reviews, router: router(provider), nowMs: { clock.now })
+        let read: (BoundaryCandidate) -> BoundaryReviewContext? = {
+            BoundaryReviewer.context(for: $0, transcriptOf: { transcript($0, texts[$0] ?? "") })
+        }
+        let both = [candidate("a"), candidate("b", atMs: 2_000)]
+        #expect(try await reviewer.review(candidates: both, contextFor: read) == 1)
+        _ = try await reviewer.review(candidates: both, contextFor: read)
+        #expect(provider.runCount == 1)
+
+        clock.advance(byMs: BoundaryReviewer.firstRetryMs)
+        _ = try await reviewer.review(candidates: both, contextFor: read)
+        #expect(provider.runCount == 2)
+        // Only the unanswered one is asked about again.
+        let body = try #require(provider.requests.last?.transcripts.first?.text)
+        #expect(body.contains("gap id: b"))
+        #expect(!body.contains("gap id: a"))
     }
 
     @Test func aVerdictForAnIdNobodyAskedAboutIsDiscarded() async throws {

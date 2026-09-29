@@ -217,8 +217,12 @@ struct FollowUpDetailScreen: View {
     private func sourceLine(_ item: FollowUpItem) -> String {
         let heard = Copy.FollowUps.capturedOn(
             FollowUpFormatting.heardAt(item.created, now: model.now))
-        guard let title = item.sourceConversationTitle else { return heard }
-        return "\(heard) · \(title)"
+        // Which model decided this belongs on the list. Extraction runs on a stronger model than
+        // the person's own choice and falls back to theirs when the key cannot use it, so the
+        // answer is not always the model Settings shows.
+        return [heard, item.sourceConversationTitle, item.modelName.map(Copy.FollowUps.foundBy)]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
     private func open() {

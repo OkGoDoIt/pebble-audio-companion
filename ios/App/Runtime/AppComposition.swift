@@ -634,11 +634,20 @@ final class AppComposition {
             remote: RemoteAiProviderSwitch(
                 selected: { settingsBox.remoteAiProvider },
                 openAi: OpenAiChatAiProvider(
-                    transport: transport,
+                    // Its own session: `URLSession.shared`'s 60 s idle timer killed every
+                    // non-streaming call that thought longer than a minute (a long Ask, a
+                    // reasoning model). The transcription uploads keep theirs.
+                    transport: AiHttpTransport.make(),
                     apiKey: openAiKey,
                     remoteConsent: { settingsBox.remoteAiEnabled },
                     model: { settingsBox.aiModel },
-                    grounding: aiGrounding
+                    grounding: aiGrounding,
+                    // The SAME hold the transcription side uses: one OpenAI account, one key. A
+                    // 402 or a rejected key from either side stops both, and the AI stage's
+                    // probe or a transcription success lifts it for both.
+                    accountHold: cloudHold,
+                    nowMs: nowMs,
+                    log: { AppRuntimeLog.shared.record($0) }
                 ),
                 applePrivateCloud: applePrivateCloud
             ),
@@ -664,6 +673,10 @@ final class AppComposition {
             // editor and the Contacts/Calendar imports write the same document, and a refresh
             // finishing mid-import used to put the pre-import version back.
             mutate: { _ = try personalContext.mutate($0) },
+            // A failed extraction is remembered across launches (with a doubling wait), not
+            // re-run on every one of the many launches iOS gives this app a day.
+            failureFileURL: containerRoot.appendingPathComponent(
+                "ai/personal_context_terms_failure.json"),
             log: { AppRuntimeLog.shared.record($0) }
         )
         self.personalContextTerms = personalContextTerms
@@ -705,6 +718,11 @@ final class AppComposition {
                 timeZone: { .current },
                 titleOf: { conversationId in
                     (try? await annotations.load(conversationId))?.title
+                },
+                // The zone the candidate's words were RECORDED in (Q16): the day they were said
+                // and the day they are due are dates there, not wherever the phone is now.
+                recordedZoneOf: { segmentId in
+                    files.readMeta(segmentId)?.recordedTimeZone.flatMap(TimeZone.init(identifier:))
                 }
             ),
             annotations: annotations,
@@ -731,7 +749,10 @@ final class AppComposition {
             // full library — just to discard it.
             speechTimingsOf: { transcripts.loadSpeechTimings($0) },
             clock: clock,
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            // For the held-AI-account probe's schedule: opening the app is when a person who
+            // just topped up is looking.
+            isForeground: { AppForegroundProbe.shared.isForeground }
         )
 
         let recap = RecapService(
@@ -749,7 +770,13 @@ final class AppComposition {
                 onRecapSaved: makeRecapDonationHook(
                     donator: donator, clock: clock, log: AppRuntimeLog.runtimeLog
                 ),
-                log: { AppRuntimeLog.shared.record($0) }
+                log: { AppRuntimeLog.shared.record($0) },
+                // A day longer than the FIRST provider can read in one call is recapped in
+                // pieces and merged — never handed whole to a model that cuts it to its first
+                // hour (the 2026-09-22/23 recaps).
+                singleCallCapacityChars: {
+                    await aiRouter.firstCallInputChars(remoteModelId: settingsBox.aiModel)
+                }
             ),
             store: recapStore
         )
@@ -1093,6 +1120,10 @@ final class AppComposition {
         let settingsMirror = settings.runtimeSettings
         let lastRecoveryKey = OSAllocatedUnfairLock(
             initialState: settingsMirror.transcriptionRecoveryKey)
+        // The AI twin (`AiRecoveryKey`): mode, remote provider, model. Only a change in one of
+        // them resets the AI retry budgets — the charger and thermal callbacks that also land
+        // here must not, or every failed title would be retried dozens of times a day.
+        let lastAiRecoveryKey = OSAllocatedUnfairLock(initialState: settingsMirror.aiRecoveryKey)
         settings.onRuntimeSettingsChanged = {
             let now = settingsMirror.transcriptionRecoveryKey
             let changed = lastRecoveryKey.withLock { last -> Bool in
@@ -1100,10 +1131,24 @@ final class AppComposition {
                 return last != now
             }
             runtime.notifyConfigChanged(reviveFailures: changed)
+            let aiNow = settingsMirror.aiRecoveryKey
+            let aiChanged = lastAiRecoveryKey.withLock { last -> Bool in
+                defer { last = aiNow }
+                return last != aiNow
+            }
+            if aiChanged { runtime.notifyAiConfigurationChanged() }
         }
-        settings.onApiKeyChanged = { runtime.notifyConfigChanged(reviveFailures: true) }
-        // A cloud account that takes work again un-parks what its hold parked, now.
-        cloudHold.onLifted { _ in runtime.notifyConfigChanged(reviveFailures: true) }
+        settings.onApiKeyChanged = {
+            runtime.notifyConfigChanged(reviveFailures: true)
+            // The OpenAI key is the AI side's key too.
+            runtime.notifyAiConfigurationChanged()
+        }
+        // A cloud account that takes work again un-parks what its hold parked, now — the
+        // transcription queue AND the AI jobs its hold had been backing off.
+        cloudHold.onLifted { _ in
+            runtime.notifyConfigChanged(reviveFailures: true)
+            runtime.notifyAiConfigurationChanged()
+        }
 
         // The screens' data-source holders, flipped from mocks to the live graph. Onboarding is
         // one of them: without this it would pair against `MockWatchPairingSource` and the first

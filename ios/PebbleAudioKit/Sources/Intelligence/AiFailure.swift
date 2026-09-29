@@ -63,10 +63,23 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     /// case an Extended summary of a long recording lands in, and it is a fact about the
     /// recording's length rather than a fault.
     case tooLongForDevice
+    /// A CLOUD model's window cannot hold a request whose template must read all of it — a
+    /// day's recap or an Ask over a range on Apple Private Cloud Compute (`AiInputPolicy`). Its
+    /// own case because `tooLongForDevice`'s sentence sends a person to cloud AI, which is what
+    /// they are already using.
+    case tooLongForModel
     /// The model's own content filter declined this material.
     case contentRefused
     /// The provider answered, with nothing in it.
     case emptyAnswer
+    /// The answer ran into the length the model may write and stopped mid-way — OpenAI's
+    /// `incomplete` / `max_output_tokens`, or the on-device model filling its output budget. It
+    /// is not kept: a note that stops mid-sentence is not a shorter note.
+    case outputLimit
+    /// The cloud model declined to answer — a refusal in the response, or an answer its own
+    /// filter stopped partway (`incomplete` for `content_filter`). It used to be read as an
+    /// empty answer, or as a finished one.
+    case answerRefused
     /// Apple Private Cloud Compute's per-person daily allowance is used up. Not `rateLimited`
     /// (that is throttling, and it clears in minutes) and not `accountOutOfFunds` (there is
     /// nothing to pay): it comes back by itself, and the on-device model is not affected.
@@ -77,6 +90,30 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     case cloudContentRefused
     /// Something we have no better word for. The honest answer, not a guess.
     case unknown
+}
+
+extension AiFailureKind {
+    /// True when the failure is about THIS input — it would fail the same way on the next pass
+    /// with nothing else changed: too long for the model, declined by a content filter, an
+    /// answer with nothing in it, a reply that was not the agreed shape, or something we cannot
+    /// name. Only these may spend a job's attempt budget.
+    ///
+    /// Everything else is the world: no network, a busy or broke account, a model still
+    /// loading, a provider switched off. The enrichment and follow-up budgets used to count
+    /// those too — three attempts, no time between them, nothing that ever reset them — so an
+    /// afternoon offline or one rate-limited minute cost a conversation its title for good.
+    /// Those failures now back off in time instead, and never use up the budget.
+    public var blamesTheInput: Bool {
+        switch self {
+        case .tooLongForDevice, .tooLongForModel, .contentRefused, .cloudContentRefused,
+            .emptyAnswer, .outputLimit, .answerRefused, .unknown:
+            return true
+        case .notConfigured, .consentRequired, .keyRejected, .keyNotPermitted, .rateLimited,
+            .accountOutOfFunds, .providerTrouble, .timedOut, .noConnection, .modelUnavailable,
+            .modelBusy, .usageLimit:
+            return false
+        }
+    }
 }
 
 /// The fallback provider's own failure, carried under the primary's in
@@ -147,6 +184,13 @@ public struct AiFailure: Sendable, Equatable {
         /// Also `ApplePrivateCloudAiProvider`'s. Not a superstring of `contentRefused`, and
         /// checked before it, so the two cannot be confused.
         public static let cloudContentRefused = "declined to work on this request"
+        /// Either cloud provider's refusal of a whole-input template that does not fit. Owned
+        /// by `AiInputPolicy`, which writes it.
+        public static let tooLongForModel = AiInputPolicy.tooLongForModelMarker
+        /// Any provider whose answer stopped at its output ceiling.
+        public static let outputLimit = "stopped at the output limit"
+        /// The cloud model's refusal (`OpenAiChatAiProvider`).
+        public static let answerRefused = "declined to answer"
     }
 
     // MARK: - Classification
@@ -199,11 +243,15 @@ public struct AiFailure: Sendable, Equatable {
         return .unknown
     }
 
-    /// `ApplePrivateCloudAiProvider`'s literals.
+    /// `ApplePrivateCloudAiProvider`'s literals, and the cloud providers' shared refusal of a
+    /// request too long to read whole.
     private static func cloudKind(in message: String) -> AiFailureKind? {
         let text = message.lowercased()
         if text.contains(Marker.usageLimit.lowercased()) { return .usageLimit }
         if text.contains(Marker.cloudContentRefused.lowercased()) { return .cloudContentRefused }
+        if text.contains(Marker.tooLongForModel.lowercased()) { return .tooLongForModel }
+        if text.contains(Marker.outputLimit.lowercased()) { return .outputLimit }
+        if text.contains(Marker.answerRefused.lowercased()) { return .answerRefused }
         return nil
     }
 

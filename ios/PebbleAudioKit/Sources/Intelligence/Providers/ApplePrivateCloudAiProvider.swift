@@ -145,7 +145,7 @@ public final class ApplePrivateCloudBuildStatus: @unchecked Sendable {
 /// OS without the model, or in a build without the entitlement, the provider is unavailable
 /// and the router treats it exactly as it treats a missing key.
 public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporting,
-    @unchecked Sendable
+    AiUnavailabilityExplaining, @unchecked Sendable
 {
     public static let providerId = "apple-pcc"
 
@@ -163,6 +163,19 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
     /// The "not enabled for this build" line is written once per process, not once per job:
     /// a Remote-first backlog would otherwise write it 145 times.
     private let loggedBuildRefusal = OnceFlag()
+    private let generationTimeoutMs: Int64
+    private let nowMs: @Sendable () -> Int64
+    /// The per-call "usage limit" and "service unavailable" lines, the first time and then at
+    /// most every ten minutes with a count — a Remote-first backlog hits them on every job.
+    private let logGate: RepeatingLogGate
+    private let limitLock = NSLock()
+    /// While the daily allowance is used up: nothing is asked of the model before this.
+    private var limitedUntilMs: Int64?
+
+    /// One request's deadline: the AI transport's own figure, so both remotes wait as long.
+    public static let defaultGenerationTimeoutMs = Int64(AiHttpTransport.requestTimeoutSeconds * 1_000)
+    /// When a used-up allowance is looked at again if the framework did not say when it resets.
+    public static let unknownResetRecheckMs: Int64 = 60 * 60_000
 
     /// - Parameters:
     ///   - model: nil on an OS without the model; the provider is then simply unavailable.
@@ -173,18 +186,43 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         remoteConsent: @escaping @Sendable () -> Bool,
         grounding: @escaping @Sendable () -> String? = { nil },
         buildStatus: ApplePrivateCloudBuildStatus = .shared,
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        generationTimeoutMs: Int64 = ApplePrivateCloudAiProvider.defaultGenerationTimeoutMs,
+        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
     ) {
         self.model = model
         self.remoteConsent = remoteConsent
         self.grounding = grounding
         self.buildStatus = buildStatus
         self.log = log
+        self.generationTimeoutMs = generationTimeoutMs
+        self.nowMs = nowMs
+        self.logGate = RepeatingLogGate(nowMs: nowMs)
     }
 
+    /// False while the daily allowance is used up, as well as for everything that makes the
+    /// model unusable. It used to answer from the framework's availability alone, which reads
+    /// `.available` all day after the allowance runs out: every job re-asked, every one was
+    /// refused, and a Remote-first user's fallback never got the job until the refusal came
+    /// back.
     public func isAvailable() async -> Bool {
         guard remoteConsent(), let model, !buildStatus.isKnownNotEnabled else { return false }
+        guard limitReason() == nil else { return false }
         return await model.availability() == .available
+    }
+
+    // MARK: AiUnavailabilityExplaining
+
+    public func unavailabilityReason() async -> String? { limitReason() }
+
+    /// "…has reached its daily usage limit. It resets at …" while the allowance is used up —
+    /// worded with `AiFailure.Marker.usageLimit`, so the router and the copy read it as the
+    /// allowance it is.
+    private func limitReason() -> String? {
+        let now = nowMs()
+        guard let until = limitLock.withLock({ limitedUntilMs }), now < until else { return nil }
+        return "\(Self.name) has reached its \(AiFailure.Marker.usageLimit). "
+            + "It is not asked again before \(Self.iso(Date(timeIntervalSince1970: Double(until) / 1_000)))."
     }
 
     /// The readiness the Settings row shows: the framework's answer, corrected by what a failed
@@ -234,6 +272,11 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
             }
             throw AiError.providerUnavailable(providerId: id)
         }
+        // A used-up allowance is not re-asked until it resets: the router never gets here in
+        // that state (`isAvailable()` is false), and a direct caller is told why.
+        if let reason = limitReason() {
+            throw AiError.providerFailed(reason)
+        }
         guard await model.availability() == .available else {
             throw AiError.providerUnavailable(providerId: id)
         }
@@ -244,12 +287,15 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         // Sized like the on-device path — the answer, the safety margin and the instructions
         // come out of the same window — but against this model's window, which is eight times
         // the on-device one. This model cannot count tokens for us, so the estimate is what
-        // there is; it is pessimistic, and truncation marks the cut.
+        // there is; it is pessimistic. A template that must read everything is REFUSED when it
+        // does not fit rather than cut (`AiInputPolicy`): a day's recap or an Ask answer drawn
+        // from the first third of its input, presented as the whole, is worse than no answer.
         let budget = OnDeviceContextBudget.forRequest(
             outputTokens: outputTokens, systemPromptChars: instructions.count,
             groundingChars: 0, windowTokens: window)
-        let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: budget.inputChars)
+        let fitted = try AiInputPolicy.fit(
+            request, maxInputChars: budget.inputChars, modelName: Self.name)
+        let userContent = fitted.content
 
         // A shape this model has a guided-generation form for is held to it, in one call over
         // the whole conversation — what OpenAI is asked for with a JSON schema. A structured
@@ -260,15 +306,26 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
             ? OnDeviceStructuredShape.forPromptId(request.prompt.id) : nil
 
         let text: String
+        // The same deadline an OpenAI request has (`AiHttpTransport`): a session on Apple's
+        // model has no timer of its own, and one that never answers held the pipeline pass.
+        let deadlineMs = generationTimeoutMs
+        let timedOut: @Sendable () -> Error = {
+            AiError.providerFailed(
+                "\(Self.name) timed out after \(deadlineMs / 1_000) s without finishing")
+        }
         do {
             if let shape {
-                text = try await model.generateStructured(
-                    shape, instructions: instructions, prompt: userContent,
-                    maxOutputTokens: outputTokens)
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await model.generateStructured(
+                        shape, instructions: instructions, prompt: userContent,
+                        maxOutputTokens: outputTokens)
+                }
             } else {
-                text = try await model.generate(
-                    instructions: instructions, prompt: userContent,
-                    maxOutputTokens: outputTokens)
+                text = try await AiTimeout.run(milliseconds: deadlineMs, timeout: timedOut) {
+                    try await model.generate(
+                        instructions: instructions, prompt: userContent,
+                        maxOutputTokens: outputTokens)
+                }
             }
         } catch let error where error is CancellationError || error is AiError {
             throw error
@@ -282,7 +339,8 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         guard !trimmed.isEmpty else {
             throw AiError.providerFailed("\(Self.name) returned an \(AiFailure.Marker.emptyAnswer)")
         }
-        return AiProviderResult(text: trimmed, modelUsed: model.id)
+        return AiProviderResult(
+            text: trimmed, modelUsed: model.id, inputTruncated: fitted.truncated)
     }
 
     // MARK: - Saying what actually happened
@@ -306,14 +364,24 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
             if let resetDate {
                 message += " It resets at \(Self.iso(resetDate))."
             }
-            log("apple pcc: usage limit reached reset=\(resetDate.map(Self.iso) ?? "unknown")")
+            // Remembered until it resets (or an hour, when the framework does not say), so the
+            // provider stops being available instead of being re-asked on every job.
+            let until =
+                resetDate.map { Int64($0.timeIntervalSince1970 * 1_000) }
+                ?? nowMs() + Self.unknownResetRecheckMs
+            limitLock.withLock { limitedUntilMs = max(limitedUntilMs ?? 0, until) }
+            gatedLog(
+                "usage-limit",
+                "apple pcc: usage limit reached reset=\(resetDate.map(Self.iso) ?? "unknown")")
             return .providerFailed(message)
         case .networkFailure(let detail):
             return .providerFailed(
                 "\(Self.name) could not be reached. \(detail)",
                 underlying: URLError(.notConnectedToInternet))
         case .serviceUnavailable(let detail):
-            log("apple pcc: service unavailable — \(String(detail.prefix(200)))")
+            gatedLog(
+                "service-unavailable",
+                "apple pcc: service unavailable — \(String(detail.prefix(200)))")
             return .providerUnavailable(providerId: id)
         case .notEnabledForThisBuild(let detail):
             buildStatus.markNotEnabled()
@@ -352,6 +420,13 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
 
     private static func iso(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+
+    /// A per-call line, the first time and then at most every ten minutes with the count held
+    /// back — the same discipline as the routers' fallback lines.
+    private func gatedLog(_ key: String, _ line: String) {
+        guard let repeats = logGate.admit(key) else { return }
+        log(repeats > 0 ? "\(line) [\(repeats) more like it since the last line]" : line)
     }
 
     /// A latch that opens exactly once.

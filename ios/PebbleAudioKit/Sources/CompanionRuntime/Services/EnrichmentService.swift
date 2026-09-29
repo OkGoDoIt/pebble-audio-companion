@@ -42,6 +42,9 @@ public actor EnrichmentService {
     private let boundaryReviewer: BoundaryReviewer?
     private let clock: RuntimeClock
     private let log: RuntimeLog
+    /// Whether the app is on screen, for the held-account probe's schedule (a person who just
+    /// topped up is looking). `{ false }` keeps it on the hold's own backoff alone.
+    private let isForeground: @Sendable () -> Bool
 
     public init(
         worker: EnrichmentWorker,
@@ -57,8 +60,10 @@ public actor EnrichmentService {
         boundaryReviewer: BoundaryReviewer? = nil,
         speechTimingsOf: (@Sendable (String) -> [Transcription.TranscriptSegment]?)? = nil,
         clock: RuntimeClock,
-        log: RuntimeLog = .silent
+        log: RuntimeLog = .silent,
+        isForeground: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.isForeground = isForeground
         self.worker = worker
         self.followUps = followUps
         self.curator = curator
@@ -108,6 +113,10 @@ public actor EnrichmentService {
     public func enrichPass() async throws -> [String] {
         isEnriching = true
         defer { isEnriching = false }
+        // A cloud AI account on hold is checked here, on its own schedule, before anything asks
+        // whether the router is available — see `EnrichmentWorker.probeHeldAccountIfDue`. A
+        // success lifts the hold, whose handler wakes every stage it parked.
+        await worker.probeHeldAccountIfDue(foreground: isForeground())
         // The boundary review rides in the AI stage rather than the grouping one on purpose:
         // `regroupPass` is deliberately AI-free so the whole app's view of reality never waits
         // on a provider. Verdicts written here are read by the NEXT regroup, so a confirmed
@@ -204,6 +213,18 @@ public actor EnrichmentService {
             }
         }
         return true
+    }
+
+    /// Every AI job's retry budget and backoff start over: titles, follow-up extraction and
+    /// curation, and the boundary review. Called when the AI configuration changes — a key, a
+    /// mode, the remote provider or model — and when a held cloud account takes work again,
+    /// because each of those can make a failed job succeed and none of them should wait out a
+    /// six-hour backoff to be noticed.
+    public func resetAiRetryBudgets() async {
+        await worker.resetRetryBudgets()
+        await followUps.resetRetryBudgets()
+        await curator.resetRetryBudgets()
+        await boundaryReviewer?.resetRetryBudgets()
     }
 
     /// Delete-cascade support: a conversation that no longer exists keeps no extraction
