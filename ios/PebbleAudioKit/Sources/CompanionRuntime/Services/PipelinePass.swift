@@ -56,7 +56,8 @@ public struct PipelineSteps: Sendable {
     public var donate: @Sendable ([String]) async -> Void
     /// Follow-up extraction over finished conversations. Returns true when it wrote anything.
     public var extractFollowUps: @Sendable () async throws -> Bool
-    public var refreshRecap: @Sendable () async -> Void
+    /// Throws when a day's recap failed, so the `.recap` stage's health records it.
+    public var refreshRecap: @Sendable () async throws -> Void
     /// `LiveTranscriber.processOnce()` + prune. Returns true when it did work.
     public var liveLocalPass: @Sendable () async throws -> Bool
     public var liveCloudPrune: @Sendable () async -> Void
@@ -105,7 +106,7 @@ public struct PipelineSteps: Sendable {
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
         extractFollowUps: @escaping @Sendable () async throws -> Bool = { false },
-        refreshRecap: @escaping @Sendable () async -> Void = {},
+        refreshRecap: @escaping @Sendable () async throws -> Void = {},
         liveLocalPass: @escaping @Sendable () async throws -> Bool = { false },
         liveCloudPrune: @escaping @Sendable () async -> Void = {},
         exportWavIfEnabled: @escaping @Sendable () async throws -> Void = {},

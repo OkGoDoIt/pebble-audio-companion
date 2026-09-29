@@ -749,7 +749,13 @@ final class AppComposition {
                 onRecapSaved: makeRecapDonationHook(
                     donator: donator, clock: clock, log: AppRuntimeLog.runtimeLog
                 ),
-                log: { AppRuntimeLog.shared.record($0) }
+                log: { AppRuntimeLog.shared.record($0) },
+                // A day longer than the FIRST provider can read in one call is recapped in
+                // pieces and merged — never handed whole to a model that cuts it to its first
+                // hour (the 2026-09-22/23 recaps).
+                singleCallCapacityChars: {
+                    await aiRouter.firstCallInputChars(remoteModelId: settingsBox.aiModel)
+                }
             ),
             store: recapStore
         )

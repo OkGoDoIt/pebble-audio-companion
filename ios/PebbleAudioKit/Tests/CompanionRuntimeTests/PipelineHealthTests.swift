@@ -159,6 +159,33 @@ import Testing
         #expect(health.health.persistentlyFailingStages == [.followUps])
     }
 
+    /// The recap stage used to swallow every failure (`try?` in `RecapService.refresh`), so a
+    /// recap that failed on every pass for days never reached Diagnostics. It now reports, like
+    /// every other stage — and the stages after it still run.
+    @Test func aFailingRecapIsRecordedAndDoesNotStopTheLivePreview() async throws {
+        let clock = TestClock()
+        let health = monitor(clock)
+        let calls = CallRecorder()
+        let pass = pass(clock: clock, health: health) { steps in
+            steps.refreshRecap = {
+                calls.record("recap")
+                throw TestFailure()
+            }
+            steps.liveLocalPass = {
+                calls.record("live")
+                return false
+            }
+        }
+
+        _ = try await pass.run()
+
+        #expect(calls.calls == ["recap", "live"])
+        #expect(health.health[.recap].consecutiveFailures == 1)
+        #expect(health.health.failingStages == [.recap])
+        // Not something the status card speaks about: recording and transcription are fine.
+        #expect(health.health.transcriptionIsPersistentlyFailing == false)
+    }
+
     @Test func aBackgroundPassCountsAsTheLoopStillTurning() async throws {
         // The watchdog reads `lastPassCompletedAtMs`; a deferring background pass is a finished
         // pass, and mistaking a pocketed phone for a wedged loop would restart the loop forever.

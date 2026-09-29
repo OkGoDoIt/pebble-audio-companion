@@ -184,6 +184,7 @@ public actor CompanionRuntime {
         let wake = self.wake
         Task {
             await environment.enrichment.resetAiRetryBudgets()
+            await environment.recap.resetFailureBackoff()
             wake.signal()
         }
     }
@@ -694,7 +695,7 @@ public actor CompanionRuntime {
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
             extractFollowUps: { try await env.enrichment.followUpPass() },
-            refreshRecap: { await env.recap.refresh() },
+            refreshRecap: { try await env.recap.refresh(onProgress: { health.progressed() }) },
             liveLocalPass: { try await env.live.localLivePass() },
             liveCloudPrune: { await env.live.cloudLivePrune() },
             exportWavIfEnabled: { try await env.live.exportWavIfEnabled() },

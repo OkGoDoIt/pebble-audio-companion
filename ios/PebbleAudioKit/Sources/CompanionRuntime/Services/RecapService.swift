@@ -33,11 +33,24 @@ public actor RecapService {
     }
 
     /// One pipeline-pass refresh: regenerate any day whose transcripts changed, then condense
-    /// any digest that came out longer than the Today card can carry (`RecapCondenser`). Never
-    /// throws into the pass: a recap failure is a non-event for the audio pipeline, and a
-    /// missing condensation just means the card shows the full digest.
-    public func refresh() async {
-        try? await engine?.refreshDigests()
+    /// any digest that came out longer than the Today card can carry (`RecapCondenser`).
+    ///
+    /// THROWS when a day's recap failed (`RecapGenerationFailed` — the classified kind, never a
+    /// provider body). It used to be `try?`, so a recap that failed on every pass for days was
+    /// invisible to Diagnostics and to `PipelineHealth`; the `.recap` stage now records it like
+    /// any other stage failure, and backs itself off. The audio pipeline is unaffected either
+    /// way — each stage runs in its own failure boundary. A missing condensation still just
+    /// means the card shows the full digest, and never throws.
+    ///
+    /// `onProgress` fires after each AI call, so a long map-reduce day reads as progress to the
+    /// loop watchdog rather than as a wedged pass.
+    public func refresh(onProgress: (@Sendable () -> Void)? = nil) async throws {
+        try await engine?.refreshDigests(onProgress: onProgress)
+    }
+
+    /// Failed days may be tried again now — see `DailyRecapEngine.resetFailureBackoff`.
+    public func resetFailureBackoff() async {
+        await engine?.resetFailureBackoff()
     }
 
     public func list() async throws -> [DailyRecap] { try await store.list() }

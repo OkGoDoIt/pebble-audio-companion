@@ -381,6 +381,26 @@ extension AiModeRouter {
         guard let reporting = remote as? AiInputWindowReporting else { return nil }
         return await reporting.contextTokens()
     }
+
+    /// Characters of transcript the provider that runs FIRST in the current mode can be handed
+    /// in one call — what a planner sizes a request by before it exists. The local modes ask
+    /// the on-device slot (`localInputChars`); the remote modes ask the remote slot's window
+    /// (Apple Private Cloud Compute reports one) or, for OpenAI, the catalog's window for
+    /// `remoteModelId`. The same numbers Ask plans against, with the same headroom.
+    ///
+    /// A fallback is NOT sized for: it refuses a whole-input request it cannot read whole
+    /// (`AiInputPolicy`) rather than being handed something it quietly cuts.
+    public func firstCallInputChars(remoteModelId: String?) async -> Int {
+        switch mode() {
+        case .localOnly, .localFirst:
+            return await localInputChars() ?? OnDeviceAiProvider.defaultMaxInputChars
+        case .remoteOnly, .remoteFirst:
+            if let tokens = await remoteContextTokens() {
+                return AskBudget.forContext(tokens: tokens).transcriptChars
+            }
+            return AskBudget.forModel(id: remoteModelId).transcriptChars
+        }
+    }
 }
 
 // MARK: - A remote account on hold
