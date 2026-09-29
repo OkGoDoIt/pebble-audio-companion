@@ -253,14 +253,26 @@ extension ParakeetEngineFactory {
                 try await task.value
             } onCancel: {
                 task.cancel()
-                Task { await model.cancelStream() }
+                cancelStream(of: model, ifStillRunning: task)
             }
         }
 
         public func interrupt() {
             let (task, model) = lock.withLock { (inFlight, self.model) }
             task?.cancel()
-            if let model { Task { await model.cancelStream() } }
+            if let task, let model { cancelStream(of: model, ifStillRunning: task) }
+        }
+
+        /// Drops `model`'s streaming session — but only if `task` is still the transcription in
+        /// flight when the hop to the model actor actually runs. The cancel is necessarily
+        /// out of band (it must not wait on `serial`), so it can land late; unguarded, a late one
+        /// abandoned the NEXT segment's session, whose own, uncancelled caller then saw a
+        /// `CancellationError` it never asked for.
+        private func cancelStream(of model: SpeechRecognitionModel, ifStillRunning task: Task<String, Error>) {
+            Task { [weak self] in
+                guard let self, self.lock.withLock({ self.inFlight == task }) else { return }
+                await model.cancelStream()
+            }
         }
 
         /// The hard release, for a memory warning: interrupt, wait, drop — leases or not.
