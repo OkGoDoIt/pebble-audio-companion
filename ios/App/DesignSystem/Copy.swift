@@ -1045,14 +1045,22 @@ enum Copy {
             /// climbing while audio goes missing means the link could not keep up; flat while
             /// audio goes missing means this phone stopped acknowledging and the watch's buffer
             /// never freed — and they have opposite fixes.
-            /// The mirror of `watchCouldNotSend`, on our side of the link. The watch sent this
-            /// audio and this app had no recording open to put it in, so it went nowhere. It
-            /// only ever appears when it is non-zero: a row that says "0" every day is a row
-            /// nobody reads on the day it says something else.
-            static let audioWithNowhereToGo = "Audio we couldn’t store"
+            /// The mirror of `watchCouldNotSend`, on our side of the link: audio the watch sent
+            /// while this app had no recording open for it yet, counted since the app started.
+            ///
+            /// It is NOT a count of lost audio, and the row must not read like one — it used to
+            /// say "Audio we couldn't store". None of it was acknowledged, so the watch kept it
+            /// and sent it again once it re-announced the recording; anything it could not keep
+            /// in the meantime is recorded as a gap, with its reason, in the recording itself.
+            /// What the row does tell a reader is that the link was out of step for a while.
+            ///
+            /// Present only when non-zero: a row that says "0" every day is a row nobody reads on
+            /// the day it says something else.
+            static let audioWithNowhereToGo = "Audio that arrived early"
             static func audioWithNowhereToGoValue(_ frames: Int) -> String {
                 let seconds = max(1, Int((Double(frames) * 0.02).rounded()))
-                return frames == 1 ? "1 frame" : "\(frames) frames · about \(seconds) sec"
+                let amount = frames == 1 ? "1 frame" : "\(frames) frames · about \(seconds) sec"
+                return amount + " · kept by the watch"
             }
 
             static let watchCouldNotSend = "Watch couldn’t send"
