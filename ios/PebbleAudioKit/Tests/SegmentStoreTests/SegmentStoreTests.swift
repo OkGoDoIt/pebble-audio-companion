@@ -243,11 +243,20 @@ import WireProtocol
         try await store.recordGap(streamId: streamId, gap: gap(100, 55))
         try await store.recordGap(streamId: streamId, gap: gap(100, 60))
 
-        let stored = try single(try #require(await store.readMeta(segmentId)).gaps)
-        #expect(stored.firstMissingSequence == 100)
-        #expect(stored.missingFrameCount == 60)
-        #expect(stored.origin == GapMeta.originWatch)
-        #expect(stored.reasonRaw == Int(GapReason.transportReset.rawValue))
+        // The repeated skips collapse into one period, and the watch's account wins for every
+        // frame it covers: the transport reset keeps 100..149 with its reason, and only the ten
+        // frames past it that the watch never mentioned remain the receiver's skip. (This used
+        // to fold them into the reset, which put the watch's reason on frames it never claimed.)
+        let gaps = try #require(await store.readMeta(segmentId)).gaps
+        #expect(gaps.count == 2)
+        #expect(gaps[0].firstMissingSequence == 100)
+        #expect(gaps[0].missingFrameCount == 50)
+        #expect(gaps[0].origin == GapMeta.originWatch)
+        #expect(gaps[0].reasonRaw == Int(GapReason.transportReset.rawValue))
+        #expect(gaps[1].firstMissingSequence == 150)
+        #expect(gaps[1].missingFrameCount == 10)
+        #expect(gaps[1].firstMissingSampleIndex == 150 * 320)
+        #expect(gaps[1].origin == GapMeta.originSequenceSkip)
     }
 
     @Test func recoverNormalizesLegacyGapMetadata() async throws {
@@ -295,15 +304,20 @@ import WireProtocol
         let reopened = makeStore(root)
         try await reopened.recover()
 
+        // The skip under the silence record is the watch's quiet, not loss; the skip that runs
+        // past the reset keeps only the frames the reset does not account for.
         let gaps = try #require(await reopened.readMeta(segmentId)).gaps
-        #expect(gaps.count == 2)
+        #expect(gaps.count == 3)
         #expect(gaps[0].firstMissingSequence == 100)
-        #expect(gaps[0].missingFrameCount == 60)
+        #expect(gaps[0].missingFrameCount == 50)
         #expect(gaps[0].origin == GapMeta.originWatch)
         #expect(gaps[0].reasonRaw == Int(GapReason.transportReset.rawValue))
-        #expect(gaps[1].firstMissingSequence == 200)
-        #expect(gaps[1].missingFrameCount == 5)
+        #expect(gaps[1].firstMissingSequence == 150)
+        #expect(gaps[1].missingFrameCount == 10)
         #expect(gaps[1].origin == GapMeta.originSequenceSkip)
+        #expect(gaps[2].firstMissingSequence == 200)
+        #expect(gaps[2].missingFrameCount == 5)
+        #expect(gaps[2].origin == GapMeta.originSequenceSkip)
 
         let persisted = try JSONDecoder().decode(SegmentMeta.self, from: Data(contentsOf: sidecar))
         #expect(persisted.gaps == gaps)

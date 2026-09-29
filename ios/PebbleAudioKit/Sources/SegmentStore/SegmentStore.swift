@@ -509,14 +509,12 @@ public actor SegmentStore: SegmentSink {
 
     /// Records genuinely-lost audio. A durable gap means audio the receiver could not recover: a
     /// disconnection long enough that the watch's buffer overflowed, an explicit watch pause/
-    /// interruption, or a dropped notification. Two things keep `gaps` informative and sparse
-    /// instead of one record per dropped packet:
+    /// interruption, or a dropped notification.
     ///
     ///  - Silence-suppressed spans are deliberately-skipped quiet, not lost audio, so they are
     ///    never persisted as loss (the live waveform still renders them as quiet while active).
-    ///  - A loss overlapping or contiguous (in sequence) with the previous gap extends that
-    ///    record's total dropped duration rather than appending a new one — so one period of lost
-    ///    audio is one gap noting the total time, however many packets it spanned.
+    ///  - The record joins the list in SEQUENCE order, whatever order it arrived in, and merges
+    ///   only with what it really overlaps — see `normalizedSegmentGaps`.
     public func recordGap(streamId: UInt32, gap: GapRecord) throws {
         // Same reasoning as `appendFrames`: a gap that lands nowhere is loss with no record of
         // it, which is the one thing this product promises never to do quietly.
@@ -529,20 +527,19 @@ public actor SegmentStore: SegmentSink {
         }
         let incoming = GapMeta.from(gap)
         guard incoming.shouldPersistAsLoss else { return }
-        segment.meta.gaps = withSparseLossGap(segment.meta.gaps, incoming: incoming)
+        // THE WHOLE LIST, not its tail. This used to compare the incoming record with the LAST
+        // stored one only, and "merged" whenever the incoming range started before that one's
+        // end — without ever moving the start back. A record that arrived out of order was
+        // therefore swallowed: its frames vanished from the list while the reply said it was
+        // stored. That is the ordinary shape of a RESUME, not an edge case: the watch's held gap
+        // notices are recorded first, and the hole BELOW them is only seen when the buffered
+        // audio arrives. On 2026-09-24 17:37 seven held overflow records went in, the receiver's
+        // sequence skip for 11975590..11976422 followed, and the 352 frames between the overflow
+        // records were left with no record at all. Across the 858 sidecars of the 2026-09-29
+        // backup only 15 sequence-skip records survived.
+        segment.meta.gaps = normalizedSegmentGaps(
+            segment.meta.gaps + [incoming], frameSamples: segment.meta.frameSamples)
         try writeMetaAtomically(segment.meta)
-    }
-
-    private func withSparseLossGap(_ gaps: [GapMeta], incoming: GapMeta) -> [GapMeta] {
-        guard let last = gaps.last, last.shouldPersistAsLoss, last.overlapsOrTouches(incoming)
-        else {
-            return gaps + [incoming]
-        }
-        let mergedEnd = max(last.endExclusive, incoming.endExclusive)
-        var merged = last
-        merged.missingFrameCount = UInt32(mergedEnd - UInt64(last.firstMissingSequence))
-        merged.watchDropCounter = incoming.watchDropCounter ?? last.watchDropCounter
-        return gaps.dropLast() + [merged]
     }
 
     public func closeSegment(reason: SegmentCloseReason) throws {
@@ -659,35 +656,11 @@ public actor SegmentStore: SegmentSink {
     }
 
     private func withNormalizedGaps(_ meta: SegmentMeta) -> SegmentMeta {
-        let normalized = normalizeSparseLossGaps(meta.gaps)
+        let normalized = normalizedSegmentGaps(meta.gaps, frameSamples: meta.frameSamples)
         if normalized == meta.gaps { return meta }
         var copy = meta
         copy.gaps = normalized
         return copy
-    }
-
-    private func normalizeSparseLossGaps(_ gaps: [GapMeta]) -> [GapMeta] {
-        if gaps.isEmpty { return [] }
-        let watchRanges = gaps.filter { $0.origin == GapMeta.originWatch && $0.missingFrameCount > 0 }
-        func coveredByWatch(_ gap: GapMeta) -> Bool {
-            watchRanges.contains { $0.covers(gap) }
-        }
-
-        let sorted = gaps
-            .filter { $0.shouldPersistAsLoss }
-            .filter { !($0.origin == GapMeta.originSequenceSkip && coveredByWatch($0)) }
-            .enumerated()
-            .sorted { a, b in
-                if a.element.firstMissingSequence != b.element.firstMissingSequence {
-                    return a.element.firstMissingSequence < b.element.firstMissingSequence
-                }
-                let rankA = a.element.origin == GapMeta.originWatch ? 0 : 1
-                let rankB = b.element.origin == GapMeta.originWatch ? 0 : 1
-                if rankA != rankB { return rankA < rankB }
-                return a.offset < b.offset  // stable, matching Kotlin's sortedWith
-            }
-            .map(\.element)
-        return sorted.reduce([]) { acc, gap in withSparseLossGap(acc, incoming: gap) }
     }
 
     public func logSizeBytes(_ segmentId: String) -> Int64 {
@@ -1064,16 +1037,131 @@ extension GapMeta {
         return !reason.isSilence
     }
 
-    func overlapsOrTouches(_ next: GapMeta) -> Bool {
-        missingFrameCount > 0
-            && next.missingFrameCount > 0
-            && UInt64(next.firstMissingSequence) <= endExclusive
+    /// Same origin, same reason: two records that say the same thing about their frames.
+    ///
+    /// Records with DIFFERENT stories are never merged. A receiver sequence skip that ends exactly
+    /// where the watch's overflow record begins is two facts — "the phone saw the sequence jump
+    /// here" and "the watch's buffer filled here" — and folding the second into the first erased
+    /// the watch's reason from the transcript and the Library.
+    func tellsTheSameStory(as other: GapMeta) -> Bool {
+        origin == other.origin && reasonRaw == other.reasonRaw
     }
 
-    func covers(_ other: GapMeta) -> Bool {
-        missingFrameCount > 0
-            && other.missingFrameCount > 0
-            && firstMissingSequence <= other.firstMissingSequence
-            && endExclusive >= other.endExclusive
+    /// This record extended to cover `next` as well. The start never moves: `next` starts at or
+    /// after it. The watch's drop counter is cumulative, so the larger one is the newer one.
+    func extended(by next: GapMeta) -> GapMeta {
+        var merged = self
+        let end = max(endExclusive, next.endExclusive)
+        merged.missingFrameCount = UInt32(clamping: end - UInt64(firstMissingSequence))
+        merged.watchDropCounter = [watchDropCounter, next.watchDropCounter].compactMap { $0 }.max()
+        return merged
     }
+}
+
+/// The one shape a segment's gap list is kept in — applied on every insert, and to every old
+/// sidecar as it is read.
+///
+///  1. A receiver-synthesized sequence skip is cut back to the frames no watch record accounts
+///     for. The watch's account of a frame — its reason, or that it was deliberately quiet — is
+///     always the better one, and the receiver only ever guessed the skip from a jump in
+///     sequence numbers. A skip the watch fully accounts for disappears.
+///  2. Records are ordered by first missing sequence, whatever order they arrived in.
+///  3. A record that tells the same story as the one before it and overlaps or touches it is
+///     merged into it, so one period of loss stays one record however many notices described
+///     it. A record with a different story keeps its own frames: where it overlaps the one
+///     before, that one keeps the overlap and this one starts where it ends.
+///
+/// No loss the watch or the receiver reported is dropped by any of this: every sequence a loss
+/// record claimed before is still claimed after, either by the same record or by the watch record
+/// that trimmed it. The one exception is a skip over frames the watch said were deliberately
+/// quiet, which is not loss; silence-suppressed records themselves are filtered out here, as
+/// `recordGap` filters them.
+///
+/// `frameSamples` places the pieces of a trimmed skip on the sample clock.
+func normalizedSegmentGaps(_ gaps: [GapMeta], frameSamples: Int) -> [GapMeta] {
+    if gaps.isEmpty { return [] }
+    let samplesPerFrame = UInt64(frameSamples > 0 ? frameSamples : 320)
+
+    // (1) What the watch accounts for, as disjoint ranges. Silence counts: a skip over frames
+    // the watch says it chose not to send is not loss the phone discovered.
+    var watch: [(UInt64, UInt64)] = []
+    for gap in gaps where gap.origin == GapMeta.originWatch && gap.missingFrameCount > 0 {
+        watch.append((UInt64(gap.firstMissingSequence), gap.endExclusive))
+    }
+    watch.sort { $0.0 < $1.0 }
+    var accounted: [(UInt64, UInt64)] = []
+    for range in watch {
+        if let last = accounted.last, range.0 <= last.1 {
+            accounted[accounted.count - 1].1 = max(last.1, range.1)
+        } else {
+            accounted.append(range)
+        }
+    }
+    func unaccountedPieces(of gap: GapMeta) -> [GapMeta] {
+        let start = UInt64(gap.firstMissingSequence)
+        let end = gap.endExclusive
+        var pieces: [GapMeta] = []
+        var cursor = start
+        for range in accounted where range.1 > cursor && range.0 < end {
+            if range.0 > cursor { pieces.append(piece(of: gap, from: cursor, to: range.0)) }
+            cursor = max(cursor, range.1)
+            if cursor >= end { break }
+        }
+        if cursor < end { pieces.append(piece(of: gap, from: cursor, to: end)) }
+        return pieces
+    }
+    func piece(of gap: GapMeta, from: UInt64, to: UInt64) -> GapMeta {
+        if from == UInt64(gap.firstMissingSequence) && to == gap.endExclusive { return gap }
+        var copy = gap
+        copy.firstMissingSequence = UInt32(from)
+        copy.missingFrameCount = UInt32(to - from)
+        copy.firstMissingSampleIndex =
+            gap.firstMissingSampleIndex + (from - UInt64(gap.firstMissingSequence)) * samplesPerFrame
+        return copy
+    }
+
+    var kept: [GapMeta] = []
+    for gap in gaps where gap.shouldPersistAsLoss {
+        if gap.origin == GapMeta.originSequenceSkip, gap.missingFrameCount > 0, !accounted.isEmpty {
+            kept += unaccountedPieces(of: gap)
+        } else {
+            kept.append(gap)
+        }
+    }
+
+    // (2) Sequence order; on a tie the watch's record goes first so it is the one that absorbs.
+    let ordered = kept.enumerated()
+        .sorted { a, b in
+            if a.element.firstMissingSequence != b.element.firstMissingSequence {
+                return a.element.firstMissingSequence < b.element.firstMissingSequence
+            }
+            let rankA = a.element.origin == GapMeta.originWatch ? 0 : 1
+            let rankB = b.element.origin == GapMeta.originWatch ? 0 : 1
+            if rankA != rankB { return rankA < rankB }
+            return a.offset < b.offset  // stable
+        }
+        .map(\.element)
+
+    // (3) Sorted input means only the latest ranged record can overlap the next one: every
+    // earlier one ends at or before it starts. (A zero-count record — "extent unknown" — has no
+    // range to overlap with, so it is kept where it falls and never merged.)
+    var result: [GapMeta] = []
+    var latestRanged: Int?
+    for var gap in ordered {
+        if gap.missingFrameCount > 0, let index = latestRanged {
+            let last = result[index]
+            let start = UInt64(gap.firstMissingSequence)
+            if last.tellsTheSameStory(as: gap), start <= last.endExclusive {
+                result[index] = last.extended(by: gap)
+                continue
+            }
+            if start < last.endExclusive {
+                guard gap.endExclusive > last.endExclusive else { continue }  // wholly claimed
+                gap = piece(of: gap, from: last.endExclusive, to: gap.endExclusive)
+            }
+        }
+        result.append(gap)
+        if gap.missingFrameCount > 0 { latestRanged = result.count - 1 }
+    }
+    return result
 }
