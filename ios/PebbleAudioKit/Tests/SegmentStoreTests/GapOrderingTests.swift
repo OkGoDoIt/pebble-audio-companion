@@ -115,24 +115,36 @@ import WireProtocol
 
     @Test("any arrival order yields the same sorted, non-overlapping list covering the same frames")
     func arrivalOrderDoesNotChangeWhatIsRecorded() async throws {
-        // A fixed pseudo-random mix of overflow notices and receiver skips, fed in many orders.
+        // A fixed pseudo-random mix of overflow notices, receiver skips and quiet notices, fed in
+        // many orders.
         var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
         func next(_ bound: UInt64) -> UInt64 {
             seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             return (seed >> 33) % bound
         }
         var records: [GapRecord] = []
-        for _ in 0..<24 {
+        for _ in 0..<30 {
             let first = UInt32(next(400))
             let count = UInt32(1 + next(40))
-            records.append(next(2) == 0 ? overflow(first, count) : skip(first, count))
+            switch next(3) {
+            case 0: records.append(overflow(first, count))
+            case 1: records.append(skip(first, count))
+            default: records.append(quiet(first, count))
+            }
         }
         func covered(_ gaps: [GapMeta]) -> Set<UInt32> {
             var set = Set<UInt32>()
             for gap in gaps { for s in gap.firstMissingSequence..<(gap.firstMissingSequence + gap.missingFrameCount) { set.insert(s) } }
             return set
         }
-        let expectedFrames = covered(records.map(GapMeta.from))
+        let input = records.map(GapMeta.from)
+        let watchLoss = covered(input.filter { $0.origin == GapMeta.originWatch && $0.countsAsLoss })
+        let watchQuiet = covered(input.filter { !$0.countsAsLoss })
+        let skips = covered(input.filter { $0.origin == GapMeta.originSequenceSkip })
+        // What must come out: the watch's loss as the watch said it; the receiver's skips only
+        // where the watch said nothing; quiet only where nothing says loss.
+        let expectedLoss = watchLoss.union(skips.subtracting(watchQuiet))
+        let expectedQuiet = watchQuiet.subtracting(expectedLoss)
 
         var reference: [GapMeta]?
         for round in 0..<12 {
@@ -145,19 +157,93 @@ import WireProtocol
             for record in order { try await store.recordGap(streamId: streamId, gap: record) }
             let gaps = try #require(await store.readMeta(id)).gaps
 
-            #expect(covered(gaps) == expectedFrames, "a frame some record claimed lost its claim")
+            #expect(covered(gaps.filter(\.countsAsLoss)) == expectedLoss, "loss lost a claim")
+            #expect(covered(gaps.filter { !$0.countsAsLoss }) == expectedQuiet)
+            #expect(covered(gaps.filter { $0.origin == GapMeta.originWatch && $0.countsAsLoss }) == watchLoss)
             for (a, b) in zip(gaps, gaps.dropFirst()) {
                 #expect(a.endExclusive <= UInt64(b.firstMissingSequence), "records overlap: \(ranges([a, b]))")
             }
-            #expect(gaps.reduce(0) { $0 + Int($1.missingFrameCount) } == expectedFrames.count)
-            // Where the watch reported a frame, the watch's record is the one that claims it.
-            let watchFrames = covered(records.map(GapMeta.from).filter { $0.origin == GapMeta.originWatch })
-            #expect(covered(gaps.filter { $0.origin == GapMeta.originWatch }) == watchFrames)
+            #expect(
+                gaps.reduce(0) { $0 + Int($1.missingFrameCount) } == expectedLoss.count + expectedQuiet.count,
+                "a frame is claimed twice")
             if let reference {
                 #expect(gaps == reference, "the stored list depends on arrival order")
             } else {
                 reference = gaps
             }
         }
+    }
+
+    private func quiet(_ first: UInt32, _ count: UInt32) -> GapRecord {
+        GapRecord(
+            firstMissingSequence: first, missingFrameCount: count,
+            firstMissingSampleIndex: UInt64(first) * 320,
+            origin: .watchReported(reasonRaw: Int(GapReason.silenceSuppressed.rawValue), watchDropCounter: 0))
+    }
+
+    @Test("quiet never merges into loss, and loss keeps frames the watch also called quiet")
+    func quietAndLossStayApartAndLossWins() async throws {
+        let (store, id) = try await openStore()
+        try await store.recordGap(streamId: streamId, gap: quiet(100, 20))
+        try await store.recordGap(streamId: streamId, gap: overflow(110, 20))
+        try await store.recordGap(streamId: streamId, gap: quiet(130, 10))
+
+        let gaps = try #require(await store.readMeta(id)).gaps
+        // 100..109 quiet; 110..129 lost (the overflow keeps the frames the watch ALSO called
+        // quiet — quiet over real loss would hide it); 130..139 quiet again, touching the loss
+        // but never folded into it.
+        #expect(ranges(gaps) == ["watch[100,110)", "watch[110,130)", "watch[130,140)"])
+        #expect(gaps.map(\.countsAsLoss) == [false, true, false])
+    }
+
+    @Test("consecutive quiet notices become one quiet period")
+    func consecutiveQuietMerges() async throws {
+        let (store, id) = try await openStore()
+        try await store.recordGap(streamId: streamId, gap: quiet(10, 10))
+        try await store.recordGap(streamId: streamId, gap: quiet(20, 15))
+
+        let gaps = try #require(await store.readMeta(id)).gaps
+        #expect(ranges(gaps) == ["watch[10,35)"])
+        #expect(!gaps[0].countsAsLoss)
+    }
+
+    @Test("a receiver skip is dropped where the watch later says the frames were quiet")
+    func aSkipOverReportedQuietIsNotLoss() async throws {
+        let (store, id) = try await openStore()
+        // The phone saw the jump before the watch's quiet notice reached it.
+        try await store.recordGap(streamId: streamId, gap: skip(50, 30))
+        try await store.recordGap(streamId: streamId, gap: quiet(50, 20))
+
+        let gaps = try #require(await store.readMeta(id)).gaps
+        // The 20 frames the watch accounts for are quiet; the 10 it never mentioned stay loss.
+        #expect(ranges(gaps) == ["watch[50,70)", "sequence_skip[70,80)"])
+        #expect(gaps.map(\.countsAsLoss) == [false, true])
+    }
+
+    @Test("stored quiet lets the media clock map exactly across it")
+    func storedQuietMakesTheMediaClockExact() async throws {
+        let (store, id) = try await openStore()
+        func frames(_ first: UInt32, _ count: Int) -> [SegmentFrame] {
+            (0..<count).map { i in
+                SegmentFrame(
+                    sequence: first + UInt32(i), sampleIndex: UInt64(first + UInt32(i)) * 320,
+                    payload: [0x5A, 0x5A])
+            }
+        }
+        // 2 s of speech, 10 s the watch skipped as quiet, 2 s of speech.
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 100))
+        try await store.recordGap(streamId: streamId, gap: quiet(100, 500))
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(600, 100))
+        try await store.closeSegment(reason: .interrupted)
+
+        let meta = try #require(await store.readMeta(id))
+        let clock = SegmentMediaClock(meta)
+        #expect(clock.wallSpanMs == 14_000)
+        #expect(clock.mediaSpanMs == 4_000)
+        #expect(clock.recordedGapMs == 10_000)
+        #expect(clock.isExact, "without the quiet record the clock falls back to a proportional guess")
+        // The first word after the quiet is 12 s into the recording, 2 s into the stored audio.
+        #expect(clock.wall(fromMedia: 2_000) == 12_000)
+        #expect(clock.media(fromWall: 12_000) == 2_000)
     }
 }
