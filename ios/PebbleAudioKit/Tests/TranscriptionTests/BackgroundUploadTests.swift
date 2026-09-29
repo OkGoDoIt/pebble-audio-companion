@@ -200,13 +200,14 @@ private final class FakeUploadQueue: @unchecked Sendable {
         let cloud: SelectableCloudTranscriptionProvider
         let coordinator: BackgroundCloudUploadCoordinator
 
-        init(provider: CloudProvider) throws {
+        init(provider: CloudProvider, hold: CloudAccountHold? = nil) throws {
             root = try makeTempRoot("upload-coord")
             jobStore = CloudUploadJobStore(root: root)
             cloud = SelectableCloudTranscriptionProvider(
                 selected: { provider },
                 openAi: FakeOpenAi(),
-                soniox: FakeSoniox()
+                soniox: FakeSoniox(),
+                hold: hold
             )
             coordinator = BackgroundCloudUploadCoordinator(
                 uploader: uploader,
@@ -290,6 +291,57 @@ private final class FakeUploadQueue: @unchecked Sendable {
 
         #expect(f.queue.retryable("seg3") == true)
         #expect(f.jobStore.load(jobId: "seg3") == nil)
+    }
+
+    // MARK: Cloud account hold (2026-09-29)
+
+    private static func hold() -> CloudAccountHold {
+        CloudAccountHold(fileURL: nil, apiKey: { _ in "key" })
+    }
+
+    /// One upload refused for the ACCOUNT, and the uploader starts no more: the next segments stay
+    /// Pending (the foreground processor parks or falls back), and nothing is staged or sent.
+    @Test func anAccountRefusalStopsTheUploaderStartingMore() async throws {
+        let hold = Self.hold()
+        let f = try Fixture(provider: .soniox, hold: hold)
+        f.queue.enqueue("seg-a")
+        let consumer = await f.coordinator.start()
+        defer { consumer.cancel() }
+
+        try await f.coordinator.submitPending()
+        #expect(f.uploader.enqueued.count == 1)
+        f.uploader.deliver(
+            CloudUploadOutcome(
+                jobId: "seg-a", httpStatus: 402,
+                error: "Soniox create transcription failed (402): Organization balance exhausted")
+        )
+        try await waitForUpload { f.queue.state("seg-a") == .failed }
+        #expect(hold.active(for: .soniox)?.kind == .accountOutOfFunds)
+
+        f.queue.enqueue("seg-b")
+        f.queue.enqueue("seg-c")
+        try await f.coordinator.submitPending()
+        #expect(f.uploader.enqueued.count == 1)
+        #expect(f.queue.state("seg-b") == .pending)
+        #expect(f.queue.state("seg-c") == .pending)
+        let staged = (try? FileManager.default.contentsOfDirectory(atPath: f.bodyDir.path)) ?? []
+        #expect(staged.isEmpty)
+    }
+
+    /// An upload already in flight when the account was topped up finishes — and that success
+    /// lifts the hold for everything else.
+    @Test func anUploadThatCompletesLiftsTheHold() async throws {
+        let hold = Self.hold()
+        let f = try Fixture(provider: .openAi, hold: hold)
+        f.queue.enqueue("seg-d")
+        let consumer = await f.coordinator.start()
+        defer { consumer.cancel() }
+
+        try await f.coordinator.submitPending()
+        hold.trip(.accountOutOfFunds, provider: .openAi)
+        f.uploader.deliver(CloudUploadOutcome(jobId: "seg-d", httpStatus: 200, responseBody: "hi"))
+        try await waitForUpload { f.queue.state("seg-d") == .complete }
+        #expect(hold.active(for: .openAi) == nil)
     }
 }
 

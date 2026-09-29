@@ -478,7 +478,7 @@ struct LiveEntityDataSource: EntityDataSource {
         // running at foreground pace). Detached so the intent answers now rather than after
         // ten segments of local transcription. The burst deliberately does not consult the
         // "while charging" policy: the person just asked.
-        graph.runtime.notifyConfigChanged()
+        graph.runtime.notifyConfigChanged(reviveFailures: true)
         let runtime = graph.runtime
         Task.detached(priority: .utility) { await runtime.runCatchUpBurst() }
         let diagnostics = runtime.diagnostics.value

@@ -16,9 +16,16 @@ public actor TranscriptionService {
     private let connectivityCheck: (any CloudConnectivityCheck)?
     private let uploader: BackgroundCloudUploadCoordinator?
     private let modelLifecycle: (any LocalTranscriptionLifecycle)?
+    /// The cloud backends and their shared account hold: probed on a schedule and by Test
+    /// Connection so a paused account resumes by itself once it takes work again.
+    private let cloudAccounts: SelectableCloudTranscriptionProvider?
+    /// The words a surface shows for a stored failure message (the app's `Copy`), used where this
+    /// service publishes to cloud health itself. Identity by default (tests).
+    private let cloudFailureText: @Sendable (String) -> String
     private let settings: any RuntimeSettings
     private let clock: RuntimeClock
     private let log: RuntimeLog
+    private var probingCloudAccount = false
 
     /// Serializes queue processing so the foreground loop and a triggered catch-up burst never
     /// run `processNext` concurrently on the shared (process-singleton) runtime.
@@ -37,6 +44,8 @@ public actor TranscriptionService {
         connectivityCheck: (any CloudConnectivityCheck)? = nil,
         uploader: BackgroundCloudUploadCoordinator? = nil,
         modelLifecycle: (any LocalTranscriptionLifecycle)? = nil,
+        cloudAccounts: SelectableCloudTranscriptionProvider? = nil,
+        cloudFailureText: @escaping @Sendable (String) -> String = { $0 },
         log: RuntimeLog = .silent
     ) {
         self.queue = queue
@@ -49,6 +58,8 @@ public actor TranscriptionService {
         self.connectivityCheck = connectivityCheck
         self.uploader = uploader
         self.modelLifecycle = modelLifecycle
+        self.cloudAccounts = cloudAccounts
+        self.cloudFailureText = cloudFailureText
         self.log = log
     }
 
@@ -56,6 +67,12 @@ public actor TranscriptionService {
 
     public func recoverOnStart() throws {
         try queue.recoverOnStart()
+        // Cloud health lives in memory; a hold outlives the process. Without this a relaunched
+        // app shows a neutral cloud row for an account it is still refusing to send to.
+        if let hold = heldCloudAccount() {
+            cloudHealth?.reportImmediate(
+                .failed(message: cloudFailureText(CloudAccountHold.pausedMessage(hold))))
+        }
     }
 
     /// Starts the background-upload coordinator and re-attaches to uploads that may have finished
@@ -76,7 +93,10 @@ public actor TranscriptionService {
 
     /// Segments parked while no provider was usable become eligible the moment one is (model
     /// downloaded, key added, mode changed). Returns true when anything changed.
-    public func reconsiderDisabled() async throws -> Bool {
+    public func reconsiderDisabled(foreground: Bool = false) async throws -> Bool {
+        // First, because a held cloud account that turns out to take work again is exactly what
+        // un-parks the Disabled tasks below — in this same pass.
+        await probeHeldCloudAccountIfDue(foreground: foreground)
         // Both kinds of parked work, in one stage, because they are the same question asked of two
         // states: is there anything we gave up on that could succeed now? `Disabled` is "no
         // provider was usable"; an exhausted `Failed` is "the provider was usable and the world
@@ -214,6 +234,9 @@ public actor TranscriptionService {
     /// transcribing while the app is suspended. Called on background entry (app still alive) and
     /// in the BGProcessing window — never during a short Bluetooth wake.
     public func submitPendingToUploader() async {
+        // The receive-only background pass is the only pass a phone off the charger runs, so a
+        // held account is checked here too (on its schedule — normally a no-op).
+        await probeHeldCloudAccountIfDue(foreground: false)
         guard let uploader, settings.cloudIsPrimaryTranscription else { return }
         do {
             try await uploader.submitPending()
@@ -280,10 +303,63 @@ public actor TranscriptionService {
 
     /// Authenticated probe against the selected cloud provider; publishes immediately to
     /// `cloudHealth` (an explicit Test Connection never waits for the 3-failure streak).
+    ///
+    /// A key check alone cannot say whether the account will pay for a transcription — Soniox's
+    /// `GET /v1/transcriptions` answers 200 for an empty account — so once the key is accepted the
+    /// account itself is checked with one second of silence (`probeAccount`). That is also what
+    /// lifts a hold the moment the user has topped up, instead of at the next scheduled check.
     public func testCloudConnection() async {
         guard let connectivityCheck, let cloudHealth else { return }
         cloudHealth.reportChecking()
-        cloudHealth.reportImmediate(await connectivityCheck.checkConnectivity())
+        let keyCheck = await connectivityCheck.checkConnectivity()
+        guard case .ok = keyCheck, let cloudAccounts else {
+            cloudHealth.reportImmediate(keyCheck)
+            return
+        }
+        let provider = settings.cloudTranscriptionProvider
+        switch await cloudAccounts.probeAccount(provider) {
+        case .accepted, .inconclusive:
+            // Inconclusive (offline mid-check, provider trouble) says nothing new about the
+            // account; the key check's answer stands.
+            cloudHealth.reportImmediate(keyCheck)
+        case .refused:
+            if let hold = cloudAccounts.hold?.active(for: provider) {
+                cloudHealth.reportImmediate(
+                    .failed(message: cloudFailureText(CloudAccountHold.pausedMessage(hold))))
+            } else {
+                cloudHealth.reportImmediate(keyCheck)
+            }
+        }
+    }
+
+    /// Checks a held cloud account when its schedule says to (see `CloudAccountHold`). Cheap and
+    /// silent when nothing is held, which is always the ordinary case.
+    public func probeHeldCloudAccountIfDue(foreground: Bool) async {
+        guard let cloudAccounts, let hold = cloudAccounts.hold, settings.cloudTranscriptionEnabled
+        else { return }
+        let provider = settings.cloudTranscriptionProvider
+        guard !probingCloudAccount, hold.isProbeDue(provider: provider, foreground: foreground)
+        else { return }
+        probingCloudAccount = true
+        defer { probingCloudAccount = false }
+        let outcome = await cloudAccounts.probeAccount(provider)
+        switch outcome {
+        case .accepted:
+            cloudHealth?.reportImmediate(.ok(detail: nil))
+        case .refused(let kind):
+            let next = hold.active(for: provider).map { ($0.nextProbeAtMs - clock.nowMs) / 60_000 }
+            log.write(
+                "cloud: \(provider.rawValue) account check: still refused (\(kind.rawValue)); "
+                    + "next check in \(next ?? 0) min")
+        case .inconclusive(let why):
+            log.write("cloud: \(provider.rawValue) account check inconclusive: \(why)")
+        }
+    }
+
+    /// The hold in force for the selected provider, if any.
+    public nonisolated func heldCloudAccount() -> CloudAccountHold.Hold? {
+        guard let cloudAccounts, settings.cloudTranscriptionEnabled else { return nil }
+        return cloudAccounts.hold?.active(for: settings.cloudTranscriptionProvider)
     }
 
     // --- queries -----------------------------------------------------------------------------

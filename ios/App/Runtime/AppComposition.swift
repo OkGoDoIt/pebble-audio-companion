@@ -13,6 +13,7 @@ import SwiftUI
 import Transcription
 import UIKit
 import WireProtocol
+import os
 
 // The app's composition root. Built exactly once, at launch, from `PebbleAudioApp`.
 //
@@ -81,6 +82,9 @@ final class AppComposition {
     private(set) var foregroundState: RuntimeForegroundState
     let queue: TranscriptionQueue
     let cloudHealth: CloudHealthMonitor
+    /// The cloud account hold (see `CloudAccountHold`), held for the lift handler wired once the
+    /// runtime exists.
+    let cloudHold: CloudAccountHold
     let localModel: LocalModelManager
     let aiRouter: AiModeRouter
     /// The DURABLE transcription router (not the live-preview one). Held so Settings can read
@@ -366,6 +370,18 @@ final class AppComposition {
             PersonalContextFormatting.aiGroundingBlock(personalContext.load())
         }
 
+        // One hold for every door audio leaves by — batch, background upload, live socket — so a
+        // provider that refused the ACCOUNT (402/401/403) is sent nothing more, by any path,
+        // until a check says it takes work again. Persisted: iOS relaunches this process many
+        // times a day, and each relaunch would otherwise rediscover the refusal with a full
+        // upload. See `CloudAccountHold` for the 09-29 incident it answers.
+        let cloudHold = CloudAccountHold(
+            fileURL: containerRoot.appendingPathComponent("cloud_account_hold.json"),
+            apiKey: { keychain.string(for: $0.keychainKey) },
+            nowMs: nowMs,
+            log: { AppRuntimeLog.shared.record($0) }
+        )
+        self.cloudHold = cloudHold
         let batchCloud = SelectableCloudTranscriptionProvider(
             selected: { settingsBox.cloudTranscriptionProvider },
             openAi: OpenAiTranscriptionProvider(
@@ -382,7 +398,8 @@ final class AppComposition {
                 diarizationEnabled: diarize,
                 contextText: sonioxContext,
                 contextTerms: contextTerms
-            )
+            ),
+            hold: cloudHold
         )
         // The local engine resolves per call from the persisted local-model selection: Apple
         // SpeechAnalyzer (the default, with the id read as its language) or a downloaded
@@ -409,13 +426,17 @@ final class AppComposition {
                     }
                 )
             },
-            isForeground: { AppForegroundProbe.shared.isForeground }
+            isForeground: { AppForegroundProbe.shared.isForeground },
+            log: { AppRuntimeLog.shared.record($0) }
         )
         let router = TranscriptionModeRouter(
             local: localBatch,
             remote: batchCloud,
             onRemoteOutcome: classifiedCloudOutcomeSink(cloudHealth),
-            mode: { settingsBox.transcriptionMode }
+            mode: { settingsBox.transcriptionMode },
+            // The durable router only: a fallback on a live 5 s chunk is too weak a signal to
+            // put on the record, and the durable path reports the same engine anyway.
+            log: { AppRuntimeLog.shared.record($0) }
         )
         self.transcriptionRouter = router
         let processor = TranscriptionProcessor(
@@ -476,6 +497,8 @@ final class AppComposition {
             // Real now that Parakeet can be the local engine: a resident multi-hundred-MB
             // model must be dropped on backgrounding, memory pressure and idle.
             modelLifecycle: localBatch,
+            cloudAccounts: batchCloud,
+            cloudFailureText: { TranscriptionFailureKind.classify($0).reason },
             log: AppRuntimeLog.runtimeLog
         )
 
@@ -500,7 +523,8 @@ final class AppComposition {
                 diarizationEnabled: diarize,
                 contextText: sonioxContext,
                 contextTerms: contextTerms
-            )
+            ),
+            hold: cloudHold
         )
         // The kit's live/export/playback seams take SYNCHRONOUS readers (they decode on their
         // own executors), so they read the spool through `files` rather than awaiting the actor.
@@ -534,12 +558,16 @@ final class AppComposition {
         let cloudLive = CloudLiveTranscriber(
             tap: liveTap,
             provider: streamingCloud,
-            enabled: { settingsBox.liveCloudEnabled },
+            // Not while the account is on hold: this is what stops the socket reconnecting into
+            // the same 402 every time the app is opened.
+            enabled: { settingsBox.liveCloudEnabled && !batchCloud.isSendingHeld },
             nowMs: nowMs,
             onOutcome: { outcome in
                 switch outcome {
                 case .ok(let detail): liveCloudOutcome(.ok(detail: detail))
-                case .failed(let kind): liveCloudOutcome(.failed(message: kind.reason))
+                case .failed(let kind):
+                    liveCloudOutcome(.failed(message: kind.reason))
+                    streamingCloud.noteFailureKind(kind)
                 }
             },
             logFailure: { label, error in
@@ -1048,9 +1076,25 @@ final class AppComposition {
         // in the App Group by Control Center or a widget sat unread in a process that was awake.
         nativeSurfaces.startCrossProcessListeners()
 
-        // A settings change that could unblock work wakes the pipeline immediately.
+        // A settings change that could unblock work wakes the pipeline immediately. It revives
+        // given-up transcriptions only when it changed something that could rescue one
+        // (`TranscriptionRecoveryKey`); the last key seen is kept under a lock because the
+        // callback is `@Sendable` and may arrive off the main actor.
         let runtime = self.runtime
-        settings.onRuntimeSettingsChanged = { runtime.notifyConfigChanged() }
+        let settingsMirror = settings.runtimeSettings
+        let lastRecoveryKey = OSAllocatedUnfairLock(
+            initialState: settingsMirror.transcriptionRecoveryKey)
+        settings.onRuntimeSettingsChanged = {
+            let now = settingsMirror.transcriptionRecoveryKey
+            let changed = lastRecoveryKey.withLock { last -> Bool in
+                defer { last = now }
+                return last != now
+            }
+            runtime.notifyConfigChanged(reviveFailures: changed)
+        }
+        settings.onApiKeyChanged = { runtime.notifyConfigChanged(reviveFailures: true) }
+        // A cloud account that takes work again un-parks what its hold parked, now.
+        cloudHold.onLifted { _ in runtime.notifyConfigChanged(reviveFailures: true) }
 
         // The screens' data-source holders, flipped from mocks to the live graph. Onboarding is
         // one of them: without this it would pair against `MockWatchPairingSource` and the first
@@ -1103,7 +1147,9 @@ final class AppComposition {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.foregroundState.devicePower = power.snapshot
-                self.runtime.notifyConfigChanged()
+                // Wake only: the charger and thermal state say when work may run, never that a
+                // failure's cause went away.
+                self.runtime.notifyConfigChanged(reviveFailures: false)
                 self.scheduleChargingCatchUp()
             }
         }

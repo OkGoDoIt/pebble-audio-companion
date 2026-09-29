@@ -79,6 +79,11 @@ final class AppSettings {
     /// instead of waiting for the loop's next tick.
     @ObservationIgnored var onRuntimeSettingsChanged: (@Sendable () -> Void)?
 
+    /// Installed by `AppComposition`: a key was saved or removed. Keys live in the Keychain, not
+    /// in the runtime mirror, so without this a new key — the fix for a rejected one — changed
+    /// nothing until the six-hourly revival sweep.
+    @ObservationIgnored var onApiKeyChanged: (@Sendable () -> Void)?
+
     /// Rebuilds the runtime mirror. Called from every `didSet` and once at the end of `init`
     /// (property observers do not fire during initialization).
     private func mirrorToRuntime() {
@@ -390,13 +395,19 @@ final class AppSettings {
 
     @discardableResult
     func setApiKey(_ value: String, for provider: CloudProvider) -> Bool {
-        defer { apiKeyRevision += 1 }
+        defer {
+            apiKeyRevision += 1
+            onApiKeyChanged?()
+        }
         return keychain.set(value, for: provider.keychainKey)
     }
 
     @discardableResult
     func removeApiKey(for provider: CloudProvider) -> Bool {
-        defer { apiKeyRevision += 1 }
+        defer {
+            apiKeyRevision += 1
+            onApiKeyChanged?()
+        }
         return keychain.remove(provider.keychainKey)
     }
 

@@ -66,6 +66,17 @@ extension RuntimeSettings {
         transcriptionMode == .remoteOnly || transcriptionMode == .remoteFirst
     }
 
+    /// The settings whose change could rescue a transcription that was given up on — see
+    /// `TranscriptionRecoveryKey`.
+    public var transcriptionRecoveryKey: TranscriptionRecoveryKey {
+        TranscriptionRecoveryKey(
+            transcriptionMode: transcriptionMode,
+            localTranscriptionModelId: localTranscriptionModelId,
+            cloudTranscriptionProvider: cloudTranscriptionProvider,
+            cloudUploadNetwork: cloudUploadNetwork
+        )
+    }
+
     /// The retention policy this settings state implies.
     public var retentionConfig: RetentionConfigInputs {
         RetentionConfigInputs(
@@ -75,6 +86,22 @@ extension RuntimeSettings {
             maxTotalBytes: retentionMaxBytes > 0 ? retentionMaxBytes : .max
         )
     }
+}
+
+/// The settings a failed transcription can be rescued by changing: which engine runs, which
+/// on-device model, which cloud, and which networks may carry the audio. (API keys are the other
+/// rescue, and are not settings — `AppSettings` reports a key write on its own.)
+///
+/// Only a change in one of these revives given-up transcriptions. Everything else — the capture
+/// switch, retention, AI settings, and above all the charger and thermal state, which change
+/// dozens of times a day — only wakes the pipeline. On 2026-09-29 every one of those revived ~350
+/// segments refused for an empty cloud account, each with a fresh eight-attempt ladder and, per
+/// attempt, a full re-upload.
+public struct TranscriptionRecoveryKey: Equatable, Sendable {
+    public var transcriptionMode: TranscriptionMode
+    public var localTranscriptionModelId: String
+    public var cloudTranscriptionProvider: CloudProvider
+    public var cloudUploadNetwork: CloudUploadNetwork
 }
 
 public enum RuntimeSettingsDefaults {

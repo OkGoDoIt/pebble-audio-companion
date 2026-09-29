@@ -64,7 +64,7 @@ import WireProtocol
         _ = await waitUntil { fixture.stages.stages.contains(.idleModelRelease) }
         let passesBefore = fixture.stages.stages.filter { $0 == .drainQueue }.count
 
-        fixture.runtime.notifyConfigChanged()
+        fixture.runtime.notifyConfigChanged(reviveFailures: false)
         _ = await waitUntil {
             fixture.stages.stages.filter { $0 == .drainQueue }.count > passesBefore
         }

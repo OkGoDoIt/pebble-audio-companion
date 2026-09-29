@@ -286,6 +286,9 @@ public actor BackgroundCloudUploadCoordinator {
     /// cap.
     public func submitPending() async throws {
         guard cloudPrimary() else { return }
+        // An account that has refused (402/401/403) gets nothing new — every segment sent to it
+        // would be encoded and uploaded in full only to be refused. See `CloudAccountHold`.
+        guard !cloudProvider.isSendingHeld else { return }
         guard let capable = cloudProvider.activeUploadCapable else { return }
         guard await cloudProvider.isAvailable() else { return }
         var budget = max(0, maxConcurrentUploads - (await queue.uploadingSegmentIds()).count)
@@ -488,11 +491,14 @@ public actor BackgroundCloudUploadCoordinator {
         await queue.saveTranscript(job.jobId, result, .remoteOnly)
         await queue.markComplete(job.jobId, result, .remoteOnly)
         cleanup(job)
+        cloudProvider.noteSuccess(provider: job.provider)
     }
 
     private func fail(_ job: CloudUploadJob, _ message: String) async {
         await queue.markFailed(job.jobId, message, true)
         cleanup(job)
+        // A refusal about the ACCOUNT stops every other upload to it, not just this one.
+        cloudProvider.noteFailureMessage(message, provider: job.provider)
     }
 
     private func noSpeech(_ job: CloudUploadJob) async {

@@ -164,11 +164,15 @@ public actor CompanionRuntime {
 
     /// Wakes the pipeline early. Every settings change that could unblock work calls this —
     /// that is what makes pacing event-driven rather than poll-driven.
-    public nonisolated func notifyConfigChanged() {
+    ///
+    /// `reviveFailures` is a separate decision, and it must be earned: pass true only for a change
+    /// that could fix a failure's CAUSE — a new key, a different provider or mode or model, a
+    /// cloud account that takes work again — so recordings given up on come back now rather than
+    /// in six hours. Everything else only wakes. (It used to revive on every call, and the charger
+    /// and thermal state call this dozens of times a day.)
+    public nonisolated func notifyConfigChanged(reviveFailures: Bool) {
         wake.signal()
-        // A settings change is the most common way a failure's CAUSE gets fixed — a new key, a
-        // different provider, a model that finished downloading. Recordings that were given up on
-        // should come back now, not in six hours.
+        guard reviveFailures else { return }
         Task { await environment.transcription.reconsiderAfterConfigurationChange() }
     }
 
@@ -643,7 +647,9 @@ public actor CompanionRuntime {
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
             releaseModel: { reason in await env.transcription.releaseModel(reason) },
-            reconsiderDisabled: { try await env.transcription.reconsiderDisabled() },
+            reconsiderDisabled: {
+                try await env.transcription.reconsiderDisabled(foreground: foreground.value)
+            },
             enqueueClosedSegments: { try await env.transcription.enqueueClosedSegments() },
             // Each drained task is progress for the loop watchdog: a backlog of a dozen
             // segments is one stage that legitimately runs for many minutes. Backgrounded, the
