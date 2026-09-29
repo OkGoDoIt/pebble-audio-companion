@@ -547,7 +547,7 @@ public actor AudioReceiverSession {
     @discardableResult
     public func verifyWatchState() async -> Bool {
         let bytes = await withReceiverTimeout(clock: clock, ms: Self.verifyReadTimeoutMs) {
-            try? await self.link.readInfo()
+            try? await self.readInfoFromLink()
         }
         guard let bytes, case .decoded(let message) = AudioCompanionProtocol.decodeInfo(bytes),
             let snapshot = message as? InfoSnapshot
@@ -1132,10 +1132,36 @@ public actor AudioReceiverSession {
         }
     }
 
+    /// Info reads this session has asked the link for that have not come back yet.
+    private var infoReadsInFlight = 0
+
+    /// Every Info read this session makes goes through here, so the handshake can tell when it is
+    /// about to collide with one of its own.
+    private func readInfoFromLink() async throws -> [UInt8] {
+        infoReadsInFlight += 1
+        defer { infoReadsInFlight -= 1 }
+        return try await link.readInfo()
+    }
+
     private func connectionHandshake(abort: OneShot<Bool>) async throws {
         setState(.authorizing)
 
-        switch AudioCompanionProtocol.decodeInfo(try await link.readInfo()) {
+        // The link keeps ONE Info read in flight and refuses a second with `operationInFlight`,
+        // and the handshake's read is the one that must not be refused: failing it fails the
+        // whole handshake and rebuilds the link. On 2026-09-19 14:19:54 the app came to the
+        // foreground while the link was still subscribing, foreground entry asked the watch what
+        // it was doing (`verifyWatchState`, which the link accepts as soon as the Info
+        // characteristic is discovered), the link reached Ready 400 ms later — and the handshake
+        // read collided with the verify's, which answered 150 ms after that. One refused read
+        // cost a cancel-and-reconnect of a link that was working. Wait for our own read to land
+        // (bounded by the link's operation timeout), then ask.
+        var waitedMs: Int64 = 0
+        while infoReadsInFlight > 0 && waitedMs < Self.handshakeInfoReadWaitMs {
+            try await clock.sleep(ms: Self.infoReadPollMs)
+            waitedMs += Self.infoReadPollMs
+        }
+
+        switch AudioCompanionProtocol.decodeInfo(try await readInfoFromLink()) {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
@@ -1410,7 +1436,7 @@ public actor AudioReceiverSession {
     }
 
     private func refreshInfoSnapshot() async {
-        guard let bytes = try? await link.readInfo() else { return }
+        guard let bytes = try? await readInfoFromLink() else { return }
         switch AudioCompanionProtocol.decodeInfo(bytes) {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
@@ -1973,6 +1999,12 @@ public actor AudioReceiverSession {
     /// A verify that never returns is a verify that never happened — a stale link the platform
     /// still calls connected can leave a GATT read outstanding indefinitely.
     static let verifyReadTimeoutMs: Int64 = 5_000
+
+    /// How long the handshake waits for an Info read of this session's own to finish before
+    /// asking anyway: the link's per-operation timeout (10 s) plus slack, so a read the link has
+    /// given up on is out of the way before the handshake's goes in.
+    static let handshakeInfoReadWaitMs: Int64 = 12_000
+    static let infoReadPollMs: Int64 = 50
 
     /// Unanswered verifies before the link is presumed stale and rebuilt. Three, at the 20 s
     /// verify cadence: a minute of a watch saying nothing to a direct question, which no
