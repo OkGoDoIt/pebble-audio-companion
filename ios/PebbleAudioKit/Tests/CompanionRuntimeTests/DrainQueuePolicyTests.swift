@@ -29,6 +29,13 @@ import Transcription
     private func makeService(
         segments: Int
     ) throws -> (TranscriptionService, CountingProvider) {
+        let (service, provider, _) = try makeServiceWithQueue(segments: segments)
+        return (service, provider)
+    }
+
+    private func makeServiceWithQueue(
+        segments: Int
+    ) throws -> (TranscriptionService, CountingProvider, TranscriptionQueue) {
         let clock = TestClock()
         let db = try AppDatabase.inMemory()
         let root = Fixture.temporaryDirectory("drain")
@@ -53,7 +60,17 @@ import Transcription
             settings: RuntimeSettingsBox(RuntimeSettingsSnapshot(captureIntent: .active)),
             clock: clock
         )
-        return (service, provider)
+        return (service, provider, queue)
+    }
+
+    /// A task left `Running` by work that died is picked up by the next drain — it used to wait
+    /// for the next process launch (four segments sat 16-20 hours on 2026-09-18).
+    @Test func aDrainPicksUpATaskOrphanedAsRunning() async throws {
+        let (service, provider, queue) = try makeServiceWithQueue(segments: 1)
+        try queue.markRunning("seg-0")
+        _ = try await service.drainQueue()
+        #expect(provider.transcribed == 1)
+        #expect(try queue.load("seg-0")?.state == .complete)
     }
 
     @Test func aDrainStopsAtTheNextTaskOnceItMayNotContinue() async throws {

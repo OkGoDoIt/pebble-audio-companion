@@ -151,6 +151,12 @@ public final class TranscriptionProcessor: Sendable {
             onStateChanged(segmentId, .complete)
             return complete
         } catch let error where error is CancellationError {
+            // Whoever cancelled this, the task must not be left `Running`: nothing but a process
+            // launch resets that state. Written synchronously, so it lands even when this task
+            // is itself being cancelled.
+            if (try? queue.markInterrupted(segmentId)) != nil {
+                onStateChanged(segmentId, .pending)
+            }
             throw error
         } catch TranscriptionError.noSpeechDetected {
             let terminal = try queue.markNoSpeech(segmentId)

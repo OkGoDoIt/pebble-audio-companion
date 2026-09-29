@@ -118,7 +118,34 @@ import Testing
         #expect(health.health.failingStages.isEmpty)
     }
 
-    @Test func cancellationStillStopsTheWholePass() async throws {
+    /// The PASS being cancelled (the loop going away) still stops it at once.
+    @Test func cancellingThePassStillStopsIt() async throws {
+        let clock = TestClock()
+        let health = monitor(clock)
+        let calls = CallRecorder()
+        let pass = pass(clock: clock, health: health) { steps in
+            steps.enrich = {
+                calls.record("enrich")
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CancellationError()
+            }
+            steps.liveLocalPass = {
+                calls.record("live")
+                return false
+            }
+        }
+
+        await #expect(throws: CancellationError.self) { _ = try await pass.run() }
+        #expect(calls.calls == ["enrich"])
+        // Cancellation is the loop going away, not a stage misbehaving.
+        #expect(health.health[.enrich].isFailing == false)
+    }
+
+    /// A cancellation raised INSIDE a stage while the pass is still wanted — work interrupted
+    /// under it, e.g. the local model released when the app left the foreground — is not the
+    /// pass being cancelled. It used to end the pass and, one level up, the loop itself
+    /// (2026-09-18 17:37, 2026-09-29). The pass now carries on, and it is not a failure.
+    @Test func anInterruptionInsideAStageDoesNotStopThePass() async throws {
         let clock = TestClock()
         let health = monitor(clock)
         let calls = CallRecorder()
@@ -133,9 +160,8 @@ import Testing
             }
         }
 
-        await #expect(throws: CancellationError.self) { _ = try await pass.run() }
-        #expect(calls.calls == ["enrich"])
-        // Cancellation is the loop going away, not a stage misbehaving.
+        _ = try await pass.run()
+        #expect(calls.calls == ["enrich", "live"])
         #expect(health.health[.enrich].isFailing == false)
     }
 

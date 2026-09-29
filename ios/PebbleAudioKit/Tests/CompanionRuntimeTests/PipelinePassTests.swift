@@ -372,6 +372,42 @@ import Testing
     }
 }
 
+extension PipelinePassTests {
+    /// 2026-09-18/29: the local model released under an in-flight transcription (the app left
+    /// the foreground) surfaced as a `CancellationError` from INSIDE the drain stage. The loop
+    /// read that as its own cancellation and returned — nothing ran until the watchdog noticed
+    /// ten minutes later. Only the loop's own cancellation may end it now.
+    @Test func anInterruptionInsideAStageDoesNotEndTheLoop() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+        var steps = PipelineSteps()
+        steps.drainQueue = { throw CancellationError() }
+        steps.regroup = {
+            calls.record("regroup")
+            return true
+        }
+        let loop = PipelineLoop(
+            pass: PipelinePass(steps: steps, clock: clock, health: health),
+            wake: WakeChannel(),
+            clock: clock,
+            health: health
+        )
+        let task = Task { await loop.run() }
+        await TestClock.settle()
+        // The pass carried on past the interrupted stage...
+        #expect(calls.calls.count == 1)
+        // ...and the loop is still turning.
+        await clock.advance(by: PipelinePacing.idleMs)
+        await TestClock.settle()
+        #expect(calls.calls.count >= 2)
+        // Not a stage failure: nothing about the drain is broken.
+        #expect(health.health.failingStages.contains(.drainQueue) == false)
+        task.cancel()
+        await task.value
+    }
+}
+
 struct TestFailure: Error {}
 
 final class Recorder: @unchecked Sendable {

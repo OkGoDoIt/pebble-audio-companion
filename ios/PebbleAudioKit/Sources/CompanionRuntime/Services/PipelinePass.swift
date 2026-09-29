@@ -265,7 +265,16 @@ public struct PipelinePass: Sendable {
             health?.succeeded(stage)
             return value
         } catch is CancellationError {
-            throw CancellationError()
+            // Only the PASS being cancelled ends the pass. A cancellation that comes up from
+            // inside a stage while this task is still running is work that was interrupted —
+            // the local model released under a transcription when the app went to the
+            // background, a memory warning — and it used to propagate straight out of the loop,
+            // which returned for good: nothing ran until the watchdog noticed ten minutes later
+            // ("pipeline pass wedged in drainQueue", 2026-09-18 17:37). The interrupted work has
+            // already put itself back (see `TranscriptionProcessor.processNext`); this pass
+            // simply carries on without it. Not a failure, so the stage's backoff is untouched.
+            if Task.isCancelled { throw CancellationError() }
+            return fallback
         } catch {
             health?.failed(stage, error)
             return fallback
@@ -484,7 +493,14 @@ public struct PipelineLoop: Sendable {
             do {
                 sleepMs = try await pass.run()
             } catch is CancellationError {
-                return
+                // The loop ends when IT is cancelled (a watchdog restart, `stop()`), never because
+                // something inside a pass was — see `PipelinePass.stage`.
+                if Task.isCancelled { return }
+                if let health {
+                    health.passAbandoned(CancellationError())
+                } else {
+                    log.failure("pipeline pass", CancellationError())
+                }
             } catch {
                 if let health {
                     health.passAbandoned(error)

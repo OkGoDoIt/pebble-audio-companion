@@ -193,6 +193,7 @@ public actor TranscriptionService {
         guard !draining else { return false }
         draining = true
         defer { draining = false }
+        resetOrphanedRunningTasks()
         var processed = false
         while try await processor.processNext() != nil {
             processed = true
@@ -210,6 +211,7 @@ public actor TranscriptionService {
         guard !draining else { return 0 }
         draining = true
         defer { draining = false }
+        resetOrphanedRunningTasks()
         var processed = 0
         while processed < maxSegments {
             try Task.checkCancellation()
@@ -224,11 +226,23 @@ public actor TranscriptionService {
         try processor.nextRetryAtMs()
     }
 
+    /// Any task still `Running` when a drain starts is an orphan: this service's `draining` flag
+    /// is the only way into the processor, and it is held right now. `processNext` puts an
+    /// interrupted task back itself; this catches whatever else can leave one behind.
+    private func resetOrphanedRunningTasks() {
+        do {
+            try queue.recoverOnStart()
+        } catch {
+            log.failure("queue orphan reset", error)
+        }
+    }
+
     // --- model residency ------------------------------------------------------------------------
 
     public func releaseModel(_ reason: String) async {
         await modelLifecycle?.releaseModel(reason: reason)
     }
+
 
     public func releaseModelIfIdle(idleTimeoutMs: Int64) async {
         await modelLifecycle?.releaseModelIfIdle(nowMs: clock.nowMs, idleTimeoutMs: idleTimeoutMs)

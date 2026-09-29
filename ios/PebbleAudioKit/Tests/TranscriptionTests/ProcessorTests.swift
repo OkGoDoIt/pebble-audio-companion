@@ -60,6 +60,23 @@ private final class OpenAnswers: @unchecked Sendable {
         pcmStream([Data([1, 2, 3, 4])])
     }
 
+    /// The model released under a running transcription (backgrounding, a memory warning) — or
+    /// the pass cancelled — used to leave the task `Running`, which nothing but a process launch
+    /// resets. It goes back to Pending now, with the attempt given back.
+    @Test func anInterruptedTaskGoesBackToPendingWithItsAttemptReturned() async throws {
+        let queue = queue()
+        try queue.enqueue("seg-1")
+        let processor = TranscriptionProcessor(
+            queue: queue,
+            router: localOnlyRouter(ProcessorFakeProvider("local", error: CancellationError())),
+            pcmSource: fourBytePcm
+        )
+        await #expect(throws: CancellationError.self) { try await processor.processNext() }
+        let task = try queue.load("seg-1")
+        #expect(task?.state == .pending)
+        #expect(task?.attempts == 0)
+    }
+
     @Test func processNextCompletesQueuedSegment() async throws {
         let queue = queue()
         try queue.enqueue("seg-1")

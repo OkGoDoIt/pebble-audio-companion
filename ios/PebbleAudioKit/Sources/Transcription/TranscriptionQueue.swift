@@ -236,6 +236,22 @@ public final class TranscriptionQueue: Sendable {
         }
     }
 
+    /// A task whose run was interrupted — the model released under it, the pass cancelled —
+    /// goes back to Pending with its attempt given back: nothing about the audio or the provider
+    /// failed, so it must not eat into the eight-attempt budget, and it must not stay `Running`,
+    /// which nothing but a process launch would ever reset (2026-09-18: four segments sat there
+    /// 16-20 hours until the app was relaunched).
+    @discardableResult
+    public func markInterrupted(_ segmentId: String) throws -> TranscriptionTask? {
+        try update(segmentId) { task in
+            guard task.state == .running else { return task }
+            var next = task
+            next.state = .pending
+            next.attempts = max(0, task.attempts - 1)
+            return next
+        }
+    }
+
     @discardableResult
     public func markComplete(
         _ segmentId: String, result: RoutedTranscription
