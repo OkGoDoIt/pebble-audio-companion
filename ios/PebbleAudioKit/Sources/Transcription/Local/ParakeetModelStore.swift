@@ -385,7 +385,11 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         guard let spec = ParakeetModelCatalog.spec(id: modelId) else { return .notInstalled }
         installs[spec.id]?.cancel()
         await installs[spec.id]?.value
-        try? FileManager.default.removeItem(at: location.directory(for: spec))
+        let directory = location.directory(for: spec)
+        if spec.requiresPreparation, supportedRuntimes.contains(spec.runtime) {
+            await preparer(spec.runtime).discardBuiltArtifacts(spec: spec, directory: directory)
+        }
+        try? FileManager.default.removeItem(at: directory)
         set(spec.id, .notInstalled)
         return .notInstalled
     }
@@ -446,6 +450,14 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
         }
         guard spec.requiresPreparation else {
             set(spec.id, .installed)
+            return
+        }
+        // A download or import can finish after the app has left the screen; the cold pass that
+        // follows it must not run then. Left unpacked-but-unprepared (`.preparing`), it is picked
+        // up by the next foreground `refresh()`.
+        guard isForeground() else {
+            log("local model unpacked id=\(spec.id); preparing when the app is next open")
+            set(spec.id, .preparing)
             return
         }
         await performPrepare(spec)

@@ -118,7 +118,7 @@ final class AppComposition {
     /// Set once a scene has actually come up — see `noteSceneActive()`. Latches true: a process
     /// that has ever shown a window is not one iOS started headless, and nothing after that point
     /// may apply receive-only to it.
-    private static var sceneHasBeenActive = false
+    private(set) static var sceneHasBeenActive = false
     private var todaySource: LiveTodayDataSource?
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
@@ -1301,6 +1301,7 @@ final class AppComposition {
         }
         AppRuntimeLog.shared.record("launch cause: \(reason)")
         receiver.markLaunchedInBackground()
+        AppForegroundProbe.shared.set(false)
         // The link's give-up watchdog must not be armed for a wake nobody is watching (see
         // `CoreBluetoothAudioGattLink.setForeground`). `install()` seeds it from
         // `UIApplication.shared.applicationState`, and the flight recorder shows that reading is
@@ -1373,12 +1374,14 @@ final class AppComposition {
     private static var sceneBackgroundNoted = false
 
     private func applySceneActive() {
+        AppForegroundProbe.shared.set(true)
         receiver.clearLaunchedInBackground()
         gattLink.setForeground(true)
         Task { [runtime] in await runtime.setForeground(true) }
     }
 
     private func applySceneBackground() {
+        AppForegroundProbe.shared.set(false)
         gattLink.setForeground(false)
         Task { [runtime] in await runtime.setForeground(false) }
     }

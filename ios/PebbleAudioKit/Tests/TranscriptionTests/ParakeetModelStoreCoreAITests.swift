@@ -59,6 +59,12 @@ private final class FakePreparer: ParakeetModelPreparing, @unchecked Sendable {
     }
 
     var preparedIds: [String] { lock.withLock { prepared } }
+    private var discarded: [String] = []
+    var discardedIds: [String] { lock.withLock { discarded } }
+
+    func discardBuiltArtifacts(spec: ParakeetModelSpec, directory: URL) async {
+        lock.withLock { discarded.append(spec.id) }
+    }
 
     func prepare(spec: ParakeetModelSpec, directory: URL) async throws {
         if let gate {
@@ -370,6 +376,40 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
         try manager.createDirectory(at: other.appendingPathComponent("x"), withIntermediateDirectories: true)
         try ParakeetModelStore.hoistSingleWrapperDirectory(in: other, marker: "metadata.json")
         #expect(manager.fileExists(atPath: other.appendingPathComponent("x").path))
+    }
+
+    /// An install can finish after the app has left the screen (a long import, a download the
+    /// user walked away from). The cold pass after it must wait for the foreground too — only the
+    /// refresh path used to check.
+    @Test func anInstallThatFinishesInTheBackgroundWaitsForTheForegroundToPrepare() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let foreground = ForegroundBox()
+        foreground.value = false
+        let preparer = FakePreparer()
+        let store = makeStore(root: root, preparer: preparer, foreground: foreground)
+        _ = try dropInInbox(root, id: coreAI.id)
+
+        #expect(await store.install(coreAI.id) == .preparing)
+        #expect(preparer.preparedIds.isEmpty)
+
+        foreground.value = true
+        _ = await store.refresh()
+        try await waitUntil("the prepare pass") { await store.state(of: coreAI.id) == .installed }
+        #expect(preparer.preparedIds == [coreAI.id])
+    }
+
+    /// Uninstalling a Core AI model also drops the ~1.1 GB the runtime built from it outside the
+    /// install directory — which a re-import could otherwise meet, stale, again.
+    @Test func uninstallDropsWhatTheRuntimeBuiltFromTheModel() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let preparer = FakePreparer()
+        let store = makeStore(root: root, preparer: preparer)
+        _ = try dropInInbox(root, id: coreAI.id)
+        #expect(await store.install(coreAI.id) == .installed)
+        #expect(await store.uninstall(coreAI.id) == .notInstalled)
+        #expect(preparer.discardedIds == [coreAI.id])
     }
 
     @Test func anUnpackedModelIsPreparedOnAForegroundRefreshOnly() async throws {

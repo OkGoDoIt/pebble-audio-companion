@@ -40,6 +40,14 @@ public protocol ParakeetModelPreparing: Sendable {
     /// Loads the model at `directory` once (and warms its graphs), then drops it. Throws when
     /// this build cannot run that runtime at all.
     func prepare(spec: ParakeetModelSpec, directory: URL) async throws
+    /// The model is being uninstalled: drop whatever the runtime built from it outside its
+    /// install directory. Core AI's specialization cache is ~1.1 GB that an uninstall otherwise
+    /// left behind — and a later re-import could meet the same stale entry it was built from.
+    func discardBuiltArtifacts(spec: ParakeetModelSpec, directory: URL) async
+}
+
+extension ParakeetModelPreparing {
+    public func discardBuiltArtifacts(spec: ParakeetModelSpec, directory: URL) async {}
 }
 
 /// Nothing to do — Cactus models are usable the moment they are extracted.
@@ -530,6 +538,12 @@ extension ParakeetEngineFactory {
             }
             // Only let go of a model this pass loaded: one a transcription loaded is its business.
             if loadedHere { await engine.releaseUnlessBusy() }
+        }
+
+        public func discardBuiltArtifacts(spec: ParakeetModelSpec, directory: URL) async {
+            let engine = CoreAIParakeetEngine.shared
+            _ = await engine.discardCompiledCache(
+                modelPath: directory.path, unlessLoadedSince: engine.loadGeneration)
         }
     }
 
