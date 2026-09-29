@@ -845,6 +845,13 @@ public actor SegmentStore: SegmentSink {
                 finalLogBytes = Int64(parsed.validBytes)
                 reconciled = reconciledMeta(meta, records: parsed.records, logBytes: finalLogBytes)
             }
+            if meta.closeReason == nil {
+                // Open at the crash, so its appends were never fsynced — they are synced only
+                // before a checkpoint — and a RESUME may now claim this audio to the watch as
+                // stored (`streamContinuation`), which lets the watch delete its own copy. Make it
+                // durable before anything can claim it. Once per crashed segment, at launch.
+                Self.synchronizeFile(logURL(id))
+            }
             reconciled = withNormalizedGaps(reconciled)
             var metaStamp = stamp
             if reconciled != meta {
@@ -894,6 +901,13 @@ public actor SegmentStore: SegmentSink {
         metaIndex = index
         log("recover: \(index.count) segment(s), \(trusted) from the index, \(index.count - trusted) read")
         saveRecoveryIndex(RecoveryIndex(entries: entries))
+    }
+
+    /// fsync one file by path. Best effort: a file that cannot be opened has nothing to sync.
+    private static func synchronizeFile(_ url: URL) {
+        guard let handle = try? FileHandle(forUpdating: url) else { return }
+        try? handle.synchronize()
+        try? handle.close()
     }
 
     private func needsRecoveryParse(_ meta: SegmentMeta, logBytes: Int64) -> Bool {

@@ -1708,6 +1708,47 @@ public actor AudioReceiverSession {
             // The stream carries on in a new segment and these are the tail of an earlier one.
             batch.removeAll { $0.sequence < ctx.contiguousNext }
         }
+        // A hole under this batch is RECORDED BEFORE the batch is stored. The other way round, a
+        // process killed between the two awaits left frames above an unrecorded hole — and on the
+        // next RESUME the store answers "stored through the highest sequence", the session seeds
+        // there, and its checkpoint tells the watch to delete the hole's frames, which it still
+        // held and would have re-sent (review of the RESUME accounting, 2026-09-30). This way a
+        // kill leaves a recorded gap and no frames above it: honest, and a re-send that arrives
+        // still refills it. Nothing below is claimed until the checkpoint, so the order is free.
+        let holeAccountedByWatch =
+            first > ctx.contiguousNext
+            && ctx.openWatchGapFrom.map { $0 <= ctx.contiguousNext } == true
+        if first > ctx.contiguousNext && !holeAccountedByWatch {
+            // Silent discontinuity: synthesize a gap record, then account for it (below).
+            //
+            // Contiguity used to stop here permanently, and the consequence was on the WATCH.
+            // `highestContiguousSequencePersisted` is the watch's only instruction to free
+            // spool (`audio_companion_spool_trim_through`), so a frozen watermark means the
+            // spool never trims again. It saturates, starts evicting its head, and emits an
+            // overflow gap for every newly captured frame — the ratcheting-overflow pattern
+            // `runCheckpointTicker` documents, except with no way out for the rest of the
+            // stream. One dropped notification cost every recording after it.
+            //
+            // The gap record is DURABLE and permanent: those frames are known-lost and will
+            // never be re-sent, so `advanceAccountedPrefix()` can never step over them and
+            // there is nothing to wait for. Accounting for them is what the watch-reported
+            // branch below already does, for a hole that is no more recoverable than this one.
+            //
+            // Only the parts of the hole the watch has NOT already explained are the
+            // receiver's to report: its own notices keep their reasons.
+            for run in ctx.unaccountedRuns(upTo: first) {
+                try await sink.recordGap(
+                    streamId: ctx.streamId,
+                    gap: GapRecord(
+                        firstMissingSequence: run.first,
+                        missingFrameCount: run.count,
+                        firstMissingSampleIndex: run.sampleIndex,
+                        origin: .sequenceSkip
+                    )
+                )
+            }
+        }
+
         // The return value is what the sink ACTUALLY persisted (plan Part 4.2). It is legitimately
         // shorter than `frames` — a post-RESUME spool rewind re-sends frames the sink already
         // holds, and those are durable, so contiguity below still advances over them. What is NOT
@@ -1717,40 +1758,10 @@ public actor AudioReceiverSession {
         _ = try await sink.appendFrames(streamId: ctx.streamId, frames: batch)
 
         if first > ctx.contiguousNext {
-            let accountedByWatchGap = ctx.openWatchGapFrom.map { $0 <= ctx.contiguousNext } == true
-            if accountedByWatchGap {
+            if holeAccountedByWatch {
                 // The watch already reported this hole (unknown extent); now we know where it
                 // ends. The lost range is accounted: contiguity resumes at this batch.
                 ctx.openWatchGapFrom = nil
-            } else {
-                // Silent discontinuity: synthesize a gap record, then account for it.
-                //
-                // Contiguity used to stop here permanently, and the consequence was on the WATCH.
-                // `highestContiguousSequencePersisted` is the watch's only instruction to free
-                // spool (`audio_companion_spool_trim_through`), so a frozen watermark means the
-                // spool never trims again. It saturates, starts evicting its head, and emits an
-                // overflow gap for every newly captured frame — the ratcheting-overflow pattern
-                // `runCheckpointTicker` documents, except with no way out for the rest of the
-                // stream. One dropped notification cost every recording after it.
-                //
-                // The gap record is DURABLE and permanent: those frames are known-lost and will
-                // never be re-sent, so `advanceAccountedPrefix()` can never step over them and
-                // there is nothing to wait for. Accounting for them is what the watch-reported
-                // branch above already does, for a hole that is no more recoverable than this one.
-                //
-                // Only the parts of the hole the watch has NOT already explained are the
-                // receiver's to report: its own notices keep their reasons.
-                for run in ctx.unaccountedRuns(upTo: first) {
-                    try await sink.recordGap(
-                        streamId: ctx.streamId,
-                        gap: GapRecord(
-                            firstMissingSequence: run.first,
-                            missingFrameCount: run.count,
-                            firstMissingSampleIndex: run.sampleIndex,
-                            origin: .sequenceSkip
-                        )
-                    )
-                }
             }
             ctx.contiguousNext = first
             ctx.contiguousSampleIndex = message.firstSampleIndex

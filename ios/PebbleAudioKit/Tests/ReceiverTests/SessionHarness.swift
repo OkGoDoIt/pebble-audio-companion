@@ -16,6 +16,13 @@ final class LedgerSink: SegmentSink, @unchecked Sendable {
     private let lock = NSLock()
     private var _lastAppended: UInt32?
     private var _appendCalls = 0
+    private var _ledger: [Entry] = []
+
+    /// Every append and gap write, in the order the session made them.
+    enum Entry: Equatable {
+        case append(first: UInt32)
+        case gap(first: UInt32, count: UInt32)
+    }
 
     init(store: SegmentStore, scheduler: TestScheduler) {
         self.store = store
@@ -25,6 +32,7 @@ final class LedgerSink: SegmentSink, @unchecked Sendable {
     /// Highest sequence the session has handed to `appendFrames` (whether or not it was new).
     var lastAppended: UInt32? { lock.withLock { _lastAppended } }
     var appendCalls: Int { lock.withLock { _appendCalls } }
+    var ledger: [Entry] { lock.withLock { _ledger } }
 
     func openSegment(
         start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?
@@ -39,6 +47,7 @@ final class LedgerSink: SegmentSink, @unchecked Sendable {
         defer { scheduler.noteEvent() }
         let accepted = try await store.appendFrames(streamId: streamId, frames: frames)
         lock.withLock {
+            if let first = frames.first?.sequence { _ledger.append(.append(first: first)) }
             _appendCalls += 1
             if let last = frames.last?.sequence { _lastAppended = max(_lastAppended ?? 0, last) }
         }
@@ -49,6 +58,9 @@ final class LedgerSink: SegmentSink, @unchecked Sendable {
         scheduler.noteEvent()
         defer { scheduler.noteEvent() }
         try await store.recordGap(streamId: streamId, gap: gap)
+        lock.withLock {
+            _ledger.append(.gap(first: gap.firstMissingSequence, count: gap.missingFrameCount))
+        }
     }
 
     func closeSegment(reason: SegmentCloseReason) async throws {
