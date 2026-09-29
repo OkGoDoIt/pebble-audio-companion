@@ -341,7 +341,14 @@ final class AppComposition {
 
         // --- transcription providers ---------------------------------------------------------
 
-        let transport = URLSessionHttpTransport()
+        // Audio-carrying requests are held to the user's "Upload Audio" choice here too — the
+        // foreground path used to ignore it (see `URLSessionHttpTransport.audioNetwork`).
+        let transport = URLSessionHttpTransport(audioNetwork: { settingsBox.cloudUploadNetwork })
+        // Whether audio may be SENT right now: the choice, applied to the network the phone is on.
+        let uploadAllowedNow: @Sendable () -> Bool = {
+            settingsBox.cloudUploadNetwork == .anyNetwork
+                || NetworkReachability.shared.allowsWifiOnlyUploads
+        }
         let openAiKey: @Sendable () -> String? = { keychain.string(for: .openAiApiKey) }
         let sonioxKey: @Sendable () -> String? = { keychain.string(for: .sonioxApiKey) }
         let cloudConsent: @Sendable () -> Bool = { settingsBox.cloudTranscriptionEnabled }
@@ -399,7 +406,8 @@ final class AppComposition {
                 contextText: sonioxContext,
                 contextTerms: contextTerms
             ),
-            hold: cloudHold
+            hold: cloudHold,
+            uploadAllowedNow: uploadAllowedNow
         )
         // The local engine resolves per call from the persisted local-model selection: Apple
         // SpeechAnalyzer (the default, with the id read as its language) or a downloaded
@@ -524,7 +532,8 @@ final class AppComposition {
                 contextText: sonioxContext,
                 contextTerms: contextTerms
             ),
-            hold: cloudHold
+            hold: cloudHold,
+            uploadAllowedNow: uploadAllowedNow
         )
         // The kit's live/export/playback seams take SYNCHRONOUS readers (they decode on their
         // own executors), so they read the spool through `files` rather than awaiting the actor.

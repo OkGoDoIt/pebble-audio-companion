@@ -313,3 +313,104 @@ private func audio() -> AsyncThrowingStream<Data, Error> {
         #expect(hold.active(for: .soniox)?.kind == .accountOutOfFunds)
     }
 }
+
+// MARK: - "Upload Audio: Wi-Fi Only" on the immediate-send paths
+
+@Suite struct UploadNetworkPolicyTests {
+    private final class Flag: @unchecked Sendable {
+        var value: Bool
+        init(_ value: Bool) { self.value = value }
+    }
+
+    /// On a network the user has not allowed audio on, the batch provider is unavailable for
+    /// anything that would send NOW (so Cloud-first uses on-device, Cloud-only parks) — but the
+    /// background uploader may still enqueue, because iOS holds a Wi-Fi-only request until
+    /// Wi-Fi appears even with the app suspended.
+    @Test func aDisallowedNetworkParksImmediateSendsButNotBackgroundUploads() async {
+        let allowed = Flag(false)
+        let soniox = Backend("soniox")
+        let cloud = SelectableCloudTranscriptionProvider(
+            selected: { .soniox }, openAi: Backend("openai"), soniox: soniox,
+            hold: CloudAccountHold(fileURL: nil, apiKey: { _ in "key" }),
+            uploadAllowedNow: { allowed.value })
+
+        #expect(await cloud.isAvailable() == false)
+        #expect(await cloud.isAvailableForBackgroundUpload())
+        #expect(
+            TranscriptionFailureKind.classify(await cloud.unavailabilityReason()) == .noConnection)
+        // Not even the one-second account probe goes out.
+        guard case .inconclusive = await cloud.probeAccount(.soniox) else {
+            Issue.record("expected an inconclusive probe")
+            return
+        }
+        #expect(soniox.callCount == 0)
+
+        allowed.value = true
+        #expect(await cloud.isAvailable())
+    }
+
+    /// A live socket IS an audio upload.
+    @Test func theLiveSocketHonoursTheChoiceToo() async {
+        final class Streaming: StreamingTranscriptionProvider, @unchecked Sendable {
+            let id = "soniox-rt"
+            func isAvailable() async -> Bool { true }
+            func transcribeStream(pcm: AsyncThrowingStream<Data, Error>, sampleRateHz: Int)
+                -> AsyncThrowingStream<StreamingTranscriptUpdate, Error>
+            {
+                AsyncThrowingStream { $0.finish() }
+            }
+        }
+        let allowed = Flag(false)
+        let live = SelectableStreamingTranscriptionProvider(
+            selected: { .soniox }, openAi: Streaming(), soniox: Streaming(),
+            uploadAllowedNow: { allowed.value })
+        #expect(await live.isAvailable() == false)
+        allowed.value = true
+        #expect(await live.isAvailable())
+    }
+}
+
+/// Captures the request the session actually hands to the network layer.
+final class CapturingURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var captured: [URLRequest] = []
+    static let lock = NSLock()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.withLock { Self.captured.append(request) }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+@Suite(.serialized) struct AudioRequestNetworkTests {
+    /// The foreground transport stamps the Wi-Fi-only restriction onto requests that carry audio
+    /// — and only onto those: create/poll/fetch are a few hundred bytes and must still work on
+    /// cellular to finish an upload that already happened.
+    @Test func audioRequestsCarryTheUserChoiceAndControlCallsDoNot() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CapturingURLProtocol.self]
+        let transport = URLSessionHttpTransport(
+            session: URLSession(configuration: configuration), audioNetwork: { .wifiOnly })
+        CapturingURLProtocol.lock.withLock { CapturingURLProtocol.captured = [] }
+
+        _ = try await transport.execute(
+            HttpTransportRequest(
+                method: "POST", url: "https://example.invalid/v1/files", body: Data([1, 2, 3]),
+                carriesAudio: true))
+        _ = try await transport.execute(
+            HttpTransportRequest(method: "GET", url: "https://example.invalid/v1/transcriptions/1"))
+
+        let captured = CapturingURLProtocol.lock.withLock { CapturingURLProtocol.captured }
+        #expect(captured.count == 2)
+        #expect(captured[0].allowsCellularAccess == false)
+        #expect(captured[0].allowsExpensiveNetworkAccess == false)
+        #expect(captured[0].allowsConstrainedNetworkAccess == false)
+        #expect(captured[1].allowsCellularAccess)
+    }
+}

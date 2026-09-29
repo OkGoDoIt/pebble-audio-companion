@@ -235,7 +235,8 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
                     "Authorization": "Bearer \(key)",
                     "Content-Type": contentType,
                 ],
-                body: body
+                body: body,
+                carriesAudio: true
             )
         )
         guard response.isSuccess else {

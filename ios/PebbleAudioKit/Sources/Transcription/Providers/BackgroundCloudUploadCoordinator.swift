@@ -290,7 +290,7 @@ public actor BackgroundCloudUploadCoordinator {
         // would be encoded and uploaded in full only to be refused. See `CloudAccountHold`.
         guard !cloudProvider.isSendingHeld else { return }
         guard let capable = cloudProvider.activeUploadCapable else { return }
-        guard await cloudProvider.isAvailable() else { return }
+        guard await cloudProvider.isAvailableForBackgroundUpload() else { return }
         var budget = max(0, maxConcurrentUploads - (await queue.uploadingSegmentIds()).count)
         if budget == 0 { return }
         // A constant for this provider, and what the audio source is told to produce.
@@ -344,7 +344,7 @@ public actor BackgroundCloudUploadCoordinator {
                 // would only come back if BOTH rungs were refused and a long segment fell all the
                 // way to raw WAV.
                 log("no upload plan for \(segmentId) as \(body.format.rawValue) (\(body.bytes.count) bytes)")
-                guard await cloudProvider.isAvailable() else { continue }
+                guard await cloudProvider.isAvailableForBackgroundUpload() else { continue }
                 await queue.markFailed(
                     segmentId,
                     "upload body of \(body.bytes.count) bytes as \(body.format.rawValue) exceeds "

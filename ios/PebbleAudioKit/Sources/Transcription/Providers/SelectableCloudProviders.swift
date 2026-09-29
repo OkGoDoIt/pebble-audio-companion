@@ -24,24 +24,39 @@ public final class SelectableCloudTranscriptionProvider: TranscriptionProvider, 
     /// background uploader's `submitPending` (via `isSendingHeld`), and the live socket (via
     /// the streaming provider, which shares the same hold).
     public let hold: CloudAccountHold?
+    /// Whether audio may leave the phone RIGHT NOW under the user's "Upload Audio" choice (false
+    /// on cellular, a hotspot or Low Data Mode when that choice is Wi-Fi Only).
+    private let uploadAllowedNow: @Sendable () -> Bool
 
     public init(
         selected: @escaping @Sendable () -> CloudProvider,
         openAi: any TranscriptionProvider,
         soniox: any TranscriptionProvider,
-        hold: CloudAccountHold? = nil
+        hold: CloudAccountHold? = nil,
+        uploadAllowedNow: @escaping @Sendable () -> Bool = { true }
     ) {
         self.selected = selected
         self.openAi = openAi
         self.soniox = soniox
         self.hold = hold
+        self.uploadAllowedNow = uploadAllowedNow
     }
 
     public var id: String { active().id }
 
-    /// False while the selected provider is on hold: the queue then parks cloud-only work at no
-    /// cost, and first modes use their other engine, until the hold lifts.
+    /// Whether a segment handed over now would be sent now. False while the selected provider is
+    /// on hold, and false while the network is one the user has not allowed audio uploads on:
+    /// the queue then parks cloud-only work at no cost, and first modes use their other engine
+    /// (on-device instead of waiting) until that changes.
     public func isAvailable() async -> Bool {
+        guard !isSendingHeld, uploadAllowedNow() else { return false }
+        return await active().isAvailable()
+    }
+
+    /// For the background uploader, which may enqueue on ANY network: iOS holds a request that
+    /// is restricted to Wi-Fi until Wi-Fi appears, even with the app suspended — the reason that
+    /// path exists. So only the hold and the provider's own readiness count here.
+    public func isAvailableForBackgroundUpload() async -> Bool {
         guard !isSendingHeld else { return false }
         return await active().isAvailable()
     }
@@ -99,6 +114,11 @@ public final class SelectableCloudTranscriptionProvider: TranscriptionProvider, 
     /// anything else reschedules it without escalating.
     @discardableResult
     public func probeAccount(_ provider: CloudProvider) async -> CloudAccountProbeOutcome {
+        // A second of audio is still audio: not on a network the user has not allowed it on.
+        guard uploadAllowedNow() else {
+            hold?.recordInconclusiveProbe(provider: provider)
+            return .inconclusive("audio uploads are Wi-Fi only and this is not Wi-Fi")
+        }
         let silence = Data(count: 16_000 * 2)
         let pcm = AsyncThrowingStream<Data, Error> { continuation in
             continuation.yield(silence)
@@ -204,25 +224,30 @@ public final class SelectableStreamingTranscriptionProvider: StreamingTranscript
     /// The same hold the batch provider uses: a live socket into an account that refuses is
     /// audio sent for nothing, reconnected into again on every open of the app.
     private let hold: CloudAccountHold?
+    private let uploadAllowedNow: @Sendable () -> Bool
 
     public init(
         selected: @escaping @Sendable () -> CloudProvider,
         openAi: any StreamingTranscriptionProvider,
         soniox: any StreamingTranscriptionProvider,
-        hold: CloudAccountHold? = nil
+        hold: CloudAccountHold? = nil,
+        uploadAllowedNow: @escaping @Sendable () -> Bool = { true }
     ) {
         self.selected = selected
         self.openAi = openAi
         self.soniox = soniox
         self.hold = hold
+        self.uploadAllowedNow = uploadAllowedNow
     }
 
     public var id: String { active().id }
 
-    /// False while the selected provider is on hold — the live transcriber then treats the socket
-    /// as unconfigured (no cloud-health failure, the on-device preview takes the segment).
+    /// False while the selected provider is on hold, or while the network is one the user has
+    /// not allowed audio uploads on (a live socket IS an audio upload) — the live transcriber then
+    /// treats the socket as unconfigured (no cloud-health failure; the on-device preview takes
+    /// the segment).
     public func isAvailable() async -> Bool {
-        guard hold?.active(for: selected()) == nil else { return false }
+        guard hold?.active(for: selected()) == nil, uploadAllowedNow() else { return false }
         return await active().isAvailable()
     }
 
@@ -248,6 +273,13 @@ public final class SelectableStreamingTranscriptionProvider: StreamingTranscript
 
 extension SelectableCloudTranscriptionProvider: TranscriptionAvailabilityExplaining {
     public func unavailabilityReason() async -> String? {
-        hold?.active(for: selected()).map(CloudAccountHold.pausedMessage)
+        if let held = hold?.active(for: selected()) { return CloudAccountHold.pausedMessage(held) }
+        if !uploadAllowedNow() { return Self.waitingForWifiMessage }
+        return nil
     }
+
+    /// Classifies as `noConnection` (the `networkMarker` prefix), which is what it is to the
+    /// person: the cloud cannot be reached from here, right now, by their own choice.
+    static let waitingForWifiMessage =
+        "network request failed (Upload Audio is Wi-Fi only and the phone is not on Wi-Fi)"
 }

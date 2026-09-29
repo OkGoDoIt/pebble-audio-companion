@@ -14,10 +14,13 @@ final class NetworkReachability: @unchecked Sendable {
     private let monitor = NWPathMonitor()
     private let lock = NSLock()
     private var cachedUnmetered = true
+    private var cachedUnconstrained = true
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.store(path.status == .satisfied && !path.isExpensive)
+            self?.store(
+                unmetered: path.status == .satisfied && !path.isExpensive,
+                unconstrained: !path.isConstrained)
         }
         monitor.start(queue: DispatchQueue(label: "dev.audiocompanion.reachability"))
     }
@@ -29,9 +32,18 @@ final class NetworkReachability: @unchecked Sendable {
         return cachedUnmetered
     }
 
-    private func store(_ value: Bool) {
+    /// What "Upload Audio: Wi-Fi Only" allows: unmetered AND not in Low Data Mode — the same
+    /// three conditions `CloudUploadNetworkPolicy.apply` puts on a background upload request.
+    var allowsWifiOnlyUploads: Bool {
         lock.lock()
-        cachedUnmetered = value
+        defer { lock.unlock() }
+        return cachedUnmetered && cachedUnconstrained
+    }
+
+    private func store(unmetered: Bool, unconstrained: Bool) {
+        lock.lock()
+        cachedUnmetered = unmetered
+        cachedUnconstrained = unconstrained
         lock.unlock()
     }
 }

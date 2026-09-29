@@ -221,7 +221,8 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
                     "Authorization": "Bearer \(key)",
                     "Content-Type": contentType,
                 ],
-                body: body
+                body: body,
+                carriesAudio: true
             )
         )
         guard response.status == 200 else {
