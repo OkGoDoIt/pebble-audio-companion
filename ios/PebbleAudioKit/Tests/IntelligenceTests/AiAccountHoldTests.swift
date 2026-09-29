@@ -114,6 +114,29 @@ struct AiAccountHoldTests {
         #expect(await provider.isAvailable())
     }
 
+    /// The hold is shared with transcription, which also holds on a 403 — a key refused the
+    /// AUDIO APIs. That says nothing about the Responses API: AI keeps running, an AI success
+    /// does not lift it (transcription would pay a refused upload to put it back, per AI call),
+    /// and the AI side never probes it.
+    @Test func aTranscriptionSide403HoldNeitherStopsAiNorIsLiftedByIt() async throws {
+        let clock = TestWallClock(ms: 1_000_000)
+        let (provider, transport, hold, _) = setup([ok, ok], clock: clock)
+        let lifted = Box(0)
+        hold.onLifted { _ in lifted.value += 1 }
+        #expect(hold.trip(.keyNotPermitted, provider: .openAi))
+
+        #expect(await provider.isAvailable())
+        let answered = try await provider.run(request)
+        #expect(answered.text == "fine")
+        #expect(hold.active(for: .openAi)?.kind == .keyNotPermitted)
+        #expect(lifted.value == 0)
+
+        clock.advance(byMs: CloudAccountHold.maxProbeDelayMs)
+        #expect(await provider.probeHeldAccountIfDue(foreground: true) == nil)
+        #expect(transport.requests == 1)
+        #expect(hold.active(for: .openAi)?.kind == .keyNotPermitted)
+    }
+
     @Test func aNewKeyReleasesTheHold() async throws {
         let (provider, _, _, key) = setup([outOfQuota])
         _ = try? await provider.run(request)

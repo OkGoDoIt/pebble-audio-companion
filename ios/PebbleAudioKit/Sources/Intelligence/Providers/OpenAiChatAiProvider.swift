@@ -18,7 +18,8 @@ import Transcription
 /// held `isAvailable()` is false and nothing is sent — Remote first uses the on-device model,
 /// Remote only parks, and the title backlog, the live refresh every 45 s, the boundary reviews
 /// and multi-megabyte Ask sweeps stop paying full price to be told no. A 403 does NOT hold on
-/// this side: for AI it can be one model the key may not use, not the account.
+/// this side: for AI it can be one model the key may not use, not the account. Nor is a 403
+/// hold the transcription side put on the account honoured here (`aiHoldingKinds`).
 public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining, AiAccountProbing,
     @unchecked Sendable
 {
@@ -104,12 +105,28 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
     /// on hold, or a 429 asked us to wait. Worded so the router and the copy classify it as the
     /// refusal it is, not as "not configured".
     public func unavailabilityReason() async -> String? {
-        if let hold = accountHold?.active(for: .openAi) { return Self.pausedMessage(hold) }
+        if let hold = honouredHold() { return Self.pausedMessage(hold) }
         if let until = lock.withLock({ rateLimitedUntilMs }), until > nowMs() {
             return "OpenAI is rate limiting this account (429); nothing is sent before "
                 + Self.iso(until)
         }
         return nil
+    }
+
+    /// The hold kinds this side honours: the account is out of money, or the key was rejected
+    /// outright — both true of every OpenAI API alike. The shared hold can also carry
+    /// `.keyNotPermitted`, a 403 the TRANSCRIPTION side got, and that one is about what the key
+    /// may do with audio: a restricted key can be refused the transcription models and still be
+    /// allowed the Responses API. Honouring it here stopped every AI job for a key that could
+    /// run them, and the first AI success then lifted it — so transcription paid a refused
+    /// upload to put it back, once per AI call, every 45 s while the live refresh ran.
+    static let aiHoldingKinds: Set<TranscriptionFailureKind> = [.accountOutOfFunds, .keyRejected]
+
+    /// The hold in force for `.openAi` when it is one this side honours, or nil.
+    private func honouredHold() -> CloudAccountHold.Hold? {
+        guard let hold = accountHold?.active(for: .openAi), Self.aiHoldingKinds.contains(hold.kind)
+        else { return nil }
+        return hold
     }
 
     /// What a held account says instead of sending anything: our own words with the status in
@@ -118,8 +135,6 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         switch hold.kind {
         case .keyRejected:
             return "OpenAI did not accept the API key (401); no AI request is sent until it changes"
-        case .keyNotPermitted:
-            return "OpenAI key is not permitted (403); no AI request is sent until it changes"
         default:
             return "OpenAI is out of credit (402); no AI request is sent until the account is "
                 + "topped up"
@@ -215,9 +230,10 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
                 "OpenAI responses request failed (\(response.status)): "
                     + String(response.text.prefix(240)))
         }
-        // The account took a request: whatever held it — here or on the transcription side —
-        // no longer applies. A no-op when nothing is held.
-        accountHold?.noteSuccess(provider: .openAi)
+        // The account took a request: an out-of-credit or rejected-key hold — tripped here or on
+        // the transcription side — no longer applies. A transcription-side 403 hold is left
+        // alone: this success says nothing about what the key may do with audio.
+        if honouredHold() != nil { accountHold?.noteSuccess(provider: .openAi) }
         let parsed = try decodeResponse(response.body)
         // A response cut off at the ceiling is not a shorter note, it is a note that stops
         // mid-sentence — and handing that back as finished is exactly the silent wrong answer
@@ -361,8 +377,10 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
     /// 10 minutes). It is the cheapest request that can say whether the account will pay for a
     /// response, which a key check cannot: `GET /v1/models` answers 200 for an empty account. A
     /// success lifts the hold, and the hold's lift handler wakes everything it parked.
+    /// Only a hold this side honours is probed: a Responses request that succeeds cannot vouch
+    /// for the audio permission a transcription-side 403 is about.
     public func probeHeldAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
-        guard remoteConsent(), let hold = accountHold,
+        guard remoteConsent(), let hold = accountHold, honouredHold() != nil,
             hold.isProbeDue(provider: .openAi, foreground: foreground)
         else { return nil }
         let claimed: Bool = lock.withLock {
