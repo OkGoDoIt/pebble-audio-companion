@@ -573,17 +573,27 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         let text = pieces.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let audioMs = ranges.reduce(0) {
+            $0 + $1.endMs(sampleRateHz: sampleRateHz) - $1.startMs(sampleRateHz: sampleRateHz)
+        }
+        let engineMs = max(0, nowMs() - startedMs)
         guard !ParakeetPcm.isNoSpeech(text) else {
             // The audio length and the time the engine spent on it travel with the verdict: an
             // engine that "heard nothing" in a fraction of the time the audio needs did not run.
-            let audioMs = ranges.reduce(0) {
-                $0 + $1.endMs(sampleRateHz: sampleRateHz) - $1.startMs(sampleRateHz: sampleRateHz)
-            }
             throw TranscriptionError.noSpeechDetected(
                 "local model returned no speech ("
                     + String(format: "%.1f", Double(audioMs) / 1_000) + " s of audio in "
-                    + "\(max(0, nowMs() - startedMs)) ms)")
+                    + "\(engineMs) ms)")
         }
+        // One line per segment: the only on-device measure of how fast the engine really runs
+        // on the phone (2026-09-30: completions ~3.5 min apart for 15-min segments, against
+        // 50x realtime on a Mac — heat, the charger or the engine, and nothing said which).
+        // Counters only, never text.
+        log(
+            "local transcription: \(id) "
+                + String(format: "%.0f s of audio in %.1f s (%.1fx realtime), ", Double(audioMs) / 1_000,
+                    Double(engineMs) / 1_000, Double(audioMs) / Double(max(engineMs, 1)))
+                + "\(pieces.count) of \(ranges.count) chunk(s) with speech")
         return TranscriptionResult(
             text: text,
             providerId: id,
