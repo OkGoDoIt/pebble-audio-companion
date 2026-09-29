@@ -262,6 +262,95 @@ public enum FollowUpTranscriptRenderer {
             + String(body.suffix(maxChars))
     }
 
+    /// The conversation as consecutive pieces the model can each read WHOLE, in order.
+    ///
+    /// `render` keeps the END of a conversation longer than `maxChars` and drops the rest —
+    /// the right call when there is one call, since the end is what closes open loops. But the
+    /// worker then settled the conversation as read, so a four-hour conversation's first hours
+    /// were never looked at for follow-ups at all, by anything, ever. This cuts the conversation
+    /// into pieces instead, each carrying the same header and saying which part of the whole it
+    /// is, so every word is read by some call and the conversation settles only when all of
+    /// them have been. A conversation that fits is one piece, identical to `render`.
+    public static func renderChunks(
+        parts: [FollowUpSourcePart],
+        title: String?,
+        summary: String?,
+        recordedAt: Date,
+        timeZone: TimeZone,
+        maxChars: Int
+    ) -> [String] {
+        let whole = render(
+            parts: parts, title: title, summary: summary, recordedAt: recordedAt,
+            timeZone: timeZone, maxChars: Int.max)
+        guard whole.count > maxChars else { return [whole] }
+
+        var header = "Recorded: \(dayLabel(recordedAt, timeZone))\n"
+        if let title, !title.isEmpty { header += "Conversation: \(title)\n" }
+        if let summary, !summary.isEmpty { header += "Summary so far: \(summary)\n" }
+        // Room for the part marker line added below.
+        let room = max(1_000, maxChars - header.count - 160)
+
+        // Each recording as "--- <clock> ---" plus its speaker lines, cut at line boundaries
+        // (and, for a single enormous line, at whitespace) wherever one recording alone is more
+        // than a piece can hold.
+        var blocks: [String] = []
+        for part in parts {
+            let started = Date(timeIntervalSince1970: Double(part.startedAtMs) / 1000)
+            let clock = "--- \(clockLabel(started, timeZone)) ---\n"
+            var current = ""
+            for line in speakerLines(part).split(separator: "\n", omittingEmptySubsequences: true)
+            {
+                for piece in pieces(String(line), limit: room - clock.count) {
+                    if !current.isEmpty, clock.count + current.count + piece.count + 1 > room {
+                        blocks.append(clock + current)
+                        current = ""
+                    }
+                    current += piece + "\n"
+                }
+            }
+            if !current.isEmpty { blocks.append(clock + current) }
+        }
+
+        var chunks: [String] = []
+        var current = ""
+        for block in blocks {
+            if !current.isEmpty, current.count + block.count + 1 > room {
+                chunks.append(current)
+                current = ""
+            }
+            current += block + "\n"
+        }
+        if !current.isEmpty { chunks.append(current) }
+
+        return chunks.enumerated().map { index, body in
+            header
+                + "Part \(index + 1) of \(chunks.count) of this conversation, in order. The other "
+                + "parts are read separately; report only what is in this part.\n\n"
+                + body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    /// `text` as pieces of at most `limit` characters, cut at whitespace where possible.
+    static func pieces(_ text: String, limit: Int) -> [String] {
+        let limit = max(200, limit)
+        guard text.count > limit else { return [text] }
+        var out: [String] = []
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            var cut = rest.index(rest.startIndex, offsetBy: limit, limitedBy: rest.endIndex)
+                ?? rest.endIndex
+            if cut < rest.endIndex,
+                let space = rest[rest.startIndex..<cut].lastIndex(where: { $0.isWhitespace }),
+                rest.distance(from: rest.startIndex, to: space) > limit / 2
+            {
+                cut = space
+            }
+            out.append(String(rest[rest.startIndex..<cut]))
+            rest = rest[cut...].drop(while: { $0.isWhitespace })
+        }
+        return out
+    }
+
     /// Speaker-turn text, collapsing consecutive turns by the same label. Falls back to the
     /// flat transcript when the provider gave us no diarization.
     static func speakerLines(_ part: FollowUpSourcePart) -> String {

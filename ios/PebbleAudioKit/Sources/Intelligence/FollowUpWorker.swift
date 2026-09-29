@@ -234,8 +234,13 @@ public final class FollowUpWorker: @unchecked Sendable {
 
     /// Transcript characters sent in one call. Well inside every catalogue model's window; the
     /// cap exists so a four-hour conversation cannot quietly become the most expensive call the
-    /// app makes.
+    /// app makes. A longer conversation is read in PIECES of at most this (less
+    /// `pieceMarginChars`), every one of them — see `FollowUpTranscriptRenderer.renderChunks`.
     public static let maxTranscriptChars = 120_000
+    /// Kept back from a piece for the template's own instruction line, so the body plus the
+    /// prompt stays inside the on-device structured shape's ceiling (`maxTranscriptChars`) and
+    /// is never the thing a provider cuts.
+    static let pieceMarginChars = 2_000
 
     /// Extraction runs on a stronger model than the user's global choice, and with more
     /// thinking. It is one call per conversation, it decides what appears on a list the person
@@ -361,14 +366,16 @@ public final class FollowUpWorker: @unchecked Sendable {
                 continue
             }
 
-            calls += 1
             let exhausted = (existing?.attempts ?? 0) >= Self.maxAttempts
             // A cooled-off retry starts the budget over; anything else keeps counting.
             let priorAttempts = fresh || exhausted ? 0 : (existing?.attempts ?? 0)
-            proposed += try await run(
+            let outcome = try await run(
                 activeRouter, conversation, parts: parts, combined: combined,
                 priorAttempts: priorAttempts,
                 priorTransientFailures: fresh ? 0 : (existing?.transientFailures ?? 0))
+            proposed += outcome.written
+            // Counted per provider call: a long conversation read in pieces costs one per piece.
+            calls += max(1, outcome.calls)
         }
         return proposed
     }
@@ -423,53 +430,69 @@ public final class FollowUpWorker: @unchecked Sendable {
         combined: Int,
         priorAttempts: Int,
         priorTransientFailures: Int
-    ) async throws -> Int {
+    ) async throws -> (written: Int, calls: Int) {
         let now = nowMs()
         let zone = timeZone()
         let attempt = priorAttempts + 1
         let context = await contextOf(conversation.conversationId)
-        let body = FollowUpTranscriptRenderer.render(
+        // Every word is read. A conversation longer than one call used to be cut to its last
+        // 120,000 characters and then SETTLED — its first hours never looked at by anything,
+        // ever. It is read in pieces now, sized for the provider that runs first, and settles
+        // only when every piece has been read.
+        let pieceChars = min(
+            Self.maxTranscriptChars - Self.pieceMarginChars,
+            await router.firstStructuredCallInputChars() ?? Int.max)
+        let bodies = FollowUpTranscriptRenderer.renderChunks(
             parts: parts,
             title: context?.title,
             summary: context?.summary,
             recordedAt: Date(
                 timeIntervalSince1970: Double(parts[0].startedAtMs) / 1000),
             timeZone: zone,
-            maxChars: Self.maxTranscriptChars)
+            maxChars: pieceChars)
+        var calls = 0
         do {
-            let result = try await router.run(
-                AiRunRequest(
-                    requestId: "followups-\(conversation.conversationId)-\(attempt)",
-                    prompt: AiPromptTemplates.followUpExtraction,
-                    transcripts: [
-                        TranscriptExcerpt(
-                            segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
-                    ],
-                    metadata: [
-                        AiRunRequest.modelKey: Self.modelId,
-                        AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
-                        AiRunRequest.requiresStructuredOutputKey: "1",
-                    ]))
-            guard let parsed = FollowUpExtractionParser.parse(raw: result.text) else {
-                throw AiError.providerFailed(
-                    "Follow-up extraction did not return the agreed JSON", underlying: nil)
+            var written = 0
+            var provisionalBy: String?
+            for (index, body) in bodies.enumerated() {
+                try Task.checkCancellation()
+                calls += 1
+                let piece = bodies.count > 1 ? "-part-\(index + 1)-of-\(bodies.count)" : ""
+                let result = try await router.run(
+                    AiRunRequest(
+                        requestId: "followups-\(conversation.conversationId)-\(attempt)\(piece)",
+                        prompt: AiPromptTemplates.followUpExtraction,
+                        transcripts: [
+                            TranscriptExcerpt(
+                                segmentId: AiTranscriptFormatting.prebuiltSegmentId, text: body)
+                        ],
+                        metadata: [
+                            AiRunRequest.modelKey: Self.modelId,
+                            AiRunRequest.reasoningEffortKey: Self.reasoningEffort,
+                            AiRunRequest.requiresStructuredOutputKey: "1",
+                        ]))
+                guard let parsed = FollowUpExtractionParser.parse(raw: result.text) else {
+                    throw AiError.providerFailed(
+                        "Follow-up extraction did not return the agreed JSON", underlying: nil)
+                }
+                written += try await persist(
+                    parsed, conversation: conversation, parts: parts, timeZone: zone, now: now)
+                if result.isProvisional { provisionalBy = result.providerId }
             }
-            let written = try await persist(
-                parsed, conversation: conversation, parts: parts, timeZone: zone, now: now)
-            // A fallback that read only part of the conversation found what was in that part —
-            // its quotes are real, so the candidates it wrote stay — but it cannot say the rest
+            // A fallback that read only part of a piece found what was in that part — its
+            // quotes are real, so the candidates it wrote stay — but it cannot say the rest
             // holds nothing. The conversation is NOT settled; it is read again once the
             // preferred provider can take all of it.
-            let provisional = result.isProvisional
+            let provisional = provisionalBy != nil
             let transient = provisional ? priorTransientFailures + 1 : 0
             try await state.save(
                 FollowUpExtractionState(
                     conversationId: conversation.conversationId,
                     sourceCharCount: combined, settled: !provisional, itemCount: written,
                     attempts: priorAttempts,
-                    lastError: provisional
-                        ? "provisional: \(result.providerId) read part of this conversation"
-                        : nil,
+                    lastError: provisionalBy.map {
+                        "provisional: \($0) read part of this conversation"
+                    },
                     updatedAtMs: now,
                     nextAttemptAtMs: provisional
                         ? now
@@ -478,7 +501,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                                 AiRetryPolicy.transientRetryMs(consecutive: transient))
                         : nil,
                     transientFailures: transient))
-            return written
+            return (written, calls)
         } catch let error where error is CancellationError {
             throw error
         } catch {
@@ -499,7 +522,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                     attempts: attempts, lastError: Self.errorMessage(error),
                     updatedAtMs: now, nextAttemptAtMs: now + wait,
                     transientFailures: transient))
-            return 0
+            return (0, calls)
         }
     }
 

@@ -410,6 +410,22 @@ extension AiModeRouter {
         return await reporting.contextTokens()
     }
 
+    /// The same question as `firstCallInputChars` for a STRUCTURED call (follow-up
+    /// extraction). The on-device follow-up sift reads a conversation whole and cuts it itself,
+    /// so the local modes impose nothing; a remote slot that reports its window (Apple Private
+    /// Cloud Compute's 32K tokens, where a four-hour conversation does not fit) is held to it;
+    /// OpenAI's catalog windows are far above any conversation. Nil means "no limit beyond the
+    /// caller's own".
+    public func firstStructuredCallInputChars() async -> Int? {
+        switch mode() {
+        case .localOnly, .localFirst:
+            return nil
+        case .remoteOnly, .remoteFirst:
+            guard let tokens = await remoteContextTokens() else { return nil }
+            return AskBudget.forContext(tokens: tokens).transcriptChars
+        }
+    }
+
     /// Characters of transcript the provider that runs FIRST in the current mode can be handed
     /// in one call — what a planner sizes a request by before it exists. The local modes ask
     /// the on-device slot (`localInputChars`); the remote modes ask the remote slot's window
