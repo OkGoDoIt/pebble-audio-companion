@@ -212,8 +212,10 @@ extension Copy.Privacy {
     ///    and the ONLY readers of `export()`/`exportFile()` are two `ShareLink`s on the
     ///    Diagnostics screen, which cannot fire without a tap. Every logging call site was
     ///    checked for transcript text; none passes any.
-    /// 4. Verified: nothing in the tree sets `isExcludedFromBackup`, so the spool, the database
-    ///    and the transcripts are in the phone's normal backups. Saying so is not a warning —
+    /// 4. Verified: the only thing in the tree that sets `isExcludedFromBackup` is the downloaded
+    ///    speech-model folder (`ParakeetModelLocation.ensureModelsDirectory` — vendor weights, not
+    ///    the person's data), so the spool, the database and the transcripts are in the phone's
+    ///    normal backups. Saying so is not a warning —
     ///    it is the difference between "on this phone" and "only on this phone".
     /// 5. Verified: the only system index written is `CSSearchableIndex.default()` (Core
     ///    Spotlight, an on-device index by Apple's documentation), every write to it goes

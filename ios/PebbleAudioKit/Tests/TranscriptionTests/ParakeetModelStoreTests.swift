@@ -143,12 +143,72 @@ private let spec = ParakeetModelCatalog.byId(ParakeetModelCatalog.defaultModelId
         #expect(ParakeetModelLocation(modelsDirectory: root).isInstalled(spec))
     }
 
-    @Test func modelsLiveUnderCachesModels() {
+    /// Not Caches: iOS empties Caches when storage runs low, and nothing would put a model back.
+    @Test func modelsLiveUnderApplicationSupportModels() {
         #expect(ParakeetModelLocation.defaultModelsDirectory.lastPathComponent == "models")
+        let parent = ParakeetModelLocation.defaultModelsDirectory.deletingLastPathComponent().path
+        #expect(parent.hasSuffix("Application Support"))
+        #expect(!parent.contains("Caches"))
+    }
+
+    @Test func legacyModelsMoveOutOfCachesAndTheOldRootGoes() throws {
+        let base = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let legacy = base.appendingPathComponent("Caches/models", isDirectory: true)
+        let root = base.appendingPathComponent("Application Support/models", isDirectory: true)
+        try install(into: legacy, spec: spec, config: true, version: spec.revision)
+        try Data("prepared".utf8).write(
+            to: legacy.appendingPathComponent(spec.installDirectoryName)
+                .appendingPathComponent(".prepared"))
+
+        let moved = ParakeetModelLocation.moveLegacyModels(from: legacy, to: root)
+
+        #expect(moved == [spec.installDirectoryName])
+        #expect(ParakeetModelLocation(modelsDirectory: root).isInstalled(spec))
+        // Everything in the directory travels with it, the prepare marker included.
         #expect(
-            ParakeetModelLocation.defaultModelsDirectory.deletingLastPathComponent().path
-                .contains("Caches")
-        )
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(spec.installDirectoryName)
+                    .appendingPathComponent(".prepared").path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+        // Running it again (every later launch) finds nothing to do.
+        #expect(ParakeetModelLocation.moveLegacyModels(from: legacy, to: root).isEmpty)
+        #expect(ParakeetModelLocation(modelsDirectory: root).isInstalled(spec))
+    }
+
+    @Test func aModelAlreadyAtTheNewRootWinsOverItsLegacyCopy() throws {
+        let base = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let legacy = base.appendingPathComponent("Caches/models", isDirectory: true)
+        let root = base.appendingPathComponent("Application Support/models", isDirectory: true)
+        try install(into: legacy, spec: spec, config: true, version: "an-older-revision")
+        try install(into: root, spec: spec, config: true, version: spec.revision)
+
+        let moved = ParakeetModelLocation.moveLegacyModels(from: legacy, to: root)
+
+        #expect(moved.isEmpty)
+        #expect(ParakeetModelLocation(modelsDirectory: root).recordedVersion(for: spec) == spec.revision)
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    @Test func noLegacyRootMeansNothingIsCreated() throws {
+        let base = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("Application Support/models", isDirectory: true)
+        #expect(
+            ParakeetModelLocation.moveLegacyModels(
+                from: base.appendingPathComponent("Caches/models"), to: root
+            ).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
+    @Test func theModelsDirectoryIsKeptOutOfBackups() throws {
+        let base = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("models", isDirectory: true)
+        #expect(ParakeetModelLocation.ensureModelsDirectory(root))
+        let values = try root.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(values.isExcludedFromBackup == true)
     }
 }
 

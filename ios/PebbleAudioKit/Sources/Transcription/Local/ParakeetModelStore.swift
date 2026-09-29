@@ -1,7 +1,8 @@
 import Foundation
 
 // Port of `app/src/iosMain/.../IosCactusModelPathProvider.kt`: download → extract → record the
-// revision, under `Caches/models/{installDirectoryName}`.
+// revision, under `Application Support/models/{installDirectoryName}` (it was `Caches/models`
+// until 2026-09-30 — see `ParakeetModelLocation.defaultModelsDirectory`).
 //
 // The install contract, carried across unchanged:
 //   • URL is `https://huggingface.co/{repository}/resolve/{revision}/{archivePath}`.
@@ -105,7 +106,7 @@ extension ParakeetModelLocating {
     public func setPrepared(_ spec: ParakeetModelSpec, _ prepared: Bool) {}
 }
 
-/// Disk layout of the model cache (`Caches/models/{installDirectoryName}`).
+/// Disk layout of the installed models (`Application Support/models/{installDirectoryName}`).
 public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
     /// The Cactus version file — see `ParakeetModelSpec.versionFileName` for the per-runtime rule.
     public static let versionFileName = ".cactus_version"
@@ -118,10 +119,87 @@ public struct ParakeetModelLocation: ParakeetModelLocating, Sendable {
         self.modelsDirectory = modelsDirectory
     }
 
+    /// `Application Support/models`, excluded from backup (`ensureModelsDirectory`).
+    ///
+    /// It was `Caches/models` until 2026-09-30, and a model is not a cache. iOS empties an app's
+    /// Caches when storage runs low, and nothing here would have noticed or put the model back:
+    /// the Core AI export can only be installed from Files, and a Cactus model is downloaded
+    /// again only when someone taps it. The day it moved, the phone had 6.4 GB free and held
+    /// 1.26 GB of model in Caches — one purge away from on-device transcription quietly ending.
+    /// Out of the backup because it is up to 1.3 GB of vendor weights, not the person's data.
     public static var defaultModelsDirectory: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        _ = movedFromCaches
+        return applicationSupportModels
+    }
+
+    static var applicationSupportModels: URL {
+        let support =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return caches.appendingPathComponent("models", isDirectory: true)
+        return support.appendingPathComponent("models", isDirectory: true)
+    }
+
+    /// The models the one-time move found under the old `Caches/models` root, for the store to
+    /// log once its log is wired. Runs on first use of `defaultModelsDirectory` — before any
+    /// engine can have loaded from either root. iOS only: on a Mac (the package's tests) the
+    /// user-domain Caches is shared by every program and is not ours to move.
+    public static let movedFromCaches: [String] = {
+        #if os(iOS)
+            guard
+                let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
+                    .first
+            else { return [] }
+            return moveLegacyModels(
+                from: caches.appendingPathComponent("models", isDirectory: true),
+                to: applicationSupportModels)
+        #else
+            return []
+        #endif
+    }()
+
+    /// Moves every entry of `legacy` into `root` and removes `legacy`. A rename on one volume:
+    /// instant, whatever the size, and nothing is copied. An entry `root` already has is newer
+    /// (installed since), so the legacy copy of it is deleted rather than moved. An entry that
+    /// cannot be moved stays where it is, and is simply not installed as far as the app can
+    /// see — the same state a purge would have left, never a half-moved model.
+    @discardableResult
+    static func moveLegacyModels(
+        from legacy: URL, to root: URL, fileManager: FileManager = .default
+    ) -> [String] {
+        guard
+            let entries = try? fileManager.contentsOfDirectory(
+                at: legacy, includingPropertiesForKeys: nil)
+        else { return [] }
+        guard ensureModelsDirectory(root, fileManager: fileManager) else { return [] }
+        var moved: [String] = []
+        for entry in entries {
+            let destination = root.appendingPathComponent(entry.lastPathComponent)
+            if fileManager.fileExists(atPath: destination.path) {
+                try? fileManager.removeItem(at: entry)
+            } else if (try? fileManager.moveItem(at: entry, to: destination)) != nil {
+                moved.append(entry.lastPathComponent)
+            }
+        }
+        if (try? fileManager.contentsOfDirectory(atPath: legacy.path))?.isEmpty == true {
+            try? fileManager.removeItem(at: legacy)
+        }
+        return moved
+    }
+
+    /// Creates the models directory when it is missing and keeps it out of the phone's backups.
+    /// Returns false when the directory could not be created.
+    @discardableResult
+    static func ensureModelsDirectory(_ url: URL, fileManager: FileManager = .default) -> Bool {
+        do {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+        var marked = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? marked.setResourceValues(values)
+        return true
     }
 
     public func directory(for spec: ParakeetModelSpec) -> URL {
@@ -200,6 +278,8 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     private let supportedRuntimes: Set<LocalEngineRuntime>
     private var isForeground: @Sendable () -> Bool
     private var log: @Sendable (String) -> Void = { _ in }
+    /// The one-time move out of Caches has been written to the log (see `setLog`).
+    private var loggedMove = false
 
     private var stateById: [String: ParakeetInstallState] = [:]
     private var installs: [String: Task<Void, Never>] = [:]
@@ -242,6 +322,13 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     /// its runtime log in; unset, nothing is recorded.
     public func setLog(_ log: @escaping @Sendable (String) -> Void) {
         self.log = log
+        let moved = ParakeetModelLocation.movedFromCaches
+        if !moved.isEmpty, !loggedMove {
+            loggedMove = true
+            log(
+                "local models moved out of Caches (iOS may empty it) into Application Support: "
+                    + moved.joined(separator: ", "))
+        }
     }
 
     /// The foreground signal `refresh()` consults before starting a prepare pass. The app wires
@@ -425,6 +512,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
             }
             set(spec.id, .installing)
             try? manager.removeItem(at: target)
+            ParakeetModelLocation.ensureModelsDirectory(location.modelsDirectory)
             try manager.createDirectory(at: target, withIntermediateDirectories: true)
             try extractor.extract(archiveAt: archive, into: target)
             try Task.checkCancellation()

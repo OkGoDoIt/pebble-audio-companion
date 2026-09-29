@@ -25,7 +25,7 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     public let repository: String
     public let revision: String
     public let archivePath: String
-    /// Directory under `Caches/models` the archive installs into.
+    /// Directory under `Application Support/models` the archive installs into.
     public let installDirectoryName: String
     public let modelNameForProvenance: String
     public let modelVersionForProvenance: String
