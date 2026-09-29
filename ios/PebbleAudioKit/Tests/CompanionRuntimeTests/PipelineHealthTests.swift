@@ -363,6 +363,22 @@ private final class Box<Value>: @unchecked Sendable {
         #expect(restarts.count == 1)
     }
 
+    /// The phone's case (2026-09-26 06:39, 07:40): iOS relaunched the app in the background, a
+    /// pass started, and the process was suspended before the supervisor's FIRST tick. With no
+    /// earlier tick to measure against, the gap went unrecognised and a healthy pass was cancelled.
+    @Test func aSuspensionBeforeTheFirstTickIsNotAWedgedPass() async throws {
+        let clock = TestClock()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+        let restarts = Counter()
+        let supervisor = PipelineSupervisor(
+            health: health, clock: clock, restartLoop: { restarts.increment() })
+
+        health.passStarted()
+        await clock.advance(by: 30 * 60 * 1000)
+        #expect(await supervisor.tick().isEmpty)
+        #expect(restarts.count == 0)
+    }
+
     @Test func aHealthyLoopIsNeverRestarted() async throws {
         let clock = TestClock()
         let health = PipelineHealthMonitor(nowMs: { clock.nowMs })

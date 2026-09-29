@@ -53,7 +53,13 @@ public actor PipelineSupervisor {
     public static let tickMs: Int64 = 30_000
     /// A tick this late is a resumed process, not a slow one.
     public static let suspensionGapMs: Int64 = 3 * tickMs
-    private var lastTickAtMs: Int64?
+    /// The last moment this process was known to be running: the previous tick, or — before the
+    /// first one — when the supervisor was created or its timer started. It used to be nil until
+    /// the first tick, so a process suspended within its first 30 s (iOS relaunches this app in
+    /// the background and suspends it again seconds later, many times a day) came back with no
+    /// reference to measure the gap against: 2026-09-26 06:39 and 07:40, "pipeline pass wedged
+    /// in drainQueue (1804s without progress)" — a healthy pass cancelled for a suspension.
+    private var lastTickAtMs: Int64
 
     public init(
         health: PipelineHealthMonitor,
@@ -67,6 +73,7 @@ public actor PipelineSupervisor {
         self.recoveries = recoveries
         self.restartLoop = restartLoop
         self.log = log
+        self.lastTickAtMs = clock.nowMs
     }
 
     /// One supervision round. Returns what it did, for tests and the detailed log.
@@ -76,7 +83,7 @@ public actor PipelineSupervisor {
         let now = clock.nowMs
         // A tick that arrives much later than its interval means the process was suspended in
         // between, not that a pass ran for that long. Judge the stall from now on.
-        if let last = lastTickAtMs, now - last > Self.suspensionGapMs {
+        if now - lastTickAtMs > Self.suspensionGapMs {
             health.passRebasedAfterSuspension()
         }
         lastTickAtMs = now
@@ -113,6 +120,7 @@ public actor PipelineSupervisor {
 
     /// The timer loop. Cancellation ends it.
     public func run() async {
+        lastTickAtMs = clock.nowMs
         while !Task.isCancelled {
             do { try await clock.sleep(ms: Self.tickMs) } catch { return }
             if Task.isCancelled { return }
