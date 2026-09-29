@@ -132,9 +132,9 @@ extension ParakeetEngineFactory {
     /// model to drop its session, which is what makes a cancelled `transcribe` return promptly.
     @available(iOS 27, macOS 27, *)
     public final class CoreAIParakeetEngine: ParakeetNativeEngine, @unchecked Sendable {
-        /// The one instance the provider and the store's preparer share. Its decoder runs on the
-        /// CPU — see `decoderOnCPU`.
-        public static let shared = CoreAIParakeetEngine(decoderOnCPU: true)
+        /// The one instance the provider and the store's preparer share. Every graph on Core AI's
+        /// default placement — see `decoderOnCPU` for why not the CPU.
+        public static let shared = CoreAIParakeetEngine()
 
         /// Process budget (MB) required to LOAD a model. The first load writes the ~1.1 GB
         /// specialization cache and peaks well above the ~200–400 MB steady-state footprint.
@@ -154,16 +154,17 @@ extension ParakeetEngineFactory {
         /// A soft release asked for while the model was busy; honoured when it goes idle.
         private var releaseRequested = false
 
-        /// Runs the TDT decoder's two per-step graphs on the CPU instead of the Neural Engine.
+        /// Runs the TDT decoder's two per-step graphs on the CPU instead of the Neural Engine. A
+        /// measured option, OFF in the app.
         ///
-        /// Those graphs are tiny (one prediction-network step, one joint) and run once per
-        /// encoder frame or emitted token — dozens of times per second of audio. On the phone each
-        /// Neural Engine request cost ~4 ms of dispatch (2026-09-30: ~250 requests a second in the
-        /// device log while transcribing at 4.2x realtime, against ~50x for the same bundle on a
-        /// Mac), so the decode loop, not the encoder, set the pace. On the CPU the same graphs give
-        /// byte-identical transcripts (`LocalEngineComparison`, `PEBBLE_COREAI_DECODER_CPU`, 3
-        /// segments / 40 min of audio, 0.0% difference) and ran 5–23% faster even on the Mac,
-        /// where Neural Engine dispatch is cheap. The encoder stays on the Neural Engine.
+        /// The phone transcribes at ~4.3x realtime against ~50x for the same bundle on a Mac, and
+        /// its device log shows ~250 Neural Engine requests a second while it does. The tiny
+        /// decoder graphs, dispatched per frame/token, looked like the cost. On the CPU they give
+        /// byte-identical transcripts (`LocalEngineComparison`, `PEBBLE_COREAI_DECODER_CPU`: 3
+        /// segments / 40 min, 0.0% difference, 5–23% faster on the Mac) — but on the phone
+        /// (2026-09-30, "900 s of audio in 206.3 s (4.4x realtime)") no faster, with requests
+        /// down only to ~150/s: the streaming encoder's own programs set the pace, and the first
+        /// load paid ~6 min of CPU specialization for nothing. Kept for the measurement.
         private let decoderOnCPU: Bool
 
         public init(decoderOnCPU: Bool = false) {

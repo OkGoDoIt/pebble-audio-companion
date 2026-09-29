@@ -45,9 +45,9 @@ By hand:
 - `SpeechRecognitionModel.init(resourcesAt:decoderOptions:)` and
   `SpeechRecognitionBundle.init(at:decoderOptions:)` take a `SpecializationOptions` for a Parakeet
   TDT bundle's `decoder_step` and `joint` graphs (the encoder keeps the default). Upstream loads
-  all three with the default. The app passes `.cpuOnly`: those graphs run dozens of times per
-  second of audio, and on a phone each Neural Engine dispatch cost more than the work (see
-  `CoreAIParakeetEngine.decoderOnCPU`). Default argument, so every upstream call site is
+  all three with the default. The app keeps the default: `.cpuOnly` for those graphs gave
+  byte-identical text and was no faster on the phone (see `CoreAIParakeetEngine.decoderOnCPU`);
+  the option stays for `LocalEngineComparison`. Default argument, so every upstream call site is
   unchanged.
 
 Not copied: `FunctionMap`, `NpyArray`, `ModelStructure`, `ResourceManaging`,
