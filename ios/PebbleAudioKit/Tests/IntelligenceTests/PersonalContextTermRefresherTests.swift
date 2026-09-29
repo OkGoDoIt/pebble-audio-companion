@@ -208,4 +208,50 @@ private final class ContextBox: @unchecked Sendable {
 
         #expect(terms.count == PersonalContextFormatting.maxDerivedTerms)
     }
+
+    /// The failure memory lived in memory, so every launch — and iOS launches this app many
+    /// times a day — re-ran an extraction the model had just failed. It is persisted now, and
+    /// the wait doubles per failure in a row.
+    @Test func aFailedExtractionIsRememberedAcrossLaunchesAndBacksOffFurther() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("term-failure-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("failure.json")
+        let box = ContextBox(PersonalContext(profileText: "I work on Pebble with Sarah Chen."))
+        let clock = TestWallClock(ms: 1_000)
+        func launch(_ provider: ScriptedAiProvider) -> PersonalContextTermRefresher {
+            PersonalContextTermRefresher(
+                load: { box.load() }, save: { try box.save($0) },
+                extractor: PersonalContextTermExtractor(
+                    router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly })),
+                nowMs: { clock.now }, failureFileURL: file, log: { _ in })
+        }
+
+        // A model that answers with nothing usable: a failure, written down.
+        let empty = ScriptedAiProvider(text: "")
+        _ = await launch(empty).refreshIfNeeded()
+        #expect(empty.calls == 1)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+
+        // A relaunch inside the wait asks nothing.
+        let relaunched = ScriptedAiProvider(text: "")
+        _ = await launch(relaunched).refreshIfNeeded()
+        #expect(relaunched.calls == 0)
+
+        // After it, one more try — and the next wait is twice as long.
+        clock.advance(byMs: 10 * 60 * 1000)
+        let again = launch(relaunched)
+        _ = await again.refreshIfNeeded()
+        #expect(relaunched.calls == 1)
+        clock.advance(byMs: 15 * 60 * 1000)
+        _ = await again.refreshIfNeeded()
+        #expect(relaunched.calls == 1, "second wait is 20 minutes")
+
+        // A success clears it, on disk too.
+        clock.advance(byMs: 10 * 60 * 1000)
+        let working = ScriptedAiProvider()
+        let terms = await launch(working).refreshIfNeeded()
+        #expect(!terms.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
 }

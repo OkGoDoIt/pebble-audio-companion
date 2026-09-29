@@ -664,6 +664,10 @@ final class AppComposition {
             // editor and the Contacts/Calendar imports write the same document, and a refresh
             // finishing mid-import used to put the pre-import version back.
             mutate: { _ = try personalContext.mutate($0) },
+            // A failed extraction is remembered across launches (with a doubling wait), not
+            // re-run on every one of the many launches iOS gives this app a day.
+            failureFileURL: containerRoot.appendingPathComponent(
+                "ai/personal_context_terms_failure.json"),
             log: { AppRuntimeLog.shared.record($0) }
         )
         self.personalContextTerms = personalContextTerms
