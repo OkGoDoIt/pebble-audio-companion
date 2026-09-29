@@ -752,18 +752,27 @@ extension LiveWorld: AskDataSource {
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
             },
             metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }))
+        // Which conversation each recording belongs to, in one read: coverage is counted — and
+        // told to the model and stored in Recent — in CONVERSATIONS. It used to count recordings
+        // and call them conversations ("29 conversations read" for one conversation).
+        let conversationOf =
+            (try? await composition.runtime.library.conversationIdsBySegment()) ?? [:]
         // Two signals, one rule: keyword evidence ranks exactly as it always has, and the
         // semantic pass may only rescue a batch keyword could not tell apart from its
         // neighbours (`AskRecallPolicy.keywordFirst`). Nil when the scope will be read whole
         // or swept in full — then there is nothing to rank and nothing is asked of either index.
         let recall = await recallSignals(
-            question: question, priorTurns: priorTurns, excerpts: ordered, budget: budget)
+            question: question, priorTurns: priorTurns, excerpts: ordered, budget: budget,
+            conversationOf: conversationOf)
         let policy = AskRecallPolicy.keywordFirst
         let plan = AskCorpusPlanner.plan(
             stretches: stretches,
             budget: budget,
             relevance: recall?.signals.relevance ?? { _ in .none },
-            policy: policy)
+            policy: policy,
+            // A recording the grouping has not reached yet counts as its own conversation —
+            // never silently merged into another.
+            conversationOf: conversationOf.isEmpty ? nil : { conversationOf[$0] })
         if let recall {
             recordRecallExperiment(
                 question: question, recall: recall, plan: plan, policy: policy, nowMs: nowMs)
@@ -781,7 +790,7 @@ extension LiveWorld: AskDataSource {
                 gapSummary: { frozenGapSummaries[$0] ?? nil })
         }
 
-        let header = askNowContext(nowMs: nowMs, scopeDescription: kitScope.displayName)
+        let header = askNowContext(nowMs: nowMs, scopeDescription: kitScope.promptDescription)
         let threadContext = askThreadContext(priorTurns)
         let answer: String
         if plan.isSinglePass {
@@ -934,7 +943,8 @@ extension LiveWorld: AskDataSource {
         question: String,
         priorTurns: [AskEntry],
         excerpts: [TranscriptExcerpt],
-        budget: AskBudget
+        budget: AskBudget,
+        conversationOf: [String: String]
     ) async -> RecallSignals? {
         // The scoring only matters when the scope overflows the sweep ceiling; skip both the
         // membership walk and the index round-trips entirely when it plainly does not — which
@@ -942,11 +952,10 @@ extension LiveWorld: AskDataSource {
         let totalChars = excerpts.reduce(0) { $0 + $1.text.count }
         guard totalChars > budget.transcriptChars * budget.maxBatches else { return nil }
 
+        // From the one read `ask` already made, rather than a query per recording.
         var members: [String: [String]] = [:]
         for excerpt in excerpts {
-            guard let conversationId = try? await composition.runtime.library
-                .conversationId(ofSegment: excerpt.segmentId)
-            else { continue }
+            guard let conversationId = conversationOf[excerpt.segmentId] else { continue }
             members[conversationId, default: []].append(excerpt.segmentId)
         }
 
@@ -1513,7 +1522,10 @@ extension AskScope {
         case .today: return .today
         case .yesterday: return .yesterday
         case .last7Days: return .lastSevenDays
-        case .everything, .conversation: return .everything
+        case .everything: return .everything
+        // Its own scope, not "Everything": the prompt says one conversation, and Recent stores
+        // what was asked about rather than "Everything · 29 conversations read".
+        case .conversation(let id, let title): return .conversation(id: id, title: title)
         case .lastDays(let days):
             let end = LogicalDay.dateKey(forMs: nowMs, timeZoneID: zone)
             let start = LogicalDay.dateKey(

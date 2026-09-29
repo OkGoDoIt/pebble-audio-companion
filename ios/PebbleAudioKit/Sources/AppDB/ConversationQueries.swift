@@ -482,4 +482,18 @@ public struct ConversationQueries: Sendable {
                 arguments: [segmentId])
         }
     }
+
+    /// Every segment's conversation, in one read. Ask counts its coverage in conversations,
+    /// and one query per recording in an "Everything" scope would be hundreds of them.
+    public func conversationIdsBySegment() async throws -> [String: String] {
+        try await db.reader.read { db in
+            var out: [String: String] = [:]
+            for row in try Row.fetchAll(
+                db, sql: "SELECT segmentId, conversationId FROM conversation_segments")
+            {
+                out[row["segmentId"]] = row["conversationId"]
+            }
+            return out
+        }
+    }
 }

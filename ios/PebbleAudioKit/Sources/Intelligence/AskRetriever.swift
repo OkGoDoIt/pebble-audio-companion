@@ -441,6 +441,13 @@ public enum AskScope: Equatable, Sendable {
     case everything
     /// Inclusive `YYYY-MM-DD` logical-day keys from the system date-range picker.
     case dateRange(startKey: String, endKey: String)
+    /// One conversation, asked about from its own screen. It has no date window: the caller
+    /// narrows the recordings to the conversation's members.
+    ///
+    /// It used to be mapped to `.everything` on the way in, so a question about one
+    /// conversation told the model "TRANSCRIPT RANGE: Everything" and was stored in Recent as
+    /// "Everything · 29 conversations read" — for one conversation of 29 recordings.
+    case conversation(id: String, title: String?)
 
     /// Approved picker copy (Part 6.6) — also the `scopeDescription` stored in ask_history.
     public var displayName: String {
@@ -451,6 +458,21 @@ public enum AskScope: Equatable, Sendable {
         case .everything: return "Everything"
         case .dateRange(let start, let end):
             return start == end ? start : "\(start) – \(end)"
+        case .conversation(_, let title):
+            guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !title.isEmpty
+            else { return "This conversation" }
+            return "\u{201C}\(title)\u{201D}"
+        }
+    }
+
+    /// What the prompt's TRANSCRIPT RANGE line says the model is reading.
+    public var promptDescription: String {
+        switch self {
+        case .conversation:
+            return "one conversation, \(displayName) — every recording below belongs to it"
+        default:
+            return displayName
         }
     }
 }
@@ -475,14 +497,16 @@ public func segmentsInAskScope(
     }
 }
 
-/// The inclusive `YYYY-MM-DD` key range a scope covers, or nil for `.everything`.
+/// The inclusive `YYYY-MM-DD` key range a scope covers, or nil for `.everything` and
+/// `.conversation` (which the caller narrows by membership instead).
 /// `YYYY-MM-DD` keys compare correctly as strings.
 public func askScopeDateKeyRange(
     _ scope: AskScope, nowMs: Int64, timeZoneID: String
 ) -> ClosedRange<String>? {
     let todayKey = LogicalDay.dateKey(forMs: nowMs, timeZoneID: timeZoneID)
     switch scope {
-    case .everything:
+    case .everything, .conversation:
+        // A conversation has no date window; the caller narrows to its members.
         return nil
     case .today:
         return todayKey...todayKey
