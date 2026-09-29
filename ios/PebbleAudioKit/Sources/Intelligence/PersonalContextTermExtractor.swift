@@ -40,6 +40,10 @@ public final class PersonalContextTermExtractor: @unchecked Sendable {
         )
         do {
             let result = try await activeRouter.run(request)
+            // Terms a fallback drew from PART of a long profile are not the profile's terms, and
+            // the refresher stamps whatever comes back with the whole text's hash — settling it
+            // until the text changes. Treated as no answer, so it is asked again later.
+            guard !result.isProvisional else { return [] }
             return parseTerms(result.text)
         } catch let error where error is CancellationError {
             throw error

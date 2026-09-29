@@ -319,6 +319,21 @@ struct AiRetryBudgetTests {
                 .count == 1)
     }
 
+    /// About You terms a fallback drew from part of a long profile would be stamped with the
+    /// WHOLE profile's hash and never re-extracted. Treated as no answer instead.
+    @Test func profileTermsFromAPartialReadAreNotKept() async throws {
+        let cloud = Scripted("cloud", text: "Pebble, Speex", error: outage)
+        let phone = Scripted("phone", text: "Pebble", truncated: true)
+        let extractor = PersonalContextTermExtractor(
+            router: AiModeRouter(local: phone, remote: cloud, mode: { .remoteFirst }))
+        #expect(try await extractor.extract(profileText: "I work on Pebble.").isEmpty)
+
+        let whole = PersonalContextTermExtractor(
+            router: AiModeRouter(
+                local: Scripted("phone", text: "Pebble"), remote: cloud, mode: { .remoteFirst }))
+        #expect(try await whole.extract(profileText: "I work on Pebble.") == ["Pebble"])
+    }
+
     // MARK: The classification itself
 
     @Test func onlyAFailureOnTheInputSpendsAnAttempt() {
