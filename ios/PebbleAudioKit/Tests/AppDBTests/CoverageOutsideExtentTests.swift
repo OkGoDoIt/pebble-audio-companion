@@ -110,4 +110,24 @@ import WireProtocol
         #expect(quiet == [.init(kind: .quiet, startMs: streamStart + minutesMs(21), endMs: streamStart + minutesMs(22))])
         #expect(coverage.totalMissingMs == minutesMs(5))
     }
+
+    @Test("the watch's power-save pause is paused, not missing, inside a recording or before it")
+    func aPowerSavePauseIsPausedNotMissing() {
+        let streamStart = dayStart + minutesMs(60)
+        let powerSave = Int(GapReason.powerSave.rawValue)
+        let meta = makeSegment(
+            id: "nightstand", stream: 1, startTimeMs: streamStart,
+            firstSample: minutesSamples(20), durationSamples: minutesSamples(30),
+            gaps: [
+                lossGap(atSample: minutesSamples(0), minutes: 20, reasonRaw: powerSave),
+                lossGap(atSample: minutesSamples(30), minutes: 5, reasonRaw: powerSave),
+            ])
+
+        let coverage = day([meta], nowMs: dayStart + minutesMs(180))
+        #expect(coverage.totalMissingMs == 0, "a pause the watch chose is not lost audio")
+        let pausedMs = coverage.spans.filter { $0.kind == .paused }.map(\.durationMs).reduce(0, +)
+        #expect(pausedMs == minutesMs(25))
+        #expect(coverage.totalRecordedMs == minutesMs(25), "the paused stretch inside is not recorded")
+        #expect(!coverage.spans.contains { $0.kind == .quiet }, "nor is it quiet")
+    }
 }

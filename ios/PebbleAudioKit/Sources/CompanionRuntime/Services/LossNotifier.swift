@@ -74,7 +74,8 @@ public struct NoopLossNotifier: LossNotifier {
 ///
 /// Excluded:
 /// - **quiet** — VAD-suppressed silence is not loss; it never fires (`visibleLossGaps` filter).
-/// - **paused** — while capture intent is not `.active`, missing audio is the user's own choice.
+/// - **paused** — while capture intent is not `.active`, missing audio is the user's own choice;
+///   and the watch's own power-save pause is a pause, not loss, whatever its length.
 /// - **open segment (B21)** — a gap in the still-recording segment is deferred, not dropped:
 ///   B21's misfire was flagging an in-progress recording over a blip whose extent was not yet
 ///   settled. Deferred candidates are re-evaluated when the segment closes. The single exception
@@ -169,8 +170,9 @@ public actor LossEventEvaluator {
 
         let reason = gap.reasonRaw
             .flatMap { $0 >= 0 && $0 <= Int(UInt8.max) ? GapReason(rawValue: UInt8($0)) : nil }
-        // Paused exclusion in wire form: the watch stopped because the user asked it to.
-        if reason == .userDisabled { return nil }
+        // Paused exclusion in wire form: the watch stopped because the user asked it to — or
+        // because it chose to save power (stationary mute), which is a pause, never lost audio.
+        if reason == .userDisabled || reason == .powerSave { return nil }
 
         let durationMs = gapDurationMs(gap, frameDurationMs: meta.frameDurationMs)
         let isSpoolOverflow = gap.origin == GapMeta.originWatch && reason == .spoolOverflow
