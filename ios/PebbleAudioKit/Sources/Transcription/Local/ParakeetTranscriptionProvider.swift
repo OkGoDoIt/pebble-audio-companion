@@ -523,6 +523,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     ) async throws -> TranscriptionResult {
         try await loadEngine(modelPath: modelPath)
 
+        let startedMs = nowMs()
         var pieces: [ParakeetNativeResponse] = []
         let boost = boostQuietAudio()
         for range in ranges {
@@ -564,11 +565,24 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
             )
         }
 
+        // A verdict is only as good as the reads behind it. An interrupted read can come back as
+        // empty text rather than an error, and "every chunk was empty" was then settled as "nothing
+        // was said" — permanently: whole conversations were lost that way when the model was
+        // released under a running segment (see `TranscriptionQueue.requeueUnexplainedNoSpeech`).
+        try Task.checkCancellation()
         let text = pieces.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !ParakeetPcm.isNoSpeech(text) else {
-            throw TranscriptionError.noSpeechDetected("local model returned no speech")
+            // The audio length and the time the engine spent on it travel with the verdict: an
+            // engine that "heard nothing" in a fraction of the time the audio needs did not run.
+            let audioMs = ranges.reduce(0) {
+                $0 + $1.endMs(sampleRateHz: sampleRateHz) - $1.startMs(sampleRateHz: sampleRateHz)
+            }
+            throw TranscriptionError.noSpeechDetected(
+                "local model returned no speech ("
+                    + String(format: "%.1f", Double(audioMs) / 1_000) + " s of audio in "
+                    + "\(max(0, nowMs() - startedMs)) ms)")
         }
         return TranscriptionResult(
             text: text,

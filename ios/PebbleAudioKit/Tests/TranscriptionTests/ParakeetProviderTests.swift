@@ -109,6 +109,9 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     func endUse() { lock.withLock { ends += 1 } }
     func releaseWhenIdle() async { lock.withLock { softReleases += 1 } }
 
+    /// A `transcribe` call is parked on the gate.
+    var isWaiting: Bool { lock.withLock { gate != nil } }
+
     func openGate() {
         let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
             gateOpen = true
@@ -210,6 +213,19 @@ private func chunks(_ data: Data, size: Int = 3_200) -> AsyncThrowingStream<Data
         }
         continuation.finish()
     }
+}
+
+/// Polls until `predicate` holds, or records an issue after `timeoutMs`.
+private func waitFor(
+    _ description: String, timeoutMs: Int = 3_000, _ predicate: @Sendable () -> Bool
+) async throws {
+    var waited = 0
+    while waited < timeoutMs {
+        if predicate() { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+        waited += 5
+    }
+    Issue.record("timed out waiting for \(description)")
 }
 
 private func makeTemp() throws -> URL {
@@ -729,6 +745,47 @@ private func makeProvider(
         }
         #expect(Date().timeIntervalSince(started) < 5)
         #expect(engine.interrupts >= 1)
+    }
+
+    /// The shape that settled whole conversations as "no speech" (2026-09-24): the read was
+    /// interrupted, and the engine came back with EMPTY TEXT instead of an error. A cancelled
+    /// transcription must end as a cancellation — the task goes back to Pending — never as a
+    /// verdict about the audio.
+    @Test func anInterruptedReadThatComesBackEmptyIsACancellationNotSilence() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(responses: [#"{"response":""}"#], hangs: true)
+        defer { engine.openGate() }
+        let provider = makeProvider(engine: engine, temp: temp)
+        let run = Task {
+            try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        }
+        try await waitFor("the engine to be reading") { engine.isWaiting }
+        run.cancel()
+        // The engine ignores the cancel and answers — with nothing.
+        engine.openGate()
+        do {
+            _ = try await run.value
+            Issue.record("expected a cancellation")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("expected a cancellation, got \(error)")
+        }
+    }
+
+    /// A verdict carries what it was reached on: how much audio, and how long the engine spent.
+    @Test func aNoSpeechVerdictSaysHowMuchAudioAndHowLongTheEngineSpent() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let provider = makeProvider(
+            engine: FakeEngine(responses: [#"{"response":"   "}"#]), temp: temp)
+        do {
+            _ = try await provider.transcribe(
+                pcmChunks: chunks(tone(ms: 2_000)), sampleRateHz: sampleRate)
+            Issue.record("expected noSpeechDetected")
+        } catch TranscriptionError.noSpeechDetected(let reason) {
+            #expect(reason.hasPrefix("local model returned no speech (2.0 s of audio in "))
+        }
     }
 
     /// A scratch-file write failure is the phone's trouble, not the recording's: it must classify

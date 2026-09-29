@@ -160,6 +160,10 @@ public enum ParakeetEngineFactory {
         private let lock = NSLock()
         private var handle: UnsafeMutableRawPointer?
         private var loadedIdentity: String?
+        /// Set by `interrupt()`, cleared as each transcription starts: `cactus_stop` makes the
+        /// running call return early with success and whatever it had — often nothing — and an
+        /// empty result reads as silence to everything above.
+        private var stopRequested = false
 
         public init() {}
 
@@ -205,6 +209,7 @@ public enum ParakeetEngineFactory {
                 guard let handle = self.currentHandle() else {
                     throw ParakeetEngineError.notLoaded
                 }
+                self.lock.withLock { self.stopRequested = false }
                 var buffer = [CChar](repeating: 0, count: Self.responseBufferBytes)
                 let status = buffer.withUnsafeMutableBufferPointer { out -> Int32 in
                     cactus_transcribe(
@@ -220,6 +225,7 @@ public enum ParakeetEngineFactory {
                         0
                     )
                 }
+                if self.lock.withLock({ self.stopRequested }) { throw CancellationError() }
                 guard status >= 0 else { throw ParakeetEngineError.nativeFailure(Self.lastError()) }
                 // The C side NUL-terminates inside the buffer; decode up to that byte.
                 let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
@@ -234,6 +240,7 @@ public enum ParakeetEngineFactory {
             lock.lock()
             defer { lock.unlock() }
             guard let handle else { return }
+            stopRequested = true
             cactus_stop(handle)
         }
 

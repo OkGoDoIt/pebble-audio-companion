@@ -247,12 +247,19 @@ func localSpeechFinalText(_ pieces: [String]) -> String? {
             } catch {
                 inputContinuation.finish()
                 await analyzer.cancelAndFinishNow()
+                // A cancelled pass is not a failed transcription: wrapped, it spent an attempt
+                // and read as an engine fault. Unwrapped, the task goes back to Pending.
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
                 throw TranscriptionError.transcriptionFailed(
                     "On-device transcription failed", underlying: error
                 )
             }
 
             let finals = try await collected
+            // A cancel that lands after the input finished can still end the results early; an
+            // empty read is then not a verdict about the audio (see the same check in
+            // `ParakeetTranscriptionProvider`).
+            try Task.checkCancellation()
             guard let text = localSpeechFinalText(finals.map { $0.text }) else {
                 throw TranscriptionError.noSpeechDetected(
                     "SpeechAnalyzer produced no speech for this audio"

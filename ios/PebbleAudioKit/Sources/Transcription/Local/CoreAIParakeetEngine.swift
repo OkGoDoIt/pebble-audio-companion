@@ -250,7 +250,12 @@ extension ParakeetEngineFactory {
                 releaseIfRequestedAndIdle()
             }
             return try await withTaskCancellationHandler {
-                try await task.value
+                let text = try await task.value
+                // A cancelled run can still finish "normally" with whatever its stream finalized
+                // before the cancel landed — often nothing. That is not a transcript of the file,
+                // and an empty one reads as silence to everything above.
+                if task.isCancelled { throw CancellationError() }
+                return text
             } onCancel: {
                 task.cancel()
                 cancelStream(of: model, ifStillRunning: task)
