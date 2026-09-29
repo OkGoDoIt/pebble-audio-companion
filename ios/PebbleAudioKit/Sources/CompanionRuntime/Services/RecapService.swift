@@ -16,6 +16,10 @@ public actor RecapService {
     }
 
     /// Starts the engine's own debounce loop. Idempotent.
+    ///
+    /// NOT called by the runtime: that loop ignores the background, charger and thermal rules
+    /// the pipeline's `.recap` stage applies (see `CompanionRuntime.start`). Kept for tests and
+    /// tools that drive the engine without a pipeline.
     public func start() async {
         guard let engine, !engineTask else { return }
         engineTask = true

@@ -263,7 +263,12 @@ public actor CompanionRuntime {
         // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
         await retention.noteSweptElsewhere()
         await environment.transcription.startUploader()
-        await environment.recap.start()
+        // No `environment.recap.start()`: the recap engine's own 15-minute loop regenerated and
+        // condensed the whole day with none of the pass's rules — on battery, in Low Power Mode,
+        // with "Only When Open", and inside thermal holds (the flight recorder has it at 09-21
+        // 23:14 and 09-22 22:02, mid-hold). The pipeline's `.recap` stage is the only caller now:
+        // every foreground pass (the engine's own debounce decides whether anything runs), and in
+        // the background only when `BackgroundWorkPolicy` allows, on its long interval.
 
         guard loopTask == nil else { return }
         startLoop()
