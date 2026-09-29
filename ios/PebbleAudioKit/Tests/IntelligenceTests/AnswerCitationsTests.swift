@@ -145,4 +145,24 @@ import Testing
     @Test func noCitationsWhenTheModelWroteNone() {
         #expect(renderedAnswerCitations("No decisions were made.", sourceIds: sources).isEmpty)
     }
+
+    /// A sweep over a large range numbers thousands of stretches; the pattern stopped at three
+    /// digits, so "[1000]" was not a citation at all and its chip never appeared — while the
+    /// answer card (which reads any number of digits) showed the marker as text.
+    @Test func citationsPastThreeDigitsResolve() {
+        let many = (1...1_200).map { "seg-\($0)" }
+        let citations = renderedAnswerCitations(
+            "Booked the ferry [1000], then changed it [1187].", sourceIds: many)
+        #expect(citations.map(\.number) == [1000, 1187])
+        #expect(citations.first?.segmentId == "seg-1000")
+
+        let stretches = (1...1_200).map {
+            CitableExcerpt(number: $0, segmentId: "seg-\($0)", startMs: 0, endMs: 1, text: "x")
+        }
+        #expect(
+            renderedAnswerCitations("See [1100].", sources: stretches).first?.segmentId
+                == "seg-1100")
+        // A number too large to be anything resolves to nothing rather than crashing.
+        #expect(renderedAnswerCitations("[99999999999999999999999]", sourceIds: many).isEmpty)
+    }
 }
