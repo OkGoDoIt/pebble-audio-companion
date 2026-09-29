@@ -67,6 +67,14 @@ public enum RecapCondenser {
         return Double(short.count) <= Double(long.count) * minimumShorteningRatio
     }
 
+    /// The longest condensation `isUsable` accepts for a (normalized) source this long — the
+    /// exact number the prompt now states. Both halves of the rule, as one figure.
+    public static func acceptanceCeiling(sourceCharacters: Int) -> Int {
+        min(
+            max(mediumParagraphCharacters, sourceCharacters / 2),
+            Int(Double(sourceCharacters) * minimumShorteningRatio))
+    }
+
     /// Whitespace-collapsed text, so a digest that happens to arrive with hard line breaks is
     /// measured by what it says rather than by how it was wrapped.
     static func normalized(_ text: String) -> String {
@@ -117,27 +125,43 @@ public enum RecapCondenser {
 
     // MARK: - Prompt
 
-    /// The condense prompt.
+    /// The condense prompt, for a digest of typical length. `condense` sends the per-digest form
+    /// (`prompt(forSourceCharacters:)`); this one is the template's identity.
     ///
     /// Lives here rather than in `AiPromptTemplates` because it is not a template a user can
     /// pick: its input is our own generated prose, not a transcript, and its only reader is the
     /// Today card. The transcript rules the shared catalog opens with ("transcripts may contain
     /// transcription errors, annotated gaps…") would be a lie about this input.
-    public static let prompt = AiPromptTemplate(
-        id: "recap-condense",
-        title: "Shorter daily recap",
-        systemPrompt:
-            "You are shortening a recap of one day that the user's own device already wrote. "
-            + "The input is finished prose, not a transcript: every fact in it is already "
-            + "established, so never add, infer, soften or re-interpret anything, and never "
-            + "remark on the shortening. Keep the day's chronological shape and the things a "
-            + "person would want to remember — who, what was decided, what is outstanding — and "
-            + "drop elaboration, repeated detail and scene-setting. Write one paragraph of at "
-            + "most three sentences and about \(condensedTargetCharacters / 7) words. Plain "
-            + "text only: no Markdown, headings, bullets, bold text or numbered lists. Answer "
-            + "with the shortened recap and nothing else.",
-        userPrompt: "Shorten this recap of the day."
-    )
+    public static let prompt = prompt(forSourceCharacters: 2 * mediumParagraphCharacters)
+
+    /// The condense prompt with the EXACT ceiling the answer will be judged against.
+    ///
+    /// The prompt used to ask for "about 60 words" with no limit, while `isUsable` refused
+    /// anything over `max(520, source / 2)` or 0.75× the source — so the model aimed at one
+    /// number and was judged against another, and about 43% of condensations were refused and
+    /// stamped as attempted, leaving the long digest on the card for good. Now the prompt states
+    /// the number the acceptance rule uses, and asks for a comfortable margin under it.
+    public static func prompt(forSourceCharacters sourceCharacters: Int) -> AiPromptTemplate {
+        let ceiling = acceptanceCeiling(sourceCharacters: sourceCharacters)
+        let target = min(condensedTargetCharacters, ceiling * 4 / 5)
+        return AiPromptTemplate(
+            id: "recap-condense",
+            title: "Shorter daily recap",
+            systemPrompt:
+                "You are shortening a recap of one day that the user's own device already wrote. "
+                + "The input is finished prose, not a transcript: every fact in it is already "
+                + "established, so never add, infer, soften or re-interpret anything, and never "
+                + "remark on the shortening. Keep the day's chronological shape and the things a "
+                + "person would want to remember — who, what was decided, what is outstanding — "
+                + "and drop elaboration, repeated detail and scene-setting. Write one paragraph "
+                + "of at most three sentences. HARD LIMIT: \(ceiling) characters, spaces "
+                + "included — an answer longer than that is discarded — so aim for about "
+                + "\(target) characters (roughly \(max(1, target / 6)) words). Plain text only: "
+                + "no Markdown, headings, bullets, bold text or numbered lists. Answer with the "
+                + "shortened recap and nothing else.",
+            userPrompt: "Shorten this recap of the day."
+        )
+    }
 
     // MARK: - The pass
 
@@ -163,7 +187,7 @@ public enum RecapCondenser {
         let result = try await run(
             AiRunRequest(
                 requestId: "recap-condense-\(recap.dateKey)-\(nowMs)",
-                prompt: prompt,
+                prompt: prompt(forSourceCharacters: normalized(recap.text).count),
                 transcripts: [
                     // `prebuilt` means "pass this body through untouched": the input is one
                     // block of our own prose, and wrapping it in a "Transcript segment

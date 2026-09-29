@@ -135,18 +135,29 @@ public struct DailyRecapStore: Sendable {
         }
     }
 
-    /// Digests long enough to want a condensed form, newest first.
+    /// Digests long enough to want a condensed form and NOT yet condensed for their current
+    /// text, newest first.
     ///
     /// `length()` is SQLite's character count on a TEXT value, so the cheap half of
     /// `RecapCondenser.needsPass` runs in the query and only a handful of rows are decoded.
-    /// The fingerprint half cannot be expressed in SQL, so the caller filters what comes back.
+    ///
+    /// The query used to stop there, and take the eight newest long days whatever their state —
+    /// so once eight recent days had been condensed, the ninth and older were never offered
+    /// again, and the backup had 09-05 and 09-07…09-10 sitting long on their cards for good. The
+    /// fingerprint cannot be computed in SQL, but its SUFFIX is the text's UTF-8 byte count
+    /// (`RecapCondenser.fingerprint`), which can: a row whose stamp ends in a different count
+    /// was stamped for other text and is still owed a pass. The caller's `needsPass` then
+    /// confirms the few that come back.
     public func longestFirstCandidates(minCharacters: Int, limit: Int) async throws -> [DailyRecap]
     {
         try await db.reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT * FROM recaps WHERE length(text) > ?
+                    SELECT * FROM recaps
+                    WHERE length(text) > ?
+                        AND (shortOfHash IS NULL
+                            OR shortOfHash NOT LIKE ('%-' || length(CAST(text AS BLOB))))
                     ORDER BY dateKey DESC LIMIT ?
                     """,
                 arguments: [minCharacters, limit]
