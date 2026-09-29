@@ -146,3 +146,31 @@ import Testing
         #expect(firstSegment?.keys.contains("speaker") == false)
     }
 }
+
+@Suite struct ScratchFileSweepTests {
+    @Test func removesOnlyOldTransientScratchFiles() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sweep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let old = Date().addingTimeInterval(-3_600)
+        func make(_ name: String, bytes: Int, modified: Date) throws {
+            let url = dir.appendingPathComponent(name)
+            try Data(count: bytes).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: modified], ofItemAtPath: url.path)
+        }
+        try make("cactus_stt-A.raw", bytes: 1_000, modified: old)
+        try make("cactus_stt-B.wav", bytes: 500, modified: old)
+        try make("pebble-flac-C.flac", bytes: 250, modified: old)
+        try make("cactus_stt-fresh.raw", bytes: 10, modified: Date())  // may still be in use
+        try make("cactus_download_x.zip", bytes: 10, modified: old)  // the store's, not ours
+        try make("pebble-audio-companion.log", bytes: 10, modified: old)
+
+        let result = ScratchFileSweep.run(in: dir)
+
+        #expect(result == ScratchFileSweep.Result(files: 3, bytes: 1_750))
+        let left = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+        #expect(left == ["cactus_download_x.zip", "cactus_stt-fresh.raw", "pebble-audio-companion.log"])
+    }
+}

@@ -67,6 +67,12 @@ public actor TranscriptionService {
 
     public func recoverOnStart() throws {
         try queue.recoverOnStart()
+        let swept = ScratchFileSweep.run()
+        if swept.files > 0 {
+            log.write(
+                "startup: removed \(swept.files) orphaned transcription scratch file(s), "
+                    + "\(swept.bytes / 1_048_576) MB")
+        }
         // Cloud health lives in memory; a hold outlives the process. Without this a relaunched
         // app shows a neutral cloud row for an account it is still refusing to send to.
         if let hold = heldCloudAccount() {
