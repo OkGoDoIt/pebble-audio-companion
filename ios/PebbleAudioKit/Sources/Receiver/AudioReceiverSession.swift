@@ -323,7 +323,12 @@ public actor AudioReceiverSession {
     /// and replayed the moment the stream opens; bounded so a watch that never announces cannot
     /// grow it.
     private var orphanGaps: [UInt32: [StreamGap]] = [:]
-    private static let orphanGapsPerStream = 16
+    /// Was 16, and on 2026-09-20 23:48:37 a re-authorization delivered more than that before its
+    /// STREAM_START: the notices past the sixteenth were dropped, and the quiet they described came
+    /// back as 13 small sequence skips — silence recorded as LOSS. A held notice is a few dozen
+    /// bytes and adjacent same-reason notices coalesce as they arrive (`holdOrphanGap`), so this
+    /// bound only stops a watch that never announces from growing the hold without end.
+    public static let orphanGapsPerStream = 1_024
     /// Frames the watch reported lost that this app had already stored (see `handleStreamGap`).
     private var phantomGapFrames: UInt32 = 0
     private var phantomGapNotices: UInt32 = 0
@@ -335,15 +340,118 @@ public actor AudioReceiverSession {
     /// battery encoding and sending audio, and this app is dropping every frame on the floor for
     /// want of a STREAM_START it never received. Nothing else in the session notices it. The
     /// frames are not checkpointed (there is no stream to checkpoint), so the watch's spool is
-    /// never trimmed and the audio is genuinely lost to overflow while both sides report health.
+    /// never trimmed, and what it cannot hold is lost to overflow while both sides report health.
     private var lastOrphanDataAtMs: Int64 = 0
 
-    /// Total frames dropped for want of a stream context, for diagnostics and the support report.
+    /// Frames that arrived with no stream to attach them to, since this session started.
+    ///
+    /// FRAMES ONLY, and for the life of the session. It used to count held gap notices as if they
+    /// were frames, and it was zeroed at every link teardown — so Diagnostics, which shows the row
+    /// only while it is above zero, was nearly always reading a counter that had just been wiped.
+    ///
+    /// What the number means, and does not: none of these frames was stored when it arrived, and
+    /// none was acknowledged, so the watch still held every one of them. It re-sends what it holds
+    /// once it re-announces the stream, and anything its buffer could not keep in the meantime is
+    /// recorded — as the watch's overflow notice, or as a gap this app's resume accounting finds
+    /// (`seedResumedStream`). The count is evidence of the link being out of step, not a measure
+    /// of audio lost.
     nonisolated public let orphanedFrameCount = StateSubject<Int>(0)
 
-    private func noteOrphanData(_ frames: Int) {
+    /// One stretch of audio the watch sent while this app had no stream for it, reported once
+    /// when the stream is announced (or the link goes down first) — see `reportOrphanEpisode`.
+    private struct OrphanEpisode {
+        var frames = 0
+        var notices = 0
+        var noticesDropped = 0
+        var streamIds: Set<UInt32> = []
+        var firstSequence: UInt32?
+        var lastSequence: UInt32?
+
+        var isEmpty: Bool { frames == 0 && notices == 0 }
+
+        mutating func add(_ data: StreamData) {
+            frames += data.frameCount
+            streamIds.insert(data.streamId)
+            let last = data.firstSequence &+ UInt32(max(data.frameCount, 1) - 1)
+            firstSequence = min(firstSequence ?? data.firstSequence, data.firstSequence)
+            lastSequence = max(lastSequence ?? last, last)
+        }
+    }
+    private var orphanEpisode = OrphanEpisode()
+
+    private func noteOrphanData(_ data: StreamData) {
         lastOrphanDataAtMs = clock.nowMs
-        orphanedFrameCount.value = orphanedFrameCount.value + max(frames, 1)
+        orphanedFrameCount.value = orphanedFrameCount.value + data.frameCount
+        orphanEpisode.add(data)
+    }
+
+    /// Holds a notice for a stream not yet announced. A notice that continues the last held one
+    /// for the same reason extends it instead of taking a slot — the watch sends its table oldest
+    /// first, and two abutting records with one reason are one period (the store would merge them
+    /// anyway).
+    private func holdOrphanGap(_ gap: StreamGap) {
+        lastOrphanDataAtMs = clock.nowMs
+        orphanEpisode.notices += 1
+        orphanEpisode.streamIds.insert(gap.streamId)
+        var held = orphanGaps[gap.streamId] ?? []
+        if let last = held.last, last.reasonRaw == gap.reasonRaw, last.missingFrameCount > 0,
+            gap.missingFrameCount > 0,
+            last.firstMissingSequence &+ last.missingFrameCount == gap.firstMissingSequence,
+            UInt64(last.missingFrameCount) + UInt64(gap.missingFrameCount) <= UInt64(UInt32.max)
+        {
+            held[held.count - 1] = StreamGap(
+                streamId: last.streamId, firstMissingSequence: last.firstMissingSequence,
+                missingFrameCount: last.missingFrameCount + gap.missingFrameCount,
+                firstMissingSampleIndex: last.firstMissingSampleIndex, reasonRaw: last.reasonRaw,
+                watchDropCounter: max(last.watchDropCounter, gap.watchDropCounter))
+        } else if held.count < Self.orphanGapsPerStream {
+            held.append(gap)
+        } else {
+            orphanEpisode.noticesDropped += 1
+            return
+        }
+        orphanGaps[gap.streamId] = held
+    }
+
+    /// Says what one orphan episode was, once, when it ends: either the stream it belonged to has
+    /// just been announced, or the link is going down without it ever being announced.
+    ///
+    /// This used to be a single line at teardown — "the watch was sending audio this app could
+    /// not store" — which overstated it. The frames were never checkpointed, so the watch kept
+    /// them and re-sends them after it re-announces the stream; the line is the evidence of a
+    /// link out of step, with the numbers to find the stretch in the recording.
+    private func reportOrphanEpisode(announced streamId: UInt32?) {
+        let episode = orphanEpisode
+        orphanEpisode = OrphanEpisode()
+        guard !episode.isEmpty else { return }
+        var parts: [String] = []
+        if episode.frames > 0 {
+            var range = ""
+            if let first = episode.firstSequence, let last = episode.lastSequence {
+                range = " (sequences \(first)-\(last))"
+            }
+            parts.append("\(episode.frames) frame(s)\(range)")
+        }
+        if episode.notices > 0 {
+            parts.append("\(episode.notices) gap notice(s)")
+        }
+        let streams = episode.streamIds.sorted().map(String.init).joined(separator: ", ")
+        let what = parts.joined(separator: " and ") + " for stream \(streams)"
+        if let streamId {
+            log(
+                "\(what) arrived before stream \(streamId) was announced; nothing was stored or "
+                    + "acknowledged, so the watch kept the audio and re-sends it now")
+        } else {
+            log(
+                "link down: \(what) arrived on a connection that never announced their stream; "
+                    + "none of it was acknowledged, so the watch kept it for the next connection")
+        }
+        if episode.noticesDropped > 0 {
+            log(
+                "\(episode.noticesDropped) gap notice(s) did not fit the hold "
+                    + "(\(Self.orphanGapsPerStream) per stream) and were dropped; "
+                    + "their frames will be recorded as sequence skips")
+        }
     }
 
     private func noteInbound() {
@@ -1391,6 +1499,7 @@ public actor AudioReceiverSession {
             stream = context
             noteAudioArrived()
             setState(.streaming(streamId: start.streamId))
+            reportOrphanEpisode(announced: start.streamId)
             if let held = orphanGaps.removeValue(forKey: start.streamId), !held.isEmpty {
                 log("applying \(held.count) gap notice(s) that arrived before STREAM_START")
                 for gap in held {
@@ -1403,7 +1512,7 @@ public actor AudioReceiverSession {
                 // Audio for a stream we cannot attach. Deliberately NOT counted as
                 // `noteAudioArrived`: nothing was stored, so treating it as evidence of a healthy
                 // recording is precisely the lie that let this state persist for hours.
-                noteOrphanData(data.frameCount)
+                noteOrphanData(data)
                 return
             }
             noteAudioArrived()
@@ -1425,8 +1534,7 @@ public actor AudioReceiverSession {
                 // watch's pending gaps 30-150 ms before the re-announced STREAM_START. The
                 // notice is applied the moment that start opens the stream (`StreamStart`
                 // above); if no start ever comes, the link teardown discards it.
-                var held = orphanGaps[gap.streamId] ?? []
-                if held.isEmpty {
+                if orphanGaps[gap.streamId]?.isEmpty ?? true {
                     log(
                         "holding a watch gap notice for stream \(gap.streamId) "
                             + "(\(gap.missingFrameCount) frames, reason \(gap.reasonRaw)): "
@@ -1434,11 +1542,7 @@ public actor AudioReceiverSession {
                                 ? "no open stream" : "our stream is \(stream?.streamId ?? 0)")
                             + " — applied when that stream is announced")
                 }
-                if held.count < Self.orphanGapsPerStream {
-                    held.append(gap)
-                    orphanGaps[gap.streamId] = held
-                }
-                noteOrphanData(1)
+                holdOrphanGap(gap)
                 return
             }
             noteAudioArrived()
@@ -1815,19 +1919,14 @@ public actor AudioReceiverSession {
         // treats anything within `orphanDataMaxAgeMs` (40 s) as current, so a dead connection's
         // orphans stayed "recent" well into the NEW one and could drive
         // `checkForAStreamWeShouldHave` into another resync — a reconnect loop feeding itself.
-        // Say it out loud before zeroing it. `orphanedFrameCount` is the one instrument that tells
-        // airtime loss apart from a spool that never freed, and it is per-CONNECTION: this reset
-        // is correct for the live evidence latch, but it also meant the number never survived long
-        // enough to be seen. Roger's flight recorder shows 27 process starts and 77 disconnects in
-        // a single day, so Diagnostics — which only renders the row while the count is above zero
-        // — was reading a counter that had just been wiped, and reported nothing for outages that
-        // cost hours. Logging it at teardown puts the evidence in the recorder the support export
-        // already carries, at one line per disconnect.
-        if orphanedFrameCount.value > 0 {
-            log(
-                "link down: \(orphanedFrameCount.value) frames arrived with no stream to attach "
-                    + "them to — the watch was sending audio this app could not store")
-        }
+        //
+        // Only the evidence latch is per connection. The episode is reported — once, with its
+        // frames, notices and sequence range — when its stream is announced or here, whichever
+        // comes first; and `orphanedFrameCount` is NOT zeroed any more: Roger's flight recorder
+        // shows 27 process starts and 77 disconnects in a single day, so Diagnostics, which only
+        // renders the row while the count is above zero, was reading a number that had just been
+        // wiped and reported nothing for outages that cost hours.
+        reportOrphanEpisode(announced: nil)
         if phantomGapNotices > 0 {
             log(
                 "link down: ignored \(phantomGapNotices) watch gap notice(s) covering "
@@ -1837,7 +1936,6 @@ public actor AudioReceiverSession {
         phantomGapFrames = 0
         orphanGaps.removeAll()
         lastOrphanDataAtMs = 0
-        orphanedFrameCount.value = 0
     }
 
     private enum ReceiverSessionError: Error {

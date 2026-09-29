@@ -17,60 +17,7 @@ import WireProtocol
 @Suite struct ResumeAccountingTests {
     private let streamId: UInt32 = 0x5EED_0003
 
-    private final class Fixture {
-        let scheduler = TestScheduler()
-        let clock: TestClock
-        let link: FakeAudioGattLink
-        let sink: FakeSegmentSink
-        let resumeStore: FakeResumeStore
-        let session: AudioReceiverSession
-        let task: Task<Void, Never>
-        let lines = LineBox()
-
-        init() {
-            clock = TestClock(scheduler: scheduler)
-            link = FakeAudioGattLink(scheduler: scheduler)
-            sink = FakeSegmentSink(scheduler: scheduler)
-            resumeStore = FakeResumeStore(scheduler: scheduler)
-            session = AudioReceiverSession(
-                link: link, sink: sink, policy: FakeReceiverPolicy(), resumeStore: resumeStore,
-                config: ReceiverConfig(
-                    receiverId: Array(repeating: 3, count: 32), receiverName: "resume",
-                    checkpointAudioMs: 2_000, checkpointMinIntervalMs: 500),
-                clock: clock, log: ReceiverLog { [lines] in lines.append($0) })
-            task = session.start()
-        }
-
-        deinit { task.cancel() }
-
-        func authorize() async {
-            link.linkState.value = .ready
-            for _ in 0..<500 {
-                await clock.settle()
-                if !link.controlWrites.isEmpty { break }
-            }
-            let token = link.controlWrites.compactMap { bytes -> AuthRequest? in
-                if case .decoded(let m) = AudioCompanionProtocol.decodeControlIn(bytes) { return m as? AuthRequest }
-                return nil
-            }.last?.requestToken ?? -1
-            link.pushControl(AuthResult(requestToken: token, statusRaw: 0, grantedProtoVersion: 1))
-            await clock.settle()
-        }
-
-        func checkpoints() -> [Checkpoint] {
-            link.controlWrites.compactMap {
-                if case .decoded(let m) = AudioCompanionProtocol.decodeControlIn($0) { return m as? Checkpoint }
-                return nil
-            }
-        }
-    }
-
-    final class LineBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _lines: [String] = []
-        func append(_ line: String) { lock.withLock { _lines.append(line) } }
-        var lines: [String] { lock.withLock { _lines } }
-    }
+    private typealias Fixture = FakeSinkSession
 
     private func start(resume: Bool) -> StreamStart {
         StreamStart(
