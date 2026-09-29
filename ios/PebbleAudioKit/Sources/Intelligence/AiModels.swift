@@ -83,4 +83,60 @@ public enum AiModels {
         }
         return `default`
     }
+
+    // MARK: - Naming a model that already produced something
+
+    /// The on-device model's recorded id (`FoundationModelsLanguageModel.id`).
+    public static let onDeviceModelId = "apple-foundation-models"
+    /// Apple Private Cloud Compute's recorded id (`ApplePrivateCloudModel.id`).
+    public static let privateCloudModelId = "apple-private-cloud-compute"
+
+    /// The name to show beside something a model WROTE — a recap, a note — from the model id
+    /// and provider id stored with it. Nil when nothing was recorded.
+    ///
+    /// `byId` is for the SETTING: it falls back to the default model, which is right for a
+    /// preference and wrong for a record. Used on records, it named everything it did not
+    /// recognise "GPT-5.6 Luna" — the on-device model's recaps, Private Cloud Compute's, and
+    /// every dated id OpenAI returns (`gpt-5.4-mini-2026-03-17`). A person reading "GPT-5.6
+    /// Luna" under a recap the phone wrote is being told the wrong thing about where their
+    /// words went. So: Apple's two models by name, OpenAI ids by their catalog family when the
+    /// family is known (with or without the date suffix OpenAI adds), and otherwise the id
+    /// exactly as recorded — never another model's name.
+    public static func displayName(modelUsed: String?, providerId: String? = nil) -> String? {
+        let model = modelUsed?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch (model, providerId) {
+        case (onDeviceModelId, _), ("", "apple-foundation-models"), ("", "on-device"):
+            return "On-device Apple model"
+        case (privateCloudModelId, _), ("", ApplePrivateCloudAiProvider.providerId):
+            return "Apple Private Cloud Compute"
+        default:
+            break
+        }
+        guard !model.isEmpty else { return nil }
+        if let exact = all.first(where: { $0.id == model }) { return exact.displayName }
+        let undated = withoutDateSuffix(model)
+        if let family = all.first(where: { $0.id == undated }) { return family.displayName }
+        return model
+    }
+
+    /// "gpt-5.6-luna-2026-09-01" → "gpt-5.6-luna". OpenAI returns the dated snapshot it
+    /// actually served under the alias that was asked for.
+    static func withoutDateSuffix(_ id: String) -> String {
+        guard
+            let range = id.range(
+                of: #"-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression)
+        else { return id }
+        return String(id[..<range.lowerBound])
+    }
+
+    /// The id to SEND for a stored setting: a legacy id resolves to the model Settings shows
+    /// for it (`legacyReplacements`), an empty one to the default. An unknown non-empty id is
+    /// sent as-is — a model somebody typed or imported is theirs to use.
+    public static func resolvedModelId(_ id: String?) -> String {
+        let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return defaultModelId }
+        if all.contains(where: { $0.id == trimmed }) { return trimmed }
+        if let replacement = legacyReplacements[trimmed] { return replacement }
+        return trimmed
+    }
 }

@@ -143,6 +143,10 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         }
 
         let requestedModel = request.metadata[AiRunRequest.modelKey]
+        // The stored setting, resolved the way Settings resolves it: a legacy id from an earlier
+        // catalog ("gpt-5.4-mini") used to be sent to OpenAI verbatim while every budget and
+        // label in the app treated it as its replacement.
+        let selectedModel = AiModels.resolvedModelId(model())
         let ceiling =
             requestedModel.map { AiModels.byId($0).contextTokens * AskBudget.charsPerToken }
             ?? maxInputChars()
@@ -151,7 +155,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         // a plan was wrong — and an answer that claims the whole range from part of it must not
         // be the way that is discovered.
         let fitted = try AiInputPolicy.fit(
-            request, maxInputChars: ceiling, modelName: requestedModel ?? model())
+            request, maxInputChars: ceiling, modelName: requestedModel ?? selectedModel)
         let userContent = fitted.content
         let instructions = buildInstructions(request.prompt.systemPrompt)
 
@@ -160,7 +164,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         // person sees on a list they trust, and the cheapest model reads ambient chatter as
         // commitments. Everything else keeps the single user-chosen model.
         var payload: [String: Any] = [
-            "model": request.metadata[AiRunRequest.modelKey] ?? model(),
+            "model": requestedModel ?? selectedModel,
             "instructions": instructions,
             "input": userContent,
             "reasoning": [
@@ -209,7 +213,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         }
         return AiProviderResult(
             text: text,
-            modelUsed: parsed.model ?? requestedModel ?? model(),
+            modelUsed: parsed.model ?? requestedModel ?? selectedModel,
             inputTokens: parsed.usage?.inputTokens,
             outputTokens: parsed.usage?.outputTokens,
             inputTruncated: fitted.truncated
@@ -314,7 +318,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
     func probeAccount() async -> CloudAccountProbeOutcome {
         guard let key = apiKey(), !key.isBlank else { return .inconclusive("no key") }
         let payload: [String: Any] = [
-            "model": model(),
+            "model": AiModels.resolvedModelId(model()),
             "input": "ok",
             "reasoning": ["effort": reasoningEffort],
             "max_output_tokens": Self.probeMaxOutputTokens,

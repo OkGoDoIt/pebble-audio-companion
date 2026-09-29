@@ -267,6 +267,23 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
             "model change should apply to the next request")
     }
 
+    /// A stored id from an earlier catalog was sent to OpenAI verbatim, while every budget and
+    /// label in the app treated it as its replacement.
+    @Test func aLegacyModelSettingIsSentAsItsReplacement() async throws {
+        let transport = RecordingTransport { _ in
+            HttpTransportResponse(
+                status: 200, text: #"{"output_text": "ok", "model": "gpt-5.6-luna"}"#)
+        }
+        let provider = OpenAiChatAiProvider(
+            transport: transport, apiKey: { "test-key" }, remoteConsent: { true },
+            model: { "gpt-5.4-mini" })
+
+        _ = try await provider.run(request(prompt: SegmentAnnotationPrompt.template))
+
+        #expect(bodyText(transport.last).contains("\"model\":\"gpt-5.6-luna\""))
+        #expect(!bodyText(transport.last).contains("gpt-5.4-mini"))
+    }
+
     @Test func nonOkResponseFailsWithProviderFailed() async throws {
         let transport = RecordingTransport { _ in
             HttpTransportResponse(status: 429, text: #"{"error": {"message": "rate limited"}}"#)

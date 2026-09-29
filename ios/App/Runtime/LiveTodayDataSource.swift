@@ -246,7 +246,7 @@ final class LiveTodayDataSource {
                 nowMs: nowMs, zone: zone, dateKey: dateKey, segments: segments, pauses: pauses
             ),
             recap: Self.recap(
-                recap, aiModelName: composition.settings.aiModel, rows: todaySection?.rows ?? []
+                recap, rows: todaySection?.rows ?? []
             ),
             followUps: followUps,
             openFollowUpCount: openFollowUps.count,
@@ -631,7 +631,7 @@ final class LiveTodayDataSource {
     }
 
     private static func recap(
-        _ recap: DailyRecap?, aiModelName: String, rows: [ConversationListRow]
+        _ recap: DailyRecap?, rows: [ConversationListRow]
     ) -> RecapDisplay? {
         guard let recap, !recap.text.isEmpty else { return nil }
         let updated = Date(timeIntervalSince1970: Double(recap.updatedAtMs) / 1000)
@@ -658,13 +658,29 @@ final class LiveTodayDataSource {
             detail: RecapDetailDisplay(
                 id: RecapIndex.documentId(dateKey: recap.dateKey),
                 title: Copy.Today.recapTitle,
-                generatedLine:
-                    "Generated \(TimeFmt.time(updated)) · "
-                    + "\(AiModels.byId(recap.model ?? aiModelName).displayName) · from today",
+                // The model that WROTE this recap, by what it recorded. `AiModels.byId` falls
+                // back to the default for anything it does not know, so every recap the phone
+                // or Apple's cloud wrote — and every dated OpenAI id — read "GPT-5.6 Luna". An
+                // old row with nothing recorded says nothing rather than guess from the setting.
+                generatedLine: Self.generatedLine(
+                    at: updated,
+                    model: AiModels.displayName(
+                        modelUsed: recap.model, providerId: recap.provider),
+                    from: "from today"),
                 bullets: bullets,
                 momentsFooter: momentsFooter
             )
         )
+    }
+
+    /// "Generated 10:21 PM · On-device Apple model · from today" — the model omitted when the
+    /// record does not say which one it was.
+    nonisolated static func generatedLine(at date: Date, model: String?, from source: String)
+        -> String
+    {
+        [ "Generated \(TimeFmt.time(date))", model, source ]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
     /// How many follow-ups Today can show. Three: enough to be a reminder that the list has

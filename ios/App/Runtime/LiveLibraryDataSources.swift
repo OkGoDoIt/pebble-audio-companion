@@ -1400,8 +1400,12 @@ extension LiveWorld: NotesDataSource {
             conversationId: note.conversationId,
             conversationTitle: conversationTitle,
             title: note.title,
-            provenance: "Generated \(TimeFmt.time(created)) · "
-                + "\(AiModels.byId(note.model).displayName) · from this conversation",
+            // The model that wrote it, by what it recorded — see `AiModels.displayName`.
+            // `byId` named every note the phone or Apple's cloud wrote "GPT-5.6 Luna".
+            provenance: LiveTodayDataSource.generatedLine(
+                at: created,
+                model: AiModels.displayName(modelUsed: note.model, providerId: note.provider),
+                from: "from this conversation"),
             body: note.body,
             momentsLabel: Self.momentsLabel(
                 citations,

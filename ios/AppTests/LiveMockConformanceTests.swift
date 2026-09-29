@@ -132,7 +132,7 @@ struct LiveMockConformanceTests {
     /// act; `exemptionsAreAllStillNeeded` deletes the option of leaving a stale one behind.
     static let exemptions: [Exemption] = [
         Exemption(
-            "LiveTodayDataSource.recap(_:aiModelName:rows:)", .fieldPopulated,
+            "LiveTodayDataSource.recap(_:rows:)", .fieldPopulated,
             "RecapBullet.citations: `DailyRecapEngine` returns prose, not grounded citations, "
                 + "so the live recap detail has nothing to cite. The artboard shows chips. "
                 + "Real gap, tracked — a fabricated citation would be worse than none."),
