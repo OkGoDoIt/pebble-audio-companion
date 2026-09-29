@@ -37,6 +37,22 @@ import WireProtocol
         #expect(notifier.events.count == 1)
     }
 
+    /// The watch's power-save pause (stationary mute) is a pause, however long: a night on the
+    /// nightstand must never wake anyone with "audio was missed".
+    @Test func aPowerSavePauseNeverFires() async throws {
+        let notifier = RecordingLossNotifier()
+        let subject = evaluator(notifier: notifier)
+        let gap = Fixture.watchGap(reason: .powerSave, missingFrames: 180_000)  // 1 h
+        let meta = Fixture.meta(gaps: [gap])
+
+        let fired = await subject.gapPersisted(
+            meta: meta, gap: gap, isSegmentOpen: false, nowMs: 1_000
+        )
+
+        #expect(fired == nil)
+        #expect(notifier.events.isEmpty)
+    }
+
     @Test func twentyFiveSecondVisibleLossDoesNotFire() async throws {
         let notifier = RecordingLossNotifier()
         let subject = evaluator(notifier: notifier)

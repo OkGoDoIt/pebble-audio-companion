@@ -100,12 +100,23 @@ public struct SegmentMediaClock: Sendable {
         raw.reserveCapacity(meta.gaps.count)
         for gap in meta.gaps {
             let anchor = meta.firstSampleIndex ?? gap.firstMissingSampleIndex
-            let samples =
+            // Where the gap starts relative to the first sample — NEGATIVE for a record that
+            // begins before this recording did. Only the part inside the span is on these clocks.
+            //
+            // This used to clamp such a record's start to zero and keep its whole length, so a
+            // record of the outage BEFORE the recording (the watch's account of it, delivered
+            // after a RESUME that had to open a new segment — 35 records in the 2026-09-29
+            // backup, one of them eight hours of power save) was read as the recording's own
+            // opening being missing. The clock then either shifted every stamp by the gap's
+            // length or, when that could not add up, fell back to the proportional guess — and
+            // `recordedGapMs` counted time that is not this recording's.
+            let offset: Int64 =
                 gap.firstMissingSampleIndex >= anchor
-                ? gap.firstMissingSampleIndex - anchor : 0
-            let start = min(max(Int64(samples) * 1_000 / rate, 0), wall)
+                ? Int64(gap.firstMissingSampleIndex - anchor) * 1_000 / rate
+                : -(Int64(anchor - gap.firstMissingSampleIndex) * 1_000 / rate)
             let duration = max(Int64(gap.missingFrameCount) * Int64(meta.frameDurationMs), 0)
-            let end = min(start + duration, wall)
+            let start = min(max(offset, 0), wall)
+            let end = min(offset + duration, wall)
             if end > start { raw.append((start, end)) }
         }
         raw.sort { $0.0 < $1.0 }

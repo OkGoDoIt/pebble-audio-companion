@@ -7,6 +7,8 @@ import WireProtocol
 
 enum FakeLinkError: Error {
     case linkDead
+    /// The real link's refusal of a second concurrent Info read.
+    case operationInFlight
 }
 
 /// Scripted `AudioGattLink`: tests push bytes in and capture control writes.
@@ -65,13 +67,35 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
         set { lock.withLock { _failInfoReads = newValue } }
     }
 
+    /// How long an Info read takes, on `readClock`. Zero (the default) answers at once, which is
+    /// what every older test assumes; anything else opens the window in which the real link's
+    /// one-read-in-flight rule can refuse a second read.
+    private var _infoReadLatencyMs: Int64 = 0
+    private var _readClock: TestClock?
+    private var _infoReadInFlight = false
+
+    func setInfoReadLatency(_ ms: Int64, on clock: TestClock) {
+        lock.withLock {
+            _infoReadLatencyMs = ms
+            _readClock = clock
+        }
+    }
+
     func readInfo() async throws -> [UInt8] {
         scheduler.noteEvent()
-        return try lock.withLock {
+        let (latency, clock): (Int64, TestClock?) = try lock.withLock {
             _infoReads += 1
             if _failInfoReads { throw FakeLinkError.linkDead }
-            return _infoBytes
+            // `CoreBluetoothAudioGattLink.readInfo`: ONE Info read in flight; a second is refused.
+            if _infoReadInFlight { throw FakeLinkError.operationInFlight }
+            _infoReadInFlight = _infoReadLatencyMs > 0
+            return (_infoReadLatencyMs, _readClock)
         }
+        if latency > 0, let clock {
+            defer { lock.withLock { _infoReadInFlight = false } }
+            try await clock.sleep(ms: latency)
+        }
+        return lock.withLock { _infoBytes }
     }
 
     func writeControl(_ message: [UInt8]) async throws {
@@ -171,11 +195,23 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
         lock.withLock { _flushes += 1 }
     }
 
-    func openSegment(start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?) async throws {
+    /// What `openSegment` answers: nil ("nothing stored for this stream") unless a test sets
+    /// what a real store would say for a resumed one.
+    private var _continuation: StreamContinuation?
+    var continuation: StreamContinuation? {
+        get { lock.withLock { _continuation } }
+        set { lock.withLock { _continuation = newValue } }
+    }
+
+    @discardableResult
+    func openSegment(
+        start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?
+    ) async throws -> StreamContinuation? {
         scheduler.noteEvent()
-        lock.withLock {
+        return lock.withLock {
             _events.append(.open(start))
             _open = true
+            return _continuation
         }
     }
 

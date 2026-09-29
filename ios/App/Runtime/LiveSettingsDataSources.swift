@@ -1164,8 +1164,10 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var watchLink: DiagnosticLinkFault?
     /// Audio the watch could not hand over, from the watch's own counter (Info `flags` bit3).
     private(set) var watchSend: WatchSendHealth = .unknown
-    /// Frames the watch sent us while we held no stream to put them in. Always a fault: it is
-    /// audio the watch spent battery capturing that this app then had nowhere to store.
+    /// Frames the watch sent us while we held no stream to put them in, since the app started.
+    /// Always a fault of the link being out of step, never itself loss: none of it was
+    /// acknowledged, so the watch kept it and resent it (see `AudioReceiverSession`
+    /// `orphanedFrameCount`).
     private(set) var orphanedFrames = 0
     private(set) var indexRebuild: IndexRebuildState = .idle
     private(set) var queueWaiting = 0

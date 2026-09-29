@@ -5,6 +5,7 @@ import Receiver
 import SegmentStore
 import StatusUI
 import Testing
+import WireProtocol
 
 // Plan 6.8 — the App Group hand-off. The widget renders from this file and nothing else, so the
 // JSON shape is a contract with a separate target: these tests are what stops it drifting.
@@ -124,6 +125,48 @@ import Testing
 
         #expect(snapshot.spans.contains { $0.kind == .paused })
         #expect(!snapshot.spans.contains { $0.kind == .missing })
+    }
+
+    /// The store keeps the watch's quiet records now (it used to drop them). The widget must
+    /// still draw that time as quiet and count none of it as missing, while a real loss record
+    /// in the same recording stays missing.
+    @Test func aStoredQuietRecordIsQuietOnTheWidgetAndLossStaysMissing() async throws {
+        let fixture = try RuntimeFixture()
+        await fixture.clock.advance(by: 1_756_512_000_000)
+        let start = fixture.clock.nowMs - 600_000
+        let streamId: UInt32 = 0x5EED_00AA
+        try await fixture.store.openSegment(
+            start: Fixture.streamStart(streamId: streamId, startTimeMs: UInt64(start)),
+            receivedAtMs: start, provenance: nil)
+        func frames(_ first: UInt32, _ count: Int) -> [SegmentFrame] {
+            (0..<count).map {
+                SegmentFrame(
+                    sequence: first + UInt32($0), sampleIndex: UInt64(first + UInt32($0)) * 320,
+                    payload: Array(repeating: 0x11, count: 20))
+            }
+        }
+        // 10 s of audio, 60 s the watch skipped as quiet, 10 s of audio, 30 s lost, 10 s of audio.
+        _ = try await fixture.store.appendFrames(streamId: streamId, frames: frames(0, 500))
+        try await fixture.store.recordGap(
+            streamId: streamId,
+            gap: GapRecord(
+                firstMissingSequence: 500, missingFrameCount: 3_000, firstMissingSampleIndex: 500 * 320,
+                origin: .watchReported(reasonRaw: Int(GapReason.silenceSuppressed.rawValue), watchDropCounter: 0)))
+        _ = try await fixture.store.appendFrames(streamId: streamId, frames: frames(3_500, 500))
+        try await fixture.store.recordGap(
+            streamId: streamId,
+            gap: GapRecord(
+                firstMissingSequence: 4_000, missingFrameCount: 1_500, firstMissingSampleIndex: 4_000 * 320,
+                origin: .watchReported(reasonRaw: Int(GapReason.spoolOverflow.rawValue), watchDropCounter: 1_500)))
+        _ = try await fixture.store.appendFrames(streamId: streamId, frames: frames(5_500, 500))
+        try await fixture.store.closeSegment(reason: .interrupted)
+
+        let snapshot = await fixture.snapshots.refresh(.segmentClosed)
+
+        let quiet = snapshot.spans.filter { $0.kind == .quiet }.reduce(0) { $0 + $1.durationMs }
+        #expect(quiet == 60_000)
+        #expect(snapshot.totalMissingMs == 30_000, "only the overflow is missing, never the quiet")
+        #expect(snapshot.totalRecordedMs == 30_000)
     }
 }
 

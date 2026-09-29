@@ -29,17 +29,22 @@ public final class TeeSegmentSink: SegmentSink {
         self.onSegmentClosed = onSegmentClosed
     }
 
+    @discardableResult
     public func openSegment(
         start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?
-    ) async throws {
+    ) async throws -> StreamContinuation? {
         let previousId = await store.openSegmentId
-        try await store.openSegment(start: start, receivedAtMs: receivedAtMs, provenance: provenance)
+        // Returned, not dropped: it is how the receiver learns where a resumed stream's stored
+        // audio ends (see `StreamContinuation`).
+        let continuation = try await store.openSegment(
+            start: start, receivedAtMs: receivedAtMs, provenance: provenance)
         let segmentId = await store.openSegmentId
         if let previousId, previousId != segmentId {
             tap?.emit(.segmentClosed(segmentId: previousId))
             onSegmentClosed()
         }
         if let segmentId { await emitSegmentOpened(segmentId) }
+        return continuation
     }
 
     /// Forwarded, not defaulted: the durable store is the thing that has to reach the disk before

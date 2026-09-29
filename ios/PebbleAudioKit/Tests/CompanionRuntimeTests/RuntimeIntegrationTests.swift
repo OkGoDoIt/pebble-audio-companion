@@ -79,10 +79,12 @@ import WireProtocol
 
     private final class SpySink: SegmentSink, @unchecked Sendable {
         let calls = CallRecorder()
+        var continuation: StreamContinuation?
         func openSegment(
             start: StreamStart, receivedAtMs: Int64, provenance: DurableSegmentProvenance?
-        ) async throws {
+        ) async throws -> StreamContinuation? {
             calls.record("open")
+            return continuation
         }
         func appendFrames(streamId: UInt32, frames: [SegmentFrame]) async throws -> [SegmentFrame] {
             calls.record("append")
@@ -112,6 +114,21 @@ import WireProtocol
 
         #expect(downstream.calls.calls == ["gap"])
         #expect(order.calls == ["observed"])
+    }
+
+    /// The receiver learns where a resumed stream's stored audio ends from `openSegment`'s
+    /// answer. A decorator that swallowed it would tell the session nothing is stored and reopen
+    /// the unrecorded hole at every reconnect, with every test of the store still passing.
+    @Test func theSinkForwardsWhatTheStoreHoldsForAResumedStream() async throws {
+        let downstream = SpySink()
+        downstream.continuation = StreamContinuation(
+            nextSequence: 5_001, nextSampleIndex: 5_001 * 320, continuesSameSegment: true)
+        let sink = LossObservingSink(downstream: downstream, openSegmentId: { "seg-1" })
+
+        let answer = try await sink.openSegment(
+            start: Fixture.streamStart(), receivedAtMs: 0, provenance: nil)
+
+        #expect(answer == downstream.continuation)
     }
 
     @Test func theSinkCapturesTheClosingSegmentIdBeforeTheCloseLandsIt() async throws {
@@ -153,7 +170,7 @@ import WireProtocol
         }
         func openSegment(
             start: StreamStart, receivedAtMs: Int64, provenance: DurableSegmentProvenance?
-        ) async throws {
+        ) async throws -> StreamContinuation? {
             try await downstream.openSegment(
                 start: start, receivedAtMs: receivedAtMs, provenance: provenance)
         }

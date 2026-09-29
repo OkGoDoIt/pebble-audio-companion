@@ -803,8 +803,10 @@ protocol DiagnosticsSource: AnyObject {
     /// Audio the watch could not hand over, as the watch counts it. `.unknown` while no watch
     /// has been read — the row is absent rather than guessing on the watch's behalf.
     var watchSend: WatchSendHealth { get }
-    /// Frames the watch sent while this app held no stream to put them in. Zero is the only
-    /// healthy value; anything else is audio the watch captured that never reached storage.
+    /// Frames the watch sent while this app held no stream to put them in, since the app started.
+    /// Zero is the only healthy value, but anything else is a link out of step rather than audio
+    /// lost: the watch kept those frames and resent them, and whatever it could not keep is
+    /// recorded as a gap in the recording.
     var orphanedFrames: Int { get }
     /// Rebuild-index progress, and a way to start one. The index is derived data, so this
     /// throws nothing away that cannot be written again from the database.

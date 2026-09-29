@@ -50,10 +50,11 @@ struct SettingsDiagnosticsScreen: View {
                         showsChevron: false
                     )
                 }
-                // Present only when it is non-zero, and then it is always a fault: the watch
-                // sent audio while this app held no recording to put it in. Nothing else on
-                // this screen can say that — the queue counts work we accepted, and the watch's
-                // own counter only knows about audio it could not hand over at all.
+                // Present only when it is non-zero, and then the link was out of step: the watch
+                // sent audio while this app held no recording to put it in. Not loss in itself —
+                // the watch kept that audio and resent it — but nothing else on this screen can
+                // say it: the queue counts work we accepted, and the watch's own counter only
+                // knows about audio it could not hand over at all.
                 if diagnostics.orphanedFrames > 0 {
                     SettingsRow(
                         title: Copy.Settings.Diagnostics.audioWithNowhereToGo,

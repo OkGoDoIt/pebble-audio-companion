@@ -193,9 +193,18 @@ One-byte `msg_id` (`0x80–0x9F`) plus packed struct per notification.
 
 `flags` bit0 (`RESUME`): re-announces an ongoing stream to a freshly (re)attached receiver.
 Same `stream_id`, codec parameters, and stream-birth timestamps (resent verbatim); sequence
-numbering continues, and the receiver adopts the first frame's sequence as its contiguity base.
-Receivers reattach on the stable identity (`stream_id` + codec parameters) — never on the
-timestamps — and continue the interrupted or still-open segment instead of opening a new one.
+numbering continues. Receivers reattach on the stable identity (`stream_id` + codec parameters) —
+never on the timestamps — and continue the interrupted or still-open segment instead of opening a
+new one.
+
+Contiguity after a RESUME: a receiver that already holds audio for the stream continues from the
+last sequence it stored, and records as lost every sequence between that and the first frame it
+receives that no `STREAM_GAP` accounts for. The watch depends on this: when its spool recycles a
+chunk it reports a gap only for frames it had not yet sent, so frames sent into a link that was
+already failing are otherwise lost without a record. Frames re-sent by the rewind below that point
+are already stored and are not stored again. A receiver that holds nothing of the stream adopts
+the first frame's sequence as its base; a `STREAM_GAP` received before that frame never raises the
+base above it.
 
 `STREAM_DATA` (`0x81`) header (20 bytes), followed by `frame_count` frame entries:
 

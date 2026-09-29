@@ -323,7 +323,12 @@ public actor AudioReceiverSession {
     /// and replayed the moment the stream opens; bounded so a watch that never announces cannot
     /// grow it.
     private var orphanGaps: [UInt32: [StreamGap]] = [:]
-    private static let orphanGapsPerStream = 16
+    /// Was 16, and on 2026-09-20 23:48:37 a re-authorization delivered more than that before its
+    /// STREAM_START: the notices past the sixteenth were dropped, and the quiet they described came
+    /// back as 13 small sequence skips — silence recorded as LOSS. A held notice is a few dozen
+    /// bytes and adjacent same-reason notices coalesce as they arrive (`holdOrphanGap`), so this
+    /// bound only stops a watch that never announces from growing the hold without end.
+    public static let orphanGapsPerStream = 1_024
     /// Frames the watch reported lost that this app had already stored (see `handleStreamGap`).
     private var phantomGapFrames: UInt32 = 0
     private var phantomGapNotices: UInt32 = 0
@@ -335,15 +340,118 @@ public actor AudioReceiverSession {
     /// battery encoding and sending audio, and this app is dropping every frame on the floor for
     /// want of a STREAM_START it never received. Nothing else in the session notices it. The
     /// frames are not checkpointed (there is no stream to checkpoint), so the watch's spool is
-    /// never trimmed and the audio is genuinely lost to overflow while both sides report health.
+    /// never trimmed, and what it cannot hold is lost to overflow while both sides report health.
     private var lastOrphanDataAtMs: Int64 = 0
 
-    /// Total frames dropped for want of a stream context, for diagnostics and the support report.
+    /// Frames that arrived with no stream to attach them to, since this session started.
+    ///
+    /// FRAMES ONLY, and for the life of the session. It used to count held gap notices as if they
+    /// were frames, and it was zeroed at every link teardown — so Diagnostics, which shows the row
+    /// only while it is above zero, was nearly always reading a counter that had just been wiped.
+    ///
+    /// What the number means, and does not: none of these frames was stored when it arrived, and
+    /// none was acknowledged, so the watch still held every one of them. It re-sends what it holds
+    /// once it re-announces the stream, and anything its buffer could not keep in the meantime is
+    /// recorded — as the watch's overflow notice, or as a gap this app's resume accounting finds
+    /// (`seedResumedStream`). The count is evidence of the link being out of step, not a measure
+    /// of audio lost.
     nonisolated public let orphanedFrameCount = StateSubject<Int>(0)
 
-    private func noteOrphanData(_ frames: Int) {
+    /// One stretch of audio the watch sent while this app had no stream for it, reported once
+    /// when the stream is announced (or the link goes down first) — see `reportOrphanEpisode`.
+    private struct OrphanEpisode {
+        var frames = 0
+        var notices = 0
+        var noticesDropped = 0
+        var streamIds: Set<UInt32> = []
+        var firstSequence: UInt32?
+        var lastSequence: UInt32?
+
+        var isEmpty: Bool { frames == 0 && notices == 0 }
+
+        mutating func add(_ data: StreamData) {
+            frames += data.frameCount
+            streamIds.insert(data.streamId)
+            let last = data.firstSequence &+ UInt32(max(data.frameCount, 1) - 1)
+            firstSequence = min(firstSequence ?? data.firstSequence, data.firstSequence)
+            lastSequence = max(lastSequence ?? last, last)
+        }
+    }
+    private var orphanEpisode = OrphanEpisode()
+
+    private func noteOrphanData(_ data: StreamData) {
         lastOrphanDataAtMs = clock.nowMs
-        orphanedFrameCount.value = orphanedFrameCount.value + max(frames, 1)
+        orphanedFrameCount.value = orphanedFrameCount.value + data.frameCount
+        orphanEpisode.add(data)
+    }
+
+    /// Holds a notice for a stream not yet announced. A notice that continues the last held one
+    /// for the same reason extends it instead of taking a slot — the watch sends its table oldest
+    /// first, and two abutting records with one reason are one period (the store would merge them
+    /// anyway).
+    private func holdOrphanGap(_ gap: StreamGap) {
+        lastOrphanDataAtMs = clock.nowMs
+        orphanEpisode.notices += 1
+        orphanEpisode.streamIds.insert(gap.streamId)
+        var held = orphanGaps[gap.streamId] ?? []
+        if let last = held.last, last.reasonRaw == gap.reasonRaw, last.missingFrameCount > 0,
+            gap.missingFrameCount > 0,
+            last.firstMissingSequence &+ last.missingFrameCount == gap.firstMissingSequence,
+            UInt64(last.missingFrameCount) + UInt64(gap.missingFrameCount) <= UInt64(UInt32.max)
+        {
+            held[held.count - 1] = StreamGap(
+                streamId: last.streamId, firstMissingSequence: last.firstMissingSequence,
+                missingFrameCount: last.missingFrameCount + gap.missingFrameCount,
+                firstMissingSampleIndex: last.firstMissingSampleIndex, reasonRaw: last.reasonRaw,
+                watchDropCounter: max(last.watchDropCounter, gap.watchDropCounter))
+        } else if held.count < Self.orphanGapsPerStream {
+            held.append(gap)
+        } else {
+            orphanEpisode.noticesDropped += 1
+            return
+        }
+        orphanGaps[gap.streamId] = held
+    }
+
+    /// Says what one orphan episode was, once, when it ends: either the stream it belonged to has
+    /// just been announced, or the link is going down without it ever being announced.
+    ///
+    /// This used to be a single line at teardown — "the watch was sending audio this app could
+    /// not store" — which overstated it. The frames were never checkpointed, so the watch kept
+    /// them and re-sends them after it re-announces the stream; the line is the evidence of a
+    /// link out of step, with the numbers to find the stretch in the recording.
+    private func reportOrphanEpisode(announced streamId: UInt32?) {
+        let episode = orphanEpisode
+        orphanEpisode = OrphanEpisode()
+        guard !episode.isEmpty else { return }
+        var parts: [String] = []
+        if episode.frames > 0 {
+            var range = ""
+            if let first = episode.firstSequence, let last = episode.lastSequence {
+                range = " (sequences \(first)-\(last))"
+            }
+            parts.append("\(episode.frames) frame(s)\(range)")
+        }
+        if episode.notices > 0 {
+            parts.append("\(episode.notices) gap notice(s)")
+        }
+        let streams = episode.streamIds.sorted().map(String.init).joined(separator: ", ")
+        let what = parts.joined(separator: " and ") + " for stream \(streams)"
+        if let streamId {
+            log(
+                "\(what) arrived before stream \(streamId) was announced; nothing was stored or "
+                    + "acknowledged, so the watch kept the audio and re-sends it now")
+        } else {
+            log(
+                "link down: \(what) arrived on a connection that never announced their stream; "
+                    + "none of it was acknowledged, so the watch kept it for the next connection")
+        }
+        if episode.noticesDropped > 0 {
+            log(
+                "\(episode.noticesDropped) gap notice(s) did not fit the hold "
+                    + "(\(Self.orphanGapsPerStream) per stream) and were dropped; "
+                    + "their frames will be recorded as sequence skips")
+        }
     }
 
     private func noteInbound() {
@@ -439,7 +547,7 @@ public actor AudioReceiverSession {
     @discardableResult
     public func verifyWatchState() async -> Bool {
         let bytes = await withReceiverTimeout(clock: clock, ms: Self.verifyReadTimeoutMs) {
-            try? await self.link.readInfo()
+            try? await self.readInfoFromLink()
         }
         guard let bytes, case .decoded(let message) = AudioCompanionProtocol.decodeInfo(bytes),
             let snapshot = message as? InfoSnapshot
@@ -698,13 +806,30 @@ public actor AudioReceiverSession {
         var pendingRanges: [PersistedRange] = []
         var pendingWatchGaps: [KnownGapRange] = []
 
-        /// False until the first STREAM_DATA/STREAM_GAP fixes the contiguity base. A fresh stream
-        /// is known to begin at sequence 0; a RESUME re-announcement (sent by the watch when it
-        /// re-attaches a receiver mid-stream after a reconnect) continues at the watch's current
-        /// sequence, so we adopt the first message's sequence as the base instead of assuming 0 —
-        /// otherwise we would synthesize a bogus multi-thousand-frame leading gap and never
-        /// checkpoint, stranding the resumed buffered audio.
+        /// False until the contiguity base is known. A fresh stream is known to begin at sequence
+        /// 0. A RESUME re-announcement (sent by the watch when it re-attaches a receiver
+        /// mid-stream after a reconnect) continues at the watch's current sequence, so assuming
+        /// 0 would synthesize a bogus multi-thousand-frame leading gap and never checkpoint.
+        ///
+        /// When the store already holds the stream, the base is SEEDED from what it holds (see
+        /// `seed`) — that is the only way the hole a reconnect leaves can be compared against
+        /// anything. Only a RESUME of a stream this app holds nothing of falls back to adopting
+        /// the base from the first frame (`adoptBase`).
         var baseInitialized: Bool
+
+        /// What to do with frames the watch re-sends BELOW a seeded base — its spool rewind
+        /// after a reconnect always re-sends everything it holds that was never checkpointed.
+        enum BelowBase {
+            /// Drop them here: they are already accounted for (a fresh stream, or an unseeded
+            /// RESUME — the behaviour before seeding existed).
+            case drop
+            /// The open segment is the one holding them: hand them to the sink, which drops the
+            /// exact re-sends and keeps any that fall inside a recorded gap (a refill).
+            case sinkDecides
+            /// They belong to an EARLIER segment of this stream: never store them again.
+            case trimAway
+        }
+        var belowBase: BelowBase = .drop
 
         /// First missing sequence of a watch-reported gap whose extent is still unknown.
         var openWatchGapFrom: UInt32?
@@ -730,20 +855,90 @@ public actor AudioReceiverSession {
         struct KnownGapRange {
             let first: UInt32
             let endExclusive: UInt32
+            let firstSampleIndex: UInt64
         }
 
-        func ensureBase(firstSequence: UInt32, firstSampleIndex: UInt64) {
+        /// Starts the stream's contiguity from what is already stored: everything below `next` is
+        /// persisted, and `recorded` is accounted for. From here on, any sequence between `next`
+        /// and the first frame the watch delivers that no watch notice accounts for is a hole
+        /// this app records as loss — which is the check the watch relies on for the frames its
+        /// spool dropped after sending them into a dying link.
+        func seed(
+            next: UInt32, nextSampleIndex: UInt64, recorded: [KnownGapRange], belowBase: BelowBase
+        ) {
+            contiguousNext = next
+            contiguousSampleIndex = nextSampleIndex
+            baseInitialized = true
+            self.belowBase = belowBase
+            for range in recorded where range.endExclusive > next {
+                pendingWatchGaps.append(range)
+            }
+            samplesSinceCheckpoint &+= advanceAccountedPrefix()
+            // Re-announce our watermark on this connection: the watch rewound to its own trim
+            // point, and a checkpoint lets it trim (and stop re-sending) what we already hold.
+            checkpointedSinceLastChange = false
+        }
+
+        /// An unseeded RESUME fixes its base on the first FRAME, as the protocol specifies — not
+        /// on the first notice. Notices held before it only lower the base, never raise it: a
+        /// notice for frames ABOVE the watch's rewind point (quiet it skipped while we were
+        /// away, say) used to set the base there, so the re-sent frames below it were discarded
+        /// as stale duplicates and the next checkpoint told the watch to delete them.
+        func adoptBase(firstDataSequence: UInt32, firstDataSampleIndex: UInt64) {
             if baseInitialized { return }
-            contiguousNext = firstSequence
-            contiguousSampleIndex = firstSampleIndex
+            contiguousNext = firstDataSequence
+            contiguousSampleIndex = firstDataSampleIndex
+            if let lowest = pendingWatchGaps.min(by: { $0.first < $1.first }),
+                lowest.first < contiguousNext
+            {
+                contiguousNext = lowest.first
+                contiguousSampleIndex = lowest.firstSampleIndex
+            }
+            if let open = openWatchGapFrom, open < contiguousNext {
+                // An unknown-extent notice has no sample index of its own; the frame clock is
+                // exact for every sequence the watch assigns, so derive it from the frame.
+                contiguousSampleIndex &-= UInt64(contiguousNext &- open) &* frameSamples
+                contiguousNext = open
+            }
             baseInitialized = true
         }
 
-        func rememberKnownGap(first: UInt32, missingCount: UInt32) {
+        func rememberKnownGap(first: UInt32, missingCount: UInt32, firstSampleIndex: UInt64) {
             if missingCount == 0 { return }
             let endExclusive = first &+ missingCount
-            if endExclusive <= contiguousNext { return }
-            pendingWatchGaps.append(KnownGapRange(first: first, endExclusive: endExclusive))
+            if baseInitialized && endExclusive <= contiguousNext { return }
+            pendingWatchGaps.append(
+                KnownGapRange(first: first, endExclusive: endExclusive, firstSampleIndex: firstSampleIndex))
+        }
+
+        /// The parts of [contiguousNext, end) that no watch notice accounts for, each placed on
+        /// the sample clock — the sequence skips to record when audio resumes at `end`.
+        ///
+        /// Recorded as ONE skip over the whole hole, as it used to be, the receiver claimed the
+        /// watch's own overflow records as "the phone missed audio", and the store — before it
+        /// learned to merge in sequence order — then swallowed the skip's lower part outright.
+        func unaccountedRuns(upTo end: UInt32) -> [(first: UInt32, count: UInt32, sampleIndex: UInt64)] {
+            var runs: [(first: UInt32, count: UInt32, sampleIndex: UInt64)] = []
+            var cursor = contiguousNext
+            var cursorSample = contiguousSampleIndex
+            for gap in pendingWatchGaps.sorted(by: { $0.first < $1.first })
+            where gap.endExclusive > cursor && gap.first < end {
+                if gap.first > cursor {
+                    runs.append((cursor, gap.first &- cursor, cursorSample))
+                }
+                cursor = gap.endExclusive
+                cursorSample = gap.firstSampleIndex &+ UInt64(gap.endExclusive &- gap.first) &* frameSamples
+                if cursor >= end { break }
+            }
+            if cursor < end {
+                runs.append((cursor, end &- cursor, cursorSample))
+            }
+            return runs
+        }
+
+        /// Watch notices wholly below `sequence` are behind the contiguous prefix for good.
+        func forgetKnownGaps(below sequence: UInt32) {
+            pendingWatchGaps.removeAll { $0.endExclusive <= sequence }
         }
 
         func advanceAccountedPrefix() -> UInt64 {
@@ -937,10 +1132,36 @@ public actor AudioReceiverSession {
         }
     }
 
+    /// Info reads this session has asked the link for that have not come back yet.
+    private var infoReadsInFlight = 0
+
+    /// Every Info read this session makes goes through here, so the handshake can tell when it is
+    /// about to collide with one of its own.
+    private func readInfoFromLink() async throws -> [UInt8] {
+        infoReadsInFlight += 1
+        defer { infoReadsInFlight -= 1 }
+        return try await link.readInfo()
+    }
+
     private func connectionHandshake(abort: OneShot<Bool>) async throws {
         setState(.authorizing)
 
-        switch AudioCompanionProtocol.decodeInfo(try await link.readInfo()) {
+        // The link keeps ONE Info read in flight and refuses a second with `operationInFlight`,
+        // and the handshake's read is the one that must not be refused: failing it fails the
+        // whole handshake and rebuilds the link. On 2026-09-19 14:19:54 the app came to the
+        // foreground while the link was still subscribing, foreground entry asked the watch what
+        // it was doing (`verifyWatchState`, which the link accepts as soon as the Info
+        // characteristic is discovered), the link reached Ready 400 ms later — and the handshake
+        // read collided with the verify's, which answered 150 ms after that. One refused read
+        // cost a cancel-and-reconnect of a link that was working. Wait for our own read to land
+        // (bounded by the link's operation timeout), then ask.
+        var waitedMs: Int64 = 0
+        while infoReadsInFlight > 0 && waitedMs < Self.handshakeInfoReadWaitMs {
+            try await clock.sleep(ms: Self.infoReadPollMs)
+            waitedMs += Self.infoReadPollMs
+        }
+
+        switch AudioCompanionProtocol.decodeInfo(try await readInfoFromLink()) {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
                 watchInfo.value = snapshot
@@ -1215,7 +1436,7 @@ public actor AudioReceiverSession {
     }
 
     private func refreshInfoSnapshot() async {
-        guard let bytes = try? await link.readInfo() else { return }
+        guard let bytes = try? await readInfoFromLink() else { return }
         switch AudioCompanionProtocol.decodeInfo(bytes) {
         case .decoded(let message):
             if let snapshot = message as? InfoSnapshot {
@@ -1279,12 +1500,14 @@ public actor AudioReceiverSession {
             // supersede the open segment: the sink continues it in place. Anything else —
             // a fresh stream, or a resume for a different id — supersedes as before.
             let resume = (start.flags & ProtocolConstants.streamStartFlagResume) != 0
+            var continuingInPlace: StreamContext?
             if resume && stream?.streamId == start.streamId {
+                continuingInPlace = stream
                 stream = nil // replaced below; the segment stays open for continuation
             } else {
                 try await closeOpenSegment(.superseded)
             }
-            try await sink.openSegment(
+            let continuation = try await sink.openSegment(
                 start: start,
                 receivedAtMs: clock.nowMs,
                 provenance: watchInfo.value.map {
@@ -1294,9 +1517,15 @@ public actor AudioReceiverSession {
                     )
                 }
             )
-            stream = StreamContext(start: start, nowMs: clock.nowMs)
+            let context = StreamContext(start: start, nowMs: clock.nowMs)
+            if resume {
+                await seedResumedStream(
+                    context, continuation: continuation, inPlace: continuingInPlace)
+            }
+            stream = context
             noteAudioArrived()
             setState(.streaming(streamId: start.streamId))
+            reportOrphanEpisode(announced: start.streamId)
             if let held = orphanGaps.removeValue(forKey: start.streamId), !held.isEmpty {
                 log("applying \(held.count) gap notice(s) that arrived before STREAM_START")
                 for gap in held {
@@ -1309,7 +1538,7 @@ public actor AudioReceiverSession {
                 // Audio for a stream we cannot attach. Deliberately NOT counted as
                 // `noteAudioArrived`: nothing was stored, so treating it as evidence of a healthy
                 // recording is precisely the lie that let this state persist for hours.
-                noteOrphanData(data.frameCount)
+                noteOrphanData(data)
                 return
             }
             noteAudioArrived()
@@ -1331,8 +1560,7 @@ public actor AudioReceiverSession {
                 // watch's pending gaps 30-150 ms before the re-announced STREAM_START. The
                 // notice is applied the moment that start opens the stream (`StreamStart`
                 // above); if no start ever comes, the link teardown discards it.
-                var held = orphanGaps[gap.streamId] ?? []
-                if held.isEmpty {
+                if orphanGaps[gap.streamId]?.isEmpty ?? true {
                     log(
                         "holding a watch gap notice for stream \(gap.streamId) "
                             + "(\(gap.missingFrameCount) frames, reason \(gap.reasonRaw)): "
@@ -1340,11 +1568,7 @@ public actor AudioReceiverSession {
                                 ? "no open stream" : "our stream is \(stream?.streamId ?? 0)")
                             + " — applied when that stream is announced")
                 }
-                if held.count < Self.orphanGapsPerStream {
-                    held.append(gap)
-                    orphanGaps[gap.streamId] = held
-                }
-                noteOrphanData(1)
+                holdOrphanGap(gap)
                 return
             }
             noteAudioArrived()
@@ -1369,10 +1593,77 @@ public actor AudioReceiverSession {
         }
     }
 
+    /// Fixes a resumed stream's contiguity base on what this app already holds of it.
+    ///
+    /// THIS IS THE RECEIVER'S HALF OF A CONTRACT THE WATCH ALREADY KEEPS. When its spool cannot
+    /// grow, the watch recycles its oldest 4 KB chunk (104 frames) and records a gap only for the
+    /// frames in it that it had not yet SENT (`spool.c`, `prv_drop_oldest_chunk`); frames it had
+    /// sent into a link that was already dying are dropped with no record, and the firmware
+    /// relies on "the receiver's own sequence check" to catch them. A RESUME used to leave that
+    /// check nothing to check against: the context started with no base, the first notice after
+    /// the reconnect set one, and the stretch between the last frame stored and the watch's
+    /// first overflow record was never compared with anything. In the 2026-09-29 backup that is
+    /// 32 of the ~70 same-stream reconnects — an unrecorded run ending exactly where the first
+    /// overflow record starts, typically 104-208 frames (one or two chunks) — 5,634 frames in
+    /// all, and the four that were decoded are speech (09-19 21:38:52, 09-23 09:35:03,
+    /// 09-23 14:30:37, 09-25 23:00:52). Today and Live painted those holes as recorded.
+    ///
+    /// Seeded, the hole is compared against the watch's own account: every sequence between what
+    /// we hold and the first frame it delivers that no notice explains becomes a sequence skip —
+    /// explicit loss. And the base can no longer be set by a notice for frames above the
+    /// watch's rewind point, which discarded the re-sent frames below it as stale and then told
+    /// the watch, by checkpoint, to delete them.
+    ///
+    /// Sources, most authoritative first: the store's answer; for an in-place re-announcement
+    /// the stream context it replaces (a sink that cannot answer — the tests' fakes — still has
+    /// that); and, when the stream carries on in a NEW segment, the resume state saved at the
+    /// last close, which still knows how far we got if the segment holding it has since been
+    /// deleted. With none of them, the base is adopted from the first frame, as the protocol
+    /// specifies for a receiver that knows nothing.
+    private func seedResumedStream(
+        _ context: StreamContext, continuation: StreamContinuation?, inPlace: StreamContext?
+    ) async {
+        var next: UInt32?
+        var nextSampleIndex: UInt64 = 0
+        var recorded: [StreamContext.KnownGapRange] = []
+        var belowBase = StreamContext.BelowBase.trimAway
+        if let continuation {
+            next = continuation.nextSequence
+            nextSampleIndex = continuation.nextSampleIndex
+            recorded = continuation.recordedRanges.map {
+                StreamContext.KnownGapRange(
+                    first: $0.firstSequence, endExclusive: $0.firstSequence &+ $0.frameCount,
+                    firstSampleIndex: $0.firstSampleIndex)
+            }
+            belowBase = continuation.continuesSameSegment ? .sinkDecides : .trimAway
+        } else if let inPlace, inPlace.baseInitialized {
+            next = inPlace.contiguousNext
+            nextSampleIndex = inPlace.contiguousSampleIndex
+            recorded = inPlace.pendingWatchGaps
+            belowBase = .sinkDecides
+        }
+        if belowBase == .trimAway, let saved = await resumeStore.load(),
+            saved.lastStreamId == context.streamId, let last = saved.lastContiguousSequence,
+            last < UInt32.max, next.map({ last + 1 > $0 }) ?? true
+        {
+            next = last + 1
+            nextSampleIndex = saved.lastSampleIndex
+        }
+        if let inPlace { context.openWatchGapFrom = inPlace.openWatchGapFrom }
+        guard let next else { return }
+        context.seed(
+            next: next, nextSampleIndex: nextSampleIndex, recorded: recorded, belowBase: belowBase)
+        log(
+            "stream \(context.streamId) resumed after sequence \(next &- 1) "
+                + (belowBase == .sinkDecides ? "in the same recording" : "in a new recording")
+                + "; any sequence the watch does not account for from here is recorded as missing")
+    }
+
     private func handleStreamData(_ message: StreamData) async throws {
         guard let ctx = stream else { return } // STREAM_DATA before STREAM_START: nothing to attach it to
         if message.streamId != ctx.streamId { return }
-        ctx.ensureBase(firstSequence: message.firstSequence, firstSampleIndex: message.firstSampleIndex)
+        ctx.adoptBase(
+            firstDataSequence: message.firstSequence, firstDataSampleIndex: message.firstSampleIndex)
 
         let first = message.firstSequence
         let count = UInt32(message.frameCount)
@@ -1384,66 +1675,97 @@ public actor AudioReceiverSession {
             ctx.checkpointedSinceLastChange = false
         }
 
+        func frames() -> [SegmentFrame] {
+            var frames: [SegmentFrame] = []
+            frames.reserveCapacity(message.frameCount)
+            for (index, payload) in message.frames.enumerated() {
+                frames.append(
+                    SegmentFrame(
+                        sequence: message.sequenceOf(index),
+                        sampleIndex: message.sampleIndexOf(index, frameSamples: ctx.start.frameSamples),
+                        payload: payload
+                    )
+                )
+            }
+            return frames
+        }
+
         if endExclusive <= ctx.contiguousNext {
+            // Stale: everything in it is already stored or accounted for. After a RESUME that
+            // continued this very segment, it is the watch's rewind re-sending what it never saw
+            // checkpointed — and the sink, not this bookkeeping, knows whether any of it falls
+            // inside a gap it recorded and so is audio recovered rather than a duplicate.
+            if ctx.belowBase == .sinkDecides {
+                _ = try await sink.appendFrames(streamId: ctx.streamId, frames: frames())
+            }
             await maybeSendCheckpoint(ctx)
-            return // stale duplicate, already accounted
+            return
         }
 
         // Durability first: frames hit the frame log before any bookkeeping or checkpointing.
-        var frames: [SegmentFrame] = []
-        frames.reserveCapacity(message.frameCount)
-        for (index, payload) in message.frames.enumerated() {
-            frames.append(
-                SegmentFrame(
-                    sequence: message.sequenceOf(index),
-                    sampleIndex: message.sampleIndexOf(index, frameSamples: ctx.start.frameSamples),
-                    payload: payload
-                )
-            )
+        var batch = frames()
+        if first < ctx.contiguousNext && ctx.belowBase == .trimAway {
+            // The stream carries on in a new segment and these are the tail of an earlier one.
+            batch.removeAll { $0.sequence < ctx.contiguousNext }
         }
+        // A hole under this batch is RECORDED BEFORE the batch is stored. The other way round, a
+        // process killed between the two awaits left frames above an unrecorded hole — and on the
+        // next RESUME the store answers "stored through the highest sequence", the session seeds
+        // there, and its checkpoint tells the watch to delete the hole's frames, which it still
+        // held and would have re-sent (review of the RESUME accounting, 2026-09-30). This way a
+        // kill leaves a recorded gap and no frames above it: honest, and a re-send that arrives
+        // still refills it. Nothing below is claimed until the checkpoint, so the order is free.
+        let holeAccountedByWatch =
+            first > ctx.contiguousNext
+            && ctx.openWatchGapFrom.map { $0 <= ctx.contiguousNext } == true
+        if first > ctx.contiguousNext && !holeAccountedByWatch {
+            // Silent discontinuity: synthesize a gap record, then account for it (below).
+            //
+            // Contiguity used to stop here permanently, and the consequence was on the WATCH.
+            // `highestContiguousSequencePersisted` is the watch's only instruction to free
+            // spool (`audio_companion_spool_trim_through`), so a frozen watermark means the
+            // spool never trims again. It saturates, starts evicting its head, and emits an
+            // overflow gap for every newly captured frame — the ratcheting-overflow pattern
+            // `runCheckpointTicker` documents, except with no way out for the rest of the
+            // stream. One dropped notification cost every recording after it.
+            //
+            // The gap record is DURABLE and permanent: those frames are known-lost and will
+            // never be re-sent, so `advanceAccountedPrefix()` can never step over them and
+            // there is nothing to wait for. Accounting for them is what the watch-reported
+            // branch below already does, for a hole that is no more recoverable than this one.
+            //
+            // Only the parts of the hole the watch has NOT already explained are the
+            // receiver's to report: its own notices keep their reasons.
+            for run in ctx.unaccountedRuns(upTo: first) {
+                try await sink.recordGap(
+                    streamId: ctx.streamId,
+                    gap: GapRecord(
+                        firstMissingSequence: run.first,
+                        missingFrameCount: run.count,
+                        firstMissingSampleIndex: run.sampleIndex,
+                        origin: .sequenceSkip
+                    )
+                )
+            }
+        }
+
         // The return value is what the sink ACTUALLY persisted (plan Part 4.2). It is legitimately
         // shorter than `frames` — a post-RESUME spool rewind re-sends frames the sink already
         // holds, and those are durable, so contiguity below still advances over them. What is NOT
         // legitimate is the sink having nowhere to put them at all: `SegmentSink.appendFrames`
         // throws for that, which fails the connection and forces a resync rather than letting the
         // bookkeeping below checkpoint audio nothing stored.
-        _ = try await sink.appendFrames(streamId: ctx.streamId, frames: frames)
+        _ = try await sink.appendFrames(streamId: ctx.streamId, frames: batch)
 
         if first > ctx.contiguousNext {
-            let accountedByWatchGap = ctx.openWatchGapFrom.map { $0 <= ctx.contiguousNext } == true
-            if accountedByWatchGap {
+            if holeAccountedByWatch {
                 // The watch already reported this hole (unknown extent); now we know where it
                 // ends. The lost range is accounted: contiguity resumes at this batch.
                 ctx.openWatchGapFrom = nil
-                ctx.contiguousNext = first
-                ctx.contiguousSampleIndex = message.firstSampleIndex
-            } else {
-                // Silent discontinuity: synthesize a gap record, then account for it.
-                //
-                // Contiguity used to stop here permanently, and the consequence was on the WATCH.
-                // `highestContiguousSequencePersisted` is the watch's only instruction to free
-                // spool (`audio_companion_spool_trim_through`), so a frozen watermark means the
-                // spool never trims again. It saturates, starts evicting its head, and emits an
-                // overflow gap for every newly captured frame — the ratcheting-overflow pattern
-                // `runCheckpointTicker` documents, except with no way out for the rest of the
-                // stream. One dropped notification cost every recording after it.
-                //
-                // The gap record is DURABLE and permanent: those frames are known-lost and will
-                // never be re-sent, so `advanceAccountedPrefix()` can never step over them and
-                // there is nothing to wait for. Accounting for them is what the watch-reported
-                // branch above already does, for a hole that is no more recoverable than this one.
-                try await sink.recordGap(
-                    streamId: ctx.streamId,
-                    gap: GapRecord(
-                        firstMissingSequence: ctx.contiguousNext,
-                        missingFrameCount: first &- ctx.contiguousNext,
-                        firstMissingSampleIndex: ctx.contiguousSampleIndex,
-                        origin: .sequenceSkip
-                    )
-                )
-                ctx.contiguousNext = first
-                ctx.contiguousSampleIndex = message.firstSampleIndex
             }
+            ctx.contiguousNext = first
+            ctx.contiguousSampleIndex = message.firstSampleIndex
+            ctx.forgetKnownGaps(below: first)
         }
 
         let endSampleIndex = message.firstSampleIndex &+ UInt64(count) &* ctx.frameSamples
@@ -1473,10 +1795,8 @@ public actor AudioReceiverSession {
     private func handleStreamGap(_ message: StreamGap) async throws {
         guard let ctx = stream else { return }
         if message.streamId != ctx.streamId { return }
-        ctx.ensureBase(
-            firstSequence: message.firstMissingSequence,
-            firstSampleIndex: message.firstMissingSampleIndex
-        )
+        // A notice never fixes the base (see `StreamContext.adoptBase`). Until a frame or the
+        // store has fixed it, the notice is recorded and remembered, and nothing is advanced.
 
         // A watch gap is a claim about frames the receiver never got. Check it against what is
         // already stored before believing it. The watch's spool recycles its oldest chunk when
@@ -1492,7 +1812,7 @@ public actor AudioReceiverSession {
         var first = message.firstMissingSequence
         var count = message.missingFrameCount
         var sampleIndex = message.firstMissingSampleIndex
-        if count > 0 {
+        if count > 0 && ctx.baseInitialized {
             let endExclusive = first &+ count
             if endExclusive <= ctx.contiguousNext {
                 phantomGapFrames &+= count
@@ -1532,8 +1852,8 @@ public actor AudioReceiverSession {
             // Unknown extent: account for it when the next STREAM_DATA shows where it ends.
             ctx.openWatchGapFrom = first
         } else {
-            ctx.rememberKnownGap(first: first, missingCount: count)
-            if first <= ctx.contiguousNext {
+            ctx.rememberKnownGap(first: first, missingCount: count, firstSampleIndex: sampleIndex)
+            if ctx.baseInitialized && first <= ctx.contiguousNext {
                 // Known-lost range adjoining the contiguous prefix: those frames will never
                 // arrive, so contiguity (and the checkpoint) advances past them.
                 advancedSamples = ctx.advanceAccountedPrefix()
@@ -1636,19 +1956,14 @@ public actor AudioReceiverSession {
         // treats anything within `orphanDataMaxAgeMs` (40 s) as current, so a dead connection's
         // orphans stayed "recent" well into the NEW one and could drive
         // `checkForAStreamWeShouldHave` into another resync — a reconnect loop feeding itself.
-        // Say it out loud before zeroing it. `orphanedFrameCount` is the one instrument that tells
-        // airtime loss apart from a spool that never freed, and it is per-CONNECTION: this reset
-        // is correct for the live evidence latch, but it also meant the number never survived long
-        // enough to be seen. Roger's flight recorder shows 27 process starts and 77 disconnects in
-        // a single day, so Diagnostics — which only renders the row while the count is above zero
-        // — was reading a counter that had just been wiped, and reported nothing for outages that
-        // cost hours. Logging it at teardown puts the evidence in the recorder the support export
-        // already carries, at one line per disconnect.
-        if orphanedFrameCount.value > 0 {
-            log(
-                "link down: \(orphanedFrameCount.value) frames arrived with no stream to attach "
-                    + "them to — the watch was sending audio this app could not store")
-        }
+        //
+        // Only the evidence latch is per connection. The episode is reported — once, with its
+        // frames, notices and sequence range — when its stream is announced or here, whichever
+        // comes first; and `orphanedFrameCount` is NOT zeroed any more: Roger's flight recorder
+        // shows 27 process starts and 77 disconnects in a single day, so Diagnostics, which only
+        // renders the row while the count is above zero, was reading a number that had just been
+        // wiped and reported nothing for outages that cost hours.
+        reportOrphanEpisode(announced: nil)
         if phantomGapNotices > 0 {
             log(
                 "link down: ignored \(phantomGapNotices) watch gap notice(s) covering "
@@ -1658,7 +1973,6 @@ public actor AudioReceiverSession {
         phantomGapFrames = 0
         orphanGaps.removeAll()
         lastOrphanDataAtMs = 0
-        orphanedFrameCount.value = 0
     }
 
     private enum ReceiverSessionError: Error {
@@ -1696,6 +2010,12 @@ public actor AudioReceiverSession {
     /// A verify that never returns is a verify that never happened — a stale link the platform
     /// still calls connected can leave a GATT read outstanding indefinitely.
     static let verifyReadTimeoutMs: Int64 = 5_000
+
+    /// How long the handshake waits for an Info read of this session's own to finish before
+    /// asking anyway: the link's per-operation timeout (10 s) plus slack, so a read the link has
+    /// given up on is out of the way before the handshake's goes in.
+    static let handshakeInfoReadWaitMs: Int64 = 12_000
+    static let infoReadPollMs: Int64 = 50
 
     /// Unanswered verifies before the link is presumed stale and rebuilt. Three, at the 20 s
     /// verify cadence: a minute of a watch saying nothing to a direct question, which no

@@ -124,6 +124,11 @@ public enum CoverageComputer {
         }
     }
 
+    /// How far past its segment's close a loss record may still be drawn: the watch's clock,
+    /// which places the record, and the phone's, which stamped the close, drift by tens of
+    /// seconds (±32 s across the real library — see `SegmentStore.openSegmentInternal`).
+    static let recordAfterCloseSlackMs: Int64 = 60_000
+
     /// Visible-loss filter: `sequence_skip` gaps (receiver-synthesized) always count as loss;
     /// watch-reported gaps count unless the reason is SilenceSuppressed (known quiet, not
     /// loss). Unknown reasons count as loss — never silently hidden.
@@ -132,7 +137,18 @@ public enum CoverageComputer {
         guard let raw = gap.reasonRaw,
             let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
         else { return true }
-        return !reason.isSilence
+        return !reason.isSilence && reason != .powerSave
+    }
+
+    /// The watch's own power-save pause: a stretch it CHOSE not to listen to (stationary mute —
+    /// the phone's status card already says "Paused while the watch is saving power"). Drawn as
+    /// paused, never as missing: a night on the nightstand is not lost audio, and the 2026-09-29
+    /// backup would otherwise have drawn 45 h of it as loss (570 min on 09-22 alone).
+    static func isWatchPause(_ gap: GapMeta) -> Bool {
+        guard gap.origin == GapMeta.originWatch, let raw = gap.reasonRaw,
+            let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
+        else { return false }
+        return reason == .powerSave
     }
 
     /// Computes one logical day's coverage. `nowMs` clamps the domain for the current day
@@ -161,35 +177,11 @@ public enum CoverageComputer {
         var recorded: [Range<Int64>] = []
         var missing: [Range<Int64>] = []
         var quiet: [Range<Int64>] = []
+        var watchPaused: [Range<Int64>] = []
 
         for input in segments {
             let meta = input.meta
-            guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
-                last > first
-            else { continue }
-            let extent = first..<last
             let frameSamples = UInt64(meta.frameSamples > 0 ? meta.frameSamples : 320)
-
-            let lossSamples = mergeRanges(
-                meta.gaps.filter(isVisibleLoss).compactMap { gap -> Range<UInt64>? in
-                    let start = gap.firstMissingSampleIndex
-                    let end = start + UInt64(gap.missingFrameCount) * frameSamples
-                    return clip(start..<end, to: extent)
-                }
-            )
-
-            let recordedSamples: [Range<UInt64>]
-            let quietSamples: [Range<UInt64>]
-            if let frameRanges = input.frameSampleRanges {
-                let frames = mergeRanges(frameRanges.compactMap { clip($0, to: extent) })
-                recordedSamples = frames
-                quietSamples = subtractRanges(
-                    [extent], subtracting: mergeRanges(frames + lossSamples))
-            } else {
-                recordedSamples = subtractRanges([extent], subtracting: lossSamples)
-                quietSamples = []
-            }
-
             func toWall(_ ranges: [Range<UInt64>]) -> [Range<Int64>] {
                 ranges.compactMap { range in
                     let start = ConversationGrouper.wallMs(ofSample: range.lowerBound, in: meta)
@@ -197,8 +189,66 @@ public enum CoverageComputer {
                     return clip(start..<end, to: domain)
                 }
             }
+
+            // Loss is drawn where its RECORD says it happened — not clipped to this segment's
+            // frames, which is what it used to be.
+            //
+            // A record can lie wholly outside the frames of the segment that carries it, and the
+            // ordinary way is a RESUME that had to open a NEW segment: the watch delivers its
+            // account of the outage (overflow, a transport reset, a power-save pause) before the
+            // first frame of the recording that follows it. Clipped, all of that rendered as
+            // "off" — time nothing was recording — instead of "missing". The 2026-09-29 backup
+            // holds 35 such records: 12 buffer overflows (71,046 frames, 23.7 min; one is the
+            // 10-minute overflow of 09-20 14:53:44-15:03:43) and 23 power-save pauses (45 h),
+            // while the same reasons INSIDE a segment's frames always rendered as missing.
+            //
+            // Nothing is invented: the painted range is exactly the record's own. The one bound is
+            // physical — a record describes time before the phone wrote it, so it cannot reach
+            // past the segment's close (plus the watch/phone clock skew the rest of the timeline
+            // already tolerates); that keeps one corrupt count from painting a whole day.
+            let closeBound = meta.closedAtMs.map { $0 + Self.recordAfterCloseSlackMs }
+            let lossSamples = mergeRanges(
+                meta.gaps.filter { isVisibleLoss($0) && $0.missingFrameCount > 0 }.map { gap in
+                    let start = gap.firstMissingSampleIndex
+                    return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
+                }
+            )
+            missing += toWall(lossSamples).compactMap { range in
+                guard let closeBound else { return range }
+                return clip(range, to: range.lowerBound..<max(range.lowerBound, closeBound))
+            }
+            // The watch's power-save pauses, placed exactly like loss and bounded the same way.
+            let pausedSamples = mergeRanges(
+                meta.gaps.filter { isWatchPause($0) && $0.missingFrameCount > 0 }.map { gap in
+                    let start = gap.firstMissingSampleIndex
+                    return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
+                }
+            )
+            watchPaused += toWall(pausedSamples).compactMap { range in
+                guard let closeBound else { return range }
+                return clip(range, to: range.lowerBound..<max(range.lowerBound, closeBound))
+            }
+
+            // Recorded and quiet are claims about THIS segment's own span, and stay inside it.
+            guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
+                last > first
+            else { continue }
+            let extent = first..<last
+            // A pause inside the recording is no more quiet than loss is: neither was heard.
+            let lossInExtent = mergeRanges(lossSamples + pausedSamples).compactMap { clip($0, to: extent) }
+
+            let recordedSamples: [Range<UInt64>]
+            let quietSamples: [Range<UInt64>]
+            if let frameRanges = input.frameSampleRanges {
+                let frames = mergeRanges(frameRanges.compactMap { clip($0, to: extent) })
+                recordedSamples = frames
+                quietSamples = subtractRanges(
+                    [extent], subtracting: mergeRanges(frames + lossInExtent))
+            } else {
+                recordedSamples = subtractRanges([extent], subtracting: lossInExtent)
+                quietSamples = []
+            }
             recorded += toWall(recordedSamples)
-            missing += toWall(lossSamples)
             quiet += toWall(quietSamples)
         }
 
@@ -206,7 +256,7 @@ public enum CoverageComputer {
             let end = pause.endMs ?? domainEnd
             guard end > pause.startMs else { return nil }
             return clip(pause.startMs..<end, to: domain)
-        }
+        } + watchPaused
 
         let layers: [(kind: CoverageKind, ranges: [Range<Int64>])] = [
             (.recorded, mergeRanges(recorded)),

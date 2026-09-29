@@ -166,7 +166,12 @@ import WireProtocol
         #expect(await store.listSegments().isEmpty)
     }
 
-    @Test func silenceSuppressedGapsAreNotPersistedAsDurableLoss() async throws {
+    // Was `silenceSuppressedGapsAreNotPersistedAsDurableLoss`, and asserted the record was
+    // DROPPED. Every reader of the sidecar — the timeline's quiet layer, Today's day strip, the
+    // media clock — expects to find it there, so dropping it meant quiet never rendered and a
+    // skipped stretch looked exactly like lost audio. It is kept now, as quiet: the reason
+    // travels with it, and nothing that counts loss counts it.
+    @Test func silenceSuppressedGapsArePersistedAsQuietNotLoss() async throws {
         let root = try tempRoot()
         let store = makeStore(root)
         try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
@@ -180,12 +185,17 @@ import WireProtocol
                     reasonRaw: Int(GapReason.silenceSuppressed.rawValue),
                     watchDropCounter: 0)))
 
-        #expect(try #require(await store.readMeta(segmentId)).gaps.isEmpty)
+        let stored = try single(try #require(await store.readMeta(segmentId)).gaps)
+        #expect(stored.firstMissingSequence == 20)
+        #expect(stored.missingFrameCount == 150)
+        #expect(stored.origin == GapMeta.originWatch)
+        #expect(stored.reasonRaw == Int(GapReason.silenceSuppressed.rawValue))
+        #expect(!stored.countsAsLoss)
         try await store.closeSegment(reason: .interrupted)
 
         let reopened = makeStore(root)
         try await reopened.recover()
-        #expect(try #require(await reopened.readMeta(segmentId)).gaps.isEmpty)
+        #expect(try #require(await reopened.readMeta(segmentId)).gaps == [stored])
     }
 
     @Test func contiguousSequenceSkipsCoalesceIntoOneDurableLossPeriod() async throws {
@@ -243,11 +253,20 @@ import WireProtocol
         try await store.recordGap(streamId: streamId, gap: gap(100, 55))
         try await store.recordGap(streamId: streamId, gap: gap(100, 60))
 
-        let stored = try single(try #require(await store.readMeta(segmentId)).gaps)
-        #expect(stored.firstMissingSequence == 100)
-        #expect(stored.missingFrameCount == 60)
-        #expect(stored.origin == GapMeta.originWatch)
-        #expect(stored.reasonRaw == Int(GapReason.transportReset.rawValue))
+        // The repeated skips collapse into one period, and the watch's account wins for every
+        // frame it covers: the transport reset keeps 100..149 with its reason, and only the ten
+        // frames past it that the watch never mentioned remain the receiver's skip. (This used
+        // to fold them into the reset, which put the watch's reason on frames it never claimed.)
+        let gaps = try #require(await store.readMeta(segmentId)).gaps
+        #expect(gaps.count == 2)
+        #expect(gaps[0].firstMissingSequence == 100)
+        #expect(gaps[0].missingFrameCount == 50)
+        #expect(gaps[0].origin == GapMeta.originWatch)
+        #expect(gaps[0].reasonRaw == Int(GapReason.transportReset.rawValue))
+        #expect(gaps[1].firstMissingSequence == 150)
+        #expect(gaps[1].missingFrameCount == 10)
+        #expect(gaps[1].firstMissingSampleIndex == 150 * 320)
+        #expect(gaps[1].origin == GapMeta.originSequenceSkip)
     }
 
     @Test func recoverNormalizesLegacyGapMetadata() async throws {
@@ -295,15 +314,24 @@ import WireProtocol
         let reopened = makeStore(root)
         try await reopened.recover()
 
+        // The silence record stays, as quiet; the skip under it is the watch's quiet, not loss,
+        // and disappears; the skip that runs past the reset keeps only the frames the reset does
+        // not account for.
         let gaps = try #require(await reopened.readMeta(segmentId)).gaps
-        #expect(gaps.count == 2)
-        #expect(gaps[0].firstMissingSequence == 100)
-        #expect(gaps[0].missingFrameCount == 60)
-        #expect(gaps[0].origin == GapMeta.originWatch)
-        #expect(gaps[0].reasonRaw == Int(GapReason.transportReset.rawValue))
-        #expect(gaps[1].firstMissingSequence == 200)
-        #expect(gaps[1].missingFrameCount == 5)
-        #expect(gaps[1].origin == GapMeta.originSequenceSkip)
+        #expect(gaps.count == 4)
+        #expect(gaps[0].firstMissingSequence == 10)
+        #expect(gaps[0].missingFrameCount == 5)
+        #expect(gaps[0].reasonRaw == Int(GapReason.silenceSuppressed.rawValue))
+        #expect(gaps[1].firstMissingSequence == 100)
+        #expect(gaps[1].missingFrameCount == 50)
+        #expect(gaps[1].origin == GapMeta.originWatch)
+        #expect(gaps[1].reasonRaw == Int(GapReason.transportReset.rawValue))
+        #expect(gaps[2].firstMissingSequence == 150)
+        #expect(gaps[2].missingFrameCount == 10)
+        #expect(gaps[2].origin == GapMeta.originSequenceSkip)
+        #expect(gaps[3].firstMissingSequence == 200)
+        #expect(gaps[3].missingFrameCount == 5)
+        #expect(gaps[3].origin == GapMeta.originSequenceSkip)
 
         let persisted = try JSONDecoder().decode(SegmentMeta.self, from: Data(contentsOf: sidecar))
         #expect(persisted.gaps == gaps)
@@ -362,11 +390,15 @@ import WireProtocol
                 105, 2,
                 .watchReported(reasonRaw: Int(GapReason.spoolOverflow.rawValue), watchDropCounter: 2)))
 
+        // The quiet record is kept as quiet, and the loss that follows it stays its own record
+        // with its own reason — quiet never absorbs loss.
         let gaps = try #require(await resumed.readMeta(segmentId)).gaps
-        #expect(gaps.count == 1)
-        #expect(gaps[0].firstMissingSequence == 105)
-        #expect(gaps[0].missingFrameCount == 2)
-        #expect(gaps[0].reasonRaw == Int(GapReason.spoolOverflow.rawValue))
+        #expect(gaps.count == 2)
+        #expect(gaps[0].firstMissingSequence == 100)
+        #expect(gaps[0].reasonRaw == Int(GapReason.silenceSuppressed.rawValue))
+        #expect(gaps[1].firstMissingSequence == 105)
+        #expect(gaps[1].missingFrameCount == 2)
+        #expect(gaps[1].reasonRaw == Int(GapReason.spoolOverflow.rawValue))
     }
 
     @Test func killMidAppend_truncatesToLastGoodRecord() async throws {

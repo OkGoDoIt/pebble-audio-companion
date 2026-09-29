@@ -160,9 +160,10 @@ public func gapDurationMs(_ gap: GapMeta, frameDurationMs: Int) -> Int64 {
 /// four-hour outage therefore lands on the eighteen-minute recording that preceded it, and
 /// counting it there made a mostly-intact recording read as "18 min · 18 min missing" (the total
 /// saturated `displayGapMs`'s clamp, so the clamp, not the loss, was choosing the number). Time
-/// outside the extent is not this recording's audio: it is the hole BETWEEN recordings, which the
-/// timeline already shows as such — `CoverageComputer` has always clipped gaps this way, and this
-/// keeps the Library row telling the same story as the timeline.
+/// outside the extent is not this recording's audio: it is the hole BETWEEN recordings, and the
+/// timeline is where that is shown — `CoverageComputer` draws every loss record where the record
+/// says it happened, inside a segment's frames or not, so the outage is on the day strip as
+/// "missing" while this row counts only what this recording lost.
 ///
 /// Loss stays explicit: nothing inside the extent is trimmed, and the raw metadata is untouched.
 /// A segment with no extent yet (nothing stored) has nothing to clip against, so it counts whole.
