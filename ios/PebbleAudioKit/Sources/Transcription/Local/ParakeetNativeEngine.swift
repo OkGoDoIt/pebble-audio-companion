@@ -33,6 +33,22 @@ public enum ParakeetEngineError: Error, Equatable, Sendable {
     case nativeFailure(String)
     /// This process's remaining jetsam budget is too small to load/run the model right now.
     case insufficientMemory(availableMb: Int64, requiredMb: Int64)
+    /// The model was released between a load and its use (a memory warning, the app letting it
+    /// go). Nothing is wrong with the model or the audio: the work is simply not possible right
+    /// now. Used to be `modelLoadFailed("no model loaded")`, which surfaced as "the on-device
+    /// model couldn't load" on a model that had loaded a second earlier (2026-09-29 23:12).
+    case notLoaded
+}
+
+/// What `discardCompiledCache` did.
+public enum ParakeetCacheDiscard: Equatable, Sendable {
+    /// The runtime's compiled cache was deleted; the next load rebuilds it cold.
+    case discarded
+    /// This runtime keeps no such cache (Cactus), or it could not be deleted.
+    case nothingToDiscard
+    /// A load has SUCCEEDED since the caller's failed one — someone else already recovered the
+    /// model, so the cache is good and was left alone. The caller should simply load again.
+    case loadedSince
 }
 
 /// The native speech-to-text engine behind `ParakeetTranscriptionProvider`. A protocol so the
@@ -56,16 +72,46 @@ public protocol ParakeetNativeEngine: Sendable {
     func release() async
 
     /// Throws away whatever the runtime compiled from the model at `modelPath` and cached outside
-    /// the install directory, so the next `load` rebuilds it from the model files. Returns true
-    /// when there was such a cache and it was dropped.
+    /// the install directory, so the next `load` rebuilds it from the model files — unless a
+    /// load has succeeded since `unlessLoadedSince` (a `loadGeneration` the caller read before
+    /// its own failed load), in which case the cache is good and is left alone.
+    ///
+    /// The generation check is not optional politeness. The durable queue, the live preview and
+    /// the model store's prepare pass all share one engine; two of them failing on the same stale
+    /// cache and each discarding it would have the second throw away the model — and the cache —
+    /// the first had just rebuilt.
     ///
     /// Core AI needs this; Cactus has nothing of the kind (its install directory is all there is).
     /// See `ParakeetTranscriptionProvider.loadEngine` for when it is called.
-    func discardCompiledCache(modelPath: String) async -> Bool
+    func discardCompiledCache(modelPath: String, unlessLoadedSince generation: Int) async
+        -> ParakeetCacheDiscard
+
+    /// Counts successful loads. Read before a load so a later discard can tell whether anyone
+    /// has recovered the model in the meantime.
+    var loadGeneration: Int { get }
+
+    /// Drops the model once whatever is running on it — and whoever holds a use lease — has
+    /// finished, WITHOUT interrupting it, and without making the caller wait. For the app leaving
+    /// the foreground: the segment in flight completes (the drain stops at the next boundary),
+    /// and the memory goes back afterwards. `release()` stays the hard version, for memory
+    /// warnings.
+    func releaseWhenIdle() async
+
+    /// A use lease: between a provider's `load` and the end of its last `transcribe`, an
+    /// opportunistic release (`releaseWhenIdle`, the store's post-prepare release) must not drop
+    /// the model out from under it. Balanced calls; `release()` ignores leases.
+    func beginUse()
+    func endUse()
 }
 
 extension ParakeetNativeEngine {
-    public func discardCompiledCache(modelPath: String) async -> Bool { false }
+    public func discardCompiledCache(modelPath: String, unlessLoadedSince generation: Int) async
+        -> ParakeetCacheDiscard
+    { .nothingToDiscard }
+    public var loadGeneration: Int { 0 }
+    public func releaseWhenIdle() async { await release() }
+    public func beginUse() {}
+    public func endUse() {}
 }
 
 /// Engine used where the runtime cannot run (no Cactus slice, no Core AI).
@@ -157,7 +203,7 @@ public enum ParakeetEngineFactory {
             }
             return try await onQueue {
                 guard let handle = self.currentHandle() else {
-                    throw ParakeetEngineError.modelLoadFailed("no model loaded")
+                    throw ParakeetEngineError.notLoaded
                 }
                 var buffer = [CChar](repeating: 0, count: Self.responseBufferBytes)
                 let status = buffer.withUnsafeMutableBufferPointer { out -> Int32 in
@@ -181,14 +227,24 @@ public enum ParakeetEngineFactory {
             }
         }
 
+        /// `cactus_stop` runs under the same lock `destroyLocked` frees the handle under. It used
+        /// to be called after the lock was dropped, so an interrupt racing a destroy could stop a
+        /// handle that was being freed.
         public func interrupt() {
-            guard let handle = currentHandle() else { return }
+            lock.lock()
+            defer { lock.unlock() }
+            guard let handle else { return }
             cactus_stop(handle)
         }
 
         public func release() async {
             interrupt()
             try? await onQueue { self.destroyLocked() }
+        }
+
+        /// Queued behind whatever is running, never interrupting it, and not awaited.
+        public func releaseWhenIdle() async {
+            Task { try? await self.onQueue { self.destroyLocked() } }
         }
 
         // MARK: - Plumbing
@@ -217,12 +273,14 @@ public enum ParakeetEngineFactory {
             return loadedIdentity
         }
 
+        /// Frees the handle while holding `lock`, so `interrupt()` can never reach a freed one.
+        /// Always on `queue`, so no transcription is running on the handle.
         private func destroyLocked() {
             lock.lock()
+            defer { lock.unlock() }
             let existing = handle
             handle = nil
             loadedIdentity = nil
-            lock.unlock()
             if let existing { cactus_destroy(existing) }
         }
 

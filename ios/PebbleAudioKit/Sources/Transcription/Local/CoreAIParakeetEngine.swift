@@ -138,6 +138,12 @@ extension ParakeetEngineFactory {
         private var model: SpeechRecognitionModel?
         private var loadedIdentity: String?
         private var inFlight: Task<String, Error>?
+        /// Successful loads so far — see `discardCompiledCache(modelPath:unlessLoadedSince:)`.
+        private var generation = 0
+        /// Providers between their `load` and their last `transcribe` — see `beginUse()`.
+        private var leases = 0
+        /// A soft release asked for while the model was busy; honoured when it goes idle.
+        private var releaseRequested = false
 
         public init() {}
 
@@ -152,44 +158,33 @@ extension ParakeetEngineFactory {
         /// The identity of the resident model, nil when none is loaded.
         public var loadedModelIdentity: String? { lock.withLock { loadedIdentity } }
 
+        public var loadGeneration: Int { lock.withLock { generation } }
+
         public func load(modelPath: String, identity: String) async throws {
             if lock.withLock({ model != nil && loadedIdentity == identity }) { return }
-            let available = Self.availableMemoryMb()
-            guard available >= Self.minModelLoadMemoryMb else {
-                throw ParakeetEngineError.insufficientMemory(
-                    availableMb: available, requiredMb: Self.minModelLoadMemoryMb
-                )
-            }
+            try Self.requireLoadMemory()
             let url = URL(fileURLWithPath: modelPath, isDirectory: true)
             try await serial.run { [self] in
-                // Re-check under the queue: a queued duplicate must not reload a model that the
-                // call ahead of it just finished loading.
-                if lock.withLock({ model != nil && loadedIdentity == identity }) { return }
-                dropModel()
-                let loaded: SpeechRecognitionModel
-                do {
-                    loaded = try await SpeechRecognitionModel(resourcesAt: url)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    throw ParakeetEngineError.modelLoadFailed(Self.describe(error))
-                }
-                lock.withLock {
-                    model = loaded
-                    loadedIdentity = identity
-                }
+                _ = try await loadOnQueue(url: url, identity: identity)
             }
         }
 
-        /// `load`, then one pass through every graph so the specialization cache is complete.
-        /// The store runs this once after an install, in the foreground; afterwards a real
-        /// transcription starts from a warm cache.
-        public func prepare(modelPath: String, identity: String) async throws {
-            try await load(modelPath: modelPath, identity: identity)
-            guard let model = lock.withLock({ self.model }) else {
-                throw ParakeetEngineError.modelLoadFailed("no model loaded")
+        /// `load`, then one pass through every graph so the specialization cache is complete —
+        /// as ONE operation on the queue, so nothing (a release, another caller) can drop the
+        /// model between the two halves. They used to be two, and a release that landed between
+        /// them failed the pass with "no model loaded" (2026-09-29 23:12). Returns true when this
+        /// call is the one that loaded the model, so the preparer only lets go of what it took.
+        @discardableResult
+        public func prepare(modelPath: String, identity: String) async throws -> Bool {
+            if !lock.withLock({ model != nil && loadedIdentity == identity }) {
+                try Self.requireLoadMemory()
             }
-            try await serial.run {
+            let url = URL(fileURLWithPath: modelPath, isDirectory: true)
+            return try await serial.run { [self] in
+                let loadedHere = try await loadOnQueue(url: url, identity: identity)
+                guard let model = lock.withLock({ self.model }) else {
+                    throw ParakeetEngineError.notLoaded
+                }
                 let samples: Int
                 if let streaming = await model.bundleStreamingConfig {
                     samples = streaming.windowSampleCount
@@ -202,7 +197,30 @@ extension ParakeetEngineFactory {
                 } catch {
                     throw ParakeetEngineError.modelLoadFailed(Self.describe(error))
                 }
+                return loadedHere
             }
+        }
+
+        /// The load itself. Only ever called on `serial`. Re-checks there, because a queued
+        /// duplicate must not reload a model the call ahead of it just finished loading.
+        private func loadOnQueue(url: URL, identity: String) async throws -> Bool {
+            if lock.withLock({ model != nil && loadedIdentity == identity }) { return false }
+            dropModel()
+            let loaded: SpeechRecognitionModel
+            do {
+                loaded = try await SpeechRecognitionModel(resourcesAt: url)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw ParakeetEngineError.modelLoadFailed(Self.describe(error))
+            }
+            lock.withLock {
+                model = loaded
+                loadedIdentity = identity
+                generation += 1
+                releaseRequested = false
+            }
+            return true
         }
 
         public func transcribe(wavPath: String) async throws -> String {
@@ -213,13 +231,16 @@ extension ParakeetEngineFactory {
                 )
             }
             guard let model = lock.withLock({ self.model }) else {
-                throw ParakeetEngineError.modelLoadFailed("no model loaded")
+                throw ParakeetEngineError.notLoaded
             }
             let task = Task<String, Error> { [serial] in
                 try await serial.run { try await Self.run(model: model, wavPath: wavPath) }
             }
             lock.withLock { inFlight = task }
-            defer { lock.withLock { if inFlight == task { inFlight = nil } } }
+            defer {
+                lock.withLock { if inFlight == task { inFlight = nil } }
+                releaseIfRequestedAndIdle()
+            }
             return try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: {
@@ -234,15 +255,53 @@ extension ParakeetEngineFactory {
             if let model { Task { await model.cancelStream() } }
         }
 
+        /// The hard release, for a memory warning: interrupt, wait, drop — leases or not.
         public func release() async {
             interrupt()
             await serial.drain()
             dropModel()
         }
 
+        /// The soft release, for the app leaving the foreground: nothing is interrupted and the
+        /// caller does not wait. The model goes once no transcription is running and no provider
+        /// holds a lease; a load in the meantime cancels the request (the work that loaded it
+        /// wants it).
+        public func releaseWhenIdle() async {
+            lock.withLock { releaseRequested = true }
+            releaseIfRequestedAndIdle()
+        }
+
+        public func beginUse() {
+            lock.withLock { leases += 1 }
+        }
+
+        public func endUse() {
+            lock.withLock { leases = max(0, leases - 1) }
+            releaseIfRequestedAndIdle()
+        }
+
+        /// Queues the drop behind whatever is running, re-checking there: the request, the leases
+        /// and the in-flight task can all have changed by the time the queue gets to it.
+        private func releaseIfRequestedAndIdle() {
+            guard lock.withLock({ releaseRequested && leases == 0 && inFlight == nil }) else {
+                return
+            }
+            Task { [self] in
+                try? await serial.run { [self] in
+                    let drop = lock.withLock { () -> Bool in
+                        guard releaseRequested, leases == 0, inFlight == nil else { return false }
+                        releaseRequested = false
+                        return true
+                    }
+                    if drop { dropModel() }
+                }
+            }
+        }
+
         /// Deletes this app's Core AI specialization cache, so the next `load` specializes the
         /// bundle afresh (a cold load: ~1.1 GB of cache written, the same pass the store's
-        /// preparer runs after an install).
+        /// preparer runs after an install) — unless a load has succeeded since `generation`, in
+        /// which case someone else already recovered the model and the cache is good.
         ///
         /// Why this exists (2026-09-29): Core AI keeps the specialized model in the app's
         /// `Library/Caches/coreai-cache`, and that entry points at Neural Engine programs held in
@@ -256,26 +315,38 @@ extension ParakeetEngineFactory {
         /// bundle, and a per-entry delete that missed one graph would leave the same dead
         /// reference behind. Serialized behind any in-flight operation, and the model is dropped
         /// first so nothing resident still refers to the entries being deleted.
-        public func discardCompiledCache(modelPath: String) async -> Bool {
-            let discarded: Bool? = try? await serial.run { [self] in
+        public func discardCompiledCache(modelPath: String, unlessLoadedSince since: Int) async
+            -> ParakeetCacheDiscard
+        {
+            let outcome: ParakeetCacheDiscard? = try? await serial.run { [self] in
+                if lock.withLock({ generation != since }) { return .loadedSince }
                 dropModel()
                 do {
                     try AIModelCache.default.deleteAll()
-                    return true
+                    return .discarded
                 } catch {
-                    return false
+                    return .nothingToDiscard
                 }
             }
-            return discarded ?? false
+            return outcome ?? .nothingToDiscard
         }
 
-        /// Drops the model unless a transcription is using it right now. The store's preparer
-        /// calls this rather than `release()`: the pipeline may have started on the same shared
-        /// model the moment the install completed, and yanking it would fail that segment.
+        /// Drops the model unless it is in use right now. The store's preparer calls this rather
+        /// than `release()`, and only for a model it loaded itself: the pipeline may have started
+        /// on the same shared model, and yanking it would fail that segment.
         public func releaseUnlessBusy() async {
             try? await serial.run { [self] in
-                guard lock.withLock({ inFlight == nil }) else { return }
+                guard lock.withLock({ inFlight == nil && leases == 0 }) else { return }
                 dropModel()
+            }
+        }
+
+        private static func requireLoadMemory() throws {
+            let available = availableMemoryMb()
+            guard available >= minModelLoadMemoryMb else {
+                throw ParakeetEngineError.insufficientMemory(
+                    availableMb: available, requiredMb: minModelLoadMemoryMb
+                )
             }
         }
 
@@ -440,8 +511,25 @@ extension ParakeetEngineFactory {
 
         public func prepare(spec: ParakeetModelSpec, directory: URL) async throws {
             let engine = CoreAIParakeetEngine.shared
-            try await engine.prepare(modelPath: directory.path, identity: spec.modelUsed)
-            await engine.releaseUnlessBusy()
+            let generation = engine.loadGeneration
+            let loadedHere: Bool
+            do {
+                loadedHere = try await engine.prepare(
+                    modelPath: directory.path, identity: spec.modelUsed)
+            } catch ParakeetEngineError.modelLoadFailed {
+                // The same stale-cache case the provider recovers from (see
+                // `CoreAIParakeetEngine.discardCompiledCache`): a re-prepare after the model was
+                // withdrawn, or a re-import after an uninstall, can meet the same dead entry. One
+                // discard, one retry; a second failure is a real one and is reported.
+                guard
+                    await engine.discardCompiledCache(
+                        modelPath: directory.path, unlessLoadedSince: generation) != .nothingToDiscard
+                else { throw ParakeetEngineError.modelLoadFailed("the model could not be loaded") }
+                loadedHere = try await engine.prepare(
+                    modelPath: directory.path, identity: spec.modelUsed)
+            }
+            // Only let go of a model this pass loaded: one a transcription loaded is its business.
+            if loadedHere { await engine.releaseUnlessBusy() }
         }
     }
 

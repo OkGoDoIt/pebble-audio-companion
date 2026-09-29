@@ -24,4 +24,16 @@ public protocol LocalTranscriptionLifecycle: Sendable {
     /// Releases the model only when it has been loaded but unused for at least `idleTimeoutMs`,
     /// measured against `nowMs`. A no-op while a transcription is recent or nothing is loaded.
     func releaseModelIfIdle(nowMs: Int64, idleTimeoutMs: Int64) async
+
+    /// Lets the model go once the work on it has finished, without interrupting it and without
+    /// making the caller wait — for the app leaving the foreground. `releaseModel` stays the
+    /// hard version (memory warnings). Interrupting on background entry threw away the segment
+    /// in flight and, until 2026-09-29, killed the pipeline loop with it.
+    func releaseModelWhenIdle(reason: String) async
+}
+
+extension LocalTranscriptionLifecycle {
+    public func releaseModelWhenIdle(reason: String) async {
+        await releaseModel(reason: reason)
+    }
 }

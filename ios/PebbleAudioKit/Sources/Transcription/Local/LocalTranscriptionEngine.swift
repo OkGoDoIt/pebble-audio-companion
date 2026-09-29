@@ -210,6 +210,12 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         }
     }
 
+    public func releaseModelWhenIdle(reason: String) async {
+        for runtime in LocalEngineRuntime.allCases {
+            await engine(for: runtime).releaseWhenIdle()
+        }
+    }
+
     public func releaseModelIfIdle(nowMs: Int64, idleTimeoutMs: Int64) async {
         let providers = lock.withLock { Array(parakeetById.values) }
         for provider in providers {

@@ -518,7 +518,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
                 return unsupportedRuntimeMessage
             case .insufficientMemory:
                 return "Not enough memory to prepare the model right now. Close other apps and try again."
-            case .modelLoadFailed, .nativeFailure:
+            case .modelLoadFailed, .nativeFailure, .notLoaded:
                 return "The model couldn't be prepared. Try again."
             }
         }

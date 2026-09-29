@@ -345,10 +345,12 @@ public actor CompanionRuntime {
         foreground.value = value
         await environment.live.setForeground(value)
         if !value {
-            // Background entry, app still alive: release the model (interrupting in-flight work)
-            // and hand cloud-primary pending segments to the suspension-proof transport. Neither
-            // belongs in a ~10 s Bluetooth wake.
-            await environment.transcription.releaseModel("background")
+            // Background entry, app still alive: let the model go once the segment in flight is
+            // done (the drain stops at the next task boundary), and hand cloud-primary pending
+            // segments to the suspension-proof transport. Neither belongs in a ~10 s Bluetooth
+            // wake. NOT the hard release: interrupting here threw away the work in flight, and
+            // the cancellation it raised used to end the pipeline loop outright.
+            await environment.transcription.releaseModelWhenIdle("background")
             await environment.transcription.submitPendingToUploader()
             await environment.deferredDeletes.commitAll()
             await refreshSnapshot(.appBackgrounded)
@@ -651,7 +653,9 @@ public actor CompanionRuntime {
         return PipelineSteps(
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
-            releaseModel: { reason in await env.transcription.releaseModel(reason) },
+            // The pass only ever releases on its way into the background: the soft release, so
+            // a charger pass that just lost its charger lets the segment in flight finish.
+            releaseModel: { reason in await env.transcription.releaseModelWhenIdle(reason) },
             reconsiderDisabled: {
                 try await env.transcription.reconsiderDisabled(foreground: foreground.value)
             },

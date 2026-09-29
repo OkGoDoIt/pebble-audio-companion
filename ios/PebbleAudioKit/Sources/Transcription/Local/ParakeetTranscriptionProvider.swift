@@ -253,8 +253,34 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     private let isForeground: @Sendable () -> Bool
     private let boostQuietAudio: @Sendable () -> Bool
     private let log: @Sendable (String) -> Void
+    private let rangeDeadline: @Sendable (Int64) -> Int64
     private let lastUsedMs = LastUsed()
     private let loadHold = LoadHold()
+    /// Set when the engine refused for memory; see `memoryRetryPauseMs`.
+    private let memoryHold = LoadHold()
+    /// One cold rebuild attempt per process for a model that was NOT prepared when its load
+    /// failed (a re-import meeting the old cache, a rebuild that was interrupted). A prepared
+    /// model gets its recovery every time it goes stale; this bounds the other case, whose
+    /// failure could otherwise repeat a 1.1 GB rebuild each time the load pause ends.
+    private let unpreparedRecovery = OnceFlag()
+
+    /// How long the provider reports itself unavailable after the engine refused for memory.
+    ///
+    /// `isAvailable()` knew nothing about memory, so a phone short of it spun: every task was
+    /// decoded (the silence gate), spooled to disk (~29 MB per 15 minutes), refused by the
+    /// engine's guard, parked as Disabled — and un-parked by the next pass, a second later,
+    /// because the provider still said it was available. Five minutes is long enough for the
+    /// memory situation to change and short enough that nothing waits noticeably.
+    public static let memoryRetryPauseMs: Int64 = 5 * 60_000
+
+    /// The longest one range may take before the call is interrupted: eight times the range's
+    /// own audio, and never under two minutes — far beyond anything a working engine needs
+    /// (a 45 s range is seconds of work even on a throttled phone). A safety net, not a pace:
+    /// without it one call that never returns holds the drain, and everything queued behind it,
+    /// until the process dies.
+    public static func rangeDeadlineMs(forAudioMs audioMs: Int64) -> Int64 {
+        max(120_000, audioMs * 8)
+    }
 
     /// How long a model that could not be loaded is left alone before the next attempt.
     ///
@@ -280,8 +306,10 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
         isForeground: @escaping @Sendable () -> Bool = { true },
         boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() },
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        rangeDeadlineMs: @escaping @Sendable (Int64) -> Int64 = { rangeDeadlineMs(forAudioMs: $0) }
     ) {
+        self.rangeDeadline = rangeDeadlineMs
         self.spec = spec
         self.id = Self.providerId(for: spec.runtime)
         self.location = location
@@ -306,7 +334,8 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
             return false
         }
         if spec.requiresPreparation, !location.isPrepared(spec), !isForeground() { return false }
-        return loadHold.reason(nowMs: nowMs()) == nil
+        let now = nowMs()
+        return loadHold.reason(nowMs: now) == nil && memoryHold.reason(nowMs: now) == nil
     }
 
     public func transcribe(
@@ -329,6 +358,13 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
                 "failed to initialize local model: \(reason) (next attempt after a pause)"
             )
         }
+        if memoryHold.reason(nowMs: nowMs()) != nil {
+            throw TranscriptionError.providerUnavailable(providerId: id)
+        }
+        // From here to the last range the model must stay put: an opportunistic release (the app
+        // leaving the foreground, the store's post-prepare release) waits for this lease.
+        engine.beginUse()
+        defer { engine.endUse() }
         let raw = temporaryDirectory.appendingPathComponent("cactus_stt-\(UUID().uuidString).raw")
         let wav = temporaryDirectory.appendingPathComponent("cactus_stt-\(UUID().uuidString).wav")
         defer {
@@ -384,14 +420,18 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
                 )
             } catch {
                 throw TranscriptionError.transcriptionFailed(
-                    "failed to stage local audio", underlying: error
+                    Self.scratchWriteFailed, underlying: error
                 )
             }
             let native: ParakeetNativeResponse
             do {
-                native = ParakeetNativeResponse.parse(try await engine.transcribe(wavPath: wav.path))
+                let audioMs = range.endMs(sampleRateHz: sampleRateHz)
+                    - range.startMs(sampleRateHz: sampleRateHz)
+                native = ParakeetNativeResponse.parse(
+                    try await transcribeWithDeadline(
+                        wavPath: wav.path, deadlineMs: rangeDeadline(audioMs)))
             } catch let error as ParakeetEngineError {
-                throw Self.map(error, id: id)
+                throw mapNoting(error, id: id)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -439,10 +479,17 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     ///    unprepared model waits for the app to come forward (or for the store's prepare pass)
     ///    exactly as a fresh install does.
     ///
+    /// The discard names the load generation this call saw before failing, so a caller that
+    /// failed on the same stale cache as another one does not throw away the model (and cache)
+    /// the other just rebuilt — the engine answers `.loadedSince` and this call simply loads.
+    /// A model that was not prepared gets one such attempt per process (`unpreparedRecovery`).
+    ///
     /// A load that still fails puts the model in `loadHold` for `loadRetryPauseMs`, so the next
     /// segments fail in microseconds instead of repeating a multi-gigabyte load each.
     private func loadEngine(modelPath: String) async throws {
         let wasPrepared = location.isPrepared(spec)
+        let generation = engine.loadGeneration
+        let message: String
         do {
             try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
             loadHold.clear()
@@ -451,33 +498,47 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
             if spec.requiresPreparation, !wasPrepared { location.setPrepared(spec, true) }
             return
         } catch let error as ParakeetEngineError {
-            guard case .modelLoadFailed(let message) = error else { throw Self.map(error, id: id) }
-            guard spec.requiresPreparation, wasPrepared else {
-                holdLoads(message)
+            guard case .modelLoadFailed(let failure) = error else { throw mapNoting(error, id: id) }
+            guard spec.requiresPreparation, wasPrepared || unpreparedRecovery.claim() else {
+                holdLoads(failure)
                 throw Self.map(error, id: id)
             }
-            let discarded = await engine.discardCompiledCache(modelPath: modelPath)
-            location.setPrepared(spec, false)
-            log(
-                "local model \(spec.id) failed to load (\(message)); "
-                    + (discarded ? "discarded its compiled cache" : "no compiled cache to discard")
-                    + (isForeground() ? ", rebuilding now" : ", rebuilding when the app is open")
-            )
+            message = failure
         } catch {
             throw TranscriptionError.transcriptionFailed(
                 "failed to initialize local model", underlying: error
             )
         }
 
+        switch await engine.discardCompiledCache(modelPath: modelPath, unlessLoadedSince: generation) {
+        case .loadedSince:
+            // Someone else recovered it while this call was failing: the cache is good.
+            try await loadOrMap(modelPath: modelPath)
+            return
+        case .nothingToDiscard:
+            holdLoads(message)
+            throw Self.map(.modelLoadFailed(message), id: id)
+        case .discarded:
+            // This process has now spent its cold rebuild; a later failure of the (now
+            // unprepared) model is held rather than rebuilt again.
+            _ = unpreparedRecovery.claim()
+            location.setPrepared(spec, false)
+            log(
+                "local model \(spec.id) failed to load (\(message)); discarded its compiled cache"
+                    + (isForeground() ? ", rebuilding now" : ", rebuilding when the app is open")
+            )
+        }
+
         guard isForeground() else { throw TranscriptionError.providerUnavailable(providerId: id) }
+        let started = nowMs()
         do {
             try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
         } catch let error as ParakeetEngineError {
-            if case .modelLoadFailed(let message) = error {
-                holdLoads(message)
-                log("local model \(spec.id) rebuild failed: \(message)")
+            if case .modelLoadFailed(let failure) = error {
+                holdLoads(failure)
+                log("local model \(spec.id) rebuild failed: \(failure)")
             }
-            throw Self.map(error, id: id)
+            throw mapNoting(error, id: id)
         } catch {
             throw TranscriptionError.transcriptionFailed(
                 "failed to initialize local model", underlying: error
@@ -485,7 +546,66 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         }
         loadHold.clear()
         location.setPrepared(spec, true)
-        log("local model \(spec.id) rebuilt its compiled cache and loaded")
+        log(
+            "local model \(spec.id) rebuilt its compiled cache and loaded "
+                + "(\((nowMs() - started) / 1_000) s)")
+    }
+
+    /// A plain load, errors mapped the usual way.
+    private func loadOrMap(modelPath: String) async throws {
+        do {
+            try await engine.load(modelPath: modelPath, identity: spec.modelUsed)
+            loadHold.clear()
+        } catch let error as ParakeetEngineError {
+            if case .modelLoadFailed(let failure) = error { holdLoads(failure) }
+            throw mapNoting(error, id: id)
+        } catch {
+            throw TranscriptionError.transcriptionFailed(
+                "failed to initialize local model", underlying: error
+            )
+        }
+    }
+
+    /// `map`, and a memory refusal starts `memoryHold` so the queue parks instead of spinning.
+    private func mapNoting(_ error: ParakeetEngineError, id: String) -> TranscriptionError {
+        if case .insufficientMemory = error {
+            memoryHold.set(reason: "memory", untilMs: nowMs() + Self.memoryRetryPauseMs)
+        }
+        return Self.map(error, id: id)
+    }
+
+    /// `engine.transcribe`, abandoned if it has not returned within `deadlineMs`.
+    ///
+    /// Deliberately NOT a task group: a group waits for every child before it returns, so a call
+    /// that never comes back would hold the "deadline" hostage too. The first of the answer and
+    /// the timer resumes the caller; a late answer is dropped. On timeout the engine is
+    /// interrupted, which frees its queue for anything that honours cancellation.
+    private func transcribeWithDeadline(wavPath: String, deadlineMs: Int64) async throws -> String {
+        let engine = self.engine
+        let outcome = FirstResult<String>()
+        let work = Task<Void, Never> {
+            do {
+                outcome.resolve(.success(try await engine.transcribe(wavPath: wavPath)))
+            } catch {
+                outcome.resolve(.failure(error))
+            }
+        }
+        let timer = Task<Void, Never> {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, deadlineMs)) * 1_000_000)
+            guard !Task.isCancelled else { return }
+            let failure = ParakeetEngineError.nativeFailure(
+                "no answer from the engine within \(deadlineMs / 1_000) s")
+            if outcome.resolve(.failure(failure)) {
+                engine.interrupt()
+                work.cancel()
+            }
+        }
+        defer { timer.cancel() }
+        return try await withTaskCancellationHandler {
+            try await outcome.value()
+        } onCancel: {
+            work.cancel()
+        }
     }
 
     private func holdLoads(_ message: String) {
@@ -496,7 +616,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     /// jetsam budget both mean "not usable right now", so the router may fall back to cloud.
     static func map(_ error: ParakeetEngineError, id: String) -> TranscriptionError {
         switch error {
-        case .unsupportedPlatform, .insufficientMemory:
+        case .unsupportedPlatform, .insufficientMemory, .notLoaded:
             return .providerUnavailable(providerId: id)
         case .modelLoadFailed(let message):
             return .transcriptionFailed("failed to initialize local model: \(message)")
@@ -513,19 +633,34 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         let manager = FileManager.default
         try? manager.removeItem(at: destination)
         guard manager.createFile(atPath: destination.path, contents: nil) else {
-            throw TranscriptionError.transcriptionFailed("failed to stage local audio")
+            throw TranscriptionError.transcriptionFailed(Self.scratchWriteFailed)
         }
-        let handle = try FileHandle(forWritingTo: destination)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: destination)
+        } catch {
+            throw TranscriptionError.transcriptionFailed(Self.scratchWriteFailed, underlying: error)
+        }
         defer { try? handle.close() }
         var bytes = 0
         var nonZero = false
         do {
             for try await chunk in chunks where !chunk.isEmpty {
-                try handle.write(contentsOf: chunk)
+                do {
+                    try handle.write(contentsOf: chunk)
+                } catch {
+                    // The PHONE could not write (a full disk, most likely) — not the recording
+                    // that could not be read. Worded so it classifies as a local engine failure,
+                    // which is retried, rather than as unreadable audio, which never is.
+                    throw TranscriptionError.transcriptionFailed(
+                        Self.scratchWriteFailed, underlying: error)
+                }
                 bytes += chunk.count
                 if !nonZero { nonZero = chunk.contains { $0 != 0 } }
             }
         } catch let error as TranscriptionError {
+            throw error
+        } catch let error where error is CancellationError {
             throw error
         } catch {
             throw TranscriptionError.transcriptionFailed("failed to read audio", underlying: error)
@@ -533,6 +668,10 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         guard nonZero else { throw TranscriptionError.noSpeechDetected("local audio is silent") }
         return bytes
     }
+
+    /// A scratch-file write failed on the phone. Classifies as `localEngineFailed` (retried, and
+    /// revisited after its retries run out), never as `audioUnreadable` (given up on for good).
+    static let scratchWriteFailed = "local transcription failed: could not write its scratch file"
 
     /// The `ParakeetQuietAudioBoost` gain for one range: its peak, read in bounded chunks.
     static func boostGain(from source: FileHandle, range: PcmSpeechRange) throws -> Double {
@@ -584,10 +723,14 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         lastUsedMs.set(0)
     }
 
+    /// Soft, like background entry: `lastUsedMs` is stamped when a segment ENDS, so a long
+    /// segment still running reads as "idle" by the time the idle sweep looks — the catch-up
+    /// burst runs outside the pipeline loop, and the hard release interrupted it mid-segment.
     public func releaseModelIfIdle(nowMs now: Int64, idleTimeoutMs: Int64) async {
         let last = lastUsedMs.value
         guard last != 0, now - last >= idleTimeoutMs else { return }
-        await releaseModel(reason: "idle \(idleTimeoutMs)ms")
+        await engine.releaseWhenIdle()
+        lastUsedMs.set(0)
     }
 }
 
@@ -610,6 +753,52 @@ final class LoadHold: @unchecked Sendable {
 
     func clear() {
         lock.withLock { held = nil }
+    }
+}
+
+/// The first `resolve` wins and is what `value()` returns; later ones are dropped.
+final class FirstResult<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<T, Error>?
+    private var waiter: CheckedContinuation<T, Error>?
+
+    /// True for the call that settled it.
+    @discardableResult
+    func resolve(_ value: Result<T, Error>) -> Bool {
+        let (won, waiting): (Bool, CheckedContinuation<T, Error>?) = lock.withLock {
+            guard result == nil else { return (false, nil) }
+            result = value
+            let pending = waiter
+            waiter = nil
+            return (true, pending)
+        }
+        waiting?.resume(with: value)
+        return won
+    }
+
+    func value() async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            let ready: Result<T, Error>? = lock.withLock {
+                if let result { return result }
+                waiter = continuation
+                return nil
+            }
+            if let ready { continuation.resume(with: ready) }
+        }
+    }
+}
+
+/// True for exactly one `claim()`.
+final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            guard !claimed else { return false }
+            claimed = true
+            return true
+        }
     }
 }
 

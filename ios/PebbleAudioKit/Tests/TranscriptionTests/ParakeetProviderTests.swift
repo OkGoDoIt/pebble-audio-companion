@@ -63,28 +63,60 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
     /// How many loads fail with `loadFailure` before loads start succeeding (all, by default).
     let failingLoads: Int
     let transcribeFailure: ParakeetEngineError?
+    /// What `discardCompiledCache` answers.
+    let discardOutcome: ParakeetCacheDiscard
+    /// When set, `transcribe` waits for `openGate()` and ignores cancellation — a call that
+    /// never comes back on its own.
+    let hangs: Bool
     private(set) var interrupts = 0
     private(set) var releases = 0
     private var attempts = 0
     private var discardCalls = 0
+    private var successfulLoads = 0
+    private var begins = 0
+    private var ends = 0
+    private var softReleases = 0
+    private var gate: CheckedContinuation<Void, Never>?
+    private var gateOpen = false
 
     init(
         supported: Bool = true,
         responses: [String] = [#"{"response":"hello there"}"#],
         loadFailure: ParakeetEngineError? = nil,
         failingLoads: Int = .max,
-        transcribeFailure: ParakeetEngineError? = nil
+        transcribeFailure: ParakeetEngineError? = nil,
+        discardOutcome: ParakeetCacheDiscard = .discarded,
+        hangs: Bool = false
     ) {
         self.supported = supported
         self.responses = responses
         self.loadFailure = loadFailure
         self.failingLoads = failingLoads
         self.transcribeFailure = transcribeFailure
+        self.discardOutcome = discardOutcome
+        self.hangs = hangs
     }
 
     /// Every `load` call, including the ones that threw.
     var loadAttempts: Int { lock.withLock { attempts } }
     var discards: Int { lock.withLock { discardCalls } }
+    var leasesTaken: Int { lock.withLock { begins } }
+    var leasesReturned: Int { lock.withLock { ends } }
+    var idleReleases: Int { lock.withLock { softReleases } }
+    var loadGeneration: Int { lock.withLock { successfulLoads } }
+
+    func beginUse() { lock.withLock { begins += 1 } }
+    func endUse() { lock.withLock { ends += 1 } }
+    func releaseWhenIdle() async { lock.withLock { softReleases += 1 } }
+
+    func openGate() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            gateOpen = true
+            defer { gate = nil }
+            return gate
+        }
+        waiting?.resume()
+    }
 
     var isSupported: Bool { supported }
     var loads: [String] { lock.withLock { loadCalls } }
@@ -98,15 +130,30 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
             return attempts
         }
         if let loadFailure, attempt <= failingLoads { throw loadFailure }
-        lock.withLock { loadCalls.append("\(modelPath)#\(identity)") }
+        lock.withLock {
+            loadCalls.append("\(modelPath)#\(identity)")
+            successfulLoads += 1
+        }
     }
 
-    func discardCompiledCache(modelPath: String) async -> Bool {
+    func discardCompiledCache(modelPath: String, unlessLoadedSince generation: Int) async
+        -> ParakeetCacheDiscard
+    {
         lock.withLock { discardCalls += 1 }
-        return true
+        return discardOutcome
     }
 
     func transcribe(wavPath: String) async throws -> String {
+        if hangs {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let open = lock.withLock { () -> Bool in
+                    if gateOpen { return true }
+                    gate = continuation
+                    return false
+                }
+                if open { continuation.resume() }
+            }
+        }
         if let transcribeFailure { throw transcribeFailure }
         let peak = (try? Data(contentsOf: URL(fileURLWithPath: wavPath)))
             .map { ParakeetQuietAudioBoost.peak(of: $0.dropFirst(PcmWav.headerBytes)) } ?? -1
@@ -560,6 +607,148 @@ private func makeProvider(
         _ = await attempt()
         #expect(engine.loadAttempts == 3)
         #expect(engine.discards == 1)
+    }
+
+    /// Two callers failed on the same stale cache; the other one has already rebuilt the model
+    /// by the time this one asks to discard. The engine says so, and this call just loads — it
+    /// does not throw away the model (and cache) the other call just built, and `.prepared`
+    /// stays. On 2026-09-29 that race is what dropped a freshly rebuilt model.
+    @Test func aDiscardAfterSomeoneElseRecoveredJustLoads() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(
+            loadFailure: .modelLoadFailed("no ANE program"), failingLoads: 1,
+            discardOutcome: .loadedSince)
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: true)
+        let result = try await recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: false
+        ).transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(result.text == "hello there")
+        #expect(location.prepared)
+        #expect(engine.loadAttempts == 2)
+    }
+
+    /// The model was released between its load and its use (a memory warning). Nothing failed:
+    /// the segment parks (`providerUnavailable`) instead of reading "the on-device model
+    /// couldn't load" on a model that loaded a moment earlier.
+    @Test func aModelReleasedBeforeUseParksTheSegmentInsteadOfFailingIt() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let provider = makeProvider(
+            engine: FakeEngine(transcribeFailure: .notLoaded), temp: temp, spec: coreAISpec)
+        do {
+            _ = try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+            Issue.record("expected providerUnavailable")
+        } catch TranscriptionError.providerUnavailable {
+        } catch {
+            Issue.record("expected providerUnavailable, got \(error)")
+        }
+    }
+
+    /// A memory refusal parks the provider for a pause — `isAvailable()` says no, so the queue
+    /// stops decoding and spooling every segment once a second just to be refused again.
+    @Test func aMemoryRefusalParksTheProviderForAPause() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let clock = Clock()
+        let engine = FakeEngine(loadFailure: .insufficientMemory(availableMb: 90, requiredMb: 700))
+        let provider = recoveringProvider(
+            engine: engine, location: MutableLocation(path: temp.appendingPathComponent("model"), prepared: true),
+            temp: temp, foreground: true, clock: clock)
+        #expect(await provider.isAvailable())
+        _ = try? await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(await provider.isAvailable() == false)
+        #expect(engine.discards == 0)  // memory is not a stale cache
+        clock.advance(ParakeetTranscriptionProvider.memoryRetryPauseMs)
+        #expect(await provider.isAvailable())
+    }
+
+    /// The segment holds a use lease from before its load to after its last range, so a soft
+    /// release cannot drop the model in between.
+    @Test func theModelIsLeasedForTheWholeSegment() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(responses: [#"{"response":"part one"}"#, #"{"response":"part two"}"#])
+        _ = try await makeProvider(engine: engine, temp: temp)
+            .transcribe(pcmChunks: chunks(tone(ms: 70_000)), sampleRateHz: sampleRate)
+        #expect(engine.leasesTaken == 1)
+        #expect(engine.leasesReturned == 1)
+    }
+
+    /// A call that never comes back is abandoned at its deadline — the caller is not held
+    /// hostage by it — and the engine is interrupted.
+    @Test func aRangeThatNeverAnswersIsAbandonedAtItsDeadline() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine(hangs: true)
+        defer { engine.openGate() }
+        let provider = ParakeetTranscriptionProvider(
+            spec: defaultSpec,
+            location: FakeLocation(path: temp.appendingPathComponent("model")),
+            engine: engine, temporaryDirectory: temp, boostQuietAudio: { false },
+            rangeDeadlineMs: { _ in 50 })
+        let started = Date()
+        do {
+            _ = try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+            Issue.record("expected a failure")
+        } catch TranscriptionError.transcriptionFailed(let message, _) {
+            #expect(message.contains("no answer from the engine"))
+        }
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(engine.interrupts >= 1)
+    }
+
+    /// A scratch-file write failure is the phone's trouble, not the recording's: it must classify
+    /// as a (retried) local engine failure, never as unreadable audio (given up on for good).
+    @Test func aScratchWriteFailureIsRetriedNotGivenUpOn() {
+        #expect(
+            TranscriptionFailureKind.classify(ParakeetTranscriptionProvider.scratchWriteFailed)
+                == .localEngineFailed)
+        #expect(TranscriptionFailureKind.localEngineFailed.isWorthRevisiting)
+    }
+
+    /// An UNprepared model whose cold load fails gets one discard-and-rebuild per process in the
+    /// foreground (a re-import meeting the old cache) — and only one.
+    @Test func anUnpreparedModelGetsOneRebuildAttemptPerProcess() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let clock = Clock()
+        let engine = FakeEngine(loadFailure: .modelLoadFailed("dead entry"), failingLoads: 1)
+        let location = MutableLocation(path: temp.appendingPathComponent("model"), prepared: false)
+        let provider = recoveringProvider(
+            engine: engine, location: location, temp: temp, foreground: true, clock: clock)
+        let result = try await provider.transcribe(
+            pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(result.text == "hello there")
+        #expect(engine.discards == 1)
+        #expect(location.prepared)
+
+        // A second failure in the same process is held, not rebuilt again.
+        let second = FakeEngine(loadFailure: .modelLoadFailed("dead entry"))
+        let again = recoveringProvider(
+            engine: second, location: MutableLocation(path: temp.appendingPathComponent("model"), prepared: false),
+            temp: temp, foreground: true, clock: clock)
+        _ = try? await again.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        _ = try? await again.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        #expect(second.discards == 1)
+        #expect(second.loadAttempts == 2)
+    }
+
+    /// The idle sweep uses the SOFT release: it must not interrupt a segment still running.
+    @Test func theIdleSweepLetsGoSoftly() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine()
+        let clock = Clock()
+        let provider = recoveringProvider(
+            engine: engine, location: MutableLocation(path: temp.appendingPathComponent("model"), prepared: true),
+            temp: temp, foreground: true, clock: clock)
+        _ = try await provider.transcribe(pcmChunks: chunks(tone(ms: 800)), sampleRateHz: sampleRate)
+        clock.advance(60_000)
+        await provider.releaseModelIfIdle(nowMs: clock.now, idleTimeoutMs: 30_000)
+        #expect(engine.idleReleases == 1)
+        #expect(engine.releases == 0)
+        #expect(engine.interrupts == 0)
     }
 
     /// Cactus has no compiled cache: a load failure is held, never "recovered".

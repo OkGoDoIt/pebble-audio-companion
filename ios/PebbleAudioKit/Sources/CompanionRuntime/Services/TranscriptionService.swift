@@ -242,6 +242,10 @@ public actor TranscriptionService {
     public func releaseModel(_ reason: String) async {
         await modelLifecycle?.releaseModel(reason: reason)
     }
+    /// The soft release (see `LocalTranscriptionLifecycle.releaseModelWhenIdle`).
+    public func releaseModelWhenIdle(_ reason: String) async {
+        await modelLifecycle?.releaseModelWhenIdle(reason: reason)
+    }
 
 
     public func releaseModelIfIdle(idleTimeoutMs: Int64) async {
