@@ -185,13 +185,13 @@ private struct StubProvider: TranscriptionProvider {
 private let sampleRate = 16_000
 
 /// A loud 440 Hz tone — comfortably over the RMS/peak voice gate.
-private func tone(ms: Int) -> Data {
+private func tone(ms: Int, amplitude: Double = 8_000) -> Data {
     var samples = [Int16]()
     let count = sampleRate * ms / 1_000
     samples.reserveCapacity(count)
     for index in 0..<count {
         let phase = Double(index) * 2 * Double.pi * 440 / Double(sampleRate)
-        samples.append(Int16(8_000 * sin(phase)))
+        samples.append(Int16(amplitude * sin(phase)))
     }
     return samples.withUnsafeBufferPointer { Data(buffer: $0) }
 }
@@ -360,8 +360,9 @@ private func makeProvider(
         #expect(engine.loads.first?.hasSuffix("#parakeet-tdt-0.6b-v3-int8:v1.10") == true)
         let segment = try #require(result.segments.first)
         #expect(segment.text == "good morning")
-        // 3 s of silence minus the 450 ms preroll, plus the native 0.5 s offset.
-        #expect(segment.startMs > 2_500)
+        // The whole segment is one chunk starting at zero (no interior gate), so the native
+        // 0.5 s offset is the segment offset.
+        #expect(segment.startMs == 500)
         #expect(result.words.first?.startMs == segment.startMs)
         // The staged WAV is cleaned up.
         #expect(FileManager.default.fileExists(atPath: engine.transcribedWavs[0]) == false)
@@ -407,6 +408,38 @@ private func makeProvider(
             }
             #expect(message.contains("tensor blew up"))
         }
+    }
+
+    /// Quiet interior audio is transcribed too: the interior voice gate dropped 17% of the words
+    /// the cloud heard in the user's recordings (whole quiet speakers). Only a chunk boundary
+    /// looks at loudness now, and it moves to the quietest point before the cap.
+    @Test func quietSpeechInsideASegmentIsHandedToTheEngine() async throws {
+        let temp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let engine = FakeEngine()
+        // Loud, then 10 s at RMS ~19 (where the cloud-heard words the old gate dropped sat;
+        // its thresholds were RMS 45 / peak 240), then loud.
+        let quiet = tone(ms: 10_000, amplitude: 27)
+        #expect(ParakeetPcm.isVoiced(quiet.prefix(3_200)) == false)
+        let audio = tone(ms: 2_000) + quiet + tone(ms: 2_000)
+        _ = try await makeProvider(engine: engine, temp: temp)
+            .transcribe(pcmChunks: chunks(audio), sampleRateHz: sampleRate)
+        #expect(engine.transcribedWavs.count == 1)
+    }
+
+    @Test func aChunkBoundaryMovesToTheQuietestPointBeforeTheCap() {
+        let rate = sampleRate
+        let windowBytes = ParakeetPcm.msToBytes(ParakeetPcm.analysisWindowMs, sampleRateHz: rate)
+        // 50 s of loud windows with one quiet window at 42.0 s.
+        var levels = Array(repeating: WindowLevel(rms: 500, peak: 2_000), count: 500)
+        levels[420] = WindowLevel(rms: 3, peak: 10)
+        let byteCount = 500 * windowBytes
+        let chunks = ParakeetPcm.chunks(levels: levels, byteCount: byteCount, sampleRateHz: rate)
+        #expect(chunks.count == 2)
+        let cutMs = chunks[0].endMs(sampleRateHz: rate)
+        #expect(cutMs == 42_050)  // the middle of window 420
+        #expect(chunks[1].startByte == chunks[0].endByte)
+        #expect(chunks[1].endByte == byteCount)
     }
 
     @Test func longAudioIsSplitIntoBoundedNativeCalls() async throws {

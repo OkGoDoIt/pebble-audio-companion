@@ -22,6 +22,37 @@ struct PcmSpeechRange: Equatable, Sendable {
     }
 }
 
+/// One analysis window's loudness.
+struct WindowLevel: Equatable, Sendable {
+    var rms: Double
+    var peak: Int
+}
+
+/// When a window counts as voiced. Fixed thresholds (`minRms`/`minPeak`), optionally raised to a
+/// multiple of the segment's own noise floor (`floorFactor` times the `floorPercentile` window
+/// RMS), so a noisy room does not pass as speech while a quiet one keeps its quiet voices.
+struct VoiceGate: Equatable, Sendable {
+    var minRms: Double
+    var minPeak: Int
+    var floorFactor: Double = 0
+    var floorPercentile: Double = 0.2
+
+    /// The thresholds this gate uses on `levels` (the floor term resolved).
+    func resolved(for levels: [WindowLevel]) -> VoiceGate {
+        guard floorFactor > 0, !levels.isEmpty else { return self }
+        let sorted = levels.map(\.rms).sorted()
+        let floor = sorted[min(sorted.count - 1, Int(Double(sorted.count) * floorPercentile))]
+        return VoiceGate(minRms: max(minRms, floor * floorFactor), minPeak: minPeak)
+    }
+
+    func isVoiced(_ level: WindowLevel) -> Bool {
+        level.rms >= minRms || level.peak >= minPeak
+    }
+
+    static let production = VoiceGate(
+        minRms: ParakeetPcm.minVoiceRms, minPeak: ParakeetPcm.minVoicePeak)
+}
+
 /// Pure PCM helpers — the RMS/peak voice test and range arithmetic, hermetically testable.
 enum ParakeetPcm {
     static let bytesPerSample = 2
@@ -32,6 +63,8 @@ enum ParakeetPcm {
     static let speechPostrollMs = 700
     static let mergeSpeechGapMs = 1_500
     static let maxTranscribeChunkMs = 45_000
+    /// How far back from the 45 s cap a chunk boundary may move to land in the quietest window.
+    static let boundarySearchMs = 5_000
     static let minVoiceRms = 45.0
     static let minVoicePeak = 240
 
@@ -41,10 +74,10 @@ enum ParakeetPcm {
         align(sampleRateHz * bytesPerSample * ms / 1_000)
     }
 
-    /// RMS/peak gate over one window of s16le mono audio.
-    static func isVoiced(_ bytes: Data) -> Bool {
+    /// RMS and peak of one window of s16le mono audio.
+    static func level(_ bytes: Data) -> WindowLevel {
         let sampleBytes = align(bytes.count)
-        guard sampleBytes > 0 else { return false }
+        guard sampleBytes > 0 else { return WindowLevel(rms: 0, peak: 0) }
         var sumSquares = 0.0
         var peak = 0
         bytes.withUnsafeBytes { raw in
@@ -59,40 +92,123 @@ enum ParakeetPcm {
                 index += bytesPerSample
             }
         }
-        let rms = (sumSquares / Double(sampleBytes / bytesPerSample)).squareRoot()
-        return rms >= minVoiceRms || peak >= minVoicePeak
+        return WindowLevel(
+            rms: (sumSquares / Double(sampleBytes / bytesPerSample)).squareRoot(), peak: peak)
     }
 
-    /// Speech ranges over `byteCount` bytes of raw PCM, read window-by-window through `read`
-    /// (offset, length) so a multi-hour segment is never resident.
+    /// RMS/peak gate over one window of s16le mono audio, at the production thresholds.
+    static func isVoiced(_ bytes: Data) -> Bool {
+        VoiceGate.production.isVoiced(level(bytes))
+    }
+
+    /// The level of every analysis window over `byteCount` bytes of raw PCM, read window by
+    /// window through `read` (offset, length) so a multi-hour segment is never resident — only
+    /// these numbers are (16 bytes per 100 ms).
+    static func windowLevels(
+        byteCount: Int,
+        sampleRateHz: Int,
+        read: (_ offset: Int, _ length: Int) throws -> Data
+    ) rethrows -> [WindowLevel] {
+        let rawEnd = align(byteCount)
+        let windowBytes = max(msToBytes(analysisWindowMs, sampleRateHz: sampleRateHz), bytesPerSample)
+        var levels: [WindowLevel] = []
+        levels.reserveCapacity(rawEnd / windowBytes + 1)
+        var offset = 0
+        while offset < rawEnd {
+            let window = try read(offset, min(windowBytes, rawEnd - offset))
+            if window.isEmpty { break }
+            levels.append(level(window))
+            offset += window.count
+        }
+        return levels
+    }
+
+    /// The WHOLE of `byteCount` bytes of raw PCM, in chunks no longer than `maxTranscribeChunkMs`,
+    /// each boundary placed in the quietest analysis window of the `boundarySearchMs` before the
+    /// cap — so a word is not cut in two by the arithmetic of a fixed 45 s split.
+    ///
+    /// This replaced the interior voice gate (`speechRanges`) as what the engine is handed. The
+    /// gate was measured on 2026-09-29 against 258 of the user's cloud-transcribed segments
+    /// (390,047 words with timings, 60 hours of audio): at its thresholds (RMS 45 / peak 240 per
+    /// 100 ms) it left out 17.3% of the words the cloud heard — whole quiet speakers, up to every
+    /// word of a segment — to save 29% of the engine's time. The words it dropped sat at RMS ~19
+    /// (p90 30). Every lower threshold that stopped losing speech (RMS 14: 0.01% missed) also
+    /// stopped saving anything (99% of the audio handed over), because the watch's noise floor is
+    /// that low: there is essentially no interior silence worth skipping. A segment with nothing
+    /// in it is still skipped whole, before the engine is ever touched, by
+    /// `TranscriptionProcessor.provablySilent`.
+    static func chunks(levels: [WindowLevel], byteCount: Int, sampleRateHz: Int) -> [PcmSpeechRange] {
+        let rawEnd = align(byteCount)
+        guard rawEnd >= minAudioBytes else { return [] }
+        let windowBytes = max(msToBytes(analysisWindowMs, sampleRateHz: sampleRateHz), bytesPerSample)
+        let maxBytes = msToBytes(maxTranscribeChunkMs, sampleRateHz: sampleRateHz)
+        let searchBytes = min(msToBytes(boundarySearchMs, sampleRateHz: sampleRateHz), maxBytes / 2)
+        guard maxBytes > windowBytes else {
+            return [PcmSpeechRange(startByte: 0, endByte: rawEnd)]
+        }
+        var ranges: [PcmSpeechRange] = []
+        var start = 0
+        while rawEnd - start > maxBytes {
+            let hardEnd = start + maxBytes
+            // Windows lying wholly inside [hardEnd - searchBytes, hardEnd).
+            let firstWindow = (hardEnd - searchBytes + windowBytes - 1) / windowBytes
+            let lastWindow = hardEnd / windowBytes - 1
+            var cut = hardEnd
+            if firstWindow <= lastWindow, lastWindow < levels.count {
+                var quietest = lastWindow
+                for index in firstWindow...lastWindow where levels[index].rms < levels[quietest].rms {
+                    quietest = index
+                }
+                cut = align(quietest * windowBytes + windowBytes / 2)
+            }
+            if cut <= start { cut = hardEnd }
+            ranges.append(PcmSpeechRange(startByte: start, endByte: cut))
+            start = cut
+        }
+        ranges.append(PcmSpeechRange(startByte: start, endByte: rawEnd))
+        return ranges
+    }
+
+    /// Speech ranges over `byteCount` bytes of raw PCM at the production gate.
     static func speechRanges(
         byteCount: Int,
         sampleRateHz: Int,
         read: (_ offset: Int, _ length: Int) throws -> Data
     ) rethrows -> [PcmSpeechRange] {
+        let levels = try windowLevels(byteCount: byteCount, sampleRateHz: sampleRateHz, read: read)
+        return speechRanges(
+            levels: levels, gate: .production, byteCount: byteCount, sampleRateHz: sampleRateHz)
+    }
+
+    /// Speech ranges from precomputed window levels: a window the gate calls voiced opens (or
+    /// extends) a range padded by `speechPrerollMs`/`speechPostrollMs`; ranges closer than
+    /// `mergeSpeechGapMs` merge; shorter than `minSpeechRangeMs` are dropped; longer than
+    /// `maxTranscribeChunkMs` are split.
+    static func speechRanges(
+        levels: [WindowLevel], gate: VoiceGate, byteCount: Int, sampleRateHz: Int
+    ) -> [PcmSpeechRange] {
         let rawEnd = align(byteCount)
         guard rawEnd >= minAudioBytes else { return [] }
         let windowBytes = max(msToBytes(analysisWindowMs, sampleRateHz: sampleRateHz), bytesPerSample)
         let prerollBytes = msToBytes(speechPrerollMs, sampleRateHz: sampleRateHz)
         let postrollBytes = msToBytes(speechPostrollMs, sampleRateHz: sampleRateHz)
         let minSpeechBytes = msToBytes(minSpeechRangeMs, sampleRateHz: sampleRateHz)
+        let threshold = gate.resolved(for: levels)
 
         var ranges: [PcmSpeechRange] = []
         var speechStart: Int?
         var speechEnd = 0
-        var offset = 0
-        while offset < rawEnd {
-            let window = try read(offset, min(windowBytes, rawEnd - offset))
-            if window.isEmpty { break }
-            let windowEnd = offset + align(window.count)
-            if isVoiced(window) {
+        for (index, level) in levels.enumerated() {
+            let offset = index * windowBytes
+            guard offset < rawEnd else { break }
+            let windowEnd = min(offset + windowBytes, rawEnd)
+            if threshold.isVoiced(level) {
                 if speechStart == nil { speechStart = align(max(offset - prerollBytes, 0)) }
                 speechEnd = align(min(windowEnd + postrollBytes, rawEnd))
             } else if let start = speechStart, offset >= speechEnd {
                 append(&ranges, start, speechEnd, minSpeechBytes)
                 speechStart = nil
             }
-            offset += window.count
         }
         if let start = speechStart { append(&ranges, start, speechEnd, minSpeechBytes) }
         return splitLong(merge(ranges, sampleRateHz: sampleRateHz), sampleRateHz: sampleRateHz)
@@ -380,17 +496,15 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
 
         let source = try FileHandle(forReadingFrom: raw)
         defer { try? source.close() }
-        var ranges = try ParakeetPcm.speechRanges(byteCount: pcmBytes, sampleRateHz: sampleRateHz) {
+        // All of it, in chunks cut at quiet points — see `ParakeetPcm.chunks` for why there is no
+        // interior voice gate any more.
+        let levels = try ParakeetPcm.windowLevels(byteCount: pcmBytes, sampleRateHz: sampleRateHz) {
             offset, length in
             try source.seek(toOffset: UInt64(offset))
             return try source.read(upToCount: length) ?? Data()
         }
-        if ranges.isEmpty {
-            ranges = ParakeetPcm.splitLong(
-                [PcmSpeechRange(startByte: 0, endByte: ParakeetPcm.align(pcmBytes))],
-                sampleRateHz: sampleRateHz
-            )
-        }
+        let ranges = ParakeetPcm.chunks(
+            levels: levels, byteCount: pcmBytes, sampleRateHz: sampleRateHz)
 
         return try await withTaskCancellationHandler {
             try await run(
