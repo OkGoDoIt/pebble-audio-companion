@@ -9,13 +9,13 @@ import Foundation
 /// `pebble-flac-*.flac` encodes; nothing would ever have removed them, and iOS only purges `tmp/`
 /// when it is under storage pressure.
 ///
-/// Only the transient, single-call names are touched (`cactus_stt-` PCM/WAV staging from
-/// `ParakeetTranscriptionProvider`, `pebble-flac-` from `PcmFlac`), and only when older than
-/// `minimumAgeMs` — at launch nothing in this process is transcribing yet, and the age is a
-/// second guard against ever deleting a file still in use. Model-download archives are the
-/// store's business and are left alone.
+/// Only transient names are touched — `cactus_stt-` PCM/WAV staging from
+/// `ParakeetTranscriptionProvider`, `pebble-flac-` from `PcmFlac`, and `cactus_download_` model
+/// archives from `ParakeetModelStore` (up to 1.2 GB; the download is a foreground session, so one
+/// cannot be in flight in a process that is just starting) — and only when older than
+/// `minimumAgeMs`, a second guard against ever deleting a file still in use.
 public enum ScratchFileSweep {
-    public static let prefixes = ["cactus_stt-", "pebble-flac-"]
+    public static let prefixes = ["cactus_stt-", "pebble-flac-", "cactus_download_"]
     public static let minimumAgeMs: Int64 = 10 * 60_000
 
     public struct Result: Equatable, Sendable {

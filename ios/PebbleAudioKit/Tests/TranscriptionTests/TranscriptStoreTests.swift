@@ -164,13 +164,13 @@ import Testing
         try make("cactus_stt-B.wav", bytes: 500, modified: old)
         try make("pebble-flac-C.flac", bytes: 250, modified: old)
         try make("cactus_stt-fresh.raw", bytes: 10, modified: Date())  // may still be in use
-        try make("cactus_download_x.zip", bytes: 10, modified: old)  // the store's, not ours
+        try make("cactus_download_x.zip", bytes: 10, modified: old)  // a killed download's archive
         try make("pebble-audio-companion.log", bytes: 10, modified: old)
 
         let result = ScratchFileSweep.run(in: dir)
 
-        #expect(result == ScratchFileSweep.Result(files: 3, bytes: 1_750))
+        #expect(result == ScratchFileSweep.Result(files: 4, bytes: 1_760))
         let left = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
-        #expect(left == ["cactus_download_x.zip", "cactus_stt-fresh.raw", "pebble-audio-companion.log"])
+        #expect(left == ["cactus_stt-fresh.raw", "pebble-audio-companion.log"])
     }
 }
