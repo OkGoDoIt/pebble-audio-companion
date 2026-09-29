@@ -171,11 +171,23 @@ final class FakeSegmentSink: SegmentSink, @unchecked Sendable {
         lock.withLock { _flushes += 1 }
     }
 
-    func openSegment(start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?) async throws {
+    /// What `openSegment` answers: nil ("nothing stored for this stream") unless a test sets
+    /// what a real store would say for a resumed one.
+    private var _continuation: StreamContinuation?
+    var continuation: StreamContinuation? {
+        get { lock.withLock { _continuation } }
+        set { lock.withLock { _continuation = newValue } }
+    }
+
+    @discardableResult
+    func openSegment(
+        start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?
+    ) async throws -> StreamContinuation? {
         scheduler.noteEvent()
-        lock.withLock {
+        return lock.withLock {
             _events.append(.open(start))
             _open = true
+            return _continuation
         }
     }
 

@@ -146,9 +146,10 @@ public actor SegmentStore: SegmentSink {
 
     // --- SegmentSink --------------------------------------------------------------------------
 
+    @discardableResult
     public func openSegment(
         start: StreamStart, receivedAtMs: Int64, provenance: SegmentProvenance?
-    ) throws {
+    ) throws -> StreamContinuation? {
         let resume = (start.flags & ProtocolConstants.streamStartFlagResume) != 0
         if resume, let open = current, open.meta.streamId == start.streamId {
             if canContinue(open.meta, start: start, provenance: provenance) {
@@ -156,7 +157,7 @@ public actor SegmentStore: SegmentSink {
                 // close (a receiver-side reattach after a transport blip). Keep appending to the
                 // open segment; superseding it here would make reattachment impossible, because
                 // only Interrupted segments are continuation candidates.
-                return
+                return storedExtent(ofStream: start.streamId)
             }
             log(
                 "audio-companion: RESUME for open stream \(start.streamId) cannot continue in "
@@ -166,8 +167,53 @@ public actor SegmentStore: SegmentSink {
         try closeSegmentInternal(.from(.superseded))
         if try tryContinueInterruptedSegment(
             start: start, receivedAtMs: receivedAtMs, provenance: provenance
-        ) { return }
-        try openSegmentInternal(start: start, receivedAtMs: receivedAtMs, provenance: provenance)
+        ) { return storedExtent(ofStream: start.streamId) }
+        // A RESUME that could not continue a segment still continues the STREAM: the watch's
+        // sequence numbers carry on from audio that is already stored in an earlier segment, and
+        // its rewind re-sends the tail of it. Say where that audio ends, so the receiver can hold
+        // the reconnect to account; and give the new segment the same dedupe floor a rotation
+        // successor gets, so the re-sent tail is never stored twice.
+        let prior = resume ? storedExtent(ofStream: start.streamId) : nil
+        try openSegmentInternal(
+            start: start, receivedAtMs: receivedAtMs, provenance: provenance,
+            dedupeFloorSequence: prior.map { $0.nextSequence &- 1 })
+        return prior
+    }
+
+    /// Where this stream's stored audio ends: one past its highest stored sequence, and every
+    /// gap already recorded beyond that. Nil when the store holds no frame of it.
+    ///
+    /// Stream-wide rather than per segment on purpose. The segment a RESUME reattaches can be an
+    /// empty rotation successor whose predecessor holds the last frame; and a reattach that
+    /// failed still continues the same sequence space. One lookup over the in-memory index, once
+    /// per RESUME.
+    private func storedExtent(ofStream streamId: UInt32) -> StreamContinuation? {
+        var metas = ensureIndex().values.filter { $0.streamId == streamId }
+        if let open = current, open.meta.streamId == streamId {
+            // The live meta, not the last flushed copy: its counters move on every append.
+            metas.removeAll { $0.segmentId == open.meta.segmentId }
+            metas.append(open.meta)
+        }
+        var holder: SegmentMeta?
+        for meta in metas where meta.lastSequence != nil && meta.lastSampleIndexExclusive != nil {
+            if let best = holder?.lastSequence, best >= meta.lastSequence! { continue }
+            holder = meta
+        }
+        guard let holder, let last = holder.lastSequence, last < UInt32.max,
+            let nextSampleIndex = holder.lastSampleIndexExclusive
+        else { return nil }
+        let next = last + 1
+        let recorded = metas.flatMap(\.gaps)
+            .filter { $0.missingFrameCount > 0 && $0.endExclusive > UInt64(next) }
+            .sorted { $0.firstMissingSequence < $1.firstMissingSequence }
+            .map {
+                StreamContinuation.RecordedRange(
+                    firstSequence: $0.firstMissingSequence, frameCount: $0.missingFrameCount,
+                    firstSampleIndex: $0.firstMissingSampleIndex)
+            }
+        return StreamContinuation(
+            nextSequence: next, nextSampleIndex: nextSampleIndex, recordedRanges: recorded,
+            continuesSameSegment: current?.meta.segmentId == holder.segmentId)
     }
 
     private func tryContinueInterruptedSegment(

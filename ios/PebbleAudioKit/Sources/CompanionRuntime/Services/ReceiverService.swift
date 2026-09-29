@@ -39,13 +39,17 @@ final class LossObservingSink: SegmentSink, @unchecked Sendable {
         self.onSegmentClosed = onSegmentClosed
     }
 
+    @discardableResult
     func openSegment(
         start: StreamStart, receivedAtMs: Int64, provenance: DurableSegmentProvenance?
-    ) async throws {
-        try await downstream.openSegment(
+    ) async throws -> StreamContinuation? {
+        // LOAD-BEARING return, like `flush` below: answering nil here would tell the session a
+        // resumed stream has nothing stored, and reopen the unrecorded hole at every reconnect.
+        let continuation = try await downstream.openSegment(
             start: start, receivedAtMs: receivedAtMs, provenance: provenance
         )
         if let id = await openSegmentId() { await onSegmentOpened(id) }
+        return continuation
     }
 
     func appendFrames(streamId: UInt32, frames: [SegmentFrame]) async throws -> [SegmentFrame] {
