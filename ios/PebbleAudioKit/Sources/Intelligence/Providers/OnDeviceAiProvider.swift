@@ -201,19 +201,21 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         let instructions = buildInstructions(request.prompt.systemPrompt)
         let outputTokens =
             maxOutputTokens ?? OnDeviceTemplateBudget.outputTokens(forTemplateId: request.prompt.id)
-        let userContent: String
+        let fitted: AiInputPolicy.Fitted
         if let shape {
             // A structured shape does its own chunking and filtering, so it is handed the
             // conversation whole. Truncating one is how a loop that closes in the last ten
             // minutes of a recording comes back looking open. It never sends this body to the
-            // model in one piece, so the window budget below does not apply to it.
-            userContent = AiTranscriptFormatting.buildUserContent(
-                request, maxInputChars: shape.maxInputChars)
+            // model in one piece, so the window budget below does not apply to it — but its own
+            // ceiling can still cut, and a cut is reported like any other.
+            fitted = try AiInputPolicy.fit(
+                request, maxInputChars: shape.maxInputChars, modelName: "on-device AI")
         } else {
-            userContent = try await fitProseInput(
+            fitted = try await fitProseInput(
                 request, model: activeModel, instructions: instructions,
                 outputTokens: outputTokens)
         }
+        let userContent = fitted.content
         let text: String
         do {
             if let shape {
@@ -246,7 +248,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         guard !trimmed.isEmpty else {
             throw AiError.providerFailed("On-device AI returned an empty completion")
         }
-        return AiProviderResult(text: trimmed, modelUsed: activeModel.id)
+        return AiProviderResult(
+            text: trimmed, modelUsed: activeModel.id, inputTruncated: fitted.truncated)
     }
 
     // MARK: - Sizing one prose request
@@ -266,16 +269,20 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
     ///
     ///  • the fixed costs alone leave less room than `minimumInputChars`, so whatever we sent
     ///    would be a note about the first two minutes of a recording; and
-    ///  • the template `readsWholeConversation` (Extended summary) and the conversation does not
-    ///    fit — a "full account" of the first 3% of a four-hour day, written confidently and
-    ///    with citations, is the most convincing wrong thing this app could produce.
+    ///  • the template needs its whole input (`AiInputPolicy.requiresWholeInput` — Extended
+    ///    summary, the daily recap, Ask and both halves of its sweep) and the input does not
+    ///    fit. A "full account" of the first 3% of a four-hour day, written confidently and
+    ///    with citations, is the most convincing wrong thing this app could produce; a day's
+    ///    recap of its first hour, saved as covering 51 recordings, was the same lie on Today
+    ///    (2026-09-22, 09-23).
     ///
     /// Both say so in the message, because "this recording is longer than the on-device model
     /// can hold, use cloud AI" is actionable and "On-device AI generation failed" is not.
+    /// Anything else that has to be cut is cut, and the result says it was (`truncated`).
     private func fitProseInput(
         _ request: AiRunRequest, model: OnDeviceLanguageModel, instructions: String,
         outputTokens: Int
-    ) async throws -> String {
+    ) async throws -> AiInputPolicy.Fitted {
         let window = await model.contextWindowTokens()
         let budget = OnDeviceContextBudget.forRequest(
             outputTokens: outputTokens,
@@ -296,7 +303,8 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         // string concatenation over transcript text the caller already holds in memory — no
         // decode, no read, no second pass over the database.
         let full = AiTranscriptFormatting.buildUserContent(request, maxInputChars: Int.max)
-        guard full.count > estimatedCeiling else { return full }
+        let whole = AiInputPolicy.Fitted(content: full, truncated: false, fullChars: full.count)
+        guard full.count > estimatedCeiling else { return whole }
 
         // The estimate says it does not fit. Before believing that, ask the model — a real count
         // of the instructions (once) and of the body (once) is two cheap calls, and the answer
@@ -314,7 +322,7 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
                 if let pinned = maxInputChars, full.count > pinned {
                     ceiling = pinned
                 } else {
-                    return full
+                    return whole
                 }
             } else {
                 // Proportional, with the framework's own margin kept back, and never below what
@@ -325,15 +333,18 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
                 ceiling = min(maxInputChars ?? measured, max(measured, estimatedCeiling))
             }
         }
-        guard full.count > ceiling else { return full }
-        guard !OnDeviceTemplateBudget.readsWholeConversation(templateId: request.prompt.id) else {
+        guard full.count > ceiling else { return whole }
+        guard !AiInputPolicy.requiresWholeInput(templateId: request.prompt.id) else {
             throw AiError.providerFailed(
                 "This recording is \(Self.tooLongSentence)"
                     + " It would fit about \(ceiling) of its \(full.count) characters,"
                     + " and \"\(request.prompt.title)\" has to read all of it."
             )
         }
-        return AiTranscriptFormatting.buildUserContent(request, maxInputChars: ceiling)
+        return AiInputPolicy.Fitted(
+            content: AiTranscriptFormatting.buildUserContent(request, maxInputChars: ceiling),
+            truncated: true,
+            fullChars: full.count)
     }
 
     /// "4,096" — the way the window has always been written in these messages. Spelled out

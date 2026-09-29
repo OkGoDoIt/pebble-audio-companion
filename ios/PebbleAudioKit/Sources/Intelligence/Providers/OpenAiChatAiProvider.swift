@@ -74,8 +74,13 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
         let ceiling =
             requestedModel.map { AiModels.byId($0).contextTokens * AskBudget.charsPerToken }
             ?? maxInputChars()
-        let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: ceiling)
+        // The last-resort backstop, and a refusal for the templates that must read everything
+        // (`AiInputPolicy`). The planners size Ask and the recap below this, so reaching it means
+        // a plan was wrong — and an answer that claims the whole range from part of it must not
+        // be the way that is discovered.
+        let fitted = try AiInputPolicy.fit(
+            request, maxInputChars: ceiling, modelName: requestedModel ?? model())
+        let userContent = fitted.content
         let instructions = buildInstructions(request.prompt.systemPrompt)
 
         // A caller may name a stronger model and more thinking for one specific job. Follow-up
@@ -130,7 +135,8 @@ public final class OpenAiChatAiProvider: AiProvider, @unchecked Sendable {
             text: text,
             modelUsed: parsed.model ?? requestedModel ?? model(),
             inputTokens: parsed.usage?.inputTokens,
-            outputTokens: parsed.usage?.outputTokens
+            outputTokens: parsed.usage?.outputTokens,
+            inputTruncated: fitted.truncated
         )
     }
 

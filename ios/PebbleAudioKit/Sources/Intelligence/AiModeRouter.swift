@@ -256,7 +256,11 @@ public final class AiModeRouter: @unchecked Sendable {
             providerId: provider.id,
             modelUsed: providerResult.modelUsed,
             inputTokens: providerResult.inputTokens,
-            outputTokens: providerResult.outputTokens
+            outputTokens: providerResult.outputTokens,
+            inputTruncated: providerResult.inputTruncated,
+            // `suppressed` is set exactly when this provider is standing in for a primary that
+            // failed — the one fact a caller needs to tell provisional work from finished work.
+            viaFallback: suppressed != nil
         )
     }
 

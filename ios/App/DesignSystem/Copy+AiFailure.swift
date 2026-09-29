@@ -63,6 +63,14 @@ extension Copy {
             "On-device AI declined to work on this recording. Cloud AI has different rules."
         static let modelBusy = "On-device AI is busy. Try again in a moment."
 
+        // ── Either cloud model ───────────────────────────────────────────────
+        /// A whole-input request — a day's recap, an Ask over a range — larger than the cloud
+        /// model's window. Refused rather than answered from a slice (`AiInputPolicy`), and the
+        /// sentence says what the reader can change: the model, or how much they ask about.
+        static let tooLongForModel =
+            "This is more than the selected cloud model can read in one go. Ask about a shorter "
+            + "stretch, or choose a model with a larger window in Transcription & AI."
+
         // ── Neither ──────────────────────────────────────────────────────────
         static let emptyAnswer = "The model answered with nothing. Try again."
         static let unknown = "Something went wrong. Detailed Logs in Diagnostics has the detail."
@@ -97,6 +105,7 @@ extension AiFailureKind {
         case .modelUnavailable: return Copy.AiFailure.modelUnavailable
         case .modelBusy: return Copy.AiFailure.modelBusy
         case .tooLongForDevice: return Copy.AiFailure.tooLongForDevice
+        case .tooLongForModel: return Copy.AiFailure.tooLongForModel
         case .contentRefused: return Copy.AiFailure.contentRefused
         case .emptyAnswer: return Copy.AiFailure.emptyAnswer
         // Apple Private Cloud Compute's two — see `Copy+ApplePrivateCloud.swift`.

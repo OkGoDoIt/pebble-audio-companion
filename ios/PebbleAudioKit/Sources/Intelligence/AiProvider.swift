@@ -123,15 +123,21 @@ public struct AiProviderResult: Sendable, Equatable {
     public let modelUsed: String?
     public let inputTokens: Int?
     public let outputTokens: Int?
+    /// True when the provider CUT the input to fit its window, so the answer was drawn from
+    /// part of what the caller sent. Never true for a template in
+    /// `AiInputPolicy.wholeInputTemplateIds` — those are refused rather than cut.
+    public let inputTruncated: Bool
 
     public init(
         text: String, modelUsed: String? = nil,
-        inputTokens: Int? = nil, outputTokens: Int? = nil
+        inputTokens: Int? = nil, outputTokens: Int? = nil,
+        inputTruncated: Bool = false
     ) {
         self.text = text
         self.modelUsed = modelUsed
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.inputTruncated = inputTruncated
     }
 }
 
@@ -142,10 +148,21 @@ public struct RoutedAiResult: Sendable, Equatable {
     public let modelUsed: String?
     public let inputTokens: Int?
     public let outputTokens: Int?
+    /// The provider cut the input (see `AiProviderResult.inputTruncated`).
+    public let inputTruncated: Bool
+    /// True when a First mode's FALLBACK produced this, not the provider the mode prefers.
+    ///
+    /// Together with `inputTruncated` this is what makes a result provisional: a fallback that
+    /// read only part of a conversation wrote something the preferred provider will write
+    /// properly once it is back, so a caller must not finalize or settle it. A truncated
+    /// result from the PRIMARY (Local only on a long conversation) is the best there will ever
+    /// be and may be kept — see `isProvisional`.
+    public let viaFallback: Bool
 
     public init(
         text: String, modeUsed: AiProcessingMode, providerId: String,
-        modelUsed: String?, inputTokens: Int?, outputTokens: Int?
+        modelUsed: String?, inputTokens: Int?, outputTokens: Int?,
+        inputTruncated: Bool = false, viaFallback: Bool = false
     ) {
         self.text = text
         self.modeUsed = modeUsed
@@ -153,7 +170,13 @@ public struct RoutedAiResult: Sendable, Equatable {
         self.modelUsed = modelUsed
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.inputTruncated = inputTruncated
+        self.viaFallback = viaFallback
     }
+
+    /// A fallback read part of the input: keep it on screen if there is nothing better, but
+    /// never mark the work done — the preferred provider redoes it later.
+    public var isProvisional: Bool { inputTruncated && viaFallback }
 }
 
 public enum AiError: Error, Sendable {

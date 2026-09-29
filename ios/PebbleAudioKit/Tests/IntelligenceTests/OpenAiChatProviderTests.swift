@@ -297,9 +297,12 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
             maxInputChars: { 500 }
         )
 
+        // A gist template: meeting notes summarise what they were given. (The KMP case used the
+        // daily summary, which is now REFUSED when it does not fit — see the test below and
+        // `AiInputPolicy`.)
         let bigRequest = AiRunRequest(
             requestId: "ai-2",
-            prompt: AiPromptTemplates.dailySummary,
+            prompt: AiPromptTemplates.meetingNotes,
             transcripts: [
                 TranscriptExcerpt(
                     segmentId: "seg-1", text: String(repeating: "word ", count: 1_000))
@@ -308,6 +311,37 @@ private func bodyText(_ request: HttpTransportRequest?) -> String {
         let result = try await provider.run(bigRequest)
 
         #expect(result.text == "ok")
+        #expect(result.inputTruncated)
         #expect(bodyText(transport.last).contains("transcript truncated for length"))
+    }
+
+    /// The daily recap is saved as covering every recording of the day, so a cut one is a
+    /// complete-looking recap of the morning. It is refused, and nothing is sent.
+    @Test func anOversizedDailySummaryIsRefusedNotTruncated() async throws {
+        let transport = RecordingTransport { _ in
+            HttpTransportResponse(
+                status: 200, text: #"{"output_text": "ok", "model": "gpt-5.6-luna"}"#)
+        }
+        let provider = OpenAiChatAiProvider(
+            transport: transport,
+            apiKey: { "test-key" },
+            remoteConsent: { true },
+            maxInputChars: { 500 }
+        )
+        let bigRequest = AiRunRequest(
+            requestId: "ai-3",
+            prompt: AiPromptTemplates.dailySummary,
+            transcripts: [
+                TranscriptExcerpt(
+                    segmentId: "seg-1", text: String(repeating: "word ", count: 1_000))
+            ]
+        )
+        do {
+            _ = try await provider.run(bigRequest)
+            Issue.record("expected a refusal")
+        } catch {
+            #expect(AiFailure.classify(error).kind == .tooLongForModel)
+        }
+        #expect(transport.requests.isEmpty)
     }
 }

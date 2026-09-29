@@ -244,12 +244,15 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         // Sized like the on-device path — the answer, the safety margin and the instructions
         // come out of the same window — but against this model's window, which is eight times
         // the on-device one. This model cannot count tokens for us, so the estimate is what
-        // there is; it is pessimistic, and truncation marks the cut.
+        // there is; it is pessimistic. A template that must read everything is REFUSED when it
+        // does not fit rather than cut (`AiInputPolicy`): a day's recap or an Ask answer drawn
+        // from the first third of its input, presented as the whole, is worse than no answer.
         let budget = OnDeviceContextBudget.forRequest(
             outputTokens: outputTokens, systemPromptChars: instructions.count,
             groundingChars: 0, windowTokens: window)
-        let userContent = AiTranscriptFormatting.buildUserContent(
-            request, maxInputChars: budget.inputChars)
+        let fitted = try AiInputPolicy.fit(
+            request, maxInputChars: budget.inputChars, modelName: Self.name)
+        let userContent = fitted.content
 
         // A shape this model has a guided-generation form for is held to it, in one call over
         // the whole conversation — what OpenAI is asked for with a JSON schema. A structured
@@ -282,7 +285,8 @@ public final class ApplePrivateCloudAiProvider: AiProvider, AiInputWindowReporti
         guard !trimmed.isEmpty else {
             throw AiError.providerFailed("\(Self.name) returned an \(AiFailure.Marker.emptyAnswer)")
         }
-        return AiProviderResult(text: trimmed, modelUsed: model.id)
+        return AiProviderResult(
+            text: trimmed, modelUsed: model.id, inputTruncated: fitted.truncated)
     }
 
     // MARK: - Saying what actually happened

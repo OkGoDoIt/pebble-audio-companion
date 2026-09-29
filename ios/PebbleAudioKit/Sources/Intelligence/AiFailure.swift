@@ -63,6 +63,11 @@ public enum AiFailureKind: String, Sendable, Equatable, CaseIterable {
     /// case an Extended summary of a long recording lands in, and it is a fact about the
     /// recording's length rather than a fault.
     case tooLongForDevice
+    /// A CLOUD model's window cannot hold a request whose template must read all of it — a
+    /// day's recap or an Ask over a range on Apple Private Cloud Compute (`AiInputPolicy`). Its
+    /// own case because `tooLongForDevice`'s sentence sends a person to cloud AI, which is what
+    /// they are already using.
+    case tooLongForModel
     /// The model's own content filter declined this material.
     case contentRefused
     /// The provider answered, with nothing in it.
@@ -147,6 +152,9 @@ public struct AiFailure: Sendable, Equatable {
         /// Also `ApplePrivateCloudAiProvider`'s. Not a superstring of `contentRefused`, and
         /// checked before it, so the two cannot be confused.
         public static let cloudContentRefused = "declined to work on this request"
+        /// Either cloud provider's refusal of a whole-input template that does not fit. Owned
+        /// by `AiInputPolicy`, which writes it.
+        public static let tooLongForModel = AiInputPolicy.tooLongForModelMarker
     }
 
     // MARK: - Classification
@@ -199,11 +207,13 @@ public struct AiFailure: Sendable, Equatable {
         return .unknown
     }
 
-    /// `ApplePrivateCloudAiProvider`'s literals.
+    /// `ApplePrivateCloudAiProvider`'s literals, and the cloud providers' shared refusal of a
+    /// request too long to read whole.
     private static func cloudKind(in message: String) -> AiFailureKind? {
         let text = message.lowercased()
         if text.contains(Marker.usageLimit.lowercased()) { return .usageLimit }
         if text.contains(Marker.cloudContentRefused.lowercased()) { return .cloudContentRefused }
+        if text.contains(Marker.tooLongForModel.lowercased()) { return .tooLongForModel }
         return nil
     }
 
