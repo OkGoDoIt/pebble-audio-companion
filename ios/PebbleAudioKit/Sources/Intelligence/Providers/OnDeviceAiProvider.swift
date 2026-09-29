@@ -277,8 +277,35 @@ public final class OnDeviceAiProvider: AiProvider, AiInputWindowReporting, @unch
         guard !trimmed.isEmpty else {
             throw AiError.providerFailed("On-device AI returned an empty completion")
         }
+        // An answer that filled its whole output budget stopped where the budget ran out, not
+        // where the answer ended: the framework returns it without saying so. It was kept as
+        // finished — a summary cut mid-sentence, a recap missing its evening. OpenAI's cut has
+        // been refused since `CloudOutputBudget`; this is the same rule for the phone. (Not for
+        // a structured shape, which is many small calls assembled into JSON.)
+        if shape == nil,
+            await Self.filledItsBudget(trimmed, cap: outputTokens, model: activeModel)
+        {
+            throw AiError.providerFailed(
+                "On-device AI \(AiFailure.Marker.outputLimit) for \(request.prompt.id)")
+        }
         return AiProviderResult(
             text: trimmed, modelUsed: activeModel.id, inputTruncated: fitted.truncated)
+    }
+
+    /// Whether `text` used the whole output budget, i.e. was cut off. The model's own count
+    /// when it can give one; otherwise a conservative guess — long enough to be at the cap at
+    /// three characters a token AND ending mid-sentence — so a finished answer is not refused.
+    static func filledItsBudget(
+        _ text: String, cap: Int, model: OnDeviceLanguageModel
+    ) async -> Bool {
+        // A token is at least a character, so a reply shorter than the cap in characters cannot
+        // have filled it — and the ordinary answer costs no count at all.
+        guard cap > 0, text.count >= cap else { return false }
+        if let used = await model.tokenCount(for: text) {
+            return used >= cap - 2
+        }
+        let endsASentence = text.last.map { ".!?\"”')]".contains($0) } ?? false
+        return text.count >= cap * AskBudget.charsPerToken && !endsASentence
     }
 
     // MARK: - Sizing one prose request

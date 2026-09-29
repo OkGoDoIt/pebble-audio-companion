@@ -73,6 +73,15 @@ extension Copy {
 
         // ── Neither ──────────────────────────────────────────────────────────
         static let emptyAnswer = "The model answered with nothing. Try again."
+        /// The answer ran into the length the model may write and stopped mid-way. It was not
+        /// kept, because a note that stops mid-sentence is not a shorter note.
+        static let outputLimit =
+            "The answer ran longer than the model may write and was cut off, so it wasn't kept. "
+            + "Trying again usually works."
+        /// The cloud model's own refusal, or its filter stopping an answer partway.
+        static let answerRefused =
+            "The cloud model declined to answer this. Nothing here is yours to fix; on-device AI "
+            + "may still manage it."
         static let unknown = "Something went wrong. Detailed Logs in Diagnostics has the detail."
 
         // ── The fallback clause ──────────────────────────────────────────────
@@ -108,6 +117,8 @@ extension AiFailureKind {
         case .tooLongForModel: return Copy.AiFailure.tooLongForModel
         case .contentRefused: return Copy.AiFailure.contentRefused
         case .emptyAnswer: return Copy.AiFailure.emptyAnswer
+        case .outputLimit: return Copy.AiFailure.outputLimit
+        case .answerRefused: return Copy.AiFailure.answerRefused
         // Apple Private Cloud Compute's two — see `Copy+ApplePrivateCloud.swift`.
         case .usageLimit: return Copy.AiFailure.usageLimit
         case .cloudContentRefused: return Copy.AiFailure.cloudContentRefused

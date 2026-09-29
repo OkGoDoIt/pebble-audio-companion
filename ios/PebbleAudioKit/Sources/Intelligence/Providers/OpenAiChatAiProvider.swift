@@ -224,7 +224,30 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         // this app keeps removing. Retrying is cheap and usually works, so say so and let it.
         if parsed.status == "incomplete", parsed.incompleteDetails?.reason == "max_output_tokens" {
             throw AiError.providerFailed(
-                "OpenAI stopped at the output limit for \(request.prompt.id)")
+                "OpenAI \(AiFailure.Marker.outputLimit) for \(request.prompt.id)")
+        }
+        // The other ways a 200 is not an answer, each named rather than read as one. An
+        // `incomplete` for any other reason (its content filter) stopped partway; a refusal part
+        // came back instead of text; a `failed` response carries its own error. All three used
+        // to reach the caller as finished text — or, with nothing left after filtering the
+        // parts, as "an empty completion".
+        if parsed.status == "incomplete" {
+            throw AiError.providerFailed(
+                "OpenAI \(AiFailure.Marker.answerRefused) in full: it stopped partway ("
+                    + "\(parsed.incompleteDetails?.reason ?? "no reason given")) for "
+                    + request.prompt.id)
+        }
+        if let refusal = parsed.refusal() {
+            throw AiError.providerFailed(
+                "OpenAI \(AiFailure.Marker.answerRefused) \(request.prompt.id): "
+                    + String(refusal.prefix(160)))
+        }
+        if parsed.status == "failed" {
+            // A failure on OpenAI's side, reported inside a 200: the provider's trouble (a
+            // server-side 500 in the shared taxonomy), not the input's.
+            throw AiError.providerFailed(
+                "OpenAI reported the response failed (500): "
+                    + String((parsed.error?.message ?? "no detail").prefix(200)))
         }
         let text = (parsed.outputText() ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
@@ -569,16 +592,21 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         /// partial answer in it.
         var status: String?
         var incompleteDetails: IncompleteDetails?
+        var error: ResponseError?
 
         private enum CodingKeys: String, CodingKey {
             case model
             case outputTextField = "output_text"
             case incompleteDetails = "incomplete_details"
-            case output, usage, status
+            case output, usage, status, error
         }
 
         struct IncompleteDetails: Decodable {
             var reason: String?
+        }
+
+        struct ResponseError: Decodable {
+            var message: String?
         }
 
         struct OutputItem: Decodable {
@@ -589,6 +617,15 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         struct ContentPart: Decodable {
             var type: String?
             var text: String?
+            /// Set on a `refusal` part: the model's own words for why it would not answer.
+            var refusal: String?
+        }
+
+        /// The model's refusal, when it gave one instead of text.
+        func refusal() -> String? {
+            let parts: [ContentPart] = (output ?? []).flatMap { $0.content ?? [] }
+            guard let part = parts.first(where: { $0.type == "refusal" }) else { return nil }
+            return (part.refusal ?? part.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         struct Usage: Decodable {
