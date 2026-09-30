@@ -1,7 +1,10 @@
+import AppDB
 import AudioCodec
 import Foundation
 import SegmentStore
 import Testing
+
+@testable import Transcription
 
 #if canImport(SoundAnalysis)
     import AVFoundation
@@ -134,6 +137,91 @@ import Testing
         #else
             print("SoundAnalysis unavailable on this platform; nothing written")
         #endif
+    }
+
+    /// Scores the SHIPPED classifier (`AudioContentClassifier`) against hand labels.
+    ///
+    /// Runs when `PEBBLE_NONCONV_ROOTS` and `PEBBLE_NONCONV_LABELS` are set. The labels file is
+    /// a CSV kept outside the repo with columns `sid,seg,w,label,desc,split,stratum,pool,n`:
+    /// one row per labelled minute (`w` is the minute index into the segment's stored audio),
+    /// `label` one of C (conversation), L (a lull inside one), B (a brief real exchange),
+    /// N (no conversation) or U (can't tell), and `pool`/`n` the stratum's size and sample
+    /// count, so precision can be re-weighted to the library's real mix. Prints only.
+    @Test func scoreShippedClassifierAgainstLabels() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let rootsRaw = env["PEBBLE_NONCONV_ROOTS"], let labelsPath = env["PEBBLE_NONCONV_LABELS"]
+        else { return }
+        let roots = rootsRaw.split(separator: ":").map {
+            URL(fileURLWithPath: String($0), isDirectory: true)
+        }
+        let lines = try String(contentsOfFile: labelsPath, encoding: .utf8)
+            .split(whereSeparator: \.isNewline).dropFirst()
+
+        struct Tally {
+            var tp = 0.0, fp = 0.0, fn = 0.0, tn = 0.0
+            var wtp = 0.0, wfp = 0.0, wfn = 0.0
+            var fpLull = 0, fpTalk = 0
+            mutating func add(predicted: Bool, label: String, weight: Double) {
+                let positive = label == "N"
+                switch (predicted, positive) {
+                case (true, true): tp += 1; wtp += weight
+                case (true, false):
+                    fp += 1; wfp += weight
+                    if label == "L" { fpLull += 1 } else { fpTalk += 1 }
+                case (false, true): fn += 1; wfn += weight
+                case (false, false): tn += 1
+                }
+            }
+            var line: String {
+                String(
+                    format: "tp=%.0f fp=%.0f (talk %d, lull %d) fn=%.0f  prec=%.3f rec=%.3f | weighted prec=%.3f rec=%.3f",
+                    tp, fp, fpTalk, fpLull, fn, tp / max(tp + fp, 1), tp / max(tp + fn, 1),
+                    wtp / max(wtp + wfp, 1e-9), wtp / max(wtp + wfn, 1e-9))
+            }
+        }
+        var tallies: [String: Tally] = [:]
+        var byDecider: [String: [String: Int]] = [:]
+        var cache: [String: [SegmentAudioContentSpan]?] = [:]
+
+        for line in lines {
+            let f = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard f.count >= 9, let w = Int64(f[2]), let pool = Double(f[7]), let n = Double(f[8])
+            else { continue }
+            let (seg, label, desc, split) = (f[1], f[3], f[4], f[5])
+            guard label != "U" else { continue }
+            if cache[seg] == nil {
+                var result: [SegmentAudioContentSpan]? = nil
+                for root in roots.reversed() {
+                    let reader = SegmentFileReader(root: root)
+                    guard let meta = reader.readMeta(seg) else { continue }
+                    let transcripts = FileTranscriptStore(root: root, nowMs: { 0 })
+                    result = AudioContentClassifier.classify(
+                        meta: meta, turns: transcripts.loadSpeechTimings(seg))
+                    break
+                }
+                cache[seg] = .some(result)
+            }
+            guard case .some(.some(let spans)) = cache[seg] else {
+                print("  unclassifiable: \(seg) (label \(label))")
+                continue
+            }
+            let mid = w * 60_000 + 30_000
+            let verdict = spans.first { $0.mediaStartMs <= mid && mid < $0.mediaEndMs }
+            let predicted = verdict?.kind == AudioContentKind.noConversation
+            for key in [split, "all"] {
+                tallies[key, default: Tally()].add(predicted: predicted, label: label, weight: pool / n)
+            }
+            let decider = verdict.map { "\($0.kind.rawValue)/\($0.decidedBy)" } ?? "none"
+            byDecider[decider, default: [:]][label == "N" ? "N:\(desc)" : label, default: 0] += 1
+        }
+        print("shipped classifier v\(AudioContentMethod.version) against labels (N = positive):")
+        for key in ["dev", "test", "all"] {
+            if let tally = tallies[key] { print("  \(key):  \(tally.line)") }
+        }
+        print("by verdict → labels:")
+        for (decider, labels) in byDecider.sorted(by: { $0.key < $1.key }) {
+            print("  \(decider): \(labels.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        }
     }
 
     #if canImport(SoundAnalysis)
