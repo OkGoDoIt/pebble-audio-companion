@@ -142,4 +142,138 @@ public struct ConversationCutStore: Sendable {
                 arguments: StatementArguments(segmentIds))
         }
     }
+
+    /// Delete-cascade support for PART of a segment: a stretch of stored audio that has been
+    /// deleted keeps no cut and no decision inside it. Start-inclusive and end-exclusive, like
+    /// the piece it is called for (`ConversationMember.contains`): the cut AT the range's
+    /// start is the one that began the deleted conversation and goes with it; the cut at its
+    /// end begins the conversation that follows, and stays.
+    ///
+    /// Without this the rows are about words that no longer exist. A settled cut would be
+    /// dropped by the planner each time it plans the run (`droppingEmptyUnits`) and sit in the
+    /// table for ever; a person's split would do the same; a person's "these are one
+    /// conversation" would go on holding automatic cuts away from a place nothing is said.
+    public func forget(segmentId: String, mediaRangeMs: Range<Int64>) async throws {
+        guard !mediaRangeMs.isEmpty else { return }
+        try await db.writer.write { db in
+            for table in ["conversation_cuts", "conversation_cut_overrides"] {
+                try db.execute(
+                    sql: "DELETE FROM \(table) WHERE segmentId = ? AND mediaMs >= ? AND mediaMs < ?",
+                    arguments: [segmentId, mediaRangeMs.lowerBound, mediaRangeMs.upperBound])
+            }
+        }
+    }
+
+    /// Delete-cascade support: takes audio that has just been deleted out of the STORED
+    /// grouping. `pieces` are the pieces of the deleted conversation that were destroyed — a
+    /// whole segment each, or a range of one.
+    ///
+    /// The stored grouping is what the next rebuild adopts ids from
+    /// (`ConversationGrouper.adoptStableIds`): a conversation takes the id of whichever stored
+    /// conversation contained the moment it now starts at. A deleted range of a shared segment
+    /// is silence, and the planner gives silence to a neighbour. So, left in the table, the
+    /// deleted conversation hands its ID to that neighbour: when the deleted one opened its
+    /// run, the conversation after it comes back under the id whose title, notes and tags the
+    /// cascade has just destroyed, and its own are left under an id nothing answers to.
+    /// Deleting a conversation must not rename the one next to it.
+    ///
+    /// For each deleted range, then:
+    ///  - a stored piece lying inside it is removed (that is the deleted conversation's, and
+    ///    any fragment a rebuild made of it while the delete was in progress);
+    ///  - a stored piece that starts in it or at its end and runs on past it — the
+    ///    conversation that FOLLOWS — is extended back to the range's start;
+    ///  - a stored piece that runs into it from before is cut back to the range's start.
+    /// and a stored conversation left with no piece is removed. Whatever the planner then does
+    /// with the silence — leaves it with the conversation before, or lets the one after begin
+    /// earlier — each surviving conversation starts inside a stored piece of its own, and
+    /// keeps its id.
+    ///
+    /// Idempotent, and written against the ranges rather than against the deleted
+    /// conversation's rows, because the pipeline's own rebuild can run while a delete is in
+    /// progress and rewrite those rows; the cascade calls this again after such a window.
+    ///
+    /// Derived state, rewritten by the rebuild that follows; this only decides what that
+    /// rebuild sees as "before".
+    public func releaseStoredPlace(of pieces: [ConversationMember]) async throws {
+        guard !pieces.isEmpty else { return }
+        try await db.writer.write { db in
+            for piece in pieces {
+                if piece.isWhole {
+                    try db.execute(
+                        sql: "DELETE FROM conversation_segments WHERE segmentId = ?",
+                        arguments: [piece.segmentId])
+                    continue
+                }
+                let lower = piece.startMediaMs ?? 0
+                let upper = piece.endMediaMs ?? Int64.max
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT conversationId, ordinal, startMediaMs, endMediaMs
+                        FROM conversation_segments WHERE segmentId = ?
+                        """,
+                    arguments: [piece.segmentId])
+                for row in rows {
+                    let key: StatementArguments = [row["conversationId"] as String, row["ordinal"] as Int]
+                    let start = (row["startMediaMs"] as Int64?) ?? 0
+                    let end = (row["endMediaMs"] as Int64?) ?? Int64.max
+                    if start >= lower, end <= upper {
+                        try db.execute(
+                            sql: """
+                                DELETE FROM conversation_segments
+                                WHERE conversationId = ? AND ordinal = ?
+                                """,
+                            arguments: key)
+                    } else if start >= lower, start <= upper {
+                        try db.execute(
+                            sql: """
+                                UPDATE conversation_segments SET startMediaMs = ?
+                                WHERE conversationId = ? AND ordinal = ?
+                                """,
+                            arguments: [lower > 0 ? lower : nil] + key)
+                    } else if start < lower, end > lower, end <= upper {
+                        try db.execute(
+                            sql: """
+                                UPDATE conversation_segments SET endMediaMs = ?
+                                WHERE conversationId = ? AND ordinal = ?
+                                """,
+                            arguments: [lower] + key)
+                    }
+                }
+            }
+            try db.execute(
+                sql: """
+                    DELETE FROM conversations
+                    WHERE id NOT IN (SELECT conversationId FROM conversation_segments)
+                    """)
+        }
+    }
+}
+
+// MARK: - Range-delete support for the follow-up staging table
+
+extension FollowUpCandidateStore {
+    /// Delete-cascade support for PART of a segment: the candidates proposed from words that
+    /// were spoken in `mediaRangeMs` of `segmentId`. `deleteForSegment` would take the
+    /// neighbouring conversation's proposals with them — one segment routinely holds the end
+    /// of one conversation and the start of the next.
+    ///
+    /// A candidate with no position inside its segment cannot be placed, so it goes only when
+    /// it names the conversation being deleted.
+    public func deleteForRange(
+        segmentId: String, mediaRangeMs: Range<Int64>, conversationId: String?
+    ) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM follow_up_candidates
+                    WHERE segmentId = ?
+                        AND ((startMs IS NOT NULL AND startMs >= ? AND startMs < ?)
+                            OR (startMs IS NULL AND conversationId = ?))
+                    """,
+                arguments: [
+                    segmentId, mediaRangeMs.lowerBound, mediaRangeMs.upperBound, conversationId,
+                ])
+        }
+    }
 }
