@@ -14,8 +14,10 @@ import Foundation
 //  a. Cut at every pause between speech runs of `preferredGapMs` or more. The cut sits at the
 //     START of the run that follows the pause: the silence belongs to what came before.
 //  b. One left-to-right pass: a piece shorter than `minPieceMs` merges into its shorter
-//     neighbour (the earlier one on a tie) when the result is at most `mergeCapMs`; otherwise
-//     it stays as it is.
+//     neighbour (the earlier one on a tie) when the result is at most `mergeCapMs`; a piece
+//     shorter than `tinyPieceMs` merges whatever the result (a few minutes do not change what a
+//     long card is, and left alone they are a 3-minute card beside a 71-minute one — 09-22
+//     13:29 on the real backup). Otherwise it stays as it is.
 //
 // STABILITY under audio appended at the end (today, while recording). Step a never moves a cut:
 // a later pause only ADDS one. Step b can move one, in one place: whether the piece before the
@@ -32,18 +34,21 @@ public struct HistoryTalkCutRules: Equatable, Sendable {
     public var preferredGapMs: Int64 = 3 * 60_000
     /// A piece shorter than this merges into its shorter neighbour (within `mergeCapMs`).
     public var minPieceMs: Int64 = 10 * 60_000
-    /// A merge never makes a piece longer than this. Not a maximum piece length: nothing is
-    /// ever cut to fit it.
+    /// A merge never makes a piece longer than this — unless the piece merging is shorter than
+    /// `tinyPieceMs`. Not a maximum piece length: nothing is ever cut to fit it.
     public var mergeCapMs: Int64 = 60 * 60_000
+    /// A piece shorter than this merges into its shorter neighbour even past `mergeCapMs`.
+    public var tinyPieceMs: Int64 = 5 * 60_000
     public static let `default` = HistoryTalkCutRules()
 
     public init(
         preferredGapMs: Int64 = 3 * 60_000, minPieceMs: Int64 = 10 * 60_000,
-        mergeCapMs: Int64 = 60 * 60_000
+        mergeCapMs: Int64 = 60 * 60_000, tinyPieceMs: Int64 = 5 * 60_000
     ) {
         self.preferredGapMs = preferredGapMs
         self.minPieceMs = minPieceMs
         self.mergeCapMs = mergeCapMs
+        self.tinyPieceMs = tinyPieceMs
     }
 }
 
@@ -71,6 +76,15 @@ public enum HistoryTalkCutter {
             }
         }
         return merged
+    }
+
+    /// Whether a piece made of these step-a pieces (in order) is one step b could have made: at
+    /// most the merge cap, or longer only by pieces under `tinyPieceMs` merged past it — its
+    /// pieces of `tinyPieceMs` or more are then a single one or together within the cap.
+    public static func isReachableByMerging(_ stepPieces: [Int64], rules: HistoryTalkCutRules = .default) -> Bool {
+        guard stepPieces.reduce(0, +) > rules.mergeCapMs else { return true }
+        let substantial = stepPieces.filter { $0 >= rules.tinyPieceMs }
+        return substantial.count <= 1 || substantial.reduce(0, +) <= rules.mergeCapMs
     }
 
     /// Step a: the start of every run that follows a pause of `preferredGapMs` or more.
@@ -102,7 +116,9 @@ public enum HistoryTalkCutter {
             case (_?, nil): goLeft = true
             case (nil, _?), (nil, nil): goLeft = false
             }
-            guard let neighbour = goLeft ? left : right, length + neighbour <= rules.mergeCapMs else {
+            guard let neighbour = goLeft ? left : right,
+                length < rules.tinyPieceMs || length + neighbour <= rules.mergeCapMs
+            else {
                 index += 1
                 continue
             }

@@ -906,8 +906,16 @@ public enum HistoryDayBuilder {
         }
     }
 
-    /// A fallback card's snippet: the first turn inside it with at least four words, else the
-    /// longest turn in its first five minutes, else nil. Verbatim; `previews` is sorted by start.
+    /// A fallback card's snippet, verbatim (`previews` is sorted by start). Among the turns in
+    /// the card's first five minutes: the first that is long enough to say something (8 words or
+    /// more), else the longest; with no turn in those five minutes, the first turn of the card
+    /// with 4 words or more; else nil.
+    ///
+    /// Words are whitespace-separated, which is right for languages written with spaces. Text
+    /// with no whitespace at all (Chinese, Japanese, Thai; Korean usually has spaces) counts as
+    /// 8 words from 12 characters and as 4 words from 6 — simple, and enough to skip "嗯" and
+    /// "はい" without a tokenizer. The 4-word threshold alone picked "That sounds fine then." and
+    /// "I left it outside." on the real backup.
     static func snippet(in range: Range<Int64>, previews: [HistoryTurnPreview]) -> String? {
         var low = 0
         var high = previews.count
@@ -915,20 +923,36 @@ public enum HistoryDayBuilder {
             let mid = (low + high) / 2
             if previews[mid].startMs < range.lowerBound { low = mid + 1 } else { high = mid }
         }
+        func words(_ text: String) -> Int {
+            let parts = text.split(whereSeparator: \.isWhitespace)
+            guard parts.count == 1 else { return parts.count }
+            // One unbroken token: a spaceless script (or one long word).
+            let characters = parts[0].count
+            return characters >= 12 ? 8 : (characters >= 6 ? 4 : 1)
+        }
+        let earlyEnd = range.lowerBound + 5 * 60_000
         var longest: HistoryTurnPreview?
         var longestCount = 0
+        var fallback: HistoryTurnPreview?
         var index = low
         while index < previews.count, previews[index].startMs < range.upperBound {
             let preview = previews[index]
             let text = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.split(whereSeparator: \.isWhitespace).count >= 4 { return preview.text }
-            if preview.startMs < range.lowerBound + 5 * 60_000, text.count > longestCount {
-                longest = preview
-                longestCount = text.count
+            let count = words(text)
+            if preview.startMs < earlyEnd {
+                if count >= 8 { return preview.text }
+                if !text.isEmpty, text.count > longestCount {
+                    longest = preview
+                    longestCount = text.count
+                }
+            } else {
+                if let longest { return longest.text }
+                if count >= 4 { return preview.text }
             }
+            if fallback == nil, count >= 4 { fallback = preview }
             index += 1
         }
-        return longest?.text
+        return longest?.text ?? fallback?.text
     }
 
     /// The recorded causes of the loss in a range, largest share first, each once. `records` is

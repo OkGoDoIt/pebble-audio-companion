@@ -490,7 +490,7 @@ private extension HistoryDay {
         #expect(built.cards[0].endMs - built.cards[0].startMs >= min(119))
     }
 
-    @Test("a fallback card's snippet: the first turn of four words or more, else the longest early one")
+    @Test("a fallback card's snippet: an early turn of 8+ words, else the longest early one, else the first of 4+")
     func snippets() throws {
         var day = Day()
         day.record("a", at(9), at(10))
@@ -501,15 +501,32 @@ private extension HistoryDay {
             HistoryTurnPreview(startMs: at(9, 0, 5), text: "Okay."),
             HistoryTurnPreview(startMs: at(9, 1), text: "Yeah, sure."),
             HistoryTurnPreview(startMs: at(9, 2), text: "So the library on Monday then"),
+            HistoryTurnPreview(startMs: at(9, 3), text: "So the library on Monday then, at ten, okay?"),
             HistoryTurnPreview(startMs: at(9, 30), text: "Hmm"),
             HistoryTurnPreview(startMs: at(9, 31), text: "Right okay"),
-            HistoryTurnPreview(startMs: at(9, 40), text: "this one is late but long enough"),
+            HistoryTurnPreview(startMs: at(9, 40), text: "this one is late but long enough to use"),
         ]
-        let built = day.build()
-        #expect(built.cards.map(\.snippet) == ["So the library on Monday then", "this one is late but long enough"])
-        // Nothing of four words: the longest turn of the first five minutes.
-        day.turnPreviews.removeLast()
-        #expect(day.build().cards.last?.snippet == "Right okay")
+        var built = day.build()
+        // First card: the first early turn of 8+ words. Second: none of 8+ early, so the longest
+        // early turn — not the later long one.
+        #expect(built.cards.map(\.snippet) == ["So the library on Monday then, at ten, okay?", "Right okay"])
+        // No early 8-word turn in the first card either: the longest of its first five minutes.
+        day.turnPreviews.remove(at: 4)
+        #expect(day.build().cards.first?.snippet == "So the library on Monday then")
+        // No turn at all in the first five minutes: the first of 4+ words later in the card.
+        day.turnPreviews = [
+            HistoryTurnPreview(startMs: at(9, 10), text: "ok"),
+            HistoryTurnPreview(startMs: at(9, 11), text: "then we go there"),
+        ]
+        built = day.build()
+        #expect(built.cards.first?.snippet == "then we go there")
+        // A script written without spaces: 12 characters is long enough.
+        day.turnPreviews = [
+            HistoryTurnPreview(startMs: at(9, 0, 10), text: "はい"),
+            HistoryTurnPreview(startMs: at(9, 0, 20), text: "来週の月曜日に図書館へ行きます"),
+            HistoryTurnPreview(startMs: at(9, 0, 30), text: "That is a very long English sentence with many words"),
+        ]
+        #expect(day.build().cards.first?.snippet == "来週の月曜日に図書館へ行きます")
         // A chapter never gets one.
         day.chapters = [HistoryChapterInput(id: "ch", startMs: at(9), endMs: at(9, 20), title: "T")]
         #expect(day.build().cards.first?.snippet == nil)

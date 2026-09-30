@@ -168,11 +168,16 @@ extension HistoryDayBuilder {
             switch block.source {
             case .conversation:
                 if block.title != nil || block.summary != nil { fail("fallback card \(block.id) has a title or summary") }
-                // Longer than a merge can make it only when no real pause lies inside it.
+                // Longer than the merge cap only as one unbroken stretch of talk, plus pieces too
+                // small to stand alone.
                 if block.endMs - block.startMs > input.rules.talkCut.mergeCapMs {
-                    let runs = HistoryTalkCutter.mergedRuns(
-                        input.speechRuns.map { $0.startMs..<$0.endMs }, in: block.startMs..<block.endMs)
-                    if !HistoryTalkCutter.pauseCuts(stretch: block.startMs..<block.endMs, runs: runs, rules: input.rules.talkCut).isEmpty {
+                    let span = block.startMs..<block.endMs
+                    let runs = HistoryTalkCutter.mergedRuns(input.speechRuns.map { $0.startMs..<$0.endMs }, in: span)
+                    let bounds = [span.lowerBound]
+                        + HistoryTalkCutter.pauseCuts(stretch: span, runs: runs, rules: input.rules.talkCut)
+                        + [span.upperBound]
+                    let pieces = zip(bounds, bounds.dropFirst()).map { $0.1 - $0.0 }
+                    if !HistoryTalkCutter.isReachableByMerging(pieces, rules: input.rules.talkCut) {
                         fail("fallback card \(block.id) is longer than the merge cap across a real pause")
                     }
                 }

@@ -41,8 +41,11 @@ private func cuts(_ pairs: [(Double, Double)], stretch: Range<Int64>? = nil, rul
         #expect(cuts([(0, 30), (34, 38), (42, 60)]) == [34])
         // Tie between neighbours: the earlier one.
         #expect(cuts([(0, 20), (24, 28), (32, 56)]) == [32])
-        // Both neighbours too long to take it within the cap: it stays.
+        // Both neighbours too long to take it within the cap: a 5-10 minute piece stays...
         #expect(cuts([(0, 55), (59, 63), (67, 122)]) == [59, 67])
+        // ...but a piece under five minutes joins its shorter neighbour past the cap.
+        #expect(cuts([(0, 71), (75, 78)]) == [])
+        #expect(cuts([(0, 55), (58.5, 59.5), (62.5, 122)]) == [62.5])
         // A short piece at the start joins the one after it. A run of short pieces is taken in
         // order: 6+6 → 12 (long enough), then the third 6 joins that shorter neighbour.
         #expect(cuts([(0, 3), (7, 30)]) == [])
@@ -84,15 +87,18 @@ private func cuts(_ pairs: [(Double, Double)], stretch: Range<Int64>? = nil, rul
             let pieces = zip(bounds, bounds.dropFirst()).map { $0.1 - $0.0 }
             #expect(pieces.allSatisfy { $0 > 0 })
             #expect(pieces.reduce(0, +) == stretch.upperBound - stretch.lowerBound)
-            // A piece that could still have merged (short, with a shorter-or-equal neighbour that
-            // fits under the cap) does not exist, apart from what one pass leaves behind — so
-            // check only the weaker guarantee: no merge ever passed the cap.
+            // Every piece is whole step-a pieces, and past the cap only by tiny ones.
             let raw = HistoryTalkCutter.pauseCuts(stretch: stretch, runs: merged, rules: rules)
             let rawBounds = [stretch.lowerBound] + raw + [stretch.upperBound]
-            for (a, b) in zip(bounds, bounds.dropFirst()) where b - a > rules.mergeCapMs {
-                // Longer than the cap only if it was never merged: it is one step-a piece.
-                #expect(rawBounds.contains(a) && rawBounds.contains(b)
-                    && !raw.contains { $0 > a && $0 < b })
+            for (a, b) in zip(bounds, bounds.dropFirst()) {
+                let inside = rawBounds.filter { $0 >= a && $0 <= b }
+                #expect(inside.first == a && inside.last == b)
+                let stepPieces = zip(inside, inside.dropFirst()).map { $0.1 - $0.0 }
+                #expect(HistoryTalkCutter.isReachableByMerging(stepPieces, rules: rules))
+            }
+            // Nothing tiny is left beside a card it could have joined.
+            if pieces.count > 1 {
+                #expect(pieces.allSatisfy { $0 >= rules.tinyPieceMs })
             }
         }
     }
