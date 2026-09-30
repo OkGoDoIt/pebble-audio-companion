@@ -26,6 +26,8 @@ public actor DeleteCascade {
     /// so every existing construction keeps compiling; the app's composition root passes the real
     /// one. See `forgetBoundaryOverride`.
     private let boundaryOverrides: BoundaryOverrideStore?
+    /// The segment's audio-content spans, and any correction that was only about it.
+    private let audioContent: AudioContentService?
     private let log: RuntimeLog
 
     public init(
@@ -41,6 +43,7 @@ public actor DeleteCascade {
         donator: SpotlightDonator? = nil,
         lossEvaluator: LossEventEvaluator? = nil,
         boundaryOverrides: BoundaryOverrideStore? = nil,
+        audioContent: AudioContentService? = nil,
         log: RuntimeLog = .silent
     ) {
         self.store = store
@@ -55,6 +58,7 @@ public actor DeleteCascade {
         self.donator = donator
         self.lossEvaluator = lossEvaluator
         self.boundaryOverrides = boundaryOverrides
+        self.audioContent = audioContent
         self.log = log
     }
 
@@ -68,6 +72,8 @@ public actor DeleteCascade {
         if await store.openSegmentId == segmentId { return false }
 
         let conversationIds = await enrichment.conversationIds(containing: segmentId)
+        // Read before the delete: the classification cascade needs the segment's wall span.
+        let meta = await store.readMeta(segmentId)
 
         do { try await store.deleteSegment(segmentId) } catch {
             log.failure("segment delete", error)
@@ -78,6 +84,7 @@ public actor DeleteCascade {
         }
         await lossEvaluator?.forget(segmentId: segmentId)
         await forgetBoundaryOverride(segmentId)
+        if let meta { await audioContent?.forget(segment: meta) }
 
         // AI outputs whose source set was JUST this segment. An output that also cites surviving
         // segments stays: its remaining citations are still true.

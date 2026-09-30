@@ -15,6 +15,10 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     /// Age/size retention, paced by `RetentionService` — before `regroup` so the deletions are
     /// visible in the same pass that makes them.
     case retention
+    /// Label what newly transcribed audio holds (conversation, or none) — before `regroup`,
+    /// whose speech evidence and the AI stages behind it read the result. See
+    /// `AudioContentService`.
+    case classifyAudio
     /// Rebuild the conversation grouping. Cheap, local, AI-free — and its OWN stage, because
     /// the entire UI reads the grouped tables and must never wait on the AI layer to see them.
     case regroup
@@ -46,6 +50,9 @@ public struct PipelineSteps: Sendable {
     /// it every time and `RetentionService` decides whether anything actually runs. Returns true
     /// when it deleted something.
     public var enforceRetentionIfDue: @Sendable () async -> Bool
+    /// Classifies segments whose transcripts changed. Returns true when it wrote anything, so
+    /// a backfill comes straight back for the rest.
+    public var classifyAudio: @Sendable () async throws -> Bool
     /// Rebuilds the conversation grouping the whole UI reads. Returns whether its STRUCTURE
     /// changed — a conversation appeared, gained or lost a member, a member's transcription
     /// state moved, or a conversation went live or closed. The live conversation's extent
@@ -102,6 +109,7 @@ public struct PipelineSteps: Sendable {
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
         drainQueue: @escaping @Sendable () async throws -> Bool = { false },
         enforceRetentionIfDue: @escaping @Sendable () async -> Bool = { false },
+        classifyAudio: @escaping @Sendable () async throws -> Bool = { false },
         regroup: @escaping @Sendable () async throws -> Bool = { true },
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
@@ -128,6 +136,7 @@ public struct PipelineSteps: Sendable {
         self.enqueueClosedSegments = enqueueClosedSegments
         self.drainQueue = drainQueue
         self.enforceRetentionIfDue = enforceRetentionIfDue
+        self.classifyAudio = classifyAudio
         self.regroup = regroup
         self.enrich = enrich
         self.donate = donate
@@ -347,6 +356,13 @@ public struct PipelinePass: Sendable {
         if try await stage(.retention, fallback: false, steps.enforceRetentionIfDue) {
             processed = true
             await steps.onDiagnosticsDirty()
+        }
+
+        // 5b. What the newly transcribed audio holds. Cheap (turn timings, no model) and
+        //     O(changed); ahead of the regroup so the boundary evidence and every AI stage in
+        //     this pass read verdicts about the same transcripts they are about to use.
+        if try await stage(.classifyAudio, fallback: false, steps.classifyAudio) {
+            processed = true
         }
 
         // 6. Rebuild the conversation grouping — BEFORE the AI layer and never behind it.
