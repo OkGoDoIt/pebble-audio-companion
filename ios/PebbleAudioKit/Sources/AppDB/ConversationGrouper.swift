@@ -37,7 +37,7 @@ public struct GroupedConversation: Equatable, Sendable {
     public var startReason: ConversationStartReason?
     /// True while where this conversation starts or ends could still move: one of its two
     /// boundaries is a segmenter decision too recent to have been written down
-    /// (`ConversationRunPlanner.commitLagMs`), or it is the end of a run that is still growing.
+    /// (`ConversationRunPlanner.commitLagMs`), or it is the end of the run being recorded into.
     /// Work that should be done ONCE per conversation — a final title, follow-up extraction —
     /// waits for this to clear, exactly as it waits for a live conversation to close. Not
     /// persisted: it is a property of this grouping pass, and a grouping read back from the
@@ -298,10 +298,13 @@ public enum ConversationGrouper {
         var result: [GroupedConversation] = []
         var cutsToCommit: [ConversationCut: ConversationStartReason] = [:]
         for (index, run) in runs.enumerated() {
-            // Only the last run can still grow: a later run exists because something ended
-            // this one for good, and so does an explicit Stop.
+            // A run can still grow only while it is being recorded into: it is the last one and
+            // holds the open segment. With nothing open, what is there is all there will be —
+            // and treating a finished library's last conversation as still undecided would
+            // leave it without its final title until the next time the watch is worn.
             let isOpenEnded =
-                index == runs.count - 1 && !(run.members.last.map(endsWithUserStop) ?? false)
+                index == runs.count - 1 && openSegmentId != nil
+                && run.members.contains { $0.segmentId == openSegmentId }
             let planned = plannedRun(
                 run.members, reason: run.reason, evidence: evidence, policy: policy,
                 cutInputs: cutInputs, joinedSegments: joined, isOpenEnded: isOpenEnded,
@@ -360,6 +363,11 @@ public enum ConversationGrouper {
                 for media in (cutInputs.splits[id] ?? []).sorted() { hasher.combine(media) }
                 hasher.combine(2)
                 for media in (cutInputs.joins[id] ?? []).sorted() { hasher.combine(media) }
+            }
+            // Few, and a span can reach into a run from outside it: hash them all.
+            for span in cutInputs.joinSpans {
+                hasher.combine(span.from)
+                hasher.combine(span.to)
             }
             let value = hasher.finalize()
             if let hit = memo.lookup(value) { return hit }

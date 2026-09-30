@@ -233,7 +233,9 @@ struct ConversationPiecesServiceTests {
         #expect(try await tags.tags(forConversation: h.first).map(\.name).contains("football"))
         #expect(try await h.fixture.annotations.load(h.second) == nil)
         // Its search and Spotlight rows go with it, so a hit cannot open a missing conversation.
-        #expect(try h.found("penalties").isEmpty)
+        // The words are found under the survivor at once: its title was written about half of
+        // what it now holds, so the regroup withdrew it and re-donated the whole conversation.
+        #expect(try h.found("penalties") == [h.first])
         #expect(
             h.spotlight.removed.contains(
                 SpotlightDonation.uniqueIdentifier(kind: .conversation, entityId: h.second)))

@@ -606,7 +606,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
 
     /// Whether an annotation holds anything the MODEL wrote: a summary, tags, or a title the
     /// person did not type.
-    static func hasGeneratedContent(_ annotation: ConversationAnnotation) -> Bool {
+    public static func hasGeneratedContent(_ annotation: ConversationAnnotation) -> Bool {
         if let summary = annotation.summary, !summary.isBlank { return true }
         if !annotation.tags.isEmpty { return true }
         if annotation.titleEditedAtMs == nil, let title = annotation.title, !title.isBlank {
@@ -618,7 +618,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
     /// Takes back what the model wrote about other audio. The save with no tags is what also
     /// withdraws the adopted AI tags (`AnnotationStore.save` adopts in its own transaction); a
     /// title the person typed is theirs and stays, as a row holding nothing else.
-    private func withdraw(_ existing: ConversationAnnotation, sourceKey: String) async throws {
+    public func withdraw(_ existing: ConversationAnnotation, sourceKey: String) async throws {
         try await annotations.save(
             ConversationAnnotation(
                 conversationId: existing.conversationId,

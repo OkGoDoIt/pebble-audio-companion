@@ -313,7 +313,12 @@ public actor EnrichmentService {
             }
             return EnrichmentConversation(
                 conversationId: conversation.id,
-                isOpen: conversation.isLive,
+                // A conversation whose start or end can still move is treated like the live
+                // one: it may get a working title, but the work that is done once per
+                // conversation — the final title, follow-up extraction — waits until its
+                // boundaries are held (`GroupedConversation.isProvisional`). Without this a
+                // cut that moved would re-title and re-extract both neighbours each time.
+                isOpen: conversation.isLive || conversation.isProvisional,
                 members: parts.map(\.meta),
                 pieces: parts.map(\.piece)
             )
@@ -473,7 +478,44 @@ public actor EnrichmentService {
         cachedGrouping = rebuilt.conversations
         cachedBoundaryCandidates = rebuilt.candidates
         await reconcile(after: rebuilt)
+        if rebuilt.structureChanged { await withdrawStaleTitles(rebuilt.conversations) }
         return rebuilt
+    }
+
+    /// Takes back, at once, a finished title that was written about other audio.
+    ///
+    /// A conversation cut in two leaves its id — and so its title, summary and tags — on the
+    /// first part. The worker writes a new one, but three conversations a pass, newest first,
+    /// and not at all with AI off; until it gets there a ten-minute conversation would carry
+    /// the title of the ten hours it was cut from, which is exactly the wrong thing this change
+    /// exists to remove. An untitled conversation shows its time, which is true.
+    ///
+    /// Only FINISHED titles of conversations that are themselves finished: a live or still
+    /// provisional conversation's working title is meant to lag behind its growing pieces, and
+    /// the worker refreshes it on its own rule. A title the person typed always stays.
+    private func withdrawStaleTitles(_ conversations: [GroupedConversation]) async {
+        guard let stored = try? await annotations.all(), !stored.isEmpty else { return }
+        var withdrawn: [String] = []
+        for conversation in conversations where !conversation.isLive && !conversation.isProvisional {
+            guard let existing = stored[conversation.id], existing.isFinal,
+                existing.providerId != AudioContentPresentation.providerId,
+                EnrichmentWorker.hasGeneratedContent(existing)
+            else { continue }
+            let key = ConversationSourceKey.key(of: conversation.members)
+            guard !ConversationSourceKey.describes(stored: existing.sourceKey, current: key)
+            else { continue }
+            do {
+                try await worker.withdraw(existing, sourceKey: key)
+                withdrawn.append(conversation.id)
+            } catch {
+                log.failure("stale title withdrawal", error)
+            }
+        }
+        // The search row still holds the old title and the old, longer transcript.
+        if !withdrawn.isEmpty {
+            log.write("withdrew \(withdrawn.count) titles written about other audio")
+            await donate(conversationIds: withdrawn)
+        }
     }
 
     /// Whether the once-per-launch whole-library reconciliation has run (`ConversationReconciler
