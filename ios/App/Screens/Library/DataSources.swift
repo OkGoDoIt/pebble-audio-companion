@@ -615,8 +615,11 @@ struct AskLibraryDataSources {
     static var current: AskLibraryDataSources = .mocks()
 }
 
-// MARK: - Undo center (delete w/ 5 s undo snackbar, shown on Library)
+// MARK: - Undo center (the app's one snackbar: delete w/ 5 s undo, and short notices)
 
+/// Hosted once, by `RootView`, over whichever tab is showing. A conversation deleted from a
+/// screen that is being popped has nowhere else to put its Undo — it used to be hosted by the
+/// Library alone, so a delete made from Today offered no Undo at all.
 @MainActor
 @Observable
 final class UndoCenter {

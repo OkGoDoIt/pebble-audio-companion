@@ -4,17 +4,15 @@ import AppDB
 /// Library tab root (mockup 2.5): title + "All ⌄" filter menu, "Search or ask" field
 /// (focusing enters the Search state — mockup 2.7), scrolling tag chips with counts, and
 /// day-sectioned conversation rows. Registers the library stack's navigation destinations
-/// (conversation + note) and hosts the delete-undo snackbar.
+/// (conversation + note). The delete-undo snackbar is hosted app-wide by `RootView`.
 struct LibraryScreen: View {
     @Environment(AppRouter.self) private var router
     @State private var model = LibraryViewModel()
     @State private var searchModel = SearchViewModel()
     @State private var searchActive = false
     @State private var showAllTags = false
-    @State private var undo = UndoCenter.shared
 
     var body: some View {
-        @Bindable var undo = undo
         Group {
             if searchActive {
                 SearchStateView(
@@ -47,7 +45,6 @@ struct LibraryScreen: View {
                 EmptyView()
             }
         }
-        .snackbar(item: $undo.snackbar)
         .task { await model.start() }
         .onAppear {
             consumePendingSearch()
