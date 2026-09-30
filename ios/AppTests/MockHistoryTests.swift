@@ -74,4 +74,21 @@ struct MockHistoryTests {
         #expect(month.rows.last?.isCurrentWeek == true)
         #expect(month.tagCounts.first?.name == "apartment")
     }
+
+    @Test func topicResultsAreNewestFirstAndMatchTheDays() async {
+        let results = await MockHistory().tagResults(tag: "apartment")
+        #expect(!results.isEmpty)
+        let keys = results.map(\.dateKey)
+        #expect(keys == keys.sorted(by: >))
+        for pair in zip(results, results.dropFirst()) where pair.0.dateKey == pair.1.dateKey {
+            #expect(pair.0.startMs > pair.1.startMs)
+        }
+        #expect(results.contains { $0.title == "Site visit, then the budget review" })
+        #expect(await MockHistory().tagResults(tag: "no-such-topic").isEmpty)
+        #expect(await MockHistory(isEmptyArchive: true).tagResults(tag: "apartment").isEmpty)
+    }
+
+    @Test func aSourceThatDoesNotKnowTopicsAnswersNone() async {
+        #expect(await HistoryMomentTapTests.Plain().tagResults(tag: "apartment").isEmpty)
+    }
 }

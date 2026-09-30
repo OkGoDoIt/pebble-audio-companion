@@ -291,6 +291,7 @@ struct DayTimeline: View {
     var onOpenFollowUp: (HistoryFollowUpLine) -> Void = { _ in }
     var onOpenGap: (HistoryGap) -> Void = { _ in }
     var onOpenLive: () -> Void = {}
+    var onOpenTag: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -387,7 +388,8 @@ struct DayTimeline: View {
         switch item {
         case .chapter(let block):
             ChapterCard(
-                block: block, onOpen: { onOpenChapter(block) }, onOpenFollowUp: onOpenFollowUp)
+                block: block, onOpen: { onOpenChapter(block) }, onOpenFollowUp: onOpenFollowUp,
+                onOpenTag: onOpenTag)
         case .gap(let gap):
             if HistoryLabels.isPendingCard(gap) {
                 PendingChapterCard(gap: gap) { onOpenGap(gap) }

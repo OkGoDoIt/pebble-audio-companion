@@ -7,13 +7,20 @@ import SwiftUI
 struct WeekDayRow: View {
     let row: HistoryWeekRow
     var onOpen: () -> Void = {}
+    /// A topic pill's results (plan 5.7). Nil: the pills do nothing.
+    var onOpenTag: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        // A tap gesture, not a Button: the topic pills inside the row are a menu of their own,
+        // and a control inside a Button's label never receives its taps.
         if isOpenable {
-            Button(action: onOpen) { content }
-                .buttonStyle(.plain)
+            content
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onOpen)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default, onOpen)
                 .accessibilityHint(Copy.History.A11y.openDayHint)
         } else {
             content
@@ -53,9 +60,7 @@ struct WeekDayRow: View {
                     .padding(.top, 3)
             }
             if !row.tags.isEmpty {
-                FlowLayout(horizontalSpacing: 5, verticalSpacing: 5) {
-                    ForEach(row.tags.prefix(3), id: \.self) { TagChip(text: $0, tone: .topic) }
-                }
+                TagPillRow(topics: Array(row.tags.prefix(3)), onSelect: onOpenTag)
                 .padding(.top, 8)
             }
             if !row.followUps.isEmpty {

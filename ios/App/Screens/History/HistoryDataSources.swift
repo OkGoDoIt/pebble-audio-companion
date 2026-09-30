@@ -58,6 +58,30 @@ struct HistoryDayPage: Equatable, Sendable {
     }
 }
 
+/// One chapter (or conversation stretch) carrying a topic, for the topic's results screen
+/// (plan 5.7). Results come newest first; the screen groups them by day.
+struct HistoryTagResult: Equatable, Sendable, Identifiable {
+    var dateKey: String
+    var startMs: Int64
+    var endMs: Int64
+    var zoneID: String
+    var title: String
+    var summary: String?
+    var id: String { "\(dateKey)-\(startMs)" }
+
+    init(
+        dateKey: String, startMs: Int64, endMs: Int64, zoneID: String = TimeZone.current.identifier,
+        title: String, summary: String? = nil
+    ) {
+        self.dateKey = dateKey
+        self.startMs = startMs
+        self.endMs = endMs
+        self.zoneID = zoneID
+        self.title = title
+        self.summary = summary
+    }
+}
+
 @MainActor
 protocol HistoryDataSource: AnyObject {
     /// The first and last day, and which days hold recordings.
@@ -72,6 +96,14 @@ protocol HistoryDataSource: AnyObject {
     func prefetch(days: [String])
     /// False cancels every observation; true resubscribes and fetches once.
     func setVisible(_ visible: Bool)
+    /// The chapters carrying a topic, newest first (plan 5.7).
+    func tagResults(tag: String) async -> [HistoryTagResult]
+}
+
+extension HistoryDataSource {
+    /// Additive: a source that does not know topics yet answers with none, and the results
+    /// screen says so. The live source overrides this.
+    func tagResults(tag: String) async -> [HistoryTagResult] { [] }
 }
 
 // MARK: - The holder

@@ -21,6 +21,8 @@ struct ChapterCard: View {
     let block: HistoryChapterBlock
     var onOpen: () -> Void = {}
     var onOpenFollowUp: (HistoryFollowUpLine) -> Void = { _ in }
+    /// A topic pill's results (plan 5.7). Nil: the pills do nothing.
+    var onOpenTag: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -106,14 +108,8 @@ struct ChapterCard: View {
     private func footer(topics: [String], collapses: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if !topics.isEmpty || !block.people.isEmpty {
-                FlowLayout(
-                    horizontalSpacing: ChapterCardMetrics.pillSpacing,
-                    verticalSpacing: ChapterCardMetrics.pillSpacing
-                ) {
-                    ForEach(topics, id: \.self) { TagChip(text: $0, tone: .topic) }
-                    ForEach(block.people, id: \.self) { TagChip(text: $0, tone: .person) }
-                }
-                .padding(.top, ChapterCardMetrics.pillsTop)
+                TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
+                    .padding(.top, ChapterCardMetrics.pillsTop)
             }
             if !block.followUps.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {

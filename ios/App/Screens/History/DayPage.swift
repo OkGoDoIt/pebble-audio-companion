@@ -97,7 +97,7 @@ struct DayPage: View, Equatable {
                 day: complete ? page.day : DayReveal.prefix(page.day, revealed),
                 liveLine: page.liveLine, isComplete: complete,
                 onOpenChapter: actions.openChapter, onOpenFollowUp: actions.openFollowUp,
-                onOpenGap: actions.openGap, onOpenLive: actions.openLive)
+                onOpenGap: actions.openGap, onOpenLive: actions.openLive, onOpenTag: actions.openTag)
             if complete, let edge = page.day.trailingEdge {
                 TimelineEdgeLine(edge: edge, leading: false, zoneID: zoneID(of: page.day.items.last))
             }
@@ -151,6 +151,8 @@ struct HistoryActions {
     var openLive: () -> Void = {}
     /// The brief's footer: the Follow-ups tab, filtered to the period starting at this day.
     var openFollowUps: (String) -> Void = { _ in }
+    /// A topic's results (plan 5.7).
+    var openTag: (String) -> Void = { _ in }
 }
 
 /// Paging onto a day that has never been built costs its whole layout in the frame the page

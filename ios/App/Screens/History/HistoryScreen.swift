@@ -34,6 +34,8 @@ struct HistoryScreen: View {
     @State private var showsCalendar = false
     @State private var searchActive = false
     @State private var searchModel = SearchViewModel()
+    /// The topic whose results are pushed (plan 5.7).
+    @State private var openTag: HistoryTagSelection?
 
     var body: some View {
         ZStack {
@@ -47,10 +49,10 @@ struct HistoryScreen: View {
                 SearchStateView(
                     model: searchModel,
                     onCancel: { exitSearch() },
-                    onSelectTag: { _ in
-                        // TODO(history step 14): a tag opens the tag results list (plan 5.7),
-                        // which is not built yet; until then choosing one just closes search.
-                        exitSearch()
+                    onSelectTag: { tag in
+                        // The same list a topic pill opens (plan 5.7). Search stays open
+                        // underneath, so Back returns to the results the tag was chosen from.
+                        openTag = HistoryTagSelection(tag: tag)
                     }
                 )
                 .background(Tokens.ground)
@@ -63,6 +65,12 @@ struct HistoryScreen: View {
         .toolbar(searchActive ? .hidden : .automatic, for: .navigationBar)
         .toolbar { toolbar }
         .navigationDestination(for: Route.self) { route in destination(for: route) }
+        .navigationDestination(item: $openTag) { selection in
+            TagResultsScreen(
+                tag: selection.tag, source: source,
+                todayKey: model?.todayDateKey ?? MockHistory.todayKey,
+                openMoment: momentOpener)
+        }
         .onChange(of: router.pendingSearchQuery) { consumePendingSearch() }
         .task {
             #if DEBUG
@@ -182,6 +190,14 @@ struct HistoryScreen: View {
         }
     }
 
+    /// `openMoment`, or the real resolver.
+    private var momentOpener: (Int64) -> Void {
+        if let openMoment { return openMoment }
+        let router = self.router
+        let source = self.source
+        return { ms in Task { await Self.openMoment(ms, source: source, router: router) } }
+    }
+
     private func enterSearch() {
         searchActive = true
     }
@@ -288,10 +304,8 @@ struct HistoryScreen: View {
 
     private func makeServices(_ model: HistoryModel) -> HistoryPageServices {
         let router = self.router
-        let source = self.source
-        let openMoment = self.openMoment ?? { ms in
-            Task { await Self.openMoment(ms, source: source, router: router) }
-        }
+        let openMoment = momentOpener
+        let openTag = $openTag
         return HistoryPageServices(
             source: source,
             actions: HistoryActions(
@@ -300,7 +314,8 @@ struct HistoryScreen: View {
                 openGap: { gap in if gap.isOpenable { openMoment(gap.startMs) } },
                 openLive: { router.push(.live) },
                 // No period filter on the Follow-ups tab yet (plan 5.2 wants one).
-                openFollowUps: { _ in router.selectedTab = .followUps }),
+                openFollowUps: { _ in router.selectedTab = .followUps },
+                openTag: { tag in openTag.wrappedValue = HistoryTagSelection(tag: tag) }),
             adjust: { offset in
                 guard let target = model.page(offset: offset) else { return }
                 model.visiblePage = target
@@ -427,4 +442,10 @@ enum HistoryLaunch {
         return nil
         #endif
     }
+}
+
+/// A topic to show results for; `Identifiable` for `navigationDestination(item:)`.
+struct HistoryTagSelection: Hashable, Identifiable {
+    var tag: String
+    var id: String { tag }
 }

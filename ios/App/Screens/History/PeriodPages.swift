@@ -56,7 +56,9 @@ struct WeekPage: View, Equatable {
         if !rows.isEmpty {
             ListCard {
                 ForEach(rows) { row in
-                    WeekDayRow(row: row) { services.drillDown(.day, row.dateKey) }
+                    WeekDayRow(
+                        row: row, onOpen: { services.drillDown(.day, row.dateKey) },
+                        onOpenTag: services.actions.openTag)
                 }
             }
         }
@@ -107,15 +109,17 @@ struct MonthPage: View, Equatable {
             title: Copy.History.monthInBrief, brief: period.brief,
             followUpTotal: period.followUpTotal, followUpOpen: period.followUpOpen,
             tagCounts: period.tagCounts,
-            onFooterTap: { services.actions.openFollowUps(context.page.key) })
+            onFooterTap: { services.actions.openFollowUps(context.page.key) },
+            onTagTap: services.actions.openTag)
         .padding(.bottom, Tokens.blockGap)
         let rows = period.rows.filter { $0.firstDateKey <= context.todayKey }
         if !rows.isEmpty {
             ListCard {
                 ForEach(rows) { row in
-                    MonthWeekRow(row: row, todayKey: context.todayKey) {
-                        services.drillDown(.week, row.firstDateKey)
-                    }
+                    MonthWeekRow(
+                        row: row, todayKey: context.todayKey,
+                        onOpen: { services.drillDown(.week, row.firstDateKey) },
+                        onOpenTag: services.actions.openTag)
                 }
             }
         }
@@ -130,6 +134,7 @@ private struct PeriodBrief: View {
     let followUpOpen: Int
     var tagCounts: [HistoryTagCount] = []
     var onFooterTap: () -> Void
+    var onTagTap: ((String) -> Void)?
 
     var body: some View {
         BriefCard(
@@ -137,7 +142,8 @@ private struct PeriodBrief: View {
             footer: followUpTotal > 0
                 ? Copy.History.followUpCount(total: followUpTotal, open: followUpOpen) : nil,
             tagCounts: tagCounts,
-            onFooterTap: followUpTotal > 0 ? onFooterTap : nil)
+            onFooterTap: followUpTotal > 0 ? onFooterTap : nil,
+            onTagTap: onTagTap)
     }
 }
 

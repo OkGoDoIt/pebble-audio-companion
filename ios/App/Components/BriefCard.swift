@@ -20,6 +20,8 @@ struct BriefCard: View {
     var note: String?
     /// Opens the Follow-ups tab filtered to the period. Nil: the footer is plain text.
     var onFooterTap: (() -> Void)?
+    /// A month tag's results (plan 5.7). Nil: the pills do nothing.
+    var onTagTap: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -56,10 +58,8 @@ struct BriefCard: View {
                 }
 
                 if !tagCounts.isEmpty {
-                    FlowLayout(horizontalSpacing: 4, verticalSpacing: 6) {
-                        ForEach(tagCounts) { TagCountPill(tag: $0) }
-                    }
-                    .padding(.top, 8)
+                    TagCountRow(tags: tagCounts, onSelect: onTagTap)
+                        .padding(.top, 8)
                 }
 
                 if let footer {

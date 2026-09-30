@@ -209,6 +209,18 @@ extension Copy {
         }
         static let thisWeek = "This week"
 
+        // MARK: Tags (5.7)
+
+        /// The heading of a pill row's menu.
+        static let showDaysTagged = "Show days with"
+        /// Under a tag's title: "12 conversations on 7 days".
+        static func tagResultsCount(results: Int, days: Int) -> String {
+            let r = results == 1 ? "1 conversation" : "\(results) conversations"
+            let d = days == 1 ? "1 day" : "\(days) days"
+            return "\(r) on \(d)"
+        }
+        static let noTagResults = "Nothing carries this topic yet."
+
         // MARK: States (5.8)
 
         static let nothingRecordedYet = "Nothing recorded yet"
@@ -241,6 +253,14 @@ extension Copy {
             static func tagDays(_ name: String, days: Int) -> String {
                 "\(name), on \(days) day\(days == 1 ? "" : "s")"
             }
+            static func pillRow(topics: [String], people: [String]) -> String {
+                var parts: [String] = []
+                if !topics.isEmpty { parts.append(Self.topics(topics)) }
+                if !people.isEmpty { parts.append(Self.people(people)) }
+                return parts.joined(separator: ", ")
+            }
+            static let pillRowHint = "Opens a list of days with one of these topics"
+            static let pillRowHintOne = "Opens a list of days with this topic"
             static let titleHint = "Swipe up or down for the next or previous period"
             static let openWeekHint = "Opens this week"
             static let hourAxis = "Hour axis"
