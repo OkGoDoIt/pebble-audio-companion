@@ -400,6 +400,12 @@ protocol ConversationDataSource: AnyObject {
     func setSplit(atSegmentId segmentId: String, on: Bool) async throws
     /// Join this conversation onto the one before it, or clear that decision.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws
+
+    /// The conversation a wall-clock moment falls in, and where on its scrubber (History plan
+    /// 7.9): `focus` is a `.moment` at exactly `atWallMs`, so the transcript lands on the row
+    /// being said then and marks nothing. A moment between recordings opens the nearest one
+    /// (see `MomentResolver.segment`). Nil only when nothing was recorded near the time.
+    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget?
 }
 
 /// The state of one conversation's boundaries: why it starts where it does, whether it can be
@@ -609,8 +615,11 @@ struct AskLibraryDataSources {
     static var current: AskLibraryDataSources = .mocks()
 }
 
-// MARK: - Undo center (delete w/ 5 s undo snackbar, shown on Library)
+// MARK: - Undo center (the app's one snackbar: delete w/ 5 s undo, and short notices)
 
+/// Hosted once, by `RootView`, over whichever tab is showing. A conversation deleted from a
+/// screen that is being popped has nowhere else to put its Undo — it used to be hosted by the
+/// Library alone, so a delete made from Today offered no Undo at all.
 @MainActor
 @Observable
 final class UndoCenter {

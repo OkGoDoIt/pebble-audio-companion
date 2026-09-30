@@ -7,9 +7,19 @@ struct SnackbarItem: Equatable {
     let message: String
     var actionTitle: String? = nil
     var action: (() -> Void)? = nil
+    /// When it was posted. The five seconds run from here, not from whenever a view happened to
+    /// start showing it: the app-wide host moves with the selected tab, and restarting the
+    /// clock on every tab switch kept "Undo" on screen after the delete it offers to undo had
+    /// already been committed (`DeferredDeleteBuffer.windowMs` is also five seconds). Part of
+    /// equality, so posting the same message twice is two snackbars with two clocks.
+    let postedAt = Date()
+
+    /// How long a snackbar stays up.
+    static let lifetime: Duration = .seconds(5)
 
     static func == (lhs: SnackbarItem, rhs: SnackbarItem) -> Bool {
         lhs.message == rhs.message && lhs.actionTitle == rhs.actionTitle
+            && lhs.postedAt == rhs.postedAt
     }
 }
 
@@ -18,6 +28,9 @@ struct SnackbarItem: Equatable {
 extension View {
     /// Presents the dark snackbar (label bg, r12, message + tinted action) above the
     /// bottom edge; auto-dismisses after 5 seconds.
+    ///
+    /// For a screen's own snackbar. App-wide ones — undo, which may be posted from a screen that
+    /// is about to be popped — go through `UndoCenter.shared`, which `RootView` hosts.
     func snackbar(item: Binding<SnackbarItem?>) -> some View {
         modifier(SnackbarModifier(item: item))
     }
@@ -29,18 +42,32 @@ private struct SnackbarModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay(alignment: .bottom) {
-                if let current = item {
-                    SnackbarView(item: current) { item = nil }
-                        .padding(.horizontal, Tokens.screenMargin)
-                        .padding(.bottom, 8)
-                        .transition(Motion.transition(.move(edge: .bottom).combined(with: .opacity)))
-                        .task(id: current) {
-                            try? await Task.sleep(for: .seconds(5))
-                            if !Task.isCancelled, item == current { item = nil }
-                        }
-                }
+                SnackbarSlot(item: $item)
             }
-            .motionAware(.snappy(duration: 0.25), value: item)
+    }
+}
+
+/// The snackbar itself, with its transition and its clock, as a view that can be placed — the
+/// overlay above uses it, and so does the app-wide host in `RootView`, which has to sit in a
+/// `ZStack` rather than an overlay to land above the tab bar (see `NoteJobDock`).
+struct SnackbarSlot: View {
+    @Binding var item: SnackbarItem?
+
+    var body: some View {
+        Group {
+            if let current = item {
+                SnackbarView(item: current) { item = nil }
+                    .padding(.horizontal, Tokens.screenMargin)
+                    .padding(.bottom, 8)
+                    .transition(Motion.transition(.move(edge: .bottom).combined(with: .opacity)))
+                    .task(id: current) {
+                        let shown = Duration.seconds(Date().timeIntervalSince(current.postedAt))
+                        try? await Task.sleep(for: max(SnackbarItem.lifetime - shown, .zero))
+                        if !Task.isCancelled, item == current { item = nil }
+                    }
+            }
+        }
+        .motionAware(.snappy(duration: 0.25), value: item)
     }
 }
 
