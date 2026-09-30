@@ -2,7 +2,7 @@
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design round 4, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design round 6, nothing implemented.** Mockups are in `history-mockups/`.
 
 ## Why the Library fails on real data
 
@@ -44,11 +44,26 @@ the natural unit.
   line. Week and Month may run past the fold — keep the two-line summaries.
 - **Week rows show up to two follow-ups per day**, then "N more". Month rows show a follow-up
   count ("16 follow-ups · 11 open"), not the items.
-- **The day is a timeline with a floor on its scale:** every minute gets at least 1 pt (60 pt per
-  hour). Quiet gaps are drawn at exactly that scale, capped at 120 pt, so a quiet hour looks like
-  an hour; a block is at least as tall as its duration and grows when its content needs more. A
-  continuous axis line runs down the gutter; it is dashed where time is compressed (before the
-  first and after the last recording of the day).
+- **The day's time scale (rounds 5–6).** Hour spacing driven purely by content was "too
+  variable" (2–3 PM came out about four times the height of 7–8 PM). Rule now:
+  - **Every hour inside the day keeps a minimum height (105 pt, i.e. 1.75 pt/min), with no
+    exceptions for gaps.** Collapsing long gaps to a short break was tried and rejected as
+    disorienting. Compression is allowed only before the first and after the last recording of
+    the day (dashed axis, "Quiet until 8 AM").
+  - A block aims to stay under about 180 pt per hour (3 pt/min): its summary is clamped to fit,
+    and its follow-ups collapse to one line plus "N more". Title, time, one summary line and tags
+    are the floor, so a very short topic may exceed the band; topics under 25 min show no summary.
+  - Long topics get LONGER summaries so the block fills its time without blank space (the
+    summary stage has to be able to write to a length).
+  - A continuous axis line runs down the gutter with hour ticks on it.
+- **Gap kinds on the day:** quiet = bare axis + gray "Quiet · 1 hr 5 min"; paused = tint-striped
+  axis + "Paused · 30 min" and who paused; **audio missing = solid amber axis for the whole
+  stretch + "Audio missing · 3 hr 30 min", its time range and the cause.** Loss inside a topic is
+  an amber suffix on the block's time line ("56 min · 4 min missing"). Long-gap labels sit at the
+  top of the gap (should pin while scrolling through it).
+- **Follow-up state:** done items show a checked circle and dimmed text everywhere. Where only
+  some are shown (two per day on the week, or a collapsed block), open ones come first. The
+  circles are NOT tap targets on the week (too small); the row opens the day.
 
 ## What the research established
 
@@ -87,6 +102,8 @@ one day boundary at every zoom level.
 `history-mockups/direction-{a,b,c,d}` — round 1, four directions.
 `history-mockups/round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
 content-sized and as calendar blocks.
-`history-mockups/round4-white-blocks-followups` — the current design.
+`history-mockups/round6-day-minimum-hour-height` — the current day. `round5-week-followup-state`
+— the current week (its two day phones are superseded by round 6).
+`history-mockups/round4-white-blocks-followups` — the current month; day and week superseded.
 `history-mockups/round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
 — today's day view with the live block, and the week with text tags.
