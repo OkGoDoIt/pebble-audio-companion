@@ -47,8 +47,7 @@ import Transcription
         #expect(!HistorySpokenTurn.isDegenerate("この件については明日また話しましょう"))
         #expect(!HistorySpokenTurn.isDegenerate("I think the thing is the thing we said"))
         #expect(!HistorySpokenTurn.isDegenerate("We should call the landlord today and ask about the deposit."))
-        // "Yeah, yeah, yeah." is a thing people say, but it is no snippet either.
-        #expect(HistorySpokenTurn.isDegenerate("Yeah, yeah, yeah."))
+        #expect(!HistorySpokenTurn.isDegenerate("Yeah, yeah, yeah."))
         #expect(!HistorySpokenTurn.isDegenerate("Yeah, sure, we can do that."))
         #expect(!HistorySpokenTurn.isDegenerate("I'm going to walk you through that checklist again."))
     }

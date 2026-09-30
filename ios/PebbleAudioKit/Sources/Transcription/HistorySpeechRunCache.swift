@@ -140,39 +140,63 @@ public struct HistorySpokenTurn: Equatable, Sendable {
         self.text = text
     }
 
-    /// A single turn that is one word said over and over — the transcriber's loop inside one
-    /// turn, which the across-turn detector cannot see. On the real backup: ", the, the, the,
-    /// the, the, uh, you kn", "저는안녕하세요. 저는안녕하세요. 저는안녕하세요. …" and "in an apartment
-    /// in Boston. I'll double I'll double I'll double I'll double". Four words or more, and fewer
-    /// than a third of them distinct, or one word said four times or more making up half of them,
-    /// or (seven words or more) at most half the word pairs distinct.
+    /// A single turn that is one word or one short phrase said over and over — the
+    /// transcriber's loop inside one turn, which the across-turn detector cannot see. On the real
+    /// backup: ", the, the, the, the, the, uh, you kn", "I'll double I'll double I'll double" and
+    /// "안녕하세요. 저는안녕하세요. 저는안녕하세요. 저". Four words or more, and fewer than a third of
+    /// them distinct, or one word said four times or more making up half of them, or (seven words
+    /// or more) at most half the word pairs distinct; for a script written without spaces, a run
+    /// of letters said three times making up half the letters (`repeatsOneRun`).
+    ///
+    /// Runs over every turn of every transcript a day reads (6,000+ on a real day), so it hashes
+    /// in place and allocates one lowercased copy per turn.
     public static func isDegenerate(_ text: String) -> Bool {
-        if repeatsOneRun(text) { return true }
-        let words = text.lowercased().split { !$0.isLetter && !$0.isNumber && $0 != "'" }
+        let lowered = text.lowercased()
+        if isSpaceless(lowered), repeatsOneRun(lowered) { return true }
+        let words = lowered.split { !$0.isLetter && !$0.isNumber && $0 != "'" }
         guard words.count >= 4 else { return false }
-        if Set(words).count * 3 < words.count { return true }
         var counts: [Substring: Int] = [:]
-        for word in words { counts[word, default: 0] += 1 }
-        let top = counts.values.max() ?? 0
+        var top = 0
+        for word in words {
+            let count = (counts[word] ?? 0) + 1
+            counts[word] = count
+            top = max(top, count)
+        }
+        if counts.count * 3 < words.count { return true }
         if top >= 4 && top * 2 >= words.count { return true }
-        // A short phrase said over and over ("I'll double I'll double I'll double I'll double"):
-        // most word pairs are repeats.
-        let pairs = zip(words, words.dropFirst()).map { "\($0) \($1)" }
-        return pairs.count >= 6 && Set(pairs).count * 2 <= pairs.count
+        guard words.count >= 7 else { return false }
+        var pairs = Set<Int>()
+        for index in 1..<words.count {
+            var hasher = Hasher()
+            hasher.combine(words[index - 1])
+            hasher.combine(words[index])
+            pairs.insert(hasher.finalize())
+        }
+        return pairs.count * 2 <= words.count - 1
     }
 
-    /// The same, for text written without spaces between words, where there are no words to
-    /// count: one run of 2-10 letters said three times or more, making up at least half the
-    /// letters ("안녕하세요. 저는안녕하세요. 저는안녕하세요. 저" — the provider cuts a loop mid-word
-    /// into turns that are not identical, so the across-turn detector never sees it).
+    /// Text in a script written without spaces between words (Chinese, Japanese, Thai), or
+    /// Korean the provider ran together: where counting words says nothing.
+    static func isSpaceless(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x0E00...0x0E7F, 0x1100...0x11FF, 0x2E80...0x9FFF, 0xAC00...0xD7AF: return true
+            default: return false
+            }
+        }
+    }
+
+    /// One run of 2-10 letters said three times or more, making up at least half the letters
+    /// (the provider cuts such a loop mid-word into turns that are not identical, so the
+    /// across-turn detector never sees it).
     static func repeatsOneRun(_ text: String) -> Bool {
-        let letters = Array(text.lowercased().filter { $0.isLetter })
+        let letters = text.unicodeScalars.filter { $0.properties.isAlphabetic }.map(\.value)
         guard letters.count >= 6 else { return false }
         for length in 2...min(10, letters.count / 3) {
-            var seen: [String: (count: Int, next: Int)] = [:]
+            var seen: [ArraySlice<UInt32>: (count: Int, next: Int)] = [:]
             var index = 0
             while index + length <= letters.count {
-                let run = String(letters[index..<(index + length)])
+                let run = letters[index..<(index + length)]
                 var entry = seen[run] ?? (0, 0)
                 if index >= entry.next {  // non-overlapping occurrences only
                     entry.count += 1
