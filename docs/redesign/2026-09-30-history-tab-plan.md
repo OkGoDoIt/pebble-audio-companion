@@ -828,9 +828,11 @@ public protocol AudioContentSource: Sendable {
 clarifications and one addition: `version` is the METHOD version (change detection is
 `digest`, which is content-gated — rewriting a segment with the same verdicts does not move it);
 `confidence` is the measured precision of the rule that decided the span (1 for a person's
-correction); and each span carries `wordCount`. Time with no span is unclassified. The only
-descriptor shipped is `fewWords` (words were said, under two a minute); no `music` or
-`TV or video` descriptor met the accuracy bar yet. Corrections:
+correction); and each span carries `wordCount`. Time with no span is unclassified. Descriptors
+shipped: `fewWords` (words were said, under two a minute, or a stray remark with nothing
+around it) and, from version 3, `music` (an AI reading called the minutes lyrics at ≥0.9;
+57/57 held back). `TV or video` did not meet the bar, so TV and announcements arrive as
+`noConversation` with no descriptor. Corrections:
 `AudioContentService.correct(startMs:endMs:kind:)` / `undoCorrection(_:)`, reachable from the
 app as `AppComposition.audioContent`; the store is `AppComposition.audioContentStore`. Its
 migration is **`v14-audio-content`**, independent of every History table, so the two sessions'
