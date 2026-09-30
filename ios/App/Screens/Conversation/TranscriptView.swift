@@ -41,74 +41,104 @@ struct TranscriptView: View {
     /// tap on the wrong line.
     static let bodyLineSpacing: CGFloat = 4
 
+    /// The rows, rebuilt only when what they are built from changes. The screen re-creates this
+    /// view on every scroll-state change, and regrouping a day-long transcript each time would
+    /// be thousands of allocations for an identical answer.
+    @State private var memo = TranscriptLayoutMemo()
+
+    /// Rows, not one card. See `TranscriptLayout` for why: a lazy stack can only be lazy about
+    /// its own children, and the card used to be ONE child holding every paragraph.
+    ///
+    /// The `LazyVStack` here is nested in the screen's own. Its rows are laid out, and exist,
+    /// only near the visible part of the scroll view, and they sit at zero spacing: each row
+    /// carries its share of the gaps around it, and draws its own slice of the card behind it.
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(runs) { run in
-                    if run.isCited {
-                        citedBand(run)
-                    } else {
-                        ForEach(run.blocks) { block in
-                            blockRow(block)
-                        }
-                    }
-                }
-                if let provenance {
-                    Text(provenance)
-                        .font(AppFont.micro)
-                        .foregroundStyle(Tokens.faint)
-                        .frame(maxWidth: .infinity)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 4)
-                }
+        let layout = memo.layout(transcript: transcript, provenance: provenance, focus: focus)
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(layout.rows) { row in
+                rowView(row)
             }
         }
-        // A hidden one-liner in an overlay: overlays do not participate in layout, so this
-        // measures the body line height without occupying a pixel of the card.
-        .overlay(alignment: .topLeading) {
-            Text(verbatim: "Ag")
-                .font(AppFont.callout)
-                .fixedSize()
-                .hidden()
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { height in
-                    bodyLineHeight = height
+        // A hidden one-liner behind the stack: a background does not participate in layout, so
+        // this measures the body line height without occupying a pixel of the card. On the
+        // stack rather than on a row, so it is there whichever rows happen to be built.
+        .background(alignment: .topLeading) { lineHeightProbe }
+    }
+
+    private func rowView(_ row: TranscriptLayout.Row) -> some View {
+        rowContent(row)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, row.topInset)
+            .padding(.bottom, row.bottomInset)
+            .padding(.horizontal, 16)
+            .background { TranscriptCardSlice(isFirst: row.isFirst, isLast: row.isLast) }
+    }
+
+    @ViewBuilder
+    private func rowContent(_ row: TranscriptLayout.Row) -> some View {
+        switch row.content {
+        case .turn(let turn, let opensRun):
+            if opensRun {
+                VStack(alignment: .leading, spacing: 3) {
+                    speakerHeader(turn)
+                    paragraph(turn)
                 }
-                .allowsHitTesting(false)
+            } else {
+                paragraph(turn)
+            }
+        case .quiet(let marker):
+            quietRow(marker)
+        case .missing(let marker):
+            missingRow(marker)
+        case .band(let blocks, let playFromMs):
+            citedBand(blocks, playFromMs: playFromMs)
+        case .provenance(let text):
+            Text(text)
+                .font(AppFont.micro)
+                .foregroundStyle(Tokens.faint)
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
         }
     }
+
+    private var lineHeightProbe: some View {
+        Text(verbatim: "Ag")
+            .font(AppFont.callout)
+            .fixedSize()
+            .hidden()
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                bodyLineHeight = height
+            }
+            .allowsHitTesting(false)
+    }
+
+    // MARK: - Blocks inside a cited band
 
     @ViewBuilder
     private func blockRow(_ block: TranscriptBlock) -> some View {
         switch block {
-        case .speech(_, let turns, _):
+        case .speech(_, let turns):
             speechBlock(turns)
-        // Markers are addressable like paragraphs (`.id(turn.id)` below): a moment inside a
-        // quiet stretch or an interruption lands on the marker that describes it.
-        case .quiet(let marker, _):
-            TranscriptMarkerRow(
-                marker: marker, color: Tokens.faint, rule: Tokens.hairline, timeZone: timeZone)
-                .id(marker.id)
-        case .missing(let marker, _):
-            TranscriptMarkerRow(
-                marker: marker, color: Tokens.missing, rule: Tokens.missingHair,
-                timeZone: timeZone)
-                .id(marker.id)
+        case .quiet(let marker):
+            quietRow(marker)
+        case .missing(let marker):
+            missingRow(marker)
         }
     }
 
     /// The stretch a citation points at: tinted, ruled on the leading edge, and headed by the
     /// one thing you came here to do. Arriving from a chip should answer "which part?" before
     /// you have read a word.
-    private func citedBand(_ run: BlockRun) -> some View {
+    private func citedBand(_ blocks: [TranscriptBlock], playFromMs: Int64?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text(Copy.Conversation.citedMoment)
                     .font(AppFont.micro)
                     .foregroundStyle(Tokens.tint)
                 Spacer(minLength: 0)
-                if let onPlayFrom, let offset = run.mediaOffsetMs {
+                if let onPlayFrom, let offset = playFromMs {
                     Button {
                         onPlayFrom(offset)
                     } label: {
@@ -127,7 +157,7 @@ struct TranscriptView: View {
                     .buttonStyle(.plain)
                 }
             }
-            ForEach(run.blocks) { block in
+            ForEach(blocks) { block in
                 blockRow(block)
             }
         }
@@ -140,115 +170,73 @@ struct TranscriptView: View {
         .overlay(alignment: .leading) {
             Capsule().fill(Tokens.tint).frame(width: 2).padding(.vertical, 6)
         }
-        .id(Self.citedAnchor)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Copy.Conversation.citedMoment)
     }
 
-    /// Scroll target for the cited band. A member's blocks are contiguous, so there is at most
-    /// one of these in a transcript.
-    static let citedAnchor = "transcript-cited-moment"
-
-    /// Blocks in reading order, split into runs by whether they belong to the cited member, so
-    /// one citation draws ONE band even though its speech is many speaker blocks.
-    private var runs: [BlockRun] {
-        var runs: [BlockRun] = []
-        for block in blocks {
-            let cited = block.isCited
-            if var last = runs.last, last.isCited == cited {
-                last.blocks.append(block)
-                runs[runs.count - 1] = last
-            } else {
-                runs.append(BlockRun(blocks: [block], isCited: cited))
-            }
-        }
-        return runs
-    }
-
-    /// Consecutive turns by the same speaker read as one person still talking, so they get
-    /// ONE name header and a paragraph each. Real transcripts arrive split at provider
-    /// segment boundaries — mid-sentence, often — and repeating "Speaker 1" over every
-    /// fragment turned the card into a wall of labels.
-    private var blocks: [TranscriptBlock] {
-        var blocks: [TranscriptBlock] = []
-        for item in transcript {
-            switch item {
-            case .turn(let turn):
-                let cited = isCited(segmentId: turn.segmentId, at: turn.startedAt)
-                // Citedness joins the grouping key: a citation that starts partway through one
-                // person still talking has to break the block, or the band would swallow lines
-                // the note never drew on.
-                if case .speech(let id, var turns, let wasCited) = blocks.last,
-                    wasCited == cited,
-                    let previous = turns.last, previous.speakerLabel == turn.speakerLabel,
-                    previous.name == turn.name, previous.role == turn.role,
-                    previous.isInProgress == turn.isInProgress
-                {
-                    turns.append(turn)
-                    blocks[blocks.count - 1] = .speech(id: id, turns: turns, isCited: cited)
-                } else {
-                    blocks.append(.speech(id: turn.id, turns: [turn], isCited: cited))
-                }
-            case .quiet(let marker):
-                blocks.append(
-                    .quiet(marker, isCited: isCited(segmentId: marker.segmentId, at: marker.startedAt)))
-            case .missing(let marker):
-                blocks.append(
-                    .missing(marker, isCited: isCited(segmentId: marker.segmentId, at: marker.startedAt)))
-            }
-        }
-        return blocks
-    }
-
-    /// Only a citation marks lines. A moment is a place to land, not a quote: banding the row
-    /// it lands on would claim somebody pointed at those words.
-    private func isCited(segmentId: String, at startedAt: Date?) -> Bool {
-        guard let focus, focus.style == .citation else { return false }
-        return focus.contains(segmentId: segmentId, at: startedAt)
-    }
-
+    /// One speaker's consecutive turns inside a band: a name header and a paragraph each.
     private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
-        let lead = turns[0]
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if let onSpeakerTap {
-                    Button {
-                        onSpeakerTap(lead)
-                    } label: {
-                        speakerName(lead).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Rename \(lead.name)")
-                } else {
-                    speakerName(lead)
-                }
-
-                // The growing tail carries no stamp: its words are still being revised, so a
-                // final-looking time would be a lie.
-                if let startedAt = lead.startedAt, !lead.isInProgress {
-                    TranscriptStamp(date: startedAt, timeZone: timeZone)
-                }
-                Spacer(minLength: 0)
-            }
-
+        VStack(alignment: .leading, spacing: 3) {
+            speakerHeader(turns[0])
             // Provider fragments of one person's speech are paragraphs, not one run-on
             // block: they get their own spacing under the single name header.
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: TranscriptLayout.paragraphGap) {
                 ForEach(turns) { turn in
-                    TranscriptTurnText(
-                        turn: turn,
-                        timeZone: timeZone,
-                        playhead: playhead,
-                        lineHeight: bodyLineHeight,
-                        onSeekTo: onSeekTo,
-                        onPlayFrom: onPlayFrom
-                    )
-                    // Addressable by `ScrollViewReader` so playback can keep the paragraph
-                    // being spoken on screen.
-                    .id(turn.id)
+                    paragraph(turn)
+                        // Inside a band the paragraphs are not rows of their own, so they need
+                        // their own scroll ids for playback to keep the one being spoken on
+                        // screen. Everywhere else the row's identity is the turn's id already.
+                        .id(turn.id)
                 }
             }
         }
+    }
+
+    // MARK: - The pieces every row is made of
+
+    private func quietRow(_ marker: TranscriptMarker) -> some View {
+        TranscriptMarkerRow(
+            marker: marker, color: Tokens.faint, rule: Tokens.hairline, timeZone: timeZone)
+    }
+
+    private func missingRow(_ marker: TranscriptMarker) -> some View {
+        TranscriptMarkerRow(
+            marker: marker, color: Tokens.missing, rule: Tokens.missingHair, timeZone: timeZone)
+    }
+
+    /// The name that heads a run of one speaker's paragraphs, and the time the run began.
+    private func speakerHeader(_ lead: TranscriptTurn) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let onSpeakerTap {
+                Button {
+                    onSpeakerTap(lead)
+                } label: {
+                    speakerName(lead).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Rename \(lead.name)")
+            } else {
+                speakerName(lead)
+            }
+
+            // The growing tail carries no stamp: its words are still being revised, so a
+            // final-looking time would be a lie.
+            if let startedAt = lead.startedAt, !lead.isInProgress {
+                TranscriptStamp(date: startedAt, timeZone: timeZone)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func paragraph(_ turn: TranscriptTurn) -> some View {
+        TranscriptTurnText(
+            turn: turn,
+            timeZone: timeZone,
+            playhead: playhead,
+            lineHeight: bodyLineHeight,
+            onSeekTo: onSeekTo,
+            onPlayFrom: onPlayFrom
+        )
     }
 
     private func speakerName(_ turn: TranscriptTurn) -> some View {
@@ -268,6 +256,55 @@ struct TranscriptView: View {
         case .other: return Tokens.speakerOther
         case .unresolved: return Tokens.meta
         }
+    }
+}
+
+/// Holds the last layout and what it was built from. A class so the view can refresh it from
+/// `body` without that write being a state change.
+@MainActor
+final class TranscriptLayoutMemo {
+    private var transcript: [TranscriptItem] = []
+    private var provenance: String?
+    private var focus: TranscriptFocus?
+    private var cached: TranscriptLayout?
+
+    func layout(
+        transcript: [TranscriptItem], provenance: String?, focus: TranscriptFocus?
+    ) -> TranscriptLayout {
+        // `==` on the array is O(1) when it is the same array, which it is on every re-render
+        // that did not reload the conversation — the case this exists for.
+        if let cached, transcript == self.transcript, provenance == self.provenance,
+            focus == self.focus
+        {
+            return cached
+        }
+        let layout = TranscriptLayout(transcript: transcript, provenance: provenance, focus: focus)
+        self.transcript = transcript
+        self.provenance = provenance
+        self.focus = focus
+        cached = layout
+        return layout
+    }
+}
+
+/// One row's slice of the transcript card: the card's surface, rounded only where the card's
+/// own corners are. Slices meet edge to edge; each one also reaches a point under the next, so
+/// a fractional row height can never show a hairline of the page between two of them — the
+/// next row paints over the overlap with the same opaque colour.
+private struct TranscriptCardSlice: View {
+    let isFirst: Bool
+    let isLast: Bool
+
+    var body: some View {
+        let radius = Tokens.cardRadius
+        UnevenRoundedRectangle(
+            topLeadingRadius: isFirst ? radius : 0,
+            bottomLeadingRadius: isLast ? radius : 0,
+            bottomTrailingRadius: isLast ? radius : 0,
+            topTrailingRadius: isFirst ? radius : 0
+        )
+        .fill(Tokens.surface)
+        .padding(.bottom, isLast ? 0 : -1)
     }
 }
 
@@ -541,43 +578,6 @@ struct TranscriptMarkerRow: View {
                 time: TranscriptStamp.text($0, in: timeZone), text: marker.text)
         } ?? marker.text
     }
-}
-
-/// One rendered row of the transcript: a run of consecutive same-speaker turns, or a marker.
-private enum TranscriptBlock: Identifiable {
-    case speech(id: String, turns: [TranscriptTurn], isCited: Bool)
-    case quiet(TranscriptMarker, isCited: Bool)
-    case missing(TranscriptMarker, isCited: Bool)
-
-    var id: String {
-        switch self {
-        case .speech(let id, _, _): return id
-        case .quiet(let marker, _), .missing(let marker, _): return marker.id
-        }
-    }
-
-    var isCited: Bool {
-        switch self {
-        case .speech(_, _, let cited), .quiet(_, let cited), .missing(_, let cited):
-            return cited
-        }
-    }
-
-    /// Where this block starts on the conversation's scrubber; markers carry no position, so a
-    /// run takes the first one any of its blocks knows.
-    var mediaOffsetMs: Int64? {
-        if case .speech(_, let turns, _) = self { return turns.first?.mediaOffsetMs }
-        return nil
-    }
-}
-
-/// Consecutive blocks that are all cited, or all not.
-private struct BlockRun: Identifiable {
-    var blocks: [TranscriptBlock]
-    var isCited: Bool
-
-    var id: String { "\(isCited)-\(blocks.first?.id ?? "")" }
-    var mediaOffsetMs: Int64? { blocks.compactMap(\.mediaOffsetMs).first }
 }
 
 /// The clock stamp beside a speaker name: 11pt `faint`, monospaced digits so a column of
