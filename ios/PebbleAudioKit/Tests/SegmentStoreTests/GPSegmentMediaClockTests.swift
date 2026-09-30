@@ -176,4 +176,33 @@ struct GPSegmentMediaClockTests {
         // …while a suppressed segment's records DO add up, which is the case that matters here.
         #expect(SegmentMediaClock(suppressedMeta(wallMs: 900_000, runs: balancedRuns(wallMs: 900_000))).isExact)
     }
+
+    @Test("a stored-audio range that straddles a gap is two wall stretches with the gap left out")
+    func mediaRangeSplitsAtGaps() {
+        // 10 min wall; 2 min withheld at 3:00-5:00. Stored audio 0-8 min.
+        let clock = SegmentMediaClock(
+            suppressedMeta(wallMs: 600_000, runs: [(180_000, 120_000)]))
+        // Media 2:00-4:00 is wall 2:00-3:00, then (after the gap) wall 5:00-6:00.
+        #expect(
+            clock.wallRanges(fromMedia: 120_000..<240_000) == [120_000..<180_000, 300_000..<360_000])
+        // Entirely before the gap, and entirely after it.
+        #expect(clock.wallRanges(fromMedia: 0..<60_000) == [0..<60_000])
+        #expect(clock.wallRanges(fromMedia: 420_000..<480_000) == [540_000..<600_000])
+        // A range that starts exactly at the gap's media instant begins on its far side, like
+        // `wall(fromMedia:)` does.
+        #expect(clock.wallRanges(fromMedia: 180_000..<200_000) == [300_000..<320_000])
+        #expect(clock.wall(fromMedia: 180_000) == 300_000)
+        // Clamped to the stored audio; empty for an empty range.
+        #expect(clock.wallRanges(fromMedia: 470_000..<900_000) == [590_000..<600_000])
+        #expect(clock.wallRanges(fromMedia: 100..<100).isEmpty)
+    }
+
+    @Test("without exact gap records a media range maps proportionally, as one stretch")
+    func inexactMediaRangeIsProportional() {
+        var meta = suppressedMeta(wallMs: 900_000, runs: [])
+        meta.frameCount = 22_500  // 7.5 min of audio in a 15 min wall span, unexplained
+        let clock = SegmentMediaClock(meta)
+        #expect(!clock.isExact)
+        #expect(clock.wallRanges(fromMedia: 60_000..<120_000) == [120_000..<240_000])
+    }
 }

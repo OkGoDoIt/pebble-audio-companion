@@ -179,6 +179,42 @@ public struct SegmentMediaClock: Sendable {
         return min(point + skipped, wallSpanMs)
     }
 
+    /// The wall stretches a range of STORED audio occupies, gaps cut out.
+    ///
+    /// `wall(fromMedia:)` maps a point; a range needs this instead, because a stretch of stored
+    /// audio that straddles a gap is two stretches on the wall clock with the gap between them,
+    /// and drawing it as one would claim the quiet (or the loss) held whatever the audio held.
+    /// Without exact gap records there is no way to say where the gaps are, so the answer is the
+    /// same proportional single stretch `wall(fromMedia:)` would give.
+    public func wallRanges(fromMedia range: Range<Int64>) -> [Range<Int64>] {
+        guard mediaSpanMs > 0, wallSpanMs > 0 else { return [] }
+        let low = min(max(range.lowerBound, 0), mediaSpanMs)
+        let high = min(max(range.upperBound, 0), mediaSpanMs)
+        guard high > low else { return [] }
+        guard isExact else {
+            let start = wallSpanMs * low / mediaSpanMs
+            let end = wallSpanMs * high / mediaSpanMs
+            return end > start ? [start..<end] : []
+        }
+        var out: [Range<Int64>] = []
+        var pieceStart: Int64 = 0
+        var skipped: Int64 = 0
+        // One recorded piece of the wall span: [wallLow, wallHigh), whose media time is the
+        // same stretch shifted back by every gap closed before it.
+        func take(_ wallLow: Int64, _ wallHigh: Int64) {
+            let start = max(wallLow - skipped, low)
+            let end = min(wallHigh - skipped, high)
+            if end > start { out.append((start + skipped)..<(end + skipped)) }
+        }
+        for index in starts.indices {
+            take(pieceStart, starts[index])
+            skipped += ends[index] - starts[index]
+            pieceStart = ends[index]
+        }
+        take(pieceStart, wallSpanMs)
+        return out
+    }
+
     /// Last index whose value is <= `value`; nil when the array is empty or starts after it.
     private func lastIndex(in values: [Int64], notAfter value: Int64) -> Int? {
         guard let first = values.first, first <= value else { return nil }
