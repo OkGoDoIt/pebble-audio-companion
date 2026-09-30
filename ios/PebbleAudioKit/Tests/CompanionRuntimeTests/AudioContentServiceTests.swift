@@ -231,6 +231,7 @@ struct AudioContentServiceTests {
         #expect(try await service.classifyPass())
         let spans = try await AudioContentStore(db: db).spans(segmentId: "a")
         #expect(spans.map(\.decidedBy).contains(AudioContentDecider.contentJudge))
+        #expect(spans.first { $0.decidedBy == AudioContentDecider.contentJudge }?.descriptor == "music")
         // Minutes 1-2 were lyrics: withheld from the models and from speech evidence.
         #expect(service.mask.aiRanges("a") == [60_000..<180_000])
         #expect(service.mask.speechRanges("a") == [60_000..<180_000])

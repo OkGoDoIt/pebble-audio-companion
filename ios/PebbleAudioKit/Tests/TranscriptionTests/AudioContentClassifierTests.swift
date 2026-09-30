@@ -214,22 +214,28 @@ struct AudioContentClassifierTests {
 
     @Test("an AI reading turns talk-rate lyrics into no conversation, but never adds talk")
     func judgementApplies() throws {
-        let turns = (0..<5).map { minute in
+        let turns = (0..<7).map { minute in
             talk(Int64(minute) * 60_000, Int64(minute) * 60_000 + 55_000, words: 100)
         }
         let judged = [
             JudgedMinute(m: 1, kind: "music", confidence: 0.95),
-            JudgedMinute(m: 2, kind: "music", confidence: 0.5),  // not sure enough
-            JudgedMinute(m: 3, kind: "gibberish", confidence: 0.99),  // not acted on
-            JudgedMinute(m: 4, kind: "tvOrVideo", confidence: 0.9),
+            JudgedMinute(m: 2, kind: "music", confidence: 0.97),
+            JudgedMinute(m: 3, kind: "tvOrVideo", confidence: 0.9),
+            JudgedMinute(m: 4, kind: "music", confidence: 0.85),  // not sure enough
+            JudgedMinute(m: 5, kind: "loop", confidence: 0.99),  // the word rules own loops
+            JudgedMinute(m: 6, kind: "gibberish", confidence: 0.99),  // not acted on
             JudgedMinute(m: 7, kind: "conversation", confidence: 0.99),  // a quiet minute stays quiet
         ]
         let spans = try #require(
             AudioContentClassifier.classify(
                 meta: meta(wallMs: 480_000), turns: turns, neighbours: .quiet, judged: judged))
-        #expect(spans.map(\.decidedBy) == ["wordRate", "contentJudge", "wordRate", "contentJudge", "wordRate"])
-        #expect(spans.map(\.kind) == [.conversation, .noConversation, .conversation, .noConversation, .noConversation])
-        #expect(spans[1].descriptor == nil && spans[1].confidence == AudioContentMethod.judgeConfidence)
+        #expect(spans.map(\.decidedBy) == ["wordRate", "contentJudge", "contentJudge", "wordRate", "wordRate"])
+        #expect(spans.map(\.kind) == [.conversation, .noConversation, .noConversation, .conversation, .noConversation])
+        // Lyrics are named, and two minutes of them are one span that still says so; TV is
+        // plain "no conversation", a span of its own.
+        #expect(spans.map(\.descriptor) == [nil, AudioContentDescriptor.music, nil, nil, nil])
+        #expect(spans[1].endMs - spans[1].startMs == 120_000)
+        #expect(spans[1].confidence == AudioContentMethod.judgeConfidence)
     }
 
     @Test("a NoSpeech segment is one no-conversation span with the transcriber as author")

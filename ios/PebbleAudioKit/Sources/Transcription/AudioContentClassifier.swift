@@ -25,7 +25,7 @@ public enum AudioContentMethod {
     /// Bump when the verdicts this method gives for the same input change. Every stored
     /// segment's input key embeds it, so a bump reclassifies the library (cheaply: this is a
     /// pass over turn timings, no model).
-    public static let version = 2
+    public static let version = 3
 
     /// The unit of judgement. A minute is short enough that half an hour of music after a
     /// conversation is not folded into it, long enough that one pause between sentences is
@@ -70,9 +70,19 @@ public enum AudioContentMethod {
     /// Method 2 (`AudioContentJudge`): the judged kinds that change a verdict, the confidence
     /// they need, and the precision stored with the result. Here rather than in the judge so
     /// the pure classifier needs no AI module.
-    public static let judgeActionableKinds: Set<String> = ["music", "tvOrVideo", "announcement", "loop"]
-    public static let judgeMinimumConfidence = 0.8
-    public static let judgeConfidence = 0.93
+    ///
+    /// Version 3, from a second, blind round of 142 minutes the reading would act on:
+    /// - "loop" is not acted on. 4 of 30 were real conversations whose transcript looped in
+    ///   places (a card game, two people talking quietly); the word rules own loops.
+    /// - 0.9, not 0.8. Every talk minute it took (2 TV verdicts) was under 0.85; at 0.9 music,
+    ///   TV and announcements were 96 of 97 no conversation (98.6% weighted), the other unclear.
+    ///   The threshold was chosen on that same round, so the stored confidence is lower.
+    public static let judgeActionableKinds: Set<String> = ["music", "tvOrVideo", "announcement"]
+    public static let judgeMinimumConfidence = 0.9
+    public static let judgeConfidence = 0.95
+    /// The judged kinds whose name is shown (see `AudioContentDescriptor.music`). The rest are
+    /// plain "no conversation".
+    public static let judgeDescriptors = ["music": AudioContentDescriptor.music]
 
     /// Measured precisions (held-back labels, weighted to the library's mix), stored as the
     /// span's confidence. See the design doc's table.
@@ -243,14 +253,17 @@ public enum AudioContentClassifier {
 
         var out: [Verdict] = []
         for verdict in perWindow {
+            let judged = verdict.decidedBy == AudioContentDecider.contentJudge
             if var last = out.last, last.kind == verdict.kind,
-                last.decidedBy == verdict.decidedBy, last.mediaEnd == verdict.mediaStart
+                last.decidedBy == verdict.decidedBy, last.mediaEnd == verdict.mediaStart,
+                !judged || last.descriptor == verdict.descriptor
             {
                 // A no-conversation run with a stray word somewhere in it is one run with a
-                // few words in it, not alternating "few words" and "nothing" minutes.
+                // few words in it, not alternating "few words" and "nothing" minutes. A judged
+                // run keeps what the reading named: lyrics are not "a few words".
                 last.mediaEnd = verdict.mediaEnd
                 last.words += verdict.words
-                if last.decidedBy != AudioContentDecider.loop, last.kind == .noConversation {
+                if last.decidedBy != AudioContentDecider.loop, !judged, last.kind == .noConversation {
                     last.descriptor = last.words >= 0.5 ? AudioContentDescriptor.fewWords : nil
                 }
                 out[out.count - 1] = last
@@ -261,10 +274,11 @@ public enum AudioContentClassifier {
         return out
     }
 
-    /// Method 2: a conversation minute an AI reading judged to be lyrics, TV, an announcement or
-    /// a loop (`AudioContentJudge.actionableKinds`, at `minimumConfidence`) is no conversation.
-    /// The judged minute is the one the window's middle falls in. Only minutes method 1 called
-    /// conversation are touched: the reading can take talk away, never add it.
+    /// Method 2: a conversation minute an AI reading judged to be lyrics, TV or an announcement
+    /// (`judgeActionableKinds`, at `judgeMinimumConfidence`) is no conversation; lyrics are
+    /// named (`judgeDescriptors`). The judged minute is the one the window's middle falls in.
+    /// Only minutes method 1 called conversation are touched: the reading can take talk away,
+    /// never add it.
     static func applyJudgement(
         _ verdicts: inout [Verdict], windows: [Range<Int64>], judged: [JudgedMinute]
     ) {
@@ -277,7 +291,7 @@ public enum AudioContentClassifier {
                 minute.confidence >= AudioContentMethod.judgeMinimumConfidence
             else { continue }
             verdicts[index].kind = .noConversation
-            verdicts[index].descriptor = nil
+            verdicts[index].descriptor = AudioContentMethod.judgeDescriptors[minute.kind]
             verdicts[index].decidedBy = AudioContentDecider.contentJudge
             verdicts[index].confidence = AudioContentMethod.judgeConfidence
         }

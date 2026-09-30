@@ -15,8 +15,11 @@ import Transcription
 //   conversation, and once called garbled real dictation gibberish;
 // - "fewWords" it applies to pauses inside conversations; method 1 handles those better.
 //
-// So only music, TV, announcements and loops, at 0.8 or more, change a verdict. No descriptor
-// is shown from this yet: none has 30 held-back examples at 95% (the bar in the design doc).
+// A second round checked 142 more minutes it would act on, labelled blind from the transcripts:
+// lyrics 58/60 right (the other two unclear, never talk), TV 36/40, announcements 12/12, but
+// "loop" only 22/30, with 4 real conversations among the misses. So music, TV and announcements
+// at 0.9 or more change a verdict, and only lyrics are named ("music"): TV misses the 95% bar
+// and announcements have too few examples. `AudioContentMethod` holds the numbers.
 
 public enum AudioContentJudge {
     /// Bump when the prompt or the reading of its answer changes; every stored judgement is
@@ -24,8 +27,8 @@ public enum AudioContentJudge {
     public static let promptVersion = 1
 
     // Which judged kinds act, at what confidence, is `AudioContentMethod.judgeActionableKinds`
-    // (the classifier applies them): music, TV, announcements and loops at 0.8, stored with a
-    // confidence of 0.93 (22/22 measured; stated below 1 because 22 is a small number).
+    // (the classifier applies them). The prompt still asks for every kind: what is not acted on
+    // is kept with the judgement, so a later method can use it without asking again.
 
     /// Minute text is capped so one looping minute cannot swamp a call.
     static let maxMinuteChars = 2_500

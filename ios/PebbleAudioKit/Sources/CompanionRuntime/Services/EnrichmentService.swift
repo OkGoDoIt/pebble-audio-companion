@@ -226,18 +226,16 @@ public actor EnrichmentService {
     private func noConversationAnnotation(
         for conversation: EnrichmentConversation
     ) async -> ConversationAnnotation {
-        var words = 0
+        var spans: [SegmentAudioContentSpan] = []
         if let audioContentStore {
             for member in conversation.members {
-                words += ((try? await audioContentStore.spans(segmentId: member.segmentId)) ?? [])
-                    .reduce(0) { $0 + $1.wordCount }
+                spans += (try? await audioContentStore.spans(segmentId: member.segmentId)) ?? []
             }
         }
         return ConversationAnnotation(
             conversationId: conversation.conversationId,
             title: AudioContentPresentation.noConversationTitle,
-            summary: words > 0
-                ? AudioContentPresentation.fewWordsSummary : AudioContentPresentation.noWordsSummary,
+            summary: AudioContentPresentation.summary(for: spans),
             tags: [],
             providerId: AudioContentPresentation.providerId,
             updatedAtMs: clock.nowMs,

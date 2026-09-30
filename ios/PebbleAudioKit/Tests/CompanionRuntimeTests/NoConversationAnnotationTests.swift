@@ -105,4 +105,25 @@ struct NoConversationAnnotationTests {
         #expect(changed.count == 1)
         #expect(try await fixture.annotations.load(changed[0])?.title == "The roof")
     }
+
+    @Test("the stand-in names what was heard only when every worded stretch agrees")
+    func standInSummary() {
+        func span(_ descriptor: String?, words: Int, by decider: String) -> SegmentAudioContentSpan {
+            SegmentAudioContentSpan(
+                segmentId: "s", index: 0, startMs: 0, endMs: 60_000, mediaStartMs: 0,
+                mediaEndMs: 60_000, kind: .noConversation, descriptor: descriptor,
+                confidence: 0.95, decidedBy: decider, version: 3, wordCount: words)
+        }
+        let quiet = span(nil, words: 0, by: AudioContentDecider.noSpeech)
+        let few = span(AudioContentDescriptor.fewWords, words: 5, by: AudioContentDecider.wordRate)
+        let music = span(AudioContentDescriptor.music, words: 180, by: AudioContentDecider.contentJudge)
+        let tv = span(nil, words: 400, by: AudioContentDecider.contentJudge)
+        typealias P = AudioContentPresentation
+        #expect(P.summary(for: [quiet]) == P.noWordsSummary)
+        #expect(P.summary(for: [quiet, few]) == P.fewWordsSummary)
+        #expect(P.summary(for: [quiet, music, music]) == P.musicSummary)
+        // An hour of television is not "a few words", and it is not named.
+        #expect(P.summary(for: [tv]) == P.otherSummary)
+        #expect(P.summary(for: [music, few]) == P.otherSummary)
+    }
 }

@@ -34,6 +34,11 @@ public enum AudioContentDescriptor {
     /// Some words were transcribed, too few to be a conversation (under two a minute). A fact
     /// about the transcript, not a guess about the room, so it is always safe to show.
     public static let fewWords = "fewWords"
+    /// An AI reading of the words judged them to be song lyrics (`AudioContentJudge`, at
+    /// `AudioContentMethod.judgeMinimumConfidence`). The only judged kind accurate enough to
+    /// name: 58 of 60 held-back minutes the reading called lyrics were, and the two others
+    /// were unclear rather than talk. TV (87%) and announcements (12 examples) are not named.
+    public static let music = "music"
 }
 
 /// Who or what made a verdict. Strings, not an enum, because a later method adds its own and

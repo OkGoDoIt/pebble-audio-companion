@@ -25,6 +25,20 @@ public enum AudioContentPresentation {
     public static let noConversationTitle = "No conversation"
     public static let noWordsSummary = "Sound was recorded, but no words were heard."
     public static let fewWordsSummary = "A few words were heard, but no conversation."
+    public static let musicSummary = "Music was playing, but no conversation was heard."
+    /// Words that were not a conversation and are not named: TV, an announcement, the
+    /// transcriber repeating itself. "A few words" would understate an hour of television.
+    public static let otherSummary = "Sound was recorded, but it holds no conversation."
+
+    /// The stand-in's summary for a conversation whose spans are all no conversation: named
+    /// only when every stretch with words in it says the same thing.
+    public static func summary(for spans: [SegmentAudioContentSpan]) -> String {
+        let worded = spans.filter { $0.wordCount > 0 }
+        if worded.isEmpty { return noWordsSummary }
+        if worded.allSatisfy({ $0.descriptor == AudioContentDescriptor.music }) { return musicSummary }
+        if worded.allSatisfy({ $0.descriptor == AudioContentDescriptor.fewWords }) { return fewWordsSummary }
+        return otherSummary
+    }
 }
 
 /// Which stored stretches of each segment are withheld from whom, on the segment's
