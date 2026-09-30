@@ -61,6 +61,13 @@ enum Route: Equatable, Hashable, Identifiable {
     var id: String { url.absoluteString }
 
     case today(date: String?)          // companion://today[?date=YYYY-MM-DD]
+    /// A History page: `companion://history[?date=YYYY-MM-DD][&level=day|week|month]`. No date
+    /// is today; no level is the day. The level is a string here because this file is also
+    /// compiled into the widget, which does not have `HistoryLevel`.
+    case history(date: String?, level: String?)
+
+    /// The levels `companion://history` knows.
+    static let historyLevels: Set<String> = ["day", "week", "month"]
     /// `atMs` cues the player (MEDIA time, gaps excluded). `focus` is where the transcript
     /// lands (WALL time): a citation's stretch, scrolled to, marked and offered to play from; or
     /// a moment on the clock, scrolled to and marked not at all. Nil for every ordinary open.
@@ -94,6 +101,9 @@ enum Route: Equatable, Hashable, Identifiable {
         switch host {
         case "today":
             return .today(date: query["date"])
+        case "history":
+            // An unknown level is ignored rather than refused: the date still means something.
+            return .history(date: query["date"], level: query["level"].flatMap { historyLevels.contains($0) ? $0 : nil })
         case "conversation":
             guard let id = pathParts.first else { return nil }
             let t = query["t"].flatMap { Int64($0) }
@@ -144,6 +154,12 @@ enum Route: Equatable, Hashable, Identifiable {
         case .today(let date):
             components.host = "today"
             if let date { components.queryItems = [.init(name: "date", value: date)] }
+        case .history(let date, let level):
+            components.host = "history"
+            var items: [URLQueryItem] = []
+            if let date { items.append(.init(name: "date", value: date)) }
+            if let level { items.append(.init(name: "level", value: level)) }
+            if !items.isEmpty { components.queryItems = items }
         case .conversation(let id, let atMs, let focus):
             components.host = "conversation"
             components.path = "/\(id)"

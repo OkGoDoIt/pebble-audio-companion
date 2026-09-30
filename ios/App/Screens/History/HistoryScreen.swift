@@ -73,16 +73,21 @@ struct HistoryScreen: View {
                 openMoment: momentOpener)
         }
         .onChange(of: router.pendingSearchQuery) { consumePendingSearch() }
+        .onChange(of: router.pendingLibraryTag) { consumePendingTag() }
+        .onChange(of: router.pendingHistory) { consumePendingHistory() }
         .task {
             #if DEBUG
             HistoryPerformance.startHitchLogIfAsked()
             #endif
             HistoryPerformance.markShown()
             await refreshBounds()
+            consumePendingHistory()
         }
         .onAppear {
             source.setVisible(true)
             consumePendingSearch()
+            consumePendingTag()
+            consumePendingHistory()
         }
         .onDisappear { source.setVisible(false) }
         .onChange(of: scenePhase) { _, phase in
@@ -225,6 +230,25 @@ struct HistoryScreen: View {
         router.pendingSearchQuery = nil
         searchModel.query = query
         searchActive = true
+    }
+
+    /// `companion://library?tag=` lands on that topic's results (plan 5.7).
+    private func consumePendingTag() {
+        guard let tag = router.consumePendingLibraryTag() else { return }
+        if searchActive { exitSearch() }
+        openTag = HistoryTagSelection(tag: tag)
+    }
+
+    /// `companion://history?date=&level=` (and a past-dated `companion://today`) show that page.
+    /// Held until the pages exist: the first open reads the recorded range first.
+    private func consumePendingHistory() {
+        guard let model, router.pendingHistory != nil, let request = router.consumePendingHistory() else { return }
+        if searchActive { exitSearch() }
+        openTag = nil
+        withAnimation(.easeInOut(duration: 0.3)) {
+            _ = model.show(request.level ?? model.level, containing: request.date ?? model.todayDateKey)
+        }
+        titleFocusToken += 1
     }
 
     /// The same destinations the Library's stack registers — search results, a conversation's
@@ -430,19 +454,10 @@ extension View {
     }
 }
 
-/// The DEBUG launch arguments that put History in the Library tab's place while it is built
-/// (plan phase 2): `-history` shows it, `-historyDay 2026-09-22` picks the day and
-/// `-historyLevel week|month` the level. Release builds never see them, and without `-history`
-/// nothing about the app changes.
+/// DEBUG launch arguments for testing History: `-historyDay 2026-09-22` opens the tab on that
+/// day, `-historyLevel week|month` at that level, `-historyEmpty` gives the demo world an empty
+/// archive. Release builds never see them.
 enum HistoryLaunch {
-    static var isEnabled: Bool {
-        #if DEBUG
-        return ProcessInfo.processInfo.arguments.contains("-history")
-        #else
-        return false
-        #endif
-    }
-
     static var dayKey: String? { value(after: "-historyDay") }
 
     /// `-historyEmpty`: the demo world with nothing ever recorded.
