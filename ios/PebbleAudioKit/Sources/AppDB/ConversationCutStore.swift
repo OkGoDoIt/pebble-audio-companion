@@ -171,26 +171,23 @@ public struct ConversationCutStore: Sendable {
     /// The stored grouping is what the next rebuild adopts ids from
     /// (`ConversationGrouper.adoptStableIds`): a conversation takes the id of whichever stored
     /// conversation contained the moment it now starts at. A deleted range of a shared segment
-    /// is silence, and the planner gives silence to a neighbour. So, left in the table, the
-    /// deleted conversation hands its ID to that neighbour: when the deleted one opened its
-    /// run, the conversation after it comes back under the id whose title, notes and tags the
-    /// cascade has just destroyed, and its own are left under an id nothing answers to.
-    /// Deleting a conversation must not rename the one next to it.
+    /// is silence, and the planner gives silence to a neighbour or makes a quiet unit of it.
+    /// Left in the table, the deleted conversation would hand its ID to whichever of those now
+    /// starts inside its old range — an id whose title, notes and tags the cascade has just
+    /// destroyed. So its place goes: a stored piece lying inside a deleted range is removed,
+    /// one that runs into a range is cut back to where the range starts, one that starts
+    /// inside a range and runs on is cut back to where it ends, and a stored conversation left
+    /// with no piece is removed.
     ///
-    /// For each deleted range, then:
-    ///  - a stored piece lying inside it is removed (that is the deleted conversation's, and
-    ///    any fragment a rebuild made of it while the delete was in progress);
-    ///  - a stored piece that starts in it or at its end and runs on past it — the
-    ///    conversation that FOLLOWS — is extended back to the range's start;
-    ///  - a stored piece that runs into it from before is cut back to the range's start.
-    /// and a stored conversation left with no piece is removed. Whatever the planner then does
-    /// with the silence — leaves it with the conversation before, or lets the one after begin
-    /// earlier — each surviving conversation starts inside a stored piece of its own, and
-    /// keeps its id.
+    /// Written against the ranges rather than against the deleted conversation's own rows,
+    /// because the pipeline's rebuild can run while a delete is in progress and rewrite them.
     ///
-    /// Idempotent, and written against the ranges rather than against the deleted
-    /// conversation's rows, because the pipeline's own rebuild can run while a delete is in
-    /// progress and rewrite those rows; the cascade calls this again after such a window.
+    /// This deliberately does NOT give the deleted range to the conversation that follows it.
+    /// That would be right when the planner lets that conversation begin earlier, and wrong
+    /// when it makes the silence a unit of its own: the silent unit starts first, would adopt
+    /// the follower's id, and the follower would come out renamed. Which of the two happens is
+    /// the planner's decision, so the cascade looks at the rebuild and then calls
+    /// `renameStoredConversation` if the follower needs its id back.
     ///
     /// Derived state, rewritten by the rebuild that follows; this only decides what that
     /// rebuild sees as "before".
@@ -224,13 +221,13 @@ public struct ConversationCutStore: Sendable {
                                 WHERE conversationId = ? AND ordinal = ?
                                 """,
                             arguments: key)
-                    } else if start >= lower, start <= upper {
+                    } else if start >= lower, start < upper {
                         try db.execute(
                             sql: """
                                 UPDATE conversation_segments SET startMediaMs = ?
                                 WHERE conversationId = ? AND ordinal = ?
                                 """,
-                            arguments: [lower > 0 ? lower : nil] + key)
+                            arguments: [upper] + key)
                     } else if start < lower, end > lower, end <= upper {
                         try db.execute(
                             sql: """
@@ -246,6 +243,39 @@ public struct ConversationCutStore: Sendable {
                     DELETE FROM conversations
                     WHERE id NOT IN (SELECT conversationId FROM conversation_segments)
                     """)
+        }
+    }
+
+    /// Delete-cascade support: gives a stored conversation another id — the one it had before
+    /// a delete beside it moved where it starts.
+    ///
+    /// A conversation's id is the position it starts at, held stable across rebuilds by
+    /// adoption from the stored grouping. When the conversation BEFORE it in a shared segment
+    /// is deleted and the planner lets this one begin earlier (over the silence), its start
+    /// is somewhere no stored piece of its own covers, so the rebuild issues it a new id — and
+    /// its title, notes, tags and follow-ups are all keyed by the old one. Renaming the stored
+    /// row puts the old id back; every later rebuild then adopts it like any other.
+    ///
+    /// Returns false, and changes nothing, when `from` is not stored or `to` already is.
+    @discardableResult
+    public func renameStoredConversation(from: String, to: String) async throws -> Bool {
+        guard from != to else { return false }
+        return try await db.writer.write { db in
+            let exists = { (id: String) in
+                try Bool.fetchOne(
+                    db, sql: "SELECT EXISTS (SELECT 1 FROM conversations WHERE id = ?)",
+                    arguments: [id]) ?? false
+            }
+            guard try exists(from), try !exists(to) else { return false }
+            // The member rows reference the conversation row; both move inside this one
+            // transaction, and the check waits for its end.
+            try db.execute(sql: "PRAGMA defer_foreign_keys = ON")
+            try db.execute(
+                sql: "UPDATE conversations SET id = ? WHERE id = ?", arguments: [to, from])
+            try db.execute(
+                sql: "UPDATE conversation_segments SET conversationId = ? WHERE conversationId = ?",
+                arguments: [to, from])
+            return true
         }
     }
 }

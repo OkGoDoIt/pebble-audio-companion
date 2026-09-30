@@ -466,42 +466,79 @@ import WireProtocol
         #expect(try await fixture.enrichment.regroup().map(\.id) == [conversations[0].id])
     }
 
-    /// Why the cascade takes the deleted pieces out of the stored grouping, and why it does so
-    /// on BOTH sides of dropping the speech evidence. The pipeline regroups on its own schedule
-    /// and nothing holds it off while a delete is in progress; these are the two places its
-    /// rebuild can land, replayed by hand.
-    @Test func theStoredGroupingHandOverAndWhatItGuardsAgainst() async throws {
-        // Without the hand-over: the deleted conversation's words go, the rebuild gives its
-        // silence to the conversation after it — and gives that conversation the deleted id.
-        do {
-            let world = try makeWorld()
-            let (segmentId, dentist, _) = try await twoConversationsInOneSegment(world)
-            try world.fixture.transcriptStore.redact(segmentId, mediaRangeMs: 0..<30_000)
-            await world.fixture.enrichment.invalidateSpeechEvidence(segmentId: segmentId)
-            let renamed = try await world.fixture.enrichment.regroup()
-            #expect(renamed.map(\.id) == [dentist.id], "the hazard this test is about has gone")
-        }
-
-        // With it, and with a rebuild landing between its two halves: the rebuild still
-        // remembers the deleted turns, so it writes the deleted conversation's place back; the
-        // second release takes it out again, and the neighbour keeps its id.
+    /// What the cascade's care with the stored grouping is for. Done naively — words gone,
+    /// regroup — the rebuild gives the deleted conversation's silence to the conversation
+    /// after it, and with the silence, the deleted conversation's id.
+    @Test func doneNaivelyTheNeighbourWouldComeBackUnderTheDeletedId() async throws {
         let world = try makeWorld()
-        let enrichment = world.fixture.enrichment
         let (segmentId, dentist, budget) = try await twoConversationsInOneSegment(world)
-        let piece = try #require(dentist.members.first)
+
         try world.fixture.transcriptStore.redact(segmentId, mediaRangeMs: 0..<30_000)
+        await world.fixture.enrichment.invalidateSpeechEvidence(segmentId: segmentId)
+        let renamed = try await world.fixture.enrichment.regroup()
 
-        try await world.cuts.releaseStoredPlace(of: [piece])
-        let remembered = try await enrichment.regroup()
-        #expect(remembered.map(\.id) == [dentist.id, budget.id])
-        await enrichment.invalidateSpeechEvidence(segmentId: segmentId)
-        try await world.cuts.releaseStoredPlace(of: [piece])
+        #expect(renamed.map(\.id) == [dentist.id], "the hazard this test documents has gone")
+        #expect(renamed.map(\.id) != [budget.id])
+    }
 
-        #expect(try await enrichment.regroup().map(\.id) == [budget.id])
-        // Releasing what is already released changes nothing.
-        try await world.cuts.releaseStoredPlace(of: [piece])
-        await enrichment.invalidateGrouping()
-        #expect(try await enrichment.regroup().map(\.id) == [budget.id])
+    /// A deleted stretch is silence to the planner, and a long enough silence at the start of
+    /// a run is a quiet unit of its own rather than the lead-in of what follows. That unit
+    /// starts first — and must not walk off with the identity of the conversation behind it.
+    @Test func aLongDeletedOpeningDoesNotTakeTheNextConversationsIdentity() async throws {
+        let world = try makeWorld()
+        let fixture = world.fixture
+        let segmentId = try await writeSegment(world, seconds: 20 * 60)
+        let opening = (0..<16).map {
+            turn("dentist talk number \($0) goes here", Int64($0) * 60_000 + 2_000, Int64($0) * 60_000 + 50_000)
+        }
+        let closing = [
+            turn("now the budget numbers", 17 * 60_000, 17 * 60_000 + 30_000),
+            turn("send the budget tonight", 18 * 60_000, 18 * 60_000 + 40_000),
+        ]
+        try await transcribe(world, segmentId, opening + closing)
+        try await split(world, segmentId, at: 16 * 60_000 + 30_000)
+        let conversations = try await fixture.enrichment.regroup()
+        try #require(conversations.count == 2)
+        let budget = conversations[1]
+        _ = try await fixture.annotations.save(
+            ConversationAnnotation(conversationId: budget.id, title: "budget title", summary: "s"))
+
+        _ = await world.cascade.deleteConversation(conversations[0].id)
+
+        let after = try await fixture.enrichment.regroup()
+        let kept = try #require(after.first { $0.id == budget.id })
+        // It is the conversation with the budget's words in it, not the silence in front.
+        #expect(kept.contains(segmentId: segmentId, mediaMs: 17 * 60_000))
+        #expect(!kept.contains(segmentId: segmentId, mediaMs: 60_000))
+        #expect(try await fixture.annotations.load(budget.id)?.title == "budget title")
+        #expect(fixture.transcriptStore.load(segmentId)?.segments == closing)
+    }
+
+    /// The same at the other end: a long deleted tail. The conversation before it is
+    /// untouched, id and all.
+    @Test func aLongDeletedTailLeavesTheConversationBeforeItAlone() async throws {
+        let world = try makeWorld()
+        let fixture = world.fixture
+        let segmentId = try await writeSegment(world, seconds: 20 * 60)
+        let opening = [turn("good morning all of you", 2_000, 30_000)]
+        let rest = (2..<19).map {
+            turn("budget talk number \($0) goes here", Int64($0) * 60_000 + 2_000, Int64($0) * 60_000 + 50_000)
+        }
+        try await transcribe(world, segmentId, opening + rest)
+        try await split(world, segmentId, at: 90_000)
+        let conversations = try await fixture.enrichment.regroup()
+        try #require(conversations.count == 2)
+        let before = await frames(world, segmentId)
+
+        _ = await world.cascade.deleteConversation(conversations[1].id)
+
+        let after = try await fixture.enrichment.regroup()
+        #expect(after.first?.id == conversations[0].id)
+        #expect(after.first?.contains(segmentId: segmentId, mediaMs: 2_000) == true)
+        #expect(fixture.transcriptStore.load(segmentId)?.segments == opening)
+        let frames = await frames(world, segmentId)
+        #expect(Array(frames[..<4_500]) == Array(before[..<4_500]))
+        #expect(frames[4_500...].allSatisfy { $0.payload == (try? SpeexSilence.frame()) })
     }
 
     // MARK: - The staged upload

@@ -87,7 +87,7 @@ public actor DeleteCascade {
         guard await destroySegment(segmentId) else { return false }
 
         // Regroup, then drop annotations + index rows for conversations that no longer exist.
-        let survivors = await regroupedIds()
+        let survivors = Set(await regrouped().map(\.id))
         for conversationId in conversationIds where !survivors.contains(conversationId) {
             await forgetConversationRecords(conversationId)
         }
@@ -113,9 +113,9 @@ public actor DeleteCascade {
     /// can be deleted again; the other order leaves a title, a summary and notes about audio
     /// that no longer exists, under an id nothing on screen leads to.
     ///
-    /// One regroup, at the end. The pieces are read once, before anything is destroyed, and
-    /// acted on as read: regrouping between them would re-plan the run around a conversation
-    /// that is half gone.
+    /// The regroup comes at the end, once. The pieces are read before anything is destroyed
+    /// and acted on as read: regrouping between them would re-plan the run around a
+    /// conversation that is half gone.
     ///
     /// Returns the segments that were deleted WHOLE. A segment the conversation only shared
     /// still exists and is not in the list.
@@ -128,14 +128,24 @@ public actor DeleteCascade {
         var neighbours: [String] = []
         var whole: [ConversationMember] = []
         var partial: [ConversationMember] = []
+        // The conversation that starts where one of this one's pieces ends, in the same
+        // segment: the one whose identity the regroup below has to keep.
+        var follower: (conversationId: String, after: ConversationMember)?
         for piece in pieces where piece.segmentId != openSegmentId {
-            let sharedWith = await enrichment.owners(ofSegment: piece.segmentId)
-                .map(\.conversationId).filter { $0 != conversationId }
-            if piece.isWhole, sharedWith.isEmpty {
+            let owners = await enrichment.owners(ofSegment: piece.segmentId)
+                .filter { $0.conversationId != conversationId }
+            if piece.isWhole, owners.isEmpty {
                 whole.append(piece)
-            } else {
-                partial.append(piece)
-                for id in sharedWith where !neighbours.contains(id) { neighbours.append(id) }
+                continue
+            }
+            partial.append(piece)
+            for owner in owners where !neighbours.contains(owner.conversationId) {
+                neighbours.append(owner.conversationId)
+            }
+            if let end = piece.endMediaMs,
+                let next = owners.first(where: { $0.piece.startMediaMs == end })
+            {
+                follower = (next.conversationId, piece)
             }
         }
 
@@ -162,28 +172,54 @@ public actor DeleteCascade {
         // the grouping has not moved.
         guard !destroyed.isEmpty else { return deleted }
 
-        // What the regroup must see, in an order that survives the pipeline's own regroup
-        // landing in the middle of it (it runs on its own schedule and nothing holds it off).
-        //
-        // The rebuild adopts ids from the stored grouping, so the deleted pieces have to be
-        // out of it by the time a rebuild first sees that their words are gone — see
-        // `ConversationCutStore.releaseStoredPlace` for why a neighbour would otherwise come
-        // back under the deleted conversation's id. A rebuild sees that when the speech
-        // evidence it remembers is dropped, and not before. So: release, drop the evidence,
-        // and release again, because a rebuild that landed between the two wrote the deleted
-        // conversation's place back from the turns it still remembered.
+        // The regroup. It adopts ids from the stored grouping, so the deleted pieces leave
+        // that first — see `ConversationCutStore.releaseStoredPlace` — and the speech evidence
+        // the grouping remembers for the rewritten segments is dropped, which is what lets it
+        // see that the words are gone.
         let cuts = ConversationCutStore(db: annotations.db)
-        do { try await cuts.releaseStoredPlace(of: destroyed) } catch {
-            log.failure("stored grouping cascade", error)
-        }
         for piece in partial where destroyed.contains(piece) {
             await enrichment.invalidateSpeechEvidence(segmentId: piece.segmentId)
         }
         do { try await cuts.releaseStoredPlace(of: destroyed) } catch {
             log.failure("stored grouping cascade", error)
         }
+        var conversations = await regrouped()
 
-        let survivors = await regroupedIds()
+        // The conversation that follows in the shared segment must still be itself. When the
+        // deleted one opened the run, the planner lets the follower begin earlier, over the
+        // silence — at a position no stored piece of its own covers, so the rebuild issued it
+        // a new id and left its title, notes and tags behind under the old one. It is the
+        // conversation that now starts in the deleted range (or exactly where it ended); the
+        // last such, because a long silence can also have become a quiet unit of its own in
+        // front of it. It gets its id back, and the rebuild after that adopts it as usual.
+        if let follower, destroyed.contains(follower.after),
+            !conversations.contains(where: { $0.id == follower.conversationId })
+        {
+            let lower = follower.after.startMediaMs ?? 0
+            let upper = follower.after.endMediaMs ?? lower
+            func start(_ conversation: GroupedConversation) -> Int64? {
+                guard let first = conversation.members.first,
+                    first.segmentId == follower.after.segmentId
+                else { return nil }
+                let at = first.startMediaMs ?? 0
+                return at >= lower && at <= upper ? at : nil
+            }
+            let candidate = conversations.filter { start($0) != nil }
+                .max { (start($0) ?? 0) < (start($1) ?? 0) }
+            if let candidate {
+                do {
+                    if try await cuts.renameStoredConversation(
+                        from: candidate.id, to: follower.conversationId)
+                    {
+                        conversations = await regrouped()
+                    }
+                } catch {
+                    log.failure("stored grouping rename", error)
+                }
+            }
+        }
+
+        let survivors = Set(conversations.map(\.id))
         // What search held for the neighbours quoted the shared segment; it is removed rather
         // than left lying about content, and put straight back from the transcript as it now
         // is. A neighbour is never stripped of its title or notes here, whatever the regroup
@@ -339,10 +375,10 @@ public actor DeleteCascade {
 
     // MARK: - Shared steps
 
-    /// Regroups and returns the ids of the conversations that exist afterwards.
-    private func regroupedIds() async -> Set<String> {
+    /// Regroups and returns the conversations that exist afterwards.
+    private func regrouped() async -> [GroupedConversation] {
         await enrichment.invalidateGrouping()
-        return Set(((try? await enrichment.regroup()) ?? []).map(\.id))
+        return (try? await enrichment.regroup()) ?? []
     }
 
     /// Everything keyed by a conversation's id rather than by its audio: the annotation, the
