@@ -1,11 +1,45 @@
 import Foundation
 
-/// The part of a conversation a citation points at: a member segment, narrowed to a
-/// wall-clock stretch of it when the citation knows one.
+/// The part of a conversation a link points at: a member segment, narrowed to a wall-clock
+/// stretch of it when the link knows one.
 struct TranscriptFocus: Equatable, Hashable {
+    /// What the arrival is for, which decides what the transcript does with the stretch.
+    enum Style: String, Hashable {
+        /// A citation chip (Ask, Saved Notes, a follow-up's source): the lines inside the
+        /// stretch are banded under "The moment this cites" with a "Play from here". It needs a
+        /// row inside the stretch to band, and without one it does nothing. Every link written
+        /// before styles existed means this.
+        case citation
+        /// A moment on the clock (History's cards): the transcript lands on the last row
+        /// starting at or before `startMs` — or the first after it — and marks nothing. It
+        /// works in a gap, where there is no row inside any window to band.
+        case moment
+
+        /// In the URL as `fk=`. Citation is the default and is never written, so every link
+        /// that existed before this reads back exactly as it did.
+        var urlValue: String? {
+            switch self {
+            case .citation: return nil
+            case .moment: return "m"
+            }
+        }
+
+        /// Anything unrecognised is a citation: that is what the link meant before `fk` could
+        /// say otherwise.
+        init(urlValue: String?) {
+            self = urlValue == Style.moment.urlValue ? .moment : .citation
+        }
+    }
+
     var segmentId: String
     var startMs: Int64?
     var endMs: Int64?
+    var style: Style = .citation
+
+    /// A wall-clock moment inside `segmentId`: a zero-length stretch at `wallMs`.
+    static func moment(segmentId: String, atWallMs wallMs: Int64) -> TranscriptFocus {
+        TranscriptFocus(segmentId: segmentId, startMs: wallMs, endMs: wallMs, style: .moment)
+    }
 
     /// Does this row belong to the cited stretch? Times win when they exist — they are what
     /// makes the highlight a few lines instead of a whole recording — and the member is the
@@ -27,8 +61,9 @@ enum Route: Equatable, Hashable, Identifiable {
     var id: String { url.absoluteString }
 
     case today(date: String?)          // companion://today[?date=YYYY-MM-DD]
-    /// `focus` is the stretch a citation chip sent us to: the transcript scrolls to it, marks
-    /// those lines, and offers to play from there. Nil for every ordinary open.
+    /// `atMs` cues the player (MEDIA time, gaps excluded). `focus` is where the transcript
+    /// lands (WALL time): a citation's stretch, scrolled to, marked and offered to play from; or
+    /// a moment on the clock, scrolled to and marked not at all. Nil for every ordinary open.
     case conversation(id: String, atMs: Int64?, focus: TranscriptFocus? = nil)
     case live
     case library(tag: String?)
@@ -66,7 +101,8 @@ enum Route: Equatable, Hashable, Identifiable {
                 TranscriptFocus(
                     segmentId: $0,
                     startMs: query["fs"].flatMap { Int64($0) },
-                    endMs: query["fe"].flatMap { Int64($0) })
+                    endMs: query["fe"].flatMap { Int64($0) },
+                    style: TranscriptFocus.Style(urlValue: query["fk"]))
             }
             return .conversation(id: id, atMs: t, focus: focus)
         case "live":
@@ -119,6 +155,7 @@ enum Route: Equatable, Hashable, Identifiable {
                     items.append(.init(name: "fs", value: String(start)))
                 }
                 if let end = focus.endMs { items.append(.init(name: "fe", value: String(end))) }
+                if let kind = focus.style.urlValue { items.append(.init(name: "fk", value: kind)) }
             }
             if !items.isEmpty { components.queryItems = items }
         case .live:

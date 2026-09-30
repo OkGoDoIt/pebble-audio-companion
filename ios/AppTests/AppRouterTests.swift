@@ -123,6 +123,66 @@ struct AppRouterTests {
         #expect(Route.parse(empty) == nil)
     }
 
+    // MARK: - Where the transcript lands: citation or moment
+
+    /// A citation link spells exactly what it always did — no `fk` — and reads back as a
+    /// citation. Every chip, note and Shortcut written before the style existed depends on this.
+    @Test func aCitationLinkIsUnchangedByTheStyle() throws {
+        let focus = TranscriptFocus(segmentId: "seg-1", startMs: 1_000, endMs: 2_000)
+        #expect(focus.style == .citation)
+        let route = Route.conversation(id: "conv-seg-1", atMs: 500, focus: focus)
+        #expect(
+            route.url.absoluteString
+                == "companion://conversation/conv-seg-1?t=500&s=seg-1&fs=1000&fe=2000")
+        #expect(Route.parse(route.url) == route)
+
+        // A link from before the style existed parses as a citation.
+        let old = try #require(
+            URL(string: "companion://conversation/conv-seg-1?t=500&s=seg-1&fs=1000&fe=2000"))
+        #expect(Route.parse(old) == route)
+        // And one with no stretch at all, the oldest shape, still names just the member.
+        let bare = try #require(URL(string: "companion://conversation/conv-seg-1?s=seg-1"))
+        #expect(
+            Route.parse(bare)
+                == .conversation(
+                    id: "conv-seg-1", atMs: nil, focus: TranscriptFocus(segmentId: "seg-1")))
+    }
+
+    @Test func aMomentLinkRoundTripsCompactly() throws {
+        let focus = TranscriptFocus.moment(segmentId: "seg-2", atWallMs: 1_727_700_000_000)
+        #expect(focus.style == .moment)
+        #expect(focus.startMs == 1_727_700_000_000 && focus.endMs == 1_727_700_000_000)
+        let route = Route.conversation(id: "conv-seg-1", atMs: 61_000, focus: focus)
+        #expect(
+            route.url.absoluteString
+                == "companion://conversation/conv-seg-1?t=61000&s=seg-2"
+                + "&fs=1727700000000&fe=1727700000000&fk=m")
+        #expect(Route.parse(route.url) == route)
+    }
+
+    /// An `fk` this build does not know is read as what the link meant before `fk` existed,
+    /// rather than dropping the focus or failing the link.
+    @Test func anUnknownFocusKindReadsAsACitation() throws {
+        let url = try #require(URL(string: "companion://conversation/c?s=seg&fs=1&fe=2&fk=zz"))
+        guard case .conversation(_, _, let focus)? = Route.parse(url) else {
+            Issue.record("not a conversation route")
+            return
+        }
+        #expect(focus?.style == .citation)
+        #expect(focus?.startMs == 1 && focus?.endMs == 2)
+    }
+
+    /// Opening at a moment is still a conversation open: it lands where every conversation
+    /// does, with the focus intact.
+    @Test func aMomentOpensInsideLibraryLikeAnyConversation() {
+        let router = AppRouter()
+        let route = Route.conversation(
+            id: "conv-1", atMs: 0, focus: .moment(segmentId: "seg-1", atWallMs: 42))
+        router.navigate(to: route)
+        #expect(router.selectedTab == .library)
+        #expect(router.libraryPath == [route])
+    }
+
     @Test func followUpsOpenInTheirOwnTab() {
         let router = AppRouter()
         router.selectedTab = .today

@@ -17,7 +17,8 @@ struct TranscriptView: View {
     /// Q16 — stamps read in the zone the audio was recorded in, not the one you're in now.
     var timeZone: TimeZone = .current
     /// The stretch a citation chip sent us to. Its rows are banded and carry the play
-    /// control; nil on every ordinary open, which is most of them.
+    /// control; nil on every ordinary open, which is most of them. A `.moment` focus bands
+    /// nothing — the screen only scrolls to it.
     var focus: TranscriptFocus?
     /// Nil where names aren't editable yet (the live screen, whose diarization is still
     /// provisional): the name renders as plain text rather than a button that does nothing.
@@ -83,13 +84,17 @@ struct TranscriptView: View {
         switch block {
         case .speech(_, let turns, _):
             speechBlock(turns)
+        // Markers are addressable like paragraphs (`.id(turn.id)` below): a moment inside a
+        // quiet stretch or an interruption lands on the marker that describes it.
         case .quiet(let marker, _):
             TranscriptMarkerRow(
                 marker: marker, color: Tokens.faint, rule: Tokens.hairline, timeZone: timeZone)
+                .id(marker.id)
         case .missing(let marker, _):
             TranscriptMarkerRow(
                 marker: marker, color: Tokens.missing, rule: Tokens.missingHair,
                 timeZone: timeZone)
+                .id(marker.id)
         }
     }
 
@@ -195,8 +200,11 @@ struct TranscriptView: View {
         return blocks
     }
 
+    /// Only a citation marks lines. A moment is a place to land, not a quote: banding the row
+    /// it lands on would claim somebody pointed at those words.
     private func isCited(segmentId: String, at startedAt: Date?) -> Bool {
-        focus?.contains(segmentId: segmentId, at: startedAt) ?? false
+        guard let focus, focus.style == .citation else { return false }
+        return focus.contains(segmentId: segmentId, at: startedAt)
     }
 
     private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
