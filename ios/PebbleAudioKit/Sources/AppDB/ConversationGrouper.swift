@@ -316,8 +316,11 @@ public enum ConversationGrouper {
             let holdsOpenSegment =
                 openSegmentId != nil && run.members.contains { $0.segmentId == openSegmentId }
             let endedAtMs = run.members.last.map { max(segmentEndMs($0), $0.closedAtMs ?? 0) }
+            // (A clock that reads EARLIER than the recording's end is not a clock to reason
+            // from — a test's, or a badly placed segment's — and says nothing about recency.)
             let mayStillChain =
-                nowMs != .max && (endedAtMs.map { nowMs - $0 < chainWindowMs } ?? false)
+                nowMs != .max
+                && (endedAtMs.map { nowMs >= $0 && nowMs - $0 < chainWindowMs } ?? false)
             let isOpenEnded = index == runs.count - 1 && (holdsOpenSegment || mayStillChain)
             let planned = plannedRun(
                 run.members, reason: run.reason, evidence: evidence, policy: policy,
