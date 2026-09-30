@@ -239,8 +239,10 @@ struct ConversationBoundaryEditsTests {
         let eager = BoundaryPolicy(
             quietSplitMs: 20_000, quietCandidateMs: 10_000, segmenter: nil)
 
+        // (The silences between them are units of their own; only the talk is named here.)
+        let spoken = [Library.first, Library.second, Library.third]
         var grouped = try await Library.regroup(db, policy: eager)
-        #expect(grouped.map(\.id) == [Library.first, Library.second, Library.third])
+        #expect(grouped.map(\.id).filter(spoken.contains) == spoken)
 
         let at = try await edits.joinWithPrevious(conversationId: Library.second)
         #expect(at == Self.holiday)
@@ -263,7 +265,7 @@ struct ConversationBoundaryEditsTests {
 
         try await edits.clearJoin(at: Self.holiday)
         grouped = try await Library.regroup(db, policy: eager)
-        #expect(grouped.map(\.id) == [Library.first, Library.second, Library.third])
+        #expect(grouped.map(\.id).filter(spoken.contains) == spoken)
     }
 
     /// A join at a conversation's OWN start is "joined with the previous conversation" — it

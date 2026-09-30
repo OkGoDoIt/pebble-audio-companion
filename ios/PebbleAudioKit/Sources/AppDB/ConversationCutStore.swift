@@ -85,9 +85,27 @@ public struct ConversationCutStore: Sendable {
         try await db.writer.write { db in
             let grouping = try ConversationGrouper.fetchAll(db)
             guard let index = grouping.firstIndex(where: { $0.id == conversationId }),
-                index > 0, let first = grouping[index].members.first,
-                let earlier = grouping[index - 1].members.first
+                index > 0, let first = grouping[index].members.first
             else { return nil }
+            // "The one before it" is the conversation before it, not the silence between them:
+            // a long silence is a unit of its own, and joining a conversation to fifteen
+            // minutes of nothing is never what was meant. Silent units are stepped over, and
+            // the span then covers them too — the person has said the talk either side of
+            // that silence is one conversation.
+            var silent = Set<String>()
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT conversationId,
+                        SUM(CASE WHEN transcriptionState = 'NoSpeech' THEN 0 ELSE 1 END) AS heard
+                    FROM conversation_segments GROUP BY conversationId
+                    """)
+            where (row["heard"] as Int? ?? 1) == 0 {
+                silent.insert(row["conversationId"])
+            }
+            var before = index - 1
+            while before > 0, silent.contains(grouping[before].id) { before -= 1 }
+            guard let earlier = grouping[before].members.first else { return nil }
             let at = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
             let from = ConversationCut(
                 segmentId: earlier.segmentId, mediaMs: earlier.startMediaMs ?? 0)
