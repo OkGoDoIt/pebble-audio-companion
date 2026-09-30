@@ -1,6 +1,9 @@
+import AppDB
 import AppIntents
 import CompanionRuntime
 import Foundation
+import SegmentStore
+import StatusUI
 import UserNotifications
 
 // Q9 — the ONE notification this product sends (plan 6.7 copy, 6.10 trigger mechanics). The
@@ -76,9 +79,12 @@ actor UserNotificationLossNotifier: LossNotifier {
     private let scheduler: any LossNotificationScheduling
     private let defaults: UserDefaults
     private let now: @Sendable () -> Int64
-    /// The conversation a segment belongs to, or nil when it cannot be resolved (no runtime
-    /// up, a segment not yet grouped). Injected so tests can answer without a database.
-    private let conversationId: @Sendable (String) async -> String?
+    /// The conversation a loss fell in, or nil when it cannot be resolved (no runtime up, a
+    /// segment not yet grouped). Handed the whole event rather than its segment id: a segment
+    /// usually holds the end of one conversation and the start of the next, so which one a gap
+    /// is in depends on where in the segment it is. Injected so tests can answer without a
+    /// database.
+    private let conversationId: @Sendable (LossEvent) async -> String?
 
     /// The Q9 alert is OPT-IN (default off). Read at fire time rather than captured at
     /// construction so toggling it in Settings takes effect immediately.
@@ -90,7 +96,7 @@ actor UserNotificationLossNotifier: LossNotifier {
         scheduler: any LossNotificationScheduling = SystemLossNotificationScheduler(),
         defaults: UserDefaults = SharedAppGroup.defaults,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
-        conversationId: @escaping @Sendable (String) async -> String? =
+        conversationId: @escaping @Sendable (LossEvent) async -> String? =
             UserNotificationLossNotifier.liveConversationId
     ) {
         self.scheduler = scheduler
@@ -99,12 +105,49 @@ actor UserNotificationLossNotifier: LossNotifier {
         self.conversationId = conversationId
     }
 
-    /// The production resolver: the live library's segment → conversation hop. Reads the
-    /// runtime off the main actor and answers nil when no composition is up.
-    private static let liveConversationId: @Sendable (String) async -> String? = { segmentId in
-        guard let library = await MainActor.run(body: { AppComposition.shared?.runtime.library })
+    /// The production resolver: the conversation that owns the MOMENT of the segment the
+    /// audio went missing at. Reads the composition off the main actor and answers nil when
+    /// none is up.
+    ///
+    /// Asked at the gap's own position when the segment's sidecar still says where that is,
+    /// and at the segment's start otherwise — which is what this always asked, and is right
+    /// whenever the segment is not shared.
+    private static let liveConversationId: @Sendable (LossEvent) async -> String? = { event in
+        let graph = await MainActor.run {
+            AppComposition.shared.map { (files: $0.files, database: $0.database) }
+        }
+        guard let graph else { return nil }
+        let mediaMs = graph.files.readMeta(event.segmentId)
+            .flatMap { UserNotificationLossNotifier.gapMediaMs(of: event, in: $0) }
+        return try? await ConversationQueries(db: graph.database).conversationId(
+            ofSegment: event.segmentId, atMediaMs: mediaMs ?? 0)
+    }
+
+    /// Where in its segment's STORED audio a loss sits — the clock a conversation's pieces are
+    /// cut on — or nil when the sidecar has no record that matches the event.
+    ///
+    /// The event carries a segment and a duration, not a position, so the record is found by
+    /// its length: the newest visible loss of exactly that duration (the evaluator fires on
+    /// the record that was just persisted, or on the longest one deferred until the segment
+    /// closed). The position returned is the last stored instant BEFORE the gap: missing audio
+    /// is shown at the end of the conversation it interrupted (`TranscriptItems` files a gap
+    /// under the piece its start falls in), so a gap sitting exactly where the next
+    /// conversation starts opens the one that lost it, not the one that began after it.
+    static func gapMediaMs(of event: LossEvent, in meta: SegmentMeta) -> Int64? {
+        let visibility = GapVisibility(meta.gaps)
+        guard
+            let gap = meta.gaps.last(where: {
+                visibility.isVisibleLoss($0)
+                    && gapDurationMs($0, frameDurationMs: meta.frameDurationMs) == event.durationMs
+            }),
+            let first = meta.firstSampleIndex, gap.firstMissingSampleIndex >= first,
+            meta.sampleRateHz > 0
         else { return nil }
-        return try? await library.conversationId(ofSegment: segmentId)
+        let wallMs =
+            Int64(gap.firstMissingSampleIndex - first) * 1_000 / Int64(meta.sampleRateHz)
+        let clock = SegmentMediaClock(meta)
+        let mediaMs = clock.isExact ? clock.media(fromWall: wallMs) : min(wallMs, clock.mediaSpanMs)
+        return max(mediaMs - 1, 0)
     }
 
     /// The route a tap opens. Kept as a string in userInfo so the payload stays plist-simple.
@@ -147,7 +190,7 @@ actor UserNotificationLossNotifier: LossNotifier {
         // The gap's conversation, when the segment has been grouped into one. A segment that
         // is still open (the B21 deferral has already been applied by the evaluator) or a
         // runtime that is not up answers nil, and the tap goes to Today as it always did.
-        let conversationId = event.segmentId.isEmpty ? nil : await conversationId(event.segmentId)
+        let conversationId = event.segmentId.isEmpty ? nil : await conversationId(event)
 
         await scheduler.schedule(
             title: Copy.Notifications.lossTitle,
