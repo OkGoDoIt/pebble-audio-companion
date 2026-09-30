@@ -1,6 +1,29 @@
 # History tab — plan
 
-**Status (2026-09-30):** design agreed with Roger after ten mockup rounds. Nothing is built.
+**Status (2026-09-30, evening):** design agreed with Roger after ten mockup rounds; building is
+under way on branch `history-integration` (see the progress log for what has landed).
+
+> **Change of architecture, 2026-09-30.** Roger: "There is never a real world situation where
+> there is a 24 hour conversation … If a conversation actually does last longer, the box
+> displaying it should be the full size according to the timeline … separately we probably need
+> to fix our algorithm for splitting long audio up into shorter conversations around specific
+> topics." A separate session ("Split long recordings into topic-sized conversations", branch
+> `conversation-units`) is making **conversations themselves topic-sized** (sub-segment
+> membership; one unit, no separate chapter layer). Consequences for this plan:
+>
+> - Sections 7.2–7.3 (a separate chapter layer and stage) are **superseded**. The groundwork on
+>   branch `history-chapters` is parked. History's cards will be the conversations overlapping
+>   the day (id, start, end, title, summary, tags), read through the day builder's existing
+>   `chapters` input.
+> - Until that lands, and whenever a stretch of talk has no conversation unit to show, the day
+>   is drawn without the grouper: talk is cut only where it really paused for three minutes or
+>   more (`HistoryTalkCutter`), and each untitled card shows its time range and the first
+>   substantive thing said, verbatim. The grouper's multi-hour conversations and their titles
+>   are not used on the day.
+> - A card is always the full height of its duration, however long. Nothing is cut or shortened
+>   to avoid a long card. The axis beside every card is drawn in a light tint (Roger liked it).
+> - Week and month briefs (7.4) wait for the new conversation unit.
+
 This document is the plan to build it. It supersedes `2026-09-30-history-tab-design.md`, which
 stays as the record of how the design was reached.
 
