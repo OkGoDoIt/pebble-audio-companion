@@ -212,6 +212,26 @@ struct AudioContentClassifierTests {
         #expect(first.neighbours.wordsBefore == 0)  // nothing before a
     }
 
+    @Test("an AI reading turns talk-rate lyrics into no conversation, but never adds talk")
+    func judgementApplies() throws {
+        let turns = (0..<5).map { minute in
+            talk(Int64(minute) * 60_000, Int64(minute) * 60_000 + 55_000, words: 100)
+        }
+        let judged = [
+            JudgedMinute(m: 1, kind: "music", confidence: 0.95),
+            JudgedMinute(m: 2, kind: "music", confidence: 0.5),  // not sure enough
+            JudgedMinute(m: 3, kind: "gibberish", confidence: 0.99),  // not acted on
+            JudgedMinute(m: 4, kind: "tvOrVideo", confidence: 0.9),
+            JudgedMinute(m: 7, kind: "conversation", confidence: 0.99),  // a quiet minute stays quiet
+        ]
+        let spans = try #require(
+            AudioContentClassifier.classify(
+                meta: meta(wallMs: 480_000), turns: turns, neighbours: .quiet, judged: judged))
+        #expect(spans.map(\.decidedBy) == ["wordRate", "contentJudge", "wordRate", "contentJudge", "wordRate"])
+        #expect(spans.map(\.kind) == [.conversation, .noConversation, .conversation, .noConversation, .noConversation])
+        #expect(spans[1].descriptor == nil && spans[1].confidence == AudioContentMethod.judgeConfidence)
+    }
+
     @Test("a NoSpeech segment is one no-conversation span with the transcriber as author")
     func noSpeechSegment() throws {
         let spans = try #require(

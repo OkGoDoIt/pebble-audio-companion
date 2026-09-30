@@ -704,7 +704,10 @@ final class AppComposition {
             transcriptVersionOf: { transcripts.version($0) },
             store: audioContentStore,
             nowMs: nowMs,
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            // Method 2 reads the words through the person's own AI mode and consent, like
+            // titles do: lyrics, TV and announcements stop being titled as conversation.
+            judge: { try await aiRouter.run($0) }
         )
         self.audioContent = audioContent
         let audioContentMask = audioContent.mask

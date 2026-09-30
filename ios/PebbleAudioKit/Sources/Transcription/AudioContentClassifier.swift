@@ -67,6 +67,13 @@ public enum AudioContentMethod {
     /// what `noConversationConfidence` covers in spirit, so it is stated a little lower.
     public static let isolatedConfidence = 0.9
 
+    /// Method 2 (`AudioContentJudge`): the judged kinds that change a verdict, the confidence
+    /// they need, and the precision stored with the result. Here rather than in the judge so
+    /// the pure classifier needs no AI module.
+    public static let judgeActionableKinds: Set<String> = ["music", "tvOrVideo", "announcement", "loop"]
+    public static let judgeMinimumConfidence = 0.8
+    public static let judgeConfidence = 0.93
+
     /// Measured precisions (held-back labels, weighted to the library's mix), stored as the
     /// span's confidence. See the design doc's table.
     public static let noConversationConfidence = 0.96
@@ -114,7 +121,8 @@ public enum AudioContentClassifier {
     /// stored-audio clock.
     public static func classify(
         meta: SegmentMeta, turns: [TranscriptSegment]?,
-        neighbours: AudioContentNeighbours = .unknown
+        neighbours: AudioContentNeighbours = .unknown,
+        judged: [JudgedMinute] = []
     ) -> [SegmentAudioContentSpan]? {
         guard meta.closeReason != nil else { return nil }
         let clock = SegmentMediaClock(meta)
@@ -133,7 +141,7 @@ public enum AudioContentClassifier {
         case .complete:
             guard let turns else { return nil }
             return place(
-                verdicts(turns: turns, mediaSpan: mediaSpan, neighbours: neighbours),
+                verdicts(turns: turns, mediaSpan: mediaSpan, neighbours: neighbours, judged: judged),
                 meta: meta, clock: clock)
         case .pending, .running, .uploading, .failed, .disabled:
             return nil
@@ -153,7 +161,8 @@ public enum AudioContentClassifier {
     /// Per-minute verdicts over the stored audio, adjacent equal ones merged.
     static func verdicts(
         turns: [TranscriptSegment], mediaSpan: Int64,
-        neighbours: AudioContentNeighbours = .unknown
+        neighbours: AudioContentNeighbours = .unknown,
+        judged: [JudgedMinute] = []
     ) -> [Verdict] {
         let windows = windowEdges(mediaSpan: mediaSpan)
         let loops = TranscriptArtefacts.loopedArtefacts(
@@ -229,6 +238,7 @@ public enum AudioContentClassifier {
             }
             perWindow.append(verdict)
         }
+        applyJudgement(&perWindow, windows: windows, judged: judged)
         isolateStrayRemarks(&perWindow, windows: windows, neighbours: neighbours)
 
         var out: [Verdict] = []
@@ -249,6 +259,28 @@ public enum AudioContentClassifier {
             }
         }
         return out
+    }
+
+    /// Method 2: a conversation minute an AI reading judged to be lyrics, TV, an announcement or
+    /// a loop (`AudioContentJudge.actionableKinds`, at `minimumConfidence`) is no conversation.
+    /// The judged minute is the one the window's middle falls in. Only minutes method 1 called
+    /// conversation are touched: the reading can take talk away, never add it.
+    static func applyJudgement(
+        _ verdicts: inout [Verdict], windows: [Range<Int64>], judged: [JudgedMinute]
+    ) {
+        guard !judged.isEmpty else { return }
+        let byMinute = Dictionary(judged.map { ($0.m, $0) }, uniquingKeysWith: { a, _ in a })
+        for index in verdicts.indices where verdicts[index].kind == .conversation {
+            let middle = windows[index].lowerBound + Int64(windows[index].count) / 2
+            guard let minute = byMinute[Int(middle / 60_000)],
+                AudioContentMethod.judgeActionableKinds.contains(minute.kind),
+                minute.confidence >= AudioContentMethod.judgeMinimumConfidence
+            else { continue }
+            verdicts[index].kind = .noConversation
+            verdicts[index].descriptor = nil
+            verdicts[index].decidedBy = AudioContentDecider.contentJudge
+            verdicts[index].confidence = AudioContentMethod.judgeConfidence
+        }
     }
 
     /// Stretches of talk (conversation minutes, joined across pauses of up to

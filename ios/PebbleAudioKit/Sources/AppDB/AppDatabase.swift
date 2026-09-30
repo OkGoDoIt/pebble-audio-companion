@@ -560,6 +560,24 @@ public struct AppDatabase: Sendable {
                 index: "audio_content_overrides_start", on: "audio_content_overrides",
                 columns: ["startMs"])
         }
+        // An AI reading of each transcribed segment, minute by minute: what the words ARE
+        // (talk, lyrics, TV, an announcement, a transcriber loop). DERIVED — it costs one call
+        // per segment to rebuild — and keyed by the transcript version and prompt version it
+        // answered, so a re-transcription or a better prompt asks again. See
+        // `AudioContentJudge` and `docs/audio-content-classification.md`.
+        migrator.registerMigration("audio-content-judgements-v1") { db in
+            try db.create(table: "audio_content_judgements") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("inputKey", .text).notNull()
+                t.column("minutesJson", .text)  // [{"m":0,"kind":"music","confidence":0.9}]
+                t.column("provider", .text)
+                t.column("model", .text)
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("lastError", .text)
+                t.column("nextAttemptAtMs", .integer)
+                t.column("judgedAtMs", .integer)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

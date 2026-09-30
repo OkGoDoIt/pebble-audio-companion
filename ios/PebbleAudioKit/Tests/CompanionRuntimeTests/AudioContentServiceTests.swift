@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import Intelligence
 import SegmentStore
 import Testing
 import Transcription
@@ -42,7 +43,11 @@ struct AudioContentServiceTests {
         }
     }
 
-    private func service(_ world: World, db: AppDatabase) -> AudioContentService {
+    private func service(
+        _ world: World, db: AppDatabase,
+        judge: (@Sendable (AiRunRequest) async throws -> RoutedAiResult)? = nil,
+        now: Int64 = 1_000
+    ) -> AudioContentService {
         AudioContentService(
             listSegments: { world.lock.withLock { world.metas } },
             speechTimingsOf: { id in
@@ -58,7 +63,8 @@ struct AudioContentServiceTests {
                 }
             },
             store: AudioContentStore(db: db),
-            nowMs: { 1_000 })
+            nowMs: { now },
+            judge: judge)
     }
 
     private func world(_ ids: [String]) -> World {
@@ -191,5 +197,73 @@ struct AudioContentServiceTests {
         world.lock.withLock { world.metas.removeAll { $0.segmentId == "b" } }
         _ = try await service.classifyPass()
         #expect(try await store.inputKeys().isEmpty)
+    }
+
+    final class Judge: @unchecked Sendable {
+        let lock = NSLock()
+        var calls = 0
+        var reply = #"{"minutes":[{"m":0,"kind":"conversation","confidence":0.99},{"m":1,"kind":"music","confidence":0.97},{"m":2,"kind":"music","confidence":0.95}]}"#
+        var error: Error?
+        func run(_ request: AiRunRequest) async throws -> RoutedAiResult {
+            let (reply, error) = lock.withLock { () -> (String, Error?) in
+                calls += 1
+                return (self.reply, self.error)
+            }
+            if let error { throw error }
+            return RoutedAiResult(
+                text: reply, modeUsed: .remoteFirst, providerId: "openai", modelUsed: "gpt-5.6-luna",
+                inputTokens: 100, outputTokens: 20)
+        }
+    }
+
+    @Test("an AI reading lands, reclassifies the segment, and withholds the lyrics from the models")
+    func judgedLyricsAreWithheld() async throws {
+        let db = try AppDatabase.inMemory()
+        let world = world(["a"])
+        let judge = Judge()
+        let now = world.metas[0].startWallMs + 3_600_000
+        let service = service(world, db: db, judge: { try await judge.run($0) }, now: now)
+        _ = try await service.classifyPass()
+        #expect(service.mask.aiRanges("a").isEmpty)
+
+        #expect(try await service.judgePass(allowBackfill: false))
+        #expect(judge.lock.withLock { judge.calls } == 1)
+        #expect(try await service.classifyPass())
+        let spans = try await AudioContentStore(db: db).spans(segmentId: "a")
+        #expect(spans.map(\.decidedBy).contains(AudioContentDecider.contentJudge))
+        // Minutes 1-2 were lyrics: withheld from the models and from speech evidence.
+        #expect(service.mask.aiRanges("a") == [60_000..<180_000])
+        #expect(service.mask.speechRanges("a") == [60_000..<180_000])
+        // Read once per transcript: nothing more to ask.
+        #expect(try await service.judgePass(allowBackfill: false) == false)
+        #expect(judge.lock.withLock { judge.calls } == 1)
+        let stored = try await AudioContentStore(db: db).judgements()["a"]
+        #expect(stored?.model == "gpt-5.6-luna" && stored?.minutes?.count == 3)
+    }
+
+    @Test("the backlog waits for the charger; no AI means nothing owed; a failure backs off")
+    func judgeGating() async throws {
+        let db = try AppDatabase.inMemory()
+        let world = world(["old"])
+        let judge = Judge()
+        // Two days later: backlog.
+        let now = world.metas[0].startWallMs + 48 * 3_600_000
+        let service = service(world, db: db, judge: { try await judge.run($0) }, now: now)
+        _ = try await service.classifyPass()
+        #expect(try await service.judgePass(allowBackfill: false) == false)
+        #expect(judge.lock.withLock { judge.calls } == 0)
+
+        judge.lock.withLock { judge.error = AiError.providerUnavailable(providerId: "openai") }
+        #expect(try await service.judgePass(allowBackfill: true) == false)
+        #expect(try await AudioContentStore(db: db).judgements().isEmpty)
+
+        judge.lock.withLock { judge.error = AiError.providerFailed("HTTP 500") }
+        #expect(try await service.judgePass(allowBackfill: true) == false)
+        let failed = try #require(try await AudioContentStore(db: db).judgements()["old"])
+        #expect(failed.attempts == 1 && failed.minutes == nil && (failed.nextAttemptAtMs ?? 0) > now)
+        // Inside the backoff: not asked again.
+        let calls = judge.lock.withLock { judge.calls }
+        #expect(try await service.judgePass(allowBackfill: true) == false)
+        #expect(judge.lock.withLock { judge.calls } == calls)
     }
 }

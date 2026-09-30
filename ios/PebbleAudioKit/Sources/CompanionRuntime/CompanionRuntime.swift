@@ -702,6 +702,11 @@ public actor CompanionRuntime {
             // trigger.
             enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
             classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
+            // The backlog of older segments is read only on a charger; today's any time.
+            judgeAudio: {
+                try await env.audioContent?.judgePass(
+                    allowBackfill: foreground.devicePower.isPluggedIn) ?? false
+            },
             regroup: { try await env.enrichment.regroupPass() },
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
