@@ -259,15 +259,14 @@ struct LiveEntityDataSource: EntityDataSource {
         )
     }
 
-    /// The same collapse the Spotlight pass applies (`AppComposition.install`): a looped
-    /// recording must not hand Siri 1 649 copies of one sentence.
+    /// The same text the Spotlight pass indexes (`AppComposition.install`): the conversation's
+    /// own pieces of its segments — never a member's whole transcript, which also holds the
+    /// conversations either side — with loops collapsed, because a looped recording must not
+    /// hand Siri 1 649 copies of one sentence.
     private static func transcript(of detail: ConversationDetail, transcripts: FileTranscriptStore)
         -> String?
     {
-        let text = detail.members
-            .compactMap { transcripts.load($0.segmentId)?.withLoopedArtefactsCollapsed().text }
-            .joined(separator: "\n")
-        return text.isEmpty ? nil : text
+        ConversationText.joined(detail.pieces) { transcripts.load($0) }
     }
 
     // MARK: Notes

@@ -47,10 +47,12 @@ final class MockWorld {
     }
 
     var conversations: [MockConversation] = []
-    /// The mock's `boundary_overrides` table: segment ids the person has split at, and the
-    /// conversations they have joined backwards. Held so the "Split or join" sheet is really
-    /// usable in previews and `-demo-data` rather than a set of switches that spring back.
+    /// The mock's override tables: the places the person has split at, the joins they have
+    /// taken back (both keyed by `ConversationBoundaryPoint.id`, the position the decision was
+    /// made at), and the conversations they have joined backwards. Held so the "Split or join"
+    /// sheet is really usable in previews and `-demo-data` rather than rows that spring back.
     var mockSplits: Set<String> = []
+    var mockSeparated: Set<String> = []
     var mockJoinedConversations: Set<String> = []
     var followUps: [FollowUp] = []
     var askEntries: [AskEntry] = []
@@ -777,43 +779,56 @@ extension MockWorld: ConversationDataSource {
 
     // --- boundaries (split / join) ---------------------------------------------------------
 
-    /// Real enough to work in previews and `-demo-data`: the split points are the transcript's
-    /// own speaker turns after the first, and toggling one actually persists here, so the sheet
-    /// can be used and reviewed without a watch.
+    /// Real enough to work in previews and `-demo-data`. The mock cannot regroup, so it shows
+    /// the two lists behaving the way the real ones do instead: a place that has been split at
+    /// leaves the list (it would now start another conversation), and the join where the
+    /// artboard conversation's two stand-in recordings meet can be taken back.
     func boundaries(id: String) async throws -> ConversationBoundariesDisplay {
-        guard let conversation = conversations.first(where: { $0.id == id }) else {
-            return .none
-        }
-        let turns: [TranscriptTurn] = conversation.transcript.compactMap { item in
+        guard let conversation = conversations.first(where: { $0.id == id }),
+            let display = try await display(id: id)
+        else { return .none }
+        // The stamped rows: the fixtures carry no times of their own (`stamped`).
+        let turns: [TranscriptTurn] = display.transcript.compactMap { item in
             if case .turn(let turn) = item { return turn }
             return nil
         }
-        let startMs = Int64((turns.first?.startedAt ?? .now).timeIntervalSince1970 * 1000)
-        let points = turns.dropFirst().enumerated().compactMap {
-            (offset, turn) -> ConversationBoundaryPoint? in
+        let startMs = Int64(conversation.start.timeIntervalSince1970 * 1000)
+        func point(_ turn: TranscriptTurn, pauseMs: Int64) -> ConversationBoundaryPoint? {
             guard let startedAt = turn.startedAt else { return nil }
             let atMs = Int64(startedAt.timeIntervalSince1970 * 1000)
             return ConversationBoundaryPoint(
-                id: turn.segmentId.isEmpty ? "mock-\(offset)" : turn.segmentId,
+                // A position per row: the row's place on the scrubber, or — a fixture with no
+                // player — how far into the conversation it is.
+                cut: ConversationCut(
+                    segmentId: turn.segmentId,
+                    mediaMs: max(turn.mediaOffsetMs ?? (atMs - startMs), 0)),
                 startedAt: startedAt,
                 offsetMs: max(0, atMs - startMs),
-                isSplit: mockSplits.contains(turn.segmentId)
-            )
+                pauseMs: pauseMs,
+                opening: ConversationSplitPoints.opening(of: turn.text))
         }
+        // Where the second stand-in recording begins: the mock's one "joined by you".
+        let seam = turns.first { $0.segmentId == MockWorld.member(id, 2) }
+        let points = turns.dropFirst().enumerated().compactMap {
+            (offset, turn) -> ConversationBoundaryPoint? in
+            guard turn.id != seam?.id else { return nil }
+            // Fixture breaks: long enough to be on the list, and not all the same.
+            return point(turn, pauseMs: Int64(25 + 20 * (offset % 4)) * 1000)
+        }
+        let joins = [seam.flatMap { point($0, pauseMs: 0) }].compactMap { $0 }
         return ConversationBoundariesDisplay(
             startReason: .quiet,
             canJoinWithPrevious: true,
             isJoinedWithPrevious: mockJoinedConversations.contains(id),
-            // One point per distinct segment: several turns share a segment, and offering the
-            // same cut three times would be three switches that move together.
-            points: points.reduce(into: [ConversationBoundaryPoint]()) { unique, point in
-                if !unique.contains(where: { $0.id == point.id }) { unique.append(point) }
-            }
+            points: Array(
+                points.filter { !mockSplits.contains($0.id) }
+                    .prefix(ConversationSplitPoints.limit)),
+            joins: joins.filter { !mockSeparated.contains($0.id) }
         )
     }
 
-    func setSplit(atSegmentId segmentId: String, on: Bool) async throws {
-        if on { mockSplits.insert(segmentId) } else { mockSplits.remove(segmentId) }
+    func split(at cut: ConversationCut) async throws {
+        mockSplits.insert("\(cut.segmentId)@\(cut.mediaMs)")
         bump()
     }
 
@@ -823,6 +838,11 @@ extension MockWorld: ConversationDataSource {
         } else {
             mockJoinedConversations.remove(conversationId)
         }
+        bump()
+    }
+
+    func separate(at cut: ConversationCut) async throws {
+        mockSeparated.insert("\(cut.segmentId)@\(cut.mediaMs)")
         bump()
     }
 }
@@ -912,10 +932,12 @@ extension MockWorld: AskDataSource {
         index(of: MockWorld.conversation(ofMember: citedId)).map { conversations[$0].title }
     }
 
-    func citationTitles(for citedIds: [String]) async -> [String: String] {
+    func citationTitles(for citations: [AskCitation]) async -> [String: String] {
         var titles: [String: String] = [:]
-        for id in citedIds {
-            if let title = conversationTitle(citedId: id) { titles[id] = title }
+        for citation in citations {
+            if let title = conversationTitle(citedId: citation.segmentId) {
+                titles[citation.momentKey] = title
+            }
         }
         return titles
     }

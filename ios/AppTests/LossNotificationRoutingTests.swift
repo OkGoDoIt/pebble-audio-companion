@@ -31,7 +31,7 @@ private actor FakeScheduler: LossNotificationScheduling {
 struct LossNotificationRoutingTests {
     private func makeNotifier(
         scheduler: FakeScheduler,
-        resolve: @escaping @Sendable (String) async -> String?
+        resolve: @escaping @Sendable (LossEvent) async -> String?
     ) -> UserNotificationLossNotifier {
         let suite = "loss-routing-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite) ?? .standard
@@ -54,7 +54,9 @@ struct LossNotificationRoutingTests {
     /// told which one so the notification can carry the entity.
     @Test func aResolvedSegmentRoutesToItsConversation() async throws {
         let scheduler = FakeScheduler()
-        let notifier = makeNotifier(scheduler: scheduler) { $0 == "seg-1" ? "conv-1" : nil }
+        let notifier = makeNotifier(scheduler: scheduler) {
+            $0.segmentId == "seg-1" ? "conv-1" : nil
+        }
 
         await notifier.notifyAudioMissed(Self.loss(segmentId: "seg-1"))
 
@@ -91,6 +93,33 @@ struct LossNotificationRoutingTests {
         let call = try #require(await scheduler.calls.first)
         #expect(call.conversationId == nil)
         #expect(call.userInfo["route"] == "companion://today")
+    }
+
+    /// A segment usually holds two conversations, so which one a gap is in depends on where
+    /// in the segment it is. The event carries no position; the sidecar's matching record
+    /// does, and it is read on the stored-audio clock a conversation's pieces are cut on — at
+    /// the last stored instant BEFORE the gap, because lost audio is the end of the
+    /// conversation it interrupted rather than the start of the next.
+    @Test func aGapIsPlacedInItsSegmentsStoredAudio() {
+        // 100 s of wall time: 20 s lost from 10 s, and 10 s lost from 60 s.
+        let meta = PieceLibrary.meta(
+            "seg-g", index: 0, wallMs: 100_000, storedMs: 70_000,
+            gaps: [
+                PieceLibrary.loss(atWallMs: 10_000, durationMs: 20_000),
+                PieceLibrary.loss(atWallMs: 60_000, durationMs: 10_000),
+            ])
+        func position(_ durationMs: Int64) -> Int64? {
+            UserNotificationLossNotifier.gapMediaMs(
+                of: LossEvent(
+                    segmentId: "seg-g", cause: .spoolOverflow, durationMs: durationMs,
+                    detectedAtMs: 500),
+                in: meta)
+        }
+        #expect(position(20_000) == 9_999)
+        // 60 s of wall time is 40 s of stored audio: the first gap is not in it.
+        #expect(position(10_000) == 39_999)
+        // No record of that length: nothing to place, and the segment's start is asked.
+        #expect(position(5_000) == nil)
     }
 
     /// The pure half, for the record.

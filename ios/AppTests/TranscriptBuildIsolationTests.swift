@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import SearchKit
 import SegmentStore
@@ -49,7 +50,7 @@ struct TranscriptBuildIsolationTests {
     /// The walk the conversation screen actually performs, likewise off the main actor.
     @Test func theWholeMemberWalkIsOffTheMainActor() async {
         let walked = await LiveWorld.walkMembers(
-            ["seg-1"],
+            [ConversationMember(segmentId: "seg-1")],
             metas: ["seg-1": meta("seg-1")],
             transcripts: [:],
             assignments: []

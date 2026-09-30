@@ -233,7 +233,7 @@ struct AskThreadScreen: View {
         entry.citations.map { citation in
             Source(
                 citation: citation,
-                title: model.citationTitles[citation.segmentId] ?? "Conversation")
+                title: model.citationTitles[citation.momentKey] ?? "Conversation")
         }
     }
 
@@ -281,9 +281,10 @@ struct AskThreadScreen: View {
 final class AskThreadViewModel {
     /// The open conversation, oldest turn first.
     private(set) var turns: [AskEntry] = []
-    /// Conversation title per cited segment id, resolved off-main once per new turn. `sources`
-    /// reads only this — resolving titles inside the render pass decoded transcripts on every
-    /// body evaluation.
+    /// Conversation title per cited MOMENT (`AskCitation.momentKey`), resolved off-main once
+    /// per new turn. `sources` reads only this — resolving titles inside the render pass
+    /// decoded transcripts on every body evaluation. Not per cited segment: one recording
+    /// usually holds two conversations, and a citation is named for the one its moment is in.
     private(set) var citationTitles: [String: String] = [:]
     /// The question waiting on an answer, and the one whose answer failed. Only one at a time.
     private(set) var pendingQuestion: String?
@@ -374,10 +375,10 @@ final class AskThreadViewModel {
 
     /// Fills the title cache for every citation on screen; ids already resolved are kept.
     private func resolveCitationTitles() async {
-        let ids = turns.flatMap { $0.citations.map(\.segmentId) }
-            .filter { citationTitles[$0] == nil }
-        guard !ids.isEmpty else { return }
-        let resolved = await AskLibraryDataSources.current.ask.citationTitles(for: ids)
+        let pending = turns.flatMap(\.citations)
+            .filter { citationTitles[$0.momentKey] == nil }
+        guard !pending.isEmpty else { return }
+        let resolved = await AskLibraryDataSources.current.ask.citationTitles(for: pending)
         citationTitles.merge(resolved) { _, new in new }
     }
 

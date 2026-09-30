@@ -30,6 +30,30 @@ public struct AudioExportResult: Sendable, Equatable {
     public var fileCount: Int { files.count }
 }
 
+/// Which frames of a segment's frame log a range of its stored audio is.
+///
+/// A conversation owns a RANGE of a segment's stored audio, in milliseconds from the segment's
+/// first stored frame (the clock transcript timings are on). Frame `i` of the sequence-sorted
+/// log covers `[i × d, (i + 1) × d)` ms, so the range `[start, end)` is frames
+/// `[start / d, end / d)`. Playback and export both slice with this one function, because two
+/// conversations that share a segment have to meet on the same frame: computed twice, slightly
+/// differently, the last frame of one would also be the first of the next — or nobody's.
+///
+/// `nil` bounds mean "from the first frame" and "to the last there is", which is how a whole
+/// segment and the still-growing end of the open one are written.
+public enum SegmentFrameRange {
+    public static func frames(
+        fromMediaMs startMs: Int64?, toMediaMs endMs: Int64?, frameCount: Int,
+        frameDurationMs: Int64 = 20
+    ) -> Range<Int> {
+        let duration = max(frameDurationMs, 1)
+        let count = max(frameCount, 0)
+        let lower = min(max(Int((startMs ?? 0) / duration), 0), count)
+        let upper = endMs.map { min(max(Int($0 / duration), lower), count) } ?? count
+        return lower..<upper
+    }
+}
+
 /// Writes user-accessible WAV copies of stored watch audio.
 ///
 /// The durable store remains the compact Speex frame log. Exports are opt-in because WAV uses
@@ -75,6 +99,39 @@ public final class AudioExportManager: Sendable {
         return AudioExportResult(directory: directory, files: [file].compactMap { $0 })
     }
 
+    /// Exports one RANGE of a segment's stored audio — the piece of it a conversation owns —
+    /// as its own WAV. `nil` bounds mean from the segment's first frame and to its last; both
+    /// nil is the whole segment, and is exactly `exportSegment(_:overwrite:)`.
+    ///
+    /// A partial range is written under its own name (the segment's, plus the range), never
+    /// the segment's: the automatic pass skips any segment whose WAV already exists, so a
+    /// piece written under the segment's name would stand in for the whole recording from
+    /// then on, with most of it missing.
+    public func exportSegment(
+        _ segmentId: String, fromMediaMs startMs: Int64?, toMediaMs endMs: Int64?,
+        overwrite: Bool = true
+    ) async throws -> AudioExportResult {
+        guard (startMs ?? 0) > 0 || endMs != nil else {
+            return try await exportSegment(segmentId, overwrite: overwrite)
+        }
+        guard let meta = readMeta(segmentId) else {
+            return AudioExportResult(directory: directory, files: [])
+        }
+        let frames = readFrames(segmentId)
+        let frameMs = Int64(max(meta.frameDurationMs, 1))
+        let range = SegmentFrameRange.frames(
+            fromMediaMs: startMs, toMediaMs: endMs, frameCount: frames.count,
+            frameDurationMs: frameMs)
+        // Named by the frames actually written, so two exports of the same piece land on the
+        // same file and a piece that has since grown gets a new one.
+        let name =
+            "\(exportBaseName(meta))-\(Int64(range.lowerBound) * frameMs)-"
+            + "\(Int64(range.upperBound) * frameMs)ms"
+        let file = try await write(
+            meta, frames: Array(frames[range]), name: name, overwrite: overwrite)
+        return AudioExportResult(directory: directory, files: [file].compactMap { $0 })
+    }
+
     public func exportAllClosedSegments(overwrite: Bool = false) async throws -> AudioExportResult {
         var skippedOpen = 0
         var exported: [AudioExportedFile] = []
@@ -91,11 +148,20 @@ public final class AudioExportManager: Sendable {
     }
 
     private func exportOne(_ meta: SegmentMeta, overwrite: Bool) async throws -> AudioExportedFile? {
-        let frames = readFrames(meta.segmentId)
+        try await write(
+            meta, frames: readFrames(meta.segmentId), name: exportBaseName(meta),
+            overwrite: overwrite)
+    }
+
+    /// Decodes `frames` into `<name>.wav`. Nothing is written for no frames: an empty WAV in
+    /// Files reads as a recording that failed.
+    private func write(
+        _ meta: SegmentMeta, frames: [FrameRecord], name: String, overwrite: Bool
+    ) async throws -> AudioExportedFile? {
         if frames.isEmpty { return nil }
         let fm = FileManager.default
         try fm.createDirectory(at: exportRoot, withIntermediateDirectories: true)
-        let outputURL = exportRoot.appendingPathComponent("\(exportBaseName(meta)).wav")
+        let outputURL = exportRoot.appendingPathComponent("\(name).wav")
         if !overwrite && fm.fileExists(atPath: outputURL.path) {
             let attributes = try? fm.attributesOfItem(atPath: outputURL.path)
             let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
