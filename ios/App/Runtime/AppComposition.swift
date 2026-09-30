@@ -1091,7 +1091,19 @@ final class AppComposition {
                     try await runFollowUpWallTimeFill(
                         database: database, store: store, log: AppRuntimeLog.runtimeLog)
                 },
-                refreshDiagnostics: { await diagnostics.refresh() }
+                refreshDiagnostics: { await diagnostics.refresh() },
+                // Recordings made before the store kept the watch's quiet records drew that quiet
+                // as recorded audio; this gives them the records, a bounded slice per launch.
+                accountForUnrecordedHoles: {
+                    let repair = try await store.accountForUnrecordedHoles()
+                    guard repair.repaired > 0 else { return }
+                    AppRuntimeLog.shared.record(
+                        "unrecorded holes: \(repair.repaired) recording(s) accounted for, "
+                            + "\(repair.quietFrames / 3000) min quiet, "
+                            + "\(repair.lossFrames / 3000) min missing; "
+                            + "\(repair.remaining) left"
+                    )
+                }
             ),
             onStep: { startupActivity.record($0) },
             log: AppRuntimeLog.runtimeLog
