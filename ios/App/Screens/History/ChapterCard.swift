@@ -67,29 +67,19 @@ struct ChapterCard: View {
     static let tiersDisabled = ProcessInfo.processInfo.arguments.contains("-historyNoTiers")
     #endif
 
-    private var snippet: String? {
-        HistoryLabels.isUntitled(block) ? block.snippet.flatMap { $0.isEmpty ? nil : $0 } : nil
-    }
-
     // MARK: Medium: 10 to 25 minutes
 
     private var mediumCard: some View {
         let time = HistoryLabels.chapterTimeLine(block)
         let topics = Array(block.tags.prefix(3))
         return VStack(alignment: .leading, spacing: ChapterCardMetrics.titleToTime) {
-            Text(HistoryLabels.chapterHeading(block))
-                .font(AppFont.rowTitle)
-                .foregroundStyle(Tokens.label)
+            CardHeading(heading: HistoryLabels.heading(block))
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 .fixedSize(horizontal: false, vertical: true)
             InlineTrailingLayout(spacing: 8) {
                 timeLine(main: time.main, missing: time.missing)
                     .lineLimit(1)
-                if let snippet {
-                    quote(snippet)
-                        .lineLimit(1)
-                        .layoutValue(key: InlineTrailingLayout.Truncates.self, value: true)
-                } else if !topics.isEmpty || !block.people.isEmpty {
+                if !topics.isEmpty || !block.people.isEmpty {
                     TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
                         .fixedSize()
                 }
@@ -114,13 +104,6 @@ struct ChapterCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
-    private func quote(_ text: String) -> some View {
-        Text(Copy.History.quote(text))
-            .font(AppFont.historyBody(dynamicTypeSize))
-            .italic()
-            .foregroundStyle(Tokens.tertiary)
-    }
-
     // MARK: Full: 25 minutes and longer
 
     @ViewBuilder
@@ -128,11 +111,13 @@ struct ChapterCard: View {
         let sizes = HistoryMetrics.at(dynamicTypeSize)
         let durationMs = block.endMs - block.startMs
         let summary = block.source == .chapter ? block.summary.flatMap { $0.isEmpty ? nil : $0 } : nil
-        // An untitled stretch's body is its first words, shown at every length: without them
-        // the card would be a time and nothing else.
-        let snippet = HistoryLabels.isUntitled(block) ? block.snippet.flatMap { $0.isEmpty ? nil : $0 } : nil
-        let showsSummary = snippet != nil
-            || ChapterCardFit.showsSummary(durationMs: durationMs, hasSummary: summary != nil)
+        // An untitled card's first words stand in the title position and take the room the
+        // card's height gives them — the one-measure fit a summary gets, at least two lines —
+        // with the gray time line beneath, as on a titled card.
+        let heading = HistoryLabels.heading(block)
+        let quote: String? = if case .quote(let text) = heading { text } else { nil }
+        let showsSummary = quote == nil
+            && ChapterCardFit.showsSummary(durationMs: durationMs, hasSummary: summary != nil)
         let topics = Array(block.tags.prefix(3))
         let hasPills = !topics.isEmpty || !block.people.isEmpty
         let collapses = ChapterCardFit.collapsesFollowUps(
@@ -145,21 +130,24 @@ struct ChapterCard: View {
             softMaxHeight: softMax - ChapterCardMetrics.paddingTop - ChapterCardMetrics.paddingBottom,
             // At the accessibility sizes a summary keeps at least two lines: one line of large
             // type is a few words, which says nothing. The card may exceed its band there.
-            minSummaryHeight: dynamicTypeSize.isAccessibilitySize
-                ? sizes.card.summaryLine * 2 + ChapterCard.summaryLineSpacing
-                : sizes.card.summaryLine
+            minSummaryHeight: quote != nil
+                ? sizes.card.titleLine * 2 + ChapterCard.summaryLineSpacing
+                : dynamicTypeSize.isAccessibilitySize
+                    ? sizes.card.summaryLine * 2 + ChapterCard.summaryLineSpacing
+                    : sizes.card.summaryLine
         ) {
-            header
-            if let snippet {
-                // Verbatim, so it is quoted and set like the Live card's line.
-                Text(Copy.History.quote(snippet))
-                    .font(AppFont.historyBody(dynamicTypeSize))
-                    .italic()
-                    .foregroundStyle(Tokens.tertiary)
+            if let quote {
+                CardHeading(heading: .quote(quote))
                     .lineSpacing(ChapterCard.summaryLineSpacing)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutValue(key: ChapterCardPart.self, value: .summary)
-            } else if showsSummary, let summary {
+                timeLineFor(block)
+                    .padding(.top, ChapterCardMetrics.titleToTime)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                header
+            }
+            if showsSummary, let summary {
                 Text(summary)
                     .font(AppFont.historyBody(dynamicTypeSize))
                     .foregroundStyle(Tokens.tertiary)
@@ -183,14 +171,17 @@ struct ChapterCard: View {
     private var header: some View {
         let time = HistoryLabels.chapterTimeLine(block)
         return VStack(alignment: .leading, spacing: ChapterCardMetrics.titleToTime) {
-            Text(HistoryLabels.chapterHeading(block))
-                .font(AppFont.rowTitle)
-                .foregroundStyle(Tokens.label)
+            CardHeading(heading: HistoryLabels.heading(block))
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 .fixedSize(horizontal: false, vertical: true)
             timeLine(main: time.main, missing: time.missing)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func timeLineFor(_ block: HistoryChapterBlock) -> some View {
+        let time = HistoryLabels.chapterTimeLine(block)
+        return timeLine(main: time.main, missing: time.missing)
     }
 
     private func timeLine(main: String, missing: String?) -> some View {
@@ -278,7 +269,7 @@ struct ChapterCardLayout: Layout {
             sub[ChapterCardPart.self] == .fixed ? sub.sizeThatFits(free).height : 0
         }
         if let index = subviews.firstIndex(where: { $0[ChapterCardPart.self] == .summary }) {
-            let fixed = heights.reduce(0, +) + summaryGap
+            let fixed = heights.reduce(0, +) + (index > 0 ? summaryGap : 0)
             let room = max(minSummaryHeight, softMaxHeight - fixed)
             heights[index] = subviews[index].sizeThatFits(
                 ProposedViewSize(width: width, height: room)).height
@@ -290,7 +281,7 @@ struct ChapterCardLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let width = proposal.width ?? 320
         let heights = heights(width: width, subviews: subviews, cache: &cache)
-        let gap = subviews.contains { $0[ChapterCardPart.self] == .summary } ? summaryGap : 0
+        let gap = subviews.dropFirst().contains { $0[ChapterCardPart.self] == .summary } ? summaryGap : 0
         return CGSize(width: width, height: heights.reduce(0, +) + gap)
     }
 
@@ -301,7 +292,8 @@ struct ChapterCardLayout: Layout {
         var y = bounds.minY
         for (index, sub) in subviews.enumerated() {
             let isSummary = sub[ChapterCardPart.self] == .summary
-            if isSummary { y += summaryGap }
+            // Space above the summary — none when it leads the card (an untitled card's words).
+            if isSummary && index > 0 { y += summaryGap }
             sub.place(
                 at: CGPoint(x: bounds.minX, y: y),
                 proposal: ProposedViewSize(width: bounds.width, height: heights[index]))
@@ -405,4 +397,46 @@ struct InlineTrailingLayout: Layout {
         let ideal = view.sizeThatFits(.unspecified)
         return ideal.width <= room ? ideal : nil
     }
+}
+
+// MARK: - What stands in the title position
+
+/// A card's first line(s): the title (semibold, primary); an untitled card's first words
+/// (primary, regular weight, quoted — see `quoteIsItalic`); or "Not summarised yet" in the
+/// secondary colour. The time is never here: it is the gray line beneath, on every card.
+struct CardHeading: View {
+    let heading: HistoryLabels.Heading
+
+    var body: some View {
+        switch heading {
+        case .title(let title):
+            Text(title)
+                .font(AppFont.rowTitle)
+                .foregroundStyle(Tokens.label)
+        case .quote(let words):
+            Text(Copy.History.quote(words))
+                .font(AppFont.callout)
+                .italic(Self.quoteIsItalic)
+                .foregroundStyle(Tokens.label)
+        case .placeholder:
+            Text(Copy.History.notSummarisedYet)
+                .font(AppFont.callout)
+                .foregroundStyle(Tokens.tertiary)
+        }
+    }
+
+    /// Upright or italic first words. DEBUG `-historyQuoteStyle upright|italic` overrides.
+    static var quoteIsItalic: Bool {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-historyQuoteStyle"), i + 1 < args.count {
+            return args[i + 1] == "italic"
+        }
+        #endif
+        return defaultQuoteIsItalic
+    }
+
+    /// Italic: it reads as speech (as on the Live card) and stays distinct from a semibold
+    /// title on a day that mixes the two, while primary colour keeps it the main thing.
+    static let defaultQuoteIsItalic = true
 }

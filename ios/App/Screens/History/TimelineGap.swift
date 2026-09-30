@@ -29,7 +29,7 @@ struct TimelineGap: View {
         ZStack(alignment: .topLeading) {
             Color.clear.frame(maxWidth: .infinity).frame(height: 0)
             if let title = text.title {
-                label(title: title, detail: text.detail)
+                label(title: title, detail: text.detail, missing: text.missing)
                     .modifier(GapLabelPin())
             }
         }
@@ -47,14 +47,13 @@ struct TimelineGap: View {
     /// Only a stretch of sound with no conversation opens: there is audio behind it.
     private var isTappable: Bool { gap.kind == .noConversation && gap.isOpenable }
 
-    private func label(title: String, detail: String?) -> some View {
+    private func label(title: String, detail: String?, missing: String?) -> some View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .foregroundStyle(titleColor)
-                if let detail {
-                    Text(detail)
-                        .foregroundStyle(Tokens.meta)
+                if detail != nil || missing != nil {
+                    GapDetailLine(detail: detail, missing: missing)
                 }
             }
             .font(AppFont.timelineMeta)
@@ -197,5 +196,28 @@ struct ZoneChangeDivider: View {
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A gap's gray second line, with the loss it carries in amber after it — exactly as on a card
+/// ("10:39 – 10:49 AM · under 1 min missing").
+struct GapDetailLine: View {
+    let detail: String?
+    let missing: String?
+
+    var body: some View {
+        Group {
+            switch (detail, missing) {
+            case let (detail?, missing?):
+                Text("\(detail) · \(Text(missing).foregroundStyle(Tokens.missingText))")
+            case let (detail?, nil):
+                Text(detail)
+            case let (nil, missing?):
+                Text(missing).foregroundStyle(Tokens.missingText)
+            case (nil, nil):
+                EmptyView()
+            }
+        }
+        .foregroundStyle(Tokens.meta)
     }
 }
