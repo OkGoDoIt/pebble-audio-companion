@@ -1,4 +1,5 @@
 import AppDB
+import OSLog
 import SwiftUI
 
 // The day timeline (plan 5.3 "Layout", 7.12 "The day timeline").
@@ -10,8 +11,12 @@ import SwiftUI
 
 enum TimelineRole: Equatable, Sendable {
     case axis
-    /// An item, and the least it may be besides its duration on the scale.
-    case item(TimelineSpan, floor: CGFloat)
+    /// An item, and the least it may be besides its duration on the scale. `isCard` items are
+    /// drawn surfaces (chapters, the Live card, pending cards); two of them in a row are kept
+    /// `spacing` apart, because consecutive chapters touch in time and would read as one. A gap
+    /// is empty space already, so nothing is added beside one: a 5-minute quiet between two
+    /// cards is its 8 pt floor, as drawn in the mockups.
+    case item(TimelineSpan, floor: CGFloat, isCard: Bool)
     /// An instant on the axis: an hour label or the "now" marker.
     case mark(Int64)
 }
@@ -44,9 +49,15 @@ struct DayTimelineLayout: Layout {
 
     private func itemHeights(width: CGFloat, subviews: Subviews, cache: inout Cache) -> [CGFloat] {
         if cache.width == width, cache.heights.count == subviews.count { return cache.heights }
+        let interval = HistoryPerformance.signposter.beginInterval("day timeline measure")
+        let started = ContinuousClock.now
+        defer {
+            HistoryPerformance.signposter.endInterval("day timeline measure", interval)
+            HistoryPerformance.reportMeasure(ContinuousClock.now - started, items: subviews.count)
+        }
         let column = ProposedViewSize(width: width - gutter, height: nil)
         let heights: [CGFloat] = subviews.map { sub in
-            guard case .item(let span, let floor) = sub[TimelineRoleKey.self] else { return -1 }
+            guard case .item(let span, let floor, _) = sub[TimelineRoleKey.self] else { return -1 }
             let ideal = sub.sizeThatFits(column).height
             let scaled = span.minutes > 0 ? (span.minutes * pointsPerMinute).rounded() : 0
             return max(ideal, scaled, floor)
@@ -61,8 +72,20 @@ struct DayTimelineLayout: Layout {
         // cards at a width the column can never have cost ~120 ms. Don't.
         guard width > gutter + 44 else { return CGSize(width: width, height: 0) }
         let heights = itemHeights(width: width, subviews: subviews, cache: &cache).filter { $0 >= 0 }
-        let total = heights.reduce(0, +) + spacing * CGFloat(max(0, heights.count - 1))
+        let total = heights.reduce(0, +) + spacingBefore(subviews).reduce(0, +)
         return CGSize(width: width, height: total)
+    }
+
+    /// The space before each item, in item order: `spacing` between two cards, else none.
+    private func spacingBefore(_ subviews: Subviews) -> [CGFloat] {
+        var result: [CGFloat] = []
+        var previousIsCard: Bool?
+        for sub in subviews {
+            guard case .item(_, _, let isCard) = sub[TimelineRoleKey.self] else { continue }
+            result.append(previousIsCard == true && isCard ? spacing : 0)
+            previousIsCard = isCard
+        }
+        return result
     }
 
     func placeSubviews(
@@ -73,15 +96,17 @@ struct DayTimelineLayout: Layout {
         var y = bounds.minY
         var spans: [TimelineSpan] = []
         var frames: [ClosedRange<CGFloat>] = []
+        var spacings = spacingBefore(subviews).makeIterator()
         for (index, sub) in subviews.enumerated() {
-            guard case .item(let span, _) = sub[TimelineRoleKey.self] else { continue }
+            guard case .item(let span, _, _) = sub[TimelineRoleKey.self] else { continue }
+            y += spacings.next() ?? 0
             let h = heights[index]
             sub.place(
                 at: CGPoint(x: bounds.minX + gutter, y: y),
                 proposal: ProposedViewSize(width: bounds.width - gutter, height: h))
             spans.append(span)
             frames.append(y...(y + h))
-            y += h + spacing
+            y += h
         }
         let markWidth = Tokens.Timeline.tickX + Tokens.Timeline.tickWidth
         for sub in subviews {
@@ -104,6 +129,22 @@ struct DayTimelineLayout: Layout {
                 break
             }
         }
+    }
+}
+
+// MARK: - Performance
+
+/// The day's measurement is the cost the spike budgeted (13–21 ms for a 25-card day; plan
+/// 7.12). It is an Instruments interval ("History" › "day timeline measure"), and in DEBUG a
+/// console line, so a regression shows up without a profiler.
+enum HistoryPerformance {
+    static let signposter = OSSignposter(subsystem: "dev.audiocompanion.app", category: "History")
+
+    static func reportMeasure(_ elapsed: Duration, items: Int) {
+        #if DEBUG
+        let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
+        print(String(format: "[history] day timeline measured %d views in %.1f ms", items, ms))
+        #endif
     }
 }
 
@@ -202,7 +243,7 @@ struct DayTimeline: View {
                 itemView(item, isLast: index == day.items.count - 1)
                     .timelineRole(.item(
                         TimelineSpan(startMs: item.startMs, endMs: item.endMs),
-                        floor: floor(of: item)))
+                        floor: floor(of: item), isCard: isCard(item)))
             }
             ForEach(marks, id: \.ms) { mark in
                 HourMark(text: HistoryFormat.hourLabel(
@@ -261,6 +302,14 @@ struct DayTimeline: View {
             }
         }
         return day.zoneID
+    }
+
+    private func isCard(_ item: HistoryItem) -> Bool {
+        switch item {
+        case .chapter, .live: return true
+        case .gap(let gap): return HistoryLabels.isPendingCard(gap)
+        case .zoneChange: return false
+        }
     }
 
     private func floor(of item: HistoryItem) -> CGFloat {

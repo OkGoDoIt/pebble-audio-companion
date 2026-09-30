@@ -122,7 +122,8 @@ struct HistoryComponentGallery: View {
             failure: String? = nil, openable: Bool = false
         ) -> HistoryGap {
             HistoryGap(
-                id: "\(kind)-\(h0)\(m0)", kind: kind, startMs: at(h0, m0), endMs: at(h1, m1),
+                id: "\(kind)-\(h0)\(m0)-\(descriptor ?? "")-\(deletedBy?.rawValue ?? "")-\(openable)",
+                kind: kind, startMs: at(h0, m0), endMs: at(h1, m1),
                 zoneID: zone, pausedBy: pausedBy, lossCauses: causes, descriptor: descriptor,
                 deletedBy: deletedBy, failureReason: failure, isOpenable: openable)
         }

@@ -26,9 +26,11 @@ struct BriefCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    // Scales with the header (13 pt at the default size, as on Today's recap)
+                    // and sits on its first line at every size.
                     Image(systemName: "sparkles")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(.footnote, weight: .semibold))
                         .foregroundStyle(Tokens.tint)
                         .accessibilityHidden(true)
                     Text(title)

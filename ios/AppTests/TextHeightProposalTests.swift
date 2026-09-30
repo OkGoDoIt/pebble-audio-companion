@@ -29,7 +29,8 @@ struct TextHeightProposalTests {
         }
     }
 
-    final class Recorder {
+    /// Written only from layout, on the main thread, inside one synchronous `sizeThatFits`.
+    final class Recorder: @unchecked Sendable {
         var sizes: [CGSize] = []
     }
 
