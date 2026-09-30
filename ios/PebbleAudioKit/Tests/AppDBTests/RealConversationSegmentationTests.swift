@@ -270,6 +270,38 @@ struct RealConversationSegmentationTests {
         #expect(percentile(new.spoken, 0.9) < 3_600_000)
     }
 
+    /// "If you ever have a 10-hour conversation in any circumstance, that is a bug." The
+    /// circumstance that made the 24-hour ones was audio with no transcript, so: the whole
+    /// real library with NOTHING transcribed, and then with each recording in turn the only
+    /// one not transcribed (one real recording holds fifteen minutes of audio across eight and
+    /// a half hours of wall clock).
+    @Test func noUnitIsEverDayLongWhateverIsOrIsNotTranscribed() throws {
+        let library = try loadLibrary()
+        func longest(_ evidence: [String: SegmentSpeechEvidence]) -> Int64 {
+            ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: evidence
+            ).map { $0.endMs - $0.startMs }.max() ?? 0
+        }
+        let nothing = longest([:])
+        print("nothing transcribed: longest unit \(minutes(nothing))")
+        #expect(nothing < 2 * 3_600_000)
+
+        // The recordings whose wall span is far longer than their audio are the dangerous ones.
+        let stretched = library.metas.filter {
+            ConversationGrouper.segmentEndMs($0) - ConversationGrouper.segmentStartMs($0)
+                > ConversationGrouper.segmentAudioMs($0) + 3_600_000
+        }
+        for meta in stretched {
+            var evidence = library.evidence
+            evidence[meta.segmentId] = SegmentSpeechEvidence(
+                segmentId: meta.segmentId, isSettled: false, speech: [])
+            let worst = longest(evidence)
+            print("\(meta.segmentId) untranscribed: longest unit \(minutes(worst))")
+            #expect(worst < 2 * 3_600_000, "\(meta.segmentId)")
+        }
+    }
+
     /// The upgrade itself, on a copy of the real database: migrate, regroup twice, and check
     /// what the phone will see — every sample in exactly one conversation, nothing day-long,
     /// the same ids on the second pass, and nothing written when nothing changed.

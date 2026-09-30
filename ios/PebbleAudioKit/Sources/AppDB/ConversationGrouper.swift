@@ -466,10 +466,13 @@ public enum ConversationGrouper {
         var piece: ConversationMember
 
         var wallStartMs: Int64 {
-            piece.startMediaMs.map { member.wall(ofMedia: $0) } ?? member.startWallMs
+            piece.startMediaMs.map { member.wallStart(ofPieceAt: $0) } ?? member.startWallMs
         }
+        /// To the end of the member — which, for a member nobody has heard yet, is the end of
+        /// the audio it holds rather than of a wall span its records cannot account for.
         var wallEndMs: Int64 {
-            piece.endMediaMs.map { member.wall(ofMedia: $0) } ?? member.endWallMs
+            piece.endMediaMs.map { member.wallEnd(ofPieceTo: $0) }
+                ?? (member.isSettled ? member.endWallMs : member.heardEndWallMs)
         }
     }
 

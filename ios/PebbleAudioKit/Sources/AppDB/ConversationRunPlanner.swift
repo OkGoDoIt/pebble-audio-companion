@@ -137,6 +137,26 @@ enum ConversationRunPlanner {
             let offset = clock.isExact ? clock.wall(fromMedia: mediaMs) : mediaMs
             return startWallMs + min(max(offset, 0), span)
         }
+
+        /// Where a piece starting at `mediaMs` starts on the wall clock, and where one ending
+        /// there ends. They differ exactly when the offset sits on a gap: audio missing for
+        /// eight hours has the frame before it and the frame after it eight hours apart, and a
+        /// piece that ends there ends BEFORE the gap while the one that starts there starts
+        /// after it. Asking one frame inside the piece settles which.
+        func wallStart(ofPieceAt mediaMs: Int64) -> Int64 {
+            mediaMs <= 0 ? startWallMs : wall(ofMedia: mediaMs + 1) - 1
+        }
+        func wallEnd(ofPieceTo mediaMs: Int64) -> Int64 {
+            mediaMs <= 0 ? startWallMs : wall(ofMedia: mediaMs - 1) + 1
+        }
+
+        /// Where this member's audio ends, for a member nothing else is known about. Where the
+        /// gap records do not account for its wall span (the sample counter ran on through a
+        /// dropped link — one such recording claims fifteen hours around fifteen minutes of
+        /// audio) the span is a phantom, and the honest end is the audio it holds.
+        var heardEndWallMs: Int64 {
+            clock.isExact ? endWallMs : min(endWallMs, startWallMs + mediaSpanMs)
+        }
     }
 
     static func members(
@@ -250,6 +270,10 @@ enum ConversationRunPlanner {
             for cut in quietCuts(
                 members: members, turns: turns, evidence: evidence, policy: policy,
                 joinedSegments: joinedSegments)
+            where !isBlocked(cut.position) {
+                add(cut)
+            }
+            for cut in unheardLossCuts(members: members, policy: policy)
             where !isBlocked(cut.position) {
                 add(cut)
             }
@@ -440,6 +464,31 @@ enum ConversationRunPlanner {
         return out
     }
 
+    /// A recording that has not been transcribed says nothing about where the talk was — but
+    /// its gap records still say where the AUDIO was not. Half an hour of missing audio inside
+    /// one recording (the watch out of reach with its counter running: one real recording holds
+    /// fifteen minutes of audio across eight and a half hours) is a break whether or not
+    /// anybody has listened to either side of it, so the recording is cut there. Without this
+    /// an untranscribed recording like that is one eight-hour unit, which is the thing this
+    /// file exists to prevent. Once it is transcribed the ordinary rule takes over, from the
+    /// words.
+    static func unheardLossCuts(members: [Member], policy: BoundaryPolicy) -> [PlannedCut] {
+        let threshold = Int64(Double(policy.quietSplitMs) * policy.lossThresholdMultiplier)
+        var out: [PlannedCut] = []
+        for (index, member) in members.enumerated() where !member.isSettled && member.clock.isExact {
+            for span in ConversationBoundaryDetector.lossSpansMs(member.meta)
+            where span.1 - span.0 >= threshold {
+                let media = member.clock.media(fromWall: span.0 - member.startWallMs)
+                guard media > 0, media < member.mediaSpanMs else { continue }
+                out.append(
+                    PlannedCut(
+                        position: RunPosition(seg: index, mediaMs: media), reason: .interrupted,
+                        kind: .hard))
+            }
+        }
+        return out
+    }
+
     // --- 3. the segmenter ----------------------------------------------------------------------
 
     /// One block and where a cut in front of it would sit.
@@ -491,11 +540,13 @@ enum ConversationRunPlanner {
             let high = seg == upper.seg ? upper.mediaMs : Int64.max
             guard high > low else { continue }
             if !member.isSettled {
-                let start = member.wall(ofMedia: low)
-                let end = max(member.wall(ofMedia: min(high, member.mediaSpanMs)), start)
+                let start = member.wallStart(ofPieceAt: low)
+                let wallEnd =
+                    high == .max
+                    ? member.heardEndWallMs
+                    : max(member.wallEnd(ofPieceTo: min(high, member.mediaSpanMs)), start)
                 // An unsettled member with no stored audio in range says nothing at all.
-                guard high == .max ? member.endWallMs > start : end > start else { continue }
-                let wallEnd = high == .max ? member.endWallMs : end
+                guard wallEnd > start else { continue }
                 out.append(
                     PlacedBlock(
                         block: SegmenterBlock(
