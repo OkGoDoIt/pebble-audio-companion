@@ -39,6 +39,8 @@ private final class GateBackend: HistoryLiveBackend, @unchecked Sendable {
         database = try AppDatabase.inMemory()
     }
 
+    /// Two topic-sized conversations that share a recording: c1 is `seg-c1` and the first
+    /// 20 minutes of `seg-shared`, c2 the rest of it and `seg-c2`.
     func seed() async throws {
         try await database.writer.write { db in
             for (index, id) in ["c1", "c2"].enumerated() {
@@ -47,19 +49,26 @@ private final class GateBackend: HistoryLiveBackend, @unchecked Sendable {
                     sql: "INSERT INTO conversations (id, startMs, endMs, timezone, state) VALUES (?, ?, ?, 'UTC', 'closed')",
                     arguments: [id, start, start + 1_800_000])
                 try db.execute(
-                    sql: """
-                        INSERT INTO conversation_segments (conversationId, segmentId, ordinal, transcriptionState)
-                        VALUES (?, ?, 0, 'Complete')
-                        """,
-                    arguments: [id, "seg-\(id)"])
-                try db.execute(
                     sql: "INSERT INTO annotations (conversationId, title) VALUES (?, ?)", arguments: [id, "Title \(id)"])
+            }
+            let pieces: [(String, String, Int, Int64?, Int64?)] = [
+                ("c1", "seg-c1", 0, nil, nil), ("c1", "seg-shared", 1, nil, 1_200_000),
+                ("c2", "seg-shared", 0, 1_200_000, nil), ("c2", "seg-c2", 1, nil, nil),
+            ]
+            for (conversation, segment, ordinal, from, to) in pieces {
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversation_segments
+                            (conversationId, segmentId, ordinal, transcriptionState, startMediaMs, endMediaMs)
+                        VALUES (?, ?, ?, 'Complete', ?, ?)
+                        """,
+                    arguments: [conversation, segment, ordinal, from, to])
             }
         }
     }
 
-    /// `ConversationGrouper.apply`'s shape: every conversation and member row deleted and
-    /// written back, identically.
+    /// `ConversationGrouper.apply`'s shape: every conversation and piece row deleted and
+    /// written back, identically — ranges included.
     func regroupIdentically() async throws {
         try await database.writer.write { db in
             let rows = try Row.fetchAll(db, sql: "SELECT * FROM conversations")
@@ -74,10 +83,14 @@ private final class GateBackend: HistoryLiveBackend, @unchecked Sendable {
             for row in members {
                 try db.execute(
                     sql: """
-                        INSERT INTO conversation_segments (conversationId, segmentId, ordinal, transcriptionState)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO conversation_segments
+                            (conversationId, segmentId, ordinal, transcriptionState, startMediaMs, endMediaMs)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                    arguments: [row["conversationId"], row["segmentId"], row["ordinal"], row["transcriptionState"]])
+                    arguments: [
+                        row["conversationId"], row["segmentId"], row["ordinal"], row["transcriptionState"],
+                        row["startMediaMs"], row["endMediaMs"],
+                    ])
             }
         }
     }
@@ -93,7 +106,9 @@ private final class GateBackend: HistoryLiveBackend, @unchecked Sendable {
     }
 
     func scope(of window: HistoryWindow) async -> HistoryDigestScope {
-        HistoryDigestScope(window: GateTestsWindow.range, segmentIds: ["seg-c1", "seg-c2"], recapDateKeys: [], includeTags: false)
+        HistoryDigestScope(
+            window: GateTestsWindow.range, segmentIds: ["seg-c1", "seg-shared", "seg-c2"], recapDateKeys: [],
+            includeTags: true, includeSummaries: true)
     }
 
     func digest(_ scope: HistoryDigestScope) async -> HistoryDigest? {
@@ -198,6 +213,46 @@ struct HistoryObservationGateTests {
         #expect(await eventually { backend.fetches.value >= fetchesBefore + 5 })
         await settle()
         #expect(backend.builds.value == 1)
+        #expect(pages.values.count == 1)
+        #expect(history.publishCount == 1)
+        pages.cancel()
+    }
+
+    @Test("a regroup that rewrites the piece rows of a shared recording as they were builds and publishes nothing")
+    func identicalPieceRewriteIsSilent() async throws {
+        let backend = try GateBackend()
+        try await backend.seed()
+        let history = source(backend)
+        let pages = Collector(history.day(pastDay))
+        #expect(await eventually { pages.values.count == 1 })
+        await settle(.milliseconds(100))
+
+        // After the upgrade the regroup re-cuts and re-titles a few conversations per pass, and
+        // every pass may rewrite the piece rows. Rewritten as they were: nothing.
+        let fetchesBefore = backend.fetches.value
+        for _ in 0..<5 {
+            try await backend.execute(
+                """
+                UPDATE conversation_segments SET startMediaMs = startMediaMs, endMediaMs = endMediaMs,
+                    transcriptionState = transcriptionState
+                """)
+            try await backend.regroupIdentically()
+        }
+        #expect(await eventually { backend.fetches.value >= fetchesBefore + 5 })
+        await settle()
+        #expect(backend.builds.value == 1)
+        #expect(pages.values.count == 1)
+
+        // A cut that moves inside the shared recording is a real change: one rebuild. What this
+        // stand-in draws (titles) is unchanged, so it publishes nothing.
+        try await backend.execute(
+            """
+            UPDATE conversation_segments SET endMediaMs = 1260000 WHERE conversationId = 'c1' AND segmentId = 'seg-shared';
+            UPDATE conversation_segments SET startMediaMs = 1260000 WHERE conversationId = 'c2' AND segmentId = 'seg-shared'
+            """)
+        #expect(await eventually { backend.builds.value == 2 })
+        await settle()
+        #expect(backend.builds.value == 2)
         #expect(pages.values.count == 1)
         #expect(history.publishCount == 1)
         pages.cancel()

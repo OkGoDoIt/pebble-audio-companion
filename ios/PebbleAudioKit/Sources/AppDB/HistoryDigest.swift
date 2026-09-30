@@ -8,14 +8,16 @@ import GRDB
 // states and stamps — and it is exactly what the page is built from, so an unchanged digest
 // means an unchanged page and nothing is rebuilt. That is the rule the 2026-09-09 drain taught
 // (an observer never re-publishes what it observes, and a refresh that changes nothing publishes
-// nothing): the pipeline's regroup rewrites every conversation row each pass, and for a past day
-// that produces this very same digest.
+// nothing): the pipeline's regroup can rewrite every conversation and piece row in a pass, and
+// for a past day whose pieces did not move that produces this very same digest.
 //
 // What is in it, and why each thing:
 // - the conversations overlapping the window: id, live/closed, start, end, title — the day's
 //   talk cards, the week's headline, what a pending delete hides;
-// - their members, with each member's mirrored transcription state (a recording joining or
-//   leaving a conversation, or settling);
+// - their pieces — the recording, the range of it the conversation owns, and the state stored
+//   for that piece (a recording joining or leaving a conversation, a cut moving inside one, a
+//   recording settling, a piece found silent). A conversation's `hasSpeech`, which decides
+//   whether it is a card, is read from those states;
 // - the tags on those conversations, for week and month pages (a day draws none of them);
 // - the transcription queue's rows for the window's recordings and those members: state and
 //   last error (failed / waiting, and why);
@@ -130,12 +132,12 @@ extension HistoryDigest {
         }
         let idsJSON = try jsonArray(ids)
 
-        hasher.combine("members")
+        hasher.combine("pieces")
         var memberIds: [String] = []
         for row in try Row.fetchAll(
             db,
             sql: """
-                SELECT conversationId, segmentId, ordinal, transcriptionState
+                SELECT conversationId, segmentId, ordinal, transcriptionState, startMediaMs, endMediaMs
                 FROM conversation_segments
                 WHERE conversationId IN (SELECT value FROM json_each(?))
                 ORDER BY conversationId, ordinal
@@ -147,6 +149,8 @@ extension HistoryDigest {
             hasher.combine(row["conversationId"] as String)
             hasher.combine(segmentId)
             hasher.combine(row["transcriptionState"] as String? ?? "")
+            hasher.combine(row["startMediaMs"] as Int64? ?? -1)
+            hasher.combine(row["endMediaMs"] as Int64? ?? -1)
         }
 
         if scope.includeTags {

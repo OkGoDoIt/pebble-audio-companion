@@ -223,4 +223,41 @@ struct HistoryReaderPiecesTests {
         let hidden = try await hiding.reader.tagHits(tag: "food", await hiding.reader.library())
         #expect(hidden.map(\.conversationId) == ["c1"])
     }
+
+    @Test("the day digest moves when a cut moves inside a recording, and not when rows are rewritten as they were")
+    func digestCoversPieces() async throws {
+        let world = try PieceWorld()
+        defer { world.remove() }
+        let library = await world.reader.library()
+        let scope = await world.reader.dayScope(day, library)
+        let before = try await HistoryDigest.read(world.database, scope: scope)
+        // Rewritten identically, the way a regroup that changes nothing but writes anyway would.
+        try await world.database.writer.write { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM conversation_segments")
+            try db.execute(sql: "DELETE FROM conversation_segments")
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversation_segments
+                            (conversationId, segmentId, ordinal, transcriptionState, startMediaMs, endMediaMs)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        row["conversationId"], row["segmentId"], row["ordinal"], row["transcriptionState"],
+                        row["startMediaMs"], row["endMediaMs"],
+                    ])
+            }
+        }
+        #expect(try await HistoryDigest.read(world.database, scope: scope) == before)
+        // The cut between c2 and c3 moves a minute: same ids, same states, different pieces.
+        try await world.database.writer.write { db in
+            try db.execute(
+                sql: "UPDATE conversation_segments SET endMediaMs = ? WHERE conversationId = 'c2' AND segmentId = 'seg-b'",
+                arguments: [16 * minute])
+            try db.execute(
+                sql: "UPDATE conversation_segments SET startMediaMs = ? WHERE conversationId = 'c3'",
+                arguments: [16 * minute])
+        }
+        #expect(try await HistoryDigest.read(world.database, scope: scope) != before)
+    }
 }
