@@ -260,6 +260,27 @@ private func expectWellFormed(
                     joins: ["s2": [238_500], "s3": [10_000]])
             ),
             (
+                "joins with their spans",
+                twoModes(minutes: 90), nil, [:],
+                ConversationCutInputs(
+                    committed: ["s2": [238_500: .lull], "s4": [300_000: .topicChange]],
+                    splits: ["s3": [450_000]],
+                    joinSpans: [
+                        .init(from: ConversationCut(segmentId: "s0", mediaMs: 0), to: nil),
+                        .init(
+                            from: ConversationCut(segmentId: "s1", mediaMs: 5_000),
+                            to: ConversationCut(segmentId: "s4", mediaMs: 300_000)),
+                        .init(
+                            from: ConversationCut(segmentId: "gone", mediaMs: 0),
+                            to: ConversationCut(segmentId: "s1", mediaMs: 0)),
+                        // Backwards, and about nowhere: neither may break anything.
+                        .init(
+                            from: ConversationCut(segmentId: "s5", mediaMs: 9),
+                            to: ConversationCut(segmentId: "s0", mediaMs: 9)),
+                        .init(from: ConversationCut(segmentId: "gone", mediaMs: 0), to: nil),
+                    ])
+            ),
+            (
                 "decisions about places that do not exist",
                 twoModes(minutes: 60), nil, ["nope": .split],
                 ConversationCutInputs(
@@ -348,6 +369,28 @@ private func expectWellFormed(
                     case 3: overrides[segment.segmentId] = Bool.random(using: &generator) ? .split : .join
                     default: break
                     }
+                }
+                // Now and then, a join with the span it joined: between two places in this
+                // run, or from one of them to the end of it.
+                if Int.random(in: 0..<3, using: &generator) == 0 {
+                    let span = rotation * 60_000
+                    func place() -> ConversationCut {
+                        ConversationCut(
+                            segmentId: part.segments.randomElement(using: &generator)!.segmentId,
+                            mediaMs: Int64.random(in: 0..<span, using: &generator))
+                    }
+                    let a = place()
+                    let b = place()
+                    // Segment ids of one run are `r<run>s<index>`: order by index, then offset.
+                    func index(_ cut: ConversationCut) -> Int {
+                        part.segments.firstIndex { $0.segmentId == cut.segmentId } ?? 0
+                    }
+                    let aFirst: Bool =
+                        index(a) == index(b) ? a.mediaMs <= b.mediaMs : index(a) < index(b)
+                    let from: ConversationCut = aFirst ? a : b
+                    let to: ConversationCut? =
+                        Bool.random(using: &generator) ? (aFirst ? b : a) : nil
+                    inputs.joinSpans.append(ConversationCutInputs.JoinSpan(from: from, to: to))
                 }
                 whole = whole + part
                 clock += minutes * 60_000 + Int64.random(in: 1...120, using: &generator) * 60_000
