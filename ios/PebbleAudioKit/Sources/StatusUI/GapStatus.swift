@@ -59,11 +59,6 @@ public func gapDescription(_ gap: GapMeta) -> String {
     }
 }
 
-private func gapReason(of gap: GapMeta) -> GapReason? {
-    guard let raw = gap.reasonRaw, raw >= 0, raw <= Int(UInt8.max) else { return nil }
-    return GapReason(rawValue: UInt8(raw))
-}
-
 /// A silence-suppressed gap is audio the watch intentionally skipped because it was below the
 /// voice-activity threshold — known-quiet time it withheld to save Bluetooth/battery, not lost
 /// audio. The app treats it as silence everywhere, never as a gap, interruption, or error.
@@ -71,76 +66,20 @@ public func isSilenceGap(_ gap: GapMeta) -> Bool {
     gapReason(of: gap)?.isSilence == true
 }
 
-/// Gaps that should be presented as genuine missing audio. A small number of field builds could
-/// store a receiver-synthesized sequence skip adjacent to the watch's explicit skipped-silence
-/// record for the same range. For display, the watch's silence reason wins: that time was known
-/// quiet, not a phone/link failure. The raw metadata remains unchanged for diagnostics.
+/// Gaps that should be presented as genuine missing audio, by the one classifier
+/// (`SegmentStore.GapClassifier`): not quiet, and not the watch's power-save pause. A small number
+/// of field builds could store a receiver-synthesized sequence skip adjacent to the watch's
+/// explicit skipped-silence record for the same range; for display the watch's silence reason
+/// wins. The raw metadata remains unchanged for diagnostics.
 public func visibleLossGaps(_ meta: SegmentMeta) -> [GapMeta] {
     let visibility = GapVisibility(meta.gaps)
     return meta.gaps.filter { visibility.isVisibleLoss($0) }
 }
 
-/// Precomputes silence-coverage for one segment's gaps so visibility is a binary search instead
-/// of a per-gap rescan of the whole list. A segment can accumulate thousands of gap records
-/// (every silence-suppression span, overflow, and reconnect adds one), so the old O(n²)
-/// `allGaps.none { … }` froze the main thread for ~12 s while building the Today timeline once
-/// the test library grew. Silence intervals are sorted by start with a running max end, which
-/// answers "is this sequence-skip fully covered by some single silence gap?" in O(log n).
-public final class GapVisibility {
-    private let silenceStarts: [UInt64]
-    private let silenceMaxEnd: [UInt64]
-
-    public init(_ gaps: [GapMeta]) {
-        // 64-bit interval arithmetic: KMP's UInt math would wrap on (start + count) overflow;
-        // widening is semantically identical for all real inputs and cannot trap.
-        let silence = gaps
-            .filter { isSilenceGap($0) }
-            .map {
-                (
-                    UInt64($0.firstMissingSequence),
-                    UInt64($0.firstMissingSequence) + UInt64($0.missingFrameCount)
-                )
-            }
-            .sorted { $0.0 < $1.0 }
-        var starts = [UInt64]()
-        var maxEnds = [UInt64]()
-        starts.reserveCapacity(silence.count)
-        maxEnds.reserveCapacity(silence.count)
-        var runningMax: UInt64 = 0
-        for (index, interval) in silence.enumerated() {
-            runningMax = index == 0 ? interval.1 : max(runningMax, interval.1)
-            starts.append(interval.0)
-            maxEnds.append(runningMax)
-        }
-        silenceStarts = starts
-        silenceMaxEnd = maxEnds
-    }
-
-    public func isVisibleLoss(_ gap: GapMeta) -> Bool {
-        if isSilenceGap(gap) { return false }
-        if gap.origin != GapMeta.originSequenceSkip { return true }
-        let start = UInt64(gap.firstMissingSequence)
-        return !coveredBySingleSilenceGap(start: start, end: start + UInt64(gap.missingFrameCount))
-    }
-
-    private func coveredBySingleSilenceGap(start: UInt64, end: UInt64) -> Bool {
-        // Largest index whose silence start <= `start`; its prefix max end is the widest a single
-        // silence gap (with start <= start) reaches, so >= end means one fully covers [start, end).
-        var lo = 0
-        var hi = silenceStarts.count - 1
-        var idx = -1
-        while lo <= hi {
-            let mid = (lo + hi) >> 1
-            if silenceStarts[mid] <= start {
-                idx = mid
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
-        }
-        return idx >= 0 && silenceMaxEnd[idx] >= end
-    }
-}
+/// The name every StatusUI caller already uses for the one gap classifier. It used to be a second,
+/// separate classifier that disagreed with the day strip about the watch's power-save pause (it
+/// counted it as loss) — see `SegmentStore/GapClassification.swift`.
+public typealias GapVisibility = GapClassifier
 
 public func isVisibleLossGap(_ gap: GapMeta, allGaps: [GapMeta]) -> Bool {
     GapVisibility(allGaps).isVisibleLoss(gap)
@@ -183,8 +122,9 @@ public func gapDurationMsWithinSegment(_ gap: GapMeta, _ meta: SegmentMeta) -> I
     return Int64(frames) * Int64(meta.frameDurationMs)
 }
 
-/// Total approximate missing time of a segment (intentionally-skipped silence excluded, and each
-/// gap counted only for the part that overlaps this segment's audio).
+/// Total approximate missing time of a segment (intentionally-skipped silence and the watch's
+/// power-save pause excluded, and each gap counted only for the part that overlaps this segment's
+/// audio).
 public func totalGapMs(_ meta: SegmentMeta) -> Int64 {
     visibleLossGaps(meta).reduce(0) { $0 + gapDurationMsWithinSegment($1, meta) }
 }

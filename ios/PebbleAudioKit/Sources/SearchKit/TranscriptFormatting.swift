@@ -709,9 +709,14 @@ private func collapsedTranscriptGaps(_ meta: SegmentMeta) -> [TranscriptTimeline
     // missing=true ("audio interrupted"). They collapse separately so a quiet stretch never
     // inherits an interruption's framing; length-based labelling happens later in
     // coalesceTimelineQuiet on the combined totals.
-    let visibility = GapVisibility(meta.gaps)
-    let lost = pauses(meta.gaps.filter { visibility.isVisibleLoss($0) }, missing: true)
-    let quiet = pauses(meta.gaps.filter { !visibility.isVisibleLoss($0) }, missing: false)
+    //
+    // The watch's power-save pause is not loss (`GapClassifier`), but it is not quiet either:
+    // nothing was heard. The transcript has only these two row kinds, so it keeps the
+    // interruption row it has always had, which names its cause ("watch was saving power").
+    // Filing it under quiet would tell the reader a room was silent that nobody listened to.
+    let classifier = GapClassifier(meta.gaps)
+    let lost = pauses(meta.gaps.filter { classifier.classify($0) != .quiet }, missing: true)
+    let quiet = pauses(meta.gaps.filter { classifier.classify($0) == .quiet }, missing: false)
     return (lost + quiet).sorted { $0.startMs < $1.startMs }
 }
 

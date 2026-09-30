@@ -129,27 +129,19 @@ public enum CoverageComputer {
     /// seconds (±32 s across the real library — see `SegmentStore.openSegmentInternal`).
     static let recordAfterCloseSlackMs: Int64 = 60_000
 
-    /// Visible-loss filter: `sequence_skip` gaps (receiver-synthesized) always count as loss;
-    /// watch-reported gaps count unless the reason is SilenceSuppressed (known quiet, not
-    /// loss). Unknown reasons count as loss — never silently hidden.
-    static func isVisibleLoss(_ gap: GapMeta) -> Bool {
-        if gap.origin == GapMeta.originSequenceSkip { return true }
-        guard let raw = gap.reasonRaw,
-            let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
-        else { return true }
-        return !reason.isSilence && reason != .powerSave
-    }
-
-    /// The watch's own power-save pause: a stretch it CHOSE not to listen to (stationary mute —
-    /// the phone's status card already says "Paused while the watch is saving power"). Drawn as
-    /// paused, never as missing: a night on the nightstand is not lost audio, and the 2026-09-29
-    /// backup would otherwise have drawn 45 h of it as loss (570 min on 09-22 alone).
-    static func isWatchPause(_ gap: GapMeta) -> Bool {
-        guard gap.origin == GapMeta.originWatch, let raw = gap.reasonRaw,
-            let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
-        else { return false }
-        return reason == .powerSave
-    }
+    // Which gap records are loss, which are the watch's own pause, and which are quiet is decided
+    // by `SegmentStore.GapClassifier` — the same classifier the transcript, the per-recording
+    // missing time, Ask and the loss notification use, so a minute cannot be "paused" here and
+    // "missing" in the recording it belongs to.
+    //
+    // - Loss: every receiver `sequence_skip` except one that a single watch-reported silence
+    //   record fully covers (that is quiet — a duplicate a few field builds stored); every
+    //   watch-reported reason other than silence and power-save, and any reason we cannot decode.
+    //   Never silently hidden.
+    // - The watch's own power-save pause: a stretch it CHOSE not to listen to (stationary mute —
+    //   the phone's status card already says "Paused while the watch is saving power"). Drawn as
+    //   paused, never as missing: a night on the nightstand is not lost audio, and the 2026-09-29
+    //   backup would otherwise have drawn 45 h of it as loss (570 min on 09-22 alone).
 
     /// Computes one logical day's coverage. `nowMs` clamps the domain for the current day
     /// ("today so far"); nil renders the full 24 h domain.
@@ -207,8 +199,9 @@ public enum CoverageComputer {
             // past the segment's close (plus the watch/phone clock skew the rest of the timeline
             // already tolerates); that keeps one corrupt count from painting a whole day.
             let closeBound = meta.closedAtMs.map { $0 + Self.recordAfterCloseSlackMs }
+            let classifier = GapClassifier(meta.gaps)
             let lossSamples = mergeRanges(
-                meta.gaps.filter { isVisibleLoss($0) && $0.missingFrameCount > 0 }.map { gap in
+                meta.gaps.filter { classifier.classify($0) == .loss && $0.missingFrameCount > 0 }.map { gap in
                     let start = gap.firstMissingSampleIndex
                     return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
                 }
@@ -219,7 +212,7 @@ public enum CoverageComputer {
             }
             // The watch's power-save pauses, placed exactly like loss and bounded the same way.
             let pausedSamples = mergeRanges(
-                meta.gaps.filter { isWatchPause($0) && $0.missingFrameCount > 0 }.map { gap in
+                meta.gaps.filter { classifier.classify($0) == .watchPause && $0.missingFrameCount > 0 }.map { gap in
                     let start = gap.firstMissingSampleIndex
                     return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
                 }

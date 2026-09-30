@@ -71,6 +71,40 @@ import Testing
         #expect(day.totalRecordedMs == minutesMs(1))
     }
 
+    /// The rule the day strip took from gap status when the two classifiers became one: a receiver
+    /// skip that a single silence record fully covers is the same stretch reported twice, and the
+    /// watch's reason (quiet) wins. One that no single record covers is still loss.
+    @Test func sequenceSkipInsideOneSilenceRecordIsQuietNotMissing() {
+        let segStart = dayStart + minutesMs(60)
+        let meta = makeSegment(
+            id: "s", stream: 1, startTimeMs: segStart, durationSamples: minutesSamples(4),
+            gaps: [
+                // Minute 1: silence, reported twice (the watch's record and a receiver skip).
+                silenceGap(atSample: minutesSamples(1), minutes: 1),
+                sequenceSkipGap(atSample: minutesSamples(1), minutes: 1),
+                // Minutes 2-3: two back-to-back silence records and one skip across both.
+                silenceGap(atSample: minutesSamples(2), minutes: 1),
+                silenceGap(atSample: minutesSamples(3), minutes: 1),
+                GapMeta(
+                    firstMissingSequence: UInt32(minutesSamples(2) / 320) + 1_500,
+                    missingFrameCount: 3_000,
+                    firstMissingSampleIndex: minutesSamples(2) + 1_500 * 320,
+                    origin: GapMeta.originSequenceSkip),
+            ])
+        let input = SegmentCoverageInput(meta: meta, frameSampleRanges: [0..<minutesSamples(1)])
+        let day = spans([input], nowMs: dayStart + minutesMs(120))
+
+        let inSegment = day.spans.filter { $0.startMs >= segStart && $0.endMs <= segStart + minutesMs(4) }
+        #expect(
+            inSegment == [
+                .init(kind: .recorded, startMs: segStart, endMs: segStart + minutesMs(1)),
+                .init(kind: .quiet, startMs: segStart + minutesMs(1), endMs: segStart + minutesMs(2) + 30_000),
+                .init(kind: .missing, startMs: segStart + minutesMs(2) + 30_000, endMs: segStart + minutesMs(3) + 30_000),
+                .init(kind: .quiet, startMs: segStart + minutesMs(3) + 30_000, endMs: segStart + minutesMs(4)),
+            ])
+        #expect(day.totalMissingMs == minutesMs(1))
+    }
+
     @Test func quietHoleBetweenFrameExtentsWithoutAnyGapRecord() {
         // Frames at minutes 1 and 3, no gap records at all: the hole is quiet, not missing —
         // the watch advanced sample indexes across suppressed silence.
