@@ -321,8 +321,9 @@ public enum ConversationBoundaryDetector {
     }
 
     /// The same runs, keeping the word count, for the rules that need to know how much was
-    /// said and not merely that something was.
-    static func spokenRuns(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
+    /// said and not merely that something was. Public for History's day, which draws its talk
+    /// stretches from exactly these runs.
+    public static func spokenRuns(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
         -> [(startMs: Int64, endMs: Int64, wordCount: Int)]
     {
         guard let evidence, !evidence.speech.isEmpty else { return [] }
