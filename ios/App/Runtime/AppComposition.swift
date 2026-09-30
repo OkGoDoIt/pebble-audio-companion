@@ -1022,8 +1022,11 @@ final class AppComposition {
                 }
                 if context.latestLine == nil {
                     let detail = try? await conversations.detail(id: live.id)
-                    for member in (detail?.members ?? []).reversed() {
-                        let text = transcripts.load(member.segmentId)?.text
+                    // The conversation's PIECE of each member: the live conversation usually
+                    // starts partway through a segment, and the last line of the one before
+                    // it is not this conversation's latest anything.
+                    for piece in (detail?.pieces ?? []).reversed() {
+                        let text = transcripts.load(piece.segmentId)?.piece(piece).text
                         if let line = Self.lastLine(of: text.map { [$0] }) {
                             context.latestLine = line
                             break
@@ -1157,10 +1160,12 @@ final class AppComposition {
             // Collapsed before it is indexed: 1 649 copies of one sentence in a single
             // recording would otherwise dominate bm25 for every word in it, so searching
             // "clothes" would return that one silent afternoon ahead of anything real.
-            let text = detail.members
-                .compactMap { transcripts.load($0.segmentId)?.withLoopedArtefactsCollapsed().text }
-                .joined(separator: "\n")
-            return text.isEmpty ? nil : text
+            //
+            // And only the conversation's own pieces of its segments: indexing whole members
+            // put the end of the previous conversation and the start of the next under this
+            // one's title, so a search for a phrase opened the conversation beside the one it
+            // was said in.
+            return ConversationText.joined(detail.pieces) { transcripts.load($0) }
         }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces
