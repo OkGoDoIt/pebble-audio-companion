@@ -712,6 +712,9 @@ public actor CompanionRuntime {
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
             extractFollowUps: { try await env.enrichment.followUpPass() },
             refreshRecap: { try await env.recap.refresh(onProgress: { health.progressed() }) },
+            refreshBriefs: {
+                try await env.recap.refreshBriefs(onProgress: { health.progressed() })
+            },
             liveLocalPass: { try await env.live.localLivePass() },
             liveCloudPrune: { await env.live.cloudLivePrune() },
             exportWavIfEnabled: { try await env.live.exportWavIfEnabled() },

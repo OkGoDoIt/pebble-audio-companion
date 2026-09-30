@@ -825,7 +825,21 @@ final class AppComposition {
                     await aiRouter.firstCallInputChars(remoteModelId: settingsBox.aiModel)
                 }
             ),
-            store: recapStore
+            store: recapStore,
+            // History's day headlines and week and month briefs, from those recaps. Through the
+            // person's own AI mode like every other summary; weeks laid out as the History tab
+            // lays them (the phone's calendar), days dated as it dates them (5 AM, phone zone).
+            briefs: PeriodBriefEngine(
+                recaps: recapStore,
+                briefs: PeriodBriefStore(db: database),
+                run: { request in try await aiRouter.run(request) },
+                todayKey: {
+                    LogicalDay.dateKey(forMs: nowMs(), timeZoneID: TimeZone.current.identifier)
+                },
+                firstWeekday: { Calendar.current.firstWeekday },
+                nowMs: nowMs,
+                log: { AppRuntimeLog.shared.record($0) }
+            )
         )
 
         // --- receiver ------------------------------------------------------------------------
