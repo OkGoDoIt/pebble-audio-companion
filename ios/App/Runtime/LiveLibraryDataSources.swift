@@ -515,12 +515,15 @@ extension LiveWorld: ConversationDataSource {
             pendingDeletes[id] = nil
         }
         pendingDeletes[id] = (token, timer)
+        // The undo buffer is memory-only, so no database observation sees the conversation go.
+        composition.history?.pendingDeletesChanged(conversationId: id)
     }
 
     func undoDelete(id: String) async throws {
         guard let pending = pendingDeletes.removeValue(forKey: id) else { return }
         pending.timer.cancel()
         _ = await composition.runtime.restoreDelete(pending.token)
+        composition.history?.pendingDeletesChanged(conversationId: id)
     }
 
     func toggleFollowUp(id: String) async throws {

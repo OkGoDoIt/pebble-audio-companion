@@ -95,6 +95,13 @@ public actor HistoryReader {
         /// Everything placed on the day, open and done.
         public var followUpTotal: Int
         public var followUpOpen: Int
+
+        public init(day: HistoryDay, brief: HistoryBrief?, followUpTotal: Int, followUpOpen: Int) {
+            self.day = day
+            self.brief = brief
+            self.followUpTotal = followUpTotal
+            self.followUpOpen = followUpOpen
+        }
     }
 
     private let sources: Sources
