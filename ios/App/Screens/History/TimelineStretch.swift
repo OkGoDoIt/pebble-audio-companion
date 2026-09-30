@@ -59,9 +59,9 @@ struct TimelineStretch: View {
                     Text(title)
                 }
             }
-            .foregroundStyle(text.titleIsLoss ? Tokens.missingText : Tokens.faint)
+            .foregroundStyle(text.titleIsLoss ? Tokens.missingText : Tokens.meta)
             if let second = text.secondLine {
-                Text(second).foregroundStyle(Tokens.faint)
+                Text(second).foregroundStyle(Tokens.meta)
             }
         }
         .font(AppFont.timelineMeta)
