@@ -28,42 +28,69 @@ struct HistoryScreen: View {
     @State private var titleFocusToken = 0
     @State private var services: HistoryPageServices?
     @State private var showsCalendar = false
+    @State private var searchActive = false
+    @State private var searchModel = SearchViewModel()
 
     var body: some View {
-        content
-            .background(Tokens.ground)
-            .navigationTitle(Copy.History.tab)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(removing: .title)
-            .toolbar { toolbar }
-            .task {
-                #if DEBUG
-                HistoryPerformance.startHitchLogIfAsked()
-                #endif
-                HistoryPerformance.markShown()
-                await refreshBounds()
+        ZStack {
+            // The pager stays alive under search, invisible and out of VoiceOver's way, so
+            // Cancel returns to the very page it left (plan 5.7).
+            content
+                .opacity(searchActive ? 0 : 1)
+                .allowsHitTesting(!searchActive)
+                .accessibilityHidden(searchActive)
+            if searchActive {
+                SearchStateView(
+                    model: searchModel,
+                    onCancel: { exitSearch() },
+                    onSelectTag: { _ in
+                        // TODO(history step 14): a tag opens the tag results list (plan 5.7),
+                        // which is not built yet; until then choosing one just closes search.
+                        exitSearch()
+                    }
+                )
+                .background(Tokens.ground)
             }
-            .onAppear { source.setVisible(true) }
-            .onDisappear { source.setVisible(false) }
-            .onChange(of: scenePhase) { _, phase in
-                source.setVisible(phase == .active)
-                if phase == .active { Task { await refreshBounds() } }
-            }
-            .onChange(of: reselectToken) { reselected() }
-            .sheet(isPresented: $showsCalendar) {
-                if let model {
-                    JumpCalendarSheet(
-                        firstDateKey: model.firstDateKey, todayDateKey: model.todayDateKey,
-                        recordedDays: model.recordedDays, level: model.level,
-                        selectedDateKey: model.focusDateKey
-                    ) { key in
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            _ = model.show(model.level, containing: key)
-                        }
+        }
+        .background(Tokens.ground)
+        .navigationTitle(searchActive ? Copy.History.search : Copy.History.tab)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
+        .toolbar(searchActive ? .hidden : .automatic, for: .navigationBar)
+        .toolbar { toolbar }
+        .navigationDestination(for: Route.self) { route in destination(for: route) }
+        .onChange(of: router.pendingSearchQuery) { consumePendingSearch() }
+        .task {
+            #if DEBUG
+            HistoryPerformance.startHitchLogIfAsked()
+            #endif
+            HistoryPerformance.markShown()
+            await refreshBounds()
+        }
+        .onAppear {
+            source.setVisible(true)
+            consumePendingSearch()
+        }
+        .onDisappear { source.setVisible(false) }
+        .onChange(of: scenePhase) { _, phase in
+            source.setVisible(phase == .active)
+            if phase == .active { Task { await refreshBounds() } }
+        }
+        .onChange(of: reselectToken) { reselected() }
+        .sheet(isPresented: $showsCalendar) {
+            if let model {
+                JumpCalendarSheet(
+                    firstDateKey: model.firstDateKey, todayDateKey: model.todayDateKey,
+                    recordedDays: model.recordedDays, level: model.level,
+                    selectedDateKey: model.focusDateKey
+                ) { key in
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        _ = model.show(model.level, containing: key)
                     }
                 }
             }
-            .onChange(of: model?.visiblePage) { prefetchNeighbours() }
+        }
+        .onChange(of: model?.visiblePage) { prefetchNeighbours() }
     }
 
     // MARK: Content
@@ -112,7 +139,7 @@ struct HistoryScreen: View {
         if model != nil {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button(Copy.History.jumpToDate, systemImage: "calendar") { showsCalendar = true }
-                Button(Copy.History.search, systemImage: "magnifyingglass") {}
+                Button(Copy.History.search, systemImage: "magnifyingglass") { enterSearch() }
             }
         }
     }
@@ -132,6 +159,44 @@ struct HistoryScreen: View {
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.ground)
+    }
+
+    // MARK: Search and pushes
+
+    private func enterSearch() {
+        searchActive = true
+    }
+
+    private func exitSearch() {
+        searchActive = false
+        searchModel.query = ""
+    }
+
+    /// `companion://search?q=` lands here while History holds the tab, as it lands on the
+    /// Library otherwise.
+    private func consumePendingSearch() {
+        guard let query = router.pendingSearchQuery else { return }
+        router.pendingSearchQuery = nil
+        searchModel.query = query
+        searchActive = true
+    }
+
+    /// The same destinations the Library's stack registers — search results, a conversation's
+    /// notes, a follow-up — plus the Live screen, which History's Live card opens.
+    @ViewBuilder
+    private func destination(for route: Route) -> some View {
+        switch route {
+        case .conversation(let id, let atMs, let focus):
+            ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
+        case .note(let id):
+            SavedNotesScreen(noteId: id)
+        case .followUp(let id):
+            FollowUpDetailScreen(id: id)
+        case .live:
+            LiveConversationScreen()
+        default:
+            EmptyView()
+        }
     }
 
     // MARK: Moves
