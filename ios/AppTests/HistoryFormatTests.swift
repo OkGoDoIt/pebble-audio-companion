@@ -155,23 +155,35 @@ struct HistoryFormatTests {
         #expect(plain(line.main) == "about 2:00 – 2:56 PM · 56 min")
     }
 
-    @Test func anUntitledStretchLeadsWithItsTimeAndHasNoPlaceholderTitle() {
+    @Test func anUntitledCardLeadsWithItsFirstWordsAndKeepsTheTimeGray() {
         var untitled = block(at(15, 20), at(16, 5), missing: 3 * 60_000)
         untitled.source = .conversation
         untitled.title = nil
         untitled.summary = nil
         untitled.snippet = "Right, try it again with the watch off the charger."
         #expect(HistoryLabels.isUntitled(untitled))
-        #expect(plain(HistoryLabels.chapterHeading(untitled, locale: us)) == "3:20 – 4:05 PM")
+        #expect(HistoryLabels.heading(untitled) == .quote("Right, try it again with the watch off the charger."))
+        // The same gray time line as a titled card: range, duration, amber loss.
         let line = HistoryLabels.chapterTimeLine(untitled, locale: us)
-        #expect(line.main == "45 min")
+        #expect(plain(line.main) == "3:20 – 4:05 PM · 45 min")
         #expect(line.missing == "3 min missing")
+        #expect(plain(HistoryLabels.compactTimeLine(untitled, locale: us).main) == "3:20 PM · 45 min")
+        // Named elsewhere by its words, never by its time or a placeholder "Conversation".
+        #expect(HistoryLabels.chapterTitle(untitled, locale: us) == "“Right, try it again with the watch off the charger.”")
         untitled.title = ""
         #expect(HistoryLabels.isUntitled(untitled))
-        #expect(!HistoryLabels.chapterTitle(untitled, locale: us).contains("Conversation"))
     }
 
-    @Test func anUntitledStretchReadsItsTimeThenItsFirstWords() {
+    @Test func withNoWordsTheTitlePositionSaysNotSummarisedYet() {
+        var bare = block(at(15, 20), at(16, 5))
+        bare.title = nil
+        bare.snippet = "   "
+        #expect(HistoryLabels.heading(bare) == .placeholder)
+        #expect(HistoryLabels.chapterTitle(bare, locale: us) == "Not summarised yet")
+        #expect(HistoryLabels.heading(block(at(9, 0), at(10, 0))) == .title("Invoice details with the vendor"))
+    }
+
+    @Test func anUntitledCardReadsItsFirstWordsThenItsTime() {
         var untitled = block(at(15, 20), at(16, 5))
         untitled.source = .conversation
         untitled.title = nil
@@ -180,9 +192,9 @@ struct HistoryFormatTests {
         untitled.people = []
         untitled.snippet = "Right, try it again."
         let label = plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us))
-        #expect(label == "3:20 to 4:05 PM, 45 minutes. First words: Right, try it again.")
+        #expect(label == "First words: Right, try it again. 3:20 to 4:05 PM, 45 minutes")
         untitled.snippet = nil
-        #expect(plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us)) == "3:20 to 4:05 PM, 45 minutes")
+        #expect(plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us)) == "Not summarised yet. 3:20 to 4:05 PM, 45 minutes")
     }
 
     @Test func theLiveCardsTimeLine() {
@@ -293,14 +305,18 @@ struct HistoryFormatTests {
         var waiting = gap(.notTranscribedYet, at(8, 17), at(16, 17))
         waiting.missingMs = 5 * 60_000
         let text = HistoryLabels.gapText(waiting, locale: us)
-        #expect(plain(text.detail ?? "") == "8:17 AM – 4:17 PM · 8 hr · 5 min missing")
+        // The loss is its own part, drawn amber after the gray line — never folded into it.
+        #expect(plain(text.detail ?? "") == "8:17 AM – 4:17 PM · 8 hr")
+        #expect(text.missing == "5 min missing")
+        #expect(plain(text.fullDetail ?? "") == "8:17 AM – 4:17 PM · 8 hr · 5 min missing")
         #expect(HistoryLabels.gapAccessibilityLabel(waiting, locale: us).contains("missing"))
         // A short quiet gap is bare — unless it carries loss, which is never left unsaid.
         var quiet = gap(.quiet, at(10, 0), at(10, 5))
         #expect(HistoryLabels.gapText(quiet, locale: us).title == nil)
         quiet.missingMs = 4_000
         #expect(HistoryLabels.gapText(quiet, locale: us).title != nil)
-        #expect(plain(HistoryLabels.gapText(quiet, locale: us).detail ?? "").hasSuffix("missing"))
+        #expect(HistoryLabels.gapText(quiet, locale: us).missing == "under 1 min missing")
+        #expect(!(HistoryLabels.gapText(quiet, locale: us).detail ?? "").contains("missing"))
     }
 
     @Test func anOpenEndedPauseSaysSince() {

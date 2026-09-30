@@ -140,7 +140,7 @@ struct ShortConversationGroupCard: View {
 }
 
 /// The one-line content of a short conversation, shared by the compact card and a group row:
-/// the title (or, untitled, the time range and the quote after it), the follow-up indicator,
+/// the title (or, untitled, its first words, or "Not summarised yet"), the follow-up indicator,
 /// "9:05 AM · 6 min" trailing, and an amber "N min missing" when audio was lost.
 struct CompactConversationRow: View {
     let block: HistoryChapterBlock
@@ -149,36 +149,19 @@ struct CompactConversationRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let snippet = HistoryLabels.isUntitled(block) ? block.snippet.flatMap({ $0.isEmpty ? nil : $0 }) : nil {
-                Text(HistoryLabels.chapterHeading(block))
-                    .font(AppFont.rowTitle)
-                    .foregroundStyle(Tokens.label)
-                    .lineLimit(1)
-                    .fixedSize()
-                Text(Copy.History.quote(snippet))
-                    .font(AppFont.historyBody(dynamicTypeSize))
-                    .italic()
-                    .foregroundStyle(Tokens.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
-                Spacer(minLength: 0)
-            } else {
-                Text(HistoryLabels.chapterHeading(block))
-                    .font(AppFont.rowTitle)
-                    .foregroundStyle(Tokens.label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // The title takes all the room the time leaves; the spacer only what is over.
-                    .layoutPriority(1)
-                Spacer(minLength: 4)
-                if !block.followUps.isEmpty { followUpIndicator }
-                Text(HistoryLabels.compactTimeLine(block).main)
-                    .font(AppFont.timelineMeta)
-                    .foregroundStyle(Tokens.meta)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+            // Text leads on every card, titled or not; the time is the gray meta trailing.
+            CardHeading(heading: HistoryLabels.heading(block))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                // The heading takes all the room the time leaves; the spacer only what is over.
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            if !block.followUps.isEmpty { followUpIndicator }
+            Text(HistoryLabels.compactTimeLine(block).main)
+                .font(AppFont.timelineMeta)
+                .foregroundStyle(Tokens.meta)
+                .lineLimit(1)
+                .fixedSize()
             if block.missingMs > 0 {
                 // Loss is never hidden: on the one line it is an amber mark, and spoken in full.
                 Text(Copy.History.missing(HistoryFormat.duration(ms: block.missingMs)))

@@ -15,10 +15,9 @@ struct PendingChapterCard: View {
                 .font(AppFont.pendingTitle)
                 .foregroundStyle(Tokens.meta)
                 .fixedSize(horizontal: false, vertical: true)
-            if let detail = text.detail {
-                Text(detail)
+            if text.detail != nil || text.missing != nil {
+                GapDetailLine(detail: text.detail, missing: text.missing)
                     .font(AppFont.timelineMeta)
-                    .foregroundStyle(Tokens.meta)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
