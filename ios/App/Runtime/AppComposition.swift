@@ -631,30 +631,34 @@ final class AppComposition {
                 log: { AppRuntimeLog.shared.record($0) }
             )
         }()
+        // Named so the developer measurement channel (`AnalysisJobRunner`) can address each
+        // side directly; the router is built from the same two instances.
+        let onDeviceAi = OnDeviceAiProvider(
+            model: FoundationModelsLanguageModel(), grounding: aiGrounding
+        )
+        let remoteAi = RemoteAiProviderSwitch(
+            selected: { settingsBox.remoteAiProvider },
+            openAi: OpenAiChatAiProvider(
+                // Its own session: `URLSession.shared`'s 60 s idle timer killed every
+                // non-streaming call that thought longer than a minute (a long Ask, a
+                // reasoning model). The transcription uploads keep theirs.
+                transport: AiHttpTransport.make(),
+                apiKey: openAiKey,
+                remoteConsent: { settingsBox.remoteAiEnabled },
+                model: { settingsBox.aiModel },
+                grounding: aiGrounding,
+                // The SAME hold the transcription side uses: one OpenAI account, one key. A
+                // 402 or a rejected key from either side stops both, and the AI stage's
+                // probe or a transcription success lifts it for both.
+                accountHold: cloudHold,
+                nowMs: nowMs,
+                log: { AppRuntimeLog.shared.record($0) }
+            ),
+            applePrivateCloud: applePrivateCloud
+        )
         let aiRouter = AiModeRouter(
-            local: OnDeviceAiProvider(
-                model: FoundationModelsLanguageModel(), grounding: aiGrounding
-            ),
-            remote: RemoteAiProviderSwitch(
-                selected: { settingsBox.remoteAiProvider },
-                openAi: OpenAiChatAiProvider(
-                    // Its own session: `URLSession.shared`'s 60 s idle timer killed every
-                    // non-streaming call that thought longer than a minute (a long Ask, a
-                    // reasoning model). The transcription uploads keep theirs.
-                    transport: AiHttpTransport.make(),
-                    apiKey: openAiKey,
-                    remoteConsent: { settingsBox.remoteAiEnabled },
-                    model: { settingsBox.aiModel },
-                    grounding: aiGrounding,
-                    // The SAME hold the transcription side uses: one OpenAI account, one key. A
-                    // 402 or a rejected key from either side stops both, and the AI stage's
-                    // probe or a transcription success lifts it for both.
-                    accountHold: cloudHold,
-                    nowMs: nowMs,
-                    log: { AppRuntimeLog.shared.record($0) }
-                ),
-                applePrivateCloud: applePrivateCloud
-            ),
+            local: onDeviceAi,
+            remote: remoteAi,
             mode: { settingsBox.aiMode },
             // AI failures had no home. The device's `diagnostics/companion.log` carried link,
             // session, heartbeat and cloud *transcription* lines and not one AI or note-job
@@ -825,6 +829,16 @@ final class AppComposition {
         let wake = WakeChannel()
         let foreground = RuntimeForegroundState()
         self.foregroundState = foreground
+
+        // Developer measurement channel: dormant unless a job file has been copied into
+        // `analysis/inbox` from a paired Mac (see `AnalysisJobRunner`). Lets a measurement use
+        // this app's own keys and AI path without a key leaving the phone.
+        let analysisRunner = AnalysisJobRunner(
+            root: containerRoot, remote: remoteAi, local: onDeviceAi, openAiKey: openAiKey,
+            transport: AiHttpTransport.make(),
+            isCharging: { foreground.devicePower.isPluggedIn },
+            log: AppRuntimeLog.runtimeLog)
+        Task.detached(priority: .utility) { await analysisRunner.pollForever() }
         let diagnostics = DiagnosticsService(
             store: store,
             retention: retention,

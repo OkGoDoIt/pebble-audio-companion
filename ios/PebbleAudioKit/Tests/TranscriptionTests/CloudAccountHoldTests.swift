@@ -285,6 +285,29 @@ private func audio() -> AsyncThrowingStream<Data, Error> {
         #expect(hold.active(for: .soniox)?.refusedProbes == 0)
     }
 
+    /// The 2026-09-30 shape: a Soniox project's monthly budget runs out mid-backlog. The first
+    /// refusal holds the account — it used to read as provider trouble, and the uploader kept
+    /// sending full recordings into it — and a probe that meets the same words is a refusal
+    /// that backs off, not an "inconclusive" that retries every 15 minutes.
+    @Test func aSpendingLimitHoldsOnTheFirstRefusalAndProbesBackOff() async {
+        let budget =
+            "Soniox transcription error: Project monthly budget exhausted. Please increase it."
+        let soniox = Backend("soniox", failure: TranscriptionError.transcriptionFailed(budget))
+        let hold = makeHold()
+        let cloud = gate(soniox, hold: hold)
+
+        await #expect(throws: TranscriptionError.self) {
+            _ = try await cloud.transcribe(pcmChunks: audio(), sampleRateHz: 16_000)
+        }
+        #expect(hold.active(for: .soniox)?.kind == .spendingLimitReached)
+        #expect(await cloud.isAvailable() == false)
+        #expect(
+            TranscriptionFailureKind.classify(await cloud.unavailabilityReason())
+                == .spendingLimitReached)
+
+        #expect(await cloud.probeAccount(.soniox) == .refused(.spendingLimitReached))
+    }
+
     /// A probe run with no hold in force — Test Connection — starts one when refused.
     @Test func aRefusedProbeWithNoHoldStartsOne() async {
         let soniox = Backend(
