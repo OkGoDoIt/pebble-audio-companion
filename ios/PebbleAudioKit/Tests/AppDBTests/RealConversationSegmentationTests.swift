@@ -155,19 +155,41 @@ struct RealConversationSegmentationTests {
         }.count
     }
 
+    /// First to last labelled line of a day.
+    static func dayWindow(_ day: String) throws -> ClosedRange<Int64> {
+        let folder = URL(fileURLWithPath: unitsLabels!)
+        let index = try JSONDecoder().decode(
+            [IndexLine].self,
+            from: Data(contentsOf: folder.appendingPathComponent("days/\(day).index.json")))
+        return (index.first?.ws ?? 0)...(index.last?.ws ?? 0)
+    }
+
     static let days = [
         "2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-27",
         "2026-09-28", "2026-09-29",
     ]
 
-    static func report(_ name: String, _ conversations: [GroupedConversation]) throws
-        -> (score: SegmentationScore, spoken: [Int64])
-    {
+    static func report(
+        _ name: String, _ all: [GroupedConversation],
+        evidence: [String: SegmentSpeechEvidence]
+    ) throws -> (score: SegmentationScore, spoken: [Int64]) {
         var score = SegmentationScore()
+        // A unit nobody spoke in (the silent tail of a run) is not a conversation and is not
+        // shown as one; it neither finds nor misses a marked start.
+        let conversations = all.filter { conversation in
+            conversation.members.contains { member in
+                evidence[member.segmentId]?.speech.contains {
+                    member.contains(mediaMs: $0.startMs)
+                } ?? false
+            }
+        }
         let starts = conversations.map(\.startMs).sorted()
         for day in days { try Self.score(starts: starts, day: day, into: &score) }
-        // Lengths of the conversations that lie in the labelled days and hold speech.
-        let lengths = conversations.map { $0.endMs - $0.startMs }.filter { $0 > 0 }.sorted()
+        // Lengths of the conversations that start inside the labelled days.
+        let windows = try days.map { try dayWindow($0) }
+        let lengths = conversations.filter { conversation in
+            windows.contains { $0.contains(conversation.startMs) }
+        }.map { $0.endMs - $0.startMs }.filter { $0 > 0 }.sorted()
         let line = String(
             format:
                 "%@: certain %d/%d (%.0f%%) unsure %d/%d cuts %d matched %d (%.0f%%) traps hit %d/%d | n=%d median %@ p90 %@ max %@ >1h %d >2h %d",
@@ -195,8 +217,51 @@ struct RealConversationSegmentationTests {
                 fallbackTimeZoneID: "UTC", evidence: library.evidence)
         }
         print("grouping \(library.metas.count) segments took \(elapsed)")
-        let old = try Self.report("long-quiet rule only", before)
-        let new = try Self.report("with the segmenter  ", after)
+        // The same library again, with the cuts the first pass would have written down and a
+        // memo: what a relaunch costs, and what every later pass costs.
+        let first = ConversationGrouper.groupDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence)
+        var committed: [String: [Int64: ConversationStartReason]] = [:]
+        for (cut, reason) in first.cutsToCommit {
+            committed[cut.segmentId, default: [:]][cut.mediaMs] = reason
+        }
+        let inputs = ConversationCutInputs(committed: committed)
+        let memo = GroupingMemo()
+        var relaunch: [GroupedConversation] = []
+        let cold = clock.measure {
+            relaunch = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        let warm = clock.measure {
+            _ = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        print(
+            "\(first.cutsToCommit.count) cuts settled; with them a cold regroup took \(cold), a repeat \(warm)")
+        // Holding the settled cuts changes nothing about the answer.
+        #expect(relaunch.map(\.id) == after.map(\.id))
+        let words = library.evidence.values.reduce(0) { $0 + $1.speech.count }
+        let lexicon = clock.measure {
+            for item in library.evidence.values {
+                for span in item.speech {
+                    _ = ConversationLexicon.features(
+                        text: String(repeating: "word ", count: span.wordCount), speaker: "1")
+                }
+            }
+        }
+        print("lexicon over \(words) turns took \(lexicon)")
+        if let dump = unitsEnv["PEBBLE_UNITS_DUMP"] {
+            let rows = after.map { "\($0.startMs)\t\($0.endMs)\t\($0.startReason?.rawValue ?? "-")\t\($0.id)" }
+            try rows.joined(separator: "\n").write(
+                toFile: dump, atomically: true, encoding: .utf8)
+        }
+        let old = try Self.report("long-quiet rule only", before, evidence: library.evidence)
+        let new = try Self.report("with the segmenter  ", after, evidence: library.evidence)
 
         // The direction, pinned: far more of the real starts found, and no conversation of
         // the kind this work exists to remove.
