@@ -540,4 +540,38 @@ struct ConversationPiecesEnrichmentTests {
         #expect(provider.runCount == 12)
         #expect(try await store.list().allSatisfy { $0.title == "Team sync" && $0.isFinal })
     }
+
+    @Test("an outage is met once a pass, not once per conversation in the backlog")
+    func anOutageStopsThePass() async throws {
+        var library: [EnrichmentConversation] = []
+        for index in 0..<6 {
+            let id = "seg-\(index)"
+            library.append(
+                EnrichmentConversation(
+                    conversationId: "conv-\(id)", isOpen: false,
+                    members: [segment(id, startMs: recordedAtMs + Int64(index) * 900_000)],
+                    pieces: [piece(id, to: 600_000)]))
+        }
+        let provider = RecordingProvider()
+        // The world's failure: the provider had trouble (a parenthesised 5xx).
+        provider.error = AiError.providerFailed("OpenAI responses request failed (503): overloaded")
+        let worker = worker(provider)
+
+        #expect(try await worker.enrich(library, transcriptOf: read).isEmpty)
+        #expect(provider.runCount == 1)
+        // Only the conversation that was tried is waiting; the rest were never charged.
+        let waiting = try await store.list()
+        #expect(waiting.map(\.conversationId) == ["conv-seg-5"])
+        #expect(waiting.first?.finalAttempts == 0 && waiting.first?.nextAttemptAtMs != nil)
+
+        // A failure on the INPUT is that conversation's alone: the pass goes on to the next.
+        provider.error = AiError.providerFailed("???")
+        #expect(try await worker.enrich(library, transcriptOf: read).isEmpty)
+        #expect(provider.runCount == 1 + EnrichmentWorker.maxPerPass)
+
+        // Back: the backlog drains as usual, newest of what is due first.
+        provider.error = nil
+        #expect(
+            try await worker.enrich(library, transcriptOf: read) == ["conv-seg-1", "conv-seg-0"])
+    }
 }

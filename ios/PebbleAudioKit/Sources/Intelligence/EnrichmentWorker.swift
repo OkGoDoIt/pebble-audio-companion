@@ -79,6 +79,10 @@ public struct EnrichmentConversation: Sendable {
 
 /// Generates the AI title + summary + proposed tags shown on Today/Library rows.
 ///
+/// What it reads is each conversation's PIECES, never its members' whole transcripts, and a
+/// title the person typed (`titleEditedAtMs`) is theirs: every pass below may rewrite the
+/// summary and tags around it, none replaces it.
+///
 /// Two passes per conversation:
 ///  - **Live/provisional**: while the conversation is still live, summarize the rolling
 ///    combined text (closed members' durable transcripts + the open member's live preview).
@@ -89,7 +93,9 @@ public struct EnrichmentConversation: Sendable {
 ///  - **Final/authoritative**: once the conversation is closed and every member is fully
 ///    transcribed, regenerate from the complete durable transcripts and mark the annotation
 ///    final, overriding any provisional. This runs exactly once on success (tagless finals
-///    get one structured backfill). Failures follow `AiRetryPolicy`: only a failure on the
+///    get one structured backfill) — once FOR THE PIECES IT READ: the annotation records
+///    them (`ConversationAnnotation.sourceKey`), and one whose conversation has since been
+///    cut differently is due again. Failures follow `AiRetryPolicy`: only a failure on the
 ///    input spends one of `maxAttempts`, the world's failures back off in time, and a spent
 ///    budget rests six hours before one more try — so a broken provider cannot spin, and an
 ///    afternoon offline cannot cost a conversation its title for good. A fallback that read
@@ -276,11 +282,33 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // already-annotated conversations must not eat the budget before reaching the one
             // that needs work.
             calls += 1
-            if try await runPlan(activeRouter, conversation, existing: existing, plan: plan) {
+            switch try await runPlan(activeRouter, conversation, existing: existing, plan: plan) {
+            case .annotated:
                 annotated.append(conversation.conversationId)
+            case .failedOnTheInput:
+                break
+            case .failedOnTheWorld:
+                // The provider is down, busy or out of reach, and the next conversation in this
+                // pass would be sent to the same one. Each conversation keeps its own backoff,
+                // so without this an outage is met one conversation at a time — three failing
+                // calls a pass until every conversation in the backlog has failed once — and a
+                // freshly re-cut library is a backlog of several hundred. One is enough to
+                // know; the rest wait for a later pass with their budgets and clocks untouched.
+                return annotated
             }
         }
         return annotated
+    }
+
+    /// How one generation ended.
+    private enum RunOutcome {
+        /// Fresh content was produced and stored.
+        case annotated
+        /// It failed, and the failure blames what was sent (`AiRetryPolicy.spendsAttempt`).
+        case failedOnTheInput
+        /// It failed for a reason that is not this conversation's: network, a busy or broke
+        /// account, a model still loading.
+        case failedOnTheWorld
     }
 
     /// Most recent conversation first; a conversation with no members sorts last. Ties break on
@@ -472,15 +500,15 @@ public final class EnrichmentWorker: @unchecked Sendable {
         return joined.count
     }
 
-    /// Runs one generation. Returns true when fresh content was produced and stored.
+    /// Runs one generation.
     private func runPlan(
         _ activeRouter: AiModeRouter,
         _ conversation: EnrichmentConversation,
         existing: ConversationAnnotation?,
         plan: Plan
-    ) async throws -> Bool {
+    ) async throws -> RunOutcome {
         guard case .generate(let excerpts, let combinedLength, let isFinal) = plan else {
-            return false
+            return .failedOnTheInput
         }
         let attempts = (existing?.attempts ?? 0) + 1
         let sourceKey = conversation.sourceKey
@@ -535,7 +563,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
                     sourceKey: sourceKey,
                     titleEditedAtMs: existing?.titleEditedAtMs
                 ))
-            return true
+            return .annotated
         } catch let error where error is CancellationError {
             throw error
         } catch {
@@ -549,6 +577,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
                 existing ?? ConversationAnnotation(conversationId: conversation.conversationId)
             record.attempts = attempts
             record.lastError = Self.errorMessage(error)
+            let blamesTheInput = AiRetryPolicy.spendsAttempt(error)
             if isFinal {
                 // The bookkeeping below is about THESE pieces from here on. Content written
                 // from other pieces stays on screen — better than a blank row — but it is no
@@ -556,7 +585,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
                 // other unfinished conversation.
                 if !sameSource { record.isFinal = false }
                 record.sourceKey = sourceKey
-                if AiRetryPolicy.spendsAttempt(error) {
+                if blamesTheInput {
                     record.finalAttempts = priorFinalAttempts + 1
                     record.transientFailures = 0
                     record.nextAttemptAtMs =
@@ -571,7 +600,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
                 }
             }
             try await annotations.save(record)
-            return false
+            return blamesTheInput ? .failedOnTheInput : .failedOnTheWorld
         }
     }
 
