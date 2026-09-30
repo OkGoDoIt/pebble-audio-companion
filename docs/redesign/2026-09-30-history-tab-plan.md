@@ -1,7 +1,24 @@
 # History tab — plan
 
-**Status (2026-09-30, evening):** design agreed with Roger after ten mockup rounds; building is
-under way on branch `history-integration` (see the progress log for what has landed).
+**Status (2026-09-30, night):** built and merged. History is the tab that used to be Library,
+reading the live library; its cards are the app's topic-sized conversations (`ConversationUnits`,
+see `docs/conversation-units.md`). Not yet on a phone: the first deploy owes the battery gate.
+
+What shipped differs from the plan below in these ways (the progress log has the detail):
+
+- Cards are conversations, not a separate chapter layer (sections 7.2–7.3 are superseded; the
+  chapter groundwork is parked on branch `history-chapters`).
+- Talk that no conversation covers, and conversations with no title yet, show the time range
+  and the first substantive thing said, verbatim. `HistoryTalkCutter` cuts such talk only at
+  real pauses of three minutes or more.
+- Three card sizes by duration: under 10 minutes one line, 10–25 minutes title and time line,
+  25 minutes and up the full card. A card is always at least the height of its duration, and
+  the axis beside every card is drawn in a light tint.
+- Lost audio under two minutes is carried on its neighbour ("· 20 s missing") instead of being
+  its own item; longer loss is its own amber gap.
+- Week and month briefs (7.4) are not built; week rows use the day recap, month rows have no
+  headline. The Library screen's code is unused but still in the tree (step 29).
+- Still unproven: iOS 26, a real device, VoiceOver.
 
 > **Change of architecture, 2026-09-30.** Roger: "There is never a real world situation where
 > there is a 24 hour conversation … If a conversation actually does last longer, the box
