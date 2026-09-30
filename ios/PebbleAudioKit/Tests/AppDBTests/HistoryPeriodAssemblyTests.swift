@@ -141,8 +141,8 @@ private func recorded(
 
     // MARK: - Month
 
-    @Test("a long conversation's title gives way to the recap's first sentence")
-    func longTitlesGiveWayToTheRecap() {
+    @Test("the recap's first sentence heads the day; without a recap, the most-talked title")
+    func theRecapHeadsTheDay() {
         let sources = InterimHistoryPeriodSources()
         let blob = HistoryConversationFact(
             id: "a", title: "Garden, Kitchen Repairs, and Projects", overlapMs: 300 * minute,
@@ -159,11 +159,15 @@ private func recorded(
         noRecap.recap = nil
         #expect(sources.dayHeadline(noRecap) == "Garden, Kitchen Repairs, and Projects")
 
-        // A conversation of an hour keeps its title; the recap stays whole as the summary.
+        // A topic-sized conversation's title names twenty minutes of the day, not the day: with
+        // a recap, the recap still heads it. (Until conversations were topic-sized, a
+        // conversation under two hours kept its title here; every real one ran longer.)
         var hour = withBlob
         hour.conversations = [HistoryConversationFact(id: "b", title: "Dinner", overlapMs: 60 * minute, transcribedMs: 60 * minute)]
+        #expect(sources.dayHeadline(hour) == "The day focused on improving an AI system's model options…")
+        #expect(sources.daySummary(hour) == "Then dinner.")
+        hour.recap = nil
         #expect(sources.dayHeadline(hour) == "Dinner")
-        #expect(sources.daySummary(hour) == recap)
 
         // The longest talk has no title: the recap names the day rather than nothing.
         var untitled = withBlob
@@ -202,7 +206,7 @@ private func recorded(
         let week = month.rows.first { $0.firstDateKey == "2026-09-20" }!
         #expect(week.headline == nil)
         // 21st (130 min): Garden planning; 22nd (110): same title again, skipped; 23rd (60):
-        // the recap's sentence, not the blob's title; 20th (20): Coffee.
+        // the recap's sentence, not a title; 20th (20): Coffee.
         #expect(week.summary == "Garden planning · Budget review and report checks · Coffee")
         #expect(week.isCurrentWeek)
         #expect(week.hasRecordings)

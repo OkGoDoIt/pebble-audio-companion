@@ -204,4 +204,23 @@ struct HistoryReaderPiecesTests {
         #expect(talk == ["c1": 10 * minute, "c2": 25 * minute, "c3": 15 * minute])
         #expect(try #require(facts[day]).recordings == 2)
     }
+
+    @Test("a tag's results are its conversations, one each, with their own start, title and summary")
+    func tagResults() async throws {
+        let world = try PieceWorld()
+        defer { world.remove() }
+        let library = await world.reader.library()
+        let hits = try await world.reader.tagHits(tag: "Food", library)
+        #expect(hits.map(\.conversationId) == ["c2", "c1"])
+        #expect(hits.map(\.startMs) == [t0 + 21 * minute, t0 + minute])
+        #expect(hits.map(\.endMs) == [t0 + 44 * minute, t0 + 9 * minute])
+        #expect(hits.map(\.title) == [nil, "Coffee"])
+        #expect(hits.map(\.summary) == ["Lunch plans.", "Beans."])
+        #expect(hits.allSatisfy { $0.dateKey == day && $0.zoneID == "UTC" })
+
+        let hiding = try PieceWorld(hidden: ["c2"])
+        defer { hiding.remove() }
+        let hidden = try await hiding.reader.tagHits(tag: "food", await hiding.reader.library())
+        #expect(hidden.map(\.conversationId) == ["c1"])
+    }
 }

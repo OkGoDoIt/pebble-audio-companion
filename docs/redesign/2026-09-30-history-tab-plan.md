@@ -23,6 +23,16 @@ under way on branch `history-integration` (see the progress log for what has lan
 > - A card is always the full height of its duration, however long. Nothing is cut or shortened
 >   to avoid a long card. The axis beside every card is drawn in a light tint (Roger liked it).
 > - Week and month briefs (7.4) wait for the new conversation unit.
+>
+> **Landed (merge of `main` into History, 2026-09-30):** `ConversationUnits.isTopicSized` is
+> true and History reads it. A day's cards are the conversations overlapping it that hold speech
+> (`HistoryReader.chapters(from:hiding:)`); a long silence (a unit of its own, every piece
+> `NoSpeech`) and audio not transcribed yet are never cards and are drawn from coverage. Right
+> after the upgrade most conversations have no title (a title written about other audio is
+> withdrawn at regroup), so any untitled card — conversation or fallback stretch — quotes a
+> verbatim snippet. A card tap opens the conversation that owns that moment of the recording
+> (`LiveWorld.momentTarget`, the hop citations take). Tag results are one row per conversation;
+> the week headline is the recap's first sentence, else the most-talked conversation's title.
 
 This document is the plan to build it. It supersedes `2026-09-30-history-tab-design.md`, which
 stays as the record of how the design was reached.

@@ -399,60 +399,37 @@ public actor HistoryReader {
 
     // MARK: - Tag results
 
-    /// One day of a conversation carrying a tag.
+    /// A conversation carrying a tag.
     public struct TagHit: Equatable, Sendable {
         public var conversationId: String
+        /// The logical day of its start.
         public var dateKey: String
-        /// The first speech of the conversation inside that day.
         public var startMs: Int64
-        /// The conversation's end, or the day's, whichever comes first.
         public var endMs: Int64
+        /// The zone in effect at its start.
         public var zoneID: String
         public var title: String?
+        public var summary: String?
     }
 
-    /// Every conversation whose tags include `tag`, one hit per day it overlaps that has speech
-    /// in it, starting at its first speech that day; newest first. Reads the tag's rows, those
-    /// conversations' pieces, and only their recordings' transcript timings (memoised).
+    /// Every conversation whose tags include `tag`, one result each — its own start, end, title
+    /// and summary — newest first. Conversations are topic-sized, so a result is the
+    /// conversation itself; before, a result was a day's share of a conversation that could run
+    /// for a day. One indexed read through the tag; nothing else is touched.
     public func tagHits(tag: String, _ library: Library) async throws -> [TagHit] {
         let queries = HistoryLibraryQueries(db: sources.database)
         let hidden = await sources.hiddenConversationIds()
         let tagged = try await queries.conversations(taggedWith: tag).filter { !hidden.contains($0.id) }
-        guard !tagged.isEmpty else { return [] }
-        let members = try await queries.pieces(ofConversations: tagged.map(\.id))
-            .mapValues { $0.map(\.member.segmentId) }
-        let metaById = Dictionary(library.metas.map { ($0.segmentId, $0) }, uniquingKeysWith: { a, _ in a })
-        let memberMetas = tagged.flatMap { members[$0.id] ?? [] }.compactMap { metaById[$0] }
-        let tasks = try await queries.tasks(segmentIds: memberMetas.map(\.segmentId))
-        var states: [String: TranscriptionState] = [:]
-        for meta in memberMetas {
-            states[meta.segmentId] = HistoryTranscriptionStates.resolve(
-                segment: meta.transcriptionState, task: tasks[meta.segmentId]?.state, hasTranscriptFile: true)
-        }
-        let speech = await sources.speechRuns.runs(for: memberMetas, states: states)
-        var runsOf: [String: [HistorySpeechRun]] = [:]
-        for run in speech.runs { runsOf[run.segmentId, default: []].append(run) }
-
-        var hits: [TagHit] = []
-        for conversation in tagged {
-            let runs = (members[conversation.id] ?? []).flatMap { runsOf[$0] ?? [] }
-            guard !runs.isEmpty else { continue }
-            let firstDay = library.timeline.dayKey(forMs: conversation.startMs)
-            let lastDay = library.timeline.dayKey(forMs: max(conversation.startMs, conversation.endMs - 1))
-            for day in HistoryCalendar.days(in: firstDay...max(firstDay, lastDay)) {
-                for window in library.windows(of: day).windows {
-                    let inside = runs.filter { $0.startMs < window.range.upperBound && $0.endMs > window.range.lowerBound }
-                    guard let first = inside.map({ max($0.startMs, window.range.lowerBound) }).min() else { continue }
-                    hits.append(
-                        TagHit(
-                            conversationId: conversation.id, dateKey: day, startMs: first,
-                            endMs: min(max(conversation.endMs, first), window.range.upperBound),
-                            zoneID: window.zoneID, title: conversation.title))
-                    break
-                }
-            }
-        }
-        return hits.sorted { $0.startMs != $1.startMs ? $0.startMs > $1.startMs : $0.conversationId < $1.conversationId }
+        let fallbackZone = sources.currentZoneID()
+        return tagged.map { conversation in
+            let day = library.timeline.dayKey(forMs: conversation.startMs)
+            let windows = library.windows(of: day).windows
+            let zone = (windows.first { $0.range.contains(conversation.startMs) } ?? windows.first)?.zoneID
+            return TagHit(
+                conversationId: conversation.id, dateKey: day, startMs: conversation.startMs,
+                endMs: max(conversation.endMs, conversation.startMs), zoneID: zone ?? fallbackZone,
+                title: conversation.title, summary: conversation.summary)
+        }.sorted { $0.startMs != $1.startMs ? $0.startMs > $1.startMs : $0.conversationId < $1.conversationId }
     }
 
     // MARK: - Weeks and months

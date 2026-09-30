@@ -237,14 +237,15 @@ final class LiveHistory: HistoryDataSource {
         }
     }
 
-    /// INTERIM until conversations are topic-sized (`HistoryReader.readsConversationsAsCards`):
-    /// each conversation whose tags include `tag`, once per day it has speech on, from its first
-    /// speech that day. One read when the results screen opens; nothing is observed.
+    /// Each conversation whose tags include `tag`, once, with its own start, title and summary
+    /// (conversations are topic-sized, so a result is the conversation itself). One read when
+    /// the results screen opens; nothing is observed.
     func tagResults(tag: String) async -> [HistoryTagResult] {
         await backend.tagHits(tag: tag).map { hit in
             HistoryTagResult(
                 dateKey: hit.dateKey, startMs: hit.startMs, endMs: hit.endMs, zoneID: hit.zoneID,
-                title: hit.title ?? Copy.History.untitledTagResult, summary: nil)
+                title: hit.title.flatMap { $0.isEmpty ? nil : $0 } ?? Copy.History.untitledTagResult,
+                summary: hit.summary.flatMap { $0.isEmpty ? nil : $0 })
         }
     }
 

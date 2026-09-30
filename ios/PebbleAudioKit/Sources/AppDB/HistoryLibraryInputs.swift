@@ -238,6 +238,7 @@ public struct HistoryLibraryQueries: Sendable {
         public var startMs: Int64
         public var endMs: Int64
         public var title: String?
+        public var summary: String?
     }
 
     /// The conversations carrying a tag (matched case-insensitively; a tag the person removed does
@@ -248,7 +249,8 @@ public struct HistoryLibraryQueries: Sendable {
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs, a.title AS title
+                    SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs, a.title AS title,
+                        a.summary AS summary
                     FROM tags t
                     JOIN conversation_tags ct ON ct.tagId = t.id AND ct.source <> '\(TagSource.removed)'
                     JOIN conversations c ON c.id = ct.conversationId
@@ -259,7 +261,9 @@ public struct HistoryLibraryQueries: Sendable {
                 arguments: [tag]
             ).map { row in
                 let start: Int64 = row["startMs"]
-                return TaggedConversation(id: row["id"], startMs: start, endMs: row["endMs"] ?? start, title: row["title"])
+                return TaggedConversation(
+                    id: row["id"], startMs: start, endMs: row["endMs"] ?? start, title: row["title"],
+                    summary: row["summary"])
             }
         }
     }

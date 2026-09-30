@@ -136,12 +136,6 @@ struct LiveMockConformanceTests {
     /// act; `exemptionsAreAllStillNeeded` deletes the option of leaving a stale one behind.
     static let exemptions: [Exemption] = [
         Exemption(
-            "LiveHistory.tagResults(tag:)", .fieldPopulated,
-            "HistoryTagResult.summary: interim until conversations are topic-sized "
-                + "(`HistoryReader.readsConversationsAsCards`). A grouped conversation's summary "
-                + "describes all of it — one runs 24 h on the real backup — not the day's stretch a "
-                + "result stands for, so the result carries none rather than a wrong one."),
-        Exemption(
             "LiveTodayDataSource.recap(_:rows:)", .fieldPopulated,
             "RecapBullet.citations: `DailyRecapEngine` returns prose, not grounded citations, "
                 + "so the live recap detail has nothing to cite. The artboard shows chips. "

@@ -72,8 +72,7 @@ public struct HistoryConversationFact: Equatable, Sendable {
     public var overlapMs: Int64
     /// Recorded time inside the day of its members that have a finished transcript with words.
     public var transcribedMs: Int64
-    /// The whole conversation's length, start to end, whatever day it runs into. A title that
-    /// describes hours of the day describes a blob, not a conversation.
+    /// The whole conversation's length, start to end, whatever day it runs into.
     public var durationMs: Int64
 
     public init(
@@ -143,11 +142,12 @@ public protocol HistoryPeriodSources: Sendable {
 
 /// INTERIM (until the chapter and brief stages exist): only facts the app already has.
 ///
-/// - Day headline: the title of the conversation with the most transcribed time inside the day —
-///   unless that conversation runs longer than `longTitleMs` (its title describes a blob of the
-///   day, not a conversation) or has no title, and the day has a recap: then the recap's first
-///   sentence, cut to about `headlineCharacters` at a word boundary. Without a recap, the title
-///   whatever its length.
+/// - Day headline, recap first: on a day with talk in it, the recap's first sentence, cut to about
+///   `headlineCharacters` at a word boundary. Without a recap, the title of the conversation with
+///   the most transcribed time inside the day (nothing when it has none). Conversations are
+///   topic-sized, so a title names twenty minutes of the day, not the day; the recap is the one
+///   text written about all of it. (Before, this took the title unless its conversation ran over
+///   two hours — which, with every conversation a blob, made it the recap on every real day.)
 /// - Day summary: the day's recap (without that first sentence when it became the headline and
 ///   more follows).
 /// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying them.
@@ -158,8 +158,6 @@ public struct InterimHistoryPeriodSources: HistoryPeriodSources {
     /// How many titles a week's summary lists.
     public static let weekSummaryTitles = 3
     public static let separator = " · "
-    /// A conversation longer than this does not name the day when a recap can.
-    public static let longTitleMs: Int64 = 2 * 3_600_000
     /// About how long a headline taken from a recap may be.
     public static let headlineCharacters = 60
 
@@ -183,15 +181,13 @@ public struct InterimHistoryPeriodSources: HistoryPeriodSources {
             .filter { $0.transcribedMs > 0 }
             .min { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
         guard let longest else { return (nil, false) }
-        let title = Self.nonEmpty(longest.title)
-        if let title, longest.durationMs <= Self.longTitleMs { return (title, false) }
         if let recap = day.recap.flatMap({ Self.nonEmpty($0.summary) }),
             let sentence = Self.nonEmpty(Self.firstSentence(of: recap).sentence)
         {
             return (Self.cut(sentence, to: Self.headlineCharacters), true)
         }
-        // No recap: the title, however long its conversation; an untitled one says nothing.
-        return (title, false)
+        // No recap: the most-talked conversation's title; an untitled one says nothing.
+        return (Self.nonEmpty(longest.title), false)
     }
 
     // INTERIM: replaced by chapter tags.
