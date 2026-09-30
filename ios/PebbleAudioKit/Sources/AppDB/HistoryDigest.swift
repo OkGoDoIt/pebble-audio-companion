@@ -40,12 +40,18 @@ public struct HistoryDigestScope: Equatable, Sendable {
     public var recapDateKeys: [String]
     /// Week and month pages draw tags; a day page does not, so a tag edit does not rebuild it.
     public var includeTags: Bool
+    /// A day whose cards are the conversations themselves draws their summaries.
+    public var includeSummaries: Bool
 
-    public init(window: Range<Int64>, segmentIds: [String], recapDateKeys: [String], includeTags: Bool) {
+    public init(
+        window: Range<Int64>, segmentIds: [String], recapDateKeys: [String], includeTags: Bool,
+        includeSummaries: Bool = false
+    ) {
         self.window = window
         self.segmentIds = segmentIds
         self.recapDateKeys = recapDateKeys
         self.includeTags = includeTags
+        self.includeSummaries = includeSummaries
     }
 }
 
@@ -104,7 +110,7 @@ extension HistoryDigest {
             db,
             sql: """
                 SELECT c.id AS id, c.state AS state, c.startMs AS startMs, c.endMs AS endMs,
-                    a.title AS title
+                    a.title AS title, a.summary AS summary
                 FROM conversations c LEFT JOIN annotations a ON a.conversationId = c.id
                 WHERE c.startMs < ? AND (c.endMs IS NULL OR c.endMs > ? OR c.startMs >= ?)
                 ORDER BY c.id
@@ -120,6 +126,7 @@ extension HistoryDigest {
             hasher.combine(row["startMs"] as Int64? ?? 0)
             hasher.combine(row["endMs"] as Int64? ?? -1)
             hasher.combine(row["title"] as String? ?? "\u{0}")
+            if scope.includeSummaries { hasher.combine(row["summary"] as String? ?? "\u{0}") }
         }
         let idsJSON = try jsonArray(ids)
 

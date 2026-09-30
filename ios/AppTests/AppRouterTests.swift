@@ -269,4 +269,47 @@ struct AppRouterTests {
         router.push(.note(id: "n2"))
         #expect(router.settingsPath == [.note(id: "n2")])
     }
+
+    // MARK: - History is the tab
+
+    @Test func aHistoryLinkRoundTripsAndOpensThatPage() throws {
+        let route = Route.history(date: "2026-09-22", level: "week")
+        #expect(route.url.absoluteString == "companion://history?date=2026-09-22&level=week")
+        #expect(Route.parse(route.url) == route)
+        #expect(Route.parse(URL(string: "companion://history")!) == .history(date: nil, level: nil))
+        // An unknown level still carries its date.
+        #expect(Route.parse(URL(string: "companion://history?date=2026-09-01&level=year")!)
+            == .history(date: "2026-09-01", level: nil))
+
+        let router = AppRouter()
+        router.libraryPath = [.note(id: "n")]
+        router.navigate(to: route)
+        #expect(router.selectedTab == .library)
+        #expect(router.libraryPath.isEmpty)
+        #expect(router.consumePendingHistory() == AppRouter.HistoryRequest(date: "2026-09-22", level: .week))
+        #expect(router.consumePendingHistory() == nil)
+    }
+
+    @Test func aPastDayOnTodayOpensHistoryOnThatDay() {
+        let router = AppRouter()
+        router.todayKey = { "2026-09-30" }
+        router.navigate(to: .today(date: "2026-09-22"))
+        #expect(router.selectedTab == .library)
+        #expect(router.consumePendingHistory() == AppRouter.HistoryRequest(date: "2026-09-22", level: .day))
+
+        // Today's own date, or none, is Today.
+        router.navigate(to: .today(date: "2026-09-30"))
+        #expect(router.selectedTab == .today)
+        router.selectedTab = .settings
+        router.navigate(to: .today(date: nil))
+        #expect(router.selectedTab == .today)
+        #expect(router.pendingHistory == nil)
+    }
+
+    @Test func aTagLinkOpensTheTopicInHistory() throws {
+        let router = AppRouter()
+        router.navigate(to: try #require(Route.parse(URL(string: "companion://library?tag=apartment")!)))
+        #expect(router.selectedTab == .library)
+        #expect(router.consumePendingLibraryTag() == "apartment")
+    }
 }

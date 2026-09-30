@@ -175,6 +175,38 @@ public struct HistoryLibraryQueries: Sendable {
         }
     }
 
+    /// A conversation carrying a tag.
+    public struct TaggedConversation: Equatable, Sendable {
+        public var id: String
+        public var startMs: Int64
+        public var endMs: Int64
+        public var title: String?
+    }
+
+    /// The conversations carrying a tag (matched case-insensitively; a tag the person removed does
+    /// not count), newest first. Through the tag's unique name, then its rows in
+    /// `conversation_tags` and the conversations by id — never a walk of the library.
+    public func conversations(taggedWith tag: String) async throws -> [TaggedConversation] {
+        try await db.reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs, a.title AS title
+                    FROM tags t
+                    JOIN conversation_tags ct ON ct.tagId = t.id AND ct.source <> '\(TagSource.removed)'
+                    JOIN conversations c ON c.id = ct.conversationId
+                    LEFT JOIN annotations a ON a.conversationId = c.id
+                    WHERE t.name = ? COLLATE NOCASE
+                    ORDER BY c.startMs DESC, c.id
+                    """,
+                arguments: [tag]
+            ).map { row in
+                let start: Int64 = row["startMs"]
+                return TaggedConversation(id: row["id"], startMs: start, endMs: row["endMs"] ?? start, title: row["title"])
+            }
+        }
+    }
+
     /// Each conversation's member recordings, in order.
     public func members(ofConversations conversationIds: [String]) async throws -> [String: [String]] {
         guard !conversationIds.isEmpty else { return [:] }

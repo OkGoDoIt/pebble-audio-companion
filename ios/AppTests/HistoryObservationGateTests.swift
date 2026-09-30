@@ -106,6 +106,8 @@ private final class GateBackend: HistoryLiveBackend, @unchecked Sendable {
         return HistoryDigest.observe(database, scope: scope, onFetch: { fetches.bump() })
     }
 
+    func tagHits(tag: String) async -> [HistoryReader.TagHit] { [] }
+
     func build(_ window: HistoryWindow, nowMs: Int64, isLive: Bool) async -> HistoryBuilt? {
         builds.bump()
         guard case .day(let key) = window else { return nil }
@@ -338,19 +340,16 @@ struct HistoryObservationGateTests {
         pages.cancel()
     }
 
-    @Test("a failed recording's reason reaches the page as the app's sentence, never the stored error")
+    @Test("a failed recording's reason is worded by the app's copy, the sentence Diagnostics uses")
     func failureReasonsAreWorded() {
         let gap = HistoryGap(
             id: "failed", kind: .transcriptionFailed, startMs: 0, endMs: 1, zoneID: "UTC",
             failureReason: TranscriptionFailureKind.accountOutOfFunds.rawValue, isOpenable: true)
-        let day = HistoryDay(
-            dateKey: pastDay, zoneID: "UTC", isToday: false, hasRecordings: true, leadingEdge: nil,
-            items: [.gap(gap)], trailingEdge: nil)
-        guard case .gap(let worded) = LiveHistory.worded(day).items[0] else {
-            Issue.record("not a gap")
-            return
-        }
-        #expect(worded.failureReason == TranscriptionFailureKind.accountOutOfFunds.reason)
+        #expect(Copy.History.gapDetail(gap) == TranscriptionFailureKind.accountOutOfFunds.reason)
+        // Anything that is not a kind (the stored error, say) is never shown.
+        var raw = gap
+        raw.failureReason = "Soniox transcription error: Organization balance exhausted. key=sk-…"
+        #expect(Copy.History.gapDetail(raw) == nil)
     }
 
     @Test("a pending delete of a conversation in the window rebuilds the visible page")

@@ -155,6 +155,22 @@ private extension HistoryDay {
         #expect(built.trailingEdge == HistoryEdge(atMs: at(9, 50), kind: .notListening))
     }
 
+    @Test("seconds of calm at either end of the day get no edge line")
+    func noEdgeForSeconds() throws {
+        // 2026-09-23 on the real backup: 19 s of the watch saving power at 5 AM (calm, and a
+        // pause never folds) became "Nothing recorded until 5:00 AM" at the top of the day.
+        var day = Day()
+        day.record("a", at(5), at(12), .pending, gaps: [gap(at: 0, seconds: 19, reason: .powerSave)])
+        day.record("b", at(12), dayEnd - 30_000, .pending)
+        let built = day.build()
+        #expect(built.leadingEdge == nil)
+        #expect(built.trailingEdge == nil)
+        // A real stretch of calm still has its line.
+        var later = Day()
+        later.record("a", at(5), at(12), .pending, gaps: [gap(at: 0, seconds: 180, reason: .powerSave)])
+        #expect(later.build().leadingEdge == HistoryEdge(atMs: at(5, 3), kind: .notListening))
+    }
+
     @Test("an edge is quiet when the watch heard nothing for most of it")
     func quietEdge() throws {
         var day = Day()

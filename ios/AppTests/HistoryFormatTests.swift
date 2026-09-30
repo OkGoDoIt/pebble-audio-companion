@@ -4,6 +4,7 @@ import Foundation
 import SegmentStore
 import StatusUI
 import Testing
+import Transcription
 
 // What History says (plan 5.1, 5.3, 5.9): its times, titles, gap labels and spoken labels. The
 // mockups' exact strings are the expectations, with the no-break space before a meridiem read
@@ -280,9 +281,26 @@ struct HistoryFormatTests {
         let text = HistoryLabels.gapText(waiting, locale: us)
         #expect(text.title == "Not transcribed yet")
         #expect(plain(text.detail ?? "") == "9:30 – 9:44 PM · 14 min")
-        let failed = HistoryLabels.gapText(gap(.transcriptionFailed, at(21, 30), at(21, 44), failure: "the provider refused the file"), locale: us)
+        // The reason is a `TranscriptionFailureKind`, worded as Diagnostics words it.
+        let failed = HistoryLabels.gapText(
+            gap(.transcriptionFailed, at(21, 30), at(21, 44), failure: TranscriptionFailureKind.providerRefusedAudio.rawValue),
+            locale: us)
         #expect(failed.title == "Could not be transcribed")
-        #expect(plain(failed.detail ?? "") == "9:30 – 9:44 PM · the provider refused the file")
+        #expect(plain(failed.detail ?? "") == "9:30 – 9:44 PM · \(TranscriptionFailureKind.providerRefusedAudio.reason)")
+    }
+
+    @Test func lossCarriedInsideAGapIsSaid() {
+        var waiting = gap(.notTranscribedYet, at(8, 17), at(16, 17))
+        waiting.missingMs = 5 * 60_000
+        let text = HistoryLabels.gapText(waiting, locale: us)
+        #expect(plain(text.detail ?? "") == "8:17 AM – 4:17 PM · 8 hr · 5 min missing")
+        #expect(HistoryLabels.gapAccessibilityLabel(waiting, locale: us).contains("missing"))
+        // A short quiet gap is bare — unless it carries loss, which is never left unsaid.
+        var quiet = gap(.quiet, at(10, 0), at(10, 5))
+        #expect(HistoryLabels.gapText(quiet, locale: us).title == nil)
+        quiet.missingMs = 4_000
+        #expect(HistoryLabels.gapText(quiet, locale: us).title != nil)
+        #expect(plain(HistoryLabels.gapText(quiet, locale: us).detail ?? "").hasSuffix("missing"))
     }
 
     @Test func anOpenEndedPauseSaysSince() {

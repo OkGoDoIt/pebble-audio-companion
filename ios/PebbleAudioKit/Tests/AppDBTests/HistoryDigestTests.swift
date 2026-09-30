@@ -192,3 +192,27 @@ final class Counter: @unchecked Sendable {
         #expect(input.placement == .span(startMs: day.startMs - 100, endMs: day.startMs + 100))
     }
 }
+
+@Suite struct HistoryTagQueryTests {
+    @Test("conversations carrying a tag, newest first, any case, never a removed tag")
+    func tagged() async throws {
+        let database = try AppDatabase.inMemory()
+        try await database.writer.write { db in
+            for (id, start) in [("old", 1_000), ("new", 5_000), ("removed", 9_000), ("other", 7_000)] {
+                try db.execute(
+                    sql: "INSERT INTO conversations (id, startMs, endMs, timezone, state) VALUES (?, ?, ?, 'UTC', 'closed')",
+                    arguments: [id, start, start + 500])
+            }
+            try db.execute(sql: "INSERT INTO annotations (conversationId, title) VALUES ('new', 'Viewing')")
+            try db.execute(sql: "INSERT INTO tags (id, name) VALUES ('t1', 'Apartment'), ('t2', 'work')")
+            try db.execute(sql: """
+                INSERT INTO conversation_tags (conversationId, tagId, source) VALUES
+                ('old', 't1', 'ai'), ('new', 't1', 'user'), ('removed', 't1', 'removed'), ('other', 't2', 'ai')
+                """)
+        }
+        let rows = try await HistoryLibraryQueries(db: database).conversations(taggedWith: "apartment")
+        #expect(rows.map(\.id) == ["new", "old"])
+        #expect(rows.first?.title == "Viewing")
+        #expect(try await HistoryLibraryQueries(db: database).conversations(taggedWith: "nothing").isEmpty)
+    }
+}

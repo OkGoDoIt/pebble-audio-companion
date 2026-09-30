@@ -2,6 +2,7 @@ import AppDB
 import Foundation
 import SegmentStore
 import StatusUI
+import Transcription
 import WireProtocol
 
 // Every word the History tab shows (plan 5). The read side hands the screen facts — kinds,
@@ -158,9 +159,16 @@ extension Copy {
             case .paused: return gap.pausedBy.map(pauseActor)
             case .audioMissing: return gap.lossCauses.first.map(lossCause)
             case .noConversation: return gap.descriptor.map(descriptorLine)
-            case .transcriptionFailed: return gap.failureReason
+            case .transcriptionFailed: return failureReason(gap.failureReason)
             case .quiet, .notRecording, .notTranscribedYet, .deleted: return nil
             }
+        }
+
+        /// Why a recording could not be transcribed. `HistoryGap.failureReason` carries a
+        /// `TranscriptionFailureKind` (never the stored error, which can hold the key — B20); the
+        /// sentence is the one Diagnostics and the conversation screen use for the same kind.
+        static func failureReason(_ kind: String?) -> String? {
+            kind.flatMap(TranscriptionFailureKind.init(rawValue:))?.reason
         }
 
         /// "Times from here in Jakarta time".
@@ -220,6 +228,8 @@ extension Copy {
             return "\(r) on \(d)"
         }
         static let noTagResults = "Nothing carries this topic yet."
+        /// A result whose conversation has no title yet.
+        static let untitledTagResult = "Untitled conversation"
 
         // MARK: States (5.8)
 

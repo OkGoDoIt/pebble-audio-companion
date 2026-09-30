@@ -1,3 +1,5 @@
+import AppDB
+import Foundation
 import Observation
 
 /// Central navigation coordinator. Tabs + per-tab paths + sheet presentation, driven by
@@ -8,7 +10,16 @@ import Observation
 /// kind of logic that has to be tested.
 @Observable
 final class AppRouter {
+    /// `.library` is the History tab (the Library screen it replaced is no longer shown); the
+    /// name stays until the Library code is removed.
     enum Tab: Hashable { case today, library, followUps, ask, settings }
+
+    /// A History page waiting for the History screen to show it, read once by
+    /// `consumePendingHistory()`.
+    struct HistoryRequest: Equatable {
+        var date: String?
+        var level: HistoryLevel?
+    }
 
     var selectedTab: Tab = .today
     var todayPath: [Route] = []
@@ -31,6 +42,13 @@ final class AppRouter {
     var pendingAsk: Route?
     /// Which slice `companion://followups?scope=` asked for, read once by the list.
     var pendingFollowUpScope: String?
+    /// `companion://history`, or `companion://today` with a day that is not today.
+    var pendingHistory: HistoryRequest?
+    /// Today's logical-day key, to tell a past-dated `companion://today` from today.
+    var todayKey: () -> String = {
+        LogicalDay.dateKey(
+            forMs: Int64(Date().timeIntervalSince1970 * 1000), timeZoneID: TimeZone.current.identifier)
+    }
 
     /// Pushes onto the stack of the tab the user is actually in, so a screen reached from
     /// Today keeps pushing inside Today (hard-coding `libraryPath` pushed a note nobody could
@@ -47,13 +65,19 @@ final class AppRouter {
 
     func navigate(to route: Route) {
         switch route {
+        case .today(let date?) where date < todayKey():
+            // Today shows today; a day before it is a History page.
+            showHistory(HistoryRequest(date: date, level: .day))
         case .today, .live:
             selectedTab = .today
             todayPath = route == .live ? [.live] : []
+        case .history(let date, let level):
+            showHistory(HistoryRequest(date: date, level: level.flatMap(HistoryLevel.init(rawValue:))))
         case .conversation, .note:
             selectedTab = .library
             libraryPath = [route]
         case .library(let tag):
+            // The History tab; a tag opens that topic's results there.
             selectedTab = .library
             libraryPath = []
             pendingLibraryTag = tag
@@ -79,6 +103,18 @@ final class AppRouter {
             selectedTab = .settings
             settingsPath = page.map { [Route.settings($0)] } ?? []
         }
+    }
+
+    private func showHistory(_ request: HistoryRequest) {
+        selectedTab = .library
+        libraryPath = []
+        pendingHistory = request
+    }
+
+    /// Takes the pending History page and clears it.
+    func consumePendingHistory() -> HistoryRequest? {
+        defer { pendingHistory = nil }
+        return pendingHistory
     }
 
     /// Takes the pending tag and clears it, so returning to Library later does not silently

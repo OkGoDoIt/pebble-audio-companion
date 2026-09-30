@@ -22,7 +22,7 @@ import SwiftUI
 /// Undo on it.
 struct RootView: View {
     @Environment(AppRouter.self) private var router
-    /// Bumped when the History tab is tapped while already selected (DEBUG `-history` only).
+    /// Bumped when the History tab is tapped while already selected.
     @State private var historyReselect = 0
 
     var body: some View {
@@ -35,21 +35,13 @@ struct RootView: View {
                 .undoSnackbarHost(isShowing: router.selectedTab == .today)
                 .noteJobDock()
             }
-            Tab(
-                HistoryLaunch.isEnabled ? Copy.History.tab : Copy.Tabs.library,
-                systemImage: HistoryLaunch.isEnabled ? "clock.arrow.circlepath" : "rectangle.stack",
-                value: AppRouter.Tab.library
-            ) {
+            // History has the Library's place (the tab value keeps its old name for now). DEBUG
+            // `-historyDay 2026-09-22` / `-historyLevel week` open it on a given page.
+            Tab(Copy.History.tab, systemImage: "clock.arrow.circlepath", value: AppRouter.Tab.library) {
                 NavigationStack(path: $router.libraryPath) {
-                    // DEBUG `-history`: the History tab being built takes the Library's place
-                    // (plan phase 2). Without the argument this is the Library, unchanged.
-                    if HistoryLaunch.isEnabled {
-                        HistoryScreen(
-                            initialDay: HistoryLaunch.dayKey, initialLevel: HistoryLaunch.level,
-                            reselectToken: historyReselect)
-                    } else {
-                        LibraryScreen()
-                    }
+                    HistoryScreen(
+                        initialDay: HistoryLaunch.dayKey, initialLevel: HistoryLaunch.level,
+                        reselectToken: historyReselect)
                 }
                 .undoSnackbarHost(isShowing: router.selectedTab == .library)
                 .noteJobDock()
@@ -78,16 +70,16 @@ struct RootView: View {
         }
     }
 
-    /// The tab selection. Without `-history` it is exactly `$router.selectedTab`. With it, a tap
-    /// on the History tab while it is already selected — the setter fires with the current
-    /// value (spike) — is passed to History: the system pops a pushed stack by itself, and at
-    /// the root History scrolls to the top or goes back to today (plan 5.1). Every other tab,
-    /// and every other tap, behaves as before.
+    /// The tab selection: `$router.selectedTab`, except that a tap on the History tab while it
+    /// is already selected — the setter fires with the current value (spike) — is passed to
+    /// History: the system pops a pushed stack by itself, and at the root History scrolls to the
+    /// top or goes back to today (plan 5.1). Every other tab, and every other tap, behaves as
+    /// before.
     private var tabSelection: Binding<AppRouter.Tab> {
         Binding(
             get: { router.selectedTab },
             set: { tab in
-                if HistoryLaunch.isEnabled, tab == .library {
+                if tab == .library {
                     if router.selectedTab == .library {
                         // Read now: the system's own pop of a pushed stack lands ~30 ms after
                         // this setter (spike), and a pushed stack is the system's to handle.

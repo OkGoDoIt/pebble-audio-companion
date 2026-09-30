@@ -98,8 +98,14 @@ public actor HistorySpeechRunCache {
         // its timings unchanged, so run i is timing i on the wall clock.
         var turns: [HistorySpokenTurn] = []
         if placed.count == timings.count {
-            for (run, timing) in zip(placed, timings) {
-                guard let text = HistorySpokenTurn.preview(timing.text) else { continue }
+            // A transcriber stuck in a loop repeats one phrase for minutes; those lines are never
+            // a card's snippet (`TranscriptArtefacts`, the same verdicts the transcript view hides).
+            let looped = TranscriptArtefacts.loopedArtefacts(
+                in: timings.map { ArtefactTurn(text: $0.text, startMs: $0.startMs) })
+            for (index, (run, timing)) in zip(placed, timings).enumerated() where !looped[index] {
+                guard !HistorySpokenTurn.isDegenerate(timing.text),
+                    let text = HistorySpokenTurn.preview(timing.text)
+                else { continue }
                 turns.append(
                     HistorySpokenTurn(segmentId: meta.segmentId, startMs: run.startMs, endMs: run.endMs, text: text))
             }
@@ -134,10 +140,87 @@ public struct HistorySpokenTurn: Equatable, Sendable {
         self.text = text
     }
 
+    /// A single turn that is one word or one short phrase said over and over — the
+    /// transcriber's loop inside one turn, which the across-turn detector cannot see. On the real
+    /// backup: ", the, the, the, the, the, uh, you kn", "I'll double I'll double I'll double" and
+    /// "안녕하세요. 저는안녕하세요. 저는안녕하세요. 저". Four words or more, and fewer than a third of
+    /// them distinct, or one word said four times or more making up half of them, or (seven words
+    /// or more) at most half the word pairs distinct; for a script written without spaces, a run
+    /// of letters said three times making up half the letters (`repeatsOneRun`).
+    ///
+    /// Runs over every turn of every transcript a day reads (6,000+ on a real day), so it hashes
+    /// in place and allocates one lowercased copy per turn.
+    public static func isDegenerate(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        if isSpaceless(lowered), repeatsOneRun(lowered) { return true }
+        let words = lowered.split { !$0.isLetter && !$0.isNumber && $0 != "'" }
+        guard words.count >= 4 else { return false }
+        var counts: [Substring: Int] = [:]
+        var top = 0
+        for word in words {
+            let count = (counts[word] ?? 0) + 1
+            counts[word] = count
+            top = max(top, count)
+        }
+        if counts.count * 3 < words.count { return true }
+        if top >= 4 && top * 2 >= words.count { return true }
+        guard words.count >= 7 else { return false }
+        var pairs = Set<Int>()
+        for index in 1..<words.count {
+            var hasher = Hasher()
+            hasher.combine(words[index - 1])
+            hasher.combine(words[index])
+            pairs.insert(hasher.finalize())
+        }
+        return pairs.count * 2 <= words.count - 1
+    }
+
+    /// Text in a script written without spaces between words (Chinese, Japanese, Thai), or
+    /// Korean the provider ran together: where counting words says nothing.
+    static func isSpaceless(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x0E00...0x0E7F, 0x1100...0x11FF, 0x2E80...0x9FFF, 0xAC00...0xD7AF: return true
+            default: return false
+            }
+        }
+    }
+
+    /// One run of 2-10 letters said three times or more, making up at least half the letters
+    /// (the provider cuts such a loop mid-word into turns that are not identical, so the
+    /// across-turn detector never sees it).
+    static func repeatsOneRun(_ text: String) -> Bool {
+        let letters = text.unicodeScalars.filter { $0.properties.isAlphabetic }.map(\.value)
+        guard letters.count >= 6 else { return false }
+        for length in 2...min(10, letters.count / 3) {
+            var seen: [ArraySlice<UInt32>: (count: Int, next: Int)] = [:]
+            var index = 0
+            while index + length <= letters.count {
+                let run = letters[index..<(index + length)]
+                var entry = seen[run] ?? (0, 0)
+                if index >= entry.next {  // non-overlapping occurrences only
+                    entry.count += 1
+                    entry.next = index + length
+                    seen[run] = entry
+                    if entry.count >= 3, entry.count * length * 2 >= letters.count { return true }
+                }
+                index += 1
+            }
+        }
+        return false
+    }
+
     /// The turn's text on one line, at most about `maxCharacters`, cut at a word; nil when
     /// nothing was said.
     public static func preview(_ text: String) -> String? {
-        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var words = text.split(whereSeparator: \.isWhitespace)
+        // The provider sometimes starts a turn inside a word ("'m just going to be a bit late.",
+        // the rest of an "I" that ended the turn before): a leading fragment that begins with an
+        // apostrophe is not something anyone said on its own.
+        if let first = words.first, let mark = first.first, mark == "'" || mark == "\u{2019}" {
+            words.removeFirst()
+        }
+        let flat = String(words.joined(separator: " ").drop { ($0.isPunctuation && $0 != "\u{201C}" && $0 != "\"") || $0 == " " })
         guard !flat.isEmpty else { return nil }
         guard flat.count > maxCharacters else { return flat }
         let prefix = flat.prefix(maxCharacters)

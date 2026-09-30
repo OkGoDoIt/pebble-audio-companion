@@ -2,7 +2,6 @@ import AppDB
 import CompanionRuntime
 import Foundation
 import os
-import Transcription
 
 // The History tab's live data source (plan 7.10 "The data source", 7.13).
 //
@@ -78,6 +77,8 @@ protocol HistoryLiveBackend: Sendable {
     func digests(_ scope: HistoryDigestScope) -> AsyncStream<HistoryDigest>
     /// Builds a window. Nil when the read failed; the page keeps what it showed.
     func build(_ window: HistoryWindow, nowMs: Int64, isLive: Bool) async -> HistoryBuilt?
+    /// The days and stretches carrying a tag, newest first (one read; no observation).
+    func tagHits(tag: String) async -> [HistoryReader.TagHit]
 }
 
 @MainActor
@@ -233,6 +234,17 @@ final class LiveHistory: HistoryDataSource {
                 await self.prefetchOne(window)
             }
             self?.prefetchTask = nil
+        }
+    }
+
+    /// INTERIM until conversations are topic-sized (`HistoryReader.readsConversationsAsCards`):
+    /// each conversation whose tags include `tag`, once per day it has speech on, from its first
+    /// speech that day. One read when the results screen opens; nothing is observed.
+    func tagResults(tag: String) async -> [HistoryTagResult] {
+        await backend.tagHits(tag: tag).map { hit in
+            HistoryTagResult(
+                dateKey: hit.dateKey, startMs: hit.startMs, endMs: hit.endMs, zoneID: hit.zoneID,
+                title: hit.title ?? Copy.History.untitledTagResult, summary: nil)
         }
     }
 
@@ -511,27 +523,12 @@ final class LiveHistory: HistoryDataSource {
     private func page(_ build: HistoryReader.DayBuild) -> HistoryDayPage {
         let hasLiveBlock = build.day.items.contains { if case .live = $0 { return true } else { return false } }
         return HistoryDayPage(
-            day: Self.worded(build.day), brief: build.brief, followUpTotal: build.followUpTotal,
+            day: build.day, brief: build.brief, followUpTotal: build.followUpTotal,
             followUpOpen: build.followUpOpen,
             // No chapter stage yet: the conversation cards are what History has, and nothing
             // says topics are on their way (plan 5.8).
             topics: .off,
             liveLine: hasLiveBlock ? live.line : nil)
-    }
-
-    /// A failed recording's reason arrives from the reader as a `TranscriptionFailureKind` (never
-    /// the stored error, which can hold the key — B20); the screen draws `failureReason` as it
-    /// is, so it becomes the same sentence Diagnostics and the conversation screen use.
-    static func worded(_ day: HistoryDay) -> HistoryDay {
-        var day = day
-        day.items = day.items.map { item in
-            guard case .gap(var gap) = item, gap.kind == .transcriptionFailed, let raw = gap.failureReason else {
-                return item
-            }
-            gap.failureReason = TranscriptionFailureKind(rawValue: raw)?.reason
-            return .gap(gap)
-        }
-        return day
     }
 
     // MARK: - The cache
@@ -587,6 +584,11 @@ struct ReaderHistoryBackend: HistoryLiveBackend {
 
     func digests(_ scope: HistoryDigestScope) -> AsyncStream<HistoryDigest> {
         HistoryDigest.observe(database, scope: scope)
+    }
+
+    func tagHits(tag: String) async -> [HistoryReader.TagHit] {
+        let library = await reader.library()
+        return (try? await reader.tagHits(tag: tag, library)) ?? []
     }
 
     func build(_ window: HistoryWindow, nowMs: Int64, isLive: Bool) async -> HistoryBuilt? {
