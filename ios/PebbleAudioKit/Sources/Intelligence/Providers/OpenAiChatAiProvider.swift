@@ -120,7 +120,9 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
     /// allowed the Responses API. Honouring it here stopped every AI job for a key that could
     /// run them, and the first AI success then lifted it — so transcription paid a refused
     /// upload to put it back, once per AI call, every 45 s while the live refresh ran.
-    static let aiHoldingKinds: Set<TranscriptionFailureKind> = [.accountOutOfFunds, .keyRejected]
+    static let aiHoldingKinds: Set<TranscriptionFailureKind> = [
+        .accountOutOfFunds, .spendingLimitReached, .keyRejected,
+    ]
 
     /// The hold in force for `.openAi` when it is one this side honours, or nil.
     private func honouredHold() -> CloudAccountHold.Hold? {
@@ -135,6 +137,9 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         switch hold.kind {
         case .keyRejected:
             return "OpenAI did not accept the API key (401); no AI request is sent until it changes"
+        case .spendingLimitReached:
+            return "OpenAI has reached its spending limit (402); no AI request is sent until the "
+                + "limit is raised"
         default:
             return "OpenAI is out of credit (402); no AI request is sent until the account is "
                 + "topped up"
@@ -347,6 +352,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
             "OpenAI responses request failed (\(status)): \(body)")
         {
         case .accountOutOfFunds: return .accountOutOfFunds
+        case .spendingLimitReached: return .spendingLimitReached
         case .keyRejected: return .keyRejected
         default: return nil
         }

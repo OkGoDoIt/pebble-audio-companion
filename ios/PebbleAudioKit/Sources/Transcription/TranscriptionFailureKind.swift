@@ -27,6 +27,14 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     /// wrong and the opposite of actionable — this is the one failure in the list the user can
     /// fix completely, in a minute, from their provider's billing page.
     case accountOutOfFunds
+    /// The account has money but a SPENDING LIMIT set on the provider's side is used up — a
+    /// Soniox project's monthly budget, an OpenAI hard limit. Separate from `accountOutOfFunds`
+    /// because the fix is different and the person has usually just done the other one: on
+    /// 2026-09-30 a Soniox top-up was followed, mid-backlog, by "Project monthly budget
+    /// exhausted. Please increase it." — read as provider trouble, so the uploader sent ~250
+    /// full recordings into it for an hour, and the only word on screen would have been "out of
+    /// credit" to someone who had just added credit. It is raised in the provider's console.
+    case spendingLimitReached
     /// 5xx, or the provider reported an error of its own. Nothing here is the user's to fix.
     case providerTrouble
     /// The provider took the audio but never returned a usable handle for it.
@@ -65,8 +73,9 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
     /// failed and stay visible in Diagnostics, which is the honest outcome.
     public var isWorthRevisiting: Bool {
         switch self {
-        case .keyRejected, .keyNotPermitted, .rateLimited, .accountOutOfFunds, .providerTrouble,
-            .timedOut, .noConnection, .modelMissing, .localEngineFailed, .notConfigured, .unknown:
+        case .keyRejected, .keyNotPermitted, .rateLimited, .accountOutOfFunds,
+            .spendingLimitReached, .providerTrouble, .timedOut, .noConnection, .modelMissing,
+            .localEngineFailed, .notConfigured, .unknown:
             return true
         case .recordingTooLong, .audioUnreadable, .providerRefusedAudio:
             return false
@@ -98,6 +107,9 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
         // Money before status. A dry account reaches us as 402 (Soniox realtime), as a statusless
         // control-plane message (Soniox async), and as a 429 with billing wording (OpenAI) — three
         // codes for one cause, so the WORDS decide and the status only confirms.
+        // A spending limit is money too, but a different fix; its wording is checked first
+        // because a limit message can also mention billing.
+        if Self.readsAsSpendingLimit(text) { return .spendingLimitReached }
         if Self.readsAsOutOfFunds(text) { return .accountOutOfFunds }
 
         // An HTTP status the provider gave us is the most specific thing available, and it maps
@@ -162,6 +174,19 @@ public enum TranscriptionFailureKind: String, Equatable, Sendable, CaseIterable 
 
     static func readsAsOutOfFunds(_ lowercasedText: String) -> Bool {
         outOfFundsPhrases.contains { lowercasedText.contains($0) }
+    }
+
+    /// Wording that means a limit the account holder set is used up, not that the account is
+    /// empty. Soniox: "Project monthly budget exhausted. Please increase it." (async job error,
+    /// no status; realtime, 402). OpenAI: "billing hard limit has been reached". The app's own
+    /// paused-account sentence says "spending limit", so it classifies back to this kind.
+    static let spendingLimitPhrases = [
+        "monthly budget", "budget exhausted", "budget exceeded", "spending limit",
+        "hard limit has been reached", "hard_limit",
+    ]
+
+    static func readsAsSpendingLimit(_ lowercasedText: String) -> Bool {
+        spendingLimitPhrases.contains { lowercasedText.contains($0) }
     }
 
     /// Prefix `storedFailureMessage` uses for a `URLError`; also what `classify` looks for.

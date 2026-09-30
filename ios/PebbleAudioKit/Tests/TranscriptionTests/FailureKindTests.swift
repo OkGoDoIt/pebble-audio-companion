@@ -29,6 +29,26 @@ import Testing
         )
     }
 
+    /// A spending limit the account holder set is used up — not an empty account, not provider
+    /// trouble. The exact words the phone stored on 2026-09-30, minutes after a Soniox top-up:
+    /// the async job error carries no status, the realtime refusal carries 402. Read as provider
+    /// trouble, ~250 full recordings were sent into the limit in an hour.
+    @Test func aSpendingLimitIsItsOwnKindOnEveryPath() {
+        for message in [
+            "Soniox transcription error: Project monthly budget exhausted. Please increase it.",
+            "Soniox realtime error (402): Project monthly budget exhausted. Please increase it.",
+            "OpenAI transcription failed (429): Billing hard limit has been reached",
+        ] {
+            #expect(TranscriptionFailureKind.classify(message) == .spendingLimitReached, "\(message)")
+        }
+        #expect(TranscriptionFailureKind.spendingLimitReached.isWorthRevisiting)
+        // An empty account still reads as one.
+        #expect(
+            TranscriptionFailureKind.classify(
+                "Soniox transcription error: Organization balance exhausted. Please either add "
+                    + "funds manually or enable autopay.") == .accountOutOfFunds)
+    }
+
     /// The HTTP-status forms, which carry the provider's own body — the copy for these must come
     /// from the status, never from the body.
     @Test func httpStatusesMapOntoTheSameAdviceAsAKeyCheck() {
