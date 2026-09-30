@@ -143,13 +143,13 @@ public enum HistoryDayBuilder {
         var trailingEdge: HistoryEdge?
         if let firstKept = entries.firstIndex(where: { $0.piece.map { !Self.isCalm($0) } ?? false }) {
             let stripped = entries[..<firstKept].compactMap(\.piece)
-            if stripped.contains(where: { $0.end > $0.start }) {
+            if Self.isWorthAnEdge(stripped, rules: input.rules) {
                 leadingEdge = HistoryEdge(atMs: entries[firstKept].piece!.start, kind: Self.edgeKind(stripped))
             }
             entries.removeSubrange(..<firstKept)
             if !isToday, let lastKept = entries.lastIndex(where: { $0.piece.map { !Self.isCalm($0) } ?? false }) {
                 let stripped = entries[(lastKept + 1)...].compactMap(\.piece)
-                if stripped.contains(where: { $0.end > $0.start }) {
+                if Self.isWorthAnEdge(stripped, rules: input.rules) {
                     trailingEdge = HistoryEdge(atMs: entries[lastKept].piece!.end, kind: Self.edgeKind(stripped))
                 }
                 entries.removeSubrange((lastKept + 1)...)
@@ -824,6 +824,15 @@ public enum HistoryDayBuilder {
         case .quiet?, .notRecording?, .paused(.watchPowerSave)?: return true
         default: return false
         }
+    }
+
+    /// An edge line says "nothing happened until 8:12 AM". Calm time shorter than `foldBelowMs`
+    /// at an end says nothing a person could use — on the real backup, a few seconds of nothing
+    /// recorded before a recording that began at the stroke of 5 AM drew "Nothing recorded until
+    /// 5:00 AM" at the very top of the day — so it gets no line; like every other sliver under
+    /// `foldBelowMs`, it is simply not drawn.
+    static func isWorthAnEdge(_ stripped: [Piece], rules: HistoryDayRules) -> Bool {
+        stripped.reduce(Int64(0)) { $0 + max(0, $1.end - $1.start) } >= rules.foldBelowMs
     }
 
     static func edgeKind(_ stripped: [Piece]) -> HistoryEdge.Kind {
