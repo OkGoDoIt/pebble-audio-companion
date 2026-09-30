@@ -95,6 +95,9 @@ public actor CompanionRuntime {
     private let log: RuntimeLog
 
     private var loopTask: Task<Void, Never>?
+    /// The running loop's memory between passes — held so a changed AI configuration can tell
+    /// the brief stage its failures may be tried again now (see `notifyAiConfigurationChanged`).
+    private var passMemory: PipelinePassMemory?
     private var supervisorTask: Task<Void, Never>?
     private var stageObserver: (@Sendable (PipelineStage) -> Void)?
     /// Which parts of the processing pass are actually working. Written by the pass, read by
@@ -190,8 +193,14 @@ public actor CompanionRuntime {
         Task {
             await environment.enrichment.resetAiRetryBudgets()
             await environment.recap.resetFailureBackoff()
+            // The brief stage sleeps until its own backoff ends; that backoff was just lifted.
+            await self.noteBriefsOwed()
             wake.signal()
         }
+    }
+
+    private func noteBriefsOwed() {
+        passMemory?.noteBriefsOwed(atMs: clock.nowMs)
     }
 
     // --- lifecycle -----------------------------------------------------------------------------
@@ -295,8 +304,11 @@ public actor CompanionRuntime {
     }
 
     private func startLoop() {
+        let memory = PipelinePassMemory()
+        passMemory = memory
         let pass = PipelinePass(
-            steps: makeSteps(), clock: clock, health: health, onStage: stageObserver ?? { _ in })
+            steps: makeSteps(), clock: clock, health: health, memory: memory,
+            onStage: stageObserver ?? { _ in })
         let loop = PipelineLoop(pass: pass, wake: wake, clock: clock, health: health, log: log)
         // `.utility`, not the default: everything on this loop is deferrable work that the user
         // is not waiting on tap-for-tap, and the scheduler puts utility work on the efficiency
