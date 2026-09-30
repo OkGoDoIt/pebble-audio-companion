@@ -949,6 +949,9 @@ final class AppComposition {
             // must take the decision with it.
             boundaryOverrides: BoundaryOverrideStore(db: database),
             audioContent: audioContent,
+            // Deleting a conversation that ends mid-segment silences that range of the audio in
+            // place; the waveform cache is keyed on the frame count, which does not change.
+            live: live,
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog

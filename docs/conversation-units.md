@@ -37,10 +37,13 @@ summary, follow-up sources, Ask and search documents, Spotlight, notes.
 - The structural rules (gap, Stop, pause) still decide which segments form one unbroken **run**.
   Inside a run, `ConversationRunPlanner` places cuts from, in order:
   1. **a long settled silence** (15 min; twice that when most of it is missing audio): the
-     conversation ends at its last word, the next starts at the first word after;
+     conversation ends at its last word, the next starts at the first word after, and the
+     silence between is a unit of its own with nothing said in it (titled "No conversation").
+     Each end is decided on the settled silence next to it, so a conversation that has ended
+     does not change when the recording goes on;
   2. **decisions already made**: the segmenter's settled cuts (`conversation_cuts`) and the
-     person's own splits (`conversation_cut_overrides`); a person's join removes a cut and keeps
-     automatic ones two minutes away;
+     person's own splits (`conversation_cut_overrides`). A person's join records the span of
+     the two conversations it joined, and nothing automatic cuts inside that span again;
   3. **the segmenter**, over each stretch of talk between two long silences.
 - **Untranscribed audio** is divided by length alone (about an hour, at segment joins, reason
   `length`), is never written down, and is divided properly when its transcripts arrive. There is
@@ -69,7 +72,9 @@ further back does not. A segmenter cut with 45 minutes of settled talk after it 
 has ended) is written to `conversation_cuts` and held. Later passes search each whole stretch with
 the held cuts forced, which reproduces exactly the conversations they were made with (pinned on
 the real library). A conversation with a boundary still inside that window is `isProvisional`:
-final titles and follow-up extraction wait for it, as they wait for a live conversation.
+final titles and follow-up extraction wait for it, as they wait for a live conversation. A run
+counts as still growing while it holds the open segment, or its last recording closed less than
+five minutes ago (a dropped link reopens in the same run).
 
 When ids do move (the first run after this change re-cuts the whole library; the recent tail can
 re-cut), records follow their moment, not their id: follow-ups by their source position, notes and
@@ -82,8 +87,12 @@ typed it.
 Deleting a conversation destroys exactly its pieces. A whole segment goes through the existing
 cascade. A partial piece has its audio replaced by encoded silence (so every clock, offset and
 gap record stays valid), its turns removed from the transcript (and kept out if a transcription
-was in flight), and the follow-ups sourced in it deleted. The neighbouring conversation is not
-touched.
+was in flight), and the follow-ups sourced in it deleted. The neighbouring conversation keeps
+its audio, words, id, title and notes; the silenced range joins a neighbour as silence. Known
+edges: an upload already in flight cannot be recalled (as for a whole-segment delete); a
+transcript with no turn timings cannot be cut, so its text stays with the piece that starts
+the segment; and where the silenced range sits beside fifteen minutes of real quiet it remains
+as a "No conversation" unit until retention.
 
 ## How it was measured
 
@@ -116,10 +125,13 @@ Results on the eight days (Swift grouper, units that hold speech):
 |---|---|---|---|---|---|---|---|---|
 | before (15 min of silence) | 22 / 200 (11%) | 25 / 38 | 13 / 397 | 45 | 1 h 27 m | 4 h 30 m | 9 h 48 m | 23 |
 | cut at every pause ≥ 3 min (prototype) | 58% | 50% | 195 / 394 | 337 | 3 m | 26 m | 3 h 19 m | 16 |
-| **now** | **104 / 200 (52%)** | **135 / 234 (58%)** | **62 / 397** | **241** | **16 m** | **45 m** | **1 h 26 m** | **5** |
+| **now** | **103 / 200 (52%)** | **134 / 232 (58%)** | **62 / 397** | **239** | **16 m** | **46 m** | **1 h 26 m** | **6** |
 | finer setting (not shipped) | 130 / 200 (65%) | 221 / 399 (55%) | 99 / 397 | 406 | 9 m | 23 m | 1 h 06 m | 3 |
 
 Over the whole 915-segment library, untranscribed days included, the longest unit is 1 h 26 m.
+Run on a copy of the real database, the upgrade turns 110 conversations (longest 24 h 52 m) into
+410 units (longest 1 h 26 m; the count includes the silent units between stretches of talk), and
+a second pass writes nothing.
 
 The numbers in `SegmenterPolicy` are fitted to the labels, leaning toward precision (a false cut
 gives two half-titled conversations; a missed one gives a slightly broad title) and treating
