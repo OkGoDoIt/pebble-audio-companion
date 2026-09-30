@@ -912,10 +912,12 @@ extension MockWorld: AskDataSource {
         index(of: MockWorld.conversation(ofMember: citedId)).map { conversations[$0].title }
     }
 
-    func citationTitles(for citedIds: [String]) async -> [String: String] {
+    func citationTitles(for citations: [AskCitation]) async -> [String: String] {
         var titles: [String: String] = [:]
-        for id in citedIds {
-            if let title = conversationTitle(citedId: id) { titles[id] = title }
+        for citation in citations {
+            if let title = conversationTitle(citedId: citation.segmentId) {
+                titles[citation.momentKey] = title
+            }
         }
         return titles
     }

@@ -16,8 +16,8 @@ import WireProtocol
 //  1. Playing it aloud feeds the phone's speaker straight back into the watch microphone that
 //     is recording — the app would be recording its own playback, and the person would have no
 //     reason to expect that.
-//  2. The engine `LiveWorld.playback(id:)` hands back resolves the conversation's members ONCE
-//     (`members(of:)`) and fixes `durationMs` from the sidecars at that instant. A reconnect
+//  2. The engine `LiveWorld.playback(id:)` hands back resolves the conversation's pieces ONCE
+//     (`pieces(of:)`) and fixes `durationMs` from the sidecars at that instant. A reconnect
 //     opens a new member the engine will never see, so the scrubber would quietly stop covering
 //     the recording it claims to cover. (`SegmentPlaybackController` does re-read the OPEN
 //     segment's frames as they land, so the tail of one member follows along — but only that.)

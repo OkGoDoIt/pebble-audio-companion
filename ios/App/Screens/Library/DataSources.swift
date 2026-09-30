@@ -332,6 +332,13 @@ struct NoteTemplate: Equatable, Identifiable {
     ]
 }
 
+extension AskCitation {
+    /// Identifies the MOMENT a citation points at — its segment and where in it — for anything
+    /// cached per citation. The segment id alone is not enough: a segment is shared between
+    /// conversations, and what a citation is called depends on which one its moment is in.
+    var momentKey: String { "\(segmentId)@\(startMs.map(String.init) ?? "start")" }
+}
+
 /// Where a citation points. Citations name SEGMENTS, screens navigate by CONVERSATION, and the
 /// player counts MEDIA time — resolving one citation is the hop between all three. Without it a
 /// chip navigated to `conversation/<segmentId>`, which is not a conversation id, so every tap
@@ -429,10 +436,14 @@ protocol AskDataSource: AnyObject {
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?
-    /// Titles for many citations at once, resolved off the main thread. The thread screen
-    /// caches the result — the sync variant decodes a transcript per call, which must never
-    /// happen per render.
-    func citationTitles(for citedIds: [String]) async -> [String: String]
+    /// Titles for many citations at once, keyed by `AskCitation.momentKey` and resolved off
+    /// the main thread. The thread screen caches the result — the sync variant decodes a
+    /// transcript per call, which must never happen per render.
+    ///
+    /// Per citation, not per cited segment: one recording usually holds the end of one
+    /// conversation and the start of the next, so two citations into the same segment can
+    /// belong to two conversations with two titles.
+    func citationTitles(for citations: [AskCitation]) async -> [String: String]
     /// The conversation, moment and scrubber position a citation names. Nil once the cited
     /// segment is gone (retention), which is when a chip must not navigate at all.
     func citationTarget(for citation: AskCitation) async -> CitationTarget?

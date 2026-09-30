@@ -105,6 +105,10 @@ final class AppComposition {
     /// `LiveAudioService` facade only drives their passes).
     let localLive: LiveTranscriber
     let cloudLive: CloudLiveTranscriber
+    /// The WAV exporter the live service runs its automatic pass through. Held here as well
+    /// because a conversation exports its PIECES — a range of each member segment — and the
+    /// service's own seam only knows whole segments.
+    let audioExporter: AudioExportManager
     let runtime: CompanionRuntime
     /// "Is startup recovery still running?", for the screens. See `StartupActivity`.
     let startup: StartupActivity
@@ -591,19 +595,21 @@ final class AppComposition {
             }
         )
         self.cloudLive = cloudLive
+        let audioExporter = AudioExportManager(
+            exportRoot: AudioExportManager.defaultExportRoot(),
+            listSegments: { files.listSegments() },
+            readMeta: { files.readMeta($0) },
+            readFrames: { files.readFrames($0) },
+            decodePcm: LiveTranscriber.defaultDecodePcm
+        )
+        self.audioExporter = audioExporter
         let live = LiveAudioService(
             store: store,
             monitor: monitor,
             localLive: localLive,
             cloudLive: cloudLive,
             waveformBuilder: SegmentWaveformBuilder(decoder: SpeexLiveFrameDecoder()),
-            exporter: AudioExportManager(
-                exportRoot: AudioExportManager.defaultExportRoot(),
-                listSegments: { files.listSegments() },
-                readMeta: { files.readMeta($0) },
-                readFrames: { files.readFrames($0) },
-                decodePcm: LiveTranscriber.defaultDecodePcm
-            ),
+            exporter: audioExporter,
             playback: SegmentPlaybackController(
                 playerFactory: { AVFoundationPcmPlayer() },
                 decoder: SpeexLiveFrameDecoder(),
