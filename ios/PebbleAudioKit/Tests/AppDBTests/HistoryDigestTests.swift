@@ -110,6 +110,56 @@ private let scope = HistoryDigestScope(
         #expect(try await HistoryDigest.read(database, scope: tagged) != withTag)
     }
 
+    @Test("a day's headline landing moves the digest once; a week's or month's brief likewise; a failure never")
+    func briefsMoveItOnce() async throws {
+        let database = try AppDatabase.inMemory()
+        try await seed(database)
+        try await database.writer.write {
+            try $0.execute(
+                sql: "INSERT INTO recaps (dateKey, text, segmentIds, updatedAtMs) VALUES ('2026-09-22', 'Day', '[]', 7)")
+        }
+        var week = scope
+        week.briefKeys = [PeriodBriefKey.week(firstDateKey: "2026-09-20")]
+        var last = try await HistoryDigest.read(database, scope: week)
+
+        // The day's headline and line land (or are refused: the stamp moves it either way).
+        try await database.writer.write {
+            try $0.execute(
+                sql: "UPDATE recaps SET headline = 'Garden planning', lineSummary = 'One.', briefOfHash = 'h1'")
+        }
+        var next = try await HistoryDigest.read(database, scope: week)
+        #expect(next != last)
+        last = next
+
+        // A failed attempt at the week's brief: written, but nothing the page shows changed.
+        let store = PeriodBriefStore(db: database)
+        let key = PeriodBriefKey.week(firstDateKey: "2026-09-20")
+        try await store.saveFailure(periodKey: key, kind: .week, attempts: 1, nextAttemptAtMs: 99, errorKind: "noConnection")
+        #expect(try await HistoryDigest.read(database, scope: week) == last, "a failure rebuilt the page")
+
+        // The brief lands: once.
+        try await store.saveCompleted(
+            periodKey: key, kind: .week, text: "The week.", headline: "Apartments", lineSummary: nil,
+            sourceHash: "s1", provider: "p", model: "m", atMs: 100)
+        next = try await HistoryDigest.read(database, scope: week)
+        #expect(next != last)
+        #expect(try await HistoryDigest.read(database, scope: week) == next)
+        last = next
+
+        // Another week's or a month's brief is not this page's.
+        try await store.saveCompleted(
+            periodKey: PeriodBriefKey.week(firstDateKey: "2026-09-27"), kind: .week, text: "Next.", headline: nil,
+            lineSummary: nil, sourceHash: "s2", provider: nil, model: nil, atMs: 101)
+        #expect(try await HistoryDigest.read(database, scope: week) == last)
+        // A page with no brief keys never reads the table.
+        let before = try await HistoryDigest.read(database, scope: scope)
+        try await store.saveCompleted(
+            periodKey: key, kind: .week, text: "The week, again.", headline: nil, lineSummary: nil,
+            sourceHash: "s3", provider: nil, model: nil, atMs: 102)
+        #expect(try await HistoryDigest.read(database, scope: scope) == before)
+        #expect(try await HistoryDigest.read(database, scope: week) != last)
+    }
+
     @Test("the observation drops duplicates at the source")
     func observationDropsDuplicates() async throws {
         let database = try AppDatabase.inMemory()

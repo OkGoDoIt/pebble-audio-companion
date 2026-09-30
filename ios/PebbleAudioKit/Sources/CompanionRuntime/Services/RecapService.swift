@@ -4,15 +4,22 @@ import SearchKit
 
 /// Wraps `DailyRecapEngine` (5 AM logical day, 30 min debounce, settled-day fingerprints) and
 /// donates each saved recap into the index under the stable `day-<dateKey>` id — same-day
-/// regenerations replace the entry instead of accumulating copies.
+/// regenerations replace the entry instead of accumulating copies. Also owns the second pass
+/// over the recaps History reads (`PeriodBriefEngine`: day headlines, week and month briefs).
 public actor RecapService {
     private let engine: DailyRecapEngine?
     private let store: DailyRecapStore
+    private let briefs: PeriodBriefEngine?
     private var engineTask = false
+    /// A recap was deleted (the delete cascade) since the last `refresh`. The pass learns that
+    /// the recaps changed from `refresh`'s answer, and a deleted day changes the week and month
+    /// written from it as surely as a regenerated one does.
+    private var deletedSinceRefresh = false
 
-    public init(engine: DailyRecapEngine?, store: DailyRecapStore) {
+    public init(engine: DailyRecapEngine?, store: DailyRecapStore, briefs: PeriodBriefEngine? = nil) {
         self.engine = engine
         self.store = store
+        self.briefs = briefs
     }
 
     /// Starts the engine's own debounce loop. Idempotent.
@@ -44,13 +51,27 @@ public actor RecapService {
     ///
     /// `onProgress` fires after each AI call, so a long map-reduce day reads as progress to the
     /// loop watchdog rather than as a wedged pass.
-    public func refresh(onProgress: (@Sendable () -> Void)? = nil) async throws {
-        try await engine?.refreshDigests(onProgress: onProgress)
+    ///
+    /// Returns whether a digest or a condensation was written — what makes `.briefs` due.
+    @discardableResult
+    public func refresh(onProgress: (@Sendable () -> Void)? = nil) async throws -> Bool {
+        let deleted = deletedSinceRefresh
+        deletedSinceRefresh = false
+        let wrote = try await engine?.refreshDigests(onProgress: onProgress) ?? false
+        return wrote || deleted
     }
 
-    /// Failed days may be tried again now — see `DailyRecapEngine.resetFailureBackoff`.
+    /// One pipeline-pass run of the brief pass (`PeriodBriefEngine.refresh`). Without a brief
+    /// engine nothing is ever owed.
+    public func refreshBriefs(onProgress: (@Sendable () -> Void)? = nil) async throws -> PeriodBriefPassOutcome {
+        try await briefs?.refresh(onProgress: onProgress) ?? .nothingOwed
+    }
+
+    /// Failed days may be tried again now — see `DailyRecapEngine.resetFailureBackoff`. The
+    /// brief pass's failures with them.
     public func resetFailureBackoff() async {
         await engine?.resetFailureBackoff()
+        await briefs?.resetFailureBackoff()
     }
 
     public func list() async throws -> [DailyRecap] { try await store.list() }
@@ -68,10 +89,12 @@ public actor RecapService {
 
     public func delete(dateKey: String) async throws {
         try await store.delete(dateKey: dateKey)
+        deletedSinceRefresh = true
     }
 
     public func deleteAll() async throws {
         try await store.deleteAll()
+        deletedSinceRefresh = true
     }
 
     /// The index document id for a recap — `day-<dateKey>` (plan Part 4.6 cascade list).

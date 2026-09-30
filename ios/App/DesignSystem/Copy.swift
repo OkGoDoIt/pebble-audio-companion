@@ -1021,6 +1021,7 @@ enum Copy {
                 case "donate": return "Search index"
                 case "followUps": return "Follow-ups"
                 case "recap": return "Daily recap"
+                case "briefs": return "History headlines"
                 case "liveLocal": return "Live transcript"
                 case "liveCloudPrune": return "Live transcript cleanup"
                 case "wavExport": return "WAV export"

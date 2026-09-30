@@ -35,8 +35,13 @@ public enum AiInputPolicy {
     ///  • `ask` — its prompt carries a COVERAGE line computed before the call ("ALL … in full").
     ///  • `ask-sweep-findings` / `ask-sweep-answer` — the two halves of a sweep, which exists
     ///    precisely so every word of the range is read; a cut part is a silently unread part.
+    ///  • `day-brief` / `week-brief` / `month-brief` — History's headlines and briefs, stored
+    ///    against a fingerprint of their whole input and settled on it. The inputs are sized to
+    ///    fit the on-device window (`PeriodBriefWriter.maxInputCharacters`), so this refuses only
+    ///    what should never happen.
     public static let wholeInputTemplateIds: Set<String> = [
         "extended-summary", "daily-summary", "ask", "ask-sweep-findings", "ask-sweep-answer",
+        "day-brief", "week-brief", "month-brief",
     ]
 
     public static func requiresWholeInput(templateId: String) -> Bool {

@@ -747,6 +747,45 @@ public struct AppDatabase: Sendable {
                         """)
             }
         }
+        // History's briefs (plan 7.4). The week page listed each day under the FIRST SENTENCE of
+        // its recap cut at sixty characters ("The day began with a long planning…") and the month
+        // page had no week headlines at all, because nothing short had ever been written about a
+        // day, a week or a month.
+        //
+        // `recaps.headline` / `lineSummary` are a SECOND pass over the day recap, like the
+        // condensed form: a phrase naming the day and a line under it. `briefOfHash` is
+        // `RecapCondenser.fingerprint` of the recap text the pass last COMPLETED against, so it
+        // runs once per recap text and a regenerated recap invalidates what was made from the old
+        // one. All three nullable; a stamped hash with nil fields is an attempt that produced
+        // nothing usable.
+        //
+        // `period_briefs` holds the week and month briefs (`week:<first day>`,
+        // `month:<yyyy-MM>`). DERIVED — dropping it costs one call per period. `text` is nullable
+        // for the same reason as the day's fields; `sourceHash` is what the brief was made from,
+        // NULL until an attempt completes. `attempts` / `nextAttemptAtMs` / `lastError` are the
+        // failure backoff, and `lastError` holds the classified kind only, never a provider's
+        // message.
+        migrator.registerMigration("v16-history-briefs") { db in
+            try db.alter(table: "recaps") { t in
+                t.add(column: "headline", .text)
+                t.add(column: "lineSummary", .text)
+                t.add(column: "briefOfHash", .text)
+            }
+            try db.create(table: "period_briefs") { t in
+                t.column("periodKey", .text).primaryKey()
+                t.column("kind", .text).notNull()  // week | month
+                t.column("text", .text)
+                t.column("headline", .text)
+                t.column("lineSummary", .text)
+                t.column("sourceHash", .text)
+                t.column("provider", .text)
+                t.column("model", .text)
+                t.column("updatedAtMs", .integer).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("nextAttemptAtMs", .integer)
+                t.column("lastError", .text)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

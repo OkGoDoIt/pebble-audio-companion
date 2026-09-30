@@ -175,15 +175,30 @@ public actor HistoryReader {
             includeSummaries: ConversationUnits.isTopicSized)
     }
 
-    public func periodScope(days: [String], _ library: Library) -> HistoryDigestScope {
+    /// A week's or month's scope. `briefKeys` are the `period_briefs` rows the page shows
+    /// (`weekBriefKeys` / `monthBriefKeys`).
+    public func periodScope(days: [String], briefKeys: [String] = [], _ library: Library) -> HistoryDigestScope {
         let hulls = days.compactMap { library.windows(of: $0).hull }
         guard let lower = hulls.map(\.lowerBound).min(), let upper = hulls.map(\.upperBound).max() else {
-            return HistoryDigestScope(window: 0..<0, segmentIds: [], recapDateKeys: days, includeTags: true)
+            return HistoryDigestScope(
+                window: 0..<0, segmentIds: [], recapDateKeys: days, includeTags: true, briefKeys: briefKeys)
         }
         let window = lower..<upper
         return HistoryDigestScope(
             window: window, segmentIds: library.segments(overlapping: window, withNext: false).map(\.segmentId),
-            recapDateKeys: days, includeTags: true)
+            recapDateKeys: days, includeTags: true, briefKeys: briefKeys)
+    }
+
+    /// The brief a week page shows.
+    public static func weekBriefKeys(firstDateKey: String) -> [String] {
+        [PeriodBriefKey.week(firstDateKey: firstDateKey)]
+    }
+
+    /// The briefs a month page shows: its own, and its weeks' (the rows).
+    public static func monthBriefKeys(containing dateKey: String, firstWeekday: Int) -> [String] {
+        [PeriodBriefKey.month(containing: dateKey)]
+            + HistoryCalendar.weeks(inMonthOf: dateKey, firstWeekday: firstWeekday)
+                .map { PeriodBriefKey.week(firstDateKey: $0.lowerBound) }
     }
 
     // MARK: - A day
@@ -440,8 +455,10 @@ public actor HistoryReader {
         let today = todayKey(library, nowMs: nowMs)
         let days = HistoryCalendar.days(in: firstDateKey...lastDateKey).filter { $0 <= today }
         let facts = try await dayFacts(days, library, nowMs: nowMs, todayKey: today, isLive: isLive)
+        let briefs = try await periodBriefs(Self.weekBriefKeys(firstDateKey: firstDateKey))
         return HistoryPeriodAssembler.week(
-            firstDateKey: firstDateKey, lastDateKey: lastDateKey, days: facts, todayKey: today)
+            firstDateKey: firstDateKey, lastDateKey: lastDateKey, days: facts, todayKey: today,
+            sources: HistoryPeriodSources(briefs: briefs))
     }
 
     public func month(
@@ -450,8 +467,20 @@ public actor HistoryReader {
         let today = todayKey(library, nowMs: nowMs)
         let days = Self.monthDays(containing: dateKey, firstWeekday: firstWeekday).filter { $0 <= today }
         let facts = try await dayFacts(days, library, nowMs: nowMs, todayKey: today, isLive: isLive)
+        let briefs = try await periodBriefs(Self.monthBriefKeys(containing: dateKey, firstWeekday: firstWeekday))
         return HistoryPeriodAssembler.month(
-            containing: dateKey, firstWeekday: firstWeekday, days: facts, todayKey: today)
+            containing: dateKey, firstWeekday: firstWeekday, days: facts, todayKey: today,
+            sources: HistoryPeriodSources(briefs: briefs))
+    }
+
+    /// The written briefs of these periods, as the pages read them. One indexed read.
+    func periodBriefs(_ keys: [String]) async throws -> [String: HistoryBrief] {
+        try await PeriodBriefStore(db: sources.database).load(keys: keys).compactMapValues { brief in
+            guard brief.hasContent else { return nil }
+            return HistoryBrief(
+                text: brief.text ?? "", headline: brief.headline, lineSummary: brief.lineSummary,
+                updatedAtMs: brief.updatedAtMs)
+        }
     }
 
     /// Every day a month page reads: its weeks, whole.
@@ -554,7 +583,11 @@ public actor HistoryReader {
                         durationMs: max(0, row.endMs - row.startMs)))
             }
             if let recap = try await sources.recaps.load(dateKey: day), let brief = Self.brief(recap) {
-                facts.recap = HistoryRecapFact(summary: brief.text, updatedAtMs: brief.updatedAtMs)
+                // The day's headline and line only while they describe the recap as it is now.
+                let current = DayBrief.current(recap)
+                facts.recap = HistoryRecapFact(
+                    summary: brief.text, updatedAtMs: brief.updatedAtMs, headline: current.headline,
+                    lineSummary: current.lineSummary)
             }
             facts.followUps = followUpsOf[day] ?? []
             result[day] = facts

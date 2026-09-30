@@ -1,17 +1,21 @@
 import Foundation
 
-// Weeks and months (plan 5.4, 5.5, 7.10 "Weeks and months"), assembled from per-day FACTS.
+// Weeks and months (plan 5.4, 5.5, 7.10 "Weeks and months"), assembled from per-day FACTS and
+// the briefs written about them.
 //
-// The finished design reads its headlines, summaries and tags from the chapter and brief stages
-// (`day_chapters`, `chapter_tags`, `period_briefs`). Neither stage exists yet, so every piece of
-// text on a week or month row comes from an INTERIM source that uses only what is already true
-// of the day: its conversations' titles and tags, and its recap. All of it is behind one
-// protocol, `HistoryPeriodSources`; when the stages land, a second conformer replaces
-// `InterimHistoryPeriodSources` in one place (the caller's `sources:` argument) and nothing else
-// here changes. The facts themselves — which days were recorded, what is waiting, which
-// follow-ups were said when — are not interim and are not behind the protocol.
+// Every piece of text on a week or month row is a thing WRITTEN to be that short (plan 7.4): a
+// day's headline and line (`recaps.headline` / `lineSummary`), a week's and a month's brief
+// (`period_briefs`). Until one exists — the brief stage has not reached that day yet, AI is off,
+// the answer was refused — the row falls back to other short things that are already true of the
+// day: the title of its most-talked conversation, the recap whole (the view clamps it to two
+// lines). Never to a cut: the first version headed each day with its recap's first sentence cut
+// at sixty characters ("The day began with a long planning…") and put the rest of the recap
+// under it ("Later, you worked with friends…"), and that is the screen Roger reported. The facts
+// themselves — which days were recorded, what is waiting, which follow-ups were said when — are
+// not text and are not affected by any of this.
 //
-// Pure: no database, file or clock. `HistoryReader` (CompanionRuntime) gathers the facts.
+// Pure: no database, file or clock. `HistoryReader` (CompanionRuntime) gathers the facts and
+// the briefs.
 
 /// What one logical day contributes to a week or month.
 public struct HistoryDayFacts: Equatable, Sendable {
@@ -93,10 +97,15 @@ public struct HistoryRecapFact: Equatable, Sendable {
     /// The condensed form when there is a current one, else the digest.
     public var summary: String
     public var updatedAtMs: Int64
+    /// The day's brief (`DayBrief`), only while it was written about the recap's CURRENT text.
+    public var headline: String?
+    public var lineSummary: String?
 
-    public init(summary: String, updatedAtMs: Int64) {
+    public init(summary: String, updatedAtMs: Int64, headline: String? = nil, lineSummary: String? = nil) {
         self.summary = summary
         self.updatedAtMs = updatedAtMs
+        self.headline = headline
+        self.lineSummary = lineSummary
     }
 }
 
@@ -120,151 +129,129 @@ public struct HistoryPlacedFollowUp: Equatable, Sendable {
     }
 }
 
-// MARK: - The replaceable text
+// MARK: - The words
 
-/// Where a week or month row's words come from. `InterimHistoryPeriodSources` is the only
-/// conformer until the chapter and brief stages exist; see the file header.
-public protocol HistoryPeriodSources: Sendable {
+/// Where a week or month row's words come from: the briefs written about the period, keyed by
+/// `PeriodBriefKey`, and the day facts' own briefs, with short fallbacks for what is not written
+/// yet (see the file header).
+///
+/// - Day headline: the day's headline; else the title of the TITLED conversation with the most
+///   transcribed time inside the day (a title is already a short phrase); else none.
+/// - Day summary: the day's line; else its recap whole — never the recap minus a sentence.
+/// - Week headline (the month's row): the week brief's headline; else the headlines of the two
+///   days with the most talk, distinct, joined — or only the first, when two would not fit the
+///   row's two lines; else the titles of the week's two most-talked titled conversations, the
+///   same way; else none (the row then has no title line at all). Week summary: the week
+///   brief's line, else none.
+/// - The week's and the month's in-brief card: their briefs' paragraphs, else none ("No summary
+///   yet").
+/// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying
+///   them (cards are conversations; there is no separate chapter layer to tag).
+public struct HistoryPeriodSources: Sendable {
+    public static let separator = " · "
+    /// How many day headlines a week row falls back to.
+    public static let weekHeadlineDays = 2
+    /// The longest fallback week headline that is two headlines joined: what the month row's
+    /// headline holds (two lines of 16 pt semibold, about 36 characters each). Two day headlines
+    /// run 25–40 characters apiece, so one line — the brief's own headline is one — would have
+    /// meant the first alone nearly always. Past this, the first alone: a second one clipped
+    /// mid-word would be the cut this file exists to avoid.
+    public static let joinedHeadlineCharacters = 72
+
+    /// Written week and month briefs, by `PeriodBriefKey`.
+    public var briefs: [String: HistoryBrief]
+
+    public init(briefs: [String: HistoryBrief] = [:]) {
+        self.briefs = briefs
+    }
+
     /// A day on the week page.
-    func dayHeadline(_ day: HistoryDayFacts) -> String?
-    func daySummary(_ day: HistoryDayFacts) -> String?
+    public func dayHeadline(_ day: HistoryDayFacts) -> String? {
+        if let headline = Self.nonEmpty(day.recap?.headline) { return headline }
+        let titled = day.conversations
+            .filter { $0.transcribedMs > 0 && Self.nonEmpty($0.title) != nil }
+            .min { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
+        return Self.nonEmpty(titled?.title)
+    }
+
+    public func daySummary(_ day: HistoryDayFacts) -> String? {
+        Self.nonEmpty(day.recap?.lineSummary) ?? Self.nonEmpty(day.recap?.summary)
+    }
+
     /// Every tag of the day, most prominent first. The row shows the first three; the month's
     /// tag counts use all of them.
-    func dayTags(_ day: HistoryDayFacts) -> [String]
-    /// A week on the month page.
-    func weekHeadline(_ days: [HistoryDayFacts]) -> String?
-    func weekSummary(_ days: [HistoryDayFacts]) -> String?
-    func weekTags(_ days: [HistoryDayFacts]) -> [String]
-    /// The in-brief card of a week page and of a month page.
-    func weekBrief(_ days: [HistoryDayFacts]) -> HistoryBrief?
-    func monthBrief(_ days: [HistoryDayFacts]) -> HistoryBrief?
-}
-
-/// INTERIM (until the chapter and brief stages exist): only facts the app already has.
-///
-/// - Day headline, recap first: on a day with talk in it, the recap's first sentence, cut to about
-///   `headlineCharacters` at a word boundary. Without a recap, the title of the conversation with
-///   the most transcribed time inside the day (nothing when it has none). Conversations are
-///   topic-sized, so a title names twenty minutes of the day, not the day; the recap is the one
-///   text written about all of it. (Before, this took the title unless its conversation ran over
-///   two hours — which, with every conversation a blob, made it the recap on every real day.)
-/// - Day summary: the day's recap (without that first sentence when it became the headline and
-///   more follows).
-/// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying them.
-/// - Week headline: none. Week summary: the distinct headlines of the week's days, the days with
-///   the most transcribed talk first, joined — a list of facts, not a generated sentence.
-/// - Week and month briefs: none (no such summaries exist).
-public struct InterimHistoryPeriodSources: HistoryPeriodSources {
-    /// How many titles a week's summary lists.
-    public static let weekSummaryTitles = 3
-    public static let separator = " · "
-    /// About how long a headline taken from a recap may be.
-    public static let headlineCharacters = 60
-
-    public init() {}
-
-    // INTERIM: replaced by the day's first chapter headline / the day brief's headline.
-    public func dayHeadline(_ day: HistoryDayFacts) -> String? {
-        headline(day).text
-    }
-
-    // INTERIM: replaced by the day brief's line summary.
-    public func daySummary(_ day: HistoryDayFacts) -> String? {
-        guard let recap = day.recap.flatMap({ Self.nonEmpty($0.summary) }) else { return nil }
-        if headline(day).fromRecap, let rest = Self.nonEmpty(Self.firstSentence(of: recap).rest) { return rest }
-        return recap
-    }
-
-    /// The day's headline and whether it came from the recap.
-    func headline(_ day: HistoryDayFacts) -> (text: String?, fromRecap: Bool) {
-        let longest = day.conversations
-            .filter { $0.transcribedMs > 0 }
-            .min { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
-        guard let longest else { return (nil, false) }
-        if let recap = day.recap.flatMap({ Self.nonEmpty($0.summary) }),
-            let sentence = Self.nonEmpty(Self.firstSentence(of: recap).sentence)
-        {
-            return (Self.cut(sentence, to: Self.headlineCharacters), true)
-        }
-        // No recap: the most-talked conversation's title; an untitled one says nothing.
-        return (Self.nonEmpty(longest.title), false)
-    }
-
-    // INTERIM: replaced by chapter tags.
     public func dayTags(_ day: HistoryDayFacts) -> [String] {
         Self.rankedTags([day.conversations])
     }
 
-    // INTERIM: replaced by the week brief's headline.
-    public func weekHeadline(_ days: [HistoryDayFacts]) -> String? { nil }
-
-    // INTERIM: replaced by the week brief's line summary.
-    public func weekSummary(_ days: [HistoryDayFacts]) -> String? {
+    /// A week on the month page. `firstDateKey` is the week's first day.
+    public func weekHeadline(firstDateKey: String, _ days: [HistoryDayFacts]) -> String? {
+        if let headline = Self.nonEmpty(weekBriefRow(firstDateKey)?.headline) { return headline }
         func talk(_ day: HistoryDayFacts) -> Int64 {
             day.conversations.reduce(Int64(0)) { $0 + $1.transcribedMs }
         }
-        let ranked: [HistoryDayFacts] = days.filter { talk($0) > 0 }.sorted { a, b in
+        let ranked = days.filter { talk($0) > 0 }.sorted { a, b in
             let (ta, tb) = (talk(a), talk(b))
             return ta != tb ? ta > tb : a.dateKey < b.dateKey
         }
-        var titles: [String] = []
-        var seen: Set<String> = []
-        for day in ranked {
-            guard let title = dayHeadline(day) else { continue }
-            let key = title.lowercased()
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-            titles.append(title)
-            if titles.count == Self.weekSummaryTitles { break }
-        }
-        return titles.isEmpty ? nil : titles.joined(separator: Self.separator)
+        if let fromDays = Self.joined(ranked.compactMap(dayHeadline)) { return fromDays }
+        // No day has a headline of its own: the week's own most-talked titled conversations.
+        // (A day's headline already falls back to its most-talked titled conversation, so this
+        // is for talk no single day ranks — a conversation whose words are spread across days,
+        // or one not yet counted as transcribed talk on any.) Never a placeholder in its place:
+        // "No summary yet" as a title over a row with tags and follow-ups is what Roger reported.
+        let titled = Self.mergedConversations(days.map(\.conversations))
+            .filter { Self.nonEmpty($0.title) != nil }
+            .sorted { a, b in
+                if a.transcribedMs != b.transcribedMs { return a.transcribedMs > b.transcribedMs }
+                if a.overlapMs != b.overlapMs { return a.overlapMs > b.overlapMs }
+                return a.id < b.id
+            }
+        return Self.joined(titled.compactMap { Self.nonEmpty($0.title) })
     }
 
-    // INTERIM: replaced by chapter tags over the week.
+    /// The first `weekHeadlineDays` distinct phrases, joined when they fit the row's two lines,
+    /// else the first alone. Nil when there are none.
+    static func joined(_ phrases: [String]) -> String? {
+        var picked: [String] = []
+        var seen: Set<String> = []
+        for phrase in phrases where seen.insert(phrase.lowercased()).inserted {
+            picked.append(phrase)
+            if picked.count == weekHeadlineDays { break }
+        }
+        guard let first = picked.first else { return nil }
+        let joined = picked.joined(separator: separator)
+        return joined.count <= joinedHeadlineCharacters ? joined : first
+    }
+
+    public func weekSummary(firstDateKey: String, _ days: [HistoryDayFacts]) -> String? {
+        Self.nonEmpty(weekBriefRow(firstDateKey)?.lineSummary)
+    }
+
     public func weekTags(_ days: [HistoryDayFacts]) -> [String] {
         Self.rankedTags(days.map(\.conversations))
     }
 
-    // INTERIM: no week brief exists until the brief stage.
-    public func weekBrief(_ days: [HistoryDayFacts]) -> HistoryBrief? { nil }
+    /// The in-brief card of a week page: its brief, when one was written with a paragraph.
+    public func weekBrief(firstDateKey: String) -> HistoryBrief? {
+        card(briefs[PeriodBriefKey.week(firstDateKey: firstDateKey)])
+    }
 
-    // INTERIM: no month brief exists until the brief stage.
-    public func monthBrief(_ days: [HistoryDayFacts]) -> HistoryBrief? { nil }
+    /// The in-brief card of a month page.
+    public func monthBrief(containing dateKey: String) -> HistoryBrief? {
+        card(briefs[PeriodBriefKey.month(containing: dateKey)])
+    }
+
+    private func weekBriefRow(_ firstDateKey: String) -> HistoryBrief? {
+        briefs[PeriodBriefKey.week(firstDateKey: firstDateKey)]
+    }
+
+    private func card(_ brief: HistoryBrief?) -> HistoryBrief? {
+        guard let brief, !brief.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return brief
+    }
 
     // --- helpers ------------------------------------------------------------------------------
-
-    /// The first sentence of a recap and what follows it. A recap may be bullet lines; a leading
-    /// bullet mark is not part of the sentence.
-    static func firstSentence(of text: String) -> (sentence: String, rest: String) {
-        var body = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
-        while let first = body.first, "-•*".contains(first) {
-            body = body.dropFirst().drop(while: { $0 == " " })
-        }
-        var index = body.startIndex
-        while index < body.endIndex {
-            let character = body[index]
-            let next = body.index(after: index)
-            if character == "\n" { return (String(body[..<index]), String(body[next...])) }
-            if ".!?".contains(character), next == body.endIndex || body[next].isWhitespace {
-                return (String(body[...index]), String(body[next...]))
-            }
-            index = next
-        }
-        return (String(body), "")
-    }
-
-    /// At most about `limit` characters, cut at a word boundary with an ellipsis; a sentence
-    /// that fits keeps its end but not its full stop.
-    static func cut(_ text: String, to limit: Int) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > limit else {
-            return trimmed.last == "." ? String(trimmed.dropLast()) : trimmed
-        }
-        let prefix = trimmed.prefix(limit + 1)
-        let cutAt = prefix.lastIndex(where: \.isWhitespace) ?? trimmed.index(trimmed.startIndex, offsetBy: limit)
-        let kept = trimmed[..<cutAt].trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
-        return kept + "…"
-    }
 
     static func nonEmpty(_ text: String?) -> String? {
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
@@ -332,19 +319,19 @@ public enum HistoryPeriodAssembler {
     /// after `todayKey` are not listed (plan 5.4); a day with no facts is "Nothing recorded".
     public static func week(
         firstDateKey: String, lastDateKey: String, days: [String: HistoryDayFacts], todayKey: String,
-        sources: some HistoryPeriodSources = InterimHistoryPeriodSources()
+        sources: HistoryPeriodSources = HistoryPeriodSources()
     ) -> HistoryPeriod<HistoryWeekRow> {
         let listed = HistoryCalendar.days(in: firstDateKey...lastDateKey).filter { $0 <= todayKey }
         let facts = listed.map { days[$0] ?? HistoryDayFacts(dateKey: $0, isToday: $0 == todayKey) }
         let rows = facts.map { weekRow($0, sources: sources) }
         let followUps = facts.flatMap(\.followUps)
         return HistoryPeriod(
-            firstDateKey: firstDateKey, lastDateKey: lastDateKey, brief: sources.weekBrief(facts),
+            firstDateKey: firstDateKey, lastDateKey: lastDateKey, brief: sources.weekBrief(firstDateKey: firstDateKey),
             tagCounts: [], rows: rows, followUpTotal: followUps.count,
             followUpOpen: followUps.filter { !$0.line.done }.count)
     }
 
-    public static func weekRow(_ day: HistoryDayFacts, sources: some HistoryPeriodSources) -> HistoryWeekRow {
+    public static func weekRow(_ day: HistoryDayFacts, sources: HistoryPeriodSources) -> HistoryWeekRow {
         let ordered = day.followUps.sorted(by: HistoryPlacedFollowUp.displayOrder)
         let shown = Array(ordered.prefix(weekRowFollowUps))
         let state = day.state
@@ -367,7 +354,7 @@ public enum HistoryPeriodAssembler {
     /// `todayKey` left out. The month's own totals and tag counts cover only its own days.
     public static func month(
         containing dateKey: String, firstWeekday: Int, days: [String: HistoryDayFacts], todayKey: String,
-        sources: some HistoryPeriodSources = InterimHistoryPeriodSources()
+        sources: HistoryPeriodSources = HistoryPeriodSources()
     ) -> HistoryPeriod<HistoryMonthRow> {
         let range = HistoryCalendar.month(containing: dateKey)
         func facts(_ keys: [String]) -> [HistoryDayFacts] {
@@ -383,21 +370,22 @@ public enum HistoryPeriodAssembler {
                     firstDateKey: week.lowerBound, lastDateKey: week.upperBound,
                     isCurrentWeek: week.contains(todayKey),
                     hasRecordings: weekDays.contains { $0.recordings > 0 },
-                    headline: sources.weekHeadline(weekDays), summary: sources.weekSummary(weekDays),
+                    headline: sources.weekHeadline(firstDateKey: week.lowerBound, weekDays),
+                    summary: sources.weekSummary(firstDateKey: week.lowerBound, weekDays),
                     tags: Array(sources.weekTags(weekDays).prefix(rowTags)),
                     followUpTotal: followUps.count, followUpOpen: followUps.filter { !$0.line.done }.count))
         }
         let monthDays = facts(HistoryCalendar.days(in: range))
         let followUps = monthDays.flatMap(\.followUps)
         return HistoryPeriod(
-            firstDateKey: range.lowerBound, lastDateKey: range.upperBound, brief: sources.monthBrief(monthDays),
+            firstDateKey: range.lowerBound, lastDateKey: range.upperBound, brief: sources.monthBrief(containing: dateKey),
             tagCounts: Array(tagCounts(monthDays, sources: sources).prefix(monthTagPills)), rows: rows,
             followUpTotal: followUps.count,
             followUpOpen: followUps.filter { !$0.line.done }.count)
     }
 
     /// Each tag with the number of days it appears on (plan 5.2), most days first, ties by name.
-    public static func tagCounts(_ days: [HistoryDayFacts], sources: some HistoryPeriodSources) -> [HistoryTagCount] {
+    public static func tagCounts(_ days: [HistoryDayFacts], sources: HistoryPeriodSources) -> [HistoryTagCount] {
         var count: [String: Int] = [:]
         var spelling: [String: String] = [:]
         for day in days {

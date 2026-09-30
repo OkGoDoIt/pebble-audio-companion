@@ -1,4 +1,5 @@
 import CompanionRuntime
+import Intelligence
 import Foundation
 import Testing
 
@@ -45,6 +46,8 @@ import Testing
                 .donate,
                 .followUps,
                 .recap,
+                // History's headlines and briefs read the recap just written.
+                .briefs,
                 .liveLocal,
                 .liveCloudPrune,
                 .wavExport,
@@ -450,7 +453,7 @@ final class Recorder: @unchecked Sendable {
             calls.record("followUps")
             return true
         }
-        steps.refreshRecap = { calls.record("recap") }
+        steps.refreshRecap = { calls.record("recap"); return false }
         steps.liveLocalPass = {
             calls.record("liveLocal")
             return true
@@ -483,7 +486,7 @@ final class Recorder: @unchecked Sendable {
             recorder.stages == [
                 .reconsiderDisabled, .enqueueClosedSegments, .drainQueue, .retention,
                 .classifyAudio, .regroup, .judgeAudio,
-                .enrich, .donate, .followUps, .recap, .liveLocal, .liveCloudPrune, .wavExport,
+                .enrich, .donate, .followUps, .recap, .briefs, .liveLocal, .liveCloudPrune, .wavExport,
                 .idleModelRelease,
             ]
         )
@@ -539,7 +542,7 @@ final class Recorder: @unchecked Sendable {
             steps.regroup = { calls.record("regroup"); return false }
             steps.enrich = { calls.record("enrich"); return [] }
             steps.extractFollowUps = { calls.record("followUps"); return false }
-            steps.refreshRecap = { calls.record("recap") }
+            steps.refreshRecap = { calls.record("recap"); return false }
         }
 
         // First pass: nothing is known yet, so the stages run and settle.
@@ -629,7 +632,7 @@ final class Recorder: @unchecked Sendable {
         steps.isForeground = { true }
         steps.regroup = { false }
         steps.enrich = { calls.record("enrich"); return [] }
-        steps.refreshRecap = { calls.record("recap") }
+        steps.refreshRecap = { calls.record("recap"); return false }
         let pass = PipelinePass(
             steps: steps, clock: clock, memory: memory, onStage: { recorder.record($0) })
         for _ in 0..<3 { _ = try await pass.run() }
@@ -645,7 +648,7 @@ final class Recorder: @unchecked Sendable {
         let memory = PipelinePassMemory()
         let pass = chargerPass(clock: clock, recorder: recorder, memory: memory) { steps in
             steps.regroup = { true }  // something changes every pass
-            steps.refreshRecap = { calls.record("recap") }
+            steps.refreshRecap = { calls.record("recap"); return false }
         }
         _ = try await pass.run()
         await clock.advance(by: 60_000)
@@ -687,5 +690,163 @@ final class Recorder: @unchecked Sendable {
         steps.isFollowingOpenSegment = { true }
         let foreground = PipelinePass(steps: steps, clock: clock, memory: memory)
         #expect(try await foreground.run() == PipelinePacing.followingOpenSegmentMs)
+    }
+}
+
+// The `.briefs` stage (History's headlines and briefs). Change-gated in BOTH states: it runs when
+// a recap was written or when it said it had work left, and a pass where neither holds does not
+// call it at all — the whole point, after the 2026-09-11 charger measurements, of every AI stage
+// learning what changed before it looks.
+@Suite struct PipelineBriefsStageTests {
+    private func pass(
+        clock: TestClock, recorder: StageRecorder = StageRecorder(), memory: PipelinePassMemory,
+        health: PipelineHealthMonitor? = nil, configure: (inout PipelineSteps) -> Void
+    ) -> PipelinePass {
+        var steps = PipelineSteps()
+        configure(&steps)
+        return PipelinePass(
+            steps: steps, clock: clock, health: health, memory: memory, onStage: { recorder.record($0) })
+    }
+
+    @Test("it looks once at launch; after that, nothing owed and nothing changed means no call")
+    func nothingOwedNoCalls() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let recorder = StageRecorder()
+        let memory = PipelinePassMemory()
+        let pass = pass(clock: clock, recorder: recorder, memory: memory) { steps in
+            steps.refreshRecap = { calls.record("recap"); return false }
+            steps.refreshBriefs = { calls.record("briefs"); return .nothingOwed }
+        }
+        _ = try await pass.run()
+        #expect(calls.calls == ["recap", "briefs"])
+        calls.reset()
+        for _ in 0..<5 {
+            await clock.advance(by: 60_000)
+            _ = try await pass.run()
+        }
+        // The foreground recap runs every pass (its own debounce decides); the briefs never.
+        #expect(calls.calls == Array(repeating: "recap", count: 5))
+        // ...while the ORDER contract holds: announced every time, right after the recap.
+        let order = recorder.stages.filter { $0 == .recap || $0 == .briefs }
+        #expect(order == Array(repeating: [PipelineStage.recap, .briefs], count: 6).flatMap { $0 })
+    }
+
+    @Test("a recap written makes it due in the same pass")
+    func recapWriteMakesItDue() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let wrote = Recorder()
+        let pass = pass(clock: clock, memory: memory) { steps in
+            steps.refreshRecap = { wrote.flag }
+            steps.refreshBriefs = { calls.record("briefs"); return .nothingOwed }
+        }
+        _ = try await pass.run()  // the launch look
+        _ = try await pass.run()
+        #expect(calls.calls == ["briefs"])
+        wrote.flag = true
+        _ = try await pass.run()
+        #expect(calls.calls == ["briefs", "briefs"])
+    }
+
+    @Test("a backlog comes straight back, capped a run at a time; a cadence waits for its time")
+    func backlogAndCadence() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let left = Recorder()
+        left.count = 2
+        let pass = pass(clock: clock, memory: memory) { steps in
+            steps.refreshBriefs = {
+                calls.record("briefs")
+                if left.count > 0 {
+                    left.count -= 1
+                    return PeriodBriefPassOutcome(calls: 8, wrote: true, nextDueAtMs: clock.nowMs)
+                }
+                // Only the current week's cadence is left: three hours from now.
+                return PeriodBriefPassOutcome(calls: 1, wrote: true, nextDueAtMs: clock.nowMs + 3 * 3_600_000)
+            }
+        }
+        let sleep = try await pass.run()
+        #expect(sleep == PipelinePacing.afterWorkMs, "calls made: come straight back")
+        _ = try await pass.run()
+        _ = try await pass.run()
+        #expect(calls.calls.count == 3)
+        for _ in 0..<4 {
+            await clock.advance(by: 30 * 60_000)
+            _ = try await pass.run()
+        }
+        #expect(calls.calls.count == 3, "two hours in, the cadence is not due")
+        await clock.advance(by: 60 * 60_000)
+        _ = try await pass.run()
+        #expect(calls.calls.count == 4)
+    }
+
+    @Test("a failure is recorded against the stage and waits out the brief's own backoff")
+    func failureWaits() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let health = PipelineHealthMonitor(nowMs: { clock.nowMs })
+        let pass = pass(clock: clock, memory: memory, health: health) { steps in
+            steps.refreshBriefs = {
+                calls.record("briefs")
+                return PeriodBriefPassOutcome(
+                    calls: 1, nextDueAtMs: clock.nowMs + 30 * 60_000,
+                    failure: PeriodBriefFailed(key: "day:2026-09-22", kind: .noConnection))
+            }
+        }
+        _ = try await pass.run()
+        #expect(health.health[.briefs].consecutiveFailures == 1)
+        for _ in 0..<5 {
+            await clock.advance(by: 5 * 60_000)
+            _ = try await pass.run()
+        }
+        #expect(calls.calls.count == 1)
+        await clock.advance(by: 5 * 60_000)
+        _ = try await pass.run()
+        #expect(calls.calls.count == 2)
+    }
+
+    @Test("backgrounded on a charger it keeps the recap's long interval")
+    func backgroundKeepsTheRecapsPace() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let pass = pass(clock: clock, memory: memory) { steps in
+            steps.isForeground = { false }
+            steps.backgroundWorkDecision = { .run }
+            steps.regroup = { true }
+            steps.refreshBriefs = {
+                calls.record("briefs")
+                return PeriodBriefPassOutcome(calls: 8, wrote: true, nextDueAtMs: clock.nowMs)
+            }
+        }
+        _ = try await pass.run()
+        await clock.advance(by: 60_000)
+        _ = try await pass.run()
+        #expect(calls.calls.count == 1, "owed, but a minute later is too soon in the background")
+        await clock.advance(by: PipelinePacing.backgroundRecapIntervalMs)
+        _ = try await pass.run()
+        #expect(calls.calls.count == 2)
+    }
+
+    @Test("a hot phone holds it without losing what is owed")
+    func thermalHoldKeepsItOwed() async throws {
+        let clock = TestClock()
+        let calls = CallRecorder()
+        let memory = PipelinePassMemory()
+        let hot = Recorder()
+        hot.flag = true
+        let pass = pass(clock: clock, memory: memory) { steps in
+            steps.isThermallyThrottled = { hot.flag }
+            steps.refreshBriefs = { calls.record("briefs"); return .nothingOwed }
+        }
+        _ = try await pass.run()
+        #expect(calls.calls.isEmpty)
+        hot.flag = false
+        _ = try await pass.run()
+        #expect(calls.calls == ["briefs"])
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Intelligence
 
 // The processing pass (plan Part 4.6). The ORDER here is load-bearing and ported verbatim from
 // `AudioCompanionRuntime.runTranscriptionPass`; the reason it matters is at the end: a
@@ -29,6 +30,10 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     case donate
     case followUps
     case recap
+    /// History's words: a headline and line per day, then week and month briefs
+    /// (`PeriodBriefEngine`). After `.recap`, whose output it reads; due only when something it
+    /// reads changed or it left work (`PipelinePassMemory.briefsDueAtMs`).
+    case briefs
     case liveLocal
     case liveCloudPrune
     case wavExport
@@ -68,8 +73,12 @@ public struct PipelineSteps: Sendable {
     public var donate: @Sendable ([String]) async -> Void
     /// Follow-up extraction over finished conversations. Returns true when it wrote anything.
     public var extractFollowUps: @Sendable () async throws -> Bool
-    /// Throws when a day's recap failed, so the `.recap` stage's health records it.
-    public var refreshRecap: @Sendable () async throws -> Void
+    /// Throws when a day's recap failed, so the `.recap` stage's health records it. Returns
+    /// whether it wrote a digest or a condensation, which makes `.briefs` due.
+    public var refreshRecap: @Sendable () async throws -> Bool
+    /// One run of the brief pass. Returns when it is next due and any failure, which the pass
+    /// records against `.briefs` after noting when to come back.
+    public var refreshBriefs: @Sendable () async throws -> PeriodBriefPassOutcome
     /// `LiveTranscriber.processOnce()` + prune. Returns true when it did work.
     public var liveLocalPass: @Sendable () async throws -> Bool
     public var liveCloudPrune: @Sendable () async -> Void
@@ -120,7 +129,8 @@ public struct PipelineSteps: Sendable {
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
         extractFollowUps: @escaping @Sendable () async throws -> Bool = { false },
-        refreshRecap: @escaping @Sendable () async throws -> Void = {},
+        refreshRecap: @escaping @Sendable () async throws -> Bool = { false },
+        refreshBriefs: @escaping @Sendable () async throws -> PeriodBriefPassOutcome = { .nothingOwed },
         liveLocalPass: @escaping @Sendable () async throws -> Bool = { false },
         liveCloudPrune: @escaping @Sendable () async -> Void = {},
         exportWavIfEnabled: @escaping @Sendable () async throws -> Void = {},
@@ -149,6 +159,7 @@ public struct PipelineSteps: Sendable {
         self.donate = donate
         self.extractFollowUps = extractFollowUps
         self.refreshRecap = refreshRecap
+        self.refreshBriefs = refreshBriefs
         self.liveLocalPass = liveLocalPass
         self.liveCloudPrune = liveCloudPrune
         self.exportWavIfEnabled = exportWavIfEnabled
@@ -206,8 +217,27 @@ public final class PipelinePassMemory: @unchecked Sendable {
     private let lock = NSLock()
     private var _aiStagesLeftWork = true
     private var _lastBackgroundRecapAtMs: Int64?
+    private var _briefsDueAtMs: Int64? = 0
 
     public init() {}
+
+    /// When the brief pass next has something to do; nil when nothing is owed. It starts due, so
+    /// the first pass after a launch looks once (and an existing library's backfill begins).
+    /// After that it is set only by the brief pass itself (its backlog, a current period's
+    /// cadence, a failure's backoff) and by the things that change what it reads: a recap
+    /// written, audio deleted by retention.
+    var briefsDueAtMs: Int64? {
+        get { lock.withLock { _briefsDueAtMs } }
+        set { lock.withLock { _briefsDueAtMs = newValue } }
+    }
+
+    func noteBriefsOwed(atMs: Int64) {
+        lock.withLock { _briefsDueAtMs = min(_briefsDueAtMs ?? atMs, atMs) }
+    }
+
+    func briefsDue(atMs: Int64) -> Bool {
+        lock.withLock { _briefsDueAtMs.map { $0 <= atMs } ?? false }
+    }
 
     /// True after a pass in which enrich or follow-ups actually wrote something — their per-pass
     /// budget means a backlog drains over several passes, and an unchanged grouping must not
@@ -362,6 +392,9 @@ public struct PipelinePass: Sendable {
         //    transcript and follow-ups are already gone.
         if try await stage(.retention, fallback: false, steps.enforceRetentionIfDue) {
             processed = true
+            // Deleted audio takes its recaps with it; the weeks and months written from them
+            // are owed a look.
+            memory.noteBriefsOwed(atMs: clock.nowMs)
             await steps.onDiagnosticsDirty()
         }
 
@@ -434,8 +467,28 @@ public struct PipelinePass: Sendable {
                     clock.nowMs - $0 >= PipelinePacing.backgroundRecapIntervalMs
                 } ?? true
         }
-        try await stage(.recap, fallback: (), heavy: true, when: recapDue, steps.refreshRecap)
+        let recapWrote = try await stage(
+            .recap, fallback: false, heavy: true, when: recapDue, steps.refreshRecap)
         if recapDue, !foreground { memory.lastBackgroundRecapAtMs = clock.nowMs }
+        if recapWrote { memory.noteBriefsOwed(atMs: clock.nowMs) }
+
+        // 10b. History's headlines and briefs, from the recaps just written. Change-gated in
+        //      BOTH states: the stage does nothing at all unless a recap changed or it said it
+        //      has work left (a backlog, a current period's cadence, a failure's backoff) — so a
+        //      pass where nothing changed costs it nothing. Backgrounded, it also keeps the
+        //      recap's long interval: nobody is reading History with the app closed.
+        let briefsDue = memory.briefsDue(atMs: clock.nowMs) && (foreground || recapDue)
+        let briefs = try await stage(
+            .briefs, fallback: PeriodBriefPassOutcome?.none, heavy: true, when: briefsDue
+        ) { () async throws -> PeriodBriefPassOutcome? in
+            let outcome = try await steps.refreshBriefs()
+            // When to come back is noted BEFORE a failure is reported, so a failing brief waits
+            // out its own backoff instead of being asked again next pass.
+            memory.briefsDueAtMs = outcome.nextDueAtMs
+            if let failure = outcome.failure { throw failure }
+            return outcome
+        }
+        if (briefs?.calls ?? 0) > 0 { processed = true }
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.

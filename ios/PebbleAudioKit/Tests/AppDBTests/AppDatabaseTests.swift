@@ -557,3 +557,66 @@ import Testing
             ])
     }
 }
+
+/// `v16-history-briefs`: a day's headline, line and the fingerprint they were written against on
+/// `recaps`, and the week and month briefs in `period_briefs`.
+@Suite struct HistoryBriefsMigrationTests {
+    private static let recapColumns: Set<String> = ["headline", "lineSummary", "briefOfHash"]
+
+    private static func columns(_ db: AppDatabase, _ table: String) throws -> Set<String> {
+        try db.reader.read { Set(try $0.columns(in: table).map(\.name)) }
+    }
+
+    @Test func aFreshDatabaseHasTheColumnsAndTheTable() throws {
+        let db = try AppDatabase.inMemory()
+        #expect(try Self.columns(db, "recaps").isSuperset(of: Self.recapColumns))
+        #expect(
+            try Self.columns(db, "period_briefs") == [
+                "periodKey", "kind", "text", "headline", "lineSummary", "sourceHash", "provider", "model",
+                "updatedAtMs", "attempts", "nextAttemptAtMs", "lastError",
+            ])
+    }
+
+    @Test func aDatabaseBeforeItUpgradesAndKeepsItsRecaps() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("v16-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("companion.sqlite")
+
+        // A database exactly as the previous release left it: no brief columns, no table, and a
+        // recap with its condensed form.
+        do {
+            let db = try AppDatabase.open(at: url)
+            try db.writer.write { d in
+                try d.execute(sql: "DROP TABLE period_briefs")
+                for column in Self.recapColumns {
+                    try d.execute(sql: "ALTER TABLE recaps DROP COLUMN \(column)")
+                }
+                try d.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v16-history-briefs'")
+                try d.execute(
+                    sql: """
+                        INSERT INTO recaps (dateKey, text, segmentIds, updatedAtMs, shortText, shortOfHash)
+                        VALUES ('2026-09-27', 'A long day.', '["s1"]', 7, 'Short.', 'h')
+                        """)
+            }
+            #expect(try Self.columns(db, "recaps").isDisjoint(with: Self.recapColumns))
+        }
+
+        let upgraded = try AppDatabase.open(at: url)
+        #expect(try Self.columns(upgraded, "recaps").isSuperset(of: Self.recapColumns))
+        let row = try upgraded.reader.read { d in
+            try Row.fetchOne(d, sql: "SELECT * FROM recaps WHERE dateKey = '2026-09-27'")
+        }
+        // Kept whole, and owed its brief: nothing is made up for it.
+        #expect(row?["text"] == "A long day.")
+        #expect(row?["shortText"] == "Short.")
+        #expect((row?["headline"] as String?) == nil && (row?["briefOfHash"] as String?) == nil)
+        let briefs = try upgraded.reader.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM period_briefs") }
+        #expect(briefs == 0)
+        let identifiers = try upgraded.reader.read {
+            try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(identifiers.contains("v16-history-briefs"))
+    }
+}

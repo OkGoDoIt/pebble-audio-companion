@@ -33,25 +33,34 @@ struct MonthWeekRow: View {
             VStack(alignment: .leading, spacing: 0) {
                 rangeLine
                 if row.hasRecordings {
-                    Text(row.headline ?? Copy.History.noSummaryYet)
-                        .font(row.headline == nil ? AppFont.pendingTitle : AppFont.rowTitle)
-                        .foregroundStyle(row.headline == nil ? Tokens.meta : Tokens.label)
-                        .lineLimit(1)
-                        .padding(.top, 2)
+                    let text = HistoryLabels.monthRow(row)
+                    if let title = text.title {
+                        // Two lines, not one: before its brief a week is headed by two days'
+                        // headlines joined (`HistoryPeriodSources.joinedHeadlineCharacters`), and
+                        // one line clipped the second mid-word. A brief's own headline fits one.
+                        Text(title)
+                            .font(AppFont.rowTitle)
+                            .foregroundStyle(Tokens.label)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
+                    }
+                    // No title: no title line (`HistoryLabels.RowText`) — the summary slot, or
+                    // its placeholder, follows the date range directly.
+                    if let summary = text.summary {
+                        Text(summary)
+                            .font(AppFont.scaled(13, relativeTo: .footnote, dynamicTypeSize))
+                            .foregroundStyle(text.summaryIsPlaceholder ? Tokens.meta : Tokens.tertiary)
+                            .lineSpacing(1.5)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 3)
+                    }
                 } else {
                     Text(Copy.History.nothingRecorded)
                         .font(AppFont.pendingTitle)
                         .foregroundStyle(Tokens.meta)
                         .padding(.top, 2)
-                }
-                if let summary = row.summary {
-                    Text(summary)
-                        .font(AppFont.scaled(13, relativeTo: .footnote, dynamicTypeSize))
-                        .foregroundStyle(Tokens.tertiary)
-                        .lineSpacing(1.5)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 3)
                 }
                 if !row.tags.isEmpty {
                     TagPillRow(topics: Array(row.tags.prefix(3)), onSelect: onOpenTag)

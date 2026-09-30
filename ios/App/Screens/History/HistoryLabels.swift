@@ -322,3 +322,41 @@ extension HistoryLabels {
         return sentences.joined(separator: ". ") + "."
     }
 }
+
+// MARK: - Week and month rows
+
+extension HistoryLabels {
+    /// What a week or month row draws in its title and summary slots.
+    ///
+    /// A row with no headline has no title line at all — never a placeholder in the title's
+    /// place. "No summary yet" in large gray above a row's tags and follow-ups is the screen
+    /// Roger reported on 2026-09-30; when a row has no text at all the placeholder goes in the
+    /// SUMMARY slot, in its style, so the title position only ever holds words about the period.
+    struct RowText: Equatable {
+        var title: String?
+        var summary: String?
+        /// `summary` is "No summary yet", drawn in the summary slot's gray.
+        var summaryIsPlaceholder: Bool
+    }
+
+    /// A week on the month page that has recordings. (One without says "Nothing recorded": a
+    /// state, not a missing summary.)
+    static func monthRow(_ row: HistoryMonthRow) -> RowText {
+        text(headline: row.headline, summary: row.summary)
+    }
+
+    /// A recorded day on the week page. Today's title is "Today" and its summary its own; the
+    /// waiting and empty states say what they are.
+    static func weekDayRow(_ row: HistoryWeekRow) -> RowText {
+        text(headline: row.headline, summary: row.summary)
+    }
+
+    private static func text(headline: String?, summary: String?) -> RowText {
+        let title = headline.flatMap { $0.isEmpty ? nil : $0 }
+        let body = summary.flatMap { $0.isEmpty ? nil : $0 }
+        guard title == nil, body == nil else {
+            return RowText(title: title, summary: body, summaryIsPlaceholder: false)
+        }
+        return RowText(title: nil, summary: Copy.History.noSummaryYet, summaryIsPlaceholder: true)
+    }
+}
