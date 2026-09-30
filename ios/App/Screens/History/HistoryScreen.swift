@@ -21,11 +21,8 @@ struct HistoryScreen: View {
     /// Bumped by the tab bar when the History tab is tapped while already selected.
     var reselectToken: Int = 0
     /// Opens the conversation at a wall-clock moment (a chapter's start, a no-conversation
-    /// stretch, a recording not transcribed yet). Nil uses `demoOpenMoment`.
-    ///
-    /// TODO(history integration): pass `{ router.navigate(to: .moment(atWallMs: $0)) }` once
-    /// `Route.moment(atWallMs:)` and its resolver (plan 7.9, `momentTarget(atWallMs:)`) land
-    /// from their branch. Until then every moment opens the demo conversation at that time.
+    /// stretch, a recording not transcribed yet). Nil resolves it with `Route.moment(atWallMs:)`
+    /// (plan 7.9); a test or preview can pass its own.
     var openMoment: ((Int64) -> Void)?
 
     @Environment(AppRouter.self) private var router
@@ -170,10 +167,19 @@ struct HistoryScreen: View {
 
     // MARK: Search and pushes
 
-    /// The stand-in for the moment route: pushes the demo world's conversation, opened at the
-    /// moment's time, so a tap visibly goes somewhere. See `openMoment`.
-    static func demoOpenMoment(_ ms: Int64, router: AppRouter) {
-        router.push(.conversation(id: MockHistory.demoConversationID, atMs: ms))
+    /// Resolves a moment and pushes it. A moment with nothing recorded near it resolves to nil
+    /// and the tap does nothing — there is nowhere true to go.
+    ///
+    /// The demo world is the one exception: `MockHistory`'s days are fixed in September 2026 and
+    /// the mock conversation world is built around the real today, so their clocks never meet.
+    /// There a moment that finds nothing opens the demo conversation instead, so a tap in
+    /// `-demo-data` still visibly goes somewhere.
+    static func openMoment(_ ms: Int64, source: any HistoryDataSource, router: AppRouter) async {
+        if let route = await Route.moment(atWallMs: ms) {
+            router.push(route)
+        } else if source is MockHistory {
+            router.push(.conversation(id: MockHistory.demoConversationID, atMs: nil))
+        }
     }
 
     private func enterSearch() {
@@ -282,7 +288,10 @@ struct HistoryScreen: View {
 
     private func makeServices(_ model: HistoryModel) -> HistoryPageServices {
         let router = self.router
-        let openMoment = self.openMoment ?? { ms in Self.demoOpenMoment(ms, router: router) }
+        let source = self.source
+        let openMoment = self.openMoment ?? { ms in
+            Task { await Self.openMoment(ms, source: source, router: router) }
+        }
         return HistoryPageServices(
             source: source,
             actions: HistoryActions(
