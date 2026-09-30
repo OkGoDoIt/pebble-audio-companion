@@ -94,7 +94,7 @@ private typealias Member = ConversationMember
         -> ConversationGrouper.Grouping
     {
         let grouping = ConversationGrouper.groupDetailed(
-            segments: day.segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            segments: day.segments, pauses: [], openSegmentId: day.open, fallbackTimeZoneID: "UTC",
             evidence: day.evidence, policy: policy, cutInputs: held)
         expectPiecesTile(grouping.conversations, segments: day.segments)
         return grouping
@@ -102,9 +102,10 @@ private typealias Member = ConversationMember
 
     /// Every conversation of `before` that is not provisional is, in `after`, still described by
     /// the key of the pieces it had — `after` being the same library a little later, grouped
-    /// with everything `before` offered for committing held.
+    /// the way the app regroups it: with everything `before` offered for committing held, and
+    /// ids adopted from `before`.
     private func expectFinishedConversationsKeepTheirKeys(
-        before: Day, after: Day, policy: BoundaryPolicy,
+        before: Day, after: Day, policy: BoundaryPolicy, somethingMustBeFinished: Bool = true,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
         let first = group(before, policy: policy)
@@ -115,7 +116,9 @@ private typealias Member = ConversationMember
         let second = ConversationGrouper.adoptStableIds(
             group(after, policy: policy, held: held).conversations, previous: first.conversations)
         let finished = first.conversations.filter { !$0.isProvisional }
-        #expect(!finished.isEmpty, "nothing to check", sourceLocation: sourceLocation)
+        if somethingMustBeFinished {
+            #expect(!finished.isEmpty, "nothing to check", sourceLocation: sourceLocation)
+        }
         for conversation in finished {
             let now = second.first { $0.id == conversation.id }
             #expect(
@@ -127,40 +130,34 @@ private typealias Member = ConversationMember
         }
     }
 
-    @Test func aFinishedConversationKeepsItsKeyWhenMoreOfTheSameTalkArrives() {
-        // A change of mode with an hour of talk after it, then another half hour of the same.
-        let before = day(minutes: 90, talk: [.dialogue(0, 30), .dictation(34, 90)])
-        let after = day(minutes: 120, talk: [.dialogue(0, 30), .dictation(34, 120)])
+    @Test func aFinishedConversationKeepsItsKeyWhileTheDayIsStillBeingRecorded() {
+        // Two people, dictation, two people again — and the watch still recording. The first
+        // conversation is finished (the cut that ends it is an hour old and held); an hour later
+        // there is another hour of talk, and it is exactly what it was.
+        let before = day(
+            minutes: 120, talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 120)],
+            recording: true)
+        let after = day(
+            minutes: 180,
+            talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150), .dictation(154, 180)],
+            recording: true)
         for policy in [BoundaryPolicy.default, frozenPolicy] {
+            #expect(group(before, policy: policy).conversations.first?.isProvisional == false)
             expectFinishedConversationsKeepTheirKeys(before: before, after: after, policy: policy)
         }
     }
 
     @Test func aFinishedConversationKeepsItsKeyWhenALaterRunStarts() {
+        // Nothing open: the library is finished, every conversation in it final. The next
+        // morning's recording is a new run and touches none of them.
         let before = day(minutes: 90, talk: [.dialogue(0, 30), .dictation(34, 90)])
         let later = day(
             minutes: 30, prefix: "t", startTimeMs: t0 + minutesMs(400), stream: 9,
-            talk: [.dialogue(0, 30)])
-        for policy in [BoundaryPolicy.default, frozenPolicy] {
+            talk: [.dialogue(0, 30)], recording: true)
+        for policy in [BoundaryPolicy.quietOnly, .default, frozenPolicy] {
+            #expect(group(before, policy: policy).conversations.allSatisfy { !$0.isProvisional })
             expectFinishedConversationsKeepTheirKeys(
                 before: before, after: before + later, policy: policy)
-        }
-    }
-
-    /// Talk, then a silence long enough to end the conversation. The silent tail becomes its own
-    /// unit "so the conversation can finish" — and it does: it is not provisional, and its title
-    /// is written. Two hours later somebody speaks again in the same run.
-    ///
-    /// REPORTED 2026-09-30 and FAILING: the silence is then no longer the tail of the run but
-    /// an interior silence, which "stays with what came before". The finished conversation's
-    /// last piece grows from `s1[..302000)` to the whole of `s1`, and it gains every silent
-    /// segment up to the first word after. Nothing it was titled from has changed — only
-    /// silence was appended — but its key has, so it is titled a second time.
-    @Test func aFinishedConversationKeepsItsKeyWhenTalkResumesAfterItsSilentTail() {
-        let before = day(minutes: 60, talk: [.dialogue(0, 20)])
-        let after = day(minutes: 180, talk: [.dialogue(0, 20), .dialogue(140, 180)])
-        for policy in [BoundaryPolicy.quietOnly, .default, frozenPolicy] {
-            expectFinishedConversationsKeepTheirKeys(before: before, after: after, policy: policy)
         }
     }
 
@@ -172,23 +169,68 @@ private typealias Member = ConversationMember
     /// REPORTED 2026-09-30 and FAILING: `conversation_cuts` only holds positions INSIDE
     /// segments (`mediaMs > 0`), so a settled cut at a segment's start is reported as fixed —
     /// the conversation before it is not provisional — and then is not forced on the next pass.
-    /// Here a hundred minutes of even talk in ten-minute recordings is cut at the join at
-    /// minute 50; sixty more minutes arrive, the search re-balances into two units of eighty,
-    /// and the "finished" first conversation grows from fifty minutes to eighty.
+    /// Here three and a half hours of even talk, still being recorded, is cut at the joins at
+    /// minutes 75 and 150; half an hour more arrives, the search re-balances, and the
+    /// "finished" first conversation loses its last eleven minutes. (On the 2026-09-08 library
+    /// 9 of 167 segmenter cuts sit on a segment's start.)
     @Test func aFinishedConversationKeepsItsKeyWhenItsSettledCutSitsOnASegmentStart() {
-        let before = day(minutes: 100, rotation: 10, talk: [.dialogue(0, 100)])
-        let after = day(minutes: 160, rotation: 10, talk: [.dialogue(0, 160)])
+        let before = day(minutes: 210, talk: [.dialogue(0, 210)], recording: true)
+        let after = day(minutes: 240, talk: [.dialogue(0, 240)], recording: true)
         let first = group(before, policy: frozenPolicy)
-        #expect(first.conversations.map(\.id) == ["conv-s0", "conv-s5"])
-        #expect(first.conversations.map(\.isProvisional) == [false, true])
+        #expect(first.conversations.map(\.id) == ["conv-s0", "conv-s5", "conv-s10"])
+        #expect(first.conversations.map(\.isProvisional) == [false, true, true])
+        // Old enough to be written down, and nowhere to write it.
+        #expect(first.cutsToCommit.isEmpty)
         expectFinishedConversationsKeepTheirKeys(before: before, after: after, policy: frozenPolicy)
 
-        // The same day in fifteen-minute recordings puts the cut INSIDE a segment, where it is
+        // The same talk half an hour shorter puts the cuts INSIDE segments, where they are
         // held — and nothing moves.
-        let inside = day(minutes: 100, talk: [.dialogue(0, 100)])
-        let insideAfter = day(minutes: 160, talk: [.dialogue(0, 160)])
+        let inside = day(minutes: 180, talk: [.dialogue(0, 180)], recording: true)
+        let insideAfter = day(minutes: 240, talk: [.dialogue(0, 240)], recording: true)
         #expect(group(inside, policy: frozenPolicy).cutsToCommit.count == 1)
         expectFinishedConversationsKeepTheirKeys(
             before: inside, after: insideAfter, policy: frozenPolicy)
+    }
+
+    /// With nothing open, nothing is provisional: the library's last conversation is final and
+    /// gets its title. But "nothing is open at this instant" is not "the run is over" — a run
+    /// goes on whenever the next recording starts inside the chain window
+    /// (`ConversationGrouper.chainWindowMs`, five minutes), which is what happens every time
+    /// the link to the watch drops and comes back.
+    ///
+    /// REPORTED 2026-09-30 and FAILING. In the gap between one recording closing and the next
+    /// opening, a regroup finds a finished library: the tail conversation is final (and every
+    /// recent cut is committed at once, however young). The recording resumes a moment later in
+    /// the SAME run, and the conversation that was just declared finished grows.
+    @Test func aFinishedConversationKeepsItsKeyWhenTheRecordingResumesInTheSameRun() {
+        // An hour of talk; the link drops; the next recording starts straight on.
+        let before = day(minutes: 60, talk: [.dialogue(0, 60)])
+        let after = day(minutes: 60, talk: [.dialogue(0, 60)], recording: true)
+        // (Either answer would do: the conversation is not called finished while its run can
+        // still go on, or it is and then does not change.)
+        for policy in [BoundaryPolicy.quietOnly, frozenPolicy] {
+            expectFinishedConversationsKeepTheirKeys(
+                before: before, after: after, policy: policy, somethingMustBeFinished: false)
+        }
+    }
+
+    /// The same gap, after a long silence. With nothing open the silent tail of the run is its
+    /// own unit "so the conversation can finish", and it does. When the recording resumes, the
+    /// silence is no longer settled to its end (the open recording overlaps it), the quiet cut
+    /// is deferred again, and the finished conversation takes the whole silence back:
+    /// `[s0, s1[..300000)]` becomes `[s0 … s4]` and the tail conversation is gone. When somebody
+    /// then speaks, it is cut again at the first word — a third set of pieces.
+    ///
+    /// REPORTED 2026-09-30 and FAILING (the same cause as the case above).
+    @Test func aFinishedConversationKeepsItsKeyWhenTheRecordingResumesAfterItsSilentTail() {
+        let before = day(minutes: 60, talk: [.dialogue(0, 20)])
+        #expect(
+            group(before, policy: .quietOnly).conversations.map(\.brief)
+                == [["s0", "s1[..300000)"], ["s1[300000..)", "s2", "s3"]])
+        let resumed = day(minutes: 60, talk: [.dialogue(0, 20)], recording: true)
+        for policy in [BoundaryPolicy.quietOnly, frozenPolicy] {
+            expectFinishedConversationsKeepTheirKeys(
+                before: before, after: resumed, policy: policy, somethingMustBeFinished: false)
+        }
     }
 }
