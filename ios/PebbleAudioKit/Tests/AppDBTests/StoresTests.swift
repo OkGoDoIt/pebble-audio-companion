@@ -527,3 +527,265 @@ import Testing
         #expect(Q.aggregateLifecycle([.complete, .noSpeech]) == .complete)
     }
 }
+
+// MARK: - Scoped conversation reads (History plan, Phase 1 step 4)
+
+/// `detail(id:)` used to build the row of EVERY conversation and pick one; `rows(overlappingMs:)`
+/// is History's windowed read. Both must return exactly what the whole-library build returns for
+/// the same conversations — the whole-library path (`buildRows(db)`, scope `.all`) is unchanged
+/// and is the reference.
+@Suite struct ScopedConversationReadsTests {
+    /// Five conversations over three days and two zones: multi-member, pending and complete
+    /// members, a failed member, AI/user/removed tags, open/done/archived follow-ups, an
+    /// annotation that gave up, coverage with quiet and missing time, and one still live.
+    func makeLibrary() async throws -> AppDatabase {
+        let db = try AppDatabase.inMemory()
+        let zone = "UTC"
+        let day1 = LogicalDay.bounds(ofDateKey: "2026-03-10", timeZoneID: zone)!.startMs
+        let day2 = LogicalDay.bounds(ofDateKey: "2026-03-11", timeZoneID: zone)!.startMs
+        let day3 = LogicalDay.bounds(ofDateKey: "2026-03-12", timeZoneID: zone)!.startMs
+        let ny = "America/New_York"
+        let segments = [
+            makeSegment(id: "s1", stream: 1, startTimeMs: day1 + minutesMs(360), durationSamples: minutesSamples(10), tz: zone),
+            makeSegment(
+                id: "s2", stream: 1, startTimeMs: day1 + minutesMs(360), firstSample: minutesSamples(12),
+                durationSamples: minutesSamples(10), tz: zone),
+            makeSegment(id: "s4", stream: 2, startTimeMs: day1 + minutesMs(600), durationSamples: minutesSamples(30), tz: zone),
+            makeSegment(id: "s3", stream: 9, startTimeMs: day2 + minutesMs(360), durationSamples: minutesSamples(20), tz: zone),
+            makeSegment(id: "s6", stream: 4, startTimeMs: day2 + minutesMs(900), durationSamples: minutesSamples(45), tz: ny),
+            makeSegment(
+                id: "s5", stream: 5, startTimeMs: day3 + minutesMs(120), durationSamples: minutesSamples(5),
+                close: nil, tz: zone),
+        ]
+        try await ConversationGrouper.rebuild(
+            segments: segments, pauses: [], openSegmentId: "s5", fallbackTimeZoneID: zone, db: db)
+
+        try await db.writer.write { d in
+            for (segment, state) in [
+                ("s1", "Complete"), ("s2", "Pending"), ("s3", "Complete"), ("s4", "Failed"),
+                ("s6", "Running"),
+            ] {
+                try d.execute(
+                    sql: """
+                        INSERT INTO transcription_tasks
+                            (segmentId, state, attempts, retryable, createdAtMs, updatedAtMs, providerId)
+                        VALUES (?, ?, 2, 1, 0, 0, 'soniox')
+                        """,
+                    arguments: [segment, state])
+            }
+            try d.execute(
+                sql: """
+                    INSERT INTO annotations
+                        (conversationId, title, summary, isFinal, sourceCharCount, finalAttempts, updatedAtMs)
+                    VALUES ('conv-s1', 'Coffee with Dana', 'Trip planning.', 1, 100, 1, 0),
+                           ('conv-s3', NULL, NULL, 0, 0, 3, 0),
+                           ('conv-s6', 'Standup', NULL, 1, 10, 1, 0)
+                    """)
+            try d.execute(sql: "INSERT INTO tags (id, name) VALUES ('t-gone', 'gone')")
+            try d.execute(
+                sql: "INSERT INTO conversation_tags (conversationId, tagId, source) VALUES ('conv-s4', 't-gone', 'removed')")
+        }
+        let tags = TagStore(db: db)
+        _ = try await tags.addTag(conversationId: "conv-s1", name: "work", source: "ai")
+        _ = try await tags.addTag(conversationId: "conv-s1", name: "Travel", source: "user")
+        _ = try await tags.addTag(conversationId: "conv-s3", name: "work", source: "user")
+        _ = try await tags.addTag(conversationId: "conv-s6", name: "alpha", source: "ai")
+        let followUps = FollowUpStore(db: db)
+        _ = try await followUps.add(text: "Book the walkthrough", conversationId: "conv-s1", segmentId: "s1", nowMs: 1_000)
+        let done = try await followUps.add(text: "Send notes", conversationId: "conv-s1", nowMs: 2_000)
+        let archived = try await followUps.add(text: "Old idea", conversationId: "conv-s3", nowMs: 3_000)
+        _ = try await followUps.add(text: "Loose end", conversationId: "conv-s5", nowMs: 4_000)
+        try await db.writer.write { d in
+            try d.execute(sql: "UPDATE follow_ups SET done = 1 WHERE id = ?", arguments: [done.id])
+            try d.execute(sql: "UPDATE follow_ups SET archivedAtMs = 5000 WHERE id = ?", arguments: [archived.id])
+        }
+        let s3start = day2 + minutesMs(360)
+        try await CoverageDayStore(db: db).save(
+            DayCoverage(
+                dateKey: "2026-03-11", timeZoneID: zone,
+                spans: [
+                    CoverageSpan(kind: .recorded, startMs: s3start, endMs: s3start + minutesMs(4)),
+                    CoverageSpan(kind: .missing, startMs: s3start + minutesMs(4), endMs: s3start + minutesMs(5)),
+                    CoverageSpan(kind: .quiet, startMs: s3start + minutesMs(5), endMs: s3start + minutesMs(20)),
+                ],
+                totalRecordedMs: minutesMs(4), totalMissingMs: minutesMs(1)))
+        return db
+    }
+
+    /// `buildDetail` exactly as it was before it was scoped: the whole-library build, one row
+    /// picked out, and the member query (which did not change).
+    private static func legacyDetail(_ db: Database, id: String) throws -> ConversationDetail? {
+        guard let row = try ConversationQueries.buildRows(db).first(where: { $0.id == id }) else {
+            return nil
+        }
+        let members = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT cs.segmentId AS segmentId, cs.ordinal AS ordinal, tt.state AS state,
+                    cs.transcriptionState AS segmentState,
+                    tt.providerId AS providerId, tt.modelUsed AS modelUsed,
+                    tt.modeUsed AS modeUsed, tt.attempts AS attempts, tt.lastError AS lastError
+                FROM conversation_segments cs
+                LEFT JOIN transcription_tasks tt ON tt.segmentId = cs.segmentId
+                WHERE cs.conversationId = ?
+                ORDER BY cs.ordinal
+                """,
+            arguments: [id]
+        ).map { member in
+            SegmentProvenance(
+                segmentId: member["segmentId"], ordinal: member["ordinal"],
+                state: (member["state"] as String?).flatMap(TranscriptionState.init(rawValue:)),
+                segmentState: (member["segmentState"] as String?).flatMap(TranscriptionState.init(rawValue:)),
+                providerId: member["providerId"], modelUsed: member["modelUsed"],
+                modeUsed: member["modeUsed"], attempts: member["attempts"] ?? 0,
+                lastError: member["lastError"])
+        }
+        return ConversationDetail(row: row, members: members)
+    }
+
+    @Test("detail(id:) is identical to the whole-library build's row for every conversation")
+    func detailMatchesTheWholeLibraryBuild() async throws {
+        let db = try await makeLibrary()
+        let all = try await db.reader.read { try ConversationQueries.buildRows($0) }
+        // The fixture really has the variety it claims.
+        #expect(all.count == 5)
+        #expect(all.contains { $0.isLive })
+        #expect(all.contains { $0.tags.count > 1 })
+        #expect(all.contains { $0.hasMissingAudio && $0.mostlyQuiet })
+        #expect(all.contains { $0.openFollowUpCount < $0.followUpCount })
+        #expect(Set(all.map(\.lifecycle)).count >= 3)
+        #expect(Set(all.map(\.timeZoneID)).count == 2)
+
+        let queries = ConversationQueries(db: db)
+        for id in all.map(\.id) + ["nope"] {
+            let legacy = try await db.reader.read { try Self.legacyDetail($0, id: id) }
+            let scoped = try await queries.detail(id: id)
+            #expect(scoped == legacy, "\(id)")
+        }
+        #expect(try await queries.detail(id: "nope") == nil)
+    }
+
+    @Test("the detail read touches one conversation, not the library")
+    func detailDoesNotScanTheLibrary() async throws {
+        let db = try await makeLibrary()
+        let (scoped, whole) = try await db.writer.write { d -> ([String], [String]) in
+            let scoped = try Self.plans(of: d) { _ = try ConversationQueries.buildDetail(d, id: "conv-s3") }
+            let whole = try Self.plans(of: d) { _ = try ConversationQueries.buildRows(d) }
+            return (scoped, whole)
+        }
+        // The whole-library build reads every conversation, member and tag; the detail read
+        // searches each table by the one conversation's key.
+        #expect(whole.contains { $0.hasPrefix("SCAN c ") || $0 == "SCAN c" }, "\(whole)")
+        #expect(!scoped.contains { $0.hasPrefix("SCAN") }, "\(scoped)")
+        #expect(scoped.contains { $0.contains("SEARCH c USING INDEX sqlite_autoindex_conversations_1 (id=?)") }, "\(scoped)")
+    }
+
+    @Test("the windowed read returns exactly the overlapping conversations, edges included")
+    func windowedReadEdges() async throws {
+        let db = try AppDatabase.inMemory()
+        let base: Int64 = 1_772_400_000_000
+        // (id, start, end) in minutes from `base`.
+        let conversations: [(String, Int64, Int64?)] = [
+            ("ends-at-window-start", 100, 200),
+            ("straddles-start", 150, 250),
+            ("inside", 250, 300),
+            ("starts-at-window-end", 400, 500),
+            ("spans-whole-window", 100, 600),
+            // No end at all. The grouper always writes one (a live conversation's is its extent
+            // so far — see the next test), but the column is nullable, and a row without one must
+            // not vanish from every window.
+            ("open-inside", 350, nil),
+            ("open-after", 450, nil),
+            ("open-from-before", 50, nil),
+            ("no-length-inside", 300, 300),
+            ("no-length-at-start", 200, 200),
+            ("no-length-at-end", 400, 400),
+            ("after", 500, 520),
+        ]
+        try await db.writer.write { d in
+            for (id, start, end) in conversations {
+                try d.execute(
+                    sql: "INSERT INTO conversations (id, startMs, endMs, timezone, state) VALUES (?, ?, ?, 'UTC', ?)",
+                    arguments: [id, base + minutesMs(start), end.map { base + minutesMs($0) }, end == nil ? "live" : "closed"])
+            }
+        }
+        let queries = ConversationQueries(db: db)
+        let window = (base + minutesMs(200))..<(base + minutesMs(400))
+        let ids = Set(try await queries.rows(overlappingMs: window).map(\.id))
+        #expect(
+            ids == [
+                "straddles-start", "inside", "spans-whole-window", "open-inside", "open-from-before",
+                "no-length-inside", "no-length-at-start",
+            ])
+        #expect(try await queries.rows(overlappingMs: window.lowerBound..<window.lowerBound).isEmpty)
+
+        // And every row is the whole-library row, in the whole library's order, for any window.
+        let all = try await db.reader.read { try ConversationQueries.buildRows($0) }
+        func overlaps(_ row: ConversationListRow, _ w: Range<Int64>) -> Bool {
+            let hasNoEnd = conversations.first { $0.0 == row.id }!.2 == nil
+            let end = hasNoEnd ? Int64.max : row.endMs
+            return row.startMs < w.upperBound && (end > w.lowerBound || row.startMs >= w.lowerBound)
+        }
+        for startMinute in stride(from: Int64(0), through: 620, by: 25) {
+            for length in [Int64(1), 50, 100, 300] {
+                let w = (base + minutesMs(startMinute))..<(base + minutesMs(startMinute + length))
+                let windowed = try await queries.rows(overlappingMs: w)
+                #expect(windowed == all.filter { overlaps($0, w) }, "\(startMinute)+\(length)")
+            }
+        }
+    }
+
+    @Test("the windowed read is the whole-library row for every conversation it returns")
+    func windowedRowsMatchTheWholeLibraryBuild() async throws {
+        let db = try await makeLibrary()
+        let all = try await db.reader.read { try ConversationQueries.buildRows($0) }
+        let queries = ConversationQueries(db: db)
+        for key in ["2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13"] {
+            let bounds = LogicalDay.bounds(ofDateKey: key, timeZoneID: "UTC")!
+            let windowed = try await queries.rows(overlappingMs: bounds.startMs..<bounds.endMs)
+            // The grouper always writes an end — a live conversation's is its extent so far,
+            // kept current every pass — so here overlap is plain overlap of the stored span.
+            #expect(windowed == all.filter { row in
+                row.startMs < bounds.endMs && (row.endMs > bounds.startMs || row.startMs >= bounds.startMs)
+            }, "\(key)")
+        }
+        // The live conversation (day 3) is read at its extent so far: in its own day, not the next.
+        let day3 = LogicalDay.bounds(ofDateKey: "2026-03-12", timeZoneID: "UTC")!
+        let day4 = LogicalDay.bounds(ofDateKey: "2026-03-13", timeZoneID: "UTC")!
+        #expect(try await queries.rows(overlappingMs: day3.startMs..<day3.endMs).contains { $0.isLive })
+        #expect(try await queries.rows(overlappingMs: day4.startMs..<day4.endMs).isEmpty)
+        let everything = try await queries.rows(overlappingMs: Int64.min..<Int64.max)
+        #expect(everything == all)
+    }
+
+    @Test("the windowed read uses conversations_start and reads the rest by key")
+    func windowedReadUsesTheStartIndex() async throws {
+        let db = try await makeLibrary()
+        let day2 = LogicalDay.bounds(ofDateKey: "2026-03-11", timeZoneID: "UTC")!
+        let plans = try await db.writer.write { d in
+            try Self.plans(of: d) {
+                _ = try ConversationQueries.buildRows(d, scope: .overlapping(day2.startMs..<day2.endMs))
+            }
+        }
+        #expect(plans.contains { $0.contains("SEARCH c USING INDEX conversations_start (startMs<?)") }, "\(plans)")
+        #expect(!plans.contains { $0.hasPrefix("SCAN") }, "\(plans)")
+    }
+
+    /// The `EXPLAIN QUERY PLAN` detail lines of every statement `body` runs.
+    private static func plans(of db: Database, _ body: () throws -> Void) throws -> [String] {
+        final class Box { var sql: [String] = [] }
+        let box = Box()
+        db.trace { event in
+            if case .statement(let statement) = event { box.sql.append(statement.expandedSQL) }
+        }
+        try body()
+        db.trace(options: [])
+        var lines: [String] = []
+        for sql in box.sql where sql.uppercased().hasPrefix("SELECT") {
+            for row in try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN \(sql)") {
+                lines.append(row["detail"])
+            }
+        }
+        return lines
+    }
+}

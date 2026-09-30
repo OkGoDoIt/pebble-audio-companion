@@ -516,6 +516,18 @@ public struct AppDatabase: Sendable {
                 t.add(column: "model", .text)
             }
         }
+        // History reads by time: one day's conversations and pauses, and the follow-ups whose
+        // source is one of that day's recordings. None of those columns had an index, so every
+        // such read scanned its whole table. Additive and self-contained (indexes only, no data
+        // change), so it can be ordered against any other migration freely.
+        migrator.registerMigration("v14-history-indexes") { db in
+            try db.execute(
+                sql: "CREATE INDEX IF NOT EXISTS conversations_start ON conversations(startMs)")
+            try db.execute(
+                sql: "CREATE INDEX IF NOT EXISTS pause_intervals_start ON pause_intervals(startMs)")
+            try db.execute(
+                sql: "CREATE INDEX IF NOT EXISTS follow_ups_segment ON follow_ups(sourceSegmentId)")
+        }
         // What recorded audio HOLDS: conversation, or sound with no conversation in it (see
         // `AudioContentStore.swift`). `audio_content_spans` / `audio_content_segments` are
         // DERIVED from each segment's transcript and recomputed when it or the method changes;
