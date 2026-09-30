@@ -689,7 +689,8 @@ public actor CompanionRuntime {
                             || BackgroundWorkPolicy.decide(
                                 env.settings.backgroundCatchUp, foreground.devicePower
                             ).isRun
-                    }
+                    },
+                    isForeground: { foreground.value }
                 ) {
                     health.progressed()
                     await env.diagnostics.refresh()
