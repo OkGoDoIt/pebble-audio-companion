@@ -433,13 +433,28 @@ private let hour = minutesMs(60)
     /// landed on a segment join (the one nearest the middle of the silence), so the decision is
     /// stored against that segment — `boundary_overrides(s2, join)`. The same silence now cuts
     /// at the first word after it, 18 minutes into `s3`, and the stored decision has to keep
-    /// meaning what the person meant: these are one conversation.
+    /// meaning what the person meant: these are one conversation. (It did not, until 25f14fe:
+    /// a silence that contains a joined segment's start is not cut at all.)
     @Test func aJoinMadeAtTheOldJoinStillDefeatsTheQuietSplitItWasMadeAgainst() {
         let segments = rotations(4)
         #expect(group(segments, evidence: talkQuietTalk).count == 2)
-        #expect(
-            group(segments, evidence: talkQuietTalk, overrides: ["s2": .join]).map(\.brief)
-                == [["s0", "s1", "s2", "s3"]])
+        // The old rule could have put the split on either join inside the silence.
+        for joined in ["s1", "s2"] {
+            #expect(
+                group(segments, evidence: talkQuietTalk, overrides: [joined: .join]).map(\.brief)
+                    == [["s0", "s1", "s2", "s3"]], "\(joined)")
+        }
+        // A join about a segment whose start is NOT in the silence is about something else: the
+        // talk of `s0` runs to minute 18, so `s0`'s own start is well clear of it.
+        #expect(group(segments, evidence: talkQuietTalk, overrides: ["s0": .join]).count == 2)
+
+        // The same for the silent tail of a run, and for the silence before its first word.
+        let trailing = evidenceMap([
+            settledEvidence("s0", minutes: [(0, 20)]), settledEvidence("s1", minutes: []),
+            settledEvidence("s2", minutes: []), settledEvidence("s3", minutes: []),
+        ])
+        #expect(group(segments, evidence: trailing).count == 2)
+        #expect(group(segments, evidence: trailing, overrides: ["s2": .join]).count == 1)
     }
 
     @Test func splitOverrideCutsWhereNothingElseWould() {

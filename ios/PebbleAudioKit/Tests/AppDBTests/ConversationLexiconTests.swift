@@ -133,19 +133,24 @@ import Testing
 
     /// An apostrophe is part of a word when it is INSIDE one ("don't"). After the last letter it
     /// is a closing quote or a plural possessive, and the word is the same word: `'harbour'` is
-    /// "harbour", and a quoted stop word is still a stop word.
-    ///
-    /// KNOWN ISSUE (reported 2026-09-30): the tokeniser appends any apostrophe that follows a
-    /// letter, so a closing quote is hashed into the word — "harbour'" and "the'" — which makes
-    /// a quoted word a different term and turns a quoted stop word into a term. It has no effect
-    /// on grouping while `SegmenterPolicy.wordWeight` is 0, which is why it is recorded here
-    /// rather than left failing.
+    /// "harbour", and a quoted stop word is still a stop word. (The tokeniser used to hash a
+    /// trailing apostrophe into the word — "harbour'", "the'"; fixed in 25f14fe.)
     @Test func aClosingQuoteIsNotPartOfTheWord() {
-        withKnownIssue("a trailing apostrophe is hashed into the word") {
-            #expect(features("'harbour'").terms == [3_894_328_072])
-            #expect(features("\u{2018}harbour\u{2019}").terms == [3_894_328_072])
-            #expect(features("he said 'the'").terms.isEmpty)
-        }
+        #expect(features("'harbour'").terms == [3_894_328_072])
+        #expect(features("\u{2018}harbour\u{2019}").terms == [3_894_328_072])
+        #expect(features("he said 'the'").terms.isEmpty)
+        // A plural possessive is the plural.
+        #expect(features("the harbours' walls").terms == features("the harbours walls").terms)
+        #expect(features("harbour' anchor").terms == [3_894_328_072, 1_122_880_180])
+        #expect(features("harbour\u{2019}, anchor").terms == [3_894_328_072, 1_122_880_180])
+        // Inside a word it still holds the word together, before a letter of any script.
+        #expect(features("y'all").terms == [1_511_088_912])
+        #expect(features("l'été").terms == [ConversationLexicon.fnv1a("l'été")])
+        // A quoted greeting is still a greeting, and a quoted dictation mark still a mark.
+        #expect(features("'Hello' she said").opensWithGreeting)
+        #expect(features("he wrote 'comma'").isDictation)
+        // Two apostrophes in a row are not a contraction.
+        #expect(features("harbour''anchor").terms == [3_894_328_072, 1_122_880_180])
     }
 
     // MARK: - the speaker
