@@ -1098,8 +1098,9 @@ extension LiveWorld: AskDataSource {
         // 14 h 59 m. `TranscriptItems` and `ConversationBoundaryDetector.spokenRuns` both
         // decline the same way, and all three must agree or the transcript screen, the split
         // and the citation describe different recordings.
+        //
+        // The rule itself is `SegmentMediaClock.wallOffset(ofMedia:)`, shared with all of them.
         let clock = SegmentMediaClock(meta)
-        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
         let startMs = ConversationGrouper.segmentStartMs(meta)
         return CitableExcerpts.split(
             segmentId: segmentId,
@@ -1108,8 +1109,8 @@ extension LiveWorld: AskDataSource {
             spans: transcript.segments.map {
                 TranscriptSpan(
                     text: $0.text,
-                    startMs: toWall($0.startMs),
-                    endMs: toWall(max($0.endMs, $0.startMs)))
+                    startMs: clock.wallOffset(ofMedia: $0.startMs),
+                    endMs: clock.wallOffset(ofMedia: max($0.endMs, $0.startMs)))
             },
             wholeText: transcript.text)
     }
@@ -1712,8 +1713,10 @@ extension LiveFollowUps: FollowUpsDataSource {
             // moment nothing was said at (169 segments on the 2026-09-08 backup, 4,813 turns
             // moved by over a minute, worst 14 h 44 m). Left alone, the offset at least sits
             // where the audio does — the same choice `TranscriptItems` and `spokenRuns` make.
-            let offset = clock.isExact ? clock.wall(fromMedia: mediaOffsetMs) : mediaOffsetMs
-            return ConversationGrouper.segmentStartMs(meta) + offset
+            // (`SegmentMediaClock.wallOffset(ofMedia:)` is that rule.) Each half is converted on
+            // its own: either can be absent, and this has never reordered them.
+            return ConversationGrouper.segmentStartMs(meta)
+                + clock.wallOffset(ofMedia: mediaOffsetMs)
         }
         let citation = AskCitation(
             segmentId: segmentId,

@@ -475,3 +475,67 @@ private func evidenceMap(_ items: [SegmentSpeechEvidence]) -> [String: SegmentSp
         #expect(stale.count == 1)
     }
 }
+
+/// `spokenRuns` used to convert and clamp inline; it now goes through the shared
+/// `SegmentMediaClock.wallRange(ofMediaStartMs:endMs:)` and `SegmentWallRange.clamped(to:)`.
+/// The move must not change a single run, so the old arithmetic is kept here verbatim and the
+/// two are compared over varied members: exact and inexact clocks, a close that cuts the span
+/// short, and runs before the start, past the end and reversed.
+@Suite struct SpokenRunsConversionEquivalenceTests {
+    private func inlineRuns(_ meta: SegmentMeta, _ speech: [SpeechSpan])
+        -> [(startMs: Int64, endMs: Int64, wordCount: Int)]
+    {
+        let start = ConversationGrouper.segmentStartMs(meta)
+        let span = max(ConversationGrouper.segmentEndMs(meta) - start, 0)
+        let clock = SegmentMediaClock(meta)
+        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
+        return speech.map { run in
+            let a = min(max(toWall(run.startMs), 0), span)
+            let b = min(max(toWall(run.endMs), a), span)
+            return (start + a, start + b, run.wordCount)
+        }
+    }
+
+    @Test func theSharedHelperReproducesTheInlineConversion() {
+        var seed: UInt64 = 0xC0FFEE
+        func next(_ bound: Int64) -> Int64 {
+            seed ^= seed << 13
+            seed ^= seed >> 7
+            seed ^= seed << 17
+            return Int64(seed % UInt64(bound))
+        }
+        var exactSeen = 0
+        var inexactSeen = 0
+        for index in 0..<300 {
+            let minutes = UInt64(1 + next(30))
+            let gaps = (0..<Int(next(6))).map { _ in
+                silenceGap(atSample: UInt64(next(Int64(minutesSamples(minutes)))), minutes: UInt32(next(2)))
+            }
+            var meta = makeSegment(
+                id: "s\(index)", stream: 1, startTimeMs: testEpochMs,
+                firstSample: minutesSamples(UInt64(next(10))), durationSamples: minutesSamples(minutes),
+                gaps: gaps)
+            let withheld = SegmentMediaClock(meta).recordedGapMs
+            switch next(3) {
+            case 0: meta.frameCount = max((Int64(minutes) * 60_000 - withheld) / 20, 1)  // adds up
+            case 1: meta.frameCount = Int64(minutes) * 3_000 / 7  // does not
+            default: meta.closedAtMs = meta.startWallMs + next(Int64(minutes) * 60_000)  // cut short
+            }
+            if SegmentMediaClock(meta).isExact { exactSeen += 1 } else { inexactSeen += 1 }
+            let speech: [SpeechSpan] = (0..<8).map { _ in
+                var run = SpeechSpan(
+                    startMs: next(Int64(minutes) * 70_000) - 30_000,
+                    endMs: 0, wordCount: Int(next(40)))
+                run.endMs = run.startMs + next(120_000) - 20_000  // sometimes reversed
+                return run
+            }
+            let evidence = SegmentSpeechEvidence(segmentId: meta.segmentId, isSettled: true, speech: speech)
+            let shared = ConversationBoundaryDetector.spokenRuns(meta, evidence)
+            let inline = inlineRuns(meta, speech)
+            #expect(shared.map(\.startMs) == inline.map(\.startMs), "\(meta.segmentId)")
+            #expect(shared.map(\.endMs) == inline.map(\.endMs), "\(meta.segmentId)")
+            #expect(shared.map(\.wordCount) == inline.map(\.wordCount))
+        }
+        #expect(exactSeen > 50 && inexactSeen > 50, "\(exactSeen) exact, \(inexactSeen) inexact")
+    }
+}
