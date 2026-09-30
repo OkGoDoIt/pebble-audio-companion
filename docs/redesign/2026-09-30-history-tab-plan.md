@@ -823,6 +823,19 @@ public protocol AudioContentSource: Sendable {
   reads the result.
 - History never derives a descriptor itself, and never shows one the source did not give.
 
+**Delivered (2026-09-30, `docs/audio-content-classification.md`).** `AudioContentStore`
+(`Kit/AppDB/AudioContentStore.swift`) implements `AudioContentSource` exactly as above, with two
+clarifications and one addition: `version` is the METHOD version (change detection is
+`digest`, which is content-gated — rewriting a segment with the same verdicts does not move it);
+`confidence` is the measured precision of the rule that decided the span (1 for a person's
+correction); and each span carries `wordCount`. Time with no span is unclassified. The only
+descriptor shipped is `fewWords` (words were said, under two a minute); no `music` or
+`TV or video` descriptor met the accuracy bar yet. Corrections:
+`AudioContentService.correct(startMs:endMs:kind:)` / `undoCorrection(_:)`, reachable from the
+app as `AppComposition.audioContent`; the store is `AppComposition.audioContentStore`. Its
+migration is **`v14-audio-content`**, independent of every History table, so the two sessions'
+migrations can land in either order.
+
 **What History does before the classifier exists.** `AudioContentSource` has a built-in
 fallback implementation that uses only facts the app already has: a segment the transcriber
 found no words in, and wordless stretches inside transcribed segments. Those are returned as

@@ -14,8 +14,9 @@ import AppDB
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
-    /// The stretch a Saved Notes / Ask chip sent us to: the transcript scrolls to it, bands
-    /// those lines, and offers to play from there. Nil on every ordinary open.
+    /// Where the transcript lands on arrival. A citation's stretch (a Saved Notes / Ask chip)
+    /// is scrolled to, banded and offered to play from; a moment (History) is scrolled to and
+    /// nothing more. Nil on every ordinary open.
     var focus: TranscriptFocus?
 
     @Environment(AppRouter.self) private var router
@@ -27,7 +28,7 @@ struct ConversationScreen: View {
     @State private var titleInBar = false
     /// One jump per arrival: re-scrolling on every reload (rename, tag edit, retranscribe)
     /// would yank the screen back under the user mid-read.
-    @State private var didScrollToCited = false
+    @State private var didScrollToFocus = false
     /// True once the header has scrolled off the top, which is when a playing player is pinned
     /// and needs a bar behind it rather than the page colour. Only ever true while playing —
     /// `pinnedViews` is empty otherwise, so nothing is docked to dress.
@@ -207,7 +208,7 @@ struct ConversationScreen: View {
                 }
             }
             .motionAware(.snappy(duration: 0.25), value: showsScrollToBottom)
-            .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
+            .onAppear { scrollToFocus(proxy, transcript: display.transcript) }
         }
     }
 
@@ -333,33 +334,52 @@ struct ConversationScreen: View {
         }
     }
 
-    /// Keeps the paragraph being spoken on screen, a little above centre so there is something
-    /// to read ahead into.
+    /// A little above centre, so there is something to read ahead into: where the paragraph
+    /// being spoken is kept, and where a moment's row is put on arrival.
+    private static let readingLine = UnitPoint(x: 0, y: 0.34)
+
+    /// Keeps the paragraph being spoken on screen at the reading line.
     private func followPlayhead(_ proxy: ScrollViewProxy, turnId: String?) {
         guard following, player.playhead.isPlaying, let turnId else { return }
         withAnimation(Motion.animation(.easeInOut(duration: 0.35))) {
-            proxy.scrollTo(turnId, anchor: UnitPoint(x: 0, y: 0.34))
+            proxy.scrollTo(turnId, anchor: Self.readingLine)
         }
     }
 
-    /// Land on the cited stretch rather than at the top of a long transcript — the chip named
-    /// a moment, so the moment is what should be on screen.
-    private func scrollToCitedMoment(_ proxy: ScrollViewProxy, transcript: [TranscriptItem]) {
-        guard let focus, !didScrollToCited else { return }
-        let present = transcript.contains { item in
-            if case .turn(let turn) = item {
-                return focus.contains(segmentId: turn.segmentId, at: turn.startedAt)
+    /// Land where the link pointed rather than at the top of a long transcript.
+    ///
+    /// A citation lands on its band, centred, and only when the band exists — a row inside the
+    /// stretch. A moment lands on the row it would be reading at that time
+    /// (`MomentResolver.rowIndex`), which exists in a gap too: the last row before the gap.
+    private func scrollToFocus(_ proxy: ScrollViewProxy, transcript: [TranscriptItem]) {
+        guard let focus, !didScrollToFocus else { return }
+        let target: String
+        let anchor: UnitPoint
+        switch focus.style {
+        case .citation:
+            let present = transcript.contains { item in
+                if case .turn(let turn) = item {
+                    return focus.contains(segmentId: turn.segmentId, at: turn.startedAt)
+                }
+                return false
             }
-            return false
+            guard present else { return }
+            target = TranscriptView.citedAnchor
+            anchor = .center
+        case .moment:
+            guard let wallMs = focus.startMs,
+                let row = MomentResolver.rowIndex(in: transcript, atWallMs: wallMs)
+            else { return }
+            target = transcript[row].id
+            anchor = Self.readingLine
         }
-        guard present else { return }
-        didScrollToCited = true
+        didScrollToFocus = true
         Task { @MainActor in
             // One frame after the transcript is laid out; scrolling into a card that does not
             // have its height yet lands short.
             try? await Task.sleep(for: .milliseconds(120))
             withAnimation(Motion.animation(.easeOut(duration: 0.25))) {
-                proxy.scrollTo(TranscriptView.citedAnchor, anchor: .center)
+                proxy.scrollTo(target, anchor: anchor)
             }
         }
     }

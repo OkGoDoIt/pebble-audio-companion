@@ -55,6 +55,10 @@ final class AppComposition {
     let annotations: AnnotationStore
     let aiOutputs: AiOutputStore
     let recapStore: DailyRecapStore
+    /// What recorded audio holds (conversation or not) — the History screens' `AudioContentSource`.
+    let audioContentStore: AudioContentStore
+    /// Classifies it, keeps the model-input masks, and records a person's corrections.
+    let audioContent: AudioContentService
     let personalContext: FilePersonalContextStore
     /// Produces `PersonalContext.derivedTerms` — the keyword list the OpenAI STT prompt is
     /// built from. Held so a surface that edits "About you" can ask for an immediate refresh
@@ -627,30 +631,34 @@ final class AppComposition {
                 log: { AppRuntimeLog.shared.record($0) }
             )
         }()
+        // Named so the developer measurement channel (`AnalysisJobRunner`) can address each
+        // side directly; the router is built from the same two instances.
+        let onDeviceAi = OnDeviceAiProvider(
+            model: FoundationModelsLanguageModel(), grounding: aiGrounding
+        )
+        let remoteAi = RemoteAiProviderSwitch(
+            selected: { settingsBox.remoteAiProvider },
+            openAi: OpenAiChatAiProvider(
+                // Its own session: `URLSession.shared`'s 60 s idle timer killed every
+                // non-streaming call that thought longer than a minute (a long Ask, a
+                // reasoning model). The transcription uploads keep theirs.
+                transport: AiHttpTransport.make(),
+                apiKey: openAiKey,
+                remoteConsent: { settingsBox.remoteAiEnabled },
+                model: { settingsBox.aiModel },
+                grounding: aiGrounding,
+                // The SAME hold the transcription side uses: one OpenAI account, one key. A
+                // 402 or a rejected key from either side stops both, and the AI stage's
+                // probe or a transcription success lifts it for both.
+                accountHold: cloudHold,
+                nowMs: nowMs,
+                log: { AppRuntimeLog.shared.record($0) }
+            ),
+            applePrivateCloud: applePrivateCloud
+        )
         let aiRouter = AiModeRouter(
-            local: OnDeviceAiProvider(
-                model: FoundationModelsLanguageModel(), grounding: aiGrounding
-            ),
-            remote: RemoteAiProviderSwitch(
-                selected: { settingsBox.remoteAiProvider },
-                openAi: OpenAiChatAiProvider(
-                    // Its own session: `URLSession.shared`'s 60 s idle timer killed every
-                    // non-streaming call that thought longer than a minute (a long Ask, a
-                    // reasoning model). The transcription uploads keep theirs.
-                    transport: AiHttpTransport.make(),
-                    apiKey: openAiKey,
-                    remoteConsent: { settingsBox.remoteAiEnabled },
-                    model: { settingsBox.aiModel },
-                    grounding: aiGrounding,
-                    // The SAME hold the transcription side uses: one OpenAI account, one key. A
-                    // 402 or a rejected key from either side stops both, and the AI stage's
-                    // probe or a transcription success lifts it for both.
-                    accountHold: cloudHold,
-                    nowMs: nowMs,
-                    log: { AppRuntimeLog.shared.record($0) }
-                ),
-                applePrivateCloud: applePrivateCloud
-            ),
+            local: onDeviceAi,
+            remote: remoteAi,
             mode: { settingsBox.aiMode },
             // AI failures had no home. The device's `diagnostics/companion.log` carried link,
             // session, heartbeat and cloud *transcription* lines and not one AI or note-job
@@ -685,12 +693,33 @@ final class AppComposition {
         // recording, rather than only from the second one onwards.
         Task { await personalContextTerms.refreshIfNeeded() }
 
+        // What recorded audio holds. Built before enrichment because its mask is part of what the
+        // AI layer reads: stretches judged to hold no conversation are left out of titles,
+        // summaries, follow-ups and recaps (never out of search, playback or the transcript).
+        let audioContentStore = AudioContentStore(db: database)
+        self.audioContentStore = audioContentStore
+        let audioContent = AudioContentService(
+            listSegments: { await store.listSegments() },
+            speechTimingsOf: { transcripts.loadSpeechTimings($0) },
+            transcriptVersionOf: { transcripts.version($0) },
+            store: audioContentStore,
+            nowMs: nowMs,
+            log: AppRuntimeLog.runtimeLog
+        )
+        self.audioContent = audioContent
+        let audioContentMask = audioContent.mask
+        // The AI workers memoise against this. A verdict that withholds part of a transcript
+        // from the models changes it, so what was built from that text is built again.
+        let aiTranscriptVersion: @Sendable (String) -> String = {
+            "\(transcripts.version($0))#\(audioContentMask.aiGeneration($0))"
+        }
+
         let enrichment = EnrichmentService(
             worker: EnrichmentWorker(
                 annotations: annotations, router: aiRouter, nowMs: nowMs,
                 // One `stat` per member per pass instead of a decoded transcript: the workers
                 // memoise what they learned from a transcript against this.
-                transcriptVersionOf: { transcripts.version($0) }
+                transcriptVersionOf: aiTranscriptVersion
             ),
             // Follow-ups are two passes over one store of candidates: extraction proposes from
             // a single conversation, curation decides across all of them. Both are handed the
@@ -708,7 +737,7 @@ final class AppComposition {
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
                 },
-                transcriptVersionOf: { transcripts.version($0) }
+                transcriptVersionOf: aiTranscriptVersion
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,
@@ -752,7 +781,8 @@ final class AppComposition {
             log: AppRuntimeLog.runtimeLog,
             // For the held-AI-account probe's schedule: opening the app is when a person who
             // just topped up is looking.
-            isForeground: { AppForegroundProbe.shared.isForeground }
+            isForeground: { AppForegroundProbe.shared.isForeground },
+            audioContentMask: audioContentMask
         )
 
         let recap = RecapService(
@@ -763,7 +793,12 @@ final class AppComposition {
                 // Collapsed, like every other model input (see `TranscriptCleanup.swift`): a
                 // day containing one looped recording would otherwise hand the recap 12 000
                 // words of the same sentence and get a day summarised around it.
-                transcriptTextOf: { transcripts.load($0)?.withLoopedArtefactsCollapsed().text },
+                // And without the stretches judged to hold no conversation: a day is not
+                // summarised around the TV that was on.
+                transcriptTextOf: {
+                    transcripts.load($0)?.withLoopedArtefactsCollapsed()
+                        .withStretchesWithheld(audioContentMask.aiRanges($0)).text
+                },
                 store: recapStore,
                 run: { request in try await aiRouter.run(request) },
                 prompt: AiPromptTemplates.dailySummary,
@@ -794,6 +829,16 @@ final class AppComposition {
         let wake = WakeChannel()
         let foreground = RuntimeForegroundState()
         self.foregroundState = foreground
+
+        // Developer measurement channel: dormant unless a job file has been copied into
+        // `analysis/inbox` from a paired Mac (see `AnalysisJobRunner`). Lets a measurement use
+        // this app's own keys and AI path without a key leaving the phone.
+        let analysisRunner = AnalysisJobRunner(
+            root: containerRoot, remote: remoteAi, local: onDeviceAi, openAiKey: openAiKey,
+            transport: AiHttpTransport.make(),
+            isCharging: { foreground.devicePower.isPluggedIn },
+            log: AppRuntimeLog.runtimeLog)
+        Task.detached(priority: .utility) { await analysisRunner.pollForever() }
         let diagnostics = DiagnosticsService(
             store: store,
             retention: retention,
@@ -893,6 +938,7 @@ final class AppComposition {
             // A manual split/join is keyed by the segment after the join, so deleting that segment
             // must take the decision with it.
             boundaryOverrides: BoundaryOverrideStore(db: database),
+            audioContent: audioContent,
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog
@@ -1021,6 +1067,12 @@ final class AppComposition {
                 enforceRetention: { try await retention.enforce() },
                 cascadeDeleted: { _ = await cascade.deleteSegment($0) },
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
+                // History places a follow-up by when it was said; rows extracted before that was
+                // stored get it here, once per launch, after the receiver is already up.
+                fillFollowUpWallTimes: {
+                    try await runFollowUpWallTimeFill(
+                        database: database, store: store, log: AppRuntimeLog.runtimeLog)
+                },
                 refreshDiagnostics: { await diagnostics.refresh() }
             ),
             onStep: { startupActivity.record($0) },
@@ -1046,7 +1098,8 @@ final class AppComposition {
                 startup: startup,
                 snapshots: snapshots,
                 foreground: foreground,
-                log: AppRuntimeLog.runtimeLog
+                log: AppRuntimeLog.runtimeLog,
+                audioContent: audioContent
             ),
             wake: wake
         )

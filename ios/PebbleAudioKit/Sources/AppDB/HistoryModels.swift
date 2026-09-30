@@ -18,8 +18,8 @@ import Foundation
 /// - `items` are in time order and tile `[items.first.startMs, items.last.endMs)` exactly: no
 ///   overlap and no hole. A `.zoneChange` item has no length and sits between two others.
 /// - Loss is never reduced and never relabelled: the sum of `.audioMissing` gaps plus every
-///   chapter's `missingMs` is at least the missing time the coverage computer reports for the
-///   same span. It is never drawn as quiet, and suppressed silence is never drawn as missing.
+///   chapter's and gap's `missingMs` is at least the missing time the coverage computer reports
+///   for the same span. It is never drawn as quiet, and suppressed silence is never drawn as missing.
 /// - Time with no audio and no record of why is `.notRecording`, never `.quiet`.
 /// - A recording that failed or has not been transcribed is never inside a chapter.
 public struct HistoryDay: Equatable, Sendable {
@@ -183,8 +183,13 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
     /// Set for `.paused`.
     public var pausedBy: HistoryPauseActor?
     /// Set for `.audioMissing`: the recorded causes, largest share of the gap first. Empty when
-    /// no record says why. Never a guess.
+    /// no record says why. Never a guess. Also set on any gap with `missingMs > 0`, for that loss.
     public var lossCauses: [HistoryLossCause]
+    /// Audio lost inside this gap that is not drawn as its own `.audioMissing` item ("· 4 s
+    /// missing"), exactly as on a card. Always 0 for `.audioMissing` itself (its whole range is
+    /// the loss). Non-zero only under `HistoryDayRules.carryShortLoss` (the default); a gap that
+    /// carries loss is never folded into an edge or the live block.
+    public var missingMs: Int64 = 0
     /// Set for `.noConversation` ONLY when the audio classifier supplied one that met its
     /// accuracy bar ("music", "TV or video"). Nil means "No conversation", styled like quiet.
     public var descriptor: String?
@@ -199,7 +204,7 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
         id: String, kind: Kind, startMs: Int64, endMs: Int64, zoneID: String,
         pausedBy: HistoryPauseActor? = nil, lossCauses: [HistoryLossCause] = [],
         descriptor: String? = nil, deletedBy: HistoryDeletionCause? = nil,
-        failureReason: String? = nil, isOpenable: Bool = false
+        failureReason: String? = nil, isOpenable: Bool = false, missingMs: Int64 = 0
     ) {
         self.id = id
         self.kind = kind
@@ -212,6 +217,7 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
         self.deletedBy = deletedBy
         self.failureReason = failureReason
         self.isOpenable = isOpenable
+        self.missingMs = missingMs
     }
 }
 

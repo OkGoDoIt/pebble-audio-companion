@@ -528,6 +528,96 @@ public struct AppDatabase: Sendable {
             try db.execute(
                 sql: "CREATE INDEX IF NOT EXISTS follow_ups_segment ON follow_ups(sourceSegmentId)")
         }
+        // When a follow-up was SAID, on the wall clock, so History can put it inside the part of
+        // the day it came from. `sourceStartMs`/`sourceEndMs` cannot answer that on their own:
+        // they are MEDIA offsets into the segment's stored audio, and turning them into a time
+        // needs the segment's sidecar (start and gap records), which is gone with the segment and
+        // costs a file read per row on every History read while it exists. `createdAtMs` is when
+        // extraction ran, days later for a backlog, and says nothing about when the words were
+        // spoken.
+        //
+        // `sourceWallApproximate` is stored beside the two times rather than derived at read
+        // time: it is a fact about the clock the times were computed through (its gap records did
+        // not account for the recording, so the offset was left on the media clock), and it is
+        // needed exactly when the segment it could be re-derived from may no longer be there.
+        // All three are NULL together when the moment is unknown.
+        //
+        // Both tables, so curation carries the value from candidate to follow-up. Two partial
+        // indexes on `follow_ups`, split on whether the time is known:
+        //  - `follow_ups_wall` holds only placed rows and serves History's window read (a range
+        //    on the column implies it is not NULL, so SQLite can use it). Partial on purpose: a
+        //    full index also answers `sourceWallStartMs IS NULL`, and the planner then served the
+        //    fill's read from it — every unplaced row in the table, archived legacy rows included.
+        //  - `follow_ups_wall_unfilled` holds only rows with a located quote and no time yet,
+        //    which is exactly what the one-time fill (`FollowUpWallTimeFill`) walks, so the fill
+        //    costs the rows it has to fill and not the table.
+        //
+        // Additive and self-contained: columns and indexes only, no data change.
+        migrator.registerMigration("v15-follow-up-wall-times") { db in
+            for table in ["follow_ups", "follow_up_candidates"] {
+                try db.alter(table: table) { t in
+                    t.add(column: "sourceWallStartMs", .integer)
+                    t.add(column: "sourceWallEndMs", .integer)
+                    t.add(column: "sourceWallApproximate", .boolean)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS follow_ups_wall ON follow_ups(sourceWallStartMs)
+                        WHERE sourceWallStartMs IS NOT NULL
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS follow_ups_wall_unfilled
+                        ON follow_ups(sourceSegmentId)
+                        WHERE sourceWallStartMs IS NULL AND sourceStartMs IS NOT NULL
+                            AND sourceSegmentId IS NOT NULL
+                    """)
+        }
+        // What recorded audio HOLDS: conversation, or sound with no conversation in it (see
+        // `AudioContentStore.swift`). `audio_content_spans` / `audio_content_segments` are
+        // DERIVED from each segment's transcript and recomputed when it or the method changes;
+        // `audio_content_overrides` is AUTHORITATIVE — a person's "this was a conversation" —
+        // and is kept by wall-clock range so a re-transcription cannot orphan it. Independent
+        // of every other table, so its place in the order does not matter to any other
+        // migration (the History tab's own migrations land beside it).
+        migrator.registerMigration("v14-audio-content") { db in
+            try db.create(table: "audio_content_spans") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("spanIndex", .integer).notNull()
+                t.column("startMs", .integer).notNull()  // wall clock
+                t.column("endMs", .integer).notNull()
+                t.column("mediaStartMs", .integer).notNull()  // the segment's stored-audio clock
+                t.column("mediaEndMs", .integer).notNull()
+                t.column("kind", .text).notNull()  // conversation | noConversation
+                t.column("descriptor", .text)
+                t.column("confidence", .double).notNull()
+                t.column("decidedBy", .text).notNull()
+                t.column("version", .integer).notNull()
+                t.column("wordCount", .integer).notNull().defaults(to: 0)
+                t.column("rowHash", .integer).notNull()
+                t.column("updatedAtMs", .integer).notNull()
+                t.primaryKey(["segmentId", "spanIndex"])
+            }
+            try db.create(
+                index: "audio_content_spans_start", on: "audio_content_spans",
+                columns: ["startMs"])
+            try db.create(table: "audio_content_segments") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("inputKey", .text).notNull()
+                t.column("updatedAtMs", .integer).notNull()
+            }
+            try db.create(table: "audio_content_overrides") { t in
+                t.column("id", .text).primaryKey()
+                t.column("startMs", .integer).notNull()
+                t.column("endMs", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("createdAtMs", .integer).notNull()
+            }
+            try db.create(
+                index: "audio_content_overrides_start", on: "audio_content_overrides",
+                columns: ["startMs"])
+        }
         try migrator.migrate(writer)
     }
 }

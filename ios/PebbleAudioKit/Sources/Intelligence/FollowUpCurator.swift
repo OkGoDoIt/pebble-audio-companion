@@ -251,7 +251,10 @@ public final class FollowUpCurator: @unchecked Sendable {
             origin: .ai,
             // The model that FOUND it — the provenance card's answer to "which model decided
             // this belongs on my list".
-            model: candidate.model)
+            model: candidate.model,
+            // When the words were said, computed when the quote was located. Carried, never
+            // recomputed here: curation has no segment clock in hand.
+            sourceWall: candidate.sourceWall)
     }
 
     // MARK: - Prompt body

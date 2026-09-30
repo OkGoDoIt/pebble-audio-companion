@@ -14,7 +14,6 @@ struct TodayScreen: View {
     @State private var poppedSpan: CoverageSpanDisplay?
     /// Which follow-up row is showing its swipe actions — at most one at a time, card-wide.
     @State private var openSwipeRow: String?
-    @State private var snackbar: SnackbarItem?
 
     var body: some View {
         ScrollView {
@@ -45,7 +44,8 @@ struct TodayScreen: View {
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
         }
-        .snackbar(item: $snackbar)
+        // Its snackbars post to `UndoCenter.shared`, which `RootView` hosts once for the
+        // whole app — a second host here would stack one snackbar on top of the other.
         .task { await viewModel.observe() }
     }
 
@@ -207,7 +207,7 @@ struct TodayScreen: View {
     /// leaving someone relying on a nudge that is never coming.
     private var captureToggle: some View {
         CaptureToggle(controller: captureController) {
-            snackbar = SnackbarItem(message: Copy.Capture.reminderUnavailable)
+            UndoCenter.shared.snackbar = SnackbarItem(message: Copy.Capture.reminderUnavailable)
         }
     }
 
@@ -472,7 +472,7 @@ struct TodayScreen: View {
     /// the only thing between a mis-swipe and a lost commitment.
     private func delete(_ item: FollowUpItem) {
         viewModel.deleteFollowUp(item)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.deleted, actionTitle: Copy.Common.undo
         ) {
             viewModel.undoDeleteFollowUp(item)
@@ -482,7 +482,7 @@ struct TodayScreen: View {
     /// Undoable like the delete: putting something off is a decision, and a mis-swipe is easy.
     private func snooze(_ item: FollowUpItem, until date: Date) {
         viewModel.snoozeFollowUp(item, until: date)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.putOff(FollowUpFormatting.day(date, now: viewModel.now)),
             actionTitle: Copy.Common.undo
         ) {

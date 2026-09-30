@@ -45,6 +45,15 @@ public struct LibraryStore: Sendable {
         try await queries.conversationId(ofSegment: segmentId)
     }
 
+    /// The conversations overlapping a window, without building the library — see
+    /// `ConversationQueries.rows(overlappingMs:)` for the edges. Not filtered for the undo window:
+    /// callers that list rows for a person to see must hide pending deletes themselves.
+    public func conversationRows(
+        overlappingMs window: Range<Int64>
+    ) async throws -> [ConversationListRow] {
+        try await queries.rows(overlappingMs: window)
+    }
+
     /// Every segment's conversation, in one read — see `ConversationQueries.conversationIdsBySegment`.
     public func conversationIdsBySegment() async throws -> [String: String] {
         try await queries.conversationIdsBySegment()

@@ -308,6 +308,9 @@ enum Copy {
         static let accountOutOfFunds =
             "Your transcription account is out of credit. Add funds and this picks up where it "
             + "left off."
+        static let spendingLimitReached =
+            "Your transcription account reached a spending limit set on the provider’s side, "
+            + "such as a monthly budget. Raise it there and this picks up where it left off."
         static let providerTrouble = "The provider had trouble on its side."
         static let providerRefusedAudio = "The provider didn’t accept the recording."
         static let timedOut = "The provider took too long to answer."
@@ -339,6 +342,7 @@ enum Copy {
             static let keyNotPermitted = "key not permitted"
             static let rateLimited = "provider busy"
             static let accountOutOfFunds = "out of credit"
+            static let spendingLimitReached = "spending limit reached"
             static let providerTrouble = "provider trouble"
             static let providerRefusedAudio = "upload refused"
             static let timedOut = "timed out"

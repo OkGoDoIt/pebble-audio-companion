@@ -71,6 +71,51 @@ extension SegmentTranscript {
         return total
     }
 
+    /// This transcript without the turns inside `ranges` (stored-audio milliseconds) — the
+    /// stretches the audio-content classification or a person found to hold no conversation.
+    /// Each withheld run is replaced by one note saying so, for the same reason the loop note
+    /// exists: a model told nothing will read the silence as meaningful.
+    ///
+    /// A VIEW for model input only. The file, the transcript screen, search and playback are
+    /// untouched; nothing is deleted or hidden from the person. Returns `self` when nothing
+    /// falls inside a range.
+    public func withStretchesWithheld(_ ranges: [Range<Int64>]) -> SegmentTranscript {
+        guard !ranges.isEmpty, !segments.isEmpty else { return self }
+        func withheld(_ turn: TranscriptSegment) -> Bool {
+            let middle = turn.startMs + max(turn.endMs - turn.startMs, 0) / 2
+            return ranges.contains { $0.contains(middle) }
+        }
+        guard segments.contains(where: withheld) else { return self }
+
+        var kept: [TranscriptSegment] = []
+        var pieces: [String] = []
+        var index = 0
+        while index < segments.count {
+            guard withheld(segments[index]) else {
+                kept.append(segments[index])
+                let trimmed = segments[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { pieces.append(trimmed) }
+                index += 1
+                continue
+            }
+            let first = index
+            while index + 1 < segments.count, withheld(segments[index + 1]) { index += 1 }
+            let minutes = max(1, Int(((segments[index].endMs - segments[first].startMs) + 30_000) / 60_000))
+            pieces.append(Self.withheldNote(minutes: minutes))
+            index += 1
+        }
+        var copy = self
+        copy.segments = kept
+        copy.words = []
+        copy.text = pieces.joined(separator: " ")
+        return copy
+    }
+
+    static func withheldNote(minutes: Int) -> String {
+        "[about \(minutes) minute\(minutes == 1 ? "" : "s") of background audio with no "
+            + "conversation in it (such as TV or music) left out]"
+    }
+
     /// Plain English, present tense, no jargon — this lands in a prompt, and a model reads it
     /// as a statement about the recording rather than as transcript content.
     static func loopNote(repeats: Int) -> String {

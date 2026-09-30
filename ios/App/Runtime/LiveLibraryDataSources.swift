@@ -1126,50 +1126,13 @@ extension LiveWorld: AskDataSource {
             let detail = try? await composition.runtime.library.conversation(id: conversationId)
         else { return nil }
 
-        var mediaBeforeMemberMs: Int64 = 0
-        var mediaOffsetMs: Int64?
-        let metas = await Self.loadMetas(detail.members.map(\.segmentId), files: composition.files)
-        for member in detail.members {
-            guard let meta = metas[member.segmentId] else { continue }
-            let mediaMs = mediaDurationMs(meta)
-            if member.segmentId == citedId {
-                // Where the cited STRETCH starts on the scrubber, not where its recording
-                // does — the same wall→media conversion the transcript rows and the missing
-                // ticks use, through the member's own gap records.
-                //
-                // This used to interpolate proportionally (a point 40% through the wall span
-                // is 40% through the stored audio), which is only true when the gaps are
-                // spread evenly. `SegmentMediaClock` replaced that guess for the transcript
-                // screen; leaving the copy here meant tapping a citation and tapping the turn
-                // it cites landed in different places on the same scrubber. Watch-side silence
-                // suppression (PebbleOS a47acac74) makes the disagreement routine rather than
-                // occasional: the withheld quiet is 4.1-13.8% of airtime, concentrated in the
-                // stretches where nobody is talking, which is exactly where "evenly spread"
-                // stops being true.
-                //
-                // The anchor is `ConversationGrouper.segmentStartMs`, not `startTimeMs`, for
-                // the reason `SegmentMeta.startWallMs` documents: `startTimeMs` is the STREAM's
-                // birth, so for every mid-stream segment it is early by `firstSampleIndex`
-                // samples — a median of 1 h across this library. Subtracting it from a wall
-                // citation put `into` past the end of the span and pinned the target at the
-                // segment's last sample.
-                guard mediaMs > 0 else { break }
-                let memberStartMs = ConversationGrouper.segmentStartMs(meta)
-                let clock = SegmentMediaClock(meta)
-                let into = min(
-                    max((citation.startMs ?? memberStartMs) - memberStartMs, 0), clock.wallSpanMs)
-                // Untouched on the way in, untouched on the way out. `drafts` above (and
-                // `TranscriptItems`) leave an inexact segment's offsets on the media clock
-                // rather than acting on the proportional guess, so converting back here would
-                // apply an inverse that was never applied — on the 2026-09-08 backup that is
-                // 169 segments and 4,813 turns that move by over a minute, worst 14 h 44 m.
-                mediaOffsetMs =
-                    mediaBeforeMemberMs
-                    + (clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs))
-                break
-            }
-            mediaBeforeMemberMs += mediaMs
-        }
+        let memberIds = detail.members.map(\.segmentId)
+        let metas = await Self.loadMetas(memberIds, files: composition.files)
+        // Where the cited STRETCH starts on the scrubber, not where its recording does. The
+        // walk is shared with `momentTarget` (see `ConversationScrubber`), so a citation and a
+        // History moment at the same instant cue the same position.
+        let mediaOffsetMs = ConversationScrubber.mediaOffset(
+            ofWallMs: citation.startMs, inMember: citedId, members: memberIds, metas: metas)
         let meta = metas[citedId]
         // Same anchor as everything else that says when a recording happened (see
         // `SegmentMeta.startWallMs`): `startTimeMs` is the stream's birth and files a
@@ -1182,6 +1145,52 @@ extension LiveWorld: AskDataSource {
                 segmentId: citedId, startMs: citation.startMs, endMs: citation.endMs),
             mediaOffsetMs: mediaOffsetMs,
             startedAt: startedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+        )
+    }
+}
+
+// MARK: - Moments (ConversationDataSource)
+
+extension LiveWorld {
+    /// A wall-clock moment resolved the way a citation is — conversation, scrubber position —
+    /// but from a TIME rather than a segment id: History knows when a chapter started, not which
+    /// recording it started in. Which recording is `MomentResolver.segment`'s rule; the scrubber
+    /// position is the walk `citationTarget` uses (`ConversationScrubber`).
+    ///
+    /// Reads the spool's in-memory index (no sidecar decoding) and two small queries. Only
+    /// grouped recordings are candidates: one the grouper has not filed yet has no conversation
+    /// to open, and choosing it would turn a tap near an older recording into nothing.
+    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget? {
+        let library = composition.runtime.library
+        guard let owners = try? await library.conversationIdsBySegment() else { return nil }
+        // A conversation inside its undo window is gone as far as the person is concerned.
+        let spans = await composition.store.listSegments().compactMap { meta in
+            owners[meta.segmentId]
+                .flatMap { pendingDeletes[$0] == nil ? $0 : nil }
+                .map { MomentResolver.Span(meta: meta, conversationId: $0) }
+        }
+        // Only needed when the time is between recordings, but one indexed query is cheaper
+        // than the branch it would save.
+        let instant = wallMs..<(wallMs == .max ? wallMs : wallMs + 1)
+        let windows = ((try? await library.conversationRows(overlappingMs: instant)) ?? [])
+            .filter { pendingDeletes[$0.id] == nil && $0.endMs > $0.startMs }
+            .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
+        guard
+            let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
+            let detail = try? await library.conversation(id: segment.conversationId)
+        else { return nil }
+
+        let memberIds = detail.members.map(\.segmentId)
+        let metas = await Self.loadMetas(memberIds, files: composition.files)
+        return CitationTarget(
+            conversationId: segment.conversationId,
+            conversationTitle: detail.row.title ?? "Conversation",
+            focus: .moment(segmentId: segment.segmentId, atWallMs: wallMs),
+            // A time between recordings clamps to the chosen one's edge: its start when it is
+            // the recording after the gap, its end when it is the one before.
+            mediaOffsetMs: ConversationScrubber.mediaOffset(
+                ofWallMs: wallMs, inMember: segment.segmentId, members: memberIds, metas: metas),
+            startedAt: Date(timeIntervalSince1970: Double(wallMs) / 1000)
         )
     }
 }
