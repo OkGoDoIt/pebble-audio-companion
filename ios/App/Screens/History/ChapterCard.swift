@@ -108,61 +108,10 @@ struct ChapterCard: View {
     // MARK: Compact: under 10 minutes
 
     private var compactCard: some View {
-        HStack(spacing: 8) {
-            if let snippet {
-                Text(HistoryLabels.chapterHeading(block))
-                    .font(AppFont.rowTitle)
-                    .foregroundStyle(Tokens.label)
-                    .lineLimit(1)
-                    .fixedSize()
-                quote(snippet)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
-                Spacer(minLength: 0)
-            } else {
-                Text(HistoryLabels.chapterHeading(block))
-                    .font(AppFont.rowTitle)
-                    .foregroundStyle(Tokens.label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // The title takes all the room the time leaves; the spacer only what is over.
-                    .layoutPriority(1)
-                Spacer(minLength: 4)
-                if !block.followUps.isEmpty {
-                    followUpIndicator
-                }
-                Text(HistoryLabels.compactTimeLine(block).main)
-                    .font(AppFont.timelineMeta)
-                    .foregroundStyle(Tokens.meta)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            if block.missingMs > 0 {
-                // Loss is never hidden: on the one line it is an amber mark, and spoken in full.
-                Text(Copy.History.missing(HistoryFormat.duration(ms: block.missingMs)))
-                    .font(AppFont.timelineMeta)
-                    .foregroundStyle(Tokens.missingText)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-        }
-        .padding(.horizontal, ChapterCardMetrics.paddingHorizontal)
-        .padding(.vertical, ChapterCardTier.compactPaddingVertical)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-    }
-
-    /// An open circle and the number of follow-ups not yet done — or a checked one when all are.
-    private var followUpIndicator: some View {
-        let open = block.followUps.filter { !$0.done }.count
-        return HStack(spacing: 3) {
-            Image(systemName: open == 0 ? "checkmark.circle" : "circle")
-                .font(AppFont.timelineMeta)
-            Text("\(open == 0 ? block.followUps.count : open)")
-                .font(AppFont.timelineMeta.monospacedDigit())
-        }
-        .foregroundStyle(open == 0 ? Tokens.followUpDone : Tokens.tint)
-        .fixedSize()
+        CompactConversationRow(block: block)
+            .padding(.horizontal, ChapterCardMetrics.paddingHorizontal)
+            .padding(.vertical, ChapterCardTier.compactPaddingVertical)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private func quote(_ text: String) -> some View {

@@ -357,11 +357,14 @@ struct DayTimeline: View {
         let marks = hourMarks(metrics: metrics)
         DayTimelineLayout(pointsPerMinute: metrics.pointsPerMinute, scaleLogZoneID: scaleLogZoneID) {
             TimelineAxis().timelineRole(.axis)
-            ForEach(Array(day.items.enumerated()), id: \.element.id) { index, item in
-                itemView(item, isLast: index == day.items.count - 1)
+            let display = HistoryDisplayGrouping.group(
+                day.items,
+                enabled: HistoryDisplayGrouping.isEnabled && !dynamicTypeSize.isAccessibilitySize)
+            ForEach(Array(display.enumerated()), id: \.element.id) { index, entry in
+                displayView(entry, isLast: index == display.count - 1)
                     .timelineRole(.item(
-                        TimelineSpan(startMs: item.startMs, endMs: item.endMs),
-                        floor: floor(of: item), isCard: isCard(item)))
+                        TimelineSpan(startMs: entry.startMs, endMs: entry.endMs),
+                        floor: floor(of: entry), isCard: isCard(entry)))
             }
             ForEach(marks, id: \.ms) { mark in
                 HourMark(text: HistoryFormat.hourLabel(
@@ -428,6 +431,28 @@ struct DayTimeline: View {
         #else
         return nil
         #endif
+    }
+
+    @ViewBuilder
+    private func displayView(_ entry: HistoryDisplayItem, isLast: Bool) -> some View {
+        switch entry {
+        case .item(let item): itemView(item, isLast: isLast)
+        case .shortRun(let blocks): ShortConversationGroupCard(blocks: blocks, onOpen: onOpenChapter)
+        }
+    }
+
+    private func isCard(_ entry: HistoryDisplayItem) -> Bool {
+        switch entry {
+        case .item(let item): return isCard(item)
+        case .shortRun: return true
+        }
+    }
+
+    private func floor(of entry: HistoryDisplayItem) -> CGFloat {
+        switch entry {
+        case .item(let item): return floor(of: item)
+        case .shortRun: return 0
+        }
     }
 
     private func isCard(_ item: HistoryItem) -> Bool {
