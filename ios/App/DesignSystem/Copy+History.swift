@@ -237,6 +237,10 @@ extension Copy {
             static let openHint = "Opens the conversation at this point"
             static let openRecordingHint = "Opens the recording"
             static let openDayHint = "Opens this day"
+            /// "apartment, on 14 days".
+            static func tagDays(_ name: String, days: Int) -> String {
+                "\(name), on \(days) day\(days == 1 ? "" : "s")"
+            }
             static let titleHint = "Swipe up or down for the next or previous period"
             static let openWeekHint = "Opens this week"
             static let hourAxis = "Hour axis"

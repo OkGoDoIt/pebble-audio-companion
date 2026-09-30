@@ -260,17 +260,10 @@ struct HistoryPager: View {
         case .day:
             DayPage(context: context, services: services).equatable()
         case .week:
-            HistoryPageFrame(
-                context: context, services: services,
-                title: HistoryFormat.weekTitle(
-                    firstDateKey: page.key, lastDateKey: model.range(of: page).upperBound,
-                    todayKey: model.todayDateKey)
-            ) { EmptyView() }
+            WeekPage(context: context, services: services, lastDateKey: model.range(of: page).upperBound)
+                .equatable()
         case .month:
-            HistoryPageFrame(
-                context: context, services: services,
-                title: HistoryFormat.monthTitle(page.key, todayKey: model.todayDateKey)
-            ) { EmptyView() }
+            MonthPage(context: context, services: services).equatable()
         }
     }
 }
