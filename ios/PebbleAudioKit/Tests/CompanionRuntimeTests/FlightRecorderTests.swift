@@ -49,8 +49,12 @@ import Testing
         #expect(text.contains("line 799"))
         // ...the oldest have been rotated out...
         #expect(!text.contains("line 0 with"))
-        // ...and the file never grows without bound (active + one rotated predecessor).
-        let active = try Data(contentsOf: recorder.activeURL).count
+        // ...and the file never grows without bound (active + one rotated predecessor). The
+        // active file is created lazily by the next write, so it is legitimately ABSENT when the
+        // last line happened to rotate — and whether it does depends on the line length, which
+        // carries the machine's uptime ("[up 761051.9s]"). Read strictly, this failed on some
+        // days and passed on others.
+        let active = (try? Data(contentsOf: recorder.activeURL).count) ?? 0
         let previous = (try? Data(contentsOf: recorder.previousURL).count) ?? 0
         #expect(active <= 4_096 + 1_024)
         #expect(previous <= 4_096 + 1_024)
