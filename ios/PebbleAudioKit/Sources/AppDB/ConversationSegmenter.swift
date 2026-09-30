@@ -58,38 +58,53 @@ struct SegmenterBlock: Equatable {
     var isOpaque: Bool = false
 }
 
-/// The segmenter's numbers. Fitted on four of the eight labelled days and checked on the other
-/// four — see `RealConversationSegmentationTests` for the table. Change one only with that
-/// measurement rerun.
+/// The segmenter's numbers.
+///
+/// FITTED, not chosen: a search over these against the 384 hand-marked conversation starts on
+/// the eight labelled days, scored as a balance of finding marked starts and not cutting where
+/// none was marked, with a penalty for slivers and for any unit over 90 minutes. Fitting on four
+/// days and scoring the other four gives nearly the same answer as fitting on all eight (the
+/// table is in `RealConversationSegmentationTests`), which is the evidence that they describe
+/// how talk behaves rather than those particular days. Change one only with that measurement
+/// rerun.
 public struct SegmenterPolicy: Hashable, Sendable {
     // Coherence of a unit.
-    /// Dirichlet concentration for a unit's vocabulary.
-    public var wordPrior = 0.3
-    public var wordWeight = 0.25
-    public var rhythmWeight = 0.5
-    public var dialogueWeight = 0.5
-    public var foreignWeight = 0.5
-    public var dictationWeight = 0.5
+    /// Dirichlet concentration for a unit's vocabulary, and the vocabulary size it is spread
+    /// over. Small: a unit is expected to reuse a few words heavily.
+    public var wordPrior = 0.08
+    public var vocabularySize = 4_000.0
+    public var wordWeight = 0.46
+    public var rhythmWeight = 0.4
+    public var dialogueWeight = 1.16
+    public var foreignWeight = 0.84
+    public var dictationWeight = 0.16
 
     // The size of a unit.
     public var unitCost = 8.0
-    /// Minutes past which a unit pays `longWeight × (minutes − longFromMinutes)²`.
-    public var longFromMinutes = 40.0
-    public var longWeight = 0.004
+    /// Minutes past which a unit pays `longWeight × (minutes − longFromMinutes)²`: nothing
+    /// extra at 17 minutes, 5.5 at an hour, 32 at two hours, 80 at three — against a price of
+    /// 8 for making one more unit, so two hours of talk is cheaper as three conversations than
+    /// as one even when nothing else distinguishes them.
+    public var longFromMinutes = 17.0
+    public var longWeight = 0.003
     /// Minutes under which a unit pays `shortWeight × (shortBelowMinutes − minutes)`.
-    public var shortBelowMinutes = 3.0
-    public var shortWeight = 1.5
+    public var shortBelowMinutes = 4.3
+    public var shortWeight = 1.17
 
     // Evidence at a cut.
-    public var pauseWeight = 6.0
+    /// Times log(1 + pause seconds) / log(900): 0 for no pause, 1 for a quarter of an hour.
+    public var pauseWeight = 5.36
     public var pause2MinWeight = 0.0
-    public var pause5MinWeight = 2.0
-    public var turnRateWeight = 2.0
-    public var wordRateWeight = 0.0
-    public var dialogueShiftWeight = 3.0
-    public var foreignShiftWeight = 2.0
-    public var dictationShiftWeight = 1.0
-    public var greetingWeight = 3.0
+    public var pause5MinWeight = 3.16
+    public var pause8MinWeight = 0.7
+    /// Times |log ratio| of turns per minute after and before — the strongest single signal:
+    /// sparse dictation giving way to a rapid exchange, or the reverse.
+    public var turnRateWeight = 3.42
+    public var wordRateWeight = 0.13
+    public var dialogueShiftWeight = 2.19
+    public var foreignShiftWeight = 0.97
+    public var dictationShiftWeight = 2.03
+    public var greetingWeight = 2.69
 
     /// How much talk either side of a candidate cut is compared.
     public var windowMs: Int64 = 5 * 60_000
@@ -137,8 +152,7 @@ enum ConversationSegmenter {
                     return id
                 })
         }
-        let vocabulary = Double(max(localId.count, 2_000))
-        let concentration = vocabulary * policy.wordPrior
+        let concentration = policy.vocabularySize * policy.wordPrior
         let lgammaConcentration = logGamma(concentration)
 
         let logGaps: [Double] = blocks.map { log(Double(max($0.gapBeforeMs, 0)) / 1000 + 1) }
@@ -334,6 +348,7 @@ enum ConversationSegmenter {
             var score = policy.pauseWeight * log(gapSeconds + 1) / logQuarterHour
             if gapSeconds >= 120 { score += policy.pause2MinWeight }
             if gapSeconds >= 300 { score += policy.pause5MinWeight }
+            if gapSeconds >= 480 { score += policy.pause8MinWeight }
             score +=
                 policy.turnRateWeight
                 * min(abs(log((after.turnRate + 0.5) / (before.turnRate + 0.5))), 3)

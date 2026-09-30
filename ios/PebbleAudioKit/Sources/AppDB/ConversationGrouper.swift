@@ -35,10 +35,19 @@ public struct GroupedConversation: Equatable, Sendable {
     /// where nothing preceded it. Persisted so the UI can account for an automatic split
     /// instead of leaving the user to guess.
     public var startReason: ConversationStartReason?
+    /// True while where this conversation starts or ends could still move: one of its two
+    /// boundaries is a segmenter decision too recent to have been written down
+    /// (`ConversationRunPlanner.commitLagMs`), or it is the end of a run that is still growing.
+    /// Work that should be done ONCE per conversation — a final title, follow-up extraction —
+    /// waits for this to clear, exactly as it waits for a live conversation to close. Not
+    /// persisted: it is a property of this grouping pass, and a grouping read back from the
+    /// database reads as settled.
+    public var isProvisional: Bool
 
     public init(
         id: String, startMs: Int64, endMs: Int64, timeZoneID: String, isLive: Bool,
-        members: [ConversationMember], startReason: ConversationStartReason? = nil
+        members: [ConversationMember], startReason: ConversationStartReason? = nil,
+        isProvisional: Bool = false
     ) {
         self.id = id
         self.startMs = startMs
@@ -47,6 +56,7 @@ public struct GroupedConversation: Equatable, Sendable {
         self.isLive = isLive
         self.members = members
         self.startReason = startReason
+        self.isProvisional = isProvisional
     }
 
     /// A conversation made of whole segments.
@@ -289,8 +299,9 @@ public enum ConversationGrouper {
         var cutsToCommit: [ConversationCut: ConversationStartReason] = [:]
         for (index, run) in runs.enumerated() {
             // Only the last run can still grow: a later run exists because something ended
-            // this one for good.
-            let isOpenEnded = index == runs.count - 1
+            // this one for good, and so does an explicit Stop.
+            let isOpenEnded =
+                index == runs.count - 1 && !(run.members.last.map(endsWithUserStop) ?? false)
             let planned = plannedRun(
                 run.members, reason: run.reason, evidence: evidence, policy: policy,
                 cutInputs: cutInputs, joinedSegments: joined, isOpenEnded: isOpenEnded,
@@ -384,6 +395,10 @@ public enum ConversationGrouper {
             let extent = unitExtent(pieces: pieces, turns: turns)
             let start = ConversationCut(
                 segmentId: first.piece.segmentId, mediaMs: first.piece.startMediaMs ?? 0)
+            // A boundary is fixed unless it is a segmenter decision still inside the lag.
+            func isFixed(_ cut: PlannedCut) -> Bool { cut.kind != .segmenter || cut.shouldCommit }
+            let startFixed = unit == 0 || isFixed(plan.cuts[unit - 1])
+            let endFixed = unit < plan.cuts.count ? isFixed(plan.cuts[unit]) : !isOpenEnded
             conversations.append(
                 GroupedConversation(
                     id: start.conversationId,
@@ -393,7 +408,8 @@ public enum ConversationGrouper {
                     isLive: openSegmentId != nil && last.piece.segmentId == openSegmentId
                         && last.piece.endMediaMs == nil,
                     members: pieces.map(\.piece),
-                    startReason: unit == 0 ? reason : plan.cuts[unit - 1].reason
+                    startReason: unit == 0 ? reason : plan.cuts[unit - 1].reason,
+                    isProvisional: !(startFixed && endFixed)
                 ))
             if unit > 0, plan.cuts[unit - 1].shouldCommit, start.mediaMs > 0 {
                 cutsToCommit[start] = plan.cuts[unit - 1].reason
