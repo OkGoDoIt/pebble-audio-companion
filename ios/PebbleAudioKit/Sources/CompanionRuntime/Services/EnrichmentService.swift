@@ -451,12 +451,20 @@ public actor EnrichmentService {
     /// window cannot see it, because the watch counts through quiet and rotations abut. Members
     /// that are still transcribing simply defer the decision to a later pass; grouping is
     /// derived, so the answer improves as evidence lands instead of being guessed early.
+    ///
+    /// `afterDelete` is for the delete cascade alone. A delete changes the pieces of the
+    /// conversations beside the deleted one (the silenced range joins a neighbour) without
+    /// changing a word of what they hold, and may pass through a grouping in which a neighbour
+    /// briefly answers to another id. Neither is a re-cut: nothing is moved between
+    /// conversations and no title is withdrawn; the cascade re-keys the neighbours itself.
     @discardableResult
-    public func regroup() async throws -> [GroupedConversation] {
-        try await regroupDetailed().conversations
+    public func regroup(afterDelete: Bool = false) async throws -> [GroupedConversation] {
+        try await regroupDetailed(settling: !afterDelete).conversations
     }
 
-    private func regroupDetailed() async throws -> ConversationGrouper.RebuiltGrouping {
+    private func regroupDetailed(settling: Bool = true) async throws
+        -> ConversationGrouper.RebuiltGrouping
+    {
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
         let pauses: [PauseInterval]
@@ -477,6 +485,7 @@ public actor EnrichmentService {
         )
         cachedGrouping = rebuilt.conversations
         cachedBoundaryCandidates = rebuilt.candidates
+        guard settling else { return rebuilt }
         await reconcile(after: rebuilt)
         if rebuilt.structureChanged { await withdrawStaleTitles(rebuilt.conversations) }
         return rebuilt

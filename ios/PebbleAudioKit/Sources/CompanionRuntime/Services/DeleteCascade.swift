@@ -149,6 +149,19 @@ public actor DeleteCascade {
             }
         }
 
+        // Which neighbours carry a title that was written from the pieces they have now. The
+        // delete is about to change those pieces without changing their words — the silenced
+        // range joins one of them — and such a title is still true: it is re-keyed below, not
+        // taken back and written again.
+        var titledFromTheirPieces = Set<String>()
+        for id in neighbours {
+            guard let annotation = try? await annotations.load(id) else { continue }
+            let key = ConversationSourceKey.key(of: await enrichment.pieces(ofConversation: id))
+            if ConversationSourceKey.describes(stored: annotation.sourceKey, current: key) {
+                titledFromTheirPieces.insert(id)
+            }
+        }
+
         await forgetConversationRecords(conversationId)
 
         var deleted: [String] = []
@@ -216,6 +229,19 @@ public actor DeleteCascade {
                 } catch {
                     log.failure("stored grouping rename", error)
                 }
+            }
+        }
+
+        for conversation in conversations where titledFromTheirPieces.contains(conversation.id) {
+            let key = ConversationSourceKey.key(of: conversation.members)
+            do {
+                guard var annotation = try await annotations.load(conversation.id),
+                    annotation.sourceKey != key
+                else { continue }
+                annotation.sourceKey = key
+                _ = try await annotations.save(annotation)
+            } catch {
+                log.failure("neighbour re-key", error)
             }
         }
 
@@ -378,7 +404,7 @@ public actor DeleteCascade {
     /// Regroups and returns the conversations that exist afterwards.
     private func regrouped() async -> [GroupedConversation] {
         await enrichment.invalidateGrouping()
-        return (try? await enrichment.regroup()) ?? []
+        return (try? await enrichment.regroup(afterDelete: true)) ?? []
     }
 
     /// Everything keyed by a conversation's id rather than by its audio: the annotation, the
