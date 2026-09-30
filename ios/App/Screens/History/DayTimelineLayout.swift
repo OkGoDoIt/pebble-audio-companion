@@ -37,6 +37,8 @@ struct DayTimelineLayout: Layout {
     var spacing: CGFloat = Tokens.Timeline.itemSpacing
     var gutter: CGFloat = Tokens.Timeline.gutter
     var axisX: CGFloat = Tokens.Timeline.axisX
+    /// DEBUG `-historyScaleLog`: the zone to read hours in when logging the rendered scale.
+    var scaleLogZoneID: String?
 
     struct Cache {
         var width: CGFloat = -1
@@ -109,6 +111,12 @@ struct DayTimelineLayout: Layout {
             frames.append(y...(y + h))
             y += h
         }
+        #if DEBUG
+        if let scaleLogZoneID {
+            let parts = scaleLogZoneID.split(separator: "|").map(String.init)
+            HistoryPerformance.logScale(spans: spans, frames: frames, zoneID: parts[1], day: parts[0])
+        }
+        #endif
         let markWidth = Tokens.Timeline.tickX + Tokens.Timeline.tickWidth
         for sub in subviews {
             switch sub[TimelineRoleKey.self] {
@@ -205,6 +213,46 @@ enum HistoryPerformance {
         }
         #endif
     }
+
+    #if DEBUG
+    nonisolated(unsafe) private static var loggedScales: Set<String> = []
+
+    /// DEBUG `-historyScaleLog`: the rendered height of every clock hour of the day, once per
+    /// day and width, with min / median / max and the timeline's total height.
+    static func logScale(spans: [TimelineSpan], frames: [ClosedRange<CGFloat>], zoneID: String, day: String) {
+        guard ProcessInfo.processInfo.arguments.contains("-historyScaleLog"),
+            let first = spans.first, let last = spans.last, let top = frames.first, let bottom = frames.last
+        else { return }
+        let key = "\(first.startMs)-\(spans.count)-\(Int(bottom.upperBound))"
+        guard loggedScales.insert(key).inserted else { return }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: zoneID) ?? .current
+        let start = Date(timeIntervalSince1970: Double(first.startMs) / 1000)
+        guard var hour = calendar.dateInterval(of: .hour, for: start)?.start else { return }
+        var heights: [(String, CGFloat)] = []
+        while true {
+            let next = calendar.date(byAdding: .hour, value: 1, to: hour)!
+            let a = max(Int64(hour.timeIntervalSince1970 * 1000), first.startMs)
+            let b = min(Int64(next.timeIntervalSince1970 * 1000), last.endMs)
+            if a >= last.endMs { break }
+            if let ya = TimelineGeometry.y(for: a, spans: spans, frames: frames),
+                let yb = TimelineGeometry.y(for: b, spans: spans, frames: frames),
+                b - a == 3_600_000
+            {
+                let label = HistoryFormat.hourLabel(Int64(hour.timeIntervalSince1970 * 1000), zone: calendar.timeZone)
+                heights.append((label, yb - ya))
+            }
+            hour = next
+        }
+        let sorted = heights.map(\.1).sorted()
+        let total = bottom.upperBound - top.lowerBound
+        print("[history-scale] \(day) hour heights (pt): " + heights.map { "\($0.0)=\(Int($0.1.rounded()))" }.joined(separator: " "))
+        if !sorted.isEmpty {
+            print(String(format: "[history-scale] \(day) full hours %d  min %.0f  median %.0f  max %.0f  timeline %.0f pt = %.1f screens of 640 pt",
+                         sorted.count, sorted.first!, sorted[sorted.count / 2], sorted.last!, total, total / 640))
+        }
+    }
+    #endif
 
     static func reportMeasure(_ elapsed: Duration, items: Int) {
         #if DEBUG
@@ -307,7 +355,7 @@ struct DayTimeline: View {
     var body: some View {
         let metrics = HistoryMetrics.at(dynamicTypeSize).timeline
         let marks = hourMarks(metrics: metrics)
-        DayTimelineLayout(pointsPerMinute: metrics.pointsPerMinute) {
+        DayTimelineLayout(pointsPerMinute: metrics.pointsPerMinute, scaleLogZoneID: scaleLogZoneID) {
             TimelineAxis().timelineRole(.axis)
             ForEach(Array(day.items.enumerated()), id: \.element.id) { index, item in
                 itemView(item, isLast: index == day.items.count - 1)
@@ -372,6 +420,14 @@ struct DayTimeline: View {
             }
         }
         return day.zoneID
+    }
+
+    private var scaleLogZoneID: String? {
+        #if DEBUG
+        return isComplete ? "\(day.dateKey)|\(day.zoneID)" : nil
+        #else
+        return nil
+        #endif
     }
 
     private func isCard(_ item: HistoryItem) -> Bool {
