@@ -215,12 +215,14 @@ public enum ConversationGrouper {
         overrides: [String: BoundaryDecision] = [:],
         policy: BoundaryPolicy = .default,
         cutInputs: ConversationCutInputs = .none,
-        memo: GroupingMemo? = nil
+        memo: GroupingMemo? = nil,
+        nowMs: Int64 = .max
     ) -> [GroupedConversation] {
         groupDetailed(
             segments: segments, pauses: pauses, openSegmentId: openSegmentId,
             fallbackTimeZoneID: fallbackTimeZoneID, previous: previous, evidence: evidence,
-            overrides: overrides, policy: policy, cutInputs: cutInputs, memo: memo
+            overrides: overrides, policy: policy, cutInputs: cutInputs, memo: memo,
+            nowMs: nowMs
         ).conversations
     }
 
@@ -249,7 +251,8 @@ public enum ConversationGrouper {
         overrides: [String: BoundaryDecision] = [:],
         policy: BoundaryPolicy = .default,
         cutInputs: ConversationCutInputs = .none,
-        memo: GroupingMemo? = nil
+        memo: GroupingMemo? = nil,
+        nowMs: Int64 = .max
     ) -> Grouping {
         let ordered = segments.sorted { a, b in
             if a.receivedAtMs != b.receivedAtMs { return a.receivedAtMs < b.receivedAtMs }
@@ -302,9 +305,20 @@ public enum ConversationGrouper {
             // holds the open segment. With nothing open, what is there is all there will be —
             // and treating a finished library's last conversation as still undecided would
             // leave it without its final title until the next time the watch is worn.
-            let isOpenEnded =
-                index == runs.count - 1 && openSegmentId != nil
-                && run.members.contains { $0.segmentId == openSegmentId }
+            //
+            // "Nothing open" is not quite "over", though: every time the link to the watch
+            // drops and comes back, one recording closes and the next opens a moment later IN
+            // THE SAME RUN (anything inside the chain window continues it). A regroup that
+            // lands in that gap must not declare the tail finished, title it and write its
+            // cuts down, only to have it grow a few seconds later. So a run whose last
+            // recording ended less than a chain window ago is still open-ended. `nowMs` is
+            // `.max` for callers with no clock, for whom the library is simply what it is.
+            let holdsOpenSegment =
+                openSegmentId != nil && run.members.contains { $0.segmentId == openSegmentId }
+            let endedAtMs = run.members.last.map { max(segmentEndMs($0), $0.closedAtMs ?? 0) }
+            let mayStillChain =
+                nowMs != .max && (endedAtMs.map { nowMs - $0 < chainWindowMs } ?? false)
+            let isOpenEnded = index == runs.count - 1 && (holdsOpenSegment || mayStillChain)
             let planned = plannedRun(
                 run.members, reason: run.reason, evidence: evidence, policy: policy,
                 cutInputs: cutInputs, joinedSegments: joined, isOpenEnded: isOpenEnded,
@@ -419,7 +433,7 @@ public enum ConversationGrouper {
                     startReason: unit == 0 ? reason : plan.cuts[unit - 1].reason,
                     isProvisional: !(startFixed && endFixed)
                 ))
-            if unit > 0, plan.cuts[unit - 1].shouldCommit, start.mediaMs > 0 {
+            if unit > 0, plan.cuts[unit - 1].shouldCommit {
                 cutsToCommit[start] = plan.cuts[unit - 1].reason
             }
         }
@@ -778,7 +792,8 @@ public enum ConversationGrouper {
             let grouping = groupDetailed(
                 segments: segments, pauses: pauses, openSegmentId: openSegmentId,
                 fallbackTimeZoneID: fallbackTimeZoneID, previous: previous, evidence: evidence,
-                overrides: overrides, policy: policy, cutInputs: cutInputs, memo: memo)
+                overrides: overrides, policy: policy, cutInputs: cutInputs, memo: memo,
+                nowMs: nowMs)
             try ConversationCutStore.commit(grouping.cutsToCommit, atMs: nowMs, in: d)
 
             // A piece of a transcribed segment that holds none of its turns is a silent piece.

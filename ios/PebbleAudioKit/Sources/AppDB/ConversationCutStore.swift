@@ -15,6 +15,9 @@ public struct ConversationCutStore: Sendable {
     /// Rows written by another version are ignored and replaced.
     public static let algorithm = 1
 
+    /// A span that runs to the end of a segment, whatever its length: past every real offset.
+    static let endOfSegment = Int64.max
+
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
@@ -82,11 +85,17 @@ public struct ConversationCutStore: Sendable {
             let at = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
             let from = ConversationCut(
                 segmentId: earlier.segmentId, mediaMs: earlier.startMediaMs ?? 0)
-            let to: ConversationCut? =
-                index + 1 < grouping.count
-                ? grouping[index + 1].members.first.map {
-                    ConversationCut(segmentId: $0.segmentId, mediaMs: $0.startMediaMs ?? 0)
-                } : nil
+            // Where the joined pair ends: where the next conversation starts, or — when this
+            // is the latest one — the end of the piece it ends on. Never "whatever comes
+            // after": a join is about the two conversations that exist, and what is recorded
+            // later must still be divided like any other talk.
+            var to: ConversationCut?
+            if index + 1 < grouping.count, let next = grouping[index + 1].members.first {
+                to = ConversationCut(segmentId: next.segmentId, mediaMs: next.startMediaMs ?? 0)
+            } else if let last = grouping[index].members.last {
+                to = ConversationCut(
+                    segmentId: last.segmentId, mediaMs: last.endMediaMs ?? Self.endOfSegment)
+            }
             try db.execute(
                 sql: """
                     INSERT INTO conversation_cut_overrides
@@ -113,7 +122,7 @@ public struct ConversationCutStore: Sendable {
     static func commit(
         _ cuts: [ConversationCut: ConversationStartReason], atMs: Int64, in db: Database
     ) throws {
-        for (cut, reason) in cuts where cut.mediaMs > 0 {
+        for (cut, reason) in cuts {
             try db.execute(
                 sql: """
                     INSERT INTO conversation_cuts

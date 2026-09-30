@@ -259,9 +259,11 @@ enum ConversationRunPlanner {
         // more specific decision about that exact place); settled segmenter cuts do not.
         for (index, member) in members.enumerated() {
             let id = member.meta.segmentId
-            for (media, reason) in inputs.committed[id] ?? [:] where media > 0 {
+            for (media, reason) in inputs.committed[id] ?? [:] where media >= 0 {
                 let position = RunPosition(seg: index, mediaMs: media)
-                guard media < member.mediaSpanMs, !isBlocked(position) else { continue }
+                guard media == 0 || media < member.mediaSpanMs, !isBlocked(position) else {
+                    continue
+                }
                 add(PlannedCut(position: position, reason: reason, kind: .fixed))
             }
             for media in inputs.splits[id] ?? [] where media > 0 && media < member.mediaSpanMs {
@@ -300,10 +302,10 @@ enum ConversationRunPlanner {
     // --- 1. hard cuts --------------------------------------------------------------------------
 
     /// A long settled silence ends the conversation at its last word, and the next one starts
-    /// at the first word after it. The silence itself stays with what came before — a
-    /// conversation never opens on minutes of nothing — except at the very start of a run,
-    /// where there is nothing before, and at the end of one, where the silent tail becomes its
-    /// own unit so the conversation can finish.
+    /// at the first word after it. The silence between is a unit of its own with nothing said
+    /// in it (the app titles it "No conversation"), so a conversation neither opens nor closes
+    /// on a quarter of an hour of nothing — and, more to the point, so a conversation that has
+    /// ended does not change when the recording goes on.
     ///
     /// `joinedSegments` are segments whose own start the person joined to what came before.
     /// When conversations were whole segments a quiet split landed on the segment join nearest
@@ -361,43 +363,62 @@ enum ConversationRunPlanner {
                 Stretch(startMs: previousEnd, endMs: runEndMs, last: previous, next: nil))
         }
 
-        var out: [PlannedCut] = []
-        for stretch in stretches {
-            let duration = stretch.endMs - stretch.startMs
-            guard duration >= policy.quietSplitMs else { continue }
-            let overlapping = members.filter {
-                $0.endWallMs > stretch.startMs && $0.startWallMs < stretch.endMs
-            }
-            // DEFERRAL, not a decision: a member still transcribing (or still open) looks
-            // exactly like a member in which nobody spoke.
-            guard overlapping.allSatisfy(\.isSettled) else { continue }
+        /// Whether `[from, to]` is a long enough silence to end a conversation on its own
+        /// evidence: every member overlapping it is settled (the caller guarantees that by
+        /// how it chooses the range), and it is long — twice as long when most of it is
+        /// missing audio rather than known quiet.
+        func verdict(from: Int64, to: Int64) -> ConversationStartReason? {
+            let duration = to - from
+            guard duration >= policy.quietSplitMs else { return nil }
+            let overlapping = members.filter { $0.endWallMs > from && $0.startWallMs < to }
             if !joinedSegments.isEmpty,
                 overlapping.contains(where: {
                     joinedSegments.contains($0.meta.segmentId)
-                        && $0.startWallMs >= stretch.startMs && $0.startWallMs <= stretch.endMs
+                        && $0.startWallMs >= from && $0.startWallMs <= to
                 })
             {
-                continue
+                return nil
             }
             let lostMs = overlapping.reduce(Int64(0)) { total, member in
                 total
                     + ConversationBoundaryDetector.lossSpansMs(member.meta).reduce(Int64(0)) {
-                        $0 + max(0, min($1.1, stretch.endMs) - max($1.0, stretch.startMs))
+                        $0 + max(0, min($1.1, to) - max($1.0, from))
                     }
             }
             let lossDominated = Double(lostMs) / Double(duration) > policy.lossDominanceFraction
             if lossDominated {
                 let scaled = Double(policy.quietSplitMs) * policy.lossThresholdMultiplier
-                guard Double(duration) >= scaled else { continue }
+                guard Double(duration) >= scaled else { return nil }
             }
-            let reason: ConversationStartReason = lossDominated ? .interrupted : .quiet
-            if let next = stretch.next {
-                out.append(
-                    PlannedCut(
-                        position: position(beforeTurn: next, in: turns), reason: reason,
-                        kind: .hard))
-            } else if let last = stretch.last {
-                // Trailing: the silent tail becomes its own unit.
+            return lossDominated ? .interrupted : .quiet
+        }
+
+        var out: [PlannedCut] = []
+        for stretch in stretches {
+            guard stretch.endMs - stretch.startMs >= policy.quietSplitMs else { continue }
+            // DEFERRAL, not a decision: a member still transcribing (or still open) looks
+            // exactly like a member in which nobody spoke. So the silence is read only as far
+            // as it is settled — forward from the last word, and back from the next one — and
+            // each end is decided on its own. That is what keeps a conversation FINISHED: once
+            // a quarter of an hour of settled silence follows its last word it ends there, and
+            // nothing that is recorded afterwards (more silence, a segment still open, talk
+            // resuming) can hand the silence back to it.
+            let unsettled = members.filter {
+                !$0.isSettled && $0.endWallMs > stretch.startMs && $0.startWallMs < stretch.endMs
+            }
+            let settledUntil =
+                unsettled.map(\.startWallMs).min().map { max($0, stretch.startMs) }
+                ?? stretch.endMs
+            let settledFrom =
+                unsettled.map(\.endWallMs).max().map { min($0, stretch.endMs) }
+                ?? stretch.startMs
+
+            // The end of the conversation before the silence: just after its last word. The
+            // silence itself becomes a unit of its own, so neither conversation beside it
+            // holds a quarter of an hour of nothing.
+            if let last = stretch.last,
+                let reason = verdict(from: stretch.startMs, to: settledUntil)
+            {
                 let turn = turns[last]
                 let after = turn.mediaEndMs + postRollMs
                 let position =
@@ -405,6 +426,14 @@ enum ConversationRunPlanner {
                     ? RunPosition(seg: turn.seg, mediaMs: after)
                     : RunPosition(seg: turn.seg + 1, mediaMs: 0)
                 out.append(PlannedCut(position: position, reason: reason, kind: .hard))
+            }
+            // The start of the conversation after it: at its first word.
+            if let next = stretch.next, let reason = verdict(from: settledFrom, to: stretch.endMs)
+            {
+                out.append(
+                    PlannedCut(
+                        position: position(beforeTurn: next, in: turns), reason: reason,
+                        kind: .hard))
             }
         }
         return out

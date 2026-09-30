@@ -103,6 +103,10 @@ public struct SegmentSpeechEvidence: Equatable, Sendable {
             hasher.combine(span.endMs)
             hasher.combine(span.wordCount)
             hasher.combine(span.features?.terms.count ?? -1)
+            hasher.combine(span.features?.speaker)
+            hasher.combine(span.features?.isForeign)
+            hasher.combine(span.features?.isDictation)
+            hasher.combine(span.features?.opensWithGreeting)
         }
         return hasher.finalize()
     }
