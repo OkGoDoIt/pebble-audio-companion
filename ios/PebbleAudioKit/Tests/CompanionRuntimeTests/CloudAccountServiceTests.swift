@@ -46,6 +46,7 @@ import Transcription
         let batch: Batch
         let health: CloudHealthMonitor
         let service: TranscriptionService
+        let queue: TranscriptionQueue
     }
 
     private func rig(
@@ -81,7 +82,8 @@ import Transcription
             cloudAccounts: cloud,
             cloudFailureText: { "shown: \(TranscriptionFailureKind.classify($0).rawValue)" }
         )
-        return Rig(clock: clock, hold: hold, batch: batch, health: health, service: service)
+        return Rig(
+            clock: clock, hold: hold, batch: batch, health: health, service: service, queue: queue)
     }
 
     /// The key is fine and the account is empty: Test Connection says so (and holds), where it used
@@ -122,6 +124,26 @@ import Transcription
         #expect(rig.batch.calls == 2)
         #expect(rig.hold.active(for: .soniox) == nil)
         #expect(rig.health.state.status == .ok)
+    }
+
+    /// A drain is one stage that can run for hours over a backlog, and the check on a held account
+    /// used to wait for the next pass: on 2026-09-30 a raised Soniox limit sat unused for the
+    /// length of an on-device backlog. The check now runs between drained tasks, and the task after
+    /// a successful one goes to the cloud.
+    @Test func aHeldAccountIsCheckedBetweenDrainedTasks() async throws {
+        let rig = try rig(failure: Self.refused, mode: .remoteOnly)
+        rig.hold.trip(.accountOutOfFunds, provider: .soniox)
+        try rig.queue.enqueue("seg-a")
+        try rig.queue.enqueue("seg-b")
+        rig.batch.fail(with: nil)  // the account was topped up after the hold
+
+        let clock = rig.clock
+        _ = try await rig.service.drainQueue(onAdvance: { await clock.advance(by: 16 * 60_000) })
+
+        #expect(rig.hold.active(for: .soniox) == nil, "checked mid-drain, and lifted")
+        #expect(rig.batch.calls == 2, "one check, then the next task transcribed in the cloud")
+        let states = try [rig.queue.load("seg-a")?.state, rig.queue.load("seg-b")?.state]
+        #expect(states.contains(.complete))
     }
 
     /// On-device only means the cloud is never contacted — not even to check an old hold.

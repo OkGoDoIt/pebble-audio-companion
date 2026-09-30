@@ -139,6 +139,27 @@ import Testing
         #endif
     }
 
+    /// Every segment across the roots (newest root wins), in wall order, with a turn loader:
+    /// what the service gives the classifier, so the harness scores the same verdicts.
+    private static func library(_ roots: [URL]) -> (
+        ordered: [SegmentMeta], index: [String: Int], turnsOf: (String) -> [TranscriptSegment]?
+    ) {
+        var chosen: [String: (URL, SegmentMeta)] = [:]
+        for root in roots {
+            for meta in SegmentFileReader(root: root).listSegments() {
+                chosen[meta.segmentId] = (root, meta)
+            }
+        }
+        let ordered = chosen.values.map(\.1).sorted {
+            ($0.startWallMs, $0.segmentId) < ($1.startWallMs, $1.segmentId)
+        }
+        let index = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($1.segmentId, $0) })
+        let rootOf = chosen.mapValues(\.0)
+        return (ordered, index, { id in
+            rootOf[id].flatMap { FileTranscriptStore(root: $0, nowMs: { 0 }).loadSpeechTimings(id) }
+        })
+    }
+
     /// Scores the SHIPPED classifier (`AudioContentClassifier`) against hand labels.
     ///
     /// Runs when `PEBBLE_NONCONV_ROOTS` and `PEBBLE_NONCONV_LABELS` are set. The labels file is
@@ -182,6 +203,7 @@ import Testing
         var tallies: [String: Tally] = [:]
         var byDecider: [String: [String: Int]] = [:]
         var cache: [String: [SegmentAudioContentSpan]?] = [:]
+        let library = Self.library(roots)
 
         for line in lines {
             let f = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
@@ -191,13 +213,13 @@ import Testing
             guard label != "U" else { continue }
             if cache[seg] == nil {
                 var result: [SegmentAudioContentSpan]? = nil
-                for root in roots.reversed() {
-                    let reader = SegmentFileReader(root: root)
-                    guard let meta = reader.readMeta(seg) else { continue }
-                    let transcripts = FileTranscriptStore(root: root, nowMs: { 0 })
+                if let position = library.index[seg] {
+                    let around = AudioContentClassifier.neighbours(
+                        of: position, in: library.ordered, turnsOf: library.turnsOf,
+                        versionOf: { _ in "" })
                     result = AudioContentClassifier.classify(
-                        meta: meta, turns: transcripts.loadSpeechTimings(seg))
-                    break
+                        meta: library.ordered[position], turns: library.turnsOf(seg),
+                        neighbours: around.neighbours)
                 }
                 cache[seg] = .some(result)
             }
@@ -280,19 +302,18 @@ import Testing
         let roots = rootsRaw.split(separator: ":").map {
             URL(fileURLWithPath: String($0), isDirectory: true)
         }
-        var chosen: [String: URL] = [:]
-        for root in roots {
-            for meta in SegmentFileReader(root: root).listSegments() { chosen[meta.segmentId] = root }
-        }
+        let library = Self.library(roots)
         var hours: [String: Double] = [:]
-        var segments = 0, unclassified = 0, loopSegments = 0, fewWordSpans = 0
+        var segments = 0, unclassified = 0, loopSegments = 0, fewWordSpans = 0, isolated = 0
         let clock = ContinuousClock()
         var busy = Duration.zero
-        for (id, root) in chosen.sorted(by: { $0.key < $1.key }) {
-            guard let meta = SegmentFileReader(root: root).readMeta(id) else { continue }
+        for (position, meta) in library.ordered.enumerated() {
             let started = clock.now
-            let turns = FileTranscriptStore(root: root, nowMs: { 0 }).loadSpeechTimings(id)
-            let spans = AudioContentClassifier.classify(meta: meta, turns: turns)
+            let turns = library.turnsOf(meta.segmentId)
+            let around = AudioContentClassifier.neighbours(
+                of: position, in: library.ordered, turnsOf: library.turnsOf, versionOf: { _ in "" })
+            let spans = AudioContentClassifier.classify(
+                meta: meta, turns: turns, neighbours: around.neighbours)
             busy += clock.now - started
             guard let spans else {
                 unclassified += 1
@@ -300,18 +321,20 @@ import Testing
             }
             segments += 1
             if spans.contains(where: { $0.decidedBy == AudioContentDecider.loop }) { loopSegments += 1 }
+            isolated += spans.filter { $0.decidedBy == AudioContentDecider.isolatedWords }.count
             for span in spans {
                 let key = "\(span.kind.rawValue)/\(span.decidedBy)"
                 hours[key, default: 0] += Double(span.endMs - span.startMs) / 3_600_000
                 if span.descriptor == AudioContentDescriptor.fewWords { fewWordSpans += 1 }
             }
         }
+        let chosen = library.ordered
         print("shipped classifier v\(AudioContentMethod.version) over \(chosen.count) segments:")
         print("  classified \(segments), unclassified \(unclassified) (not transcribed, open or no file)")
         for (key, value) in hours.sorted(by: { $0.key < $1.key }) {
             print(String(format: "  %@: %.1f h", key, value))
         }
-        print("  few-words spans \(fewWordSpans); segments with a loop span \(loopSegments)")
+        print("  few-words spans \(fewWordSpans) (\(isolated) of them stray remarks); segments with a loop span \(loopSegments)")
         print("  read + classify time: \(busy)")
     }
 

@@ -140,6 +140,104 @@ struct AudioContentClassifierTests {
         #expect(talked.map(\.kind) == [.conversation])
     }
 
+    @Test("a stray remark with nothing said around it is a few words, not a conversation")
+    func strayRemarkIsFewWords() throws {
+        // Roger's example: 12 seconds after a long quiet stretch, "It is a good one. Thanks."
+        let short = meta(wallMs: 12_000)
+        let remark = [TranscriptSegment(text: "It is a good one. Thanks.", startMs: 2_000, endMs: 6_000)]
+        let quiet = try #require(
+            AudioContentClassifier.classify(meta: short, turns: remark, neighbours: .quiet))
+        #expect(quiet.map(\.kind) == [.noConversation])
+        #expect(quiet[0].decidedBy == AudioContentDecider.isolatedWords)
+        #expect(quiet[0].descriptor == AudioContentDescriptor.fewWords)
+        #expect(quiet[0].wordCount == 6)
+        // A neighbour that is not transcribed yet: not judged until it is.
+        let unknown = try #require(
+            AudioContentClassifier.classify(meta: short, turns: remark, neighbours: .unknown))
+        #expect(unknown.map(\.kind) == [.conversation])
+        // The next recording starts talking straight away: the remark is part of that.
+        let talking = try #require(
+            AudioContentClassifier.classify(
+                meta: short, turns: remark,
+                neighbours: AudioContentNeighbours(wordsBefore: 0, wordsAfter: 60)))
+        #expect(talking.map(\.kind) == [.conversation])
+        // Short is not the same as sparse: 12 seconds with 40 words is talk.
+        let burst = [talk(0, 12_000, words: 40)]
+        let spoken = try #require(
+            AudioContentClassifier.classify(meta: short, turns: burst, neighbours: .quiet))
+        #expect(spoken.map(\.kind) == [.conversation])
+    }
+
+    @Test("a remark in the middle of a long recording is judged against the minutes around it")
+    func strayRemarkInsideASegment() throws {
+        // 15 minutes: talk 0-3, nothing 3-8, "Coffee." at 8:30, nothing after.
+        var turns = (0..<3).map { minute in
+            talk(Int64(minute) * 60_000, Int64(minute) * 60_000 + 55_000, words: 90)
+        }
+        turns.append(TranscriptSegment(text: "Coffee. Coffee, we'll see.", startMs: 510_000, endMs: 514_000))
+        let spans = try #require(
+            AudioContentClassifier.classify(meta: meta(), turns: turns, neighbours: .quiet))
+        #expect(spans.first?.kind == .conversation && spans.first?.wordCount == 270)
+        let remark = try #require(spans.first { $0.decidedBy == AudioContentDecider.isolatedWords })
+        #expect(remark.startMs == start + 480_000 && remark.wordCount == 4)
+        // Within two minutes of the talk it would have been a pause in that talk instead.
+        var near = Array(turns.prefix(3))
+        near.append(TranscriptSegment(text: "Coffee. Coffee, we'll see.", startMs: 250_000, endMs: 254_000))
+        let joined = try #require(
+            AudioContentClassifier.classify(meta: meta(), turns: near, neighbours: .quiet))
+        #expect(!joined.contains { $0.decidedBy == AudioContentDecider.isolatedWords })
+    }
+
+    @Test("neighbours are read across a short gap only, and an unsettled one is unknown")
+    func neighbourContext() {
+        var a = meta(wallMs: 600_000)
+        a.segmentId = "a"
+        var b = meta(wallMs: 600_000)
+        b.segmentId = "b"
+        b.startTimeMs = a.startTimeMs + 630_000  // 30 s after a ends
+        var c = meta(wallMs: 600_000, state: .pending)
+        c.segmentId = "c"
+        c.startTimeMs = b.startTimeMs + 610_000  // 10 s after b ends, still transcribing
+        let segments = [a, b, c]
+        let turnsOf: (String) -> [TranscriptSegment]? = { id in
+            id == "a" ? [self.talk(560_000, 590_000, words: 25)] : []
+        }
+        let around = AudioContentClassifier.neighbours(
+            of: 1, in: segments, turnsOf: turnsOf, versionOf: { _ in "v" })
+        #expect(around.neighbours.wordsBefore == 25)
+        #expect(around.neighbours.wordsAfter == nil)
+        #expect(around.key == "a:C:v/c:Pending")
+        let first = AudioContentClassifier.neighbours(
+            of: 0, in: segments, turnsOf: turnsOf, versionOf: { _ in "v" })
+        #expect(first.neighbours.wordsBefore == 0)  // nothing before a
+    }
+
+    @Test("an AI reading turns talk-rate lyrics into no conversation, but never adds talk")
+    func judgementApplies() throws {
+        let turns = (0..<7).map { minute in
+            talk(Int64(minute) * 60_000, Int64(minute) * 60_000 + 55_000, words: 100)
+        }
+        let judged = [
+            JudgedMinute(m: 1, kind: "music", confidence: 0.95),
+            JudgedMinute(m: 2, kind: "music", confidence: 0.97),
+            JudgedMinute(m: 3, kind: "tvOrVideo", confidence: 0.9),
+            JudgedMinute(m: 4, kind: "music", confidence: 0.85),  // not sure enough
+            JudgedMinute(m: 5, kind: "loop", confidence: 0.99),  // the word rules own loops
+            JudgedMinute(m: 6, kind: "gibberish", confidence: 0.99),  // not acted on
+            JudgedMinute(m: 7, kind: "conversation", confidence: 0.99),  // a quiet minute stays quiet
+        ]
+        let spans = try #require(
+            AudioContentClassifier.classify(
+                meta: meta(wallMs: 480_000), turns: turns, neighbours: .quiet, judged: judged))
+        #expect(spans.map(\.decidedBy) == ["wordRate", "contentJudge", "contentJudge", "wordRate", "wordRate"])
+        #expect(spans.map(\.kind) == [.conversation, .noConversation, .noConversation, .conversation, .noConversation])
+        // Lyrics are named, and two minutes of them are one span that still says so; TV is
+        // plain "no conversation", a span of its own.
+        #expect(spans.map(\.descriptor) == [nil, AudioContentDescriptor.music, nil, nil, nil])
+        #expect(spans[1].endMs - spans[1].startMs == 120_000)
+        #expect(spans[1].confidence == AudioContentMethod.judgeConfidence)
+    }
+
     @Test("a NoSpeech segment is one no-conversation span with the transcriber as author")
     func noSpeechSegment() throws {
         let spans = try #require(

@@ -12,14 +12,15 @@ import StatusUI
 // spanned a reconnect lost everything before it, on a screen the user was watching at the
 // time. They share this now, so a live conversation is the same conversation, still growing.
 
-/// What one member segment contributes to a conversation's transcript.
+/// What one member contributes to a conversation's transcript: the PIECE of its segment the
+/// conversation owns, which is the whole segment only when nothing else shares it.
 struct MemberTranscript {
     var items: [TranscriptItem] = []
     /// Id of the last speech row, so a still-open member can mark it as the growing tail.
     var lastTurnId: String?
-    /// Stored audio in the member (the player's clock), gaps excluded.
+    /// Stored audio in the piece (the player's clock), gaps excluded.
     var mediaMs: Int64 = 0
-    /// Media offsets, within this member, of each gap — for the scrubber's amber ticks.
+    /// Offsets, within this piece's stored audio, of each gap — for the scrubber's amber ticks.
     var missingMediaOffsets: [Int64] = []
 }
 
@@ -54,18 +55,28 @@ enum TranscriptTimebase {
 enum TranscriptItems {
     /// Builds the rows for one member segment from whatever text exists for it — the durable
     /// transcript when it has landed, the live preview while it hasn't.
+    ///
+    /// `piece` is the range of the segment this conversation owns; nil is the whole segment. A
+    /// segment routinely holds the end of one conversation and the start of the next, so with
+    /// a piece this builds ONLY what is inside it: the turns that start in it, the quiet and
+    /// interrupted rows whose records start in it, and scrubber positions counted from the
+    /// piece's first frame rather than the segment's. `segments` and `words` are still handed
+    /// over in the SEGMENT's clock — the piece's bounds are on it too — and may be the whole
+    /// segment's: anything outside the piece is dropped here, so a caller cannot show a
+    /// neighbour's words by forgetting to cut first.
     static func member(
         segmentId: String,
         meta: SegmentMeta,
         segments: [SearchKit.TranscriptSegment],
         words: [SearchKit.TranscriptWord] = [],
         assignments: [SpeakerAssignment],
-        /// Media time consumed by the members already walked, so each turn can carry its
+        /// Media time consumed by the pieces already walked, so each turn can carry its
         /// position on the CONVERSATION's scrubber rather than one local to this segment.
         mediaBeforeMemberMs: Int64 = 0,
         /// Which clock `segments`/`words` are on. Defaults to `.wall` because that is what this
         /// builder assumed before the two were told apart; the durable path passes `.media`.
-        timebase: TranscriptTimebase = .wall
+        timebase: TranscriptTimebase = .wall,
+        piece: ConversationMember? = nil
     ) -> MemberTranscript {
         var result = MemberTranscript()
         // Two clocks: wall time (the stamps beside each speaker) and media time (what the
@@ -84,7 +95,12 @@ enum TranscriptItems {
         // marker on those was wrong.
         let wallStartMs = ConversationGrouper.segmentStartMs(meta)
         let clock = SegmentMediaClock(meta)
-        result.mediaMs = clock.mediaSpanMs
+        // The piece on all three clocks. For a whole segment this is `0..<mediaSpanMs` with no
+        // wall window, and everything below is exactly what it was before pieces existed.
+        let own = PieceSpan(
+            piece ?? ConversationMember(segmentId: segmentId), clock: clock,
+            frameDurationMs: Int64(meta.frameDurationMs))
+        result.mediaMs = own.durationMs
         func wallDate(_ offsetMs: Int64) -> Date {
             Date(timeIntervalSince1970: Double(wallStartMs + offsetMs) / 1000)
         }
@@ -102,14 +118,17 @@ enum TranscriptItems {
         // from one and the stamps inside it from the other.
         let convertsFromMedia = timebase == .media && clock.isExact
         let passesMediaThrough = timebase == .media && !clock.isExact
-        /// A wall offset into this member, as a position on the CONVERSATION's scrubber.
+        /// A wall offset into this member, as a position on the CONVERSATION's scrubber: the
+        /// pieces before this one, plus how far into THIS piece the moment is. Not how far into
+        /// the segment — the part of the segment before the piece is another conversation's
+        /// audio, and the player never holds it.
         func mediaOffset(_ wallMs: Int64) -> Int64? {
             guard result.mediaMs > 0 else { return nil }
-            guard !passesMediaThrough else {
-                // Untouched on the way in, so untouched on the way out.
-                return mediaBeforeMemberMs + min(max(wallMs, 0), clock.mediaSpanMs)
-            }
-            return mediaBeforeMemberMs + clock.media(fromWall: wallMs)
+            // Untouched on the way in (`passesMediaThrough`), so untouched on the way out.
+            let segmentMediaMs =
+                passesMediaThrough
+                ? min(max(wallMs, 0), clock.mediaSpanMs) : clock.media(fromWall: wallMs)
+            return mediaBeforeMemberMs + own.offset(ofSegmentMediaMs: segmentMediaMs)
         }
         /// The stamp beside a turn. Clamped to the member's span so a live preview that has
         /// run past the metadata cannot print a time outside the recording it belongs to.
@@ -135,18 +154,37 @@ enum TranscriptItems {
         // is cheap: one binary search per timing, no allocation beyond the mapped arrays. The
         // rows' own stamps were already converted individually and were already right; this is
         // about the order they appear in and the gaps derived BETWEEN them.
+        // ONLY THIS PIECE'S WORDS, decided on the clock the piece's bounds are on. A turn (and
+        // a word) belongs to the piece its first instant falls in — the rule
+        // `SegmentTranscript.piece` cuts by — so every turn of a shared segment appears in
+        // exactly one conversation. Durable timings are on the media clock, as the bounds are;
+        // the live preview is on the wall clock, so it is tested against the piece's wall
+        // window instead.
+        let ownSegments: [SearchKit.TranscriptSegment]
+        let ownWords: [SearchKit.TranscriptWord]
+        if own.member.isWhole {
+            ownSegments = segments
+            ownWords = words
+        } else if timebase == .media {
+            ownSegments = segments.filter { own.member.contains(mediaMs: $0.startMs) }
+            ownWords = words.filter { own.member.contains(mediaMs: $0.startMs) }
+        } else {
+            ownSegments = segments.filter { own.wallMs?.contains($0.startMs) ?? true }
+            ownWords = words.filter { own.wallMs?.contains($0.startMs) ?? true }
+        }
+
         let wallSegments: [SearchKit.TranscriptSegment]
         let wallWords: [SearchKit.TranscriptWord]
         if convertsFromMedia {
             // `wallOffset(ofMedia:)` is the shared form of this rule (exact → converted); this
             // branch only runs on an exact clock, so it is `wall(fromMedia:)` here.
-            wallSegments = segments.map {
+            wallSegments = ownSegments.map {
                 var span = $0
                 span.startMs = clock.wallOffset(ofMedia: $0.startMs)
                 span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
                 return span
             }
-            wallWords = words.map {
+            wallWords = ownWords.map {
                 var span = $0
                 span.startMs = clock.wallOffset(ofMedia: $0.startMs)
                 span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
@@ -158,8 +196,8 @@ enum TranscriptItems {
             // preview can be a flush ahead of the metadata it is previewing, and pinning its
             // newest rows to the last known sample would stack them on one instant. The stamp
             // is clamped where it is rendered, exactly as it was before.
-            wallSegments = segments
-            wallWords = words
+            wallSegments = ownSegments
+            wallWords = ownWords
         }
 
         // Looped transcriber output is taken out of the rows before anything else is derived
@@ -168,9 +206,11 @@ enum TranscriptItems {
         // rendered text, so dropping turns without dropping their words slides every later
         // highlight by the removed characters.
         let cleaned = filteringLoopedArtefacts(segments: wallSegments, words: wallWords)
+        // The gap records are the one input nothing above could cut: the renderer reads them
+        // off the meta, so it is told which stretch of the segment this is.
         let timeline = transcriptTimelineItems(
             meta: meta, segments: cleaned.segments, words: cleaned.words,
-            suppressedLoops: cleaned.loops)
+            suppressedLoops: cleaned.loops, window: own.wallMs)
         // Word timings are aligned to the rendered turns ONCE for the whole member, because the
         // only reliable correspondence between them is positional: both derive from the same
         // provider token stream, so the Nth letter of the transcript is the Nth letter of the
@@ -218,7 +258,7 @@ enum TranscriptItems {
                     // Where the gap falls on the SCRUBBER. Recorded even for the brief
                     // interruptions that earn no transcript row below — the tick and the
                     // recording's missing total are how those stay visible.
-                    let tick = clock.media(fromWall: pause.startMs)
+                    let tick = own.offset(ofSegmentMediaMs: clock.media(fromWall: pause.startMs))
                     result.missingMediaOffsets.append(tick)
                     if pause.isShownInTranscript { result.items.append(.missing(marker)) }
                 } else {
@@ -276,17 +316,6 @@ enum TranscriptItems {
     static func timeZone(_ meta: SegmentMeta?) -> TimeZone? {
         meta?.recordedTimeZone.flatMap { TimeZone(identifier: $0) }
     }
-}
-
-/// Stored audio in a segment, in milliseconds — frames on disk, not the wall span the segment
-/// covers. `segmentDurationMs` is the latter, and the two differ by exactly the audio lost.
-///
-/// `SegmentMediaClock` and both duration primitives now live in the kit
-/// (`SegmentStore/SegmentMediaClock.swift`), because the conversation-boundary detector and
-/// Ask's citation targets need the same conversion and sit below this layer. This stays as the
-/// name the app-side call sites already use.
-func mediaDurationMs(_ meta: SegmentMeta) -> Int64 {
-    segmentStoredAudioMs(meta)
 }
 
 // MARK: - Word alignment

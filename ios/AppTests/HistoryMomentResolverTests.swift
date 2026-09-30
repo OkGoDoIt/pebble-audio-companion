@@ -148,7 +148,7 @@ struct HistoryMomentScrubberTests {
         var mediaOffsetMs: Int64?
         for member in members {
             guard let meta = metas[member] else { continue }
-            let mediaMs = mediaDurationMs(meta)
+            let mediaMs = segmentStoredAudioMs(meta)
             if member == citedId {
                 guard mediaMs > 0 else { break }
                 let memberStartMs = ConversationGrouper.segmentStartMs(meta)

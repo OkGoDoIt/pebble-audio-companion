@@ -76,6 +76,19 @@ public actor SegmentWaveformBuilder {
         self.minRebuildDeltaFrames = minRebuildDeltaFrames
     }
 
+    /// Forgets the cached waveform if it is this segment's.
+    ///
+    /// The cache is keyed on the frame COUNT, which is the right key for a segment that only
+    /// ever grows. Deleting part of a segment silences frames in place and leaves the count
+    /// exactly what it was (`SegmentStore.silenceAudio`), so without this the bars of the
+    /// deleted audio would go on being drawn until another segment happened to be opened.
+    public func invalidate(segmentId: String) {
+        guard cachedSegmentId == segmentId else { return }
+        cachedSegmentId = nil
+        cachedFrameCount = -1
+        cachedValue = nil
+    }
+
     public func build(
         meta: SegmentMeta,
         framesProvider: @Sendable () -> [FrameRecord]

@@ -22,6 +22,9 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     /// Rebuild the conversation grouping. Cheap, local, AI-free — and its OWN stage, because
     /// the entire UI reads the grouped tables and must never wait on the AI layer to see them.
     case regroup
+    /// Method 2 of the audio-content classification: an AI reading of what newly transcribed
+    /// segments' words are (lyrics, TV, announcements). An AI stage — gated like `.enrich`.
+    case judgeAudio
     case enrich
     case donate
     case followUps
@@ -53,6 +56,8 @@ public struct PipelineSteps: Sendable {
     /// Classifies segments whose transcripts changed. Returns true when it wrote anything, so
     /// a backfill comes straight back for the rest.
     public var classifyAudio: @Sendable () async throws -> Bool
+    /// One AI-reading pass (`AudioContentService.judgePass`). True when it saved a reading.
+    public var judgeAudio: @Sendable () async throws -> Bool
     /// Rebuilds the conversation grouping the whole UI reads. Returns whether its STRUCTURE
     /// changed — a conversation appeared, gained or lost a member, a member's transcription
     /// state moved, or a conversation went live or closed. The live conversation's extent
@@ -110,6 +115,7 @@ public struct PipelineSteps: Sendable {
         drainQueue: @escaping @Sendable () async throws -> Bool = { false },
         enforceRetentionIfDue: @escaping @Sendable () async -> Bool = { false },
         classifyAudio: @escaping @Sendable () async throws -> Bool = { false },
+        judgeAudio: @escaping @Sendable () async throws -> Bool = { false },
         regroup: @escaping @Sendable () async throws -> Bool = { true },
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
@@ -137,6 +143,7 @@ public struct PipelineSteps: Sendable {
         self.drainQueue = drainQueue
         self.enforceRetentionIfDue = enforceRetentionIfDue
         self.classifyAudio = classifyAudio
+        self.judgeAudio = judgeAudio
         self.regroup = regroup
         self.enrich = enrich
         self.donate = donate
@@ -383,6 +390,13 @@ public struct PipelinePass: Sendable {
         let foreground = steps.isForeground()
         let aiStagesDue = foreground || groupingChanged || memory.aiStagesLeftWork
 
+        // 6b. What the new transcripts' words are, before anything is titled from them. Its
+        //     verdicts land in the NEXT pass's classification (and so the next enrich), which
+        //     keeps this pass's inputs consistent with each other.
+        let judged = try await stage(
+            .judgeAudio, fallback: false, heavy: true, when: aiStagesDue, steps.judgeAudio)
+        if judged { processed = true }
+
         // 7/8. Titles + summaries, then search/Spotlight donation of exactly what changed.
         //      BOUNDED per pass: the backlog drains over many passes rather than holding this
         //      one open for minutes.
@@ -404,7 +418,7 @@ public struct PipelinePass: Sendable {
             await steps.onDiagnosticsDirty()
         }
         if aiStagesDue {
-            memory.aiStagesLeftWork = !enriched.isEmpty || followUpsWrote
+            memory.aiStagesLeftWork = !enriched.isEmpty || followUpsWrote || judged
         }
 
         // 10. Daily recap (its own debounce decides whether anything actually runs). A summary of

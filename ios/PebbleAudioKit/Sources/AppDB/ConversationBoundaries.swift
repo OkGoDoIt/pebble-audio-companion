@@ -49,11 +49,26 @@ public struct SpeechSpan: Equatable, Sendable {
     /// then measures nothing and never blocks a split, which is exactly the behaviour before
     /// word counts existed.
     public var wordCount: Int
+    /// What the conversation segmenter reads from the turn's text (`ConversationLexicon`). Nil
+    /// where a caller has timings only; the segmenter then works from the timings alone.
+    public var features: TurnFeatures?
 
-    public init(startMs: Int64, endMs: Int64, wordCount: Int = 0) {
+    public init(
+        startMs: Int64, endMs: Int64, wordCount: Int = 0, features: TurnFeatures? = nil
+    ) {
         self.startMs = startMs
         self.endMs = max(endMs, startMs)
         self.wordCount = wordCount
+        self.features = features
+    }
+
+    /// A turn with its text: the word count and the segmenter's features are derived here, so
+    /// every place that builds evidence from a transcript agrees on both.
+    public init(startMs: Int64, endMs: Int64, text: String, speaker: String?) {
+        self.init(
+            startMs: startMs, endMs: endMs,
+            wordCount: text.split(whereSeparator: \.isWhitespace).count,
+            features: ConversationLexicon.features(text: text, speaker: speaker))
     }
 }
 
@@ -76,6 +91,24 @@ public struct SegmentSpeechEvidence: Equatable, Sendable {
         self.segmentId = segmentId
         self.isSettled = isSettled
         self.speech = speech
+    }
+
+    /// A cheap hash of where the speech is, for memoising a grouping on its evidence. Not
+    /// stable across launches, and it does not need to be.
+    var fingerprint: Int {
+        var hasher = Hasher()
+        hasher.combine(speech.count)
+        for span in speech {
+            hasher.combine(span.startMs)
+            hasher.combine(span.endMs)
+            hasher.combine(span.wordCount)
+            hasher.combine(span.features?.terms.count ?? -1)
+            hasher.combine(span.features?.speaker)
+            hasher.combine(span.features?.isForeign)
+            hasher.combine(span.features?.isDictation)
+            hasher.combine(span.features?.opensWithGreeting)
+        }
+        return hasher.finalize()
     }
 
     /// The settling rule, in one place.
@@ -126,8 +159,17 @@ public enum ConversationStartReason: String, Sendable, Codable, CaseIterable {
     /// Same, but the stretch was mostly MISSING audio rather than known-quiet. Never conflated
     /// with `quiet`: one is calm, the other is a hole in the record.
     case interrupted
-    /// The semantic reviewer judged a candidate boundary to be a real change of subject/people.
+    /// The talk itself changed here — who was speaking, how, or about what — with no long
+    /// silence to mark it (`ConversationSegmenter`). Also what the retired semantic reviewer
+    /// wrote, which meant the same thing.
     case topicChange
+    /// The talk picked up again after a few quiet minutes, and what followed was a different
+    /// conversation. Shorter than `quiet`, which is a silence long enough to end one by itself.
+    case lull
+    /// Nothing is known about this stretch yet except how long it is: its recordings are not
+    /// transcribed. It is divided by length so that waiting audio is never one day-long block,
+    /// and divided again, properly, when the transcripts arrive.
+    case length
     /// The user split here by hand.
     case manual
 }
@@ -181,7 +223,7 @@ public enum BoundaryDecision: String, Sendable, Codable, CaseIterable {
 ///    honest word counts and titles; worthless for grouping.
 ///  - **Cutting on a recorded link gap ≥ 10 min.** Two extra cuts library-wide, no boundary
 ///    found, no trap hit — already covered by `.interrupted` on a loss-dominated quiet stretch.
-public struct BoundaryPolicy: Equatable, Sendable {
+public struct BoundaryPolicy: Hashable, Sendable {
     /// A settled no-speech stretch at least this long ends the conversation — unless the
     /// wearer was still in full flow on both sides of it (`flankFlowWordsPerMinute`).
     public var quietSplitMs: Int64
@@ -212,6 +254,9 @@ public struct BoundaryPolicy: Equatable, Sendable {
     public var flankFlowWordsPerMinute: Double
     /// How much of the record either side of the silence the guard reads.
     public var flankWindowMs: Int64
+    /// How talk with no long silence in it is divided into conversations. Nil turns the
+    /// segmenter off, which leaves only the structural rules and the long-quiet rule.
+    public var segmenter: SegmenterPolicy?
 
     public init(
         quietSplitMs: Int64 = 15 * 60 * 1000,
@@ -219,7 +264,8 @@ public struct BoundaryPolicy: Equatable, Sendable {
         lossDominanceFraction: Double = 0.5,
         lossThresholdMultiplier: Double = 2,
         flankFlowWordsPerMinute: Double = 30,
-        flankWindowMs: Int64 = 10 * 60 * 1000
+        flankWindowMs: Int64 = 10 * 60 * 1000,
+        segmenter: SegmenterPolicy? = .default
     ) {
         self.quietSplitMs = quietSplitMs
         self.quietCandidateMs = quietCandidateMs
@@ -227,6 +273,7 @@ public struct BoundaryPolicy: Equatable, Sendable {
         self.lossThresholdMultiplier = lossThresholdMultiplier
         self.flankFlowWordsPerMinute = flankFlowWordsPerMinute
         self.flankWindowMs = flankWindowMs
+        self.segmenter = segmenter
     }
 
     public static let `default` = BoundaryPolicy()
@@ -234,7 +281,11 @@ public struct BoundaryPolicy: Equatable, Sendable {
     /// v1 behaviour: structural rules only, no quiet layer at all. Used by callers that have no
     /// transcript evidence to give, and by the tests that pin the old rules.
     public static let structuralOnly = BoundaryPolicy(
-        quietSplitMs: .max, quietCandidateMs: .max)
+        quietSplitMs: .max, quietCandidateMs: .max, segmenter: nil)
+
+    /// The long-quiet rule without the segmenter: what shipped before conversations became
+    /// topic-sized. Kept for the tests that pin that rule on its own.
+    public static let quietOnly = BoundaryPolicy(segmenter: nil)
 }
 
 /// A join that looks like a boundary but is not certain enough to act on alone — the input to

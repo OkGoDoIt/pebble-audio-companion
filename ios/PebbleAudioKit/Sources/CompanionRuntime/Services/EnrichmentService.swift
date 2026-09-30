@@ -25,11 +25,17 @@ public actor EnrichmentService {
     private let pauseJournal: PauseJournal?
     private let database: AppDatabase
     private let transcriptOf: @Sendable (String) -> SegmentTranscript?
-    /// The same transcript with ONLY the looped artefacts collapsed — what search and Spotlight
+    /// What the models read of ONE PIECE of a segment — the range a conversation owns of it
+    /// (`ConversationMember`). Cut first, cleaned second: see the note in `init`.
+    private let pieceTranscriptOf: @Sendable (ConversationMember) -> SegmentTranscript?
+    /// The same piece with ONLY the looped artefacts collapsed — what search and Spotlight
     /// are given. Audio judged to hold no conversation (TV, lyrics) stays findable: a person may
     /// well search for a line they heard, and a label that can be wrong must not decide what
     /// can be found. See `AudioContentMask`.
-    private let searchTranscriptOf: @Sendable (String) -> SegmentTranscript?
+    private let searchPieceTranscriptOf: @Sendable (ConversationMember) -> SegmentTranscript?
+    /// Moves follow-ups, notes, tags, speaker names and typed titles to where they belong when
+    /// a rebuild moves conversations (`ConversationReconciler`).
+    private let reconciler: ConversationReconciler
     /// Turn timings only, for the boundary layer's whole-library sweep. Defaults to reading the
     /// full transcript and throwing the words away; `FileTranscriptStore.loadSpeechTimings`
     /// avoids decoding them at all and is what the app supplies.
@@ -51,6 +57,7 @@ public actor EnrichmentService {
     /// topped up is looking). `{ false }` keeps it on the hold's own backoff alone.
     private let isForeground: @Sendable () -> Bool
     private let audioContentMask: AudioContentMask?
+    private let audioContentStore: AudioContentStore?
 
     public init(
         worker: EnrichmentWorker,
@@ -68,7 +75,8 @@ public actor EnrichmentService {
         clock: RuntimeClock,
         log: RuntimeLog = .silent,
         isForeground: @escaping @Sendable () -> Bool = { false },
-        audioContentMask: AudioContentMask? = nil
+        audioContentMask: AudioContentMask? = nil,
+        audioContentStore: AudioContentStore? = nil
     ) {
         self.isForeground = isForeground
         self.worker = worker
@@ -90,13 +98,34 @@ public actor EnrichmentService {
         // The audio-content mask is the second half of the same seam: stretches judged to hold
         // no conversation (TV dialogue, lyrics, or a person's own "this was not a
         // conversation") are left out of what the MODELS read, with a note in their place, so
-        // a song does not become a title or a follow-up. Search reads `searchTranscriptOf`.
-        self.searchTranscriptOf = { transcriptOf($0)?.withLoopedArtefactsCollapsed() }
+        // a song does not become a title or a follow-up. Search reads `searchPieceTranscriptOf`.
+        //
+        // A conversation owns a RANGE of each of its segments, so what the workers and the
+        // donation read is a PIECE: the transcript cut to the range, THEN cleaned. The order is
+        // not a detail. Both cleaners leave a note in `text` where they took turns out, and
+        // `SegmentTranscript.piece` rebuilds a partial piece's text from its turns — cleaning
+        // the whole segment and cutting afterwards would silently drop every note, and nearly
+        // every piece is partial. (The loop rules look at the turns around each one, so a loop
+        // that straddles a cut is judged in each half on its own; the cuts are placed between
+        // turns of real talk, which is not where loops are.)
+        self.searchPieceTranscriptOf = {
+            transcriptOf($0.segmentId)?.piece($0).withLoopedArtefactsCollapsed()
+        }
+        self.pieceTranscriptOf = { member in
+            guard
+                let transcript = transcriptOf(member.segmentId)?.piece(member)
+                    .withLoopedArtefactsCollapsed()
+            else { return nil }
+            guard let audioContentMask else { return transcript }
+            return transcript.withStretchesWithheld(audioContentMask.aiRanges(member.segmentId))
+        }
+        // The whole-segment form, for the boundary reviewer's context.
         self.transcriptOf = { id in
             guard let transcript = transcriptOf(id)?.withLoopedArtefactsCollapsed() else { return nil }
             guard let audioContentMask else { return transcript }
             return transcript.withStretchesWithheld(audioContentMask.aiRanges(id))
         }
+        self.reconciler = ConversationReconciler(db: database)
         self.liveTextOf = liveTextOf
         self.donator = donator
         self.boundaryReviewer = boundaryReviewer
@@ -114,6 +143,7 @@ public actor EnrichmentService {
             }
         }
         self.audioContentMask = audioContentMask
+        self.audioContentStore = audioContentStore
         self.clock = clock
         self.log = log
     }
@@ -152,7 +182,8 @@ public actor EnrichmentService {
         // on a provider. Verdicts written here are read by the NEXT regroup, so a confirmed
         // boundary appears one pass later — which is also what keeps the AI from ever mutating
         // the grouping directly. It is cheap: verdicts are cached, so this makes a call only
-        // when a genuinely new candidate has appeared.
+        // when a genuinely new candidate has appeared — and since conversations are cut by the
+        // segmenter, none does: the rebuild hands back no candidates and this returns at once.
         do {
             _ = try await boundaryReviewPass()
         } catch let error where error is CancellationError {
@@ -160,14 +191,114 @@ public actor EnrichmentService {
         } catch {
             log.failure("boundary review", error)
         }
-        let inputs = await enrichmentInputs()
-        guard !inputs.isEmpty else { return [] }
-        return try await worker.enrich(
-            inputs, transcriptOf: transcriptOf, liveTextOf: liveTextOf
-        )
+        let (inputs, settled) = await settleNoConversation(await enrichmentInputs())
+        guard !inputs.isEmpty else { return settled }
+        return settled
+            + (try await worker.enrich(
+                inputs, pieceTranscriptOf: pieceTranscriptOf, liveTextOf: liveTextOf))
     }
 
-    /// The conversation grouping as the worker sees it: current grouping + member metas.
+    /// Finished conversations with no conversation in them — the classified time of every PIECE
+    /// is "no conversation" (all no-speech, or a stray remark) — are not the AI's to title. They
+    /// get a plain stand-in annotation ("No conversation", with no AI tags) so every screen that
+    /// shows a title says what they are, and they are left out of titling and follow-ups. A
+    /// stand-in is withdrawn the moment the conversation turns out to hold talk (a correction, a
+    /// new transcript, a cut that moved), which hands it back to the AI. A person's own tags —
+    /// and a title they typed — are never touched.
+    ///
+    /// Returns the conversations still to enrich, and the ids whose annotation this changed.
+    private func settleNoConversation(
+        _ inputs: [EnrichmentConversation]
+    ) async -> (remaining: [EnrichmentConversation], changed: [String]) {
+        guard audioContentMask != nil else { return (inputs, []) }
+        let existing = (try? await annotations.all()) ?? [:]
+        var remaining: [EnrichmentConversation] = []
+        var changed: [String] = []
+        for conversation in inputs {
+            let current = existing[conversation.conversationId]
+            if holdsNoConversation(conversation) {
+                let standIn = await noConversationAnnotation(for: conversation, existing: current)
+                // The key is part of the comparison for the reason it exists at all: a stand-in
+                // inherited with an id says "no conversation" about audio it was never asked
+                // about, and must be written again for the pieces it names now.
+                if current?.title != standIn.title || current?.summary != standIn.summary
+                    || current?.providerId != standIn.providerId || current?.tags.isEmpty == false
+                    || !ConversationSourceKey.describes(
+                        stored: current?.sourceKey, current: conversation.sourceKey)
+                {
+                    do {
+                        _ = try await annotations.save(standIn)
+                        changed.append(conversation.conversationId)
+                    } catch {
+                        log.failure("no-conversation annotation", error)
+                    }
+                }
+                continue
+            }
+            if let current, current.providerId == AudioContentPresentation.providerId {
+                do {
+                    try await annotations.delete(conversation.conversationId)
+                    // The stand-in goes; a title the person typed over it does not. It is put
+                    // back alone, with no key, so the pass below writes the rest around it.
+                    if let title = current.title, current.titleEditedAtMs != nil {
+                        try await annotations.save(
+                            ConversationAnnotation(
+                                conversationId: conversation.conversationId, title: title,
+                                titleEditedAtMs: current.titleEditedAtMs))
+                    }
+                    changed.append(conversation.conversationId)
+                } catch {
+                    log.failure("no-conversation annotation withdraw", error)
+                }
+            }
+            remaining.append(conversation)
+        }
+        return (remaining, changed)
+    }
+
+    /// Closed, with members, and no stretch classified as conversation overlapping any of its
+    /// PIECES. A segment's verdict is not the conversation's: the conversation that owns a
+    /// segment's quiet tail holds none, whatever was said at the segment's start — and the one
+    /// that owns the talk is not excused by the quiet after it. An unclassified member keeps
+    /// the conversation with the AI.
+    private func holdsNoConversation(_ conversation: EnrichmentConversation) -> Bool {
+        guard let audioContentMask, !conversation.isOpen, !conversation.members.isEmpty else {
+            return false
+        }
+        return conversation.pieces.allSatisfy { audioContentMask.holdsConversation(in: $0) == false }
+    }
+
+    /// The stand-in, carrying which pieces it is about and — where the person has named the
+    /// conversation — their title rather than "No conversation".
+    private func noConversationAnnotation(
+        for conversation: EnrichmentConversation, existing: ConversationAnnotation?
+    ) async -> ConversationAnnotation {
+        var spans: [SegmentAudioContentSpan] = []
+        if let audioContentStore {
+            for piece in conversation.pieces {
+                // Only what was heard in the conversation's own range of the segment: the
+                // summary must not say "music was playing" because it played after the cut.
+                let start = piece.startMediaMs ?? 0
+                let end = piece.endMediaMs ?? Int64.max
+                spans += ((try? await audioContentStore.spans(segmentId: piece.segmentId)) ?? [])
+                    .filter { piece.isWhole || ($0.mediaStartMs < end && $0.mediaEndMs > start) }
+            }
+        }
+        let typed = existing?.titleEditedAtMs != nil ? existing?.title : nil
+        return ConversationAnnotation(
+            conversationId: conversation.conversationId,
+            title: typed ?? AudioContentPresentation.noConversationTitle,
+            summary: AudioContentPresentation.summary(for: spans),
+            tags: [],
+            providerId: AudioContentPresentation.providerId,
+            updatedAtMs: clock.nowMs,
+            isFinal: true,
+            sourceKey: conversation.sourceKey,
+            titleEditedAtMs: existing?.titleEditedAtMs)
+    }
+
+    /// The conversation grouping as the worker sees it: current grouping + member metas, each
+    /// with the piece of it the conversation owns.
     private func enrichmentInputs() async -> [EnrichmentConversation] {
         let conversations = await grouping()
         guard !conversations.isEmpty else { return [] }
@@ -175,10 +306,21 @@ public actor EnrichmentService {
             uniqueKeysWithValues: await store.listSegments().map { ($0.segmentId, $0) }
         )
         return conversations.map { conversation in
-            EnrichmentConversation(
+            // A piece whose segment is gone from the store (a delete racing the pass) is
+            // dropped with it, so the two lists stay parallel.
+            let parts = conversation.members.compactMap { piece in
+                metasById[piece.segmentId].map { (meta: $0, piece: piece) }
+            }
+            return EnrichmentConversation(
                 conversationId: conversation.id,
-                isOpen: conversation.isLive,
-                members: conversation.memberSegmentIds.compactMap { metasById[$0] }
+                // A conversation whose start or end can still move is treated like the live
+                // one: it may get a working title, but the work that is done once per
+                // conversation — the final title, follow-up extraction — waits until its
+                // boundaries are held (`GroupedConversation.isProvisional`). Without this a
+                // cut that moved would re-title and re-extract both neighbours each time.
+                isOpen: conversation.isLive || conversation.isProvisional,
+                members: parts.map(\.meta),
+                pieces: parts.map(\.piece)
             )
         }
     }
@@ -217,9 +359,10 @@ public actor EnrichmentService {
         var changed = false
         if try await curator.archiveStale() > 0 { changed = true }
 
-        let inputs = await enrichmentInputs()
+        let inputs = await enrichmentInputs().filter { !holdsNoConversation($0) }
         if !inputs.isEmpty {
-            let proposed = try await followUps.extract(inputs, transcriptOf: transcriptOf)
+            let proposed = try await followUps.extract(
+                inputs, pieceTranscriptOf: pieceTranscriptOf)
             if proposed > 0 { changed = true }
         }
 
@@ -275,8 +418,14 @@ public actor EnrichmentService {
             guard let conversation = conversations[id] else { continue }
             do {
                 let annotation = try await annotations.load(id)
-                let transcript = conversation.memberSegmentIds
-                    .compactMap { searchTranscriptOf($0)?.text }
+                // A stand-in says the conversation holds none; there is nothing to find it by.
+                if annotation?.providerId == AudioContentPresentation.providerId { continue }
+                // The words of the conversation's PIECES. Whole members would make the talk
+                // at the other end of a shared segment findable under this conversation too —
+                // a search hit that opens a conversation in which the words are never said.
+                let transcript = conversation.members
+                    .compactMap { searchPieceTranscriptOf($0)?.text }
+                    .filter { !$0.isEmpty }
                     .joined(separator: "\n")
                 try await donator.donateConversation(
                     conversationId: id,
@@ -302,12 +451,20 @@ public actor EnrichmentService {
     /// window cannot see it, because the watch counts through quiet and rotations abut. Members
     /// that are still transcribing simply defer the decision to a later pass; grouping is
     /// derived, so the answer improves as evidence lands instead of being guessed early.
+    ///
+    /// `afterDelete` is for the delete cascade alone. A delete changes the pieces of the
+    /// conversations beside the deleted one (the silenced range joins a neighbour) without
+    /// changing a word of what they hold, and may pass through a grouping in which a neighbour
+    /// briefly answers to another id. Neither is a re-cut: nothing is moved between
+    /// conversations and no title is withdrawn; the cascade re-keys the neighbours itself.
     @discardableResult
-    public func regroup() async throws -> [GroupedConversation] {
-        try await regroupDetailed().conversations
+    public func regroup(afterDelete: Bool = false) async throws -> [GroupedConversation] {
+        try await regroupDetailed(settling: !afterDelete).conversations
     }
 
-    private func regroupDetailed() async throws -> ConversationGrouper.RebuiltGrouping {
+    private func regroupDetailed(settling: Bool = true) async throws
+        -> ConversationGrouper.RebuiltGrouping
+    {
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
         let pauses: [PauseInterval]
@@ -322,11 +479,103 @@ public actor EnrichmentService {
             pauses: pauses,
             openSegmentId: openId,
             evidence: evidence,
+            memo: groupingMemo,
+            nowMs: clock.nowMs,
             db: database
         )
         cachedGrouping = rebuilt.conversations
         cachedBoundaryCandidates = rebuilt.candidates
+        guard settling else { return rebuilt }
+        await reconcile(after: rebuilt)
+        if rebuilt.structureChanged { await withdrawStaleTitles(rebuilt.conversations) }
         return rebuilt
+    }
+
+    /// Takes back, at once, a finished title that was written about other audio.
+    ///
+    /// A conversation cut in two leaves its id — and so its title, summary and tags — on the
+    /// first part. The worker writes a new one, but three conversations a pass, newest first,
+    /// and not at all with AI off; until it gets there a ten-minute conversation would carry
+    /// the title of the ten hours it was cut from, which is exactly the wrong thing this change
+    /// exists to remove. An untitled conversation shows its time, which is true.
+    ///
+    /// Only FINISHED titles of conversations that are themselves finished: a live or still
+    /// provisional conversation's working title is meant to lag behind its growing pieces, and
+    /// the worker refreshes it on its own rule. A title the person typed always stays.
+    private func withdrawStaleTitles(_ conversations: [GroupedConversation]) async {
+        guard let stored = try? await annotations.all(), !stored.isEmpty else { return }
+        var withdrawn: [String] = []
+        for conversation in conversations where !conversation.isLive && !conversation.isProvisional {
+            guard let existing = stored[conversation.id], existing.isFinal,
+                existing.providerId != AudioContentPresentation.providerId,
+                EnrichmentWorker.hasGeneratedContent(existing)
+            else { continue }
+            let key = ConversationSourceKey.key(of: conversation.members)
+            guard !ConversationSourceKey.describes(stored: existing.sourceKey, current: key)
+            else { continue }
+            do {
+                try await worker.withdraw(existing, sourceKey: key)
+                withdrawn.append(conversation.id)
+            } catch {
+                log.failure("stale title withdrawal", error)
+            }
+        }
+        // The search row still holds the old title and the old, longer transcript.
+        if !withdrawn.isEmpty {
+            log.write("withdrew \(withdrawn.count) titles written about other audio")
+            await donate(conversationIds: withdrawn)
+        }
+    }
+
+    /// Whether the once-per-launch whole-library reconciliation has run (`ConversationReconciler
+    /// .sweep`). It catches up a rebuild whose own reconciliation never ran — the process died
+    /// between the grouper's write and it — which nothing else can, because the grouping as it
+    /// was is gone by then.
+    private var sweptThisLaunch = false
+
+    /// Re-attaches what a rebuild left behind: follow-ups to the conversation that owns their
+    /// moment now, and the notes, tags, speaker names and typed title of a conversation whose id
+    /// went away to the one that took its place. Then drops the search and Spotlight rows of
+    /// the ids that were superseded — the index is keyed by conversation id too, and a hit for
+    /// an id that no longer exists opens "conversation not found".
+    ///
+    /// Never fails the regroup: the grouping is already written, and everything this does is
+    /// done again, from the database alone, by the next launch's sweep.
+    private func reconcile(after rebuilt: ConversationGrouper.RebuiltGrouping) async {
+        var superseded = Set<String>()
+        do {
+            if rebuilt.structureChanged, !rebuilt.previous.isEmpty {
+                let outcome = try await reconciler.reconcile(
+                    previous: rebuilt.previous, current: rebuilt.conversations)
+                superseded.formUnion(outcome.superseded.keys)
+                logReconciled(outcome, what: "reconciled")
+            }
+            if !sweptThisLaunch {
+                let outcome = try await reconciler.sweep()
+                sweptThisLaunch = true
+                superseded.formUnion(outcome.superseded.keys)
+                logReconciled(outcome, what: "launch sweep")
+            }
+        } catch {
+            log.failure("conversation reconcile", error)
+        }
+        guard let donator else { return }
+        for id in superseded {
+            do { try await donator.remove(id: id, kind: .conversation) } catch {
+                log.failure("superseded conversation index removal", error)
+            }
+        }
+    }
+
+    private func logReconciled(_ outcome: ConversationReconciler.Outcome, what: String) {
+        guard !outcome.isEmpty else { return }
+        log.write(
+            "conversations \(what): \(outcome.superseded.count) superseded, "
+                + "\(outcome.followUpsRepointed) follow-ups and "
+                + "\(outcome.candidatesRepointed) candidates re-pointed, "
+                + "\(outcome.notesMoved) notes, \(outcome.tagsMoved) tags, "
+                + "\(outcome.speakerAssignmentsMoved) speaker names and "
+                + "\(outcome.titlesMoved) typed titles moved")
     }
 
     /// One pass of the OPTIONAL semantic boundary review: asks the model about the joins the
@@ -346,6 +595,9 @@ public actor EnrichmentService {
     }
 
     private var cachedGrouping: [GroupedConversation]?
+    /// Each run's conversations, remembered between passes: regroup runs over the whole
+    /// library every pass, and a run whose evidence has not moved must not be searched again.
+    private let groupingMemo = GroupingMemo()
     /// Boundary candidates from the last regroup — the semantic layer's work list.
     private var cachedBoundaryCandidates: [BoundaryCandidate] = []
 
@@ -380,8 +632,8 @@ public actor EnrichmentService {
                 meta.transcriptionState == .complete
                 ? speechTimingsOf(meta.segmentId)?.map {
                     SpeechSpan(
-                        startMs: $0.startMs, endMs: $0.endMs,
-                        wordCount: $0.text.split(whereSeparator: \.isWhitespace).count)
+                        startMs: $0.startMs, endMs: $0.endMs, text: $0.text,
+                        speaker: $0.speaker)
                 }
                 : nil
             let evidence = SegmentSpeechEvidence.of(meta, transcriptSpeech: timings)
@@ -392,6 +644,15 @@ public actor EnrichmentService {
         let alive = Set(segments.map(\.segmentId))
         evidenceCache = evidenceCache.filter { alive.contains($0.key) }
         return out
+    }
+
+    /// Range-delete support: the words of a stretch of this segment were taken out of its
+    /// transcript (`DeleteCascade`), and the evidence memoised above does not know. Its key is
+    /// the segment's state, closedness and mask generation — none of which a redaction moves —
+    /// so without this the next regroup would plan the run around turns that no longer exist,
+    /// and the conversation that was just deleted would be grouped straight back.
+    public func invalidateSpeechEvidence(segmentId: String) {
+        evidenceCache[segmentId] = nil
     }
 
     private func grouping() async -> [GroupedConversation] {
@@ -411,5 +672,21 @@ public actor EnrichmentService {
 
     public func members(ofConversation conversationId: String) async -> [String] {
         (await grouping()).first { $0.id == conversationId }?.memberSegmentIds ?? []
+    }
+
+    /// The pieces a conversation is made of: which range of each member segment it owns. A
+    /// conversation rarely owns all of its first and last segments, so anything that acts on
+    /// "the conversation's audio" or "its transcript" has to go through these, not the ids.
+    public func pieces(ofConversation conversationId: String) async -> [ConversationMember] {
+        (await grouping()).first { $0.id == conversationId }?.members ?? []
+    }
+
+    /// Every conversation that owns some part of a segment, with the part it owns.
+    public func owners(ofSegment segmentId: String) async
+        -> [(conversationId: String, piece: ConversationMember)]
+    {
+        (await grouping()).compactMap { conversation in
+            conversation.member(segmentId).map { (conversation.id, $0) }
+        }
     }
 }

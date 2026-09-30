@@ -17,7 +17,7 @@ import WireProtocol
     var dayStart: Int64 { LogicalDay.bounds(ofDateKey: dateKey, timeZoneID: zone)!.startMs }
 
     @Test func attributedCoverageIsComputeToTheMillisecond() {
-        var rng = SeededGenerator(seed: 0x5EED_C0DE)
+        var rng = SplitMixGenerator(seed: 0x5EED_C0DE)
         var seen: Set<CoverageKind> = []
         for _ in 0..<400 {
             let day = randomCoverageDay(&rng, dayStart: dayStart)
@@ -39,7 +39,7 @@ import WireProtocol
     }
 
     @Test func everyMissingAndPausedSpanIsExplainedByItsRecords() {
-        var rng = SeededGenerator(seed: 42)
+        var rng = SplitMixGenerator(seed: 42)
         for _ in 0..<300 {
             let day = randomCoverageDay(&rng, dayStart: dayStart)
             let attributed = CoverageComputer.computeAttributed(
@@ -72,7 +72,7 @@ import WireProtocol
     }
 
     @Test func movedQuietRecutMatchesTheAppsCopy() {
-        var rng = SeededGenerator(seed: 7)
+        var rng = SplitMixGenerator(seed: 7)
         for _ in 0..<300 {
             let day = randomCoverageDay(&rng, dayStart: dayStart)
             let metas = day.segments.map(\.meta)
@@ -116,7 +116,7 @@ struct FuzzCoverageDay {
 }
 
 /// SplitMix64: deterministic, so a failure reproduces from its seed.
-struct SeededGenerator: RandomNumberGenerator {
+struct SplitMixGenerator: RandomNumberGenerator {
     var state: UInt64
     init(seed: UInt64) { state = seed }
     mutating func next() -> UInt64 {
@@ -131,7 +131,7 @@ struct SeededGenerator: RandomNumberGenerator {
 /// Every gap reason (and an undecodable one, and a receiver skip), sometimes outside the
 /// segment's own extent, sometimes past its close; frame ranges on some segments; user pauses,
 /// open and closed; and "now" on some days.
-func randomCoverageDay(_ rng: inout SeededGenerator, dayStart: Int64) -> FuzzCoverageDay {
+func randomCoverageDay(_ rng: inout SplitMixGenerator, dayStart: Int64) -> FuzzCoverageDay {
     var segments: [SegmentCoverageInput] = []
     let count = Int.random(in: 0...6, using: &rng)
     for index in 0..<count {

@@ -172,7 +172,7 @@ enum ConversationScrubber {
         var mediaBeforeMemberMs: Int64 = 0
         for member in members {
             guard let meta = metas[member] else { continue }
-            let mediaMs = mediaDurationMs(meta)
+            let mediaMs = segmentStoredAudioMs(meta)
             guard member == segmentId else {
                 mediaBeforeMemberMs += mediaMs
                 continue

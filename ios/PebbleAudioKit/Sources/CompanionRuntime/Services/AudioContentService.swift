@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import Intelligence
 import SegmentStore
 import Transcription
 
@@ -15,6 +16,31 @@ import Transcription
 // time; it only runs when the pass itself runs (foreground, or backgrounded on a cool
 // charger — `BackgroundWorkPolicy`).
 
+/// What a conversation that holds no conversation is called wherever a title is shown. Plain
+/// and calm, like quiet: it is a fact about the recording, not an error.
+public enum AudioContentPresentation {
+    /// `ConversationAnnotation.providerId` of the stand-in, so it is never mistaken for an AI
+    /// title and can be withdrawn.
+    public static let providerId = "audioContent"
+    public static let noConversationTitle = "No conversation"
+    public static let noWordsSummary = "Sound was recorded, but no words were heard."
+    public static let fewWordsSummary = "A few words were heard, but no conversation."
+    public static let musicSummary = "Music was playing, but no conversation was heard."
+    /// Words that were not a conversation and are not named: TV, an announcement, the
+    /// transcriber repeating itself. "A few words" would understate an hour of television.
+    public static let otherSummary = "Sound was recorded, but it holds no conversation."
+
+    /// The stand-in's summary for a conversation whose spans are all no conversation: named
+    /// only when every stretch with words in it says the same thing.
+    public static func summary(for spans: [SegmentAudioContentSpan]) -> String {
+        let worded = spans.filter { $0.wordCount > 0 }
+        if worded.isEmpty { return noWordsSummary }
+        if worded.allSatisfy({ $0.descriptor == AudioContentDescriptor.music }) { return musicSummary }
+        if worded.allSatisfy({ $0.descriptor == AudioContentDescriptor.fewWords }) { return fewWordsSummary }
+        return otherSummary
+    }
+}
+
 /// Which stored stretches of each segment are withheld from whom, on the segment's
 /// stored-audio clock (what transcript turns are timed on).
 ///
@@ -24,6 +50,10 @@ public final class AudioContentMask: @unchecked Sendable {
     private let lock = NSLock()
     private var ai: [String: [Range<Int64>]] = [:]
     private var speech: [String: [Range<Int64>]] = [:]
+    /// The stretches of each CLASSIFIED segment's stored audio that are conversation
+    /// (corrections applied). A segment with an entry has been classified; an empty entry says
+    /// none of it is conversation.
+    private var conversation: [String: [Range<Int64>]] = [:]
     private var aiGenerations: [String: Int] = [:]
     private var speechGenerations: [String: Int] = [:]
 
@@ -57,6 +87,37 @@ public final class AudioContentMask: @unchecked Sendable {
         lock.withLock { speechGenerations[segmentId] ?? 0 }
     }
 
+    /// Whether any of this segment's classified time is conversation (corrections applied); nil
+    /// while it has not been classified. A conversation whose every member answers false holds
+    /// no conversation at all, and is presented and treated as such (`EnrichmentService`).
+    public func holdsConversation(_ segmentId: String) -> Bool? {
+        lock.withLock { conversation[segmentId].map { !$0.isEmpty } }
+    }
+
+    /// The same question about one PIECE of a segment: whether any stretch classified as
+    /// conversation overlaps the range the piece owns; nil while the segment has not been
+    /// classified.
+    ///
+    /// This is the one a conversation is asked with. A conversation owns a range of each of its
+    /// segments, and the whole-segment answer is wrong for it in the direction that matters:
+    /// the quiet end of a segment, cut off as a conversation of its own, would be sent to a
+    /// model to be titled because people talked at the start of the same file. In memory, one
+    /// lock and a scan of a handful of ranges — it is asked for every conversation on every AI
+    /// pass.
+    public func holdsConversation(in piece: ConversationMember) -> Bool? {
+        lock.withLock {
+            guard let ranges = conversation[piece.segmentId] else { return nil }
+            if piece.isWhole { return !ranges.isEmpty }
+            let start = piece.startMediaMs ?? 0
+            let end = piece.endMediaMs ?? Int64.max
+            return ranges.contains { $0.lowerBound < end && $0.upperBound > start }
+        }
+    }
+
+    func setConversationRanges(_ segmentId: String, _ ranges: [Range<Int64>]) {
+        lock.withLock { conversation[segmentId] = ranges }
+    }
+
     /// Returns true when anything changed.
     @discardableResult
     func set(segmentId: String, ai newAi: [Range<Int64>], speech newSpeech: [Range<Int64>]) -> Bool {
@@ -79,6 +140,7 @@ public final class AudioContentMask: @unchecked Sendable {
             for id in segmentIds {
                 ai[id] = nil
                 speech[id] = nil
+                conversation[id] = nil
             }
         }
     }
@@ -103,6 +165,12 @@ public actor AudioContentService {
     /// one `stat` of its transcript — when this moves, so a pass over an unchanged library
     /// reads nothing.
     private var observed: [String: (TranscriptionState, Bool)] = [:]
+    /// Segments to re-key on the next look even though their own state did not move: a
+    /// neighbour's did, and the stray-remark rule reads neighbours.
+    private var dirty: Set<String> = []
+    /// AI readings by segment (method 2), loaded once and kept in step with what is saved.
+    private var judgements: [String: AudioContentJudgement] = [:]
+    private let judge: (@Sendable (AiRunRequest) async throws -> RoutedAiResult)?
     private var loaded = false
 
     public init(
@@ -112,8 +180,10 @@ public actor AudioContentService {
         store: AudioContentStore,
         mask: AudioContentMask = AudioContentMask(),
         nowMs: @escaping @Sendable () -> Int64,
-        log: RuntimeLog = .silent
+        log: RuntimeLog = .silent,
+        judge: (@Sendable (AiRunRequest) async throws -> RoutedAiResult)? = nil
     ) {
+        self.judge = judge
         self.listSegments = listSegments
         self.speechTimingsOf = speechTimingsOf
         self.transcriptVersionOf = transcriptVersionOf
@@ -134,45 +204,77 @@ public actor AudioContentService {
         let segments = await listSegments()
         if !loaded {
             inputKeys = try await store.inputKeys()
+            judgements = try await store.judgements()
+            for (id, ranges) in try await store.conversationMediaRanges() {
+                mask.setConversationRanges(id, ranges)
+            }
             try await loadMasks(segments: segments)
             loaded = true
         }
 
-        var due: [SegmentMeta] = []
-        for meta in segments {
-            let now = (meta.transcriptionState, meta.closeReason != nil)
-            if let seen = observed[meta.segmentId], seen == now { continue }
-            let key = AudioContentMethod.inputKey(
+        // Wall order, because the stray-remark rule reads each segment's neighbours and a
+        // neighbour settling changes the verdict (and the key) of the segments beside it.
+        let ordered = segments.sorted {
+            ($0.startWallMs, $0.segmentId) < ($1.startWallMs, $1.segmentId)
+        }
+        let versionOf = transcriptVersionOf
+        func key(_ index: Int) -> String {
+            let meta = ordered[index]
+            let around = AudioContentClassifier.neighbours(
+                of: index, in: ordered, turnsOf: { _ in [] }, versionOf: versionOf)
+            return AudioContentMethod.inputKey(
                 state: meta.transcriptionState,
                 transcriptVersion: meta.transcriptionState == .complete
-                    ? transcriptVersionOf(meta.segmentId) : nil)
-            if inputKeys[meta.segmentId] == key || !Self.isSettled(meta) {
+                    ? versionOf(meta.segmentId) : nil,
+                neighbours: around.key + judgementKey(meta.segmentId))
+        }
+
+        var due: [(index: Int, key: String)] = []
+        for (index, meta) in ordered.enumerated() {
+            let id = meta.segmentId
+            let now = (meta.transcriptionState, meta.closeReason != nil)
+            let moved = observed[id].map { $0 != now } ?? true
+            if !moved, !dirty.contains(id) { continue }
+            if moved {
+                // Its neighbours' keys name it, so they are looked at again too.
+                if index > 0 { dirty.insert(ordered[index - 1].segmentId) }
+                if index + 1 < ordered.count { dirty.insert(ordered[index + 1].segmentId) }
+                observed[id] = now
+            }
+            let current = key(index)
+            if inputKeys[id] == current || !Self.isSettled(meta) {
                 // Nothing new, or nothing to say yet. Unsettled segments are looked at again
                 // when their state moves; a settled one whose key matches is done.
-                observed[meta.segmentId] = now
+                dirty.remove(id)
                 continue
             }
-            due.append(meta)
+            // Stays dirty until it is classified, so a backfill past the budget resumes.
+            dirty.insert(id)
+            due.append((index, current))
         }
         // Newest first: the day a person is looking at is today.
-        due.sort { $0.startWallMs > $1.startWallMs }
+        due.sort { ordered[$0.index].startWallMs > ordered[$1.index].startWallMs }
 
         var wrote = false
-        for meta in due.prefix(max(budget, 0)) {
+        for (index, currentKey) in due.prefix(max(budget, 0)) {
             try Task.checkCancellation()
+            let meta = ordered[index]
             let id = meta.segmentId
             let turns = meta.transcriptionState == .complete ? speechTimingsOf(id) : nil
-            let key = AudioContentMethod.inputKey(
-                state: meta.transcriptionState,
-                transcriptVersion: meta.transcriptionState == .complete ? transcriptVersionOf(id) : nil)
-            guard let spans = AudioContentClassifier.classify(meta: meta, turns: turns) else {
+            let around = AudioContentClassifier.neighbours(
+                of: index, in: ordered, turnsOf: speechTimingsOf, versionOf: versionOf)
+            guard
+                let spans = AudioContentClassifier.classify(
+                    meta: meta, turns: turns, neighbours: around.neighbours,
+                    judged: currentJudgement(id)?.minutes ?? [])
+            else {
                 // `Complete` with no file: a fault, not silence. Looked at again when it moves.
-                observed[id] = (meta.transcriptionState, meta.closeReason != nil)
+                dirty.remove(id)
                 continue
             }
-            try await store.replace(segmentId: id, inputKey: key, spans: spans, atMs: nowMs())
-            inputKeys[id] = key
-            observed[id] = (meta.transcriptionState, meta.closeReason != nil)
+            try await store.replace(segmentId: id, inputKey: currentKey, spans: spans, atMs: nowMs())
+            inputKeys[id] = currentKey
+            dirty.remove(id)
             try await refreshMask(meta: meta, spans: spans)
             wrote = true
         }
@@ -188,10 +290,125 @@ public actor AudioContentService {
             wrote = true
         }
         observed = observed.filter { alive.contains($0.key) }
+        dirty = dirty.filter { alive.contains($0) }
         if wrote, due.count > budget {
             log.write("audio content: classified \(budget), \(due.count - budget) left")
         }
         return wrote
+    }
+
+    // MARK: Method 2: AI readings
+
+    /// The reading that applies to a segment's current transcript, if any.
+    private func currentJudgement(_ segmentId: String) -> AudioContentJudgement? {
+        guard let judgement = judgements[segmentId], judgement.minutes != nil,
+            judgement.inputKey
+                == AudioContentJudge.inputKey(transcriptVersion: transcriptVersionOf(segmentId))
+        else { return nil }
+        return judgement
+    }
+
+    /// Part of a segment's classification key: which reading it was classified with.
+    private func judgementKey(_ segmentId: String) -> String {
+        guard let judgement = currentJudgement(segmentId) else { return "|j-" }
+        return "|j\(judgement.judgedAtMs ?? 0)"
+    }
+
+    /// Readings attempted per transcript before giving up on it.
+    public static let maxJudgeAttempts = 4
+    /// Segments older than this are backlog: read only on a charger.
+    public static let recentMs: Int64 = 24 * 3_600_000
+
+    /// One pass of method 2: ask for an AI reading of up to `budget` segments that hold
+    /// conversation minutes and have none for their current transcript. Newest first; the
+    /// backlog (older than a day) only when `allowBackfill`. Returns true when it saved a
+    /// reading, so the pass comes back for more and the next classification uses it.
+    @discardableResult
+    public func judgePass(budget: Int = 3, allowBackfill: Bool) async throws -> Bool {
+        guard let judge, loaded else { return false }
+        let now = nowMs()
+        var candidates: [SegmentMeta] = []
+        for meta in await listSegments() {
+            let id = meta.segmentId
+            guard Self.isSettled(meta), meta.transcriptionState == .complete,
+                mask.holdsConversation(id) == true || currentJudgement(id) != nil,
+                currentJudgement(id) == nil
+            else { continue }
+            if !allowBackfill, now - meta.startWallMs > Self.recentMs { continue }
+            let key = AudioContentJudge.inputKey(transcriptVersion: transcriptVersionOf(id))
+            if let previous = judgements[id], previous.inputKey == key {
+                if previous.attempts >= Self.maxJudgeAttempts { continue }
+                if let next = previous.nextAttemptAtMs, next > now { continue }
+            }
+            candidates.append(meta)
+        }
+        candidates.sort { $0.startWallMs > $1.startWallMs }
+
+        var wrote = false
+        for meta in candidates.prefix(max(budget, 0)) {
+            try Task.checkCancellation()
+            let id = meta.segmentId
+            let key = AudioContentJudge.inputKey(transcriptVersion: transcriptVersionOf(id))
+            let prior = judgements[id].flatMap { $0.inputKey == key ? $0 : nil }
+            guard let turns = speechTimingsOf(id) else { continue }
+            guard let input = AudioContentJudge.input(turns: turns) else {
+                // Nothing to read: recorded as read, with no minutes.
+                try await saveJudgement(
+                    AudioContentJudgement(segmentId: id, inputKey: key, minutes: [], judgedAtMs: now))
+                wrote = true
+                continue
+            }
+            do {
+                let result = try await judge(
+                    AiRunRequest(
+                        requestId: "audio-content-\(id)-\(now)", prompt: AudioContentJudge.template,
+                        transcripts: [TranscriptExcerpt(segmentId: id, text: input)]))
+                guard let minutes = AudioContentJudge.parse(result.text) else {
+                    throw AiError.providerFailed("audio-content judge: no minutes in the reply")
+                }
+                try await saveJudgement(
+                    AudioContentJudgement(
+                        segmentId: id, inputKey: key, minutes: minutes, provider: result.providerId,
+                        model: result.modelUsed, attempts: (prior?.attempts ?? 0) + 1,
+                        judgedAtMs: nowMs()))
+                wrote = true
+            } catch let error as AiError {
+                switch error {
+                case .providerUnavailable, .consentRequired:
+                    // No AI to ask (none configured, consent off, an account on hold): nothing
+                    // is owed and nothing is counted against the segment.
+                    return wrote
+                case .providerFailed:
+                    try await recordJudgeFailure(id: id, key: key, prior: prior, error: error)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try await recordJudgeFailure(id: id, key: key, prior: prior, error: error)
+            }
+        }
+        return wrote
+    }
+
+    private func saveJudgement(_ judgement: AudioContentJudgement) async throws {
+        try await store.saveJudgement(judgement)
+        judgements[judgement.segmentId] = judgement
+        // Its classification key names the reading: look at it again on the next pass.
+        dirty.insert(judgement.segmentId)
+    }
+
+    private func recordJudgeFailure(
+        id: String, key: String, prior: AudioContentJudgement?, error: Error
+    ) async throws {
+        let attempts = (prior?.attempts ?? 0) + 1
+        let waitMs = min(Int64(30 * 60_000) << Int64(max(attempts - 1, 0)), 6 * 3_600_000)
+        let judgement = AudioContentJudgement(
+            segmentId: id, inputKey: key, minutes: nil, attempts: attempts,
+            lastError: String(String(describing: error).prefix(300)),
+            nextAttemptAtMs: nowMs() + waitMs)
+        try await store.saveJudgement(judgement)
+        judgements[id] = judgement
+        log.write("audio content: reading failed for \(id) (attempt \(attempts)): \(judgement.lastError ?? "")")
     }
 
     /// A person's correction. The masks of every segment it touches are brought up to date
@@ -228,7 +445,44 @@ public actor AudioContentService {
         }
         inputKeys[id] = nil
         observed[id] = nil
+        dirty.remove(id)
         mask.forget([id])
+    }
+
+    /// Range-delete cascade: part of this segment's stored audio was silenced and the words in
+    /// it taken out of the transcript (`DeleteCascade`), while the segment itself — its state,
+    /// its closedness — did not move.
+    ///
+    /// That is exactly the change `classifyPass` cannot see: it re-keys a segment only when
+    /// `observed` says its state moved, and nothing here moved it. So the segment is handed
+    /// back as never looked at. The next pass keys it against the transcript as it now is,
+    /// finds the key differs, classifies it again, and looks at its neighbours too (their keys
+    /// name it, and the stray-remark rule reads them).
+    ///
+    /// A correction lying wholly inside the deleted stretch goes with it — a statement about
+    /// audio the person has since deleted — and one that also covers surviving audio stays,
+    /// the same rule `forget(segment:)` applies to a whole segment. The masks are brought up
+    /// to date at once rather than at the next pass, so nothing reads a correction that is no
+    /// longer there.
+    public func audioRewritten(segment meta: SegmentMeta, mediaRangeMs: Range<Int64>) async {
+        let id = meta.segmentId
+        observed[id] = nil
+        dirty.insert(id)
+        let clock = SegmentMediaClock(meta)
+        let start = meta.startWallMs + clock.wall(fromMedia: mediaRangeMs.lowerBound)
+        let end = meta.startWallMs + clock.wall(fromMedia: mediaRangeMs.upperBound)
+        guard end > start else { return }
+        do {
+            var removed = false
+            for correction in try await store.overrides(overlappingMs: start..<end)
+            where correction.startMs >= start && correction.endMs <= end {
+                try await store.removeOverride(id: correction.id)
+                removed = true
+            }
+            if removed { try await refreshMasks(overlapping: start..<end) }
+        } catch {
+            log.failure("audio content range cascade", error)
+        }
     }
 
     // MARK: Masks
@@ -241,9 +495,11 @@ public actor AudioContentService {
     /// Deciders whose no-conversation verdict withholds a stretch from the model. Word-rate and
     /// NoSpeech verdicts are absent on purpose (nothing, or next to nothing, to withhold);
     /// later content methods add themselves here.
-    static let aiMaskingDeciders: Set<String> = [AudioContentDecider.user]
+    static let aiMaskingDeciders: Set<String> = [
+        AudioContentDecider.user, AudioContentDecider.contentJudge,
+    ]
     static let speechMaskingDeciders: Set<String> = [
-        AudioContentDecider.user, AudioContentDecider.loop,
+        AudioContentDecider.user, AudioContentDecider.loop, AudioContentDecider.contentJudge,
     ]
 
     private func loadMasks(segments: [SegmentMeta]) async throws {
@@ -305,5 +561,10 @@ public actor AudioContentService {
             if Self.speechMaskingDeciders.contains(piece.decidedBy) { speech.append(range) }
         }
         mask.set(segmentId: meta.segmentId, ai: ai, speech: speech)
+        // Every conversation stretch is kept, an empty one included: "is any of this segment
+        // conversation" is whether the list has an entry, exactly as it was when this stored a
+        // flag, and a piece is answered by overlap.
+        mask.setConversationRanges(
+            meta.segmentId, effective.filter { $0.kind == .conversation }.map(media))
     }
 }

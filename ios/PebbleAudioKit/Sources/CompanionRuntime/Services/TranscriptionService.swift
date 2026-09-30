@@ -198,6 +198,7 @@ public actor TranscriptionService {
     @discardableResult
     public func drainQueue(
         shouldContinue: @Sendable () -> Bool = { true },
+        isForeground: @Sendable () -> Bool = { false },
         onAdvance: @Sendable () async -> Void = {}
     ) async throws -> Bool {
         guard !draining else { return false }
@@ -205,7 +206,7 @@ public actor TranscriptionService {
         defer { draining = false }
         resetOrphanedRunningTasks()
         var processed = false
-        while try await processor.processNext() != nil {
+        while try await nextTaskAfterCheckingTheHold(foreground: isForeground()) != nil {
             processed = true
             await onAdvance()
             guard shouldContinue() else { break }
@@ -225,11 +226,25 @@ public actor TranscriptionService {
         var processed = 0
         while processed < maxSegments {
             try Task.checkCancellation()
-            guard try await processor.processNext() != nil else { break }
+            guard try await nextTaskAfterCheckingTheHold(foreground: false) != nil else { break }
             processed += 1
             await onAdvance()
         }
         return processed
+    }
+
+    /// One task, after a held cloud account's check if one is due.
+    ///
+    /// The check used to run only at the start of a pass and on the way into the background, and
+    /// a drain is ONE stage that can run for hours over a backlog. On 2026-09-30 a raised Soniox
+    /// limit sat unused while the on-device model worked through 245 queued segments: the
+    /// on-screen check was due at 15:06 and ran at 15:11, when the app left the screen. Between
+    /// segments it costs an in-memory comparison unless a check is actually due.
+    private func nextTaskAfterCheckingTheHold(foreground: Bool) async throws
+        -> TranscriptionTask?
+    {
+        await probeHeldCloudAccountIfDue(foreground: foreground)
+        return try await processor.processNext()
     }
 
     public func nextRetryAtMs() throws -> Int64? {
@@ -418,6 +433,53 @@ public actor TranscriptionService {
     public func deleteAllTranscriptionData() throws {
         try queue.deleteAll()
         try transcriptStore.deleteAll()
+    }
+
+    /// Range-delete cascade: the words spoken in `mediaRangeMs` of this segment's stored audio
+    /// leave its transcript, and cannot come back with a transcript that lands later
+    /// (`FileTranscriptStore.redact`). The task's state is deliberately left alone: the turns
+    /// that remain are timed on a clock the delete did not move, so a finished transcript is
+    /// still the transcript of what is left, and re-running it would spend a transcription to
+    /// arrive at the same turns.
+    public func redactTranscript(_ segmentId: String, mediaRangeMs: Range<Int64>) throws {
+        try transcriptStore.redact(segmentId, mediaRangeMs: mediaRangeMs)
+    }
+
+    /// Delete cascade: destroys the upload body staged for this segment, which holds its audio
+    /// as it was when the body was assembled.
+    ///
+    /// A cloud-primary segment handed to the background transport sits on disk as
+    /// `upload-bodies/<segmentId>.body` until the OS has finished with it — minutes on a good
+    /// network, hours when the upload is waiting for Wi-Fi. Deleting the recording, or part of
+    /// it, left that copy where it was.
+    ///
+    ///  - `forgetJob: true` — the whole segment is gone. The job record goes as well, which is
+    ///    what makes the coordinator drop the upload's outcome when it arrives (it looks the
+    ///    job up first) instead of saving a transcript for a recording that no longer exists.
+    ///  - `forgetJob: false` — part of the segment was silenced. The job stays, so the outcome
+    ///    is still handled: an upload that had not started fails for want of its body and is
+    ///    retried from the silenced audio; one that was already on its way completes, and the
+    ///    transcript it brings back is cut by the redaction in `FileTranscriptStore.save`.
+    ///
+    /// What this cannot do is recall an upload in flight: the transport has no cancel.
+    ///
+    /// The paths are derived from the segment store's root, which is the root the upload
+    /// wiring stages under (`BackgroundUploadWiring.makeCoordinator(root:)`), and from the job
+    /// record itself where there is one.
+    public func discardStagedUpload(_ segmentId: String, forgetJob: Bool) {
+        let root = store.rootURL
+        let jobs = CloudUploadJobStore(root: root)
+        var paths: Set<String> = [
+            BackgroundCloudUploadCoordinator.defaultBodyDir(root: root)
+                .appendingPathComponent("\(segmentId).body").path
+        ]
+        if let job = jobs.load(jobId: segmentId) { paths.insert(job.bodyFilePath) }
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            do { try FileManager.default.removeItem(atPath: path) } catch {
+                log.failure("staged upload delete", error)
+            }
+        }
+        if forgetJob { jobs.delete(jobId: segmentId) }
     }
 }
 

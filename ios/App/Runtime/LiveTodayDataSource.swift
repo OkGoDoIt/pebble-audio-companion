@@ -272,6 +272,12 @@ final class LiveTodayDataSource {
     /// are walked in order instead: durable transcripts for the ones already transcribed,
     /// the live preview for the segment still open, and the newest block marked as the tail
     /// still being written.
+    ///
+    /// Its PIECES, that is. The live conversation usually starts partway through a recording —
+    /// the one before it ended there — so its first member is a range of that segment, and
+    /// rendering the whole member opened the live screen on the end of a conversation that
+    /// had already finished. (The timeline strip needs no such cut: it is clipped to the
+    /// conversation's own start, `live.startMs`, whatever its members hold before that.)
     private func refreshLive(
         openSegmentId: String?, rows: [ConversationListRow], pauses: [PauseInterval]
     ) async {
@@ -307,18 +313,22 @@ final class LiveTodayDataSource {
         // runs on every pipeline tick while recording, and decoding a long conversation's
         // word-timing JSON inline here was the recurring main-thread stall that made the whole
         // app feel laggy while a recording was live.
-        let allMemberIds = (detail?.members ?? []).map(\.segmentId)
+        let pieces = detail?.pieces ?? []
+        let allMemberIds = pieces.map(\.segmentId)
         let metas = await LiveWorld.loadMetas(allMemberIds, files: composition.files)
         let durables = await LiveWorld.loadTranscripts(allMemberIds, store: composition.transcripts)
 
-        for member in detail?.members ?? [] {
+        for member in pieces {
             // The open segment's meta places the transcript in time and carries the gaps the
             // watch has already reported, so quiet/missing show up while recording rather
             // than only at the end.
             guard let meta = metas[member.segmentId] else { continue }
             if zone == nil { zone = TranscriptItems.timeZone(meta) }
             let isOpen = member.segmentId == openSegmentId
-            let durable = durables[member.segmentId]
+            // Cut to the conversation's piece of the segment; `TranscriptItems.member` is told
+            // the piece too, which is what cuts the live preview (on the wall clock, where
+            // `piece` cannot reach) and the quiet and missing rows.
+            let durable = durables[member.segmentId]?.piece(member)
             memberIds.insert(member.segmentId)
             // A finished transcript covers its whole segment, so every bar of it is transcribed.
             if durable != nil { transcribedThrough[member.segmentId] = .max }
@@ -339,11 +349,16 @@ final class LiveTodayDataSource {
                 segments = []
             }
 
-            // No timings yet on the open segment: one unstamped, still-growing row.
+            // No timings yet on the open segment: one unstamped, still-growing row. Text
+            // that cannot be placed goes to the piece that STARTS its segment (the rule
+            // `SegmentTranscript.piece` applies), so a piece that begins partway through
+            // shows nothing until the preview has timings to be cut by.
             if isOpen, durable == nil, segments.isEmpty, let preview {
-                items.append(
-                    contentsOf: TranscriptItems.untimedTail(
-                        segmentId: member.segmentId, text: preview.text))
+                if member.startMediaMs == nil {
+                    items.append(
+                        contentsOf: TranscriptItems.untimedTail(
+                            segmentId: member.segmentId, text: preview.text))
+                }
                 continue
             }
 
@@ -360,7 +375,8 @@ final class LiveTodayDataSource {
                 // transcript is timed against the stored audio (the processor feeds the
                 // provider the decoded frame log, gaps absent), while the live preview offsets
                 // each chunk by `sampleOffsetMs`, which counts wall samples.
-                timebase: durable != nil ? .media : .wall
+                timebase: durable != nil ? .media : .wall,
+                piece: member
             )
             var memberItems = built.items
             // Only the newest block of the open, not-yet-durable segment is still growing.
@@ -394,7 +410,7 @@ final class LiveTodayDataSource {
             // so; nil renders nothing rather than an empty card.
             summary: live.summary,
             timeline: LiveTimeline.display(
-                metas: (detail?.members ?? []).compactMap { metas[$0.segmentId] },
+                metas: pieces.compactMap { metas[$0.segmentId] },
                 pauses: pauses,
                 startMs: live.startMs,
                 nowMs: nowMs,

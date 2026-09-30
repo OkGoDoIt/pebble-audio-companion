@@ -4,180 +4,120 @@ import Testing
 
 @testable import AppDB
 
-// The distribution gate. `RealSegmentBoundaryTests` pins the INVARIANTS of the quiet layer
-// (settled-only, deterministic, never fragmenting); this file pins the SHAPE of what the user
-// actually sees, so a later change that quietly reintroduces a nine-hour "conversation" — or
-// a sixteen-hour one holding thirty-two seconds of audio — fails loudly instead of shipping.
+// The honest-extent gate over a READ-ONLY copy of the 2026-09-08 library: no conversation the
+// user can open is a phantom. `RealSegmentBoundaryTests` pins the invariants of the long-quiet
+// rule; this file pins what a conversation DISPLAYS, so a later change that quietly
+// reintroduces a sixteen-hour "conversation" holding thirty-two seconds of audio fails loudly
+// instead of shipping.
 //
-// Everything here was measured against a hand-labelled yardstick built by reading 93.5% of the
-// library's 74,125 utterances: 95 `certain` boundaries, 55 `unsure`, and 149 deliberate
-// NON-boundaries (the traps). Scored at ±3 minutes, on the 2026-09-08 backup:
-//
-//                                        certain   traps   median    p90    longest   >4h
-//   v1 structural rules only              54/95   29/149  27m31s   4h58m   17h31m     16
-//   shipped before this change            62/95   30/149  26m38s   2h54m   16h29m      9
-//   + honest extent (no rule change)      62/95   30/149  14m57s   2h05m    8h59m      7
-//   + flanking-flow guard                 62/95   29/149  14m57s   2h11m    8h59m      7
-//   + quietSplitMs 25 min -> 15 min       67/95   34/149  14m54s   2h03m    7h38m      4
-//
-// The two failure shapes the labels insist on scoring separately behave very differently:
-//   (a) SILENCE-PADDED (a few minutes of speech with hours of silent audio chained on, e.g.
-//       2026-09-06: a 17.5-hour span holding 58 minutes of speech). Already 5 of 6 certain
-//       boundaries before this change — what was broken there was the DURATION, not the
-//       splitting, and the honest extent is what fixes it.
-//   (b) GENUINELY DENSE (2026-08-15 is 84% speech over 9.1 hours). 1 of 8 certain boundaries
-//       before, 4 of 8 after, at a cost of 2 traps out of 34. This is the hard half and it
-//       stays hard: the true boundaries there are scene changes with no usable silence.
-//
-// The longest survivor, 7h38m, is not a bug: it is one long social evening that the label file
-// records as ONE episode, with its internal activity shifts (one activity -> a second ->
-// a third) recorded as zero-gap traps.
+// PORTED 2026-09-30. This suite used to pin a measured distribution (longest < 8 h, at most
+// five over four hours, p90 under 2 h 30 m) and two properties of the flanking-flow guard. Those
+// numbers were measured on this corpus UNDER THE RULES THAT HAVE BEEN REPLACED — whole-segment
+// conversations cut at joins — and the guard no longer affects grouping, so both are gone. The
+// numbers that matter now (median, p90 and longest of topic-sized conversations, scored against
+// hand-marked starts) are measured in `RealConversationSegmentationTests`. What is kept is every
+// invariant that still makes sense: the extent is honest, it sits inside its own pieces and
+// covers every word said in them, it changes no membership, and the long-quiet rule reads
+// timings only.
 
-/// Deliberately its own variable rather than `PEBBLE_SEGMENT_BACKUP`: the numbers below are a
-/// measured distribution over ONE corpus, so pointing this suite at a different snapshot would
-/// not test a regression, it would test a different library. `RealSegmentBoundaryTests` pins
-/// invariants and can run anywhere; this one pins a shape and names its corpus.
+/// Deliberately its own variable rather than `PEBBLE_SEGMENT_BACKUP`, as it always was: this
+/// suite names its corpus.
 private let splitBackupPath =
     ProcessInfo.processInfo.environment["PEBBLE_SPLIT_BACKUP"]
     ?? NSHomeDirectory()
         + "/Desktop/PebbleAudioBackup/audio-companion-20260908-164136/segments"
 
-private var splitTranscriptsPath: String {
-    URL(fileURLWithPath: splitBackupPath)
-        .deletingLastPathComponent()
-        .appendingPathComponent("transcription/transcripts").path
-}
+private var splitBackupAvailable: Bool { RealLibrary.isAvailable(segmentsPath: splitBackupPath) }
 
-private var splitBackupAvailable: Bool {
-    FileManager.default.fileExists(atPath: splitBackupPath, isDirectory: nil)
-        && FileManager.default.fileExists(atPath: splitTranscriptsPath, isDirectory: nil)
-}
+/// One piece with the run member it is cut from — for the piece's place on the wall clock.
+private struct PlacedTestPiece {
+    var piece: ConversationMember
+    var member: ConversationRunPlanner.Member
 
-/// The durable transcript sidecar, with the text — the word counts feed the flanking-flow
-/// guard, which is inert without them.
-private struct SplitBackupTranscript: Decodable {
-    struct Turn: Decodable {
-        var startMs: Int64
-        var endMs: Int64
-        var text: String?
+    var wallStartMs: Int64 {
+        piece.startMediaMs.map { member.wall(ofMedia: $0) } ?? member.startWallMs
     }
-    var segments: [Turn]?
-}
-
-private func loadSplitMetas() throws -> [SegmentMeta] {
-    let decoder = JSONDecoder()
-    return try FileManager.default
-        .contentsOfDirectory(
-            at: URL(fileURLWithPath: splitBackupPath), includingPropertiesForKeys: nil
-        )
-        .filter { $0.lastPathComponent.hasSuffix(".meta.json") }
-        .map { try decoder.decode(SegmentMeta.self, from: Data(contentsOf: $0)) }
-}
-
-private func loadSplitEvidence(_ metas: [SegmentMeta]) -> [String: SegmentSpeechEvidence] {
-    let decoder = JSONDecoder()
-    var out: [String: SegmentSpeechEvidence] = [:]
-    for meta in metas {
-        let url = URL(fileURLWithPath: splitTranscriptsPath)
-            .appendingPathComponent("\(meta.segmentId).transcript.json")
-        let speech: [SpeechSpan]? = (try? Data(contentsOf: url))
-            .flatMap { try? decoder.decode(SplitBackupTranscript.self, from: $0) }
-            .map {
-                ($0.segments ?? []).map { turn in
-                    SpeechSpan(
-                        startMs: turn.startMs, endMs: turn.endMs,
-                        wordCount: (turn.text ?? "").split(whereSeparator: \.isWhitespace).count)
-                }
-            }
-        out[meta.segmentId] = SegmentSpeechEvidence.of(meta, transcriptSpeech: speech)
+    var wallEndMs: Int64 {
+        piece.endMediaMs.map { member.wall(ofMedia: $0) } ?? member.endWallMs
     }
-    return out
+    /// The turns that start in the piece, on the wall clock.
+    func turns(_ evidence: SegmentSpeechEvidence?) -> [(startMs: Int64, endMs: Int64)] {
+        (evidence?.speech ?? []).filter { piece.contains(mediaMs: max($0.startMs, 0)) }.map {
+            let start = member.wall(ofMedia: $0.startMs)
+            return (start, max(member.wall(ofMedia: $0.endMs), start))
+        }
+    }
+    var audioMs: Int64 {
+        let range = piece.mediaRange(mediaSpanMs: member.mediaSpanMs)
+        return range.upperBound - range.lowerBound
+    }
 }
 
-private func spokenWords(
-    _ conversation: GroupedConversation, metas: [String: SegmentMeta],
-    evidence: [String: SegmentSpeechEvidence]
-) -> Int {
-    conversation.memberSegmentIds.reduce(0) { total, id in
-        total + (evidence[id]?.speech.reduce(0) { $0 + $1.wordCount } ?? 0)
+private func placed(_ conversation: GroupedConversation, in library: RealLibrary)
+    -> [PlacedTestPiece]
+{
+    let metas = library.metasById
+    return conversation.members.compactMap { piece in
+        guard let meta = metas[piece.segmentId] else { return nil }
+        let member = ConversationRunPlanner.members([meta], evidence: library.evidence)[0]
+        return PlacedTestPiece(piece: piece, member: member)
     }
 }
 
 @Suite struct RealSegmentSplitDistributionTests {
 
-    private func grouped(_ policy: BoundaryPolicy = .default) throws -> (
-        metas: [String: SegmentMeta], evidence: [String: SegmentSpeechEvidence],
-        conversations: [GroupedConversation]
-    ) {
-        let metas = try loadSplitMetas()
-        let evidence = loadSplitEvidence(metas)
-        return (
-            Dictionary(uniqueKeysWithValues: metas.map { ($0.segmentId, $0) }),
-            evidence,
-            ConversationGrouper.group(
-                segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-                evidence: evidence, policy: policy)
-        )
-    }
-
-    /// THE headline: no conversation the user can open is a phantom, and the monsters are gone.
-    @Test(.enabled(if: splitBackupAvailable))
-    func theDisplayedLengthsAreHonestAndTheMonstersAreGone() throws {
-        let (metas, evidence, conversations) = try grouped()
-        let spans = conversations.map { $0.endMs - $0.startMs }.sorted()
-
-        // Before this change the longest row in the library was 16 h 29 m and held 32 seconds
-        // of audio; the longest with any speech in it was 9 h 06 m. Measured after: 7 h 38 m.
-        #expect(spans.last ?? 0 < 8 * 3_600_000)
-        // Nine conversations exceeded four hours; measured after: four, and every one of them
-        // is a real occasion read end to end by hand.
-        #expect(spans.filter { $0 > 4 * 3_600_000 }.count <= 5)
-        // p90 was 2 h 54 m; measured after: 2 h 03 m.
-        #expect(spans[Int(Double(spans.count) * 0.9)] < 2 * 3_600_000 + 30 * 60_000)
-
-        // The phantom test proper: a row with nothing said in it can never be long, because its
-        // extent is now the audio actually received. The worst case in this library was a
-        // single segment displaying 16 h 29 m for 1,634 frames of audio.
-        //
-        // "Nothing said" means no speech RUNS, which is not the same as no words: 1.2% of the
-        // library's turns carry timings and empty text (the recogniser heard voice and produced
-        // no transcript for it). Those are evidence of when someone spoke, so they anchor the
-        // extent like any other run — this branch is for the members that produced no timing at
-        // all, where the only honest length left is the audio we hold.
+    /// THE headline that survives: a row with nothing said in it can never be long, because its
+    /// extent is the audio actually received. The worst case in this library was a single
+    /// segment displaying 16 h 29 m for 1,634 frames of audio.
+    ///
+    /// "Nothing said" means no speech RUNS in the conversation's pieces, which is not the same
+    /// as no words: 1.2% of the library's turns carry timings and empty text (the recogniser
+    /// heard voice and produced no transcript for it). Those are evidence of when someone spoke,
+    /// so they anchor the extent like any other run — this is for the pieces that produced no
+    /// timing at all, where the only honest length left is the audio we hold.
+    @Test(.enabled(if: splitBackupAvailable), arguments: [BoundaryPolicy.quietOnly, .default])
+    func aConversationNobodySpokeInIsNeverLongerThanItsAudio(policy: BoundaryPolicy) throws {
+        let library = try RealLibrary.load(segmentsPath: splitBackupPath)
+        let conversations = library.group(policy)
+        var checked = 0
         for conversation in conversations {
-            let members = conversation.memberSegmentIds.compactMap { metas[$0] }
-            let silent = members.allSatisfy {
-                ConversationBoundaryDetector.spokenRuns($0, evidence[$0.segmentId]).isEmpty
-            }
-            guard silent, members.allSatisfy({ evidence[$0.segmentId]?.isSettled == true })
+            let pieces = placed(conversation, in: library)
+            guard pieces.allSatisfy(\.member.isSettled),
+                pieces.allSatisfy({ $0.turns(library.evidence[$0.piece.segmentId]).isEmpty })
             else { continue }
-            let audio = members.reduce(Int64(0)) { $0 + ConversationGrouper.segmentAudioMs($1) }
-            #expect(conversation.endMs - conversation.startMs <= audio)
-            #expect(spokenWords(conversation, metas: metas, evidence: evidence) == 0)
+            checked += 1
+            let audio = pieces.reduce(Int64(0)) { $0 + $1.audioMs }
+            #expect(conversation.endMs - conversation.startMs <= audio, "\(conversation.id)")
         }
+        #expect(checked > 0, "the corpus holds silent conversations; none was examined")
     }
 
     /// The extent may only ever SHRINK the container, and only onto real speech. This is what
     /// stops a "fix" that shortens a conversation past the words it contains.
-    @Test(.enabled(if: splitBackupAvailable))
-    func everyExtentSitsInsideItsContainerAndCoversEverySpokenWord() throws {
-        let (metas, evidence, conversations) = try grouped()
+    @Test(.enabled(if: splitBackupAvailable), arguments: [BoundaryPolicy.quietOnly, .default])
+    func everyExtentSitsInsideItsPiecesAndCoversEverySpokenWord(policy: BoundaryPolicy) throws {
+        let library = try RealLibrary.load(segmentsPath: splitBackupPath)
+        let conversations = library.group(policy)
+        expectPiecesTile(conversations, segments: library.metas)
         for conversation in conversations {
-            let members = conversation.memberSegmentIds.compactMap { metas[$0] }
-            guard let first = members.first else { continue }
-            let containerStart = ConversationGrouper.segmentStartMs(first)
-            let containerEnd = members.map(ConversationGrouper.segmentEndMs).max() ?? containerStart
-            #expect(conversation.startMs >= containerStart)
-            #expect(conversation.endMs <= max(containerEnd, containerStart))
-            #expect(conversation.endMs >= conversation.startMs)
+            let pieces = placed(conversation, in: library)
+            guard let first = pieces.first else { continue }
+            let containerStart = first.wallStartMs
+            let containerEnd = max(pieces.map(\.wallEndMs).max() ?? containerStart, containerStart)
+            #expect(conversation.startMs >= containerStart, "\(conversation.id)")
+            #expect(conversation.endMs <= containerEnd, "\(conversation.id)")
+            #expect(conversation.endMs >= conversation.startMs, "\(conversation.id)")
 
-            // Every word that was said is inside the extent — the trim only ever eats silence.
-            let allSettled = members.allSatisfy { evidence[$0.segmentId]?.isSettled == true }
-            guard allSettled else { continue }
-            for meta in members {
-                for run in ConversationBoundaryDetector.spokenRuns(meta, evidence[meta.segmentId]) {
-                    #expect(run.startMs >= conversation.startMs)
-                    #expect(run.endMs <= conversation.endMs)
+            // Every word said in the conversation's pieces is inside the extent — the trim only
+            // ever eats silence. (A turn that runs past the end of its piece is held to the
+            // piece: the extent never leaves the audio the conversation owns.)
+            guard pieces.allSatisfy(\.member.isSettled) else { continue }
+            for piece in pieces {
+                for turn in piece.turns(library.evidence[piece.piece.segmentId]) {
+                    #expect(turn.startMs >= conversation.startMs, "\(conversation.id)")
+                    #expect(
+                        min(turn.endMs, piece.wallEndMs) <= conversation.endMs,
+                        "\(conversation.id)")
                 }
             }
         }
@@ -187,70 +127,58 @@ private func spokenWords(
     /// boundary. This is why it could ship on its own, and why it is tested on its own.
     @Test(.enabled(if: splitBackupAvailable))
     func theHonestExtentChangesNoMembership() throws {
-        let metas = try loadSplitMetas()
-        let evidence = loadSplitEvidence(metas)
-        let withEvidence = ConversationGrouper.group(
-            segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-            evidence: evidence, policy: .structuralOnly)
-        let withoutEvidence = ConversationGrouper.group(
-            segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-            policy: .structuralOnly)
-        #expect(withEvidence.map(\.memberSegmentIds) == withoutEvidence.map(\.memberSegmentIds))
+        let library = try RealLibrary.load(segmentsPath: splitBackupPath)
+        let withEvidence = library.group(.structuralOnly)
+        let withoutEvidence = library.group(.structuralOnly, evidence: [:])
+        #expect(withEvidence.map(\.members) == withoutEvidence.map(\.members))
+        #expect(withEvidence.map(\.id) == withoutEvidence.map(\.id))
+        #expect(withEvidence.allSatisfy { $0.members.allSatisfy(\.isWhole) })
         // …and it really does shorten things: without evidence there is nothing to anchor on,
         // so those extents are the old container edges.
         let anchored = withEvidence.reduce(Int64(0)) { $0 + ($1.endMs - $1.startMs) }
         let containers = withoutEvidence.reduce(Int64(0)) { $0 + ($1.endMs - $1.startMs) }
         #expect(anchored < containers)
-    }
-
-    /// The flanking-flow guard earns its place: it refuses cuts, never invents them, and the
-    /// refused ones are still offered to the reviewer rather than dropped on the floor.
-    @Test(.enabled(if: splitBackupAvailable))
-    func theFlankingFlowGuardOnlyEverWithholdsASplit() throws {
-        let metas = try loadSplitMetas()
-        let evidence = loadSplitEvidence(metas)
-        func run(_ policy: BoundaryPolicy) -> (conversations: [GroupedConversation],
-            candidates: [BoundaryCandidate])
-        {
-            ConversationGrouper.groupWithCandidates(
-                segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-                evidence: evidence, policy: policy)
+        // And never moves one outside its members. (Not "never past the evidence-free end":
+        // that end is the LAST member's, and members overlap in wall time, so a word in an
+        // earlier member can legitimately sit after it.)
+        let metas = library.metasById
+        for (a, b) in zip(withEvidence, withoutEvidence) {
+            let ends = a.memberSegmentIds.compactMap { metas[$0] }.map(ConversationGrouper.segmentEndMs)
+            #expect(a.startMs >= b.startMs, "\(a.id)")
+            #expect(a.endMs <= max(ends.max() ?? a.endMs, b.startMs), "\(a.id)")
         }
-        let guarded = run(.default)
-        let unguarded = run(
-            BoundaryPolicy(
-                quietSplitMs: BoundaryPolicy.default.quietSplitMs,
-                quietCandidateMs: BoundaryPolicy.default.quietCandidateMs,
-                flankFlowWordsPerMinute: 0))
-        #expect(guarded.conversations.count < unguarded.conversations.count)
-        // A withheld split becomes a candidate: the evidence is not thrown away, it is handed
-        // to the layer that can read what was actually said.
-        #expect(guarded.candidates.count > unguarded.candidates.count)
-        // And it is a pure refusal — the guarded grouping is a strict merge of the unguarded
-        // one, never a different set of cuts.
-        let unguardedStarts = Set(unguarded.conversations.compactMap(\.memberSegmentIds.first))
-        let guardedStarts = Set(guarded.conversations.compactMap(\.memberSegmentIds.first))
-        #expect(guardedStarts.isSubset(of: unguardedStarts))
     }
 
-    /// Word counts are optional evidence: without them the guard is inert, and nothing else
-    /// changes. A caller that cannot supply them must still get a sane grouping.
+    /// The long-quiet rule reads WHERE speech is and nothing else. Word counts fed the retired
+    /// flanking-flow guard; a caller that cannot supply them — or any setting of the guard's
+    /// leftover knobs — must get exactly the same grouping.
     @Test(.enabled(if: splitBackupAvailable))
-    func withoutWordCountsTheGroupingIsTheUnguardedOne() throws {
-        let metas = try loadSplitMetas()
-        let evidence = loadSplitEvidence(metas)
-        let countless = evidence.mapValues { known in
+    func theQuietRuleReadsTimingsOnly() throws {
+        let library = try RealLibrary.load(segmentsPath: splitBackupPath)
+        let countless = library.evidence.mapValues { known in
             SegmentSpeechEvidence(
                 segmentId: known.segmentId, isSettled: known.isSettled,
                 speech: known.speech.map { SpeechSpan(startMs: $0.startMs, endMs: $0.endMs) })
         }
-        let withCounts = ConversationGrouper.group(
-            segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-            evidence: countless, policy: .default)
-        let unguarded = ConversationGrouper.group(
-            segments: metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
-            evidence: countless,
-            policy: BoundaryPolicy(flankFlowWordsPerMinute: 0))
-        #expect(withCounts.map(\.memberSegmentIds) == unguarded.map(\.memberSegmentIds))
+        let shipped = library.group(.quietOnly)
+        #expect(library.group(.quietOnly, evidence: countless) == shipped)
+        var unguarded = BoundaryPolicy.quietOnly
+        unguarded.flankFlowWordsPerMinute = 0
+        unguarded.quietCandidateMs = 1
+        #expect(library.group(unguarded) == shipped)
+    }
+
+    /// The long-quiet rule on the corpus it was tuned on still does what it was tuned to do, in
+    /// direction if no longer in the old numbers: more conversations than the structural rules
+    /// give, a shorter longest one, and no quiet split without a reason.
+    @Test(.enabled(if: splitBackupAvailable))
+    func theQuietRuleStillShortensTheLongestConversation() throws {
+        let library = try RealLibrary.load(segmentsPath: splitBackupPath)
+        let structural = library.group(.structuralOnly)
+        let quiet = library.group(.quietOnly)
+        #expect(quiet.count > structural.count)
+        let longest: ([GroupedConversation]) -> Int64 = { $0.map { $0.endMs - $0.startMs }.max() ?? 0 }
+        #expect(longest(quiet) < longest(structural))
+        #expect(quiet.dropFirst().allSatisfy { $0.startReason != nil })
     }
 }

@@ -107,11 +107,21 @@ struct ConversationScreen: View {
                 canJoinWithPrevious: model.boundaries.canJoinWithPrevious,
                 isJoinedWithPrevious: model.boundaries.isJoinedWithPrevious,
                 points: model.boundaries.points,
+                joins: model.boundaries.joins,
+                notice: model.boundaryNotice,
+                timeZone: model.display?.timeZone ?? .current,
                 onToggleJoinWithPrevious: { on in
                     Task { await model.setJoinWithPrevious(id: conversationId, on: on) }
                 },
-                onToggleSplit: { segmentId, on in
-                    Task { await model.setSplit(conversationId: conversationId, segmentId: segmentId, on: on) }
+                onSplit: { point in
+                    Task {
+                        await model.split(
+                            conversationId: conversationId, at: point,
+                            timeZone: model.display?.timeZone ?? .current)
+                    }
+                },
+                onSeparate: { point in
+                    Task { await model.separate(conversationId: conversationId, at: point) }
                 },
                 onDone: { model.showBoundaries = false }
             )
@@ -770,6 +780,10 @@ final class ConversationViewModel {
     /// Loaded with the conversation so the start caption can render under the title, and
     /// reloaded when the sheet writes a decision.
     var boundaries: ConversationBoundariesDisplay = .none
+    /// What the last split did, for the sheet to say under its list: the row that was tapped
+    /// leaves it (that place now starts another conversation), and a list that silently gets
+    /// shorter reads as a tap that did nothing.
+    var boundaryNotice: String?
     /// Inline action result (B10 — actions always show progress and a result).
     var actionResult: String?
 
@@ -783,23 +797,41 @@ final class ConversationViewModel {
     /// Opens the sheet on fresh values rather than whatever the last load left behind — a
     /// regroup elsewhere can have moved the members since.
     func loadBoundaries(id: String) async {
+        boundaryNotice = nil
         boundaries =
             (try? await AskLibraryDataSources.current.conversations.boundaries(id: id)) ?? .none
         showBoundaries = true
     }
 
     /// `conversationId` is the screen's, for the reload — the write itself is keyed only by the
-    /// segment that would start the new conversation.
-    func setSplit(conversationId: String, segmentId: String, on: Bool) async {
-        try? await AskLibraryDataSources.current.conversations.setSplit(
-            atSegmentId: segmentId, on: on)
+    /// position the new conversation starts at.
+    func split(
+        conversationId: String, at point: ConversationBoundaryPoint, timeZone: TimeZone
+    ) async {
+        do {
+            try await AskLibraryDataSources.current.conversations.split(at: point.cut)
+            // Q16: in the zone the conversation was recorded in, like every stamp beside it.
+            boundaryNotice = Copy.Boundaries.didSplit(
+                at: point.startedAt.formatted(
+                    Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone)))
+        } catch {
+            boundaryNotice = nil
+        }
         await loadBoundariesKeepingSheet(id: conversationId)
     }
 
     func setJoinWithPrevious(id: String, on: Bool) async {
+        boundaryNotice = nil
         try? await AskLibraryDataSources.current.conversations.setJoinWithPrevious(
             conversationId: id, on: on)
         await loadBoundariesKeepingSheet(id: id)
+    }
+
+    /// Takes back a join the person made inside this conversation.
+    func separate(conversationId: String, at point: ConversationBoundaryPoint) async {
+        boundaryNotice = nil
+        try? await AskLibraryDataSources.current.conversations.separate(at: point.cut)
+        await loadBoundariesKeepingSheet(id: conversationId)
     }
 
     /// A write regroups, which can move this conversation's members — or dissolve it into the

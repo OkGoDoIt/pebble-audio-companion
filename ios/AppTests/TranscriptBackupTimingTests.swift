@@ -57,7 +57,8 @@ struct TranscriptBackupTimingTests {
         var start = ContinuousClock.now
         let detail = try #require(try await queries.detail(id: longest.id))
         let detailTime = seconds(start)
-        let members = detail.members.map(\.segmentId)
+        let pieces = detail.pieces
+        let members = pieces.map(\.segmentId)
 
         let files = SegmentFileReader(root: root)
         let store = FileTranscriptStore(root: root, nowMs: { 0 })
@@ -69,7 +70,7 @@ struct TranscriptBackupTimingTests {
         let transcriptsTime = seconds(start)
         start = .now
         let walked = await LiveWorld.walkMembers(
-            members, metas: metas, transcripts: transcripts, assignments: [])
+            pieces, metas: metas, transcripts: transcripts, assignments: [])
         let walkTime = seconds(start)
 
         // What the screen does with the result on the main actor.

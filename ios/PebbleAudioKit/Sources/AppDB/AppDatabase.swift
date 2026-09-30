@@ -618,6 +618,135 @@ public struct AppDatabase: Sendable {
                 index: "audio_content_overrides_start", on: "audio_content_overrides",
                 columns: ["startMs"])
         }
+        // An AI reading of each transcribed segment, minute by minute: what the words ARE
+        // (talk, lyrics, TV, an announcement, a transcriber loop). DERIVED — it costs one call
+        // per segment to rebuild — and keyed by the transcript version and prompt version it
+        // answered, so a re-transcription or a better prompt asks again. See
+        // `AudioContentJudge` and `docs/audio-content-classification.md`.
+        migrator.registerMigration("audio-content-judgements-v1") { db in
+            try db.create(table: "audio_content_judgements") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("inputKey", .text).notNull()
+                t.column("minutesJson", .text)  // [{"m":0,"kind":"music","confidence":0.9}]
+                t.column("provider", .text)
+                t.column("model", .text)
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("lastError", .text)
+                t.column("nextAttemptAtMs", .integer)
+                t.column("judgedAtMs", .integer)
+            }
+        }
+        // Conversations become topic-sized (see `ConversationUnits.swift`): a conversation owns a
+        // RANGE of a segment's stored audio, so one segment can belong to two conversations.
+        //
+        // `conversation_segments` is derived, but it is rebuilt in place rather than dropped so
+        // the library does not read as empty between this migration and the first regroup. The
+        // only changes are the two nullable range columns (nil = the whole segment, which is
+        // what every existing row means) and the UNIQUE on `segmentId` becoming a plain index.
+        //
+        // `conversation_cuts` is where the segmenter's SETTLED decisions live: a cut that has
+        // enough later talk behind it is written once and then held, so a conversation's id and
+        // title do not move every time the recording grows. DERIVED — dropping the table costs
+        // one re-segmentation. `conversation_cut_overrides` is the person's own "start a new
+        // conversation here" / "these are one conversation" at a position inside a segment, and
+        // is AUTHORITATIVE like `boundary_overrides` (which keeps the decisions made at a
+        // segment's own start).
+        migrator.registerMigration("conversation-ranges-v1") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE conversation_segments_v2 (
+                        conversationId TEXT NOT NULL
+                            REFERENCES conversations(id) ON DELETE CASCADE,
+                        segmentId TEXT NOT NULL,
+                        ordinal INTEGER NOT NULL,
+                        transcriptionState TEXT,
+                        startMediaMs INTEGER,
+                        endMediaMs INTEGER,
+                        PRIMARY KEY (conversationId, ordinal)
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_segments_v2
+                        (conversationId, segmentId, ordinal, transcriptionState)
+                    SELECT conversationId, segmentId, ordinal, transcriptionState
+                    FROM conversation_segments
+                    """)
+            try db.execute(sql: "DROP TABLE conversation_segments")
+            try db.execute(
+                sql: "ALTER TABLE conversation_segments_v2 RENAME TO conversation_segments")
+            try db.execute(
+                sql: """
+                    CREATE INDEX conversation_segments_segment
+                    ON conversation_segments(segmentId)
+                    """)
+            try db.create(table: "conversation_cuts") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("mediaMs", .integer).notNull()
+                t.column("reason", .text).notNull()
+                t.column("algorithm", .integer).notNull()
+                t.column("createdAtMs", .integer).notNull()
+                t.primaryKey(["segmentId", "mediaMs"])
+            }
+            try db.create(table: "conversation_cut_overrides") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("mediaMs", .integer).notNull()
+                t.column("decision", .text).notNull()  // split | join
+                t.column("createdAtMs", .integer).notNull()
+                // A join says "these two are one conversation", and that is a statement about
+                // everything the two held, not about one instant: the span from the start of
+                // the earlier one to the end of the later one, inside which nothing automatic
+                // may cut again. `spanTo*` NULL means "to the end of the run".
+                t.column("spanFromSegmentId", .text)
+                t.column("spanFromMediaMs", .integer)
+                t.column("spanToSegmentId", .text)
+                t.column("spanToMediaMs", .integer)
+                t.primaryKey(["segmentId", "mediaMs"])
+            }
+        }
+        // What the AI layer needs to survive conversations being re-cut (`conversation-ranges-v1`
+        // turns every conversation in an existing library into several smaller ones, and a
+        // conversation's id stays with its first part).
+        //
+        // `annotations.sourceKey` records WHICH PIECES a title and summary were written from
+        // (`ConversationSourceKey`: segment ids and ranges, never transcript text). Without it a
+        // "final" annotation is final forever, and the ten minutes that inherit a ten-hour
+        // conversation's id would keep its title. NULL — every row written before this — reads
+        // as "written from something else", so the whole library is re-titled once.
+        //
+        // `annotations.titleEditedAtMs` marks a title the PERSON typed. Rename used to overwrite
+        // `title` and leave no trace, so nothing could tell a typed title from a generated one;
+        // regeneration now keeps a marked title and refreshes only the summary and tags.
+        //
+        // `follow_up_covered_segments` is every segment whose follow-ups had ALREADY been
+        // extracted when the library was re-cut. `follow_up_extractions` is keyed by
+        // conversation id and candidate ids embed it, so after the re-cut the worker would read
+        // the whole library again and propose, under new ids, everything the person already
+        // has. A conversation made only of covered segments is settled without a call instead.
+        // This has to read `conversation_segments` as the previous release left it — whole
+        // segments under the old ids — which `conversation-ranges-v1` preserves and the first
+        // regroup after it replaces; so it must run in the same launch, before that regroup.
+        // `follow_up_extractions` is created by its store rather than by a migration (and was
+        // dropped by v7), so a database that has never extracted anything has no such table.
+        migrator.registerMigration("annotation-source-key-v1") { db in
+            try db.alter(table: "annotations") { t in
+                t.add(column: "sourceKey", .text)
+                t.add(column: "titleEditedAtMs", .integer)
+            }
+            try db.create(table: "follow_up_covered_segments") { t in
+                t.column("segmentId", .text).primaryKey()
+            }
+            if try db.tableExists("follow_up_extractions") {
+                try db.execute(
+                    sql: """
+                        INSERT OR IGNORE INTO follow_up_covered_segments (segmentId)
+                        SELECT DISTINCT cs.segmentId
+                        FROM conversation_segments cs
+                        JOIN follow_up_extractions e ON e.conversationId = cs.conversationId
+                        WHERE e.settled = 1
+                        """)
+            }
+        }
         try migrator.migrate(writer)
     }
 }

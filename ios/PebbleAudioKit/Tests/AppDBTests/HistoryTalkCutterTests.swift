@@ -65,7 +65,7 @@ private func cuts(_ pairs: [(Double, Double)], stretch: Range<Int64>? = nil, rul
 
     @Test("fuzz: pieces tile, cuts are run starts after a real pause, short pieces merged where they can be")
     func fuzz() {
-        var rng = SeededGenerator(seed: 0xC077)
+        var rng = SplitMixGenerator(seed: 0xC077)
         let rules = HistoryTalkCutRules.default
         for _ in 0..<3_000 {
             let list = randomRuns(&rng)
@@ -105,7 +105,7 @@ private func cuts(_ pairs: [(Double, Double)], stretch: Range<Int64>? = nil, rul
 
     @Test("appending talk never moves a cut before the growing end (and says where it can)")
     func stableUnderAppend() {
-        var rng = SeededGenerator(seed: 0xA99E)
+        var rng = SplitMixGenerator(seed: 0xA99E)
         let rules = HistoryTalkCutRules.default
         var checked = 0
         var moved = 0
@@ -140,7 +140,7 @@ private func cuts(_ pairs: [(Double, Double)], stretch: Range<Int64>? = nil, rul
 
 /// 1-40 runs of 5 s to 40 min, separated by pauses weighted towards the interesting range
 /// (under and over the 3-minute cut, around the 10-minute minimum).
-private func randomRuns(_ rng: inout SeededGenerator) -> [Range<Int64>] {
+private func randomRuns(_ rng: inout SplitMixGenerator) -> [Range<Int64>] {
     var result: [Range<Int64>] = []
     var at: Int64 = 1_000_000
     for _ in 0..<Int.random(in: 1...40, using: &rng) {

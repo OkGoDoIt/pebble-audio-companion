@@ -271,6 +271,40 @@ struct ImportedNote {
         #expect(try await noteRows(env.db).isEmpty)
     }
 
+    /// A segment can hold the end of one conversation and the start of the next, and a legacy
+    /// output names whole segments. "The conversation of a segment" is then the one that owns
+    /// the segment's START — not whichever of its rows the database happened to return last.
+    @Test func aNoteOverASharedSegmentLandsOnTheConversationThatOwnsItsStart() async throws {
+        let env = try MigrationTestEnv()
+        defer { env.cleanup() }
+        let a = "seg-1787157319627-cfa6ca6e-6"
+        // A minute of audio, and the person's own split half way through it.
+        try writeLegacySegment(
+            root: env.root, id: a, startTimeMs: 1_787_157_319_627,
+            receivedAtMs: 1_787_157_319_627, frameCount: 3_000, transcriptionState: .complete)
+        try writeLegacyTranscript(root: env.root, segmentId: a)
+        try await ConversationCutStore(db: env.db).setOverride(
+            at: ConversationCut(segmentId: a, mediaMs: 30_000), decision: .split)
+        try writeLegacyAiOutput(
+            root: env.root, outputId: "ai-1", promptTemplateId: "decisions", segmentIds: [a],
+            text: "A decision.")
+
+        let outcome = try await env.importer().run()
+
+        let owners = try await env.db.reader.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                    SELECT conversationId FROM conversation_segments WHERE segmentId = ?
+                    ORDER BY COALESCE(startMediaMs, 0)
+                    """,
+                arguments: [a])
+        }
+        #expect(owners == ["conv-\(a)", "conv-\(a)-m30000"])
+        #expect(outcome.stats.notesImported == 1)
+        #expect(try await noteRows(env.db).map(\.conversationId) == ["conv-\(a)"])
+    }
+
     @Test func rerunningTheImportAddsNothingTwice() async throws {
         let env = try MigrationTestEnv()
         defer { env.cleanup() }

@@ -34,6 +34,11 @@ public enum AudioContentDescriptor {
     /// Some words were transcribed, too few to be a conversation (under two a minute). A fact
     /// about the transcript, not a guess about the room, so it is always safe to show.
     public static let fewWords = "fewWords"
+    /// An AI reading of the words judged them to be song lyrics (`AudioContentJudge`, at
+    /// `AudioContentMethod.judgeMinimumConfidence`). The only judged kind accurate enough to
+    /// name: 58 of 60 held-back minutes the reading called lyrics were, and the two others
+    /// were unclear rather than talk. TV (87%) and announcements (12 examples) are not named.
+    public static let music = "music"
 }
 
 /// Who or what made a verdict. Strings, not an enum, because a later method adds its own and
@@ -46,6 +51,12 @@ public enum AudioContentDecider {
     /// The minute's words are the transcriber's own repetition loop over quiet audio
     /// (`TranscriptArtefacts`), so what it "said" was never said.
     public static let loop = "loop"
+    /// A short stretch of talk with nothing else said around it: a stray remark, not a
+    /// conversation (`AudioContentMethod.isolatedMaximumWords`).
+    public static let isolatedWords = "isolatedWords"
+    /// An AI reading of the words said what they are: lyrics, TV, an announcement, a loop
+    /// (`AudioContentJudge`). The model is recorded with the judgement.
+    public static let contentJudge = "contentJudge"
     /// A person's correction.
     public static let user = "user"
 }
@@ -135,6 +146,51 @@ public struct SegmentAudioContentSpan: Equatable, Sendable {
         AudioContentSpan(
             startMs: startMs, endMs: endMs, kind: kind, descriptor: descriptor,
             confidence: confidence, decidedBy: decidedBy, version: version, wordCount: wordCount)
+    }
+}
+
+/// What an AI reading said one minute of a segment was.
+public struct JudgedMinute: Codable, Equatable, Sendable {
+    /// Minute index into the segment's stored audio.
+    public var m: Int
+    public var kind: String
+    public var confidence: Double
+
+    public init(m: Int, kind: String, confidence: Double) {
+        self.m = m
+        self.kind = kind
+        self.confidence = confidence
+    }
+}
+
+/// One segment's stored AI reading, or the state of trying to get one.
+public struct AudioContentJudgement: Equatable, Sendable {
+    public var segmentId: String
+    /// Transcript and prompt the answer is for (`AudioContentJudge.inputKey`).
+    public var inputKey: String
+    /// Nil until a reading has succeeded.
+    public var minutes: [JudgedMinute]?
+    public var provider: String?
+    public var model: String?
+    public var attempts: Int
+    public var lastError: String?
+    public var nextAttemptAtMs: Int64?
+    public var judgedAtMs: Int64?
+
+    public init(
+        segmentId: String, inputKey: String, minutes: [JudgedMinute]? = nil,
+        provider: String? = nil, model: String? = nil, attempts: Int = 0,
+        lastError: String? = nil, nextAttemptAtMs: Int64? = nil, judgedAtMs: Int64? = nil
+    ) {
+        self.segmentId = segmentId
+        self.inputKey = inputKey
+        self.minutes = minutes
+        self.provider = provider
+        self.model = model
+        self.attempts = attempts
+        self.lastError = lastError
+        self.nextAttemptAtMs = nextAttemptAtMs
+        self.judgedAtMs = judgedAtMs
     }
 }
 
@@ -234,6 +290,61 @@ public struct AudioContentStore: AudioContentSource {
         }
     }
 
+    /// For every classified segment, whether any of its stored time is conversation (before
+    /// corrections; the service applies those). One query at launch.
+    public func conversationPresence() async throws -> [String: Bool] {
+        try await db.reader.read { db in
+            var out: [String: Bool] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT s.segmentId AS segmentId,
+                        COALESCE(MAX(p.kind = 'conversation'), 0) AS present
+                    FROM audio_content_segments s
+                    LEFT JOIN audio_content_spans p ON p.segmentId = s.segmentId
+                    GROUP BY s.segmentId
+                    """)
+            {
+                out[row["segmentId"]] = (row["present"] as Int64? ?? 0) != 0
+            }
+            return out
+        }
+    }
+
+    /// For every classified segment, the stretches of its STORED audio classified as
+    /// conversation (before corrections; the service applies those) — empty for a segment with
+    /// none. One query at launch.
+    ///
+    /// `conversationPresence` answers for a whole segment, which was the question while a
+    /// conversation was made of whole segments. A conversation now owns a range of one, so
+    /// "does this conversation hold any conversation" needs to know WHERE in the segment the
+    /// talk was: the quiet tail of a segment is a conversation of its own, and it holds none
+    /// however much was said in the segment's first ten minutes.
+    public func conversationMediaRanges() async throws -> [String: [Range<Int64>]] {
+        try await db.reader.read { db in
+            var out: [String: [Range<Int64>]] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT s.segmentId AS segmentId, p.mediaStartMs AS mediaStartMs,
+                        p.mediaEndMs AS mediaEndMs
+                    FROM audio_content_segments s
+                    LEFT JOIN audio_content_spans p
+                        ON p.segmentId = s.segmentId AND p.kind = 'conversation'
+                    ORDER BY s.segmentId, p.spanIndex
+                    """)
+            {
+                let segmentId: String = row["segmentId"]
+                var ranges = out[segmentId] ?? []
+                if let start: Int64 = row["mediaStartMs"], let end: Int64 = row["mediaEndMs"] {
+                    ranges.append(start..<max(end, start))
+                }
+                out[segmentId] = ranges
+            }
+            return out
+        }
+    }
+
     /// Delete-cascade and retention: a segment that no longer exists keeps no classification.
     /// Corrections are kept; they are about time, not about a file.
     public func forget(segmentIds: [String]) async throws {
@@ -243,7 +354,56 @@ public struct AudioContentStore: AudioContentSource {
             let args = StatementArguments(segmentIds)
             try db.execute(sql: "DELETE FROM audio_content_spans WHERE segmentId IN (\(marks))", arguments: args)
             try db.execute(sql: "DELETE FROM audio_content_segments WHERE segmentId IN (\(marks))", arguments: args)
+            try db.execute(sql: "DELETE FROM audio_content_judgements WHERE segmentId IN (\(marks))", arguments: args)
         }
+    }
+
+    // MARK: Derived: AI readings
+
+    public func judgements() async throws -> [String: AudioContentJudgement] {
+        try await db.reader.read { db in
+            var out: [String: AudioContentJudgement] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM audio_content_judgements") {
+                let judgement = Self.judgement(row)
+                out[judgement.segmentId] = judgement
+            }
+            return out
+        }
+    }
+
+    public func saveJudgement(_ judgement: AudioContentJudgement) async throws {
+        let minutes = try judgement.minutes.map {
+            String(decoding: try JSONEncoder().encode($0), as: UTF8.self)
+        }
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO audio_content_judgements (
+                        segmentId, inputKey, minutesJson, provider, model, attempts, lastError,
+                        nextAttemptAtMs, judgedAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(segmentId) DO UPDATE SET
+                        inputKey = excluded.inputKey, minutesJson = excluded.minutesJson,
+                        provider = excluded.provider, model = excluded.model,
+                        attempts = excluded.attempts, lastError = excluded.lastError,
+                        nextAttemptAtMs = excluded.nextAttemptAtMs, judgedAtMs = excluded.judgedAtMs
+                    """,
+                arguments: [
+                    judgement.segmentId, judgement.inputKey, minutes, judgement.provider,
+                    judgement.model, judgement.attempts, judgement.lastError,
+                    judgement.nextAttemptAtMs, judgement.judgedAtMs,
+                ])
+        }
+    }
+
+    static func judgement(_ row: Row) -> AudioContentJudgement {
+        let json: String? = row["minutesJson"]
+        return AudioContentJudgement(
+            segmentId: row["segmentId"], inputKey: row["inputKey"],
+            minutes: json.flatMap { try? JSONDecoder().decode([JudgedMinute].self, from: Data($0.utf8)) },
+            provider: row["provider"], model: row["model"], attempts: row["attempts"],
+            lastError: row["lastError"], nextAttemptAtMs: row["nextAttemptAtMs"],
+            judgedAtMs: row["judgedAtMs"])
     }
 
     // MARK: Authoritative: corrections

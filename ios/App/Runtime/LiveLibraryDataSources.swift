@@ -56,11 +56,18 @@ final class LiveWorld {
         )
     }
 
-    /// The segment ids that make up a conversation, in order.
-    private func members(of conversationId: String) async -> [String] {
+    /// The pieces a conversation is made of, in order: which range of each member segment it
+    /// owns. There is deliberately no "segment ids of a conversation" next to this — a segment
+    /// usually holds the end of one conversation and the start of the next, so anything that
+    /// reads a conversation's words or audio by segment id reads its neighbours' too.
+    private func pieces(of conversationId: String) async -> [ConversationMember] {
         let detail = try? await composition.runtime.library.conversation(id: conversationId)
-        return detail?.members.map(\.segmentId) ?? []
+        return detail?.pieces ?? []
     }
+
+    /// Straight to the queries for the one read `LibraryStore` has no pass-through for: which
+    /// conversation owns a MOMENT of a segment.
+    private var queries: ConversationQueries { ConversationQueries(db: composition.database) }
 
     private func title(of conversationId: String) async -> String? {
         let detail = try? await composition.runtime.library.conversation(id: conversationId)
@@ -83,11 +90,12 @@ final class LiveWorld {
         }.value
     }
 
-    /// What one walk over a conversation's members produced.
+    /// What one walk over a conversation's pieces produced.
     struct WalkedMembers: Sendable {
         var transcript: [TranscriptItem] = []
         var missingTicks: [Double] = []
-        /// Total STORED audio across the members — the player's clock, not the wall span.
+        /// Total STORED audio across the pieces — the player's clock, not the wall span, and
+        /// not the members' whole segments.
         var mediaMs: Int64 = 0
         var provider: String?
         var transcribedAtMs: Int64?
@@ -103,17 +111,23 @@ final class LiveWorld {
     /// database tick it observes. That is a main thread blocked for a second at a time while
     /// somebody is reading, which is exactly what "the app gets unresponsive in a longer
     /// conversation" is.
+    ///
+    /// It walks PIECES. `transcripts` holds each member segment's whole transcript, and the
+    /// walk cuts it to the range this conversation owns (`SegmentTranscript.piece`), so a
+    /// segment shared with the conversation before or after contributes only its own turns —
+    /// and the scrubber position of each is counted over the pieces, not the segments.
     static func walkMembers(
-        _ memberIds: [String],
+        _ members: [ConversationMember],
         metas: [String: SegmentMeta],
         transcripts: [String: SegmentTranscript],
         assignments: [SpeakerAssignment]
     ) async -> WalkedMembers {
         await Task.detached(priority: .userInitiated) {
             var result = WalkedMembers()
-            for segmentId in memberIds {
+            for member in members {
+                let segmentId = member.segmentId
                 guard let meta = metas[segmentId] else { continue }
-                let stored = transcripts[segmentId]
+                let stored = transcripts[segmentId]?.piece(member)
                 if let stored {
                     result.provider = stored.providerId
                     result.transcribedAtMs = max(result.transcribedAtMs ?? 0, stored.createdAtMs)
@@ -142,7 +156,8 @@ final class LiveWorld {
                     // what this did before the two clocks were told apart) compressed every
                     // transcript position by the gap ratio — on a silence-suppressed recording,
                     // by half or more.
-                    timebase: .media
+                    timebase: .media,
+                    piece: member
                 )
                 let before = result.mediaMs
                 result.transcript.append(contentsOf: built.items)
@@ -379,12 +394,13 @@ extension LiveWorld: ConversationDataSource {
         // One off-main pass for every member's sidecar and transcript: an hour-long conversation
         // is megabytes of word-timing JSON, and this used to decode all of it on the main actor
         // on every DB tick the open conversation observed.
-        let memberIds = detail.members.map(\.segmentId)
+        let pieces = detail.pieces
+        let memberIds = pieces.map(\.segmentId)
         let metas = await Self.loadMetas(memberIds, files: composition.files)
         let storedTranscripts = await Self.loadTranscripts(memberIds, store: composition.transcripts)
 
         let walked = await Self.walkMembers(
-            memberIds, metas: metas, transcripts: storedTranscripts, assignments: assignments)
+            pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments)
         let transcript = walked.transcript
         let missingTicks = walked.missingTicks
         let provider = walked.provider
@@ -393,7 +409,9 @@ extension LiveWorld: ConversationDataSource {
 
         // The scrubber measures STORED AUDIO. Using the wall span instead (a 1 hr 4 min
         // conversation holding 33 min of audio) made the player claim time that does not
-        // exist, and every position on it was wrong by however much was missing.
+        // exist, and every position on it was wrong by however much was missing. And it
+        // measures the conversation's PIECES: the walk sums each piece's range, which is what
+        // `playback(id:)` hands the player frame for frame.
         let duration = walked.mediaMs
         let hasWords = transcript.contains { if case .turn = $0 { return true } else { return false } }
         let aiAvailable = await composition.aiRouter.isAvailable()
@@ -437,14 +455,18 @@ extension LiveWorld: ConversationDataSource {
         }
     }
 
-    /// Playback over every member segment of the conversation, as one continuous stream.
+    /// Playback over every PIECE of the conversation, as one continuous stream: each member's
+    /// frames sliced to the range the conversation owns, so a segment shared with the
+    /// conversation before it starts playing where this one starts — and stops where the next
+    /// one begins. `durationMs` is the same sum of ranges `display(id:)` puts on the scrubber.
     func playback(id: String) async throws -> (any ConversationPlayback)? {
-        let segments = await members(of: id)
-        guard !segments.isEmpty else { return nil }
+        let pieces = await pieces(of: id)
+        guard !pieces.isEmpty else { return nil }
         let files = composition.files
-        let durationMs = segments.compactMap { files.readMeta($0) }
-            .reduce(Int64(0)) { $0 + mediaDurationMs($1) }
+        let metas = await Self.loadMetas(pieces.map(\.segmentId), files: files)
+        let durationMs = ConversationTimeline(members: pieces, metas: metas).durationMs
         guard durationMs > 0 else { return nil }
+        let frameDurations = metas.mapValues { Int64($0.frameDurationMs) }
         return ConversationPlaybackEngine(
             key: id,
             durationMs: durationMs,
@@ -453,36 +475,36 @@ extension LiveWorld: ConversationDataSource {
                 decoder: SpeexLiveFrameDecoder(),
                 // Called on the playback executor, never the main actor: the frame logs of a
                 // long conversation are tens of megabytes to walk.
-                frameSource: { _ in segments.flatMap { files.readFrames($0).map(\.payload) } }
+                frameSource: { _ in
+                    ConversationAudio.payloads(
+                        of: pieces, frameDurationMs: { frameDurations[$0] },
+                        readFrames: { files.readFrames($0) })
+                }
             ))
     }
 
+    /// The person's own title. One write that also marks the title as theirs
+    /// (`AnnotationStore.setUserTitle`), so no later regeneration — the provisional pass while
+    /// the conversation is live, the final one, a re-title after its pieces change — replaces
+    /// it; then the conversation is donated again THROUGH the enrichment service, which is the
+    /// donation that carries the transcript. The direct donation this used to make had none,
+    /// and a donation replaces the document: renaming a conversation took its words out of
+    /// search.
     func rename(id: String, to title: String) async throws {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let existing = try await composition.annotations.load(id)
-        var annotation =
-            existing
-            ?? ConversationAnnotation(
-                conversationId: id, updatedAtMs: composition.clock.nowMs
-            )
-        annotation.title = trimmed
-        annotation.updatedAtMs = composition.clock.nowMs
-        _ = try await composition.annotations.save(annotation)
-        try? await composition.donator.donateConversation(
-            conversationId: id,
-            title: trimmed,
-            summary: annotation.summary,
-            tags: annotation.tags,
-            startDateMs: nil,
-            createdAtMs: composition.clock.nowMs
-        )
+        try await composition.annotations.setUserTitle(trimmed, conversationId: id)
+        await composition.runtime.enrichment.donate(conversationIds: [id])
     }
 
-    /// Re-run transcription from scratch for every member segment.
+    /// Re-run transcription from scratch for every member segment — WHOLE segments, on
+    /// purpose. A transcript is one file per segment, so there is no such thing as
+    /// re-transcribing a piece; a segment shared with a neighbouring conversation is simply
+    /// transcribed again for both, which costs a little and changes nothing about who owns
+    /// which part of it.
     func retranscribe(id: String) async throws {
-        for segmentId in await members(of: id) {
-            await composition.runtime.reprocessSegment(segmentId)
+        for piece in await pieces(of: id) {
+            await composition.runtime.reprocessSegment(piece.segmentId)
         }
     }
 
@@ -490,14 +512,20 @@ extension LiveWorld: ConversationDataSource {
 
     func retryNow(id: String) async throws { try await retranscribe(id: id) }
 
-    /// One WAV per member segment. The count is returned rather than assumed: a conversation
-    /// that survived three reconnects is four files, and the screen used to report "1 file
+    /// One WAV per piece. The count is returned rather than assumed: a conversation that
+    /// survived three reconnects is four files, and the screen used to report "1 file
     /// exported" for all of them.
+    ///
+    /// Each file holds the conversation's own range of that recording and nothing else —
+    /// exporting the members' whole segments handed over the end of the conversation before
+    /// and the start of the one after, in a file named as this one's audio.
     func exportAudio(id: String) async throws -> Int {
-        let live = await composition.runtime.environment.live
+        let exporter = composition.audioExporter
         var written = 0
-        for segmentId in await members(of: id) {
-            written += try await live.exportSegment(segmentId).files.count
+        for piece in await pieces(of: id) {
+            written += try await exporter.exportSegment(
+                piece.segmentId, fromMediaMs: piece.startMediaMs, toMediaMs: piece.endMediaMs
+            ).files.count
         }
         return written
     }
@@ -532,32 +560,25 @@ extension LiveWorld: ConversationDataSource {
 
     // --- boundaries (split / join) ---------------------------------------------------------
 
-    /// Every member except the first is a place this conversation could be cut, because a member
-    /// is exactly a stretch the receiver already treats as one piece — a cut anywhere else would
-    /// land inside a segment, which grouping cannot express.
+    /// Where this conversation could be split, and what the person has already decided about
+    /// it. The places offered are where talk resumed after a break — a conversation is a range
+    /// of each member recording now, so a new one can start between any two turns, and the
+    /// joins between recordings (all that could be offered while a conversation was whole
+    /// recordings) are no longer special.
     func boundaries(id: String) async throws -> ConversationBoundariesDisplay {
-        guard let detail = try? await composition.runtime.library.conversation(id: id) else {
-            return .none
-        }
-        let memberIds = detail.members.map(\.segmentId)
-        guard let firstMemberId = memberIds.first else { return .none }
+        guard let detail = try? await composition.runtime.library.conversation(id: id),
+            let first = detail.pieces.first
+        else { return .none }
+        let pieces = detail.pieces
+        let memberIds = pieces.map(\.segmentId)
         let metas = await Self.loadMetas(memberIds, files: composition.files)
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        let decisions = (try? await overrides.all()) ?? [:]
-        let queries = ConversationQueries(db: composition.database)
+        let turns = await Self.loadTurns(memberIds, store: composition.transcripts)
+        let decisions =
+            (try? await ConversationBoundaryEdits(database: composition.database).decisions())
+            ?? [:]
         let startReason = try? await queries.startReason(ofConversation: id)
 
         let conversationStartMs = detail.row.startMs
-        let points: [ConversationBoundaryPoint] = memberIds.dropFirst().compactMap { memberId in
-            guard let meta = metas[memberId] else { return nil }
-            let startMs = ConversationGrouper.segmentStartMs(meta)
-            return ConversationBoundaryPoint(
-                id: memberId,
-                startedAt: Date(timeIntervalSince1970: Double(startMs) / 1000),
-                offsetMs: max(0, startMs - conversationStartMs),
-                isSplit: decisions[memberId] == .split
-            )
-        }
         // Something to join BACK to: an earlier conversation has to exist. Asked of the listing
         // rather than inferred from `startReason` being nil, which is also nil for everything
         // grouped before that column existed and would offer the join on conversations that
@@ -566,27 +587,67 @@ extension LiveWorld: ConversationDataSource {
         let hasPrevious = sections.contains { section in
             section.rows.contains { $0.startMs < conversationStartMs }
         }
+        let start = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
         return ConversationBoundariesDisplay(
             startReason: startReason,
             canJoinWithPrevious: hasPrevious,
-            isJoinedWithPrevious: decisions[firstMemberId] == .join,
-            points: points
+            // Seldom true once the grouping has caught up — a joined conversation becomes part
+            // of the one before it — but when a join does stand at this conversation's own
+            // start the row has to say so, not offer it again.
+            isJoinedWithPrevious: decisions[start] == .join,
+            points: ConversationSplitPoints.points(
+                pieces: pieces, metas: metas, turns: turns,
+                conversationStartMs: conversationStartMs),
+            joins: ConversationSplitPoints.joins(
+                pieces: pieces, metas: metas, turns: turns, decisions: decisions,
+                conversationStartMs: conversationStartMs)
         )
     }
 
-    func setSplit(atSegmentId segmentId: String, on: Bool) async throws {
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        try await overrides.set(segmentId: segmentId, decision: on ? .split : nil)
+    /// Turn timings and text for the split-point list, off the main actor and WITHOUT the
+    /// per-word arrays: the sheet needs where each turn starts and its first few words, and
+    /// `load` would decode megabytes of word timings to throw them away.
+    static func loadTurns(
+        _ segmentIds: [String], store: FileTranscriptStore
+    ) async -> [String: [Transcription.TranscriptSegment]] {
+        await Task.detached(priority: .userInitiated) {
+            var loaded: [String: [Transcription.TranscriptSegment]] = [:]
+            for id in segmentIds {
+                if let turns = store.loadSpeechTimings(id) { loaded[id] = turns }
+            }
+            return loaded
+        }.value
+    }
+
+    func split(at cut: ConversationCut) async throws {
+        try await ConversationBoundaryEdits(database: composition.database).split(at: cut)
         try await regroupAfterBoundaryChange()
     }
 
+    /// Joins the conversation to the one before it, or clears that join.
+    ///
+    /// The join is the kit's to write (`ConversationCutStore.joinWithPrevious`), wherever the
+    /// conversation starts — inside a segment as often as at the start of one. It records the
+    /// whole span the two conversations covered, not just the point between them, which is
+    /// what keeps the segmenter from cutting the merged conversation again a few minutes on.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws {
-        guard
-            let detail = try? await composition.runtime.library.conversation(id: conversationId),
-            let firstMemberId = detail.members.first?.segmentId
-        else { return }
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        try await overrides.set(segmentId: firstMemberId, decision: on ? .join : nil)
+        let edits = ConversationBoundaryEdits(database: composition.database)
+        if on {
+            try await edits.joinWithPrevious(conversationId: conversationId)
+        } else {
+            guard
+                let detail = try? await composition.runtime.library.conversation(
+                    id: conversationId),
+                let first = detail.pieces.first
+            else { return }
+            try await edits.clearJoin(
+                at: ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0))
+        }
+        try await regroupAfterBoundaryChange()
+    }
+
+    func separate(at cut: ConversationCut) async throws {
+        try await ConversationBoundaryEdits(database: composition.database).clearJoin(at: cut)
         try await regroupAfterBoundaryChange()
     }
 
@@ -691,18 +752,25 @@ extension LiveWorld: AskDataSource {
         let files = composition.files
         let allMetas = await Task.detached(priority: .userInitiated) { files.listSegments() }.value
         let metas = segmentsInAskScope(allMetas, scope: kitScope, nowMs: nowMs)
-        // A conversation-scoped question narrows to that conversation's members.
+        // A conversation-scoped question narrows to that conversation's PIECES: the range of
+        // each member segment it owns. Narrowing to the members alone read the end of the
+        // conversation before and the start of the one after as part of this one, and then
+        // cited them.
         let scoped: [SegmentMeta]
+        var scopedPieces: [String: ConversationMember] = [:]
         if case .conversation(let id, _) = scope {
-            let ids = Set(await members(of: id))
-            scoped = allMetas.filter { ids.contains($0.segmentId) }
+            for piece in await pieces(of: id) { scopedPieces[piece.segmentId] = piece }
+            scoped = allMetas.filter { scopedPieces[$0.segmentId] != nil }
         } else {
             scoped = metas
         }
 
         // Kept so the stretch cutter below does not decode every one of these a second time.
-        let loaded = await Self.loadTranscripts(
-            scoped.map(\.segmentId), store: composition.transcripts)
+        // Cut to the piece HERE, once, so everything downstream — the excerpts, the citable
+        // stretches, the recall scoring — reads the same text.
+        let loaded = Self.cut(
+            await Self.loadTranscripts(scoped.map(\.segmentId), store: composition.transcripts),
+            to: scopedPieces)
         var excerpts: [TranscriptExcerpt] = []
         var gapSummaries: [String: String?] = [:]
         for meta in scoped {
@@ -714,8 +782,11 @@ extension LiveWorld: AskDataSource {
             // segments off by over a minute. This is the date Ask puts in front of the model
             // and prints beside the answer, so it was answering "what did I say last night"
             // with material from the wrong evening.
-            let startMs = ConversationGrouper.segmentStartMs(meta)
-            let endMs = startMs + segmentDurationMs(meta)
+            //
+            // For a piece, the wall stretch of the PIECE: a conversation that starts eleven
+            // minutes into its first recording happened eleven minutes later than that
+            // recording did.
+            let (startMs, endMs) = Self.wallExtent(of: scopedPieces[meta.segmentId], meta: meta)
             excerpts.append(
                 TranscriptExcerpt(
                     segmentId: meta.segmentId,
@@ -754,12 +825,21 @@ extension LiveWorld: AskDataSource {
             of: ordered.compactMap { excerpt in
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
             },
-            metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }))
+            metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }),
+            pieces: scopedPieces)
         // Which conversation each recording belongs to, in one read: coverage is counted — and
         // told to the model and stored in Recent — in CONVERSATIONS. It used to count recordings
         // and call them conversations ("29 conversations read" for one conversation).
-        let conversationOf =
+        //
+        // Per segment this is coarse on purpose (a shared segment is filed under the
+        // conversation that owns its start). A conversation-scoped question is the one place
+        // that is plainly wrong — its first segment usually starts in the conversation before —
+        // so there every piece is counted as what it is: part of the one being asked about.
+        var conversationOf =
             (try? await composition.runtime.library.conversationIdsBySegment()) ?? [:]
+        if case .conversation(let id, _) = scope {
+            for segmentId in scopedPieces.keys { conversationOf[segmentId] = id }
+        }
         // Two signals, one rule: keyword evidence ranks exactly as it always has, and the
         // semantic pass may only rescue a batch keyword could not tell apart from its
         // neighbours (`AskRecallPolicy.keywordFirst`). Nil when the scope will be read whole
@@ -955,11 +1035,20 @@ extension LiveWorld: AskDataSource {
         let totalChars = excerpts.reduce(0) { $0 + $1.text.count }
         guard totalChars > budget.transcriptChars * budget.maxBatches else { return nil }
 
-        // From the one read `ask` already made, rather than a query per recording.
+        // Every conversation that owns ANY part of a recording in scope, in one read. A hit
+        // is a conversation; a segment shared by two of them has to be reachable from both, or
+        // the conversation that owns only its second half can never rank the recording its
+        // words are in. (`conversationOf` names one owner per segment, which is right for
+        // counting coverage and wrong for this.)
+        let owners = (try? await queries.membersBySegment()) ?? [:]
         var members: [String: [String]] = [:]
         for excerpt in excerpts {
-            guard let conversationId = conversationOf[excerpt.segmentId] else { continue }
-            members[conversationId, default: []].append(excerpt.segmentId)
+            let owning = owners[excerpt.segmentId]?.map(\.conversationId) ?? []
+            let fallback = conversationOf[excerpt.segmentId].map { [$0] } ?? []
+            for conversationId in owning.isEmpty ? fallback : owning
+            where !(members[conversationId] ?? []).contains(excerpt.segmentId) {
+                members[conversationId, default: []].append(excerpt.segmentId)
+            }
         }
 
         let started = ContinuousClock.now
@@ -1026,49 +1115,166 @@ extension LiveWorld: AskDataSource {
         return segmentTitle(meta, transcriptText: composition.transcripts.load(citedId)?.text)
     }
 
-    /// The batch form, with every meta read and transcript decode off the main actor.
-    func citationTitles(for citedIds: [String]) async -> [String: String] {
-        let ids = Array(Set(citedIds))
-        let files = composition.files
-        let store = composition.transcripts
-        return await Task.detached(priority: .userInitiated) {
-            var titles: [String: String] = [:]
-            for id in ids {
-                guard let meta = files.readMeta(id) else { continue }
-                titles[id] = segmentTitle(meta, transcriptText: store.load(id)?.text)
+    /// The batch form, keyed by `AskCitation.momentKey`, with every meta read and transcript
+    /// decode off the main actor.
+    ///
+    /// A title belongs to the cited MOMENT, not the cited segment: a segment usually holds two
+    /// conversations, so two citations into one recording can be two different sources. Each
+    /// is named for the conversation that owns its moment — that conversation's own title
+    /// when it has one, else the opening words of ITS piece of the recording. Titling by
+    /// segment labelled a citation with the first words of the conversation before it.
+    func citationTitles(for citations: [AskCitation]) async -> [String: String] {
+        var unique: [String: AskCitation] = [:]
+        for citation in citations { unique[citation.momentKey] = citation }
+        guard !unique.isEmpty else { return [:] }
+        let metas = await Self.loadMetas(
+            Array(Set(unique.values.map(\.segmentId))), files: composition.files)
+        // One read for every segment's owners, instead of a query per citation.
+        let owners = (try? await queries.membersBySegment()) ?? [:]
+
+        var titles: [String: String] = [:]
+        var titleOfConversation: [String: String?] = [:]
+        var untitled: [(key: String, meta: SegmentMeta, piece: ConversationMember?)] = []
+        for (key, citation) in unique {
+            guard let meta = metas[citation.segmentId] else { continue }
+            let owner = Self.owner(
+                of: Self.citedMediaMs(citation, meta: meta), in: owners[citation.segmentId] ?? [])
+            if let owner {
+                if titleOfConversation[owner.conversationId] == nil {
+                    titleOfConversation[owner.conversationId] =
+                        .some(try? await composition.annotations.load(owner.conversationId)?.title)
+                }
+                if let title = titleOfConversation[owner.conversationId] ?? nil, !title.isEmpty {
+                    titles[key] = title
+                    continue
+                }
             }
-            return titles
+            // A recording the grouping has not reached yet has no owner, and is read whole.
+            untitled.append((key, meta, owner?.member))
+        }
+        guard !untitled.isEmpty else { return titles }
+
+        let store = composition.transcripts
+        let pending = untitled
+        let snippets = await Task.detached(priority: .userInitiated) {
+            var out: [String: String] = [:]
+            for item in pending {
+                let transcript = store.load(item.meta.segmentId)
+                let text = item.piece.map { transcript?.piece($0).text } ?? transcript?.text
+                out[item.key] = segmentTitle(item.meta, transcriptText: text)
+            }
+            return out
         }.value
+        return titles.merging(snippets) { title, _ in title }
+    }
+
+    /// The piece of a segment that owns a moment of it — the rule
+    /// `ConversationQueries.conversationId(ofSegment:atMediaMs:)` applies, over rows already
+    /// read: the piece containing the moment, else (a stale offset past every piece) the last.
+    nonisolated static func owner(
+        of mediaMs: Int64, in pieces: [(conversationId: String, member: ConversationMember)]
+    ) -> (conversationId: String, member: ConversationMember)? {
+        pieces.first { $0.member.contains(mediaMs: max(mediaMs, 0)) } ?? pieces.last
+    }
+
+    /// Where a citation points, on its segment's stored-audio clock — the clock a
+    /// conversation's pieces are cut on, so this is what decides WHICH conversation a citation
+    /// into a shared segment opens.
+    ///
+    /// A citation carries wall-clock bounds; with none (older citations, imports) it means the
+    /// segment's first instant. The conversion is the one the transcript rows and the missing
+    /// ticks use, through the segment's own gap records — and, as there, only where those
+    /// records add up. `drafts` (and `TranscriptItems`) leave an inexact segment's offsets on
+    /// the media clock rather than acting on the proportional guess, so converting back here
+    /// would apply an inverse that was never applied: on the 2026-09-08 backup that is 169
+    /// segments and 4,813 turns that move by over a minute, worst 14 h 44 m.
+    ///
+    /// The anchor is `ConversationGrouper.segmentStartMs`, not `startTimeMs`, for the reason
+    /// `SegmentMeta.startWallMs` documents: `startTimeMs` is the STREAM's birth, so for every
+    /// mid-stream segment it is early by `firstSampleIndex` samples — a median of 1 h across
+    /// this library. Subtracting it from a wall citation put the moment past the end of the
+    /// span and pinned every target at the segment's last sample.
+    nonisolated static func citedMediaMs(_ citation: AskCitation, meta: SegmentMeta) -> Int64 {
+        let segmentStartMs = ConversationGrouper.segmentStartMs(meta)
+        let clock = SegmentMediaClock(meta)
+        let into = min(
+            max((citation.startMs ?? segmentStartMs) - segmentStartMs, 0), clock.wallSpanMs)
+        return clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs)
     }
 
     /// A conversation's transcripts cut into citable stretches, in recording order and
     /// numbered once. Provider spans give the boundaries, so every stretch starts where
-    /// someone started speaking.
-    func citableStretches(of segmentIds: [String]) async -> [CitableExcerpt] {
-        let transcripts = await Self.loadTranscripts(segmentIds, store: composition.transcripts)
+    /// someone started speaking — and only the conversation's own pieces are cut up, so a
+    /// note can never cite the conversation that shares its first or last recording.
+    func citableStretches(of pieces: [ConversationMember]) async -> [CitableExcerpt] {
+        let segmentIds = pieces.map(\.segmentId)
+        let owned = Dictionary(
+            pieces.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first })
+        let transcripts = Self.cut(
+            await Self.loadTranscripts(segmentIds, store: composition.transcripts), to: owned)
         let metas = await Self.loadMetas(segmentIds, files: composition.files)
         return citableStretches(
-            of: segmentIds.compactMap { id in transcripts[id].map { (id, $0) } }, metas: metas)
+            of: segmentIds.compactMap { id in transcripts[id].map { (id, $0) } }, metas: metas,
+            pieces: owned)
     }
 
     /// The same, for a caller that has already read these transcripts and metas. Ask reads every
     /// transcript in scope to build its excerpts and would otherwise decode all of them a
     /// second time here — which, on an "Everything" question over a few hundred recordings, is
     /// tens of megabytes of JSON parsed twice for one question.
+    ///
+    /// `transcripts` are ALREADY cut to `pieces` where a segment has one (`cut(_:to:)`); the
+    /// pieces are passed again only so a transcript with no timings is stretched over its
+    /// piece rather than its whole segment.
     func citableStretches(
         of transcripts: [(segmentId: String, transcript: SegmentTranscript)],
-        metas: [String: SegmentMeta]
+        metas: [String: SegmentMeta],
+        pieces: [String: ConversationMember] = [:]
     ) -> [CitableExcerpt] {
         CitableExcerpts.numbered(
             CitableExcerpts.coalesced(
                 transcripts.flatMap {
-                    drafts(of: $0.segmentId, transcript: $0.transcript, meta: metas[$0.segmentId])
+                    drafts(
+                        of: $0.segmentId, transcript: $0.transcript, meta: metas[$0.segmentId],
+                        piece: pieces[$0.segmentId])
                 }))
     }
 
-    private func drafts(of segmentId: String, transcript: SegmentTranscript, meta: SegmentMeta?)
-        -> [CitableExcerptDraft]
-    {
+    /// Each transcript cut to the piece of its segment named in `pieces`; a segment with no
+    /// piece named is read whole (a date-scoped question reads recordings, not conversations).
+    nonisolated static func cut(
+        _ transcripts: [String: SegmentTranscript], to pieces: [String: ConversationMember]
+    ) -> [String: SegmentTranscript] {
+        guard !pieces.isEmpty else { return transcripts }
+        var out = transcripts
+        for (segmentId, piece) in pieces {
+            if let transcript = transcripts[segmentId] { out[segmentId] = transcript.piece(piece) }
+        }
+        return out
+    }
+
+    /// The wall-clock stretch a piece of a segment covers — the whole segment's for no piece.
+    /// Converted the way every other media offset is: through the gap records where they add
+    /// up, and as a plain offset where they do not (see `drafts`).
+    nonisolated static func wallExtent(
+        of piece: ConversationMember?, meta: SegmentMeta
+    ) -> (Int64, Int64) {
+        let startMs = ConversationGrouper.segmentStartMs(meta)
+        guard let piece, !piece.isWhole else { return (startMs, startMs + segmentDurationMs(meta)) }
+        let clock = SegmentMediaClock(meta)
+        let range = piece.mediaRange(mediaSpanMs: clock.mediaSpanMs)
+        func wall(_ mediaMs: Int64) -> Int64 {
+            clock.isExact ? clock.wall(fromMedia: mediaMs) : min(mediaMs, clock.wallSpanMs)
+        }
+        let lower = piece.startMediaMs == nil ? 0 : wall(range.lowerBound)
+        let upper = piece.endMediaMs == nil ? clock.wallSpanMs : wall(range.upperBound)
+        return (startMs + lower, startMs + max(upper, lower))
+    }
+
+    private func drafts(
+        of segmentId: String, transcript: SegmentTranscript, meta: SegmentMeta?,
+        piece: ConversationMember? = nil
+    ) -> [CitableExcerptDraft] {
         guard !transcript.text.isEmpty, let meta else { return [] }
         // Ask's citable excerpts were the last model input still reading raw transcript text,
         // so a conversation whose transcriber looped could be cited hundreds of times on the
@@ -1105,10 +1311,17 @@ extension LiveWorld: AskDataSource {
         // The rule itself is `SegmentMediaClock.wallOffset(ofMedia:)`, shared with all of them.
         let clock = SegmentMediaClock(meta)
         let startMs = ConversationGrouper.segmentStartMs(meta)
+        // `segmentStartMs` stays the SEGMENT's: it is the anchor the span offsets are added
+        // to, and those are offsets into the segment whichever piece they were cut for. Only
+        // the end differs for a piece — it is what a transcript with no timings at all is
+        // stretched to, and such a transcript goes, whole, to the piece that starts its
+        // segment (`SegmentTranscript.piece`), which ends where that piece does.
+        let endMs =
+            piece.map { Self.wallExtent(of: $0, meta: meta).1 } ?? (startMs + clock.wallSpanMs)
         return CitableExcerpts.split(
             segmentId: segmentId,
             segmentStartMs: startMs,
-            segmentEndMs: startMs + clock.wallSpanMs,
+            segmentEndMs: endMs,
             spans: transcript.segments.map {
                 TranscriptSpan(
                     text: $0.text,
@@ -1118,37 +1331,73 @@ extension LiveWorld: AskDataSource {
             wholeText: transcript.text)
     }
 
-    /// Resolve a citation all the way to something the UI can act on: which conversation holds
-    /// the cited segment, where that segment starts on the player's scrubber (media time, gaps
-    /// excluded — the same accumulation `display(id:)` walks), and when it was recorded.
+    /// Resolve a citation all the way to something the UI can act on: which conversation owns
+    /// the cited MOMENT, where that moment sits on the conversation's scrubber, and when it
+    /// was recorded.
+    ///
+    /// The moment, not the segment: a segment usually holds the end of one conversation and
+    /// the start of the next, so "the conversation of the cited segment" opened the earlier of
+    /// the two for every citation into the later one — the right recording, the wrong
+    /// conversation, and a scrubber position counted through audio that conversation does not
+    /// own.
     func citationTarget(for citation: AskCitation) async -> CitationTarget? {
-        let citedId = citation.segmentId
+        let files = composition.files
         guard
-            let conversationId = try? await composition.runtime.library.conversationId(
-                ofSegment: citedId),
-            let detail = try? await composition.runtime.library.conversation(id: conversationId)
+            let cited = await Self.citedPosition(
+                of: citation, queries: queries,
+                loadMetas: { await Self.loadMetas($0, files: files) })
         else { return nil }
-
-        let memberIds = detail.members.map(\.segmentId)
-        let metas = await Self.loadMetas(memberIds, files: composition.files)
-        // Where the cited STRETCH starts on the scrubber, not where its recording does. The
-        // walk is shared with `momentTarget` (see `ConversationScrubber`), so a citation and a
-        // History moment at the same instant cue the same position.
-        let mediaOffsetMs = ConversationScrubber.mediaOffset(
-            ofWallMs: citation.startMs, inMember: citedId, members: memberIds, metas: metas)
-        let meta = metas[citedId]
         // Same anchor as everything else that says when a recording happened (see
         // `SegmentMeta.startWallMs`): `startTimeMs` is the stream's birth and files a
         // mid-stream segment a median of 1 h early.
-        let startedAtMs = citation.startMs ?? meta.map { ConversationGrouper.segmentStartMs($0) }
+        let startedAtMs =
+            citation.startMs ?? cited.meta.map { ConversationGrouper.segmentStartMs($0) }
         return CitationTarget(
-            conversationId: conversationId,
-            conversationTitle: detail.row.title ?? "Conversation",
+            conversationId: cited.detail.row.id,
+            conversationTitle: cited.detail.row.title ?? "Conversation",
             focus: TranscriptFocus(
-                segmentId: citedId, startMs: citation.startMs, endMs: citation.endMs),
-            mediaOffsetMs: mediaOffsetMs,
+                segmentId: citation.segmentId, startMs: citation.startMs, endMs: citation.endMs),
+            mediaOffsetMs: cited.mediaOffsetMs,
             startedAt: startedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         )
+    }
+
+    /// What a citation resolves to: the conversation that owns the cited moment, and where
+    /// that moment is on its scrubber.
+    struct CitedPosition {
+        var detail: ConversationDetail
+        /// Nil when the conversation's piece of the cited segment holds no stored audio —
+        /// which is also when there is nothing to play.
+        var mediaOffsetMs: Int64?
+        /// The cited segment's sidecar; nil once retention has taken it.
+        var meta: SegmentMeta?
+    }
+
+    /// The hop itself, over nothing but the database and the sidecars, so it can be pinned
+    /// without a composition root: the cited wall time onto the segment's stored-audio clock
+    /// (`citedMediaMs`), the conversation that owns that moment, and the moment's place on
+    /// that conversation's PIECES laid end to end (the same accumulation `display(id:)`
+    /// walks) — the earlier pieces' lengths, plus how far into its own piece it is.
+    static func citedPosition(
+        of citation: AskCitation,
+        queries: ConversationQueries,
+        loadMetas: ([String]) async -> [String: SegmentMeta]
+    ) async -> CitedPosition? {
+        let citedId = citation.segmentId
+        let citedMeta = await loadMetas([citedId])[citedId]
+        let mediaMs = citedMeta.map { citedMediaMs(citation, meta: $0) } ?? 0
+        guard
+            let conversationId = try? await queries.conversationId(
+                ofSegment: citedId, atMediaMs: mediaMs),
+            let detail = try? await queries.detail(id: conversationId)
+        else { return nil }
+        var metas = await loadMetas(detail.members.map(\.segmentId))
+        if let citedMeta { metas[citedId] = citedMeta }
+        return CitedPosition(
+            detail: detail,
+            mediaOffsetMs: ConversationTimeline(members: detail.pieces, metas: metas)
+                .offset(segmentId: citedId, mediaMs: mediaMs),
+            meta: citedMeta)
     }
 }
 
@@ -1257,17 +1506,25 @@ extension LiveWorld: NotesDataSource {
     private func produce(
         conversationId: String, template: NoteTemplate, customPrompt: String?
     ) async throws -> ProducedNote {
-        let segmentIds = await members(of: conversationId)
+        // The conversation's PIECES: a note is written from what was said in this
+        // conversation, and its first and last recordings usually also hold the ones either
+        // side of it.
+        let pieces = await pieces(of: conversationId)
+        let segmentIds = pieces.map(\.segmentId)
+        let owned = Dictionary(
+            pieces.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first })
         let prompt = Self.prompt(for: template, customPrompt: customPrompt)
         // A citing template numbers STRETCHES — a paragraph of speech each, not whole
         // recordings. That is what makes a chip land on the lines the point came from and the
         // player start there; numbering by member sent every citation to the top of a
         // twenty-minute segment.
-        let stretches = prompt.citesSources ? await citableStretches(of: segmentIds) : []
+        let stretches = prompt.citesSources ? await citableStretches(of: pieces) : []
         // Off-main for the same reason as `ask()`: a fallback over a long conversation decodes
         // every member transcript, and "Generate note" should not freeze the screen doing it.
         let fallbackTranscripts = stretches.isEmpty
-            ? await Self.loadTranscripts(segmentIds, store: composition.transcripts) : [:]
+            ? Self.cut(
+                await Self.loadTranscripts(segmentIds, store: composition.transcripts), to: owned)
+            : [:]
         let fallbackMetas = stretches.isEmpty
             ? await Self.loadMetas(segmentIds, files: composition.files) : [:]
         let excerpts =
@@ -1285,7 +1542,10 @@ extension LiveWorld: NotesDataSource {
                 // prompt, so the model was told a morning conversation happened the night
                 // before — the citing branch below has used the right anchor since
                 // `citableStretches`; only this no-stretches fallback was left behind.
-                let startMs = meta.map { ConversationGrouper.segmentStartMs($0) }
+                //
+                // And the PIECE's start, for the same reason: a conversation that begins
+                // eleven minutes into its first recording began eleven minutes later.
+                let startMs = meta.map { Self.wallExtent(of: owned[segmentId], meta: $0).0 }
                 return TranscriptExcerpt(
                     segmentId: segmentId,
                     text: transcript.text,

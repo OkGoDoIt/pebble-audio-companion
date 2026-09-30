@@ -35,7 +35,7 @@ private func gap(
 }
 
 /// Builds a day from recordings, their states and speech, and checks every promise on it.
-private struct Day {
+private struct HonestyDay {
     var segments: [SegmentMeta] = []
     var states: [String: TranscriptionState] = [:]
     var reasons: [String: String] = [:]
@@ -131,7 +131,7 @@ private extension HistoryDay {
 
     @Test("a day with nothing recorded has no items and no edges")
     func emptyDay() {
-        let day = Day().build()
+        let day = HonestyDay().build()
         #expect(day.hasRecordings == false)
         #expect(day.items.isEmpty)
         #expect(day.leadingEdge == nil && day.trailingEdge == nil)
@@ -139,7 +139,7 @@ private extension HistoryDay {
 
     @Test("one conversation: calm ends become edges, the talk one card")
     func oneConversation() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10), conversation: "c1")
         day.speech("a", at(9, 10), at(9, 50))
         let built = day.build()
@@ -159,21 +159,21 @@ private extension HistoryDay {
     func noEdgeForSeconds() throws {
         // 2026-09-23 on the real backup: 19 s of the watch saving power at 5 AM (calm, and a
         // pause never folds) became "Nothing recorded until 5:00 AM" at the top of the day.
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(5), at(12), .pending, gaps: [gap(at: 0, seconds: 19, reason: .powerSave)])
         day.record("b", at(12), dayEnd - 30_000, .pending)
         let built = day.build()
         #expect(built.leadingEdge == nil)
         #expect(built.trailingEdge == nil)
         // A real stretch of calm still has its line.
-        var later = Day()
+        var later = HonestyDay()
         later.record("a", at(5), at(12), .pending, gaps: [gap(at: 0, seconds: 180, reason: .powerSave)])
         #expect(later.build().leadingEdge == HistoryEdge(atMs: at(5, 3), kind: .notListening))
     }
 
     @Test("an edge is quiet when the watch heard nothing for most of it")
     func quietEdge() throws {
-        var day = Day()
+        var day = HonestyDay()
         // Recording from 05:00; the first three hours the watch reported as suppressed silence.
         day.record("a", at(5), at(9), gaps: [gap(at: 0, seconds: 3 * 3_600, reason: .silenceSuppressed)])
         day.speech("a", at(8, 5), at(8, 50))
@@ -186,7 +186,7 @@ private extension HistoryDay {
 
     @Test("strict form: loss outside a card is its own item however short, and names its cause")
     func shortLossStays() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.rules = HistoryDayRules(carryShortLoss: false)
         day.record(
             "a", at(9), at(11),
@@ -203,7 +203,7 @@ private extension HistoryDay {
 
     @Test("loss inside a talk stretch is the card's missing time, never a separate item")
     func lossInsideCard() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10), gaps: [gap(at: 1_800, seconds: 90, reason: .spoolOverflow)], conversation: "c")
         day.speech("a", at(9, 10), at(9, 30))
         day.speech("a", at(9, 32), at(9, 50))  // 2 min between: not a real pause, no cut
@@ -214,7 +214,7 @@ private extension HistoryDay {
 
     @Test("loss causes: largest share first, each once, and an undecodable reason names none")
     func lossCauses() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.rules = HistoryDayRules(carryShortLoss: false)  // the strict form: each its own item
         day.record(
             "a", at(9), at(10),
@@ -238,7 +238,7 @@ private extension HistoryDay {
 
     @Test("suppressed silence is quiet, never missing; a skip one silence record covers is quiet too")
     func silenceIsNeverMissing() {
-        var day = Day()
+        var day = HonestyDay()
         day.record(
             "a", at(9), at(10),
             gaps: [
@@ -256,7 +256,7 @@ private extension HistoryDay {
 
     @Test("time nothing recorded is never quiet, not even a sliver between quiet")
     func offIsNeverQuiet() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10), gaps: [gap(at: 0, seconds: 3_600, reason: .silenceSuppressed)])
         day.record("b", at(10, 1), at(11), gaps: [gap(at: 0, seconds: 3_540, reason: .silenceSuppressed)])
         day.record("c", at(11), at(11, 30))
@@ -272,7 +272,7 @@ private extension HistoryDay {
 
     @Test("a failed or untranscribed recording ends a stretch and is never inside a card")
     func untranscribedNeverInCard() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(9, 15), conversation: "c")
         day.record("b", at(9, 15), at(9, 16), .failed, conversation: "c", failure: "quota")
         day.record("d", at(9, 16), at(9, 30), conversation: "c")
@@ -292,7 +292,7 @@ private extension HistoryDay {
 
     @Test("the watch's power save is a pause mid-day and part of the edge at the ends")
     func powerSave() {
-        var day = Day()
+        var day = HonestyDay()
         day.record(
             "a", at(9), at(12),
             gaps: [
@@ -311,7 +311,7 @@ private extension HistoryDay {
 
     @Test("a lone recorded sliver beside the watch's power save or unrecorded time joins it, so the night is an edge")
     func sliverJoinsTheNight() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10))
         day.speech("a", at(9), at(10))
         // 10:00-15:00 the watch rests in power save (the record rides on the blip's recording),
@@ -338,7 +338,7 @@ private extension HistoryDay {
         #expect(built.trailingEdge?.atMs == at(15, 1, 54))
 
         // A card is never a sliver that folds, and a pause the person made takes in nothing.
-        var talk = Day()
+        var talk = HonestyDay()
         talk.record("a", at(9), at(10))
         talk.speech("a", at(9), at(10))
         talk.record("t", at(10), at(10, 1))
@@ -353,7 +353,7 @@ private extension HistoryDay {
 
     @Test("a pause the person made is its own item, even at the end of the day and however short")
     func userPause() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10))
         day.speech("a", at(9), at(10))
         day.record("b", at(10, 1), at(11))
@@ -375,7 +375,7 @@ private extension HistoryDay {
 
     @Test("recorded audio wins over a pause row covering the same moment, as on the strip")
     func recordedBeatsPause() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10))
         day.speech("a", at(9), at(10))
         day.pauses = [PauseInterval(startMs: at(9, 30), endMs: at(10, 30), source: "statusCard")]
@@ -388,7 +388,7 @@ private extension HistoryDay {
 
     @Test("wordless recording is its own openable item from 15 minutes, quiet below")
     func noConversationMinimum() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10, 5))
         day.speech("a", at(9), at(9, 10))
         day.speech("a", at(9, 30), at(9, 40))  // 20 min wordless before: its own item
@@ -404,7 +404,7 @@ private extension HistoryDay {
         #expect(built.trailingEdge?.atMs == at(10))  // the 5-min wordless tail is calm
 
         // Ten wordless minutes that no talk bridges (a pause follows) are quiet, not an item.
-        var paused = Day()
+        var paused = HonestyDay()
         paused.record("a", at(9), at(9, 40))
         paused.speech("a", at(9), at(9, 30))
         paused.pauses = [PauseInterval(startMs: at(9, 40), endMs: at(10), source: "statusCard")]
@@ -417,7 +417,7 @@ private extension HistoryDay {
 
     @Test("two short wordless runs bridged by a short quiet hole count as one run")
     func noConversationBridgesQuietHoles() {
-        var day = Day()
+        var day = HonestyDay()
         // 09:10-09:18 wordless, 09:18-09:19 silence, 09:19-09:27 wordless: a 17-min run.
         day.record("a", at(9), at(9, 50), gaps: [gap(at: 1_080, seconds: 60, reason: .silenceSuppressed)])
         day.speech("a", at(9), at(9, 10))
@@ -429,7 +429,7 @@ private extension HistoryDay {
 
     @Test("a no-speech recording is no conversation; a classifier descriptor is carried only when given")
     func noSpeechAndDescriptors() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(9, 30), .noSpeech)
         day.record("b", at(9, 30), at(10))
         day.speech("b", at(9, 30), at(10))  // words, but the classifier says music
@@ -444,7 +444,7 @@ private extension HistoryDay {
 
     @Test("a sliver of nothing recorded between two stretches of one conversation leaves one card")
     func slivers() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(9, 30), conversation: "c")
         day.record("b", at(9, 30, 40), at(10), conversation: "c")
         day.speech("a", at(9), at(9, 30))
@@ -456,7 +456,7 @@ private extension HistoryDay {
 
     @Test("a short untranscribed recording folds into quiet beside it, never into a card")
     func shortPendingFolds() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(9, 30))
         day.speech("a", at(9), at(9, 10))
         day.record("p", at(9, 30), at(9, 31), .pending)
@@ -467,7 +467,7 @@ private extension HistoryDay {
         #expect(built.shape == ["card", "noConversation", "card"])
         #expect(built.gaps(.notTranscribedYet).isEmpty)
 
-        var beside = Day()
+        var beside = HonestyDay()
         beside.record("a", at(9), at(9, 30))
         beside.speech("a", at(9), at(9, 30))
         beside.record("p", at(9, 30), at(9, 31), .pending)
@@ -480,7 +480,7 @@ private extension HistoryDay {
 
     @Test("fallback cards ignore the grouper: cut only at real pauses, untitled, never forced short")
     func fallbackCutting() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10), conversation: "c1")
         day.record("b", at(10), at(10, 45), conversation: "c2")
         day.speech("a", at(9), at(9, 20))
@@ -494,7 +494,7 @@ private extension HistoryDay {
         #expect(built.cards.map(\.id) == ["talk-a-\(at(9))", "talk-b-\(at(10, 14))"])
 
         // Two hours with no real pause stays one two-hour card.
-        var long = Day()
+        var long = HonestyDay()
         long.record("a", at(9), at(11, 5))
         var t = at(9)
         while t < at(11) {
@@ -508,7 +508,7 @@ private extension HistoryDay {
 
     @Test("a fallback card's snippet: an early turn of 8+ words, else the longest early one, else the first of 4+")
     func snippets() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10))
         day.speech("a", at(9), at(9, 20))
         day.speech("a", at(9, 30), at(9, 50))
@@ -550,7 +550,7 @@ private extension HistoryDay {
 
     @Test("a pause, deletion or unrecorded time always ends a stretch")
     func stretchBreakers() {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(9, 30), conversation: "c")
         day.record("b", at(9, 35), at(10), conversation: "c")
         day.speech("a", at(9), at(9, 30))
@@ -569,7 +569,7 @@ private extension HistoryDay {
 
     @Test("a chapter takes its range, counts the loss in it, and is cut where the words are unknown")
     func chapters() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(10), gaps: [gap(at: 600, seconds: 30, reason: .spoolOverflow)])
         day.record("f", at(10), at(10, 10), .failed)
         day.record("b", at(10, 10), at(11))
@@ -590,7 +590,7 @@ private extension HistoryDay {
 
     @Test("follow-ups attach by moment, by an 80% share of a span, or not at all; open first")
     func followUps() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.record("a", at(9), at(11))
         day.speech("a", at(9), at(9, 30))
         day.speech("a", at(10), at(10, 30))
@@ -614,7 +614,7 @@ private extension HistoryDay {
 
     @Test("today runs to now with no trailing edge; recording, the unsettled tail is the live block")
     func today() throws {
-        var day = Day()
+        var day = HonestyDay()
         day.nowMs = at(12)
         day.record("a", at(9), at(11))
         day.speech("a", at(9), at(11))
@@ -631,7 +631,7 @@ private extension HistoryDay {
         #expect(live.startMs == at(11) && live.endMs == at(12))
 
         // The block takes only the unsettled tail: loss before it stays an item of its own.
-        var lossy = Day()
+        var lossy = HonestyDay()
         lossy.nowMs = at(12)
         lossy.isLive = true
         lossy.record("a", at(9), at(11, 50), gaps: [gap(at: 9_000, seconds: 30, reason: .transportReset)])
@@ -646,7 +646,7 @@ private extension HistoryDay {
         #expect(tail.startMs == at(11, 50) && tail.endMs == at(12))
 
         // Nothing unsettled: the block marks now and has no length.
-        var settled = Day()
+        var settled = HonestyDay()
         settled.nowMs = at(12)
         settled.isLive = true
         settled.record("a", at(9), at(12))
@@ -663,7 +663,7 @@ private extension HistoryDay {
     func zoneChange() throws {
         let tokyo = "Asia/Tokyo"
         // 09:00 UTC in one zone, then a recording stamped Tokyo two hours later.
-        var day = Day()
+        var day = HonestyDay()
         var first = day.record("a", at(9), at(10))
         first.recordedTimeZone = zone
         var second = day.record("b", at(11), at(12))
@@ -685,7 +685,7 @@ private extension HistoryDay {
 
     @Test("carryShortLoss: a burst of buffer drops is one row with its loss, still counted and named")
     func carryShortLoss() throws {
-        var day = Day()
+        var day = HonestyDay()
         var drops: [GapMeta] = []
         for second in stride(from: Int64(600), to: 660, by: 4) {
             drops.append(gap(at: second, seconds: 1, reason: .spoolOverflow))
@@ -706,7 +706,7 @@ private extension HistoryDay {
 
     @Test("carryShortLoss never hands loss to unrecorded time or a pause, nor lets it into an edge")
     func carryShortLossLimits() {
-        var day = Day()
+        var day = HonestyDay()
         day.rules = HistoryDayRules(carryShortLoss: true)
         // A 10 s loss record placed before the recording's first frame, in unrecorded time.
         let meta = makeSegment(
@@ -725,7 +725,7 @@ private extension HistoryDay {
 
     @Test("fuzzed days keep every promise, under both loss rules, past and today")
     func fuzz() {
-        var rng = SeededGenerator(seed: 0x4157_0123)
+        var rng = SplitMixGenerator(seed: 0x4157_0123)
         var itemsSeen = 0
         for round in 0..<250 {
             var day = randomHistoryDay(&rng)
@@ -747,8 +747,8 @@ private struct TestFailure: Error {}
 
 /// A day of 0-8 recordings with every transcription state and gap reason, speech runs,
 /// conversations, pauses, deletions, classifier spans, chapters and follow-ups.
-private func randomHistoryDay(_ rng: inout SeededGenerator) -> Day {
-    var day = Day()
+private func randomHistoryDay(_ rng: inout SplitMixGenerator) -> HonestyDay {
+    var day = HonestyDay()
     var cursor = dayStart + Int64.random(in: 0...600, using: &rng) * 60_000
     let states: [TranscriptionState] = [.complete, .complete, .complete, .noSpeech, .pending, .failed, .running, .disabled]
     var conversation = 0

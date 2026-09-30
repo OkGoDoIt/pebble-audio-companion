@@ -177,8 +177,24 @@ import WireProtocol
         #expect(first == second)
         #expect(first.map(\.id) == ["conv-a", "conv-c"])
 
+        // What is stored is what was returned, less `isProvisional` — a property of the pass,
+        // which is not persisted. Nothing is open here, so nothing is provisional anyway.
         let persisted = try await db.reader.read { try ConversationGrouper.fetchAll($0) }
-        #expect(persisted == first)
+        #expect(persisted == first.map(\.asStored))
+        #expect(first.map(\.isProvisional) == [false, false])
+
+        // With `c` still being recorded into, the conversation it ends is provisional — and
+        // what is stored is still exactly the grouping without that flag.
+        var open = c
+        open.closeReason = nil
+        let live = try await ConversationGrouper.rebuild(
+            segments: [a, b, open], pauses: [], openSegmentId: "c", fallbackTimeZoneID: "UTC",
+            db: db)
+        #expect(live.map(\.isProvisional) == [false, true])
+        #expect(live.map(\.isLive) == [false, true])
+        let stored = try await db.reader.read { try ConversationGrouper.fetchAll($0) }
+        #expect(stored == live.map(\.asStored))
+        #expect(stored.map(\.isProvisional) == [false, false])
         let memberCount = try await db.reader.read {
             try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM conversation_segments") ?? -1
         }

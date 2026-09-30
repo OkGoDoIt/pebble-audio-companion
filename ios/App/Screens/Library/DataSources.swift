@@ -332,6 +332,13 @@ struct NoteTemplate: Equatable, Identifiable {
     ]
 }
 
+extension AskCitation {
+    /// Identifies the MOMENT a citation points at — its segment and where in it — for anything
+    /// cached per citation. The segment id alone is not enough: a segment is shared between
+    /// conversations, and what a citation is called depends on which one its moment is in.
+    var momentKey: String { "\(segmentId)@\(startMs.map(String.init) ?? "start")" }
+}
+
 /// Where a citation points. Citations name SEGMENTS, screens navigate by CONVERSATION, and the
 /// player counts MEDIA time — resolving one citation is the hop between all three. Without it a
 /// chip navigated to `conversation/<segmentId>`, which is not a conversation id, so every tap
@@ -393,13 +400,16 @@ protocol ConversationDataSource: AnyObject {
     /// whether someone ended a meeting or just blanked out a moment, the split is predictable
     /// and putting it back is one tap.
     func boundaries(id: String) async throws -> ConversationBoundariesDisplay
-    /// Split so `segmentId` starts a new conversation, or clear that decision and hand the join
-    /// back to the automatic rules. Keyed by the segment alone — segment ids are the only stable
-    /// thing across a regroup, and the conversation this is being done FROM is about to stop
-    /// existing in its current shape anyway.
-    func setSplit(atSegmentId segmentId: String, on: Bool) async throws
+    /// Start a new conversation at `cut`. Keyed by the position alone — a recording and an
+    /// offset into it are the only things stable across a regroup, and the conversation this
+    /// is being done FROM is about to stop existing in its current shape anyway. Taken back by
+    /// joining the conversation it creates to the one before it.
+    func split(at cut: ConversationCut) async throws
     /// Join this conversation onto the one before it, or clear that decision.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws
+    /// "Separate them again": take back the person's join at a place INSIDE a conversation
+    /// (`ConversationBoundariesDisplay.joins`), handing that place back to the automatic rules.
+    func separate(at cut: ConversationCut) async throws
 
     /// The conversation a wall-clock moment falls in, and where on its scrubber (History plan
     /// 7.9): `focus` is a `.moment` at exactly `atWallMs`, so the transcript lands on the row
@@ -409,13 +419,17 @@ protocol ConversationDataSource: AnyObject {
 }
 
 /// The state of one conversation's boundaries: why it starts where it does, whether it can be
-/// joined backwards, and every interior point that could become a split.
+/// joined backwards, the places inside it where a new one could start, and the places where
+/// the person joined two.
 struct ConversationBoundariesDisplay: Equatable {
     var startReason: ConversationStartReason?
     /// False for the oldest conversation there is — nothing to join to.
     var canJoinWithPrevious: Bool
     var isJoinedWithPrevious: Bool
+    /// Where talk resumed after a pause, in the order it happened.
     var points: [ConversationBoundaryPoint]
+    /// The person's joins inside this conversation, each of which can be taken back.
+    var joins: [ConversationBoundaryPoint] = []
 
     static let none = ConversationBoundariesDisplay(
         startReason: nil, canJoinWithPrevious: false, isJoinedWithPrevious: false, points: [])
@@ -435,10 +449,14 @@ protocol AskDataSource: AnyObject {
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?
-    /// Titles for many citations at once, resolved off the main thread. The thread screen
-    /// caches the result — the sync variant decodes a transcript per call, which must never
-    /// happen per render.
-    func citationTitles(for citedIds: [String]) async -> [String: String]
+    /// Titles for many citations at once, keyed by `AskCitation.momentKey` and resolved off
+    /// the main thread. The thread screen caches the result — the sync variant decodes a
+    /// transcript per call, which must never happen per render.
+    ///
+    /// Per citation, not per cited segment: one recording usually holds the end of one
+    /// conversation and the start of the next, so two citations into the same segment can
+    /// belong to two conversations with two titles.
+    func citationTitles(for citations: [AskCitation]) async -> [String: String]
     /// The conversation, moment and scrubber position a citation names. Nil once the cited
     /// segment is gone (retention), which is when a chip must not navigate at all.
     func citationTarget(for citation: AskCitation) async -> CitationTarget?

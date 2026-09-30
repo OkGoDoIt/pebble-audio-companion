@@ -150,6 +150,12 @@ public actor LiveAudioService {
         return await waveformBuilder.build(meta: meta) { frames }
     }
 
+    /// Range-delete cascade: part of this segment's audio was silenced in place. The waveform
+    /// cache cannot tell — see `SegmentWaveformBuilder.invalidate`.
+    public func audioRewritten(_ segmentId: String) async {
+        await waveformBuilder?.invalidate(segmentId: segmentId)
+    }
+
     public func stopPlayback() {
         playback?.stop()
     }

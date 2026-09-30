@@ -9,15 +9,25 @@ import Transcription
 // structure already flagged: after this much quiet, did the recording go on to a different
 // subject or different people?
 //
+// STILL WIRED, NO LONGER FED (2026-09-30). The joins it used to be asked about were the ones
+// the structural rules could not settle — a quiet stretch at a segment join, too short to split
+// on and too long to ignore. Conversations are now cut between turns, inside the talk, by
+// `ConversationSegmenter` (`ConversationUnits.swift`), which decides those places itself from
+// the words either side; "a join worth asking a model about" no longer exists as a category.
+// `ConversationGrouper.RebuiltGrouping.candidates` is therefore always empty,
+// `EnrichmentService.boundaryReviewPass` returns 0 without touching the provider, and no call
+// is ever made. The type, its verdict cache (`boundary_reviews`) and its retry bookkeeping stay
+// as they are: deleting them is a separate decision, and nothing here costs anything idle.
+//
 // Four properties it must keep, in the order they matter:
 //
 //  1. NEVER REQUIRED. With no router, no available provider, or the whole AI layer off, this
 //     type does nothing and the grouping is the structural one. Nothing downstream may assume
 //     a verdict exists.
-//  2. IT CANNOT INVENT A BOUNDARY. Its input is the candidate list from
-//     `ConversationGrouper.groupWithCandidates`, which only ever contains joins with 8–25
-//     minutes of settled quiet around them. It cannot split continuous speech — a cut there
-//     would have to be snapped to the nearest 15-minute rotation, landing mid-sentence.
+//  2. IT CANNOT INVENT A BOUNDARY. Its input is a candidate list the GROUPER hands it
+//     (`ConversationGrouper.RebuiltGrouping.candidates` — once the joins with 8–25 minutes of
+//     settled quiet around them, now nothing). It is never given continuous speech to split,
+//     and a verdict only ever confirms or dismisses a place the grouper named.
 //  3. CHEAP AND BATCHED. One provider call carries up to `maxPerCall` candidates, and verdicts
 //     are cached in `boundary_reviews` so a candidate is asked about once. Measured over three
 //     months of real capture the whole work list is ~23 candidates a month.

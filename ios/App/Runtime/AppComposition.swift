@@ -105,6 +105,10 @@ final class AppComposition {
     /// `LiveAudioService` facade only drives their passes).
     let localLive: LiveTranscriber
     let cloudLive: CloudLiveTranscriber
+    /// The WAV exporter the live service runs its automatic pass through. Held here as well
+    /// because a conversation exports its PIECES — a range of each member segment — and the
+    /// service's own seam only knows whole segments.
+    let audioExporter: AudioExportManager
     let runtime: CompanionRuntime
     /// "Is startup recovery still running?", for the screens. See `StartupActivity`.
     let startup: StartupActivity
@@ -593,19 +597,21 @@ final class AppComposition {
             }
         )
         self.cloudLive = cloudLive
+        let audioExporter = AudioExportManager(
+            exportRoot: AudioExportManager.defaultExportRoot(),
+            listSegments: { files.listSegments() },
+            readMeta: { files.readMeta($0) },
+            readFrames: { files.readFrames($0) },
+            decodePcm: LiveTranscriber.defaultDecodePcm
+        )
+        self.audioExporter = audioExporter
         let live = LiveAudioService(
             store: store,
             monitor: monitor,
             localLive: localLive,
             cloudLive: cloudLive,
             waveformBuilder: SegmentWaveformBuilder(decoder: SpeexLiveFrameDecoder()),
-            exporter: AudioExportManager(
-                exportRoot: AudioExportManager.defaultExportRoot(),
-                listSegments: { files.listSegments() },
-                readMeta: { files.readMeta($0) },
-                readFrames: { files.readFrames($0) },
-                decodePcm: LiveTranscriber.defaultDecodePcm
-            ),
+            exporter: audioExporter,
             playback: SegmentPlaybackController(
                 playerFactory: { AVFoundationPcmPlayer() },
                 decoder: SpeexLiveFrameDecoder(),
@@ -706,7 +712,10 @@ final class AppComposition {
             transcriptVersionOf: { transcripts.version($0) },
             store: audioContentStore,
             nowMs: nowMs,
-            log: AppRuntimeLog.runtimeLog
+            log: AppRuntimeLog.runtimeLog,
+            // Method 2 reads the words through the person's own AI mode and consent, like
+            // titles do: lyrics, TV and announcements stop being titled as conversation.
+            judge: { try await aiRouter.run($0) }
         )
         self.audioContent = audioContent
         let audioContentMask = audioContent.mask
@@ -784,7 +793,8 @@ final class AppComposition {
             // For the held-AI-account probe's schedule: opening the app is when a person who
             // just topped up is looking.
             isForeground: { AppForegroundProbe.shared.isForeground },
-            audioContentMask: audioContentMask
+            audioContentMask: audioContentMask,
+            audioContentStore: audioContentStore
         )
 
         let recap = RecapService(
@@ -941,6 +951,9 @@ final class AppComposition {
             // must take the decision with it.
             boundaryOverrides: BoundaryOverrideStore(db: database),
             audioContent: audioContent,
+            // Deleting a conversation that ends mid-segment silences that range of the audio in
+            // place; the waveform cache is keyed on the frame count, which does not change.
+            live: live,
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog
@@ -1014,8 +1027,11 @@ final class AppComposition {
                 }
                 if context.latestLine == nil {
                     let detail = try? await conversations.detail(id: live.id)
-                    for member in (detail?.members ?? []).reversed() {
-                        let text = transcripts.load(member.segmentId)?.text
+                    // The conversation's PIECE of each member: the live conversation usually
+                    // starts partway through a segment, and the last line of the one before
+                    // it is not this conversation's latest anything.
+                    for piece in (detail?.pieces ?? []).reversed() {
+                        let text = transcripts.load(piece.segmentId)?.piece(piece).text
                         if let line = Self.lastLine(of: text.map { [$0] }) {
                             context.latestLine = line
                             break
@@ -1155,10 +1171,12 @@ final class AppComposition {
             // Collapsed before it is indexed: 1 649 copies of one sentence in a single
             // recording would otherwise dominate bm25 for every word in it, so searching
             // "clothes" would return that one silent afternoon ahead of anything real.
-            let text = detail.members
-                .compactMap { transcripts.load($0.segmentId)?.withLoopedArtefactsCollapsed().text }
-                .joined(separator: "\n")
-            return text.isEmpty ? nil : text
+            //
+            // And only the conversation's own pieces of its segments: indexing whole members
+            // put the end of the previous conversation and the start of the next under this
+            // one's title, so a search for a phrase opened the conversation beside the one it
+            // was said in.
+            return ConversationText.joined(detail.pieces) { transcripts.load($0) }
         }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces

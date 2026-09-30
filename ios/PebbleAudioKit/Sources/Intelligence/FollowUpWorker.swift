@@ -166,6 +166,15 @@ public struct FollowUpExtractionStore: Sendable {
         }
     }
 
+    /// Segments whose follow-ups had already been extracted when conversations were re-cut
+    /// into topic-sized ones (`follow_up_covered_segments`, filled once by the
+    /// `annotation-source-key-v1` migration). See `FollowUpWorker.isCovered`.
+    public func coveredSegments() async throws -> Set<String> {
+        try await db.reader.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT segmentId FROM follow_up_covered_segments"))
+        }
+    }
+
     /// Conversations still awaiting a first extraction is not derivable from this table alone
     /// (unseen conversations have no row), so the count of settled ones is what callers get.
     public func settledCount() async throws -> Int {
@@ -267,6 +276,12 @@ public final class FollowUpWorker: @unchecked Sendable {
     }
     private let measured = TranscriptMemo<Measured>()
 
+    /// `follow_up_covered_segments`, read once. The table is written by a migration and never
+    /// again, so there is nothing to go stale; an empty set — every install that did not
+    /// upgrade across the re-cut — makes the check free.
+    private let coveredLock = NSLock()
+    private var coveredSegments: Set<String>?
+
     public init(
         candidates: FollowUpCandidateStore,
         state: FollowUpExtractionStore,
@@ -294,16 +309,31 @@ public final class FollowUpWorker: @unchecked Sendable {
     }
 
     /// Runs one bounded extraction pass. Returns the number of candidates newly proposed.
+    /// `transcriptOf` is a segment's durable transcript, cut here to each conversation's piece
+    /// of it (`SegmentTranscript.piece`).
     @discardableResult
     public func extract(
         _ conversations: [EnrichmentConversation],
         transcriptOf: (String) -> SegmentTranscript?
+    ) async throws -> Int {
+        try await extract(
+            conversations, pieceTranscriptOf: { transcriptOf($0.segmentId)?.piece($0) })
+    }
+
+    /// The same, for a caller that prepares each piece's transcript itself — see
+    /// `EnrichmentWorker.enrich(_:pieceTranscriptOf:liveTextOf:)` for why `EnrichmentService`
+    /// cuts before it cleans.
+    @discardableResult
+    public func extract(
+        _ conversations: [EnrichmentConversation],
+        pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?
     ) async throws -> Int {
         guard let activeRouter = router else { return 0 }
         guard await activeRouter.isAvailable() else { return 0 }
 
         let ordered = conversations.sorted(by: EnrichmentWorker.newestFirst)
         let settledStates = try await state.all()
+        let covered = try await coveredSegmentIds()
         let now = nowMs()
 
         var proposed = 0
@@ -312,6 +342,17 @@ public final class FollowUpWorker: @unchecked Sendable {
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
             let existing = settledStates[conversation.conversationId]
+            // Already read, under another id. Before the transcripts are opened and before
+            // anything else is asked: see `isCovered`.
+            if Self.isCovered(conversation, by: covered) {
+                if existing?.settled != true {
+                    try await state.save(
+                        FollowUpExtractionState(
+                            conversationId: conversation.conversationId, settled: true,
+                            itemCount: 0, updatedAtMs: now))
+                }
+                continue
+            }
             // Same inputs as last time, and a state that says nothing to do: answer without
             // opening a single transcript. This is the steady state of every finished
             // conversation in the library, on every pass.
@@ -329,9 +370,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                     continue
                 }
             }
-            guard let parts = partsIfDue(conversation, transcriptOf: transcriptOf) else {
-                continue
-            }
+            guard let parts = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
+            else { continue }
             let combined = parts.map(\.text).joined(separator: "\n\n").count
             if let key {
                 measured.remember(
@@ -388,33 +428,72 @@ public final class FollowUpWorker: @unchecked Sendable {
 
     // MARK: - Planning
 
-    /// The member recordings to read, or nil when the conversation is not a candidate.
+    /// Whether every segment this conversation has a piece of had its follow-ups extracted
+    /// before conversations were re-cut.
+    ///
+    /// `follow_up_extractions` is keyed by conversation id, and the re-cut that made
+    /// conversations topic-sized gave nearly every stretch of the library a new one. Left to
+    /// itself this worker would read the whole library again — and because a candidate's id
+    /// embeds its conversation's, everything it found the first time would come back as a NEW
+    /// proposal: the follow-ups a person already has, ticked, filed away or still open, a
+    /// second time. The segments read before the re-cut were written down by the migration;
+    /// a conversation made only of them has nothing in it that has not been read, and is
+    /// settled without a call. Audio recorded since is in no such list, so a conversation
+    /// holding any of it is read as usual.
+    ///
+    /// Open conversations are left to the ordinary gate: one that is still growing will take
+    /// in new audio, and is read when it closes.
+    static func isCovered(_ conversation: EnrichmentConversation, by covered: Set<String>) -> Bool {
+        guard !covered.isEmpty, !conversation.isOpen, !conversation.members.isEmpty else {
+            return false
+        }
+        return conversation.members.allSatisfy { covered.contains($0.segmentId) }
+    }
+
+    private func coveredSegmentIds() async throws -> Set<String> {
+        if let cached = coveredLock.withLock({ coveredSegments }) { return cached }
+        let loaded = try await state.coveredSegments()
+        coveredLock.withLock { coveredSegments = loaded }
+        return loaded
+    }
+
+    /// The pieces to read, or nil when the conversation is not a candidate.
     /// Same gate as `EnrichmentWorker`'s final pass: closed, non-empty, every member terminal.
+    ///
+    /// One part per PIECE: the turns the conversation owns of each member, and nothing of the
+    /// rest of that member — which belongs to the conversation before or after, and would
+    /// otherwise have its commitments proposed twice, once under each.
     private func partsIfDue(
         _ conversation: EnrichmentConversation,
-        transcriptOf: (String) -> SegmentTranscript?
+        pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?
     ) -> [FollowUpSourcePart]? {
         guard !conversation.isOpen, !conversation.members.isEmpty,
             conversation.members.allSatisfy({ !$0.isOpen && $0.isFullyTranscribed })
         else { return nil }
-        let parts: [FollowUpSourcePart] = conversation.members.compactMap { member in
+        let parts: [FollowUpSourcePart] = conversation.parts.compactMap { member, piece in
             guard member.transcriptionState == .complete,
-                let transcript = transcriptOf(member.segmentId)
+                let transcript = pieceTranscriptOf(piece)
             else { return nil }
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             return FollowUpSourcePart(
-                // `startWallMs`, not the raw `startTimeMs`: the latter anchors sample index 0 of
-                // the STREAM, so every reattach and every 15-minute rotation successor carries
-                // the stream's birth clock instead of its own start. Over the 2026-09-08 backup
-                // (774 segments) the two differ on 602 of them, 594 by more than a minute, by a
-                // median of 1 h 59 m and up to 24 h 21 m. This value is the day and clock time
-                // the model is told the conversation happened at — which is what "tomorrow" and
-                // "next Tuesday" inside it resolve against — and it is what `recordedAtMs` on
-                // every candidate row becomes, so "play the moment this came from" was aiming at
-                // the stream's birth rather than the sentence.
+                // Anchored on `startWallMs`, not the raw `startTimeMs`: the latter anchors
+                // sample index 0 of the STREAM, so every reattach and every 15-minute rotation
+                // successor carries the stream's birth clock instead of its own start. Over the
+                // 2026-09-08 backup (774 segments) the two differ on 602 of them, 594 by more
+                // than a minute, by a median of 1 h 59 m and up to 24 h 21 m. This value is the
+                // day and clock time the model is told the conversation happened at — which is
+                // what "tomorrow" and "next Tuesday" inside it resolve against — and it is what
+                // `recordedAtMs` on every candidate row becomes, so "play the moment this came
+                // from" was aiming at the stream's birth rather than the sentence.
+                //
+                // And it is the time of the PIECE's first turn, not of the segment: a
+                // conversation cut from the middle of a segment started up to fifteen minutes
+                // after the segment did. The turns keep the segment's own media clock, which is
+                // what `follow_ups.sourceStartMs` is in.
                 segmentId: member.segmentId,
-                startedAtMs: member.startWallMs,
+                startedAtMs: EnrichmentConversation.startWallMs(
+                    of: piece, in: member, firstTurnMediaMs: transcript.segments.first?.startMs),
                 text: text,
                 turns: transcript.segments)
         }
