@@ -12,8 +12,28 @@ struct MockHistoryTests {
 
     private let demoDays = [
         "2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22", "2026-09-24", "2026-09-26",
-        "2026-09-20",
+        "2026-09-20", "2026-09-19",
     ]
+
+    @Test func theLongNightIsOneBlockBetweenItsConversations() {
+        let page = MockHistory.page(for: "2026-09-19")
+        let stretches = page.entries.compactMap { entry -> HistoryStretch? in
+            if case .stretch(let stretch) = entry { return stretch } else { return nil }
+        }
+        // The night between "Planning the drive" and the 12:33 AM piece: many gaps, one block.
+        let night = stretches.max { $0.parts.count < $1.parts.count }
+        #expect((night?.parts.count ?? 0) >= 13)
+        #expect(night.map { HistoryLabels.stretchText($0, locale: Locale(identifier: "en_US")).title }
+            == "Paused · 1 hr 43 min")
+        // Every item is in exactly one entry, in order.
+        let flattened = page.entries.flatMap { entry -> [String] in
+            switch entry {
+            case .item(let item): return [item.id]
+            case .stretch(let stretch): return stretch.parts.map(\.id)
+            }
+        }
+        #expect(flattened == page.day.items.map(\.id))
+    }
 
     @Test func everyDemoDayTilesWithNoHoleAndNoOverlap() {
         for key in demoDays {

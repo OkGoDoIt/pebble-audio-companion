@@ -25,6 +25,7 @@ struct HistoryDisplayGroupingTests {
             case .item(.chapter(let b)): return b.id
             case .item(.gap(let g)): return "\(g.kind.rawValue)"
             case .item: return "other"
+            case .stretch(let s): return "{" + s.parts.map(\.kind.rawValue).joined(separator: ",") + "}"
             case .shortRun(let blocks): return "[" + blocks.map(\.id).joined(separator: ",") + "]"
             }
         }
@@ -70,5 +71,15 @@ struct HistoryDisplayGroupingTests {
         let items = [card("x", 0, 30), card("a", 30, 35), gap(.quiet, 35, 40), card("b", 40, 44), gap(.quiet, 44, 60), card("y", 60, 90)]
         let grouped = HistoryDisplayGrouping.group(items)
         for (a, b) in zip(grouped, grouped.dropFirst()) { #expect(a.endMs == b.startMs) }
+    }
+
+    @Test func aShortQuietStretchJoinsARunAndAnythingElseEndsIt() {
+        let day = HistoryDay(
+            dateKey: "1970-01-01", zoneID: zone, isToday: false, hasRecordings: true, leadingEdge: nil,
+            items: [card("a", 0, 5), gap(.quiet, 5, 8), gap(.quiet, 8, 12), card("b", 12, 16),
+                    gap(.quiet, 16, 20), gap(.paused, 20, 60), card("c", 60, 64)],
+            trailingEdge: nil)
+        let grouped = HistoryDisplayGrouping.group(HistoryStretches.combine(day))
+        #expect(shape(grouped) == ["[a,b]", "{quiet,paused}", "c"])
     }
 }

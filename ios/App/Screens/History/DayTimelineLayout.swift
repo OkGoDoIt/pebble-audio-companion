@@ -338,6 +338,8 @@ struct TimelineEdgeLine: View {
 /// lines are drawn by the page, above and below.
 struct DayTimeline: View {
     let day: HistoryDay
+    /// What is drawn: `day.items` with every run of gaps as one stretch (`HistoryDayPage.entries`).
+    var entries: [HistoryDayEntry]
     /// The live transcript's last line, for today's Live card.
     var liveLine: String?
     var nowMs: Int64?
@@ -358,7 +360,7 @@ struct DayTimeline: View {
         DayTimelineLayout(pointsPerMinute: metrics.pointsPerMinute, scaleLogZoneID: scaleLogZoneID) {
             TimelineAxis().timelineRole(.axis)
             let display = HistoryDisplayGrouping.group(
-                day.items,
+                entries,
                 enabled: HistoryDisplayGrouping.isEnabled && !dynamicTypeSize.isAccessibilitySize)
             ForEach(Array(display.enumerated()), id: \.element.id) { index, entry in
                 displayView(entry, isLast: index == display.count - 1)
@@ -438,6 +440,12 @@ struct DayTimeline: View {
         switch entry {
         case .item(let item): itemView(item, isLast: isLast)
         case .shortRun(let blocks): ShortConversationGroupCard(blocks: blocks, onOpen: onOpenChapter)
+        case .stretch(let stretch):
+            if let single = stretch.singleOpenablePiece {
+                TimelineGap(gap: single) { onOpenGap(single) }
+            } else {
+                TimelineStretch(stretch: stretch, onOpenGap: onOpenGap)
+            }
         }
     }
 
@@ -445,6 +453,7 @@ struct DayTimeline: View {
         switch entry {
         case .item(let item): return isCard(item)
         case .shortRun: return true
+        case .stretch: return false
         }
     }
 
@@ -452,6 +461,12 @@ struct DayTimeline: View {
         switch entry {
         case .item(let item): return floor(of: item)
         case .shortRun: return 0
+        case .stretch(let stretch):
+            if let single = stretch.singleOpenablePiece {
+                return TimelineGeometry.gapFloor(isLabelled: HistoryLabels.isLabelled(single))
+            }
+            // The labelled floor is paid once for the whole stretch.
+            return TimelineGeometry.gapFloor(isLabelled: HistoryLabels.stretchText(stretch).title != nil)
         }
     }
 

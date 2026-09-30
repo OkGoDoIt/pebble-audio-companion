@@ -21,7 +21,9 @@ enum HistoryTopicsState: Equatable, Sendable {
 
 /// Everything one day page draws.
 struct HistoryDayPage: Equatable, Sendable {
-    var day: HistoryDay
+    var day: HistoryDay {
+        didSet { entries = Self.entries(for: day) }
+    }
     /// The day's brief ("The day in brief" / "Today so far"). Nil: "No summary yet".
     var brief: HistoryBrief?
     var followUpTotal: Int
@@ -30,17 +32,34 @@ struct HistoryDayPage: Equatable, Sendable {
     /// Today while recording: the last line of the live transcript, from the live snapshot
     /// (never a second walk of the transcript). Nil otherwise.
     var liveLine: String?
+    /// What the timeline draws: the day's items with every run of gaps as one stretch
+    /// (`HistoryStretches.combine`). Computed here, once, when the page is made — never in a view
+    /// body. DEBUG `-historyNoStretches` draws every gap on its own, as before.
+    var entries: [HistoryDayEntry]
 
     init(
         day: HistoryDay, brief: HistoryBrief?, followUpTotal: Int, followUpOpen: Int,
         topics: HistoryTopicsState, liveLine: String? = nil
     ) {
+        self.entries = Self.entries(for: day)
         self.day = day
         self.brief = brief
         self.followUpTotal = followUpTotal
         self.followUpOpen = followUpOpen
         self.topics = topics
         self.liveLine = liveLine
+    }
+
+    static func entries(for day: HistoryDay) -> [HistoryDayEntry] {
+        stretchesDisabled ? day.items.map { .item($0) } : HistoryStretches.combine(day)
+    }
+
+    static var stretchesDisabled: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-historyNoStretches")
+        #else
+        return false
+        #endif
     }
 
     /// Recorded, but nothing of it transcribed yet: the brief card says "Waiting to transcribe".
