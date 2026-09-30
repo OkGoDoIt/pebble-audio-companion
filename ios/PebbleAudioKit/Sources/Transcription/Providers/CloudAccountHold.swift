@@ -53,7 +53,7 @@ public final class CloudAccountHold: @unchecked Sendable {
     /// The refusals that are about the ACCOUNT, not about one recording or one moment.
     /// `rateLimited` is deliberately absent: busy is not broke, and it passes by itself.
     public static let holdingKinds: Set<TranscriptionFailureKind> = [
-        .accountOutOfFunds, .keyRejected, .keyNotPermitted,
+        .accountOutOfFunds, .spendingLimitReached, .keyRejected, .keyNotPermitted,
     ]
 
     public static let firstProbeDelayMs: Int64 = 15 * 60_000
@@ -226,6 +226,9 @@ public final class CloudAccountHold: @unchecked Sendable {
             return "\(name) did not accept the API key (401); audio is not sent until it changes"
         case .keyNotPermitted:
             return "\(name) key is not permitted for this API (403); audio is not sent until it changes"
+        case .spendingLimitReached:
+            return "\(name) has reached its spending limit (402), such as a monthly budget; audio is "
+                + "not sent until the limit is raised"
         default:
             return "\(name) is out of credit (402); audio is not sent until the account is topped up"
         }

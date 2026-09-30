@@ -17,6 +17,7 @@ extension TranscriptionFailureKind {
         case .keyNotPermitted: return Copy.TranscriptionFailure.keyNotPermitted
         case .rateLimited: return Copy.TranscriptionFailure.rateLimited
         case .accountOutOfFunds: return Copy.TranscriptionFailure.accountOutOfFunds
+        case .spendingLimitReached: return Copy.TranscriptionFailure.spendingLimitReached
         case .providerTrouble: return Copy.TranscriptionFailure.providerTrouble
         case .providerRefusedAudio: return Copy.TranscriptionFailure.providerRefusedAudio
         case .timedOut: return Copy.TranscriptionFailure.timedOut
@@ -37,6 +38,7 @@ extension TranscriptionFailureKind {
         case .keyNotPermitted: return Copy.TranscriptionFailure.Row.keyNotPermitted
         case .rateLimited: return Copy.TranscriptionFailure.Row.rateLimited
         case .accountOutOfFunds: return Copy.TranscriptionFailure.Row.accountOutOfFunds
+        case .spendingLimitReached: return Copy.TranscriptionFailure.Row.spendingLimitReached
         case .providerTrouble: return Copy.TranscriptionFailure.Row.providerTrouble
         case .providerRefusedAudio: return Copy.TranscriptionFailure.Row.providerRefusedAudio
         case .timedOut: return Copy.TranscriptionFailure.Row.timedOut

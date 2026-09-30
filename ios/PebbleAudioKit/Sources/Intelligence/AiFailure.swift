@@ -286,7 +286,7 @@ public struct AiFailure: Sendable, Equatable {
         case .keyRejected: return .keyRejected
         case .keyNotPermitted: return .keyNotPermitted
         case .rateLimited: return .rateLimited
-        case .accountOutOfFunds: return .accountOutOfFunds
+        case .accountOutOfFunds, .spendingLimitReached: return .accountOutOfFunds
         case .providerTrouble, .providerRefusedAudio: return .providerTrouble
         case .timedOut: return .timedOut
         case .noConnection: return .noConnection
