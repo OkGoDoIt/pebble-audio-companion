@@ -483,26 +483,18 @@ extension LiveWorld: ConversationDataSource {
             ))
     }
 
+    /// The person's own title. One write that also marks the title as theirs
+    /// (`AnnotationStore.setUserTitle`), so no later regeneration — the provisional pass while
+    /// the conversation is live, the final one, a re-title after its pieces change — replaces
+    /// it; then the conversation is donated again THROUGH the enrichment service, which is the
+    /// donation that carries the transcript. The direct donation this used to make had none,
+    /// and a donation replaces the document: renaming a conversation took its words out of
+    /// search.
     func rename(id: String, to title: String) async throws {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let existing = try await composition.annotations.load(id)
-        var annotation =
-            existing
-            ?? ConversationAnnotation(
-                conversationId: id, updatedAtMs: composition.clock.nowMs
-            )
-        annotation.title = trimmed
-        annotation.updatedAtMs = composition.clock.nowMs
-        _ = try await composition.annotations.save(annotation)
-        try? await composition.donator.donateConversation(
-            conversationId: id,
-            title: trimmed,
-            summary: annotation.summary,
-            tags: annotation.tags,
-            startDateMs: nil,
-            createdAtMs: composition.clock.nowMs
-        )
+        try await composition.annotations.setUserTitle(trimmed, conversationId: id)
+        await composition.runtime.enrichment.donate(conversationIds: [id])
     }
 
     /// Re-run transcription from scratch for every member segment — WHOLE segments, on
@@ -578,11 +570,9 @@ extension LiveWorld: ConversationDataSource {
         let memberIds = pieces.map(\.segmentId)
         let metas = await Self.loadMetas(memberIds, files: composition.files)
         let turns = await Self.loadTurns(memberIds, store: composition.transcripts)
-        let edits = ConversationBoundaryEdits(database: composition.database)
-        let atSegmentStarts =
-            (try? await BoundaryOverrideStore(db: composition.database).all()) ?? [:]
-        let insideSegments =
-            (try? await ConversationCutStore(db: composition.database).overrides()) ?? [:]
+        let decisions =
+            (try? await ConversationBoundaryEdits(database: composition.database).decisions())
+            ?? [:]
         let startReason = try? await queries.startReason(ofConversation: id)
 
         let conversationStartMs = detail.row.startMs
@@ -598,13 +588,16 @@ extension LiveWorld: ConversationDataSource {
         return ConversationBoundariesDisplay(
             startReason: startReason,
             canJoinWithPrevious: hasPrevious,
-            isJoinedWithPrevious: (try? await edits.decision(at: start)) == .join,
+            // Seldom true once the grouping has caught up — a joined conversation becomes part
+            // of the one before it — but when a join does stand at this conversation's own
+            // start the row has to say so, not offer it again.
+            isJoinedWithPrevious: decisions[start] == .join,
             points: ConversationSplitPoints.points(
                 pieces: pieces, metas: metas, turns: turns,
                 conversationStartMs: conversationStartMs),
             joins: ConversationSplitPoints.joins(
-                pieces: pieces, metas: metas, turns: turns, insideSegments: insideSegments,
-                atSegmentStarts: atSegmentStarts, conversationStartMs: conversationStartMs)
+                pieces: pieces, metas: metas, turns: turns, decisions: decisions,
+                conversationStartMs: conversationStartMs)
         )
     }
 
@@ -628,46 +621,31 @@ extension LiveWorld: ConversationDataSource {
         try await regroupAfterBoundaryChange()
     }
 
-    /// Joins the conversation to the one before it, at the position its first piece starts —
-    /// which is inside a segment as often as not — or clears that join.
+    /// Joins the conversation to the one before it, or clears that join.
     ///
-    /// A conversation that starts where the person split is joined by taking the split away.
-    /// If the rules would start a conversation at the same place anyway, that alone changes
-    /// nothing anybody can see, so the grouping is looked at again and the join written on
-    /// top: one tap on "Join" always joins.
+    /// The join is the kit's to write (`ConversationCutStore.joinWithPrevious`), wherever the
+    /// conversation starts — inside a segment as often as at the start of one. It records the
+    /// whole span the two conversations covered, not just the point between them, which is
+    /// what keeps the segmenter from cutting the merged conversation again a few minutes on.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws {
-        guard
-            let detail = try? await composition.runtime.library.conversation(id: conversationId),
-            let first = detail.pieces.first
-        else { return }
-        let start = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
         let edits = ConversationBoundaryEdits(database: composition.database)
-        guard on else {
-            try await edits.clearJoin(at: start)
-            try await regroupAfterBoundaryChange()
-            return
+        if on {
+            try await edits.joinWithPrevious(conversationId: conversationId)
+        } else {
+            guard
+                let detail = try? await composition.runtime.library.conversation(
+                    id: conversationId),
+                let first = detail.pieces.first
+            else { return }
+            try await edits.clearJoin(
+                at: ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0))
         }
-        let wrote = try await edits.joinWithPrevious(conversationStartingAt: start)
         try await regroupAfterBoundaryChange()
-        if wrote == .clearedSplit, await conversationStarts(at: start) {
-            try await edits.joinWithPrevious(conversationStartingAt: start)
-            try await regroupAfterBoundaryChange()
-        }
     }
 
     func separate(at cut: ConversationCut) async throws {
         try await ConversationBoundaryEdits(database: composition.database).clearJoin(at: cut)
         try await regroupAfterBoundaryChange()
-    }
-
-    /// Whether some conversation's FIRST piece starts exactly at `cut`.
-    private func conversationStarts(at cut: ConversationCut) async -> Bool {
-        guard
-            let owner = try? await queries.conversationId(
-                ofSegment: cut.segmentId, atMediaMs: cut.mediaMs),
-            let first = try? await queries.detail(id: owner)?.pieces.first
-        else { return false }
-        return first.segmentId == cut.segmentId && (first.startMediaMs ?? 0) == cut.mediaMs
     }
 
     /// Grouping is derived, so a decision only becomes visible once it is recomputed. Doing it

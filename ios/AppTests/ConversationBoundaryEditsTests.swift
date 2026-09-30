@@ -106,9 +106,8 @@ struct ConversationBoundaryEditsTests {
 
     // MARK: - What a tap writes
 
-    /// A split inside a segment is a row in the cut overrides; a split at a segment's own
-    /// start is a row in `boundary_overrides`, where decisions about that join have always
-    /// lived. Never both.
+    /// A split inside a segment is a cut override; a split at a segment's own start is a row
+    /// in `boundary_overrides`, where a decision about that join has always lived. Never both.
     @Test func aSplitIsWrittenToTheTableThatOwnsThatKindOfPosition() async throws {
         let db = try AppDatabase.inMemory()
         let edits = ConversationBoundaryEdits(database: db)
@@ -121,54 +120,75 @@ struct ConversationBoundaryEditsTests {
         let atStarts = try await BoundaryOverrideStore(db: db).all()
         #expect(inside == [Self.holiday: .split])
         #expect(atStarts == ["seg-b": .split])
-        let holiday = try await edits.decision(at: Self.holiday)
-        let start = try await edits.decision(at: segmentStart)
-        #expect(holiday == .split)
-        #expect(start == .split)
+        let decisions = try await edits.decisions()
+        #expect(decisions == [Self.holiday: .split, segmentStart: .split])
     }
 
-    /// Joining a conversation that starts where the person split takes the split away, and
-    /// leaves nothing standing in its place. Joining one the RULES started writes the join.
-    @Test func joiningClearsThePersonsSplitOrWritesAJoin() async throws {
+    /// A join is the kit's to write, from the grouping as stored: it lands where the
+    /// conversation starts, and replaces a split the person made there — which is how a split
+    /// is undone.
+    @Test func joiningWritesTheJoinWhereTheConversationStarts() async throws {
+        let db = try await Library.sharedLibrary()
+        let edits = ConversationBoundaryEdits(database: db)
+
+        let at = try await edits.joinWithPrevious(conversationId: Library.second)
+        #expect(at == Self.holiday)
+        var decisions = try await edits.decisions()
+        #expect(decisions == [Self.holiday: .join, Self.budget: .split])
+
+        // Nothing comes before the first conversation: nothing is written.
+        let none = try await edits.joinWithPrevious(conversationId: Library.first)
+        #expect(none == nil)
+        decisions = try await edits.decisions()
+        #expect(decisions == [Self.holiday: .join, Self.budget: .split])
+    }
+
+    /// At a segment's own start the person's split lives in the older table. Joining there
+    /// clears it, so one decision stands at the place — and splitting there again clears the
+    /// join, which would otherwise outrank the split and silently overrule it.
+    @Test func atASegmentsStartTheNewerDecisionReplacesTheOlder() async throws {
         let db = try AppDatabase.inMemory()
         let edits = ConversationBoundaryEdits(database: db)
-        try await edits.split(at: Self.holiday)
-
-        let undone = try await edits.joinWithPrevious(conversationStartingAt: Self.holiday)
-        #expect(undone == .clearedSplit)
-        var stored = try await ConversationCutStore(db: db).overrides()
-        #expect(stored.isEmpty)
-
-        let joined = try await edits.joinWithPrevious(conversationStartingAt: Self.holiday)
-        #expect(joined == .joined)
-        stored = try await ConversationCutStore(db: db).overrides()
-        #expect(stored == [Self.holiday: .join])
-
-        // The same two steps at a segment's own start, in the other table.
         let segmentStart = ConversationCut(segmentId: "seg-b", mediaMs: 0)
         try await edits.split(at: segmentStart)
-        let undoneAtStart = try await edits.joinWithPrevious(conversationStartingAt: segmentStart)
-        let joinedAtStart = try await edits.joinWithPrevious(conversationStartingAt: segmentStart)
-        #expect(undoneAtStart == .clearedSplit)
-        #expect(joinedAtStart == .joined)
-        let atStarts = try await BoundaryOverrideStore(db: db).all()
-        #expect(atStarts == ["seg-b": .join])
+        let grouped = try await Library.regroup(db)
+        #expect(grouped.map(\.id) == ["conv-seg-a", "conv-seg-b"])
+
+        let at = try await edits.joinWithPrevious(conversationId: "conv-seg-b")
+        #expect(at == segmentStart)
+        var atStarts = try await BoundaryOverrideStore(db: db).all()
+        var inside = try await ConversationCutStore(db: db).overrides()
+        #expect(atStarts.isEmpty)
+        #expect(inside == [segmentStart: .join])
+        let joined = try await Library.regroup(db)
+        #expect(joined.map(\.members) == [Self.whole])
+
+        try await edits.split(at: segmentStart)
+        atStarts = try await BoundaryOverrideStore(db: db).all()
+        inside = try await ConversationCutStore(db: db).overrides()
+        #expect(atStarts == ["seg-b": .split])
+        #expect(inside.isEmpty)
+        let split = try await Library.regroup(db)
+        #expect(split.map(\.id) == ["conv-seg-a", "conv-seg-b"])
     }
 
-    /// "Separate them again" takes back a JOIN. A split stored at the same kind of place is
-    /// left alone: clearing it from here would join two conversations under a button that
-    /// says it separates them.
+    /// "Separate them again" takes back a JOIN — from either table. A split stored at the
+    /// same kind of place is left alone: clearing it from here would join two conversations
+    /// under a button that says it separates them.
     @Test func separatingClearsAJoinAndNothingElse() async throws {
-        let db = try AppDatabase.inMemory()
+        let db = try await Library.sharedLibrary()
         let edits = ConversationBoundaryEdits(database: db)
-        try await edits.joinWithPrevious(conversationStartingAt: Self.holiday)
-        try await edits.split(at: Self.budget)
+        try await edits.joinWithPrevious(conversationId: Library.second)
+        // A join from before joins carried a span: a row in the older table.
+        try await BoundaryOverrideStore(db: db).set(segmentId: "seg-b", decision: .join)
+        let legacy = ConversationCut(segmentId: "seg-b", mediaMs: 0)
 
         try await edits.clearJoin(at: Self.holiday)
         try await edits.clearJoin(at: Self.budget)
+        try await edits.clearJoin(at: legacy)
 
-        let stored = try await ConversationCutStore(db: db).overrides()
-        #expect(stored == [Self.budget: .split])
+        let decisions = try await edits.decisions()
+        #expect(decisions == [Self.budget: .split])
     }
 
     // MARK: - What the grouper does with it
@@ -202,11 +222,8 @@ struct ConversationBoundaryEditsTests {
         // The place is no longer offered in the first half: it is the start of the second.
         #expect(Self.points(grouped[0].members).isEmpty)
 
-        let start = try #require(grouped[1].members.first)
-        let wrote = try await edits.joinWithPrevious(
-            conversationStartingAt: ConversationCut(
-                segmentId: start.segmentId, mediaMs: start.startMediaMs ?? 0))
-        #expect(wrote == .clearedSplit)
+        let at = try await edits.joinWithPrevious(conversationId: Library.second)
+        #expect(at == offered.cut)
         grouped = try await Library.regroup(db)
         #expect(grouped.map(\.members) == [Self.whole])
     }
@@ -225,32 +242,24 @@ struct ConversationBoundaryEditsTests {
         var grouped = try await Library.regroup(db, policy: eager)
         #expect(grouped.map(\.id) == [Library.first, Library.second, Library.third])
 
-        let wrote = try await edits.joinWithPrevious(conversationStartingAt: Self.holiday)
-        #expect(wrote == .joined)
+        let at = try await edits.joinWithPrevious(conversationId: Library.second)
+        #expect(at == Self.holiday)
         grouped = try await Library.regroup(db, policy: eager)
-        #expect(
-            grouped.map(\.members) == [
-                [
-                    ConversationMember(segmentId: "seg-a"),
-                    ConversationMember(segmentId: "seg-b", endMediaMs: Library.cutB),
-                ],
-                [ConversationMember(segmentId: "seg-b", startMediaMs: Library.cutB)],
-            ])
+        // No conversation starts at the join any more: the moment is inside the one before.
+        // (How far either side of it the rules are also held off is the planner's business —
+        // two minutes, which in a two-minute library is everything.)
+        #expect(!grouped.contains { $0.members.first?.startMediaMs == Library.cutA })
+        let merged = try #require(grouped.first)
+        #expect(merged.id == Library.first)
+        #expect(merged.contains(segmentId: "seg-a", mediaMs: Library.cutA))
 
-        let inside = try await ConversationCutStore(db: db).overrides()
-        let atStarts = try await BoundaryOverrideStore(db: db).all()
-        func joins(_ pieces: [ConversationMember]) -> [ConversationBoundaryPoint] {
-            ConversationSplitPoints.joins(
-                pieces: pieces, metas: Library.metas, turns: Library.turns,
-                insideSegments: inside, atSegmentStarts: atStarts,
-                conversationStartMs: Int64(Library.t0) + 2_000)
-        }
-        let listed = joins(grouped[0].members)
+        let decisions = try await edits.decisions()
+        let listed = ConversationSplitPoints.joins(
+            pieces: merged.members, metas: Library.metas, turns: Library.turns,
+            decisions: decisions, conversationStartMs: Int64(Library.t0) + 2_000)
         #expect(listed.map(\.cut) == [Self.holiday])
         #expect(listed.map(\.opening) == ["So about the holiday plans."])
         #expect(listed.map(\.offsetMs) == [36_500])
-        // Not in the conversation after it, which the join has nothing to do with.
-        #expect(joins(grouped[1].members).isEmpty)
 
         try await edits.clearJoin(at: Self.holiday)
         grouped = try await Library.regroup(db, policy: eager)
@@ -264,11 +273,13 @@ struct ConversationBoundaryEditsTests {
             ConversationMember(segmentId: "seg-a", startMediaMs: Library.cutA),
             ConversationMember(segmentId: "seg-b"),
         ]
+        let betweenRecordings = ConversationCut(segmentId: "seg-b", mediaMs: 0)
         let listed = ConversationSplitPoints.joins(
             pieces: second, metas: Library.metas, turns: Library.turns,
-            insideSegments: [Self.holiday: .join], atSegmentStarts: ["seg-b": .join],
+            decisions: [Self.holiday: .join, betweenRecordings: .join, Self.budget: .split],
             conversationStartMs: Int64(Library.t0) + 40_000)
         // The join between the two recordings is inside it; the one at its start is not.
-        #expect(listed.map(\.cut) == [ConversationCut(segmentId: "seg-b", mediaMs: 0)])
+        // Nor is a split, which is not a join at all.
+        #expect(listed.map(\.cut) == [betweenRecordings])
     }
 }

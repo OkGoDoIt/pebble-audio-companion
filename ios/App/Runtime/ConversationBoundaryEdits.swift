@@ -15,13 +15,18 @@ import Transcription
 //
 // A decision is stored against a POSITION — a segment and an offset into its stored audio
 // (`ConversationCut`) — because that is the only thing that survives a regroup; conversation
-// ids are derived and move when a split does. Two stores hold them, by where the position is:
+// ids are derived and move when a split does. Two tables hold them:
 //
-//  - inside a segment (`mediaMs > 0`): `ConversationCutStore`'s overrides;
-//  - a segment's own start (`mediaMs == 0`): `BoundaryOverrideStore`, where decisions about
-//    the join between two recordings have always lived. (`ConversationCutStore.fetchInputs`
-//    would fold a zero-offset row in there anyway; writing it to the right table keeps one
-//    place to look.)
+//  - `conversation_cut_overrides` (`ConversationCutStore`): every JOIN, wherever the joined
+//    conversation starts, and every split inside a segment. A join is written by the kit
+//    (`ConversationCutStore.joinWithPrevious`), never here: it records the whole span the
+//    two conversations covered, which is what stops the segmenter cutting the merged
+//    conversation again a few minutes further on. A join written as a bare point does not.
+//  - `boundary_overrides` (`BoundaryOverrideStore`): a split at a segment's own start, and
+//    the joins written there before joins carried a span. Still read, still undoable.
+//
+// At a segment's start both tables can speak; the grouper lets the cut-override row win
+// (`ConversationCutStore.fetchInputs` folds it in last), and so does `decisions()` here.
 //
 // Everything here is either pure or a plain database write, so it is tested without the
 // composition root (`AppTests/ConversationPiecesTests.swift`).
@@ -165,25 +170,25 @@ enum ConversationSplitPoints {
     ///
     /// A join at the conversation's own start is not one of these (it is "joined with the
     /// previous conversation", and has its own row).
+    ///
+    /// `decisions` is every decision by position (`ConversationBoundaryEdits.decisions`). A
+    /// position is inside the conversation when one of its pieces holds that moment of that
+    /// segment — which, for a segment's own start, is any member but the first.
     static func joins(
         pieces: [ConversationMember],
         metas: [String: SegmentMeta],
         turns: [String: [TranscriptSegment]],
-        insideSegments: [ConversationCut: BoundaryDecision],
-        atSegmentStarts: [String: BoundaryDecision],
+        decisions: [ConversationCut: BoundaryDecision],
         conversationStartMs: Int64
     ) -> [ConversationBoundaryPoint] {
         var points: [ConversationBoundaryPoint] = []
         for (index, piece) in pieces.enumerated() {
             guard let meta = metas[piece.segmentId] else { continue }
             var offsets =
-                insideSegments
+                decisions
                 .filter { $0.value == .join && $0.key.segmentId == piece.segmentId }
                 .map(\.key.mediaMs)
-                .filter { $0 > 0 && piece.contains(mediaMs: $0) }
-            if piece.startMediaMs == nil, atSegmentStarts[piece.segmentId] == .join {
-                offsets.append(0)
-            }
+                .filter { piece.contains(mediaMs: $0) }
             // The conversation's own start is the join with the PREVIOUS conversation.
             if index == 0 { offsets.removeAll { $0 == (piece.startMediaMs ?? 0) } }
             let wall = wallClock(meta)
@@ -213,65 +218,68 @@ enum ConversationSplitPoints {
     }
 }
 
-/// The writes behind the "Split or join" sheet. Each is one row in one of the two override
-/// tables; the grouping itself is derived and is recomputed by the caller afterwards.
+/// The writes behind the "Split or join" sheet. The grouping itself is derived and is recomputed
+/// by the caller afterwards.
 struct ConversationBoundaryEdits: Sendable {
     let database: AppDatabase
 
-    private var insideSegments: ConversationCutStore { ConversationCutStore(db: database) }
-    private var atSegmentStarts: BoundaryOverrideStore { BoundaryOverrideStore(db: database) }
+    private var cutOverrides: ConversationCutStore { ConversationCutStore(db: database) }
+    private var segmentStarts: BoundaryOverrideStore { BoundaryOverrideStore(db: database) }
 
-    /// The person's decision at a position, from whichever table holds that kind of position.
-    func decision(at cut: ConversationCut) async throws -> BoundaryDecision? {
-        cut.mediaMs > 0
-            ? try await insideSegments.overrides()[cut]
-            : try await atSegmentStarts.decision(forSegment: cut.segmentId)
-    }
-
-    private func write(_ decision: BoundaryDecision?, at cut: ConversationCut) async throws {
-        if cut.mediaMs > 0 {
-            try await insideSegments.setOverride(at: cut, decision: decision)
-        } else {
-            try await atSegmentStarts.set(segmentId: cut.segmentId, decision: decision)
+    /// Every decision the person has made, by position, as the grouper will read them: the
+    /// older table's decisions about a segment's start at offset 0, overridden by a
+    /// cut-override row at the same place.
+    func decisions() async throws -> [ConversationCut: BoundaryDecision] {
+        var out: [ConversationCut: BoundaryDecision] = [:]
+        for (segmentId, decision) in try await segmentStarts.all() {
+            out[ConversationCut(segmentId: segmentId, mediaMs: 0)] = decision
         }
+        for (cut, decision) in try await cutOverrides.overrides() { out[cut] = decision }
+        return out
     }
 
-    /// "Start a new conversation here." Replaces a join the person made at the same place:
-    /// it is the newer decision about it.
+    /// "Start a new conversation here." The newer decision about that place, so it replaces a
+    /// join the person made there.
     func split(at cut: ConversationCut) async throws {
-        try await write(.split, at: cut)
-    }
-
-    /// What joining a conversation to the one before it had to write.
-    enum JoinWrite: Equatable {
-        /// The conversation started here only because the person split here. Taking the split
-        /// away is the whole undo: the place goes back to the rules, with no standing "keep
-        /// these together" left behind to explain later.
-        case clearedSplit
-        /// The rules start a conversation here; the person's join now overrules them.
-        case joined
-    }
-
-    /// "Join with the previous conversation", for the conversation that starts at `start`.
-    ///
-    /// After `.clearedSplit` the caller regroups and looks again: if the rules start a
-    /// conversation at the same place on their own account, it calls this a second time —
-    /// there is then no split left to clear, and the join is written.
-    @discardableResult
-    func joinWithPrevious(conversationStartingAt start: ConversationCut) async throws -> JoinWrite {
-        if try await decision(at: start) == .split {
-            try await write(nil, at: start)
-            return .clearedSplit
+        guard cut.mediaMs > 0 else {
+            // A cut-override row at a segment's start outranks `boundary_overrides`, so a join
+            // left there would silently overrule the split being written.
+            try await cutOverrides.setOverride(at: cut, decision: nil)
+            try await segmentStarts.set(segmentId: cut.segmentId, decision: .split)
+            return
         }
-        try await write(.join, at: start)
-        return .joined
+        try await cutOverrides.setOverride(at: cut, decision: .split)
+    }
+
+    /// "Join with the previous conversation." Returns the position the join was written at —
+    /// where the conversation started — or nil when there is nothing before it to join.
+    ///
+    /// One decision stands at a place: the join replaces a split the person made there, in
+    /// whichever table held it (the cut-override row is the same row; the older table's is
+    /// cleared here). Joining a conversation that starts where the person split is therefore
+    /// also how that split is undone.
+    @discardableResult
+    func joinWithPrevious(conversationId: String) async throws -> ConversationCut? {
+        guard let at = try await cutOverrides.joinWithPrevious(conversationId: conversationId)
+        else { return nil }
+        if at.mediaMs == 0, try await segmentStarts.decision(forSegment: at.segmentId) != nil {
+            try await segmentStarts.set(segmentId: at.segmentId, decision: nil)
+        }
+        return at
     }
 
     /// "Separate them again": takes back the person's join at a position and hands the place
-    /// to the rules. Leaves anything else stored there alone — clearing a SPLIT from here
-    /// would join two conversations under a button that says it separates them.
+    /// to the rules. Leaves a SPLIT stored there alone — clearing one from here would join two
+    /// conversations under a button that says it separates them.
     func clearJoin(at cut: ConversationCut) async throws {
-        guard try await decision(at: cut) == .join else { return }
-        try await write(nil, at: cut)
+        if try await cutOverrides.overrides()[cut] == .join {
+            try await cutOverrides.setOverride(at: cut, decision: nil)
+        }
+        // A join from before joins carried a span lives in the older table.
+        if cut.mediaMs == 0,
+            try await segmentStarts.decision(forSegment: cut.segmentId) == .join
+        {
+            try await segmentStarts.set(segmentId: cut.segmentId, decision: nil)
+        }
     }
 }
