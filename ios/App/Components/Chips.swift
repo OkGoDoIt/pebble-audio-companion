@@ -41,22 +41,51 @@ struct FilterChip: View {
 
 /// Read-only tag on rows: 11/500 on `grayChipFill`, r9, padding 2/8. On detail screens
 /// (over `ground`) it switches to a white fill with padding 3/9.
+///
+/// History (plan 5.3) adds two tones on cards: `.topic` — tint text on 10 % tint — and
+/// `.person` — dark gray text on `grayChipFill` with a person glyph. Either way the chip never
+/// breaks inside itself: at the largest text sizes "Oliver" wrapped to "Oli/ver" in the spike.
 struct TagChip: View {
     enum Style { case onCard, onGround }
+    enum Tone { case neutral, topic, person }
 
     let text: String
     var style: Style = .onCard
+    var tone: Tone = .neutral
 
     var body: some View {
-        Text(text)
-            .font(AppFont.tagChip)
-            .foregroundStyle(Tokens.tertiary)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.vertical, style == .onCard ? 2 : 3)
-            .padding(.horizontal, style == .onCard ? 8 : 9)
-            .background(Capsule().fill(style == .onCard ? Tokens.grayChipFill : Tokens.surface))
-            .accessibilityLabel(Copy.A11y.tag(text))
+        HStack(spacing: 3) {
+            if tone == .person {
+                Image(systemName: "person")
+                    .font(AppFont.tagChip)
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
+            Text(text).lineLimit(1)
+        }
+        .font(AppFont.tagChip)
+        .foregroundStyle(foreground)
+        .fixedSize()
+        .padding(.vertical, style == .onCard ? 2 : 3)
+        .padding(.horizontal, style == .onCard ? 8 : 9)
+        .background(Capsule().fill(fill))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tone == .person ? text : Copy.A11y.tag(text))
+    }
+
+    private var foreground: Color {
+        switch tone {
+        case .neutral: return Tokens.tertiary
+        case .topic: return Tokens.tint
+        case .person: return Tokens.secondaryBody
+        }
+    }
+
+    private var fill: Color {
+        switch tone {
+        case .topic: return Tokens.tintFill10
+        case .neutral, .person: return style == .onCard ? Tokens.grayChipFill : Tokens.surface
+        }
     }
 }
 

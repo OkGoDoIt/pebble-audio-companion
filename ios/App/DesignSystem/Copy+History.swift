@@ -180,12 +180,18 @@ extension Copy {
         static func missing(_ duration: String) -> String { "\(duration) missing" }
         /// The prefix for a time read from a recording whose clock is not exact.
         static func approximately(_ times: String) -> String { "about \(times)" }
+        /// The card's long-press menu (5.3).
+        static let open = "Open"
+        static let shareSummary = "Share summary"
+        static let copySummary = "Copy summary"
         /// Trailing a collapsed follow-up line, or under a week row's two: "3 more".
         static func more(_ count: Int) -> String { "\(count) more" }
 
         // MARK: Today (5.3 "Today")
 
         static let recordingNow = "Recording now"
+        /// The live transcript's last line, as a fragment of something still being said.
+        static func liveQuote(_ line: String) -> String { "“…\(line)…”" }
         /// "11:20 AM · 21 min so far".
         static func liveTime(start: String, soFar: String) -> String { "\(start) · \(soFar) so far" }
 
@@ -230,6 +236,8 @@ extension Copy {
             static func followUpAction(_ text: String) -> String { "Follow-up: \(text)" }
             static let openHint = "Opens the conversation at this point"
             static let openRecordingHint = "Opens the recording"
+            static let openDayHint = "Opens this day"
+            static let openWeekHint = "Opens this week"
             static let hourAxis = "Hour axis"
             static let now = "Now"
             static let followUpDone = "done"

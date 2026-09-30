@@ -25,6 +25,12 @@ enum HistoryFormat {
             .string(from: date(ms)))
     }
 
+    /// The time without its meridiem, for the "now" marker on the axis: "11:41".
+    static func clock(_ ms: Int64, zone: TimeZone, locale: Locale = .current) -> String {
+        if let parts = clockParts(ms, zone: zone, locale: locale) { return parts.clock }
+        return time(ms, zone: zone, locale: locale)
+    }
+
     /// "9:05 – 10:15 AM" when both ends share the meridiem; "11:40 AM – 12:10 PM" otherwise.
     static func timeRange(_ startMs: Int64, _ endMs: Int64, zone: TimeZone, locale: Locale = .current)
         -> String

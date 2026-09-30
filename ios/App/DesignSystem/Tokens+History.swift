@@ -59,6 +59,8 @@ extension AppFont {
     static let timelineMeta = Font.system(.caption)
     /// 20/500 — the day number in a week row.
     static let dayNumeral = Font.system(.title3, weight: .medium)
+    /// 16/500 — the gray title of a pending card, and of a week row with nothing to show.
+    static let pendingTitle = Font.system(.callout, weight: .medium)
     /// 12/600 — the "now" marker.
     static let nowMarker = Font.system(.caption, weight: .semibold)
 
