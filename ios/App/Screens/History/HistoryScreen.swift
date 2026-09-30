@@ -27,6 +27,7 @@ struct HistoryScreen: View {
     @State private var isEmptyArchive = false
     @State private var titleFocusToken = 0
     @State private var services: HistoryPageServices?
+    @State private var showsCalendar = false
 
     var body: some View {
         content
@@ -49,6 +50,19 @@ struct HistoryScreen: View {
                 if phase == .active { Task { await refreshBounds() } }
             }
             .onChange(of: reselectToken) { reselected() }
+            .sheet(isPresented: $showsCalendar) {
+                if let model {
+                    JumpCalendarSheet(
+                        firstDateKey: model.firstDateKey, todayDateKey: model.todayDateKey,
+                        recordedDays: model.recordedDays, level: model.level,
+                        selectedDateKey: model.focusDateKey
+                    ) { key in
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            _ = model.show(model.level, containing: key)
+                        }
+                    }
+                }
+            }
             .onChange(of: model?.visiblePage) { prefetchNeighbours() }
     }
 
@@ -97,7 +111,7 @@ struct HistoryScreen: View {
         }
         if model != nil {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button(Copy.History.jumpToDate, systemImage: "calendar") {}
+                Button(Copy.History.jumpToDate, systemImage: "calendar") { showsCalendar = true }
                 Button(Copy.History.search, systemImage: "magnifyingglass") {}
             }
         }
