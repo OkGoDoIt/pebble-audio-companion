@@ -308,11 +308,20 @@ let gapCollapseWindowMs: Int64 = 5_000
 /// `filteringLoopedArtefacts`; they are folded into the quiet rows so a hidden loop reads as
 /// the quiet it actually was, and says how many lines it stands for. Callers that pass nothing
 /// get exactly the behavior they had before suppression existed.
+///
+/// `window` is for a caller rendering a PIECE of the segment — a conversation owns a range of a
+/// segment's audio, not always all of it — and is that piece as wall offsets into the segment.
+/// The caller has already cut `segments` and `words` to the piece; what it cannot cut is the
+/// gap records, which this function reads straight off `meta`. Without the window a piece would
+/// open on every quiet and interrupted row of the conversation before it, and close on the
+/// next one's. A gap record belongs to the piece its START falls in, so the pieces of a segment
+/// show each record exactly once between them. Nil is the whole segment, as it always was.
 public func transcriptTimelineItems(
     meta: SegmentMeta,
     segments: [TranscriptSegment],
     words: [TranscriptWord] = [],
-    suppressedLoops: [SuppressedLoop] = []
+    suppressedLoops: [SuppressedLoop] = [],
+    window: Range<Int64>? = nil
 ) -> [TranscriptTimelineItem] {
     let speech = coalescedSpeechBlocks(segments: segments, words: words)
         .flatMap { splitSpeechBlock($0) }
@@ -323,7 +332,7 @@ public func transcriptTimelineItems(
         return coalesceTimelineQuiet(quietRowsForUncoveredLoops([], suppressedLoops))
     }
 
-    let gaps = collapsedTranscriptGaps(meta)
+    let gaps = collapsedTranscriptGaps(meta, window: window)
     var items: [TranscriptTimelineItem] = []
     var gapIndex = 0
     var previousSpeechEnd: Int64?
@@ -638,7 +647,9 @@ private func splitSpeechBlock(
     }
 }
 
-private func collapsedTranscriptGaps(_ meta: SegmentMeta) -> [TranscriptTimelineItem.Pause] {
+private func collapsedTranscriptGaps(
+    _ meta: SegmentMeta, window: Range<Int64>? = nil
+) -> [TranscriptTimelineItem.Pause] {
     if meta.gaps.isEmpty { return [] }
     let segmentDuration = max(segmentDurationMs(meta), 0)
 
@@ -709,9 +720,17 @@ private func collapsedTranscriptGaps(_ meta: SegmentMeta) -> [TranscriptTimeline
     // missing=true ("audio interrupted"). They collapse separately so a quiet stretch never
     // inherits an interruption's framing; length-based labelling happens later in
     // coalesceTimelineQuiet on the combined totals.
+    // Visibility is judged over ALL of the segment's records (a sequence skip is hidden by the
+    // watch record that covers it, wherever a piece happens to be cut); only then are the
+    // records outside the window dropped — before collapsing, so a cluster never reaches across
+    // the edge of the piece and drags a neighbour's quiet in with it.
     let visibility = GapVisibility(meta.gaps)
-    let lost = pauses(meta.gaps.filter { visibility.isVisibleLoss($0) }, missing: true)
-    let quiet = pauses(meta.gaps.filter { !visibility.isVisibleLoss($0) }, missing: false)
+    let inWindow = meta.gaps.filter { gap in
+        guard let window else { return true }
+        return window.contains(rangeOf(gap).0)
+    }
+    let lost = pauses(inWindow.filter { visibility.isVisibleLoss($0) }, missing: true)
+    let quiet = pauses(inWindow.filter { !visibility.isVisibleLoss($0) }, missing: false)
     return (lost + quiet).sorted { $0.startMs < $1.startMs }
 }
 
