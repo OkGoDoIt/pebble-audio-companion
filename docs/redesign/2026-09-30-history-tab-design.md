@@ -1,8 +1,14 @@
-# History tab — design notes (in progress)
+# History tab — design notes
+
+> **Superseded by `2026-09-30-history-tab-plan.md`** (the agreed design, architecture and build
+> sequence). This file is kept as the record of how the design was reached, round by round. Where
+> the two disagree, the plan wins — in particular the background-audio section below predates
+> Roger's rule that a descriptor is shown only when it is accurate, and the decision to hand the
+> classification to a separate backend task.
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design round 10, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design agreed after round 10, nothing implemented.** Mockups are in `history-mockups/`.
 
 ## Why the Library fails on real data
 
