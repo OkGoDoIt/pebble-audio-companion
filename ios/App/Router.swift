@@ -193,6 +193,22 @@ enum Route: Equatable, Hashable, Identifiable {
     }
 }
 
+extension Route {
+    /// A conversation opened at a wall-clock moment: the player cued at `mediaOffsetMs` (MEDIA
+    /// time, as `atMs` always is), the transcript landing on the row being said at `wallMs`
+    /// (WALL time), nothing marked. `segmentId` is the recording the moment falls in.
+    ///
+    /// The pieces come from `ConversationDataSource.momentTarget(atWallMs:)`; in the app,
+    /// `Route.moment(atWallMs:)` does both steps in one line.
+    static func moment(
+        conversationId: String, segmentId: String, atWallMs wallMs: Int64, mediaOffsetMs: Int64?
+    ) -> Route {
+        .conversation(
+            id: conversationId, atMs: mediaOffsetMs,
+            focus: .moment(segmentId: segmentId, atWallMs: wallMs))
+    }
+}
+
 private extension URL {
     var queryItems: [String: String] {
         guard let components = URLComponents(url: self, resolvingAgainstBaseURL: false),

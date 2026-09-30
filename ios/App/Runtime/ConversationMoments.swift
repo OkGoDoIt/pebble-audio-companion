@@ -210,3 +210,26 @@ enum ConversationScrubber {
         return nil
     }
 }
+
+extension Route {
+    /// The conversation a wall-clock moment falls in, opened there — History's one line:
+    ///
+    ///     if let route = await Route.moment(atWallMs: chapter.startMs) { router.push(route) }
+    ///
+    /// Nil when nothing was recorded near the time, which is when a tap must not navigate.
+    @MainActor
+    static func moment(atWallMs wallMs: Int64) async -> Route? {
+        await moment(atWallMs: wallMs, in: AskLibraryDataSources.current.conversations)
+    }
+
+    /// The same, against a named source.
+    @MainActor
+    static func moment(atWallMs wallMs: Int64, in source: any ConversationDataSource) async
+        -> Route?
+    {
+        guard let target = await source.momentTarget(atWallMs: wallMs) else { return nil }
+        return .moment(
+            conversationId: target.conversationId, segmentId: target.focus.segmentId,
+            atWallMs: wallMs, mediaOffsetMs: target.mediaOffsetMs)
+    }
+}

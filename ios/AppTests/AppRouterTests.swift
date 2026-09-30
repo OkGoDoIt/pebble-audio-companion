@@ -183,6 +183,45 @@ struct AppRouterTests {
         #expect(router.libraryPath == [route])
     }
 
+    /// The one-liner History writes: both clocks in the right slots, and the link survives.
+    @Test func theMomentHelperBuildsTheConversationRoute() {
+        let route = Route.moment(
+            conversationId: "conv-a", segmentId: "b", atWallMs: 1_727_700_000_000,
+            mediaOffsetMs: 95_000)
+        #expect(
+            route
+                == .conversation(
+                    id: "conv-a", atMs: 95_000,
+                    focus: TranscriptFocus(
+                        segmentId: "b", startMs: 1_727_700_000_000, endMs: 1_727_700_000_000,
+                        style: .moment)))
+        #expect(Route.parse(route.url) == route)
+        // No audio to cue: the transcript still lands, the player stays at its default.
+        let silent = Route.moment(
+            conversationId: "conv-a", segmentId: "b", atWallMs: 5, mediaOffsetMs: nil)
+        #expect(Route.parse(silent.url) == silent)
+    }
+
+    /// From a wall time straight to a route, through the data source.
+    @Test func aWallTimeResolvesToAMomentRoute() async throws {
+        let world = MockWorld.shared
+        let display = try #require(try await world.display(id: "coffee-dana"))
+        let start = try #require(display.startedAt)
+        let wallMs = Int64(start.timeIntervalSince1970 * 1000) + 60_000
+
+        let route = try #require(await Route.moment(atWallMs: wallMs, in: world))
+        guard case .conversation(let id, let atMs, let focus) = route else {
+            Issue.record("not a conversation route")
+            return
+        }
+        #expect(id == "coffee-dana")
+        #expect(atMs != nil)
+        #expect(focus?.style == .moment)
+        #expect(focus?.startMs == wallMs)
+        // A time nobody recorded anywhere near opens nothing.
+        #expect(await Route.moment(atWallMs: 0, in: world) == nil)
+    }
+
     @Test func followUpsOpenInTheirOwnTab() {
         let router = AppRouter()
         router.selectedTab = .today
