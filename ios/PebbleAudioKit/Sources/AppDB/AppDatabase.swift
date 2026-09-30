@@ -516,6 +516,50 @@ public struct AppDatabase: Sendable {
                 t.add(column: "model", .text)
             }
         }
+        // What recorded audio HOLDS: conversation, or sound with no conversation in it (see
+        // `AudioContentStore.swift`). `audio_content_spans` / `audio_content_segments` are
+        // DERIVED from each segment's transcript and recomputed when it or the method changes;
+        // `audio_content_overrides` is AUTHORITATIVE — a person's "this was a conversation" —
+        // and is kept by wall-clock range so a re-transcription cannot orphan it. Independent
+        // of every other table, so its place in the order does not matter to any other
+        // migration (the History tab's own migrations land beside it).
+        migrator.registerMigration("v14-audio-content") { db in
+            try db.create(table: "audio_content_spans") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("spanIndex", .integer).notNull()
+                t.column("startMs", .integer).notNull()  // wall clock
+                t.column("endMs", .integer).notNull()
+                t.column("mediaStartMs", .integer).notNull()  // the segment's stored-audio clock
+                t.column("mediaEndMs", .integer).notNull()
+                t.column("kind", .text).notNull()  // conversation | noConversation
+                t.column("descriptor", .text)
+                t.column("confidence", .double).notNull()
+                t.column("decidedBy", .text).notNull()
+                t.column("version", .integer).notNull()
+                t.column("wordCount", .integer).notNull().defaults(to: 0)
+                t.column("rowHash", .integer).notNull()
+                t.column("updatedAtMs", .integer).notNull()
+                t.primaryKey(["segmentId", "spanIndex"])
+            }
+            try db.create(
+                index: "audio_content_spans_start", on: "audio_content_spans",
+                columns: ["startMs"])
+            try db.create(table: "audio_content_segments") { t in
+                t.column("segmentId", .text).primaryKey()
+                t.column("inputKey", .text).notNull()
+                t.column("updatedAtMs", .integer).notNull()
+            }
+            try db.create(table: "audio_content_overrides") { t in
+                t.column("id", .text).primaryKey()
+                t.column("startMs", .integer).notNull()
+                t.column("endMs", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("createdAtMs", .integer).notNull()
+            }
+            try db.create(
+                index: "audio_content_overrides_start", on: "audio_content_overrides",
+                columns: ["startMs"])
+        }
         try migrator.migrate(writer)
     }
 }
