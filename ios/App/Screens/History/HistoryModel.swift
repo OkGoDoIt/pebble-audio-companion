@@ -56,6 +56,10 @@ final class HistoryModel {
     private(set) var recordedDays: Set<String>
     let firstWeekday: Int
 
+    /// Pages currently scrolled away from their top, as they report it. Not observed: the tab
+    /// re-tap reads it, nothing draws it.
+    @ObservationIgnored var scrolledPages: Set<HistoryPageID> = []
+
     @ObservationIgnored private var pageCache: [HistoryLevel: [HistoryPageID]] = [:]
 
     init(

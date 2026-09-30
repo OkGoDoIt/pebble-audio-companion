@@ -237,6 +237,7 @@ extension Copy {
             static let openHint = "Opens the conversation at this point"
             static let openRecordingHint = "Opens the recording"
             static let openDayHint = "Opens this day"
+            static let titleHint = "Swipe up or down for the next or previous period"
             static let openWeekHint = "Opens this week"
             static let hourAxis = "Hour axis"
             static let now = "Now"

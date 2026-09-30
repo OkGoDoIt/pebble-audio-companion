@@ -36,7 +36,7 @@ struct RootView: View {
                     // DEBUG `-history`: the History tab being built takes the Library's place
                     // (plan phase 2). Without the argument this is the Library, unchanged.
                     if HistoryLaunch.isEnabled {
-                        HistoryScreen(dateKey: HistoryLaunch.dayKey)
+                        HistoryScreen(initialDay: HistoryLaunch.dayKey, initialLevel: HistoryLaunch.level)
                     } else {
                         LibraryScreen()
                     }
