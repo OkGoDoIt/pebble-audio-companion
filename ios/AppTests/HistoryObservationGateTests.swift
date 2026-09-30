@@ -313,6 +313,30 @@ struct HistoryObservationGateTests {
         pages.cancel()
     }
 
+    @Test("a burst of real changes to a past day is one rebuild, not one per write")
+    func burstsCollapse() async throws {
+        let backend = try GateBackend()
+        try await backend.seed()
+        let history = source(backend)
+        let pages = Collector(history.day(pastDay))
+        #expect(await eventually { pages.values.count == 1 })
+
+        // A catch-up pass writing the day's rows one by one, every 50 ms.
+        for step in 1...10 {
+            try await backend.execute("UPDATE annotations SET title = 'Step \(step)' WHERE conversationId = 'c1'")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await eventually { backend.builds.value == 2 })
+        await settle(.milliseconds(2_500))
+        #expect(backend.builds.value == 2)
+        #expect(pages.values.count == 2)
+        let title = pages.values.last!.day.items.compactMap { item -> String? in
+            if case .chapter(let block) = item { return block.title } else { return nil }
+        }.first
+        #expect(title == "Step 10")
+        pages.cancel()
+    }
+
     @Test("a pending delete of a conversation in the window rebuilds the visible page")
     func pendingDeleteRebuilds() async throws {
         let backend = try GateBackend()

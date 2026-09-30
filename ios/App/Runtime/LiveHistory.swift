@@ -84,6 +84,9 @@ final class LiveHistory: HistoryDataSource {
     struct Tuning {
         /// Today, while recording: at most one rebuild per this.
         var todayCoalesceMs: Int64 = 10_000
+        /// Any other page: at most one rebuild per this, so a burst of writes (a catch-up pass
+        /// classifying a day's recordings one by one) is one build, not one per write.
+        var minimumRebuildIntervalMs: Int64 = 2_000
         /// Today, while visible: rebuilt this often, because its timeline runs to "now".
         var todayTickMs: Int64 = 60_000
         /// Days kept built (the visible one, its neighbours, recently seen ones).
@@ -108,11 +111,11 @@ final class LiveHistory: HistoryDataSource {
     private final class Subscriber {
         let window: HistoryWindow
         /// Maps the built value to the stream's element and yields it when it differs from the
-        /// last one this subscriber received.
-        let offer: @MainActor (HistoryBuilt) -> Void
+        /// last one this subscriber received. True when it yielded.
+        let offer: @MainActor (HistoryBuilt) -> Bool
         let finish: () -> Void
 
-        init(window: HistoryWindow, offer: @escaping @MainActor (HistoryBuilt) -> Void, finish: @escaping () -> Void) {
+        init(window: HistoryWindow, offer: @escaping @MainActor (HistoryBuilt) -> Bool, finish: @escaping () -> Void) {
             self.window = window
             self.offer = offer
             self.finish = finish
@@ -140,8 +143,10 @@ final class LiveHistory: HistoryDataSource {
     private var builds: [HistoryWindow: Task<Void, Never>] = [:]
     /// The newest digest seen while a build was already running for the window.
     private var rebuildAgain: [HistoryWindow: HistoryDigest?] = [:]
-    /// Today's coalesced rebuilds, waiting for their slot.
+    /// Rebuilds waiting for their slot (`minimumRebuildIntervalMs`, today's `todayCoalesceMs`).
     private var deferred: [HistoryWindow: Task<Void, Never>] = [:]
+    /// The newest digest each observed window delivered, for a deferred rebuild.
+    private var latestDigest: [HistoryWindow: HistoryDigest] = [:]
     private var todayTick: Task<Void, Never>?
     private var liveTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
@@ -273,10 +278,11 @@ final class LiveHistory: HistoryDataSource {
             let subscriber = Subscriber(
                 window: window,
                 offer: { [weak self] built in
-                    guard let value = map(built), value != last else { return }
+                    guard let value = map(built), value != last else { return false }
                     last = value
                     self?.publishCount += 1
                     continuation.yield(value)
+                    return true
                 },
                 finish: { continuation.finish() })
             subscribers[id] = subscriber
@@ -287,7 +293,7 @@ final class LiveHistory: HistoryDataSource {
             // stays until new data is ready); the observation then says whether it still holds.
             if let built = cache[window]?.built {
                 touch(window)
-                subscriber.offer(built)
+                _ = subscriber.offer(built)
             }
             activate(window)
         }
@@ -300,6 +306,7 @@ final class LiveHistory: HistoryDataSource {
         observations.removeValue(forKey: window)?.cancel()
         deferred.removeValue(forKey: window)?.cancel()
         rebuildAgain.removeValue(forKey: window)
+        latestDigest.removeValue(forKey: window)
         evict()
         updateTimeObservers()
     }
@@ -324,6 +331,7 @@ final class LiveHistory: HistoryDataSource {
 
     private func digestArrived(_ window: HistoryWindow, _ digest: HistoryDigest) {
         touch(window)
+        latestDigest[window] = digest
         guard var entry = cache[window], let built = entry.built, entry.digest == digest, !entry.stale else {
             requestBuild(window, digest: digest)
             return
@@ -346,18 +354,19 @@ final class LiveHistory: HistoryDataSource {
             return
         }
         // Coalesce: a window with today in it, while recording, rebuilds at most once per
-        // `todayCoalesceMs`; a change inside that is picked up by one build at its end.
-        if live.isLive, let entry = cache[window], entry.built?.includesToday == true {
-            let wait = entry.builtAtMs + tuning.todayCoalesceMs - now()
+        // `todayCoalesceMs`, any other at most once per `minimumRebuildIntervalMs`; changes
+        // inside the interval are picked up by one build at its end.
+        if let entry = cache[window], let built = entry.built {
+            let interval = live.isLive && built.includesToday ? tuning.todayCoalesceMs : tuning.minimumRebuildIntervalMs
+            let wait = entry.builtAtMs + interval - now()
             if wait > 0 {
                 guard deferred[window] == nil else { return }
                 deferred[window] = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(wait))
                     guard !Task.isCancelled, let self else { return }
                     self.deferred[window] = nil
-                    // The newest digest is whatever the observation last delivered; build from
-                    // it by re-reading at build time.
-                    self.startBuild(window, digest: nil)
+                    // The newest digest the observation delivered while this waited.
+                    self.startBuild(window, digest: self.latestDigest[window] ?? self.cache[window]?.digest)
                 }
                 return
             }
@@ -398,8 +407,12 @@ final class LiveHistory: HistoryDataSource {
         _ window: HistoryWindow, digest: HistoryDigest?, built: HistoryBuilt?, startedAt: Int64, elapsed: Duration
     ) {
         builds[window] = nil
-        let ms = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
-        log.debug("history: built \(String(describing: window), privacy: .public) in \(ms, format: .fixed(precision: 1)) ms")
+        var published = 0
+        defer {
+            let ms = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
+            log.debug(
+                "history: built \(String(describing: window), privacy: .public) in \(ms, format: .fixed(precision: 1)) ms, published to \(published)")
+        }
         if let built {
             var entry = cache[window] ?? Entry()
             entry.digest = digest
@@ -411,7 +424,9 @@ final class LiveHistory: HistoryDataSource {
             touch(window)
             // Published only where it differs from what the subscriber already has.
             if isVisible {
-                for subscriber in subscribers.values where subscriber.window == window { subscriber.offer(built) }
+                for subscriber in subscribers.values where subscriber.window == window {
+                    if subscriber.offer(built) { published += 1 }
+                }
             }
             evict()
             updateTimeObservers()
@@ -485,7 +500,7 @@ final class LiveHistory: HistoryDataSource {
                 requestBuild(window, digest: entry.digest)
             } else {
                 // Only the line moved: the same page, re-offered (no rebuild).
-                for subscriber in subscribers.values where subscriber.window == window { subscriber.offer(built) }
+                for subscriber in subscribers.values where subscriber.window == window { _ = subscriber.offer(built) }
             }
         }
     }
