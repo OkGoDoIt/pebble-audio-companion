@@ -1,11 +1,13 @@
 import CoreGraphics
 import Foundation
 
-/// Pure, testable day-timeline geometry. No SwiftUI. Times are epoch ms so DST days work.
+// Corrected after the 2026-09-30 simulator spike (iOS 27.0, iPhone 18 Pro).
+// Only change vs. the sketch: `pinOffset` documents that `visible` is the scroll view's own
+// bounds (already excluding the bars) and takes an optional edge margin. The maths was verified
+// in all four states (see shots/q2-pin-*.png and logs/pin0-*.log).
+
 enum TimelineScale {
-    /// 70 pt per hour floor.
     static let minPointsPerMinute: CGFloat = 70.0 / 60.0
-    /// Soft ceiling for a chapter (≈180 pt/hour).
     static let softMaxPointsPerMinute: CGFloat = 3
     static let quietGapFloor: CGFloat = 8
     static let labelledGapFloor: CGFloat = 44
@@ -28,8 +30,6 @@ enum TimelineGeometry {
         span.minutes * TimelineScale.softMaxPointsPerMinute * max(1, dynamicTypeScale)
     }
 
-    /// Y for a wall-clock instant, interpolated along whichever placed item contains it.
-    /// `frames` are the items' placed y-ranges in timeline coordinates, same order as `spans`.
     static func y(for ms: Int64, spans: [TimelineSpan], frames: [ClosedRange<CGFloat>]) -> CGFloat? {
         for (span, frame) in zip(spans, frames) where span.contains(ms) || ms == span.endMs {
             let length = CGFloat(span.endMs - span.startMs)
@@ -40,9 +40,6 @@ enum TimelineGeometry {
         return nil
     }
 
-    /// Which wall-clock hours get a label. Because every item is at least minutes × 1.1667 pt
-    /// tall and spacing only adds, two instants Δ minutes apart are always ≥ Δ × 1.1667 pt apart,
-    /// so collisions are decidable in minutes, before layout.
     static func hourMarks(
         in range: TimelineSpan, now: Int64?, calendar: Calendar, clearanceMinutes: Int
     ) -> [Int64] {
@@ -65,12 +62,13 @@ enum TimelineGeometry {
         return marks
     }
 
-    /// Pinned gap label: all rects in the label's LOCAL space (from `GeometryProxy.bounds(of:)`).
-    /// The label rests centred in the gap (local minY == 0). Returns the y offset to apply.
-    static func pinOffset(labelHeight h: CGFloat, gap: CGRect, visible: CGRect) -> CGFloat {
-        // Visible clamp first, gap clamp last: the gap always wins, so a label whose gap is
-        // nearly gone slides out with the gap's edge instead of jumping back to the centre.
-        let inView = min(max(0, visible.minY), visible.maxY - h)
+    /// Pinned gap label. All rects are in the label's LOCAL space (`GeometryProxy.bounds(of:)`).
+    /// `visible` is `bounds(of: .scrollView(axis: .vertical))` AS IS: the spike measured it as the
+    /// 640-pt region between the bars (874-pt screen, 151-pt top chrome, 83-pt tab bar), so the
+    /// bar insets must NOT be subtracted again (the sketch did; it pinned 151 pt too low).
+    /// `margin` keeps a pinned label off the bar edge (0 = flush, which is what was verified).
+    static func pinOffset(labelHeight h: CGFloat, gap: CGRect, visible: CGRect, margin: CGFloat = 0) -> CGFloat {
+        let inView = min(max(0, visible.minY + margin), visible.maxY - margin - h)
         return min(max(inView, gap.minY), gap.maxY - h)
     }
 }
