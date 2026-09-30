@@ -42,6 +42,17 @@ public struct ConversationAnnotation: Equatable, Sendable {
     public var nextAttemptAtMs: Int64?
     /// Consecutive final-pass failures that were NOT the input's fault; drives their backoff.
     public var transientFailures: Int
+    /// Which pieces of which segments this was written from (`ConversationSourceKey`) — nil on
+    /// rows written before it was recorded. A conversation's id stays with its first part when
+    /// it is cut, so without this a final title would follow the id onto audio it never
+    /// described. `EnrichmentWorker` treats a final annotation whose key no longer describes
+    /// the conversation as not final, and writes it again.
+    public var sourceKey: String?
+    /// Set when the PERSON typed the title (`AnnotationStore.setUserTitle`), to the time they
+    /// did. While it is set the title is theirs: regeneration refreshes the summary and the
+    /// tags and leaves the title alone, and `AnnotationStore.save` will not overwrite it with
+    /// an unmarked one.
+    public var titleEditedAtMs: Int64?
 
     public init(
         conversationId: String,
@@ -58,10 +69,14 @@ public struct ConversationAnnotation: Equatable, Sendable {
         sourceCharCount: Int = 0,
         finalAttempts: Int = 0,
         nextAttemptAtMs: Int64? = nil,
-        transientFailures: Int = 0
+        transientFailures: Int = 0,
+        sourceKey: String? = nil,
+        titleEditedAtMs: Int64? = nil
     ) {
         self.nextAttemptAtMs = nextAttemptAtMs
         self.transientFailures = transientFailures
+        self.sourceKey = sourceKey
+        self.titleEditedAtMs = titleEditedAtMs
         self.conversationId = conversationId
         self.title = title
         self.summary = summary
@@ -128,6 +143,13 @@ public struct AnnotationStore: Sendable {
 
     /// Saves (upserts) the annotation, stamping `updatedAtMs` (KMP `save` stamped
     /// `createdAtMs` the same way). Returns the stamped value.
+    ///
+    /// A title the person typed is never lost to a save that does not know about it: where the
+    /// stored row carries `titleEditedAtMs` and the saved value does not, the stored title and
+    /// its mark are kept and everything else is written. The worker reads an annotation, waits
+    /// on a provider for seconds, and then saves; a rename that lands in between would
+    /// otherwise be overwritten by the title the model was already writing. (The returned value
+    /// is what was handed in, so in that one case its title is not the stored one.)
     @discardableResult
     public func save(_ annotation: ConversationAnnotation) async throws -> ConversationAnnotation {
         var stamped = annotation
@@ -139,10 +161,18 @@ public struct AnnotationStore: Sendable {
                 sql: """
                     INSERT INTO annotations (conversationId, title, summary, tagsJson, isFinal,
                         sourceCharCount, finalAttempts, updatedAtMs, modeUsed, providerId,
-                        modelUsed, attempts, lastError, nextAttemptAtMs, transientFailures)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        modelUsed, attempts, lastError, nextAttemptAtMs, transientFailures,
+                        sourceKey, titleEditedAtMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversationId) DO UPDATE SET
-                        title = excluded.title, summary = excluded.summary,
+                        title = CASE
+                            WHEN annotations.titleEditedAtMs IS NOT NULL
+                                AND excluded.titleEditedAtMs IS NULL
+                            THEN annotations.title ELSE excluded.title END,
+                        titleEditedAtMs =
+                            COALESCE(excluded.titleEditedAtMs, annotations.titleEditedAtMs),
+                        sourceKey = excluded.sourceKey,
+                        summary = excluded.summary,
                         tagsJson = excluded.tagsJson, isFinal = excluded.isFinal,
                         sourceCharCount = excluded.sourceCharCount,
                         finalAttempts = excluded.finalAttempts,
@@ -158,6 +188,7 @@ public struct AnnotationStore: Sendable {
                     toStore.updatedAtMs, toStore.modeUsed?.rawValue, toStore.providerId,
                     toStore.modelUsed, toStore.attempts, toStore.lastError,
                     toStore.nextAttemptAtMs, toStore.transientFailures,
+                    toStore.sourceKey, toStore.titleEditedAtMs,
                 ]
             )
             // `tagsJson` is the PROPOSAL; the Library's chips, tag filter, row/detail pills and
@@ -169,6 +200,41 @@ public struct AnnotationStore: Sendable {
                 db, conversationId: toStore.conversationId, names: toStore.tags)
         }
         return stamped
+    }
+
+    /// The person names a conversation. One write, so it cannot lose a summary the worker saved
+    /// a moment earlier the way a load-modify-save from the UI could: only the title and its
+    /// mark change, and a conversation with no annotation yet gets a row holding just those.
+    ///
+    /// The mark is what makes the name stick. Every later regeneration — a provisional refresh
+    /// while the conversation is live, the final pass, a re-title after its pieces changed —
+    /// keeps a marked title and rewrites only the summary and tags, and `ConversationReconciler`
+    /// carries a marked title to the conversation that takes over when this one's id goes.
+    ///
+    /// `updatedAtMs` is left alone on an existing row: it anchors the worker's refresh and
+    /// retry clocks, and a rename is not a generation.
+    @discardableResult
+    public func setUserTitle(
+        _ title: String, conversationId: String
+    ) async throws -> ConversationAnnotation {
+        let now = nowMs()
+        return try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO annotations (conversationId, title, titleEditedAtMs, updatedAtMs)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(conversationId) DO UPDATE SET
+                        title = excluded.title, titleEditedAtMs = excluded.titleEditedAtMs
+                    """,
+                arguments: [conversationId, title, now, now])
+            let row = try Row.fetchOne(
+                db, sql: "SELECT * FROM annotations WHERE conversationId = ?",
+                arguments: [conversationId])
+            return row.map(Self.annotation(from:))
+                ?? ConversationAnnotation(
+                    conversationId: conversationId, title: title, updatedAtMs: now,
+                    titleEditedAtMs: now)
+        }
     }
 
     public func load(_ conversationId: String) async throws -> ConversationAnnotation? {
@@ -251,7 +317,9 @@ public struct AnnotationStore: Sendable {
             sourceCharCount: row["sourceCharCount"],
             finalAttempts: row["finalAttempts"],
             nextAttemptAtMs: row["nextAttemptAtMs"],
-            transientFailures: row["transientFailures"] ?? 0
+            transientFailures: row["transientFailures"] ?? 0,
+            sourceKey: row["sourceKey"],
+            titleEditedAtMs: row["titleEditedAtMs"]
         )
     }
 }
