@@ -17,10 +17,28 @@ import Testing
         #expect(ids.contains("gpt-5.6-luna"))
         #expect(ids.contains("gpt-5.6-terra"))
         #expect(ids.contains("gpt-5.6-sol"))
+        // The GPT-6 family sits beside 5.6, which stays (and stays the default).
+        #expect(ids.contains("gpt-6-luna"))
+        #expect(ids.contains("gpt-6.1-sol"))
+        #expect(ids.contains("gpt-6-astra"))
         #expect(Set(ids).count == ids.count, "model ids must be unique")
         #expect(
             AiModels.all.filter { $0.recommended }.count == 1,
             "exactly one recommended default")
+    }
+
+    /// A GPT-6 request may carry 922,000 input tokens (the 1,050,000 window less the 128,000
+    /// reserved for output). Ask sizes its read from this number, so it must not exceed it.
+    @Test func gpt6WindowsNeverExceedTheInputLimit() {
+        for id in ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"] {
+            let spec = AiModels.byId(id)
+            #expect(spec.id == id, "\(id) resolves to itself, not to the default")
+            #expect(spec.contextTokens <= 922_000)
+            #expect(AiModels.resolvedModelId(id) == id)
+        }
+        // A dated snapshot is named by its family, dots in the version included.
+        #expect(AiModels.displayName(modelUsed: "gpt-6.1-sol-2026-09-15") == "GPT-6.1 Sol")
+        #expect(AiModels.displayName(modelUsed: "gpt-6-luna") == "GPT-6 Luna")
     }
 
     @Test func byIdResolvesKnownAndFallsBackForUnknown() {

@@ -59,6 +59,35 @@ public enum AiModels {
                 + "answers, highest cost.",
             contextTokens: 400_000
         ),
+        // The GPT-6 family (added 2026-09-30, beside 5.6 rather than in place of it). Ids,
+        // windows and prices are from OpenAI's model pages on that date. All three take the
+        // Responses API, `reasoning.effort` of low and medium (the two this app sends) and
+        // structured outputs, so nothing about the request changes with the model.
+        //
+        // `contextTokens` is the most INPUT a request may carry: the advertised 1,050,000-token
+        // window less the 128,000 tokens reserved for output, 922,000. A prompt over 272,000
+        // input tokens is billed at twice the input rate for the whole request.
+        AiModelSpec(
+            id: "gpt-6-luna",
+            displayName: "GPT-6 Luna",
+            description: "The newer small model: about half GPT-5.6 Luna's price, with the same "
+                + "room for a long day of transcript.",
+            contextTokens: 922_000
+        ),
+        AiModelSpec(
+            id: "gpt-6.1-sol",
+            displayName: "GPT-6.1 Sol",
+            description: "Close to the top model on hard questions at a fifth of its price; "
+                + "about twenty times GPT-6 Luna's.",
+            contextTokens: 922_000
+        ),
+        AiModelSpec(
+            id: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            description: "OpenAI's most capable model, for the most demanding questions across "
+                + "a whole archive. By far the highest cost.",
+            contextTokens: 922_000
+        ),
     ]
 
     /// Ids from earlier versions of this catalog, mapped to the closest current model so a
