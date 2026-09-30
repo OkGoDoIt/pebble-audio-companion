@@ -375,3 +375,171 @@ private final class Recorder: @unchecked Sendable {
         }
     }
 }
+
+// MARK: - History's window read
+
+@Suite struct HistoryFollowUpWindowTests {
+    private let db: AppDatabase
+    private let followUps: FollowUpStore
+
+    init() throws {
+        db = try AppDatabase.inMemory()
+        followUps = FollowUpStore(db: db)
+    }
+
+    /// A day: 2026-09-01 00:00 to 2026-09-02 00:00 UTC.
+    private static let day: Range<Int64> = 1_788_220_800_000..<1_788_307_200_000
+    private static let noon: Int64 = 1_788_264_000_000
+    private static let now: Int64 = 1_788_300_000_000
+
+    private static func segment(receivedAt ms: Int64, _ n: Int = 1) -> String {
+        "seg-\(ms)-00000001-\(n)"
+    }
+
+    private func insert(
+        _ id: String, origin: FollowUpOrigin = .ai, segment: String? = nil,
+        wallAt: Int64? = nil, createdAtMs: Int64 = 1, done: Bool = false,
+        snoozedUntil: Int64? = nil, archived: Bool = false
+    ) async throws {
+        try await db.writer.write { d in
+            try d.execute(
+                sql: """
+                    INSERT INTO follow_ups
+                        (id, text, done, sourceSegmentId, createdAtMs, snoozedUntilMs,
+                         archivedAtMs, origin, sourceWallStartMs, sourceWallEndMs,
+                         sourceWallApproximate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    id, id, done, segment, createdAtMs, snoozedUntil, archived ? 2 : nil,
+                    origin.rawValue, wallAt, wallAt.map { $0 + 1_000 }, wallAt.map { _ in false },
+                ])
+        }
+    }
+
+    private func ids(segmentIds: [String] = [], window: Range<Int64> = day) async throws -> [String] {
+        try await followUps.history(inWallWindow: window, segmentIds: segmentIds).map(\.id)
+    }
+
+    @Test func aWallTimeInTheWindowCountsAndTheEdgesAreHalfOpen() async throws {
+        try await insert("noon", wallAt: Self.noon)
+        try await insert("first-ms", wallAt: Self.day.lowerBound)
+        try await insert("last-ms", wallAt: Self.day.upperBound - 1)
+        try await insert("next-day", wallAt: Self.day.upperBound)
+        try await insert("day-before", wallAt: Self.day.lowerBound - 1)
+        #expect(Set(try await ids()) == ["noon", "first-ms", "last-ms"])
+    }
+
+    /// Plan 7.5: open and done count, snoozed counts as open, archived never.
+    @Test func archivedIsLeftOutAndDoneAndSnoozedAreKept() async throws {
+        try await insert("open", wallAt: Self.noon)
+        try await insert("done", wallAt: Self.noon + 1, done: true)
+        try await insert("snoozed", wallAt: Self.noon + 2, snoozedUntil: Self.now + 1)
+        try await insert("archived", wallAt: Self.noon + 3, archived: true)
+        try await insert(
+            "archived-by-segment", segment: Self.segment(receivedAt: Self.noon), archived: true)
+        try await insert(
+            "archived-by-hand", origin: .user, createdAtMs: Self.noon, archived: true)
+
+        let records = try await followUps.history(
+            inWallWindow: Self.day, segmentIds: [Self.segment(receivedAt: Self.noon)])
+        // Open first, then done, each by time.
+        #expect(records.map(\.id) == ["open", "snoozed", "done"])
+        #expect(records.first { $0.id == "snoozed" }?.isSnoozed(at: Self.now) == true)
+        #expect(records.first { $0.id == "done" }?.done == true)
+    }
+
+    @Test func noWallTimeCountsThroughTheWindowsRecordings() async throws {
+        let before = Self.segment(receivedAt: Self.day.lowerBound - 60_000)  // straddles midnight
+        try await insert("in-list", segment: before)
+        try await insert("not-in-list", segment: Self.segment(receivedAt: 1_700_000_000_000))
+        // A known moment outside the window wins over its segment being listed.
+        try await insert("placed-elsewhere", segment: before, wallAt: Self.day.lowerBound - 30_000)
+        #expect(Set(try await ids(segmentIds: [before])) == ["in-list"])
+    }
+
+    /// Rule 3's rows — segment gone, no wall time — are found by the time in their id.
+    @Test func noWallTimeCountsThroughTheReceiveTimeInTheSegmentId() async throws {
+        try await insert("gone", segment: Self.segment(receivedAt: Self.noon))
+        try await insert("gone-edge", segment: Self.segment(receivedAt: Self.day.lowerBound))
+        try await insert("gone-next-day", segment: Self.segment(receivedAt: Self.day.upperBound))
+        try await insert("not-an-id-time", segment: "seg-1")
+        try await insert("twelve-digits", segment: "seg-178826400000-1")
+        #expect(Set(try await ids()) == ["gone", "gone-edge"])
+
+        let records = try await followUps.history(inWallWindow: Self.day, segmentIds: [])
+        let placed = Dictionary(
+            uniqueKeysWithValues: records.map {
+                ($0.id, FollowUpPlacement.placement(of: $0) { _ in nil })
+            })
+        #expect(placed["gone"] == .dayOnly(approximateMs: Self.noon))
+        #expect(placed["gone-edge"] == .dayOnly(approximateMs: Self.day.lowerBound))
+    }
+
+    @Test func aHandWrittenItemCountsOnTheDayItWasWritten() async throws {
+        try await insert("mine", origin: .user, createdAtMs: Self.noon)
+        try await insert("mine-yesterday", origin: .user, createdAtMs: Self.day.lowerBound - 1)
+        // Extraction ran today on something said last week: createdAtMs is not when it was said.
+        try await insert("extracted-today", createdAtMs: Self.noon)
+        // Hand-written about a recording: counted through the recording, not the day typed.
+        try await insert(
+            "mine-about-a-recording", origin: .user,
+            segment: Self.segment(receivedAt: 1_700_000_000_000), createdAtMs: Self.noon)
+        #expect(try await ids() == ["mine"])
+    }
+
+    /// SQLite binds at most 32,766 parameters (999 before 3.32); the ids are one JSON parameter.
+    @Test func aLargeIdListIsOneParameter() async throws {
+        let many = (0..<40_000).map { Self.segment(receivedAt: 1_600_000_000_000, $0) }
+        try await insert("last-of-many", segment: many.last)
+        try await insert("middle-of-many", segment: many[20_000])
+        #expect(Set(try await ids(segmentIds: many)) == ["last-of-many", "middle-of-many"])
+    }
+
+    @Test func anEmptyWindowOrListFindsNothingItShouldNot() async throws {
+        try await insert("noon", wallAt: Self.noon)
+        #expect(try await ids(window: Self.noon..<Self.noon).isEmpty)
+    }
+
+    @Test func theIdRangeSortsLikeTheTimesItHolds() {
+        let range = FollowUpStore.segmentIdRange(receivedIn: Self.day)
+        #expect(range.contains(Self.segment(receivedAt: Self.day.lowerBound)))
+        #expect(range.contains(Self.segment(receivedAt: Self.day.upperBound - 1)))
+        #expect(!range.contains(Self.segment(receivedAt: Self.day.upperBound)))
+        #expect(!range.contains(Self.segment(receivedAt: Self.day.lowerBound - 1)))
+        // The domain's ends: nothing breaks for a window past what thirteen digits hold.
+        let everything = FollowUpStore.segmentIdRange(receivedIn: -5..<Int64.max)
+        #expect(everything.contains("seg-0000000000000-1"))
+        #expect(everything.contains("seg-9999999999999-1"))
+    }
+
+    /// Every branch is an index read: nothing scans the table.
+    @Test func noBranchScansTheTable() async throws {
+        let plan = try await db.reader.read { d in
+            try Row.fetchAll(
+                d, sql: "EXPLAIN QUERY PLAN " + FollowUpStore.historySQL,
+                arguments: ["start": 0, "end": 1, "ids": "[]", "idFrom": "a", "idTo": "b"]
+            ).map { $0["detail"] as String }
+        }
+        let scans = plan.filter {
+            $0.hasPrefix("SCAN follow_ups") || $0.hasPrefix("SCAN TABLE follow_ups")
+        }
+        #expect(scans.isEmpty, "\(plan)")
+        #expect(plan.contains { $0.contains("follow_ups_wall") }, "\(plan)")
+        #expect(plan.contains { $0.contains("follow_ups_segment") }, "\(plan)")
+        #expect(plan.contains { $0.contains("follow_ups_open") }, "\(plan)")
+    }
+
+    /// From the read to the line History draws.
+    @Test func aRecordBecomesItsLine() async throws {
+        try await insert("rough", wallAt: Self.noon, snoozedUntil: Self.now + 1)
+        let record = try #require(
+            try await followUps.history(inWallWindow: Self.day, segmentIds: []).first)
+        let placement = try #require(FollowUpPlacement.placement(of: record) { _ in nil })
+        #expect(placement == .moment(Self.noon, isApproximate: false))
+        #expect(
+            record.line(placement: placement, nowMs: Self.now)
+                == HistoryFollowUpLine(
+                    id: "rough", text: "rough", done: false, isSnoozed: true, isApproximate: false))
+    }
+}

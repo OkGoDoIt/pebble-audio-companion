@@ -87,8 +87,8 @@ public struct FollowUpWallTimeFill: Sendable {
                 outcome.segmentGone += 1
                 continue
             }
-            updates.append(
-                (row, clock.wallRange(ofMediaStartMs: row.startMs, endMs: row.endMs ?? row.startMs)))
+            let wall = clock.wallRange(ofMediaStartMs: row.startMs, endMs: row.endMs ?? row.startMs)
+            updates.append((row, wall))
         }
         guard !updates.isEmpty else { return outcome }
 
@@ -177,7 +177,7 @@ public enum FollowUpPlacement: Equatable, Sendable {
     }
 }
 
-/// What placement reads from a row.
+/// What placement reads from a row. `FollowUp` and `HistoryFollowUpRecord` both carry it.
 public protocol FollowUpPlacementSource {
     var origin: FollowUpOrigin { get }
     var sourceSegmentId: String? { get }
@@ -232,5 +232,143 @@ extension FollowUpPlacement {
             rest.dropFirst(13).first == UInt8(ascii: "-")
         else { return nil }
         return Int64(String(decoding: digits, as: UTF8.self))
+    }
+}
+
+// MARK: - History's read
+
+/// One follow-up as History reads it for a window: what its line shows, and what placement
+/// needs (`FollowUpPlacement.placement(of:segmentSpan:)`).
+public struct HistoryFollowUpRecord: Equatable, Sendable, Identifiable, FollowUpPlacementSource {
+    public let id: String
+    public var text: String
+    public var done: Bool
+    public var snoozedUntilMs: Int64?
+    public var origin: FollowUpOrigin
+    public var sourceSegmentId: String?
+    public var sourceWall: SegmentWallRange?
+    public var createdAtMs: Int64
+
+    public init(
+        id: String, text: String, done: Bool, snoozedUntilMs: Int64? = nil,
+        origin: FollowUpOrigin = .ai, sourceSegmentId: String? = nil,
+        sourceWall: SegmentWallRange? = nil, createdAtMs: Int64
+    ) {
+        self.id = id
+        self.text = text
+        self.done = done
+        self.snoozedUntilMs = snoozedUntilMs
+        self.origin = origin
+        self.sourceSegmentId = sourceSegmentId
+        self.sourceWall = sourceWall
+        self.createdAtMs = createdAtMs
+    }
+
+    /// Put off past `nowMs`. History counts a snoozed item as open (plan 7.5).
+    public func isSnoozed(at nowMs: Int64) -> Bool {
+        guard let snoozedUntilMs else { return false }
+        return snoozedUntilMs > nowMs
+    }
+
+    /// The line History draws for it, once it has been placed.
+    public func line(placement: FollowUpPlacement, nowMs: Int64) -> HistoryFollowUpLine {
+        HistoryFollowUpLine(
+            id: id, text: text, done: done, isSnoozed: isSnoozed(at: nowMs),
+            isApproximate: placement.isApproximate)
+    }
+}
+
+extension FollowUpStore {
+    /// The follow-ups that may belong to a wall-clock window, for History: open, done and
+    /// snoozed alike; never archived (plan 7.5 — 481 of 511 rows in the backup are archived
+    /// legacy rows with no quote). Four ways in, one indexed read each:
+    ///
+    /// 1. a wall time inside the window (`follow_ups_wall`);
+    /// 2. no wall time, and the source segment is one of `segmentIds` — the window's recordings,
+    ///    which the caller knows and SQL does not (`follow_ups_segment`, the ids bound as one
+    ///    JSON array through `json_each`, so any number of them is one parameter);
+    /// 3. no wall time, and the receive time in the segment id is inside the window
+    ///    (`follow_ups_segment`, as a string range: thirteen-digit times sort as numbers). This
+    ///    is how a row whose segment is gone is found at all — rule 3 of the placement, the day
+    ///    its id carries — and it is the same id rule as `FollowUpPlacement.receivedAtMs`;
+    /// 4. written by hand with no segment, and created inside the window (`follow_ups_open`,
+    ///    through `done IN (0, 1)`, which lets its leading column be probed rather than
+    ///    scanned).
+    ///
+    /// A SUPERSET of what the window shows: the caller places every record and keeps those its
+    /// placement puts in the window. (A segment in `segmentIds` can straddle the window's edge,
+    /// and one found by its id's receive time can still exist and span an earlier stretch —
+    /// spooled audio arrives after it was recorded.) Ordered open first, then by wall time,
+    /// then id; the final order by placed time is the builder's, which knows the spans.
+    public func history(
+        inWallWindow window: Range<Int64>, segmentIds: [String]
+    ) async throws -> [HistoryFollowUpRecord] {
+        let ids = String(decoding: try JSONEncoder().encode(segmentIds), as: UTF8.self)
+        let idRange = Self.segmentIdRange(receivedIn: window)
+        let records = try await db.reader.read { db in
+            try Row.fetchAll(
+                db, sql: Self.historySQL,
+                arguments: [
+                    "start": window.lowerBound, "end": window.upperBound, "ids": ids,
+                    "idFrom": idRange.lowerBound, "idTo": idRange.upperBound,
+                ]
+            ).map(Self.historyRecord(from:))
+        }
+        return records.sorted {
+            ($0.done ? 1 : 0, $0.sourceWall?.startMs ?? .max, $0.id)
+                < ($1.done ? 1 : 0, $1.sourceWall?.startMs ?? .max, $1.id)
+        }
+    }
+
+    static let historySQL: String = {
+        let columns = """
+            id, text, done, snoozedUntilMs, origin, sourceSegmentId, createdAtMs,
+            sourceWallStartMs, sourceWallEndMs, sourceWallApproximate
+            """
+        // `seg-` and exactly thirteen digits, then `-`: `FollowUpPlacement.receivedAtMs`'s rule.
+        let idShape = "seg-" + String(repeating: "[0-9]", count: 13) + "-*"
+        return """
+            SELECT \(columns) FROM follow_ups
+            WHERE archivedAtMs IS NULL
+                AND sourceWallStartMs >= :start AND sourceWallStartMs < :end
+            UNION
+            SELECT \(columns) FROM follow_ups
+            WHERE archivedAtMs IS NULL AND sourceWallStartMs IS NULL
+                AND sourceSegmentId IN (SELECT value FROM json_each(:ids))
+            UNION
+            SELECT \(columns) FROM follow_ups
+            WHERE archivedAtMs IS NULL AND sourceWallStartMs IS NULL
+                AND sourceSegmentId >= :idFrom AND sourceSegmentId < :idTo
+                AND sourceSegmentId GLOB '\(idShape)'
+            UNION
+            SELECT \(columns) FROM follow_ups
+            WHERE done IN (0, 1) AND archivedAtMs IS NULL
+                AND createdAtMs >= :start AND createdAtMs < :end
+                AND origin = 'user' AND sourceSegmentId IS NULL
+            """
+    }()
+
+    /// The segment ids whose embedded receive time is in `window`, as a string range over
+    /// `seg-<13 digits>-…`. Clamped to what thirteen digits can hold; `seg-:` sorts after every
+    /// `seg-<digit>` and stands for the end of that domain.
+    static func segmentIdRange(receivedIn window: Range<Int64>) -> Range<String> {
+        let domainEnd: Int64 = 10_000_000_000_000
+        func key(_ ms: Int64) -> String {
+            let clamped = min(max(ms, 0), domainEnd)
+            guard clamped < domainEnd else { return "seg-:" }
+            let digits = String(clamped)
+            return "seg-" + String(repeating: "0", count: 13 - digits.count) + digits
+        }
+        return key(window.lowerBound)..<key(window.upperBound)
+    }
+
+    private static func historyRecord(from row: Row) -> HistoryFollowUpRecord {
+        HistoryFollowUpRecord(
+            id: row["id"], text: row["text"], done: row["done"],
+            snoozedUntilMs: row["snoozedUntilMs"],
+            origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai,
+            sourceSegmentId: row["sourceSegmentId"],
+            sourceWall: SegmentWallRange.sourceWall(from: row),
+            createdAtMs: row["createdAtMs"])
     }
 }
