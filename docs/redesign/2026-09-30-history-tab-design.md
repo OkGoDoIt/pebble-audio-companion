@@ -2,7 +2,7 @@
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design round 6, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design round 7, nothing implemented.** Mockups are in `history-mockups/`.
 
 ## Why the Library fails on real data
 
@@ -49,7 +49,9 @@ the natural unit.
   - **Every hour inside the day keeps a minimum height (105 pt, i.e. 1.75 pt/min), with no
     exceptions for gaps.** Collapsing long gaps to a short break was tried and rejected as
     disorienting. Compression is allowed only before the first and after the last recording of
-    the day (dashed axis, "Quiet until 8 AM").
+    the day. The timeline starts AT the first recording and ends at the last, with one line at
+    each end ("Quiet until 8:12 AM", "Quiet after 9:44 PM") — never a rounded-hour label plus
+    a second "Quiet · 30 min" gap.
   - A block aims to stay under about 180 pt per hour (3 pt/min): its summary is clamped to fit,
     and its follow-ups collapse to one line plus "N more". Title, time, one summary line and tags
     are the floor, so a very short topic may exceed the band; topics under 25 min show no summary.
@@ -102,7 +104,7 @@ one day boundary at every zoom level.
 `history-mockups/direction-{a,b,c,d}` — round 1, four directions.
 `history-mockups/round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
 content-sized and as calendar blocks.
-`history-mockups/round6-day-minimum-hour-height` — the current day. `round5-week-followup-state`
+`history-mockups/round7-day-merged-edge-quiet` — the current day (round 6 plus merged edge labels). `round5-week-followup-state`
 — the current week (its two day phones are superseded by round 6).
 `history-mockups/round4-white-blocks-followups` — the current month; day and week superseded.
 `history-mockups/round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
