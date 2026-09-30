@@ -250,7 +250,11 @@ public actor HistoryReader {
         for meta in metas {
             var state = states[meta.segmentId] ?? meta.transcriptionState
             if state == .complete, !speech.withTranscript.contains(meta.segmentId) { state = .pending }
-            let reason = state == .failed ? tasks[meta.segmentId]?.lastError : nil
+            // The queue's `lastError` is developer prose with the provider's response body in
+            // it — which can be the request URL or the key itself — so it never reaches a
+            // screen (B20). History carries the classified kind, a machine value; the app's copy
+            // turns it into words. An unclassifiable one says nothing.
+            let reason = state == .failed ? Self.failureKind(tasks[meta.segmentId]?.lastError) : nil
             if let entry = HistorySegmentState(meta: meta, state: state, failureReason: reason) {
                 segmentStates.append(entry)
             }
@@ -296,6 +300,13 @@ public actor HistoryReader {
             $0.startMs < hull.upperBound && $0.endMs >= hull.lowerBound && !hiddenSegments.contains($0.segmentId)
         }
         return DayInputs(builder: input, followUps: placed, turns: turns)
+    }
+
+    /// `TranscriptionFailureKind`'s raw value for a stored error, nil when it cannot be named.
+    static func failureKind(_ lastError: String?) -> String? {
+        guard let lastError else { return nil }
+        let kind = TranscriptionFailureKind.classify(lastError)
+        return kind == .unknown ? nil : kind.rawValue
     }
 
     /// The in-brief card's text: the condensed form while it is current, else the digest.

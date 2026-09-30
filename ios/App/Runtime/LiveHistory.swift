@@ -2,6 +2,7 @@ import AppDB
 import CompanionRuntime
 import Foundation
 import os
+import Transcription
 
 // The History tab's live data source (plan 7.10 "The data source", 7.13).
 //
@@ -510,12 +511,27 @@ final class LiveHistory: HistoryDataSource {
     private func page(_ build: HistoryReader.DayBuild) -> HistoryDayPage {
         let hasLiveBlock = build.day.items.contains { if case .live = $0 { return true } else { return false } }
         return HistoryDayPage(
-            day: build.day, brief: build.brief, followUpTotal: build.followUpTotal,
+            day: Self.worded(build.day), brief: build.brief, followUpTotal: build.followUpTotal,
             followUpOpen: build.followUpOpen,
             // No chapter stage yet: the conversation cards are what History has, and nothing
             // says topics are on their way (plan 5.8).
             topics: .off,
             liveLine: hasLiveBlock ? live.line : nil)
+    }
+
+    /// A failed recording's reason arrives from the reader as a `TranscriptionFailureKind` (never
+    /// the stored error, which can hold the key — B20); the screen draws `failureReason` as it
+    /// is, so it becomes the same sentence Diagnostics and the conversation screen use.
+    static func worded(_ day: HistoryDay) -> HistoryDay {
+        var day = day
+        day.items = day.items.map { item in
+            guard case .gap(var gap) = item, gap.kind == .transcriptionFailed, let raw = gap.failureReason else {
+                return item
+            }
+            gap.failureReason = TranscriptionFailureKind(rawValue: raw)?.reason
+            return .gap(gap)
+        }
+        return day
     }
 
     // MARK: - The cache

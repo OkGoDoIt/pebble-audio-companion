@@ -3,6 +3,7 @@ import CompanionRuntime
 import Foundation
 import GRDB
 import Testing
+import Transcription
 
 // The two battery rules, measured on `LiveHistory` itself (CLAUDE.md; plan 7.10, 7.13):
 //
@@ -335,6 +336,21 @@ struct HistoryObservationGateTests {
         }.first
         #expect(title == "Step 10")
         pages.cancel()
+    }
+
+    @Test("a failed recording's reason reaches the page as the app's sentence, never the stored error")
+    func failureReasonsAreWorded() {
+        let gap = HistoryGap(
+            id: "failed", kind: .transcriptionFailed, startMs: 0, endMs: 1, zoneID: "UTC",
+            failureReason: TranscriptionFailureKind.accountOutOfFunds.rawValue, isOpenable: true)
+        let day = HistoryDay(
+            dateKey: pastDay, zoneID: "UTC", isToday: false, hasRecordings: true, leadingEdge: nil,
+            items: [.gap(gap)], trailingEdge: nil)
+        guard case .gap(let worded) = LiveHistory.worded(day).items[0] else {
+            Issue.record("not a gap")
+            return
+        }
+        #expect(worded.failureReason == TranscriptionFailureKind.accountOutOfFunds.reason)
     }
 
     @Test("a pending delete of a conversation in the window rebuilds the visible page")
