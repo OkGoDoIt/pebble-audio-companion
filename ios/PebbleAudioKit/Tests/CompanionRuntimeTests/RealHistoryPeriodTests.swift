@@ -118,13 +118,15 @@ struct RealHistoryPeriodTests {
             month = HistoryCalendar.month(containing: HistoryCalendar.key(month.upperBound, addingDays: 1))
         }
 
-        // Snippets of the days asked for (PEBBLE_HISTORY_DAYS), and the results of the most used tag.
+        // The days asked for (PEBBLE_HISTORY_DAYS), item by item as the day page draws them, and
+        // the results of the most used tag.
         let snippetDays = (ProcessInfo.processInfo.environment["PEBBLE_HISTORY_DAYS"] ?? "2026-09-22,2026-09-23")
             .split(separator: ",").map(String.init)
+        let tz = TimeZone(identifier: zone) ?? .current
         for day in snippetDays {
             let built = try await reader.day(day, library, nowMs: nowMs, isToday: day == bounds.todayDateKey, isLive: false)
-            for case .chapter(let card) in built.day.items {
-                print("real-periods: snippet \(day) \(clip(card.title ?? card.snippet.map { "“\($0)”" }, 70))")
+            for item in built.day.items {
+                print("real-periods: item \(day) \(render(item, zone: tz))")
             }
         }
         let thisMonth = try await reader.month(
@@ -181,6 +183,25 @@ private func state(_ state: HistoryDayState) -> String {
     case .recorded: return "recorded"
     case .notTranscribedYet(let waiting): return "not transcribed yet (\(waiting / 60_000) min waiting)"
     case .today(let isLive): return "today\(isLive ? " (live)" : "")"
+    }
+}
+
+/// One day item: its times, kind, and what it says ("card" with its title or quoted snippet).
+private func render(_ item: HistoryItem, zone: TimeZone) -> String {
+    let formatter = DateFormatter()
+    formatter.timeZone = zone
+    formatter.dateFormat = "HH:mm"
+    func time(_ ms: Int64) -> String { formatter.string(from: Date(timeIntervalSince1970: Double(ms) / 1000)) }
+    let span = "\(time(item.startMs))–\(time(item.endMs)) (\((item.endMs - item.startMs) / 60_000) min)"
+    switch item {
+    case .chapter(let card):
+        let words = card.title.flatMap { $0.isEmpty ? nil : $0 } ?? card.snippet.map { "“\($0)”" }
+        return "\(span) card[\(card.source.rawValue)] \(card.id) \(clip(words, 70))"
+            + (card.missingMs > 0 ? " · \(card.missingMs / 1000) s missing" : "")
+    case .gap(let gap):
+        return "\(span) \(gap.kind.rawValue)" + (gap.descriptor.map { " (\($0))" } ?? "")
+    case .live: return "\(span) live"
+    case .zoneChange(let change): return "zone → \(change.zoneID)"
     }
 }
 
