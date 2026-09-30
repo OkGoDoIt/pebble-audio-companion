@@ -109,9 +109,14 @@ struct WeekDayRow: View {
                 .font(AppFont.rowTitle).foregroundStyle(Tokens.tint)
         case .recorded:
             if let headline = row.headline {
+                // Two lines, never a clipped one: a headline is written to fit (36 characters
+                // asked, 42 accepted), but a 390 pt phone fits about 34 beside the date column,
+                // and the fallback is a conversation title of any length. Ellipsised, it was the
+                // cut the briefs exist to remove ("Site tour and a long debugg…").
                 Text(headline)
                     .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if row.summary == nil {
                 // Only where there is no text at all: above a summary it read as if the summary
                 // were not one.
