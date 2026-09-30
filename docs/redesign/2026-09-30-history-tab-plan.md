@@ -16,8 +16,12 @@ What shipped differs from the plan below in these ways (the progress log has the
   the axis beside every card is drawn in a light tint.
 - Lost audio under two minutes is carried on its neighbour ("· 20 s missing") instead of being
   its own item; longer loss is its own amber gap.
-- Week and month briefs (7.4) are not built; week rows use the day recap, month rows have no
-  headline. The Library screen's code is unused but still in the tree (step 29).
+- Briefs (7.4) are built (branch `history-briefs`): a headline and line per day recap, then
+  week and month briefs, in stage `.briefs` after `.recap` (`PeriodBriefEngine`,
+  `HistoryBriefs.swift`, migration `v16-history-briefs`). Rows fall back to a conversation
+  title and the recap whole, a week row to two days' headlines — never to a cut sentence.
+  Keys are `week:<first day>` / `month:<yyyy-MM>`, not the `W…`/`M…` sketched in 7.7. The
+  Library screen's code is unused but still in the tree (step 29).
 - Still unproven: iOS 26, a real device, VoiceOver.
 
 > **Change of architecture, 2026-09-30.** Roger: "There is never a real world situation where
