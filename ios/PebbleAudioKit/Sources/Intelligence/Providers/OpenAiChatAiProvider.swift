@@ -628,7 +628,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
             "additionalProperties": false,
             "required": ["text", "headline", "lineSummary"],
             "properties": [
-                "text": schemaString("3 or 4 sentences, at most 480 characters."),
+                "text": schemaString("3 or 4 short sentences, at most 420 characters."),
                 "headline": schemaString(
                     "A noun phrase of 2 to 6 words naming the main threads; no full stop."),
                 "lineSummary": schemaString(

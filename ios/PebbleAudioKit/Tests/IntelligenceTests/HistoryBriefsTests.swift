@@ -38,6 +38,13 @@ import Testing
         #expect(HistoryBriefText.headline("Packing") == nil, "one word")
         #expect(HistoryBriefText.headline("Ads, bank, flat, visa, curry, rain, dogs, bus") == nil, "eight words")
         #expect(HistoryBriefText.headline("Went to the bank. Then dinner") == nil)
+        // Never a list of three, however it is punctuated; one comma is fine.
+        #expect(HistoryBriefText.headline("Denver, work, birthday") == nil)
+        #expect(HistoryBriefText.headline("Ads, the bank and a bike") == nil)
+        #expect(HistoryBriefText.headline("Denver, then dinner") == "Denver, then dinner")
+        // The prompt's own example of the form, echoed back, is refused.
+        #expect(HistoryBriefText.headline(HistoryBriefText.exampleHeadline) == nil)
+        #expect(HistoryBriefText.lineSummary(HistoryBriefText.exampleLine) == nil)
         #expect(HistoryBriefText.headline("  ") == nil)
         #expect(HistoryBriefText.headline(nil) == nil)
     }
@@ -89,6 +96,17 @@ import Testing
         #expect(answer.lineSummary == "A shed built; a road trip to Denver.")
         let refused = PeriodBriefWriter.parse(#"{"text":"The speaker planted tomatoes.","headline":"The week","lineSummary":""}"#)
         #expect(refused.isEmpty)
+        // A paragraph is at least two sentences: the headline again, or one run-on clause, is
+        // not a summary (both came back from the on-device model on real weeks).
+        #expect(HistoryBriefText.briefText("Software fixes and garden work.") == nil)
+        #expect(
+            HistoryBriefText.briefText(
+                "Software fixes and garden work you fixed data issues and walked the city") == nil)
+        #expect(HistoryBriefText.briefText("Gardening took the week. A shed was built.") != nil)
+        // Line breaks inside the model's strings are read as spaces, not as a broken answer.
+        let broken = PeriodBriefWriter.parse("{\"text\":\"Gardening took the week.\nA shed was built.\",\"headline\":\"Gardening and a shed\",\"lineSummary\":\"\"}")
+        #expect(broken.text == "Gardening took the week. A shed was built.")
+        #expect(broken.headline == "Gardening and a shed")
     }
 }
 

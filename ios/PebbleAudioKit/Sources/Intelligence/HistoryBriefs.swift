@@ -39,7 +39,7 @@ public enum HistoryBriefText {
     /// A line's hard cap. The row clamps it to two lines of 13 pt (about 90 characters a line);
     /// the prompt asks for 130.
     public static let lineSummaryMaxCharacters = 150
-    /// The in-brief card's paragraph: 3–4 sentences, asked for at 480.
+    /// The in-brief card's paragraph: 3–4 sentences, asked for at 420.
     public static let briefTextMaxCharacters = 700
 
     // MARK: - Voice rules
@@ -65,6 +65,15 @@ public enum HistoryBriefText {
     /// Anywhere in anything: the recaps' outside view of the person the app belongs to.
     static let bannedPhrases = ["the speaker", "the user", "the wearer"]
 
+    /// The prompts' examples of the FORM. Invented, and about nothing a recording here is likely
+    /// to hold, because the on-device model copies examples: in the first dry run on real recaps
+    /// (2026-09-30) two days of the eleven came back headed "Office in Unit 4 and
+    /// Fernwood" — an example taken from another day — with that example's line under it. An
+    /// answer that repeats one is refused, whatever the day was.
+    public static let exampleHeadline = "Roof repairs and a school play"
+    public static let exampleLine = "Fixed the roof leak; watched the school play."
+    static let examples: Set<String> = [exampleHeadline.lowercased(), exampleLine.lowercased()]
+
     /// Words a Title Case answer capitalises that sentence case never does mid-phrase. Proper
     /// names are left alone — "Unit 4", "Fernwood", "Denver" — so only these are lowered.
     static let minorWords: Set<String> = [
@@ -79,14 +88,17 @@ public enum HistoryBriefText {
         guard var text = cleaned(raw) else { return nil }
         // Never a sentence: a full stop inside it means there were two.
         if text.contains(". ") { return nil }
+        // Never a list of three ("Denver, work, birthday"; "Ads, the bank and a bike").
+        let commas = text.filter { $0 == "," }.count
+        if commas >= 2 || (commas == 1 && text.lowercased().contains(" and ")) { return nil }
         while let last = text.last, ".,;:!…".contains(last) { text.removeLast() }
         text = text.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, text.count <= headlineMaxCharacters else { return nil }
         let words = text.split(whereSeparator: \.isWhitespace)
         guard (headlineMinWords...headlineMaxWords).contains(words.count) else { return nil }
-        guard !opens(text, withAnyOf: bannedHeadlineOpenings), !containsBannedPhrase(text) else {
-            return nil
-        }
+        guard !opens(text, withAnyOf: bannedHeadlineOpenings), !containsBannedPhrase(text),
+            !examples.contains(text.lowercased())
+        else { return nil }
         // Sentence case for the words a Title Case answer gets wrong; the rest as written.
         let lowered = words.enumerated().map { index, word -> String in
             let string = String(word)
@@ -103,16 +115,36 @@ public enum HistoryBriefText {
         guard !opens(text, withAnyOf: bannedLineOpenings), !containsBannedPhrase(text) else {
             return nil
         }
-        return terminated(capitalizedFirst(text))
+        let line = terminated(capitalizedFirst(text))
+        return examples.contains(line.lowercased()) ? nil : line
     }
 
-    /// A week's or month's paragraph for the in-brief card, or nil.
+    /// A week's or month's paragraph for the in-brief card, or nil. At least two sentences: the
+    /// on-device model, asked for four, has answered with the headline again and with one
+    /// run-on clause ("Software fixes and garden work you fixed data issues and…"), and
+    /// neither is a summary of anything.
     public static func briefText(_ raw: String?) -> String? {
         guard let text = cleaned(raw), text.count <= briefTextMaxCharacters else { return nil }
         guard !opens(text, withAnyOf: bannedLineOpenings), !containsBannedPhrase(text) else {
             return nil
         }
-        return terminated(capitalizedFirst(text))
+        let body = terminated(capitalizedFirst(text))
+        guard sentenceCount(body) >= minimumBriefSentences else { return nil }
+        return body
+    }
+
+    static let minimumBriefSentences = 2
+
+    /// Sentence ends: a full stop, question or exclamation mark at the end or before a space.
+    static func sentenceCount(_ text: String) -> Int {
+        var count = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            let next = text.index(after: index)
+            if ".!?".contains(text[index]), next == text.endIndex || text[next] == " " { count += 1 }
+            index = next
+        }
+        return count
     }
 
     /// Whitespace collapsed, wrapping quotes and emphasis marks removed. Nil when nothing is
@@ -164,11 +196,18 @@ public enum HistoryBriefText {
     /// The fields of a reply, leniently: the first JSON object in the text (a model that wraps
     /// it in a code fence or a sentence still counts), unknown keys ignored. Nil when there is no
     /// object at all.
+    ///
+    /// Raw line breaks are read as spaces first: the on-device model writes them inside its
+    /// strings, which JSON forbids, and a whole answer was lost to that in the first dry run. A
+    /// break between tokens is whitespace either way, so nothing else changes.
     static func fields(_ reply: String) -> [String: String]? {
         guard let open = reply.firstIndex(of: "{"), let close = reply.lastIndex(of: "}"),
-            open < close,
-            let object = try? JSONSerialization.jsonObject(with: Data(reply[open...close].utf8))
-                as? [String: Any]
+            open < close
+        else { return nil }
+        let body = reply[open...close].replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        guard
+            let object = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
         else { return nil }
         return object.compactMapValues { $0 as? String }
     }
@@ -200,24 +239,26 @@ public enum DayBrief {
         systemPrompt: """
             You label one day in a person's history, from a recap of that day their own device \
             already wrote. The recap is finished prose and every fact in it is established: \
-            never add, infer or re-interpret anything. The label sits on a list of days, and the \
-            person must recognise the day from it at a glance.
+            never add, infer or re-interpret anything, and use nothing but this recap. The \
+            label sits on a list of days, and the person must recognise the day from it at a \
+            glance.
 
-            Write two things.
-            headline: a short noun phrase naming what the day was mostly about. 2 to 6 words and \
-            at most 36 characters. Sentence case: capitalise the first word and proper names \
-            only. It is not a sentence: no full stop, and it never starts with "The day", "The \
-            speaker", "The user", "Today", "You" or "A day". Name the one or two things that \
-            most set this day apart; join two with "and"; never list three. Good headlines: \
-            "Office in Unit 4 and Fernwood", "Ad audits and a Denver walk", "Deploying \
-            the website changes", "Road trip to Denver".
-            lineSummary: one or two short sentences, at most 130 characters in all, that stand \
-            on their own and add to the headline rather than repeat it. Leave the subject out \
-            where you can ("Signed a new office lease in Unit 4; weighed short terms.") and \
-            say "you" where one is needed. The recap may call the person "the speaker", "the \
-            user" or by a name: never do any of those. Never start with "Later", "Also" or \
-            "Then".
+            Write two things, both about this recap only.
+            headline: a short noun phrase naming what the day was mostly about. 2 to 6 words \
+            and at most 36 characters. Sentence case: capitalise the first word and proper \
+            names only ("\(HistoryBriefText.exampleHeadline)", never "Roof Repairs And A School \
+            Play"). It is not a sentence: no full stop, and it never starts with "The day", \
+            "The speaker", "The user", "Today", "You" or "A day". Name the one or two things \
+            that most set this day apart, as specifically as the recap allows: a place, a \
+            project, a person or an event it names, never a bare category like "Work", \
+            "Errands" or "Business". Join two with "and"; never list three.
+            lineSummary: one or two short sentences, at most 130 characters in all, saying what \
+            happened the way you would tell the person about their own day. Leave the subject \
+            out ("\(HistoryBriefText.exampleLine)") or say "you". The recap may call the person \
+            "the speaker", "the user" or by a name: never call them anything but "you". Never \
+            start with "Later", "Also" or "Then", and do not repeat the headline.
 
+            The examples show the form only: never use their words.
             No Markdown. Reply with JSON only: {"headline":"...","lineSummary":"..."}
             """,
         userPrompt: "Label this day.")
@@ -318,21 +359,24 @@ public enum PeriodBriefWriter {
     }
 
     static let answerRules = """
-        Write three things.
-        text: 3 or 4 sentences, at most 480 characters, for the top of the page: what the \
-        period was mostly about, what was decided or changed, and anything that ran through it, \
-        in the order it happened where the order matters.
-        headline: a short noun phrase naming the period's one or two main threads. 2 to 6 words \
-        and at most 36 characters, sentence case (capitalise the first word and proper names \
-        only), no full stop, never a sentence, never starting with "The", "This", "Today" or \
-        "You". Join two threads with "and"; never list three.
+        Write three things, in this order.
+        headline: a short noun phrase naming the period's one or two main threads, as \
+        specifically as the input allows (a place, a project, a person, an event; never a bare \
+        category like "Work"). 2 to 6 words and at most 36 characters, sentence case \
+        (capitalise the first word and proper names only), no full stop, never a sentence, \
+        never starting with "The", "This", "Today" or "You". Join two threads with "and"; never \
+        list three.
         lineSummary: one or two short sentences, at most 130 characters in all, that stand on \
         their own and add to the headline rather than repeat it.
+        text: one paragraph of 3 or 4 short, complete sentences, at most 420 characters, about \
+        the whole period: what it was mostly about, what was decided or changed, and what ran \
+        through it. Not a list of days, and no line breaks.
 
-        Voice for all three: plain and direct. Leave the subject out where you can and say \
-        "you" where one is needed. The input may call the person "the speaker", "the user" or \
-        by a name: never do any of those. Never start with "Later", "Also" or "Then". No \
-        Markdown. Reply with JSON only: {"text":"...","headline":"...","lineSummary":"..."}
+        Voice for all three: plain and direct, the way you would tell the person about their \
+        own week. Leave the subject out where you can and say "you" where one is needed. The \
+        input may call the person "the speaker", "the user" or by a name: never call them \
+        anything but "you". Never start with "Later", "Also" or "Then". No Markdown. Reply \
+        with JSON only: {"headline":"...","lineSummary":"...","text":"..."}
         """
 
     public static let weekPrompt = AiPromptTemplate(
