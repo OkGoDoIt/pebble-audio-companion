@@ -88,6 +88,17 @@ import Testing
                         endMs INTEGER,
                         source TEXT NOT NULL
                     );
+                    -- Rebuilt in place by `conversation-ranges-v1`, which copies its rows into
+                    -- the ranged table. Verbatim v1, plus the column `v2` adds (this fixture
+                    -- claims v2).
+                    CREATE TABLE conversation_segments (
+                        conversationId TEXT NOT NULL
+                            REFERENCES conversations(id) ON DELETE CASCADE,
+                        segmentId TEXT NOT NULL UNIQUE,
+                        ordinal INTEGER NOT NULL,
+                        transcriptionState TEXT,
+                        PRIMARY KEY (conversationId, ordinal)
+                    );
                     """)
             for index in 0..<rows {
                 try db.execute(
