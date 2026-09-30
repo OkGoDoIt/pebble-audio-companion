@@ -126,6 +126,14 @@ public final class FileTranscriptStore: Sendable {
     /// that had already read "no redactions" would put the deleted words back a moment after
     /// the delete removed them. Readers take no lock: every write is a whole-file rename.
     private let writeLock = NSLock()
+    /// Segments deleted through this store since it was created. Guarded by `writeLock`.
+    /// See `save` for what it is for; segment ids are never reused, so an id only ever
+    /// enters this set.
+    private let deletedSegments = DeletedSegments()
+
+    private final class DeletedSegments: @unchecked Sendable {
+        var ids: Set<String> = []
+    }
 
     public init(root: URL, nowMs: @escaping @Sendable () -> Int64) {
         self.transcriptsDir =
@@ -153,6 +161,13 @@ public final class FileTranscriptStore: Sendable {
     /// delete that should have removed part of it: a transcription that was already running,
     /// or an upload the OS carried on with while the app was suspended, was made from the
     /// audio as it was and would otherwise write the deleted words straight back.
+    ///
+    /// For the same reason a save for a segment that has been DELETED writes nothing. The
+    /// transcription that was running when the recording was deleted finishes a moment later
+    /// and saves; with no segment, no task and no conversation left to hang it on, that file
+    /// was the whole transcript of a deleted recording, sitting in the directory until the
+    /// next Delete All. The result is still returned, so the caller's bookkeeping — which
+    /// finds no task to complete — runs as it would have.
     @discardableResult
     public func save(_ segmentId: String, result: RoutedTranscription) throws -> SegmentTranscript {
         try writeLock.withLock {
@@ -166,6 +181,7 @@ public final class FileTranscriptStore: Sendable {
                 segments: result.segments,
                 words: result.words
             ).redacting(loadRedactions(segmentId))
+            guard !deletedSegments.ids.contains(segmentId) else { return transcript }
             try write(transcript)
             return transcript
         }
@@ -306,6 +322,9 @@ public final class FileTranscriptStore: Sendable {
     /// deleted from it — there is nothing left for a redaction to be about.
     public func delete(_ segmentId: String) throws {
         try writeLock.withLock {
+            // Before the files: a save that arrives after this must find the segment deleted
+            // even if removing a file throws.
+            deletedSegments.ids.insert(segmentId)
             try removeIfExists(transcriptURL(segmentId))
             try removeIfExists(redactionsURL(segmentId))
         }
@@ -318,6 +337,9 @@ public final class FileTranscriptStore: Sendable {
                     at: transcriptsDir, includingPropertiesForKeys: nil)) ?? []
             for url in entries {
                 let name = url.lastPathComponent
+                if name.hasSuffix(Self.suffix) {
+                    deletedSegments.ids.insert(String(name.dropLast(Self.suffix.count)))
+                }
                 if name.hasSuffix(Self.suffix) || name.hasSuffix("\(Self.suffix).tmp")
                     || name.hasSuffix(Self.redactionsSuffix)
                     || name.hasSuffix("\(Self.redactionsSuffix).tmp")

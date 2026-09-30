@@ -190,6 +190,31 @@ import Testing
         #expect(store.list().isEmpty)
     }
 
+    /// The whole-segment version of the same race: the recording is deleted while its
+    /// transcription is still running, and the result arrives a moment later.
+    @Test func aTranscriptThatLandsAfterItsSegmentWasDeletedIsNotWritten() throws {
+        let root = try makeTempRoot("redact-tombstone")
+        let store = store(root)
+        try store.save("seg-1", result: routed())
+        try store.save("seg-2", result: routed())
+
+        try store.delete("seg-1")
+        let landed = try store.save("seg-1", result: routed())
+
+        // The caller gets its result back; nothing reaches the disk.
+        #expect(landed.segmentId == "seg-1")
+        #expect(store.load("seg-1") == nil)
+        #expect(store.list().map(\.segmentId) == ["seg-2"])
+
+        // Delete All covers everything that had a transcript.
+        try store.deleteAll()
+        try store.save("seg-2", result: routed())
+        #expect(store.load("seg-2") == nil)
+        // A segment recorded afterwards is a new id, and saves as ever.
+        try store.save("seg-3", result: routed())
+        #expect(store.load("seg-3") != nil)
+    }
+
     @Test func redactingIsTheComplementOfAPiece() throws {
         let store = store(try makeTempRoot("redact-piece"))
         let transcript = try store.save("seg-1", result: routed())
