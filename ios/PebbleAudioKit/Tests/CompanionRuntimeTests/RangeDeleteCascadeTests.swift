@@ -481,6 +481,20 @@ import WireProtocol
         #expect(renamed.map(\.id) != [budget.id])
     }
 
+    /// The rename that gives a follower its id back is only ever a rename: it never merges two
+    /// stored conversations and never invents one.
+    @Test func aStoredConversationIsNeverRenamedOntoAnother() async throws {
+        let world = try makeWorld()
+        let (_, dentist, budget) = try await twoConversationsInOneSegment(world)
+
+        #expect(try await world.cuts.renameStoredConversation(from: dentist.id, to: budget.id) == false)
+        #expect(try await world.cuts.renameStoredConversation(from: "conv-nope", to: "conv-new") == false)
+        #expect(try await world.cuts.renameStoredConversation(from: budget.id, to: budget.id) == false)
+
+        await world.fixture.enrichment.invalidateGrouping()
+        #expect(try await world.fixture.enrichment.regroup().map(\.id) == [dentist.id, budget.id])
+    }
+
     /// A deleted stretch is silence to the planner, and a long enough silence at the start of
     /// a run is a quiet unit of its own rather than the lead-in of what follows. That unit
     /// starts first — and must not walk off with the identity of the conversation behind it.
