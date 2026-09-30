@@ -33,9 +33,19 @@ struct RootView: View {
                 .undoSnackbarHost(isShowing: router.selectedTab == .today)
                 .noteJobDock()
             }
-            Tab(Copy.Tabs.library, systemImage: "rectangle.stack", value: AppRouter.Tab.library) {
+            Tab(
+                HistoryLaunch.isEnabled ? Copy.History.tab : Copy.Tabs.library,
+                systemImage: HistoryLaunch.isEnabled ? "clock.arrow.circlepath" : "rectangle.stack",
+                value: AppRouter.Tab.library
+            ) {
                 NavigationStack(path: $router.libraryPath) {
-                    LibraryScreen()
+                    // DEBUG `-history`: the History tab being built takes the Library's place
+                    // (plan phase 2). Without the argument this is the Library, unchanged.
+                    if HistoryLaunch.isEnabled {
+                        HistoryScreen(dateKey: HistoryLaunch.dayKey)
+                    } else {
+                        LibraryScreen()
+                    }
                 }
                 .undoSnackbarHost(isShowing: router.selectedTab == .library)
                 .noteJobDock()
