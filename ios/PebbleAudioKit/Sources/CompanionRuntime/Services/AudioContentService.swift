@@ -103,6 +103,9 @@ public actor AudioContentService {
     /// one `stat` of its transcript — when this moves, so a pass over an unchanged library
     /// reads nothing.
     private var observed: [String: (TranscriptionState, Bool)] = [:]
+    /// Segments to re-key on the next look even though their own state did not move: a
+    /// neighbour's did, and the stray-remark rule reads neighbours.
+    private var dirty: Set<String> = []
     private var loaded = false
 
     public init(
@@ -138,41 +141,68 @@ public actor AudioContentService {
             loaded = true
         }
 
-        var due: [SegmentMeta] = []
-        for meta in segments {
-            let now = (meta.transcriptionState, meta.closeReason != nil)
-            if let seen = observed[meta.segmentId], seen == now { continue }
-            let key = AudioContentMethod.inputKey(
+        // Wall order, because the stray-remark rule reads each segment's neighbours and a
+        // neighbour settling changes the verdict (and the key) of the segments beside it.
+        let ordered = segments.sorted {
+            ($0.startWallMs, $0.segmentId) < ($1.startWallMs, $1.segmentId)
+        }
+        let versionOf = transcriptVersionOf
+        func key(_ index: Int) -> String {
+            let meta = ordered[index]
+            let around = AudioContentClassifier.neighbours(
+                of: index, in: ordered, turnsOf: { _ in [] }, versionOf: versionOf)
+            return AudioContentMethod.inputKey(
                 state: meta.transcriptionState,
                 transcriptVersion: meta.transcriptionState == .complete
-                    ? transcriptVersionOf(meta.segmentId) : nil)
-            if inputKeys[meta.segmentId] == key || !Self.isSettled(meta) {
+                    ? versionOf(meta.segmentId) : nil,
+                neighbours: around.key)
+        }
+
+        var due: [(index: Int, key: String)] = []
+        for (index, meta) in ordered.enumerated() {
+            let id = meta.segmentId
+            let now = (meta.transcriptionState, meta.closeReason != nil)
+            let moved = observed[id].map { $0 != now } ?? true
+            if !moved, !dirty.contains(id) { continue }
+            if moved {
+                // Its neighbours' keys name it, so they are looked at again too.
+                if index > 0 { dirty.insert(ordered[index - 1].segmentId) }
+                if index + 1 < ordered.count { dirty.insert(ordered[index + 1].segmentId) }
+                observed[id] = now
+            }
+            let current = key(index)
+            if inputKeys[id] == current || !Self.isSettled(meta) {
                 // Nothing new, or nothing to say yet. Unsettled segments are looked at again
                 // when their state moves; a settled one whose key matches is done.
-                observed[meta.segmentId] = now
+                dirty.remove(id)
                 continue
             }
-            due.append(meta)
+            // Stays dirty until it is classified, so a backfill past the budget resumes.
+            dirty.insert(id)
+            due.append((index, current))
         }
         // Newest first: the day a person is looking at is today.
-        due.sort { $0.startWallMs > $1.startWallMs }
+        due.sort { ordered[$0.index].startWallMs > ordered[$1.index].startWallMs }
 
         var wrote = false
-        for meta in due.prefix(max(budget, 0)) {
+        for (index, currentKey) in due.prefix(max(budget, 0)) {
             try Task.checkCancellation()
+            let meta = ordered[index]
             let id = meta.segmentId
             let turns = meta.transcriptionState == .complete ? speechTimingsOf(id) : nil
-            let key = AudioContentMethod.inputKey(
-                state: meta.transcriptionState,
-                transcriptVersion: meta.transcriptionState == .complete ? transcriptVersionOf(id) : nil)
-            guard let spans = AudioContentClassifier.classify(meta: meta, turns: turns) else {
+            let around = AudioContentClassifier.neighbours(
+                of: index, in: ordered, turnsOf: speechTimingsOf, versionOf: versionOf)
+            guard
+                let spans = AudioContentClassifier.classify(
+                    meta: meta, turns: turns, neighbours: around.neighbours)
+            else {
                 // `Complete` with no file: a fault, not silence. Looked at again when it moves.
-                observed[id] = (meta.transcriptionState, meta.closeReason != nil)
+                dirty.remove(id)
                 continue
             }
-            try await store.replace(segmentId: id, inputKey: key, spans: spans, atMs: nowMs())
-            inputKeys[id] = key
-            observed[id] = (meta.transcriptionState, meta.closeReason != nil)
+            try await store.replace(segmentId: id, inputKey: currentKey, spans: spans, atMs: nowMs())
+            inputKeys[id] = currentKey
+            dirty.remove(id)
             try await refreshMask(meta: meta, spans: spans)
             wrote = true
         }
@@ -188,6 +218,7 @@ public actor AudioContentService {
             wrote = true
         }
         observed = observed.filter { alive.contains($0.key) }
+        dirty = dirty.filter { alive.contains($0) }
         if wrote, due.count > budget {
             log.write("audio content: classified \(budget), \(due.count - budget) left")
         }
@@ -228,6 +259,7 @@ public actor AudioContentService {
         }
         inputKeys[id] = nil
         observed[id] = nil
+        dirty.remove(id)
         mask.forget([id])
     }
 

@@ -25,7 +25,7 @@ public enum AudioContentMethod {
     /// Bump when the verdicts this method gives for the same input change. Every stored
     /// segment's input key embeds it, so a bump reclassifies the library (cheaply: this is a
     /// pass over turn timings, no model).
-    public static let version = 1
+    public static let version = 2
 
     /// The unit of judgement. A minute is short enough that half an hour of music after a
     /// conversation is not folded into it, long enough that one pause between sentences is
@@ -55,6 +55,18 @@ public enum AudioContentMethod {
     public static let loopRepetition = 0.85
     public static let loopMinimumWords = 20.0
 
+    /// A stretch of talk with fewer words than this in total, and nothing else said within
+    /// `isolationMs` either side, is a stray remark ("It is a good one. Thanks."), not a
+    /// conversation. Across the library it relabels 30 of 18,651 minutes, every one sampled a
+    /// remark, a mic test or an announcement; no hand-labelled minute changes. (Version 2,
+    /// after Roger pointed at titled "conversations" made of five words.)
+    public static let isolatedMaximumWords = 13.0
+    /// Talk this close counts as the same stretch, across pauses and segment edges.
+    public static let isolationMs: Int64 = 120_000
+    /// Not measured apart from the stretch rule's inspection; the stretch rule is a subset of
+    /// what `noConversationConfidence` covers in spirit, so it is stated a little lower.
+    public static let isolatedConfidence = 0.9
+
     /// Measured precisions (held-back labels, weighted to the library's mix), stored as the
     /// span's confidence. See the design doc's table.
     public static let noConversationConfidence = 0.96
@@ -67,9 +79,30 @@ public enum AudioContentMethod {
 
     /// What a stored classification was computed from. When it differs from the current one
     /// the segment is classified again.
-    public static func inputKey(state: TranscriptionState, transcriptVersion: String?) -> String {
-        "v\(version)|\(state.rawValue)|\(transcriptVersion ?? "-")"
+    /// `neighbours` identifies the adjacent recordings the stray-remark rule looked at (their
+    /// ids, states and transcript versions), so a neighbour settling reclassifies this one.
+    public static func inputKey(
+        state: TranscriptionState, transcriptVersion: String?, neighbours: String = ""
+    ) -> String {
+        "v\(version)|\(state.rawValue)|\(transcriptVersion ?? "-")|\(neighbours)"
     }
+}
+
+/// What was said just outside a segment, for the stray-remark rule: words in the adjacent
+/// recording within `AudioContentMethod.isolationMs` of the shared edge. Zero when there is no
+/// recording that close; nil when there is one but it is not settled yet (so the rule does not
+/// judge that edge until it is).
+public struct AudioContentNeighbours: Equatable, Sendable {
+    public var wordsBefore: Double?
+    public var wordsAfter: Double?
+
+    public init(wordsBefore: Double?, wordsAfter: Double?) {
+        self.wordsBefore = wordsBefore
+        self.wordsAfter = wordsAfter
+    }
+
+    public static let unknown = AudioContentNeighbours(wordsBefore: nil, wordsAfter: nil)
+    public static let quiet = AudioContentNeighbours(wordsBefore: 0, wordsAfter: 0)
 }
 
 public enum AudioContentClassifier {
@@ -80,7 +113,8 @@ public enum AudioContentClassifier {
     /// `turns` are the transcript's segments (`SegmentTranscript.segments`), on the segment's
     /// stored-audio clock.
     public static func classify(
-        meta: SegmentMeta, turns: [TranscriptSegment]?
+        meta: SegmentMeta, turns: [TranscriptSegment]?,
+        neighbours: AudioContentNeighbours = .unknown
     ) -> [SegmentAudioContentSpan]? {
         guard meta.closeReason != nil else { return nil }
         let clock = SegmentMediaClock(meta)
@@ -98,7 +132,9 @@ public enum AudioContentClassifier {
                 ], meta: meta, clock: clock)
         case .complete:
             guard let turns else { return nil }
-            return place(verdicts(turns: turns, mediaSpan: mediaSpan), meta: meta, clock: clock)
+            return place(
+                verdicts(turns: turns, mediaSpan: mediaSpan, neighbours: neighbours),
+                meta: meta, clock: clock)
         case .pending, .running, .uploading, .failed, .disabled:
             return nil
         }
@@ -115,7 +151,10 @@ public enum AudioContentClassifier {
     }
 
     /// Per-minute verdicts over the stored audio, adjacent equal ones merged.
-    static func verdicts(turns: [TranscriptSegment], mediaSpan: Int64) -> [Verdict] {
+    static func verdicts(
+        turns: [TranscriptSegment], mediaSpan: Int64,
+        neighbours: AudioContentNeighbours = .unknown
+    ) -> [Verdict] {
         let windows = windowEdges(mediaSpan: mediaSpan)
         let loops = TranscriptArtefacts.loopedArtefacts(
             in: turns.map { ArtefactTurn(text: $0.text, startMs: $0.startMs) })
@@ -141,9 +180,11 @@ public enum AudioContentClassifier {
             }
         }
 
-        var out: [Verdict] = []
+        var perWindow: [Verdict] = []
         for (w, edge) in windows.enumerated() {
-            let minutes = Double(edge.count) / 60_000
+            // Never less than a minute: a 12-second recording holding five words is five words
+            // a minute, not twenty-five.
+            let minutes = max(Double(edge.count) / 60_000, 1)
             let rate = words[w] / minutes
             let verdict: Verdict
             // Loop first: the artefact rule keeps the FIRST occurrence of every repeated line
@@ -186,6 +227,12 @@ public enum AudioContentClassifier {
                     decidedBy: AudioContentDecider.wordRate,
                     confidence: AudioContentMethod.noConversationConfidence, words: words[w])
             }
+            perWindow.append(verdict)
+        }
+        isolateStrayRemarks(&perWindow, windows: windows, neighbours: neighbours)
+
+        var out: [Verdict] = []
+        for verdict in perWindow {
             if var last = out.last, last.kind == verdict.kind,
                 last.decidedBy == verdict.decidedBy, last.mediaEnd == verdict.mediaStart
             {
@@ -193,7 +240,7 @@ public enum AudioContentClassifier {
                 // few words in it, not alternating "few words" and "nothing" minutes.
                 last.mediaEnd = verdict.mediaEnd
                 last.words += verdict.words
-                if last.decidedBy == AudioContentDecider.wordRate, last.kind == .noConversation {
+                if last.decidedBy != AudioContentDecider.loop, last.kind == .noConversation {
                     last.descriptor = last.words >= 0.5 ? AudioContentDescriptor.fewWords : nil
                 }
                 out[out.count - 1] = last
@@ -202,6 +249,116 @@ public enum AudioContentClassifier {
             }
         }
         return out
+    }
+
+    /// Stretches of talk (conversation minutes, joined across pauses of up to
+    /// `isolationMs`) with fewer than `isolatedMaximumWords` words in them, counting what the
+    /// neighbouring recordings said within `isolationMs` of an edge the stretch reaches, become
+    /// "a few words". An edge whose neighbour is not settled yet is not judged.
+    static func isolateStrayRemarks(
+        _ verdicts: inout [Verdict], windows: [Range<Int64>], neighbours: AudioContentNeighbours
+    ) {
+        let reach = AudioContentMethod.isolationMs
+        var index = 0
+        while index < verdicts.count {
+            guard verdicts[index].kind == .conversation else {
+                index += 1
+                continue
+            }
+            let first = index
+            var last = index
+            var probe = index + 1
+            while probe < verdicts.count, windows[probe].lowerBound - windows[last].upperBound < reach {
+                if verdicts[probe].kind == .conversation { last = probe }
+                probe += 1
+            }
+            var words = verdicts[first...last].reduce(0) { $0 + $1.words }
+            // Quiet minutes inside the reach also count what little they hold.
+            for other in verdicts.indices where other < first || other > last {
+                let near =
+                    (other < first && windows[first].lowerBound - windows[other].upperBound < reach)
+                    || (other > last && windows[other].lowerBound - windows[last].upperBound < reach)
+                if near, verdicts[other].decidedBy != AudioContentDecider.loop {
+                    words += verdicts[other].words
+                }
+            }
+            var judgeable = true
+            if windows[first].lowerBound < reach {
+                if let before = neighbours.wordsBefore { words += before } else { judgeable = false }
+            }
+            if windows.last.map({ $0.upperBound - windows[last].upperBound < reach }) ?? false {
+                if let after = neighbours.wordsAfter { words += after } else { judgeable = false }
+            }
+            if judgeable, words < AudioContentMethod.isolatedMaximumWords {
+                for position in first...last where verdicts[position].kind == .conversation {
+                    verdicts[position].kind = .noConversation
+                    verdicts[position].descriptor = AudioContentDescriptor.fewWords
+                    verdicts[position].decidedBy = AudioContentDecider.isolatedWords
+                    verdicts[position].confidence = AudioContentMethod.isolatedConfidence
+                }
+            }
+            index = last + 1
+        }
+    }
+
+    /// Words said within `AudioContentMethod.isolationMs` of one end of a segment, on the wall
+    /// clock — what a neighbour contributes to the stray-remark rule.
+    public static func edgeWords(
+        meta: SegmentMeta, turns: [TranscriptSegment], atStart: Bool
+    ) -> Double {
+        let clock = SegmentMediaClock(meta)
+        let span = max(ConversationGrouper.segmentEndMs(meta) - ConversationGrouper.segmentStartMs(meta), 0)
+        var words = 0.0
+        for turn in turns {
+            let middle = turn.startMs + max(turn.endMs - turn.startMs, 0) / 2
+            let wall = clock.isExact ? clock.wall(fromMedia: middle) : middle
+            let inside = atStart
+                ? wall < AudioContentMethod.isolationMs
+                : span - wall < AudioContentMethod.isolationMs
+            if inside { words += Double(TranscriptArtefacts.tokenize(turn.text).count) }
+        }
+        return words
+    }
+
+    /// The neighbours of `segments[index]` (sorted by wall start) for the stray-remark rule,
+    /// and a key naming what they were computed from.
+    public static func neighbours(
+        of index: Int, in segments: [SegmentMeta],
+        turnsOf: (String) -> [TranscriptSegment]?,
+        versionOf: (String) -> String
+    ) -> (neighbours: AudioContentNeighbours, key: String) {
+        let meta = segments[index]
+        let start = ConversationGrouper.segmentStartMs(meta)
+        let end = ConversationGrouper.segmentEndMs(meta)
+        func side(_ other: SegmentMeta?, atStart: Bool) -> (Double?, String) {
+            guard let other else { return (0, "-") }
+            let gap = atStart
+                ? start - ConversationGrouper.segmentEndMs(other)
+                : ConversationGrouper.segmentStartMs(other) - end
+            guard gap < AudioContentMethod.isolationMs else { return (0, "-") }
+            let settled = other.closeReason != nil
+            switch (settled, other.transcriptionState) {
+            case (true, .noSpeech):
+                return (0, "\(other.segmentId):N")
+            case (true, .complete):
+                let version = versionOf(other.segmentId)
+                guard let turns = turnsOf(other.segmentId) else {
+                    return (nil, "\(other.segmentId):C:\(version)")
+                }
+                return (
+                    edgeWords(meta: other, turns: turns, atStart: !atStart),
+                    "\(other.segmentId):C:\(version)"
+                )
+            default:
+                return (nil, "\(other.segmentId):\(other.transcriptionState.rawValue)")
+            }
+        }
+        let before = side(index > 0 ? segments[index - 1] : nil, atStart: true)
+        let after = side(index + 1 < segments.count ? segments[index + 1] : nil, atStart: false)
+        return (
+            AudioContentNeighbours(wordsBefore: before.0, wordsAfter: after.0),
+            "\(before.1)/\(after.1)"
+        )
     }
 
     /// Share of a token list's word trigrams that are repeats: 0 for varied speech, near 1 for

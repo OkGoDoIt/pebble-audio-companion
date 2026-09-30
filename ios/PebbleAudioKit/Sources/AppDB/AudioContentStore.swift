@@ -46,6 +46,9 @@ public enum AudioContentDecider {
     /// The minute's words are the transcriber's own repetition loop over quiet audio
     /// (`TranscriptArtefacts`), so what it "said" was never said.
     public static let loop = "loop"
+    /// A short stretch of talk with nothing else said around it: a stray remark, not a
+    /// conversation (`AudioContentMethod.isolatedMaximumWords`).
+    public static let isolatedWords = "isolatedWords"
     /// A person's correction.
     public static let user = "user"
 }
