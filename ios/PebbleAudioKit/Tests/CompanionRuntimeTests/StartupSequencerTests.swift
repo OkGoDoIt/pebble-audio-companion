@@ -1,3 +1,4 @@
+import AppDB
 import CompanionRuntime
 import Foundation
 import SegmentStore
@@ -24,6 +25,7 @@ import Testing
                 .queueRecover,
                 .retentionEnforce,
                 .enqueueClosedSegments,
+                .followUpWallTimes,
                 .refreshDiagnostics,
             ]
         )
@@ -132,6 +134,28 @@ import Testing
         #expect(tasks.count == 1)
         await fixture.runtime.stop()
     }
+
+    /// A follow-up written before extraction stored when it was said gets that time at launch,
+    /// from the segment's clock, through the same wiring the app uses.
+    @Test func runtimeStartupFillsFollowUpWallTimes() async throws {
+        let fixture = try RuntimeFixture()
+        let segmentId = try await Fixture.writeSegment(into: fixture.store, frames: 50)
+        let followUps = FollowUpStore(db: fixture.database)
+        try await followUps.upsertExtracted(
+            FollowUp(
+                id: "f1", text: "Call Sam", done: false, sourceConversationId: "conv",
+                sourceSegmentId: segmentId, createdAtMs: 1, sourceStartMs: 400,
+                sourceEndMs: 600))
+
+        await fixture.runtime.start()
+        await TestClock.settle()
+
+        let meta = try #require(await fixture.store.readMeta(segmentId))
+        #expect(
+            try await followUps.load(id: "f1")?.sourceWall
+                == SegmentMediaClock.wallRange(ofMediaStartMs: 400, endMs: 600, in: meta))
+        await fixture.runtime.stop()
+    }
 }
 
 // The split that keeps a background wake from expiring before the microphone starts.
@@ -174,6 +198,7 @@ import Testing
                 .queueRecover,
                 .retentionEnforce,
                 .enqueueClosedSegments,
+                .followUpWallTimes,
                 .refreshDiagnostics,
             ]
         )
@@ -209,6 +234,6 @@ import Testing
 
         #expect(recorder.steps.first == .legacyImport)
         #expect(recorder.steps.last == .refreshDiagnostics)
-        #expect(recorder.steps.count == 6)
+        #expect(recorder.steps.count == 7)
     }
 }

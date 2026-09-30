@@ -542,11 +542,15 @@ public struct AppDatabase: Sendable {
         // needed exactly when the segment it could be re-derived from may no longer be there.
         // All three are NULL together when the moment is unknown.
         //
-        // Both tables, so curation carries the value from candidate to follow-up. Indexes:
-        // `follow_ups_wall` serves History's window read; `follow_ups_wall_unfilled` is partial —
-        // it holds only rows with a located quote and no wall time yet, which is exactly what the
-        // one-time fill (`FollowUpStore.fillMissingWallTimes`) walks, so the fill costs the rows
-        // it has to fill and not the table.
+        // Both tables, so curation carries the value from candidate to follow-up. Two partial
+        // indexes on `follow_ups`, split on whether the time is known:
+        //  - `follow_ups_wall` holds only placed rows and serves History's window read (a range
+        //    on the column implies it is not NULL, so SQLite can use it). Partial on purpose: a
+        //    full index also answers `sourceWallStartMs IS NULL`, and the planner then served the
+        //    fill's read from it — every unplaced row in the table, archived legacy rows included.
+        //  - `follow_ups_wall_unfilled` holds only rows with a located quote and no time yet,
+        //    which is exactly what the one-time fill (`FollowUpWallTimeFill`) walks, so the fill
+        //    costs the rows it has to fill and not the table.
         //
         // Additive and self-contained: columns and indexes only, no data change.
         migrator.registerMigration("v15-follow-up-wall-times") { db in
@@ -560,6 +564,7 @@ public struct AppDatabase: Sendable {
             try db.execute(
                 sql: """
                     CREATE INDEX IF NOT EXISTS follow_ups_wall ON follow_ups(sourceWallStartMs)
+                        WHERE sourceWallStartMs IS NOT NULL
                     """)
             try db.execute(
                 sql: """

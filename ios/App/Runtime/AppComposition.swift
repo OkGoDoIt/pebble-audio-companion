@@ -1021,6 +1021,12 @@ final class AppComposition {
                 enforceRetention: { try await retention.enforce() },
                 cascadeDeleted: { _ = await cascade.deleteSegment($0) },
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
+                // History places a follow-up by when it was said; rows extracted before that was
+                // stored get it here, once per launch, after the receiver is already up.
+                fillFollowUpWallTimes: {
+                    try await runFollowUpWallTimeFill(
+                        database: database, store: store, log: AppRuntimeLog.runtimeLog)
+                },
                 refreshDiagnostics: { await diagnostics.refresh() }
             ),
             onStep: { startupActivity.record($0) },

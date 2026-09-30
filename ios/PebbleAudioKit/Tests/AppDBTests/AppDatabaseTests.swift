@@ -146,7 +146,9 @@ import Testing
             #expect(try Self.columns(db, table).isSuperset(of: Self.columns), "\(table)")
         }
         let found = try Self.indexSQL(db)
-        #expect(found["follow_ups_wall"]?.contains("follow_ups(sourceWallStartMs)") == true)
+        let wall = found["follow_ups_wall"] ?? ""
+        #expect(wall.contains("follow_ups(sourceWallStartMs)"))
+        #expect(wall.contains("WHERE sourceWallStartMs IS NOT NULL"))
         // Partial: only rows the one-time fill still has to visit.
         let unfilled = found["follow_ups_wall_unfilled"] ?? ""
         #expect(unfilled.contains("follow_ups(sourceSegmentId)"))
