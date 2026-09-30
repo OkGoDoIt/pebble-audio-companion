@@ -269,4 +269,63 @@ struct RealConversationSegmentationTests {
         #expect((new.spoken.last ?? 0) < 3 * 3_600_000)
         #expect(percentile(new.spoken, 0.9) < 3_600_000)
     }
+
+    /// The upgrade itself, on a copy of the real database: migrate, regroup twice, and check
+    /// what the phone will see — every sample in exactly one conversation, nothing day-long,
+    /// the same ids on the second pass, and nothing written when nothing changed.
+    @Test func theRealDatabaseMigratesAndRegroupsIntoTopicSizedConversations() async throws {
+        let root = URL(fileURLWithPath: unitsBackup!)
+        let source = root.appendingPathComponent("db")
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conversation-units-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        for name in try FileManager.default.contentsOfDirectory(atPath: source.path) {
+            try FileManager.default.copyItem(
+                at: source.appendingPathComponent(name), to: scratch.appendingPathComponent(name))
+        }
+        let database = try AppDatabase.open(at: scratch.appendingPathComponent("companion.sqlite"))
+        let library = try loadLibrary()
+        let before = try await database.reader.read { try ConversationGrouper.fetchAll($0) }
+
+        let memo = GroupingMemo()
+        let first = try await ConversationGrouper.rebuildDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence, memo: memo, db: database)
+        let second = try await ConversationGrouper.rebuildDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence, memo: memo, db: database)
+        let settled = try await ConversationCutStore(db: database).committed()
+        let longest = first.conversations.map { $0.endMs - $0.startMs }.max() ?? 0
+        let longestBefore = before.map { $0.endMs - $0.startMs }.max() ?? 0
+        print(
+            "real database: \(before.count) conversations (longest \(minutes(longestBefore))) -> \(first.conversations.count) (longest \(minutes(longest))); \(settled.count) cuts settled")
+
+        #expect(first.changed && first.structureChanged)
+        #expect(!second.changed && !second.structureChanged)
+        #expect(second.conversations.map(\.id) == first.conversations.map(\.id))
+        #expect(Set(first.conversations.map(\.id)).count == first.conversations.count)
+        #expect(longest < 2 * 3_600_000)
+
+        // Every segment's stored audio is covered exactly once, in order.
+        var pieces: [String: [ConversationMember]] = [:]
+        for conversation in first.conversations {
+            for member in conversation.members { pieces[member.segmentId, default: []].append(member) }
+        }
+        #expect(Set(pieces.keys) == Set(library.metas.map(\.segmentId)))
+        for (segmentId, owned) in pieces {
+            let ordered = owned.sorted { ($0.startMediaMs ?? 0) < ($1.startMediaMs ?? 0) }
+            #expect(ordered.first?.startMediaMs == nil, "\(segmentId) does not start at 0")
+            #expect(ordered.last?.endMediaMs == nil, "\(segmentId) does not run to its end")
+            for (earlier, later) in zip(ordered, ordered.dropFirst()) {
+                #expect(earlier.endMediaMs == later.startMediaMs, "\(segmentId) has a hole or overlap")
+            }
+        }
+        // What was read back is what was grouped.
+        let stored = try await database.reader.read { try ConversationGrouper.fetchAll($0) }
+        #expect(stored.map(\.members) == first.conversations.sorted {
+            $0.startMs == $1.startMs ? $0.id < $1.id : $0.startMs < $1.startMs
+        }.map(\.members))
+    }
 }
