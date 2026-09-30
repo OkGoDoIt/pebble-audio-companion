@@ -494,4 +494,20 @@ public actor EnrichmentService {
     public func members(ofConversation conversationId: String) async -> [String] {
         (await grouping()).first { $0.id == conversationId }?.memberSegmentIds ?? []
     }
+
+    /// The pieces a conversation is made of: which range of each member segment it owns. A
+    /// conversation rarely owns all of its first and last segments, so anything that acts on
+    /// "the conversation's audio" or "its transcript" has to go through these, not the ids.
+    public func pieces(ofConversation conversationId: String) async -> [ConversationMember] {
+        (await grouping()).first { $0.id == conversationId }?.members ?? []
+    }
+
+    /// Every conversation that owns some part of a segment, with the part it owns.
+    public func owners(ofSegment segmentId: String) async
+        -> [(conversationId: String, piece: ConversationMember)]
+    {
+        (await grouping()).compactMap { conversation in
+            conversation.member(segmentId).map { (conversation.id, $0) }
+        }
+    }
 }
