@@ -33,10 +33,14 @@ struct MonthWeekRow: View {
             VStack(alignment: .leading, spacing: 0) {
                 rangeLine
                 if let headline = row.headline {
+                    // Two lines, not one: before its brief a week is headed by two days'
+                    // headlines joined (`HistoryPeriodSources.joinedHeadlineCharacters`), and one
+                    // line clipped the second mid-word. A brief's own headline fits one.
                     Text(headline)
                         .font(AppFont.rowTitle)
                         .foregroundStyle(Tokens.label)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
                 } else if row.hasRecordings {
                     // "No summary yet" only where there is no text at all. A week with a line and

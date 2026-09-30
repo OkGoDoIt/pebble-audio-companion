@@ -251,9 +251,10 @@ private func recorded(
         #expect(week.isCurrentWeek)
         #expect(week.hasRecordings)
 
-        // Two that would not fit one line: the first alone, never a clipped second.
+        // Two that would not fit the row's two lines: the first alone, never a clipped second.
         var long = days
-        long["2026-09-23"]?.recap?.headline = "Budget review and the quarterly report"
+        long["2026-09-23"]?.recap?.headline =
+            "Budget review, the quarterly report, the slides and the shared team calendar"
         let longWeek = HistoryPeriodAssembler.month(
             containing: "2026-09-22", firstWeekday: 1, days: long, todayKey: "2026-09-26"
         ).rows.first { $0.firstDateKey == "2026-09-20" }!

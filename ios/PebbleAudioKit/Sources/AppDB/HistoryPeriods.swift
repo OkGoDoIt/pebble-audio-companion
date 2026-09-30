@@ -139,8 +139,8 @@ public struct HistoryPlacedFollowUp: Equatable, Sendable {
 ///   transcribed time inside the day (a title is already a short phrase); else none.
 /// - Day summary: the day's line; else its recap whole — never the recap minus a sentence.
 /// - Week headline (the month's row): the week brief's headline; else the headlines of the two
-///   days with the most talk, distinct, joined — or only the first, when two would not fit one
-///   line. Week summary: the week brief's line, else none.
+///   days with the most talk, distinct, joined — or only the first, when two would not fit the
+///   row's two lines. Week summary: the week brief's line, else none.
 /// - The week's and the month's in-brief card: their briefs' paragraphs, else none ("No summary
 ///   yet").
 /// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying
@@ -149,10 +149,12 @@ public struct HistoryPeriodSources: Sendable {
     public static let separator = " · "
     /// How many day headlines a week row falls back to.
     public static let weekHeadlineDays = 2
-    /// The longest fallback week headline that is two headlines joined: about what one line of
-    /// the row holds. Past it, the first headline alone — a second one clipped mid-word would
-    /// be the cut this file exists to avoid.
-    public static let joinedHeadlineCharacters = 44
+    /// The longest fallback week headline that is two headlines joined: what the month row's
+    /// headline holds (two lines of 16 pt semibold, about 36 characters each). Two day headlines
+    /// run 25–40 characters apiece, so one line — the brief's own headline is one — would have
+    /// meant the first alone nearly always. Past this, the first alone: a second one clipped
+    /// mid-word would be the cut this file exists to avoid.
+    public static let joinedHeadlineCharacters = 72
 
     /// Written week and month briefs, by `PeriodBriefKey`.
     public var briefs: [String: HistoryBrief]
