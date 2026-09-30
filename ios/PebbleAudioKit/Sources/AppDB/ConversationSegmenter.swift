@@ -60,51 +60,65 @@ struct SegmenterBlock: Equatable {
 
 /// The segmenter's numbers.
 ///
-/// FITTED, not chosen: a search over these against the 384 hand-marked conversation starts on
-/// the eight labelled days, scored as a balance of finding marked starts and not cutting where
-/// none was marked, with a penalty for slivers and for any unit over 90 minutes. Fitting on four
-/// days and scoring the other four gives nearly the same answer as fitting on all eight (the
-/// table is in `RealConversationSegmentationTests`), which is the evidence that they describe
-/// how talk behaves rather than those particular days. Change one only with that measurement
-/// rerun.
+/// FITTED, not chosen: a search over these against the hand-marked conversation starts on the
+/// eight labelled days. The fit leans toward precision — a cut where nothing was marked splits
+/// one conversation into two half-titled ones, which costs the person more than a conversation
+/// that runs a little broad — and treats the labels' `unsure` starts (a subject drifting inside
+/// one exchange) as neither required nor wrong. What it settles on is units with a median of
+/// 16 minutes and a p90 of 44, which is the size of the labels' `certain` conversations (median
+/// 17) and of how Roger describes his own ("twenty minutes or thirty, maybe an hour").
+///
+/// What the fit says about the signals, by removing each (199 certain starts; found / cuts on
+/// a marked start):
+///   as shipped                         117   66%
+///   without the change in turn rate     85   65%      the strongest signal
+///   without any pause term              82   62%
+///   without the dictation terms        103   64%
+///   without the other-language terms   116   61%
+///   WITH a vocabulary model (0.3)      112   65%      28 more cuts, none of them certain
+/// So the words themselves do not help at this size: a unit's own vocabulary separates
+/// subjects drifting inside one exchange, which is exactly what is not being cut here. The
+/// term is kept at weight 0 — it is what a finer setting would turn on — and costs nothing
+/// when off. Change a number only with `RealConversationSegmentationTests` rerun.
 public struct SegmenterPolicy: Hashable, Sendable {
     // Coherence of a unit.
     /// Dirichlet concentration for a unit's vocabulary, and the vocabulary size it is spread
-    /// over. Small: a unit is expected to reuse a few words heavily.
-    public var wordPrior = 0.08
+    /// over.
+    public var wordPrior = 0.12
     public var vocabularySize = 4_000.0
-    public var wordWeight = 0.46
-    public var rhythmWeight = 0.4
-    public var dialogueWeight = 1.16
+    public var wordWeight = 0.0
+    public var rhythmWeight = 0.0
+    public var dialogueWeight = 1.28
     public var foreignWeight = 0.84
-    public var dictationWeight = 0.16
+    public var dictationWeight = 0.23
 
     // The size of a unit.
     public var unitCost = 8.0
     /// Minutes past which a unit pays `longWeight × (minutes − longFromMinutes)²`: nothing
-    /// extra at 17 minutes, 5.5 at an hour, 32 at two hours, 80 at three — against a price of
-    /// 8 for making one more unit, so two hours of talk is cheaper as three conversations than
-    /// as one even when nothing else distinguishes them.
-    public var longFromMinutes = 17.0
+    /// extra at 19 minutes, 5 at an hour, 31 at two hours, 78 at three — against a price of 8
+    /// for making one more unit. So two hours of talk is cheaper as three conversations than
+    /// as one even when nothing else distinguishes them, and the search then puts the cuts at
+    /// the best places the two hours offer.
+    public var longFromMinutes = 18.8
     public var longWeight = 0.003
     /// Minutes under which a unit pays `shortWeight × (shortBelowMinutes − minutes)`.
-    public var shortBelowMinutes = 4.3
-    public var shortWeight = 1.17
+    public var shortBelowMinutes = 6.2
+    public var shortWeight = 0.73
 
     // Evidence at a cut.
     /// Times log(1 + pause seconds) / log(900): 0 for no pause, 1 for a quarter of an hour.
     public var pauseWeight = 5.36
     public var pause2MinWeight = 0.0
-    public var pause5MinWeight = 3.16
+    public var pause5MinWeight = 1.29
     public var pause8MinWeight = 0.7
-    /// Times |log ratio| of turns per minute after and before — the strongest single signal:
-    /// sparse dictation giving way to a rapid exchange, or the reverse.
+    /// Times |log ratio| of turns per minute after and before: sparse dictation giving way to
+    /// a rapid exchange, or the reverse.
     public var turnRateWeight = 3.42
-    public var wordRateWeight = 0.13
-    public var dialogueShiftWeight = 2.19
-    public var foreignShiftWeight = 0.97
-    public var dictationShiftWeight = 2.03
-    public var greetingWeight = 2.69
+    public var wordRateWeight = 0.165
+    public var dialogueShiftWeight = 0.0
+    public var foreignShiftWeight = 1.34
+    public var dictationShiftWeight = 3.87
+    public var greetingWeight = 1.13
 
     /// How much talk either side of a candidate cut is compared.
     public var windowMs: Int64 = 5 * 60_000
@@ -131,10 +145,14 @@ enum ConversationSegmenter {
 
     /// Block indexes (never 0) that start a new unit, ascending.
     ///
-    /// `blocked` are block indexes where the person has said "these are one conversation"; no
-    /// cut is placed there.
+    /// `forced` are block indexes where a unit MUST start — decisions already made and held.
+    /// Forcing a subset of the search's own answer returns that same answer (the unforced
+    /// optimum is still available and nothing better has been added), which is what lets a
+    /// settled cut be held without disturbing the ones around it. `blocked` are block indexes
+    /// where the person has said "these are one conversation"; no cut is placed there.
     static func cuts(
-        blocks: [SegmenterBlock], blocked: Set<Int> = [], policy: SegmenterPolicy = .default
+        blocks: [SegmenterBlock], forced: Set<Int> = [], blocked: Set<Int> = [],
+        policy: SegmenterPolicy = .default
     ) -> [Int] {
         let count = blocks.count
         guard count > 1 else { return [] }
@@ -166,7 +184,7 @@ enum ConversationSegmenter {
 
         for start in 0..<count {
             guard best[start] > -.infinity else { continue }
-            if start > 0, blocked.contains(start) { continue }
+            if start > 0, blocked.contains(start), !forced.contains(start) { continue }
             let base = best[start] + (start > 0 ? cutScores[start] : 0)
             let unitStartMs = blocks[start].wallStartMs
 
@@ -185,13 +203,15 @@ enum ConversationSegmenter {
                 let block = blocks[end]
                 if end > start, block.wallEndMs - unitStartMs > policy.maxUnitMs { break }
                 if !block.isOpaque {
-                    for id in ids[end] {
-                        let seen = counts[id]
-                        if seen == 0 { touched.append(id) }
-                        wordLogSum += log(Double(seen) + policy.wordPrior)
-                        counts[id] = seen + 1
+                    if policy.wordWeight != 0 {
+                        for id in ids[end] {
+                            let seen = counts[id]
+                            if seen == 0 { touched.append(id) }
+                            wordLogSum += log(Double(seen) + policy.wordPrior)
+                            counts[id] = seen + 1
+                        }
+                        wordTotal += ids[end].count
                     }
-                    wordTotal += ids[end].count
                     if end > start, !blocks[end - 1].isOpaque {
                         let gap = logGaps[end]
                         gapCount += 1
@@ -203,10 +223,16 @@ enum ConversationSegmenter {
                     if block.isForeign { foreign += 1 }
                     if block.isDictation { dictation += 1 }
                 }
-                var score =
-                    policy.wordWeight
-                    * (lgammaConcentration - logGamma(Double(wordTotal) + concentration) + wordLogSum)
-                score += policy.rhythmWeight * rhythmLikelihood(gapCount, gapSum, gapSquares)
+                var score = 0.0
+                if policy.wordWeight != 0 {
+                    score +=
+                        policy.wordWeight
+                        * (lgammaConcentration - logGamma(Double(wordTotal) + concentration)
+                            + wordLogSum)
+                }
+                if policy.rhythmWeight != 0 {
+                    score += policy.rhythmWeight * rhythmLikelihood(gapCount, gapSum, gapSquares)
+                }
                 score += policy.dialogueWeight * flagLikelihood(dialogue, spoken)
                 score += policy.foreignWeight * flagLikelihood(foreign, spoken)
                 score += policy.dictationWeight * flagLikelihood(dictation, spoken)
@@ -218,6 +244,8 @@ enum ConversationSegmenter {
                     back[end + 1] = start
                 }
                 end += 1
+                // No unit runs across a place where one must start.
+                if forced.contains(end) { break }
             }
             for id in touched { counts[id] = 0 }
             touched.removeAll(keepingCapacity: true)

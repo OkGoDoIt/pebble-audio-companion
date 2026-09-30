@@ -229,14 +229,21 @@ enum ConversationRunPlanner {
             }
         }
 
-        // 3. The segmenter, over every stretch the cuts so far leave whole.
+        // 3. The segmenter, over every stretch of talk between two long silences — the WHOLE
+        // stretch, with the fixed cuts inside it forced, rather than each piece between fixed
+        // cuts on its own. The evidence at a cut is read from the talk either side of it, so a
+        // stretch searched in pieces is scored differently near every piece's edge and comes
+        // out with different (more) cuts than the same stretch searched whole; forcing keeps
+        // the scores, and therefore the answer, exactly what they were when the cuts were made.
         if let segmenter = policy.segmenter {
-            let edges = [runStart] + cuts.keys.sorted() + [runEnd]
+            let hard = cuts.values.filter { $0.kind == .hard }.map(\.position).sorted()
+            let fixed = cuts.values.filter { $0.kind == .fixed }.map(\.position).sorted()
+            let edges = [runStart] + hard + [runEnd]
             for (lower, upper) in zip(edges, edges.dropFirst()) {
                 let isLastStretch = upper == runEnd
                 let found = segmenterCuts(
-                    from: lower, to: upper, members: members, turns: turns, policy: segmenter,
-                    isBlocked: isBlocked,
+                    from: lower, to: upper, fixed: fixed.filter { $0 > lower && $0 < upper },
+                    members: members, turns: turns, policy: segmenter, isBlocked: isBlocked,
                     endsOpen: isLastStretch && isOpenEnded)
                 for cut in found { add(cut) }
             }
@@ -351,14 +358,20 @@ enum ConversationRunPlanner {
     struct PlacedBlock {
         var block: SegmenterBlock
         var position: RunPosition
+        /// Index of the block's first turn; nil for an opaque block.
+        var firstTurn: Int?
     }
 
     /// The blocks of `[lower, upper)`: settled talk as `ConversationSegmenter` blocks, and each
     /// unsettled member (or the part of one inside the range) as one opaque block.
+    /// `breaks` are positions a block must not run across (ascending): a block starts at the
+    /// first turn at or after each.
     static func blocks(
-        from lower: RunPosition, to upper: RunPosition, members: [Member], turns: [RunTurn]
+        from lower: RunPosition, to upper: RunPosition, breaks: [RunPosition] = [],
+        members: [Member], turns: [RunTurn]
     ) -> [PlacedBlock] {
         var out: [PlacedBlock] = []
+        var nextBreak = 0
         var previousEnd: Int64?
         var speakers = Set<UInt32>()
         var lineSpeaker: UInt32 = 0
@@ -413,8 +426,15 @@ enum ConversationRunPlanner {
                 let features = turn.features
                 let speaker = features?.speaker ?? 0
                 let gap = previousEnd.map { turn.wallStartMs - $0 } ?? Int64.max
+                let here = RunPosition(seg: seg, mediaMs: turn.mediaStartMs)
+                var crossesBreak = false
+                while nextBreak < breaks.count, breaks[nextBreak] <= here {
+                    crossesBreak = true
+                    nextBreak += 1
+                }
                 let joins =
-                    blockSegment == seg && gap < ConversationSegmenter.blockJoinGapMs
+                    !crossesBreak && blockSegment == seg
+                    && gap < ConversationSegmenter.blockJoinGapMs
                     && turn.wallEndMs - (out.last?.block.wallStartMs ?? turn.wallStartMs)
                         < ConversationSegmenter.blockMaxMs
                     && out.last?.block.isOpaque == false
@@ -456,7 +476,7 @@ enum ConversationRunPlanner {
                                 isDialogue: false, isForeign: features?.isForeign ?? false,
                                 isDictation: features?.isDictation ?? false,
                                 opensWithGreeting: features?.opensWithGreeting ?? false),
-                            position: cut))
+                            position: cut, firstTurn: turnCursor))
                 }
                 previousEnd = max(previousEnd ?? turn.wallEndMs, turn.wallEndMs)
                 turnCursor += 1
@@ -468,18 +488,27 @@ enum ConversationRunPlanner {
     }
 
     static func segmenterCuts(
-        from lower: RunPosition, to upper: RunPosition, members: [Member], turns: [RunTurn],
-        policy: SegmenterPolicy, isBlocked: (RunPosition) -> Bool, endsOpen: Bool
+        from lower: RunPosition, to upper: RunPosition, fixed: [RunPosition],
+        members: [Member], turns: [RunTurn], policy: SegmenterPolicy,
+        isBlocked: (RunPosition) -> Bool, endsOpen: Bool
     ) -> [PlannedCut] {
-        let placed = blocks(from: lower, to: upper, members: members, turns: turns)
+        let placed = blocks(
+            from: lower, to: upper, breaks: fixed, members: members, turns: turns)
         guard placed.count > 1 else { return [] }
+        // Each fixed cut forces a unit to start at the first block at or after it. (The cut
+        // itself keeps its own position; this only tells the search a boundary is there.)
+        var forced = Set<Int>()
+        for position in fixed {
+            let index = placed.partitioningIndex { blockStart($0, in: turns) >= position }
+            if index > 0, index < placed.count { forced.insert(index) }
+        }
         var blocked = Set<Int>()
         for (index, block) in placed.enumerated() where index > 0 {
             // A cut must move the position forward, and must not be where the person said no.
             if block.position <= lower || isBlocked(block.position) { blocked.insert(index) }
         }
         let starts = ConversationSegmenter.cuts(
-            blocks: placed.map(\.block), blocked: blocked, policy: policy)
+            blocks: placed.map(\.block), forced: forced, blocked: blocked, policy: policy)
         guard !starts.isEmpty else { return [] }
 
         // How far settled talk runs after each block without an unsettled stretch in the way.
@@ -495,7 +524,7 @@ enum ConversationRunPlanner {
         }
 
         var out: [PlannedCut] = []
-        for (order, start) in starts.enumerated() {
+        for (order, start) in starts.enumerated() where !forced.contains(start) {
             let block = placed[start].block
             let previousStart = order > 0 ? starts[order - 1] : 0
             // Both conversations the cut separates must be fully heard.
@@ -513,6 +542,12 @@ enum ConversationRunPlanner {
                     shouldCommit: settled))
         }
         return out
+    }
+
+    /// Where a block's first turn starts (its cut position sits a little before that).
+    static func blockStart(_ placed: PlacedBlock, in turns: [RunTurn]) -> RunPosition {
+        placed.firstTurn.map { RunPosition(seg: turns[$0].seg, mediaMs: turns[$0].mediaStartMs) }
+            ?? placed.position
     }
 
     // --- tidying -------------------------------------------------------------------------------

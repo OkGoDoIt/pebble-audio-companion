@@ -217,6 +217,44 @@ struct RealConversationSegmentationTests {
                 fallbackTimeZoneID: "UTC", evidence: library.evidence)
         }
         print("grouping \(library.metas.count) segments took \(elapsed)")
+        // The same library again, with the cuts the first pass would have written down and a
+        // memo: what a relaunch costs, and what every later pass costs.
+        let first = ConversationGrouper.groupDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence)
+        var committed: [String: [Int64: ConversationStartReason]] = [:]
+        for (cut, reason) in first.cutsToCommit {
+            committed[cut.segmentId, default: [:]][cut.mediaMs] = reason
+        }
+        let inputs = ConversationCutInputs(committed: committed)
+        let memo = GroupingMemo()
+        var relaunch: [GroupedConversation] = []
+        let cold = clock.measure {
+            relaunch = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        let warm = clock.measure {
+            _ = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        print(
+            "\(first.cutsToCommit.count) cuts settled; with them a cold regroup took \(cold), a repeat \(warm)")
+        // Holding the settled cuts changes nothing about the answer.
+        #expect(relaunch.map(\.id) == after.map(\.id))
+        let words = library.evidence.values.reduce(0) { $0 + $1.speech.count }
+        let lexicon = clock.measure {
+            for item in library.evidence.values {
+                for span in item.speech {
+                    _ = ConversationLexicon.features(
+                        text: String(repeating: "word ", count: span.wordCount), speaker: "1")
+                }
+            }
+        }
+        print("lexicon over \(words) turns took \(lexicon)")
         if let dump = unitsEnv["PEBBLE_UNITS_DUMP"] {
             let rows = after.map { "\($0.startMs)\t\($0.endMs)\t\($0.startReason?.rawValue ?? "-")\t\($0.id)" }
             try rows.joined(separator: "\n").write(
