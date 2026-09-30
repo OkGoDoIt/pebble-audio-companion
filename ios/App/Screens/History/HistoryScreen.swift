@@ -383,33 +383,50 @@ struct HistoryPager: View {
         // screen, so the lazy stack builds them while the pager is idle rather than in the
         // first frame of the next swipe (profiled 2026-09-30: that build was a 35–45 ms frame
         // on every swipe onto a page not yet built).
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 0) {
-                ForEach(model.pages(for: model.level), id: \.self) { page in
-                    pageView(page)
-                        // The container's length already excludes the content margins.
-                        .containerRelativeFrame(.horizontal)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(model.pages(for: model.level), id: \.self) { page in
+                        pageView(page)
+                            // The container's length already excludes the content margins.
+                            .containerRelativeFrame(.horizontal)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .contentMargins(.horizontal, Self.lookAhead, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+            .scrollPosition(id: $model.visiblePage)
+            .padding(.horizontal, -Self.lookAhead)
+            .scrollIndicators(.hidden)
+            // A rebuilt pager (a level change, a far jump, a launch at week level) laid out at its
+            // FIRST page with `visiblePage` still naming the one `show` asked for — the position
+            // binding is not applied to a lazy stack's first layout when the page is not built yet.
+            // On the real backup "Week" from Tuesday 22 showed Sep 13 – 19 and a jump to the 20th
+            // showed the 18th. The first frames of a new pager scroll to the page it is meant to show.
+            // (`settledPage` holds that page until the pager has rested on one for 350 ms.)
+            .task {
+                guard let target = model.settledPage ?? model.visiblePage else { return }
+                for _ in 0..<3 {
+                    try? await Task.sleep(for: .milliseconds(30))
+                    guard !Task.isCancelled, model.settledPage == target else { return }
+                    if model.visiblePage != target { model.visiblePage = target }
+                    proxy.scrollTo(target, anchor: .center)
                 }
             }
-            .scrollTargetLayout()
-        }
-        .contentMargins(.horizontal, Self.lookAhead, for: .scrollContent)
-        .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
-        .scrollPosition(id: $model.visiblePage)
-        .padding(.horizontal, -Self.lookAhead)
-        .scrollIndicators(.hidden)
-        #if DEBUG
-        .onScrollPhaseChange { _, phase in HistoryPerformance.mark("pager \(phase)") }
-        #endif
-        // Swipes belong to VoiceOver; a three-finger scroll pages instead.
-        .accessibilityScrollAction { edge in
-            let offset: Int
-            switch edge {
-            case .leading: offset = 1
-            case .trailing: offset = -1
-            default: return
+            #if DEBUG
+            .onScrollPhaseChange { _, phase in HistoryPerformance.mark("pager \(phase)") }
+            #endif
+            // Swipes belong to VoiceOver; a three-finger scroll pages instead.
+            .accessibilityScrollAction { edge in
+                let offset: Int
+                switch edge {
+                case .leading: offset = 1
+                case .trailing: offset = -1
+                default: return
+                }
+                if let target = model.page(offset: offset) { model.visiblePage = target }
             }
-            if let target = model.page(offset: offset) { model.visiblePage = target }
         }
         // Spike caveat: after a tab re-tap the pager's phase can stay `.animating`; nothing
         // here gates on it being idle.
