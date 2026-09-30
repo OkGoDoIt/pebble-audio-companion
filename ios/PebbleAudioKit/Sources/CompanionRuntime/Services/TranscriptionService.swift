@@ -434,6 +434,53 @@ public actor TranscriptionService {
         try queue.deleteAll()
         try transcriptStore.deleteAll()
     }
+
+    /// Range-delete cascade: the words spoken in `mediaRangeMs` of this segment's stored audio
+    /// leave its transcript, and cannot come back with a transcript that lands later
+    /// (`FileTranscriptStore.redact`). The task's state is deliberately left alone: the turns
+    /// that remain are timed on a clock the delete did not move, so a finished transcript is
+    /// still the transcript of what is left, and re-running it would spend a transcription to
+    /// arrive at the same turns.
+    public func redactTranscript(_ segmentId: String, mediaRangeMs: Range<Int64>) throws {
+        try transcriptStore.redact(segmentId, mediaRangeMs: mediaRangeMs)
+    }
+
+    /// Delete cascade: destroys the upload body staged for this segment, which holds its audio
+    /// as it was when the body was assembled.
+    ///
+    /// A cloud-primary segment handed to the background transport sits on disk as
+    /// `upload-bodies/<segmentId>.body` until the OS has finished with it — minutes on a good
+    /// network, hours when the upload is waiting for Wi-Fi. Deleting the recording, or part of
+    /// it, left that copy where it was.
+    ///
+    ///  - `forgetJob: true` — the whole segment is gone. The job record goes as well, which is
+    ///    what makes the coordinator drop the upload's outcome when it arrives (it looks the
+    ///    job up first) instead of saving a transcript for a recording that no longer exists.
+    ///  - `forgetJob: false` — part of the segment was silenced. The job stays, so the outcome
+    ///    is still handled: an upload that had not started fails for want of its body and is
+    ///    retried from the silenced audio; one that was already on its way completes, and the
+    ///    transcript it brings back is cut by the redaction in `FileTranscriptStore.save`.
+    ///
+    /// What this cannot do is recall an upload in flight: the transport has no cancel.
+    ///
+    /// The paths are derived from the segment store's root, which is the root the upload
+    /// wiring stages under (`BackgroundUploadWiring.makeCoordinator(root:)`), and from the job
+    /// record itself where there is one.
+    public func discardStagedUpload(_ segmentId: String, forgetJob: Bool) {
+        let root = store.rootURL
+        let jobs = CloudUploadJobStore(root: root)
+        var paths: Set<String> = [
+            BackgroundCloudUploadCoordinator.defaultBodyDir(root: root)
+                .appendingPathComponent("\(segmentId).body").path
+        ]
+        if let job = jobs.load(jobId: segmentId) { paths.insert(job.bodyFilePath) }
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            do { try FileManager.default.removeItem(atPath: path) } catch {
+                log.failure("staged upload delete", error)
+            }
+        }
+        if forgetJob { jobs.delete(jobId: segmentId) }
+    }
 }
 
 /// The sink to hand `TranscriptionModeRouter(onRemoteOutcome:)` when building the router.

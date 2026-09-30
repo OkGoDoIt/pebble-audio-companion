@@ -24,6 +24,13 @@ public enum SegmentStoreError: Error, Equatable {
     case noOpenSegment(streamId: UInt32)
     /// Frames or a gap arrived for a different stream than the open segment's.
     case streamMismatch(expected: UInt32, got: UInt32)
+    /// Asked to rewrite the audio of a segment that is still being recorded. A delete that was
+    /// told "done" here would have destroyed nothing.
+    case segmentIsOpen(segmentId: String)
+    /// Asked to rewrite the audio of a segment the store has no metadata for.
+    case unknownSegment(segmentId: String)
+    /// The replacement payload is empty or longer than a frame record can carry.
+    case invalidSilenceFrame(byteCount: Int)
 }
 
 public struct SegmentStoreConfig: Sendable {
@@ -137,6 +144,10 @@ public actor SegmentStore: SegmentSink {
 
     /// Segment id of the currently open segment, or nil.
     public var openSegmentId: String? { current?.meta.segmentId }
+
+    /// The directory this store lives under — the same root the transcript store, the upload
+    /// job records and the staged upload bodies hang off. Immutable, so readable from anywhere.
+    public nonisolated var rootURL: URL { root }
 
     // --- paths --------------------------------------------------------------------------------
 
@@ -760,6 +771,134 @@ public actor SegmentStore: SegmentSink {
         try removeIfExists(logURL(segmentId))
         try removeIfExists(metaURL(segmentId))
         metaIndex?[segmentId] = nil
+    }
+
+    /// Replaces the audio of one stretch of a CLOSED segment with silence, in place: every frame
+    /// whose first instant falls in `mediaRangeMs` gets `silenceFrame` as its payload. Returns
+    /// how many frames that was.
+    ///
+    /// This is how part of a segment is deleted. A conversation owns a RANGE of a segment's
+    /// stored audio, and the rest of the segment belongs to its neighbours, so the frames
+    /// cannot simply be removed: the transcript's turn and word timings, the follow-up sources
+    /// and the conversation cuts are all offsets into the segment's media clock — frame `i` of
+    /// the SEQUENCE-sorted log covers `[i·20, (i+1)·20)` ms — and taking frames out would move
+    /// every offset after them. Silencing keeps each frame where it is. So:
+    ///
+    ///  - the records are the same records: same sequence, same sample index, same order on
+    ///    disk (which is not sequence order once a gap has been refilled), only the payload
+    ///    differs;
+    ///  - the sidecar is not touched — frame count, extents and gap records are what they were,
+    ///    so `SegmentMediaClock` and every wall-clock placement are too. `logBytes` moves only
+    ///    when the replacement is a different size from the frames it replaces, which for the
+    ///    recorder's 25-byte frames it is not.
+    ///
+    /// A frame belongs to the range its START falls in, the same rule that gives a transcript
+    /// turn to one conversation (`ConversationMember.contains`), so the pieces of a segment
+    /// tile its frames exactly: none is silenced twice and none is left between two ranges.
+    ///
+    /// DURABILITY. The new log is written whole to a temp file, fsynced, and renamed over the
+    /// old one, so a crash leaves the old log or the new one and never a mixture. When the size
+    /// changes the log is replaced BEFORE the sidecar: a crash between the two leaves a sidecar
+    /// whose `logBytes` disagrees with the file, which is exactly what `recover()` re-parses
+    /// and reconciles (`needsRecoveryParse`). The recovery index needs nothing: it trusts an
+    /// entry while the sidecar is untouched and the log is the size it recorded — still true
+    /// here, and its cached sidecar is still right because the sidecar did not change.
+    ///
+    /// Refuses the open segment (its log is being appended to through an open handle) and says
+    /// so by throwing: answering a delete with a quiet no-op would leave the audio in place
+    /// behind a caller that believes it is gone.
+    @discardableResult
+    public func silenceAudio(
+        _ segmentId: String, mediaRangeMs: Range<Int64>, silenceFrame: [UInt8]
+    ) throws -> Int {
+        guard !silenceFrame.isEmpty, silenceFrame.count <= ProtocolConstants.maxEncodedFrameBytes
+        else { throw SegmentStoreError.invalidSilenceFrame(byteCount: silenceFrame.count) }
+        guard segmentId != openSegmentId else {
+            throw SegmentStoreError.segmentIsOpen(segmentId: segmentId)
+        }
+        guard let meta = readMeta(segmentId) else {
+            throw SegmentStoreError.unknownSegment(segmentId: segmentId)
+        }
+        // A sidecar still marked open is a segment recovery has not closed yet: its counters
+        // are not the log's, and a RESUME may still reattach it.
+        guard meta.closeReason != nil else {
+            throw SegmentStoreError.segmentIsOpen(segmentId: segmentId)
+        }
+        let logFile = logURL(segmentId)
+        guard !mediaRangeMs.isEmpty, fm.fileExists(atPath: logFile.path) else { return 0 }
+        let bytes = [UInt8](try Data(contentsOf: logFile))
+        let parsed = parseRecords(bytes)
+        let records = parsed.records
+
+        // Media position = rank in sequence order (what `readFrames` hands every consumer).
+        // Ties keep file order, as the stable sort there does.
+        let bySequence = records.indices.sorted { a, b in
+            records[a].sequence != records[b].sequence
+                ? records[a].sequence < records[b].sequence : a < b
+        }
+        let frameMs = Int64(meta.frameDurationMs > 0 ? meta.frameDurationMs : 20)
+        var silenced = [Bool](repeating: false, count: records.count)
+        var count = 0
+        var changed = false
+        for (position, index) in bySequence.enumerated()
+        where mediaRangeMs.contains(Int64(position) * frameMs) {
+            silenced[index] = true
+            count += 1
+            if records[index].payload != silenceFrame { changed = true }
+        }
+        // Nothing in range, or already silent (a delete that is being repeated): no write.
+        guard changed else { return count }
+
+        var writer = WireWriter(initialCapacity: bytes.count)
+        for (index, record) in records.enumerated() {
+            let payload = silenced[index] ? silenceFrame : record.payload
+            writer.u32(record.sequence)
+            writer.u64(record.sampleIndex)
+            writer.u16(payload.count)
+            writer.bytes(payload)
+        }
+        let rewritten = writer.toData()
+        let tmp = segmentsDir.appendingPathComponent("\(segmentId)\(Self.logSuffix).tmp")
+        try Self.writeDurably(rewritten, to: tmp)
+        try atomicMove(from: tmp, to: logFile)
+        // The rename is what destroyed the audio; make it survive a power cut too.
+        Self.synchronizeDirectory(segmentsDir)
+
+        if meta.logBytes != Int64(rewritten.count) {
+            var resized = meta
+            resized.logBytes = Int64(rewritten.count)
+            try writeMetaAtomically(resized)
+        }
+        return count
+    }
+
+    /// Writes `data` to a new file at `url` and fsyncs it before returning.
+    private static func writeDurably(_ data: Data, to url: URL) throws {
+        let fm = FileManager.default
+        try? fm.removeItem(at: url)
+        guard fm.createFile(atPath: url.path, contents: nil) else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain, code: Int(errno),
+                userInfo: [NSFilePathErrorKey: url.path])
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? fm.removeItem(at: url)
+            throw error
+        }
+    }
+
+    /// fsync a directory, so a rename inside it is durable. Best effort.
+    private static func synchronizeDirectory(_ url: URL) {
+        let descriptor = open(url.path, O_RDONLY)
+        guard descriptor >= 0 else { return }
+        fsync(descriptor)
+        close(descriptor)
     }
 
     private func removeIfExists(_ url: URL) throws {
