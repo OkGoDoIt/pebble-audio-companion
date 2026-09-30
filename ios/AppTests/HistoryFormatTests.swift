@@ -150,12 +150,34 @@ struct HistoryFormatTests {
         #expect(plain(line.main) == "about 2:00 – 2:56 PM · 56 min")
     }
 
-    @Test func anUntitledConversationStretchIsConversation() {
-        var untitled = block(at(9, 0), at(10, 0))
+    @Test func anUntitledStretchLeadsWithItsTimeAndHasNoPlaceholderTitle() {
+        var untitled = block(at(15, 20), at(16, 5), missing: 3 * 60_000)
+        untitled.source = .conversation
         untitled.title = nil
-        #expect(HistoryLabels.chapterTitle(untitled) == "Conversation")
+        untitled.summary = nil
+        untitled.snippet = "Right, try it again with the watch off the charger."
+        #expect(HistoryLabels.isUntitled(untitled))
+        #expect(plain(HistoryLabels.chapterHeading(untitled, locale: us)) == "3:20 – 4:05 PM")
+        let line = HistoryLabels.chapterTimeLine(untitled, locale: us)
+        #expect(line.main == "45 min")
+        #expect(line.missing == "3 min missing")
         untitled.title = ""
-        #expect(HistoryLabels.chapterTitle(untitled) == "Conversation")
+        #expect(HistoryLabels.isUntitled(untitled))
+        #expect(!HistoryLabels.chapterTitle(untitled, locale: us).contains("Conversation"))
+    }
+
+    @Test func anUntitledStretchReadsItsTimeThenItsFirstWords() {
+        var untitled = block(at(15, 20), at(16, 5))
+        untitled.source = .conversation
+        untitled.title = nil
+        untitled.summary = nil
+        untitled.tags = []
+        untitled.people = []
+        untitled.snippet = "Right, try it again."
+        let label = plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us))
+        #expect(label == "3:20 to 4:05 PM, 45 minutes. First words: Right, try it again.")
+        untitled.snippet = nil
+        #expect(plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us)) == "3:20 to 4:05 PM, 45 minutes")
     }
 
     @Test func theLiveCardsTimeLine() {

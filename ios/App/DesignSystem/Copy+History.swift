@@ -174,8 +174,8 @@ extension Copy {
 
         // MARK: Chapter cards (5.3 "Chapter card")
 
-        /// The title of a card drawn from an untitled conversation stretch.
-        static let conversation = "Conversation"
+        /// Verbatim words, quoted: an untitled card's first words.
+        static func quote(_ text: String) -> String { "“\(text)”" }
         /// "· 4 min missing" on a card's time line.
         static func missing(_ duration: String) -> String { "\(duration) missing" }
         /// The prefix for a time read from a recording whose clock is not exact.
@@ -247,6 +247,8 @@ extension Copy {
             static func approximately(_ spokenRange: String) -> String { "about \(spokenRange)" }
             static func followUpAction(_ text: String) -> String { "Follow-up: \(text)" }
             static let openHint = "Opens the conversation at this point"
+            /// An untitled card's first words, spoken after its time.
+            static func firstWords(_ text: String) -> String { "First words: \(text)" }
             static let openRecordingHint = "Opens the recording"
             static let openDayHint = "Opens this day"
             /// "apartment, on 14 days".

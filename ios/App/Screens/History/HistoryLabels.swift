@@ -20,19 +20,37 @@ enum HistoryLabels {
     static func chapterTimeLine(_ block: HistoryChapterBlock, locale: Locale = .current)
         -> (main: String, missing: String?)
     {
-        let zone = TimeZone(identifier: block.zoneID) ?? .current
-        var range = HistoryFormat.timeRange(block.startMs, block.endMs, zone: zone, locale: locale)
-        if block.timesApproximate { range = Copy.History.approximately(range) }
-        let main = range + " · " + HistoryFormat.duration(ms: block.endMs - block.startMs)
+        let duration = HistoryFormat.duration(ms: block.endMs - block.startMs)
+        // An untitled card already leads with its range; its second line is the duration.
+        let main = isUntitled(block) ? duration : timeRange(block, locale: locale) + " · " + duration
         let missing = block.missingMs > 0
             ? Copy.History.missing(HistoryFormat.duration(ms: block.missingMs)) : nil
         return (main, missing)
     }
 
-    /// The title a card shows: the chapter's, or for an untitled conversation "Conversation".
-    static func chapterTitle(_ block: HistoryChapterBlock) -> String {
+    /// A stretch of conversation no chapter covers and nothing titles: the card leads with its
+    /// time, and its body is its first words (`snippet`).
+    static func isUntitled(_ block: HistoryChapterBlock) -> Bool {
+        block.title?.isEmpty ?? true
+    }
+
+    /// What a card is called where a name is needed (topic results, menus): its title, or for
+    /// an untitled stretch its time range. There is no placeholder title.
+    static func chapterTitle(_ block: HistoryChapterBlock, locale: Locale = .current) -> String {
         if let title = block.title, !title.isEmpty { return title }
-        return Copy.History.conversation
+        return timeRange(block, locale: locale)
+    }
+
+    /// The card's first line: the title, or for an untitled stretch its time range, set in the
+    /// title style ("3:20 – 4:05 PM").
+    static func chapterHeading(_ block: HistoryChapterBlock, locale: Locale = .current) -> String {
+        chapterTitle(block, locale: locale)
+    }
+
+    private static func timeRange(_ block: HistoryChapterBlock, locale: Locale) -> String {
+        let zone = TimeZone(identifier: block.zoneID) ?? .current
+        let range = HistoryFormat.timeRange(block.startMs, block.endMs, zone: zone, locale: locale)
+        return block.timesApproximate ? Copy.History.approximately(range) : range
     }
 
     /// The live card's time line: "11:20 AM · 21 min so far".
@@ -103,6 +121,25 @@ enum HistoryLabels {
         let zone = TimeZone(identifier: block.zoneID) ?? .current
         var range = HistoryFormat.spokenTimeRange(block.startMs, block.endMs, zone: zone, locale: locale)
         if block.timesApproximate { range = Copy.History.A11y.approximately(range) }
+        if isUntitled(block) {
+            // "3:20 to 4:05 PM, 45 minutes. First words: …"
+            var head = range + ", " + HistoryFormat.spokenDuration(ms: block.endMs - block.startMs)
+            if block.missingMs > 0 {
+                head += ", " + Copy.History.A11y.missing(HistoryFormat.spokenDuration(ms: block.missingMs))
+            }
+            var sentences = [head]
+            if let snippet = block.snippet, !snippet.isEmpty {
+                sentences.append(Copy.History.A11y.firstWords(snippet))
+            }
+            var rest: [String] = []
+            if !block.tags.isEmpty { rest.append(Copy.History.A11y.topics(block.tags)) }
+            if !block.people.isEmpty { rest.append(Copy.History.A11y.people(block.people)) }
+            let open = block.followUps.filter { !$0.done }.count
+            let followUps = Copy.History.A11y.followUps(total: block.followUps.count, open: open)
+            if !followUps.isEmpty { rest.append(followUps) }
+            if !rest.isEmpty { sentences.append(rest.joined(separator: ", ")) }
+            return sentences.joined(separator: ". ")
+        }
         var parts = [chapterTitle(block), range, HistoryFormat.spokenDuration(ms: block.endMs - block.startMs)]
         if block.missingMs > 0 {
             parts.append(Copy.History.A11y.missing(HistoryFormat.spokenDuration(ms: block.missingMs)))

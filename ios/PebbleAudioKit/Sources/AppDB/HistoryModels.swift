@@ -124,6 +124,9 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
     /// Nil when there is no title to show (an untitled conversation stretch).
     public var title: String?
     public var summary: String?
+    /// For a card with no title or summary of its own (source `.conversation`): the first
+    /// substantive thing that was said in it, verbatim from the transcript. Nil otherwise.
+    public var snippet: String?
     public var tags: [String]
     public var people: [String]
     /// Audio lost inside the card's range ("· 4 min missing"). Never a separate item.
@@ -135,7 +138,7 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
 
     public init(
         id: String, startMs: Int64, endMs: Int64, zoneID: String, source: Source,
-        title: String?, summary: String?, tags: [String] = [], people: [String] = [],
+        title: String?, summary: String?, snippet: String? = nil, tags: [String] = [], people: [String] = [],
         missingMs: Int64 = 0, timesApproximate: Bool = false,
         followUps: [HistoryFollowUpLine] = []
     ) {
@@ -146,6 +149,7 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
         self.source = source
         self.title = title
         self.summary = summary
+        self.snippet = snippet
         self.tags = tags
         self.people = people
         self.missingMs = missingMs
