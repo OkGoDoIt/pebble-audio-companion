@@ -399,6 +399,8 @@ public actor EnrichmentService {
             pauses: pauses,
             openSegmentId: openId,
             evidence: evidence,
+            memo: groupingMemo,
+            nowMs: clock.nowMs,
             db: database
         )
         cachedGrouping = rebuilt.conversations
@@ -423,6 +425,9 @@ public actor EnrichmentService {
     }
 
     private var cachedGrouping: [GroupedConversation]?
+    /// Each run's conversations, remembered between passes: regroup runs over the whole
+    /// library every pass, and a run whose evidence has not moved must not be searched again.
+    private let groupingMemo = GroupingMemo()
     /// Boundary candidates from the last regroup — the semantic layer's work list.
     private var cachedBoundaryCandidates: [BoundaryCandidate] = []
 
@@ -457,8 +462,8 @@ public actor EnrichmentService {
                 meta.transcriptionState == .complete
                 ? speechTimingsOf(meta.segmentId)?.map {
                     SpeechSpan(
-                        startMs: $0.startMs, endMs: $0.endMs,
-                        wordCount: $0.text.split(whereSeparator: \.isWhitespace).count)
+                        startMs: $0.startMs, endMs: $0.endMs, text: $0.text,
+                        speaker: $0.speaker)
                 }
                 : nil
             let evidence = SegmentSpeechEvidence.of(meta, transcriptSpeech: timings)

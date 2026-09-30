@@ -164,6 +164,35 @@ public struct SegmentProvenance: Equatable, Sendable {
     public var modeUsed: String?
     public var attempts: Int
     public var lastError: String?
+    /// The range of the segment's stored audio this conversation owns (media ms). Nil bounds
+    /// mean "from the segment's start" / "to its end"; both nil is the whole segment.
+    public var startMediaMs: Int64?
+    public var endMediaMs: Int64?
+
+    public init(
+        segmentId: String, ordinal: Int, state: TranscriptionState? = nil,
+        segmentState: TranscriptionState? = nil, providerId: String? = nil,
+        modelUsed: String? = nil, modeUsed: String? = nil, attempts: Int = 0,
+        lastError: String? = nil, startMediaMs: Int64? = nil, endMediaMs: Int64? = nil
+    ) {
+        self.segmentId = segmentId
+        self.ordinal = ordinal
+        self.state = state
+        self.segmentState = segmentState
+        self.providerId = providerId
+        self.modelUsed = modelUsed
+        self.modeUsed = modeUsed
+        self.attempts = attempts
+        self.lastError = lastError
+        self.startMediaMs = startMediaMs
+        self.endMediaMs = endMediaMs
+    }
+
+    /// The piece itself — what to hand `SegmentTranscript.piece(_:)` or a frame reader.
+    public var member: ConversationMember {
+        ConversationMember(
+            segmentId: segmentId, startMediaMs: startMediaMs, endMediaMs: endMediaMs)
+    }
 }
 
 public struct ConversationDetail: Equatable, Sendable {
@@ -496,7 +525,8 @@ public struct ConversationQueries: Sendable {
                 SELECT cs.segmentId AS segmentId, cs.ordinal AS ordinal, tt.state AS state,
                     cs.transcriptionState AS segmentState,
                     tt.providerId AS providerId, tt.modelUsed AS modelUsed,
-                    tt.modeUsed AS modeUsed, tt.attempts AS attempts, tt.lastError AS lastError
+                    tt.modeUsed AS modeUsed, tt.attempts AS attempts, tt.lastError AS lastError,
+                    cs.startMediaMs AS startMediaMs, cs.endMediaMs AS endMediaMs
                 FROM conversation_segments cs
                 LEFT JOIN transcription_tasks tt ON tt.segmentId = cs.segmentId
                 WHERE cs.conversationId = ?
@@ -514,7 +544,9 @@ public struct ConversationQueries: Sendable {
                 modelUsed: member["modelUsed"],
                 modeUsed: member["modeUsed"],
                 attempts: member["attempts"] ?? 0,
-                lastError: member["lastError"]
+                lastError: member["lastError"],
+                startMediaMs: member["startMediaMs"],
+                endMediaMs: member["endMediaMs"]
             )
         }
         return ConversationDetail(row: row, members: members)
@@ -545,15 +577,64 @@ public struct ConversationQueries: Sendable {
         }.values(in: db.reader)
     }
 
-    /// The conversation a segment belongs to. AI citations name SEGMENTS while every screen
-    /// navigates by CONVERSATION (`conv-<firstMemberSegmentId>`), so this is the hop between
-    /// them - without it a citation tap opens "conversation not found".
-    public func conversationId(ofSegment segmentId: String) async throws -> String? {
+    /// The conversation that owns a moment of a segment. AI citations, follow-up sources and
+    /// loss notices name a SEGMENT and a time inside it, while every screen navigates by
+    /// CONVERSATION, so this is the hop between them — without it a citation tap opens
+    /// "conversation not found".
+    ///
+    /// `mediaMs` is an offset into the segment's stored audio. A segment can hold the end of
+    /// one conversation and the start of the next, so "the conversation of a segment" is only
+    /// a well-formed question at a moment; with no moment given, this answers for the
+    /// segment's first instant.
+    public func conversationId(
+        ofSegment segmentId: String, atMediaMs mediaMs: Int64 = 0
+    ) async throws -> String? {
         try await db.reader.read { db in
-            try String.fetchOne(
+            try Self.conversationId(db, ofSegment: segmentId, atMediaMs: mediaMs)
+        }
+    }
+
+    static func conversationId(
+        _ db: Database, ofSegment segmentId: String, atMediaMs mediaMs: Int64
+    ) throws -> String? {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT conversationId, startMediaMs, endMediaMs FROM conversation_segments
+                WHERE segmentId = ? ORDER BY COALESCE(startMediaMs, 0)
+                """,
+            arguments: [segmentId])
+        let owner = rows.first { row in
+            ConversationMember(
+                segmentId: segmentId, startMediaMs: row["startMediaMs"],
+                endMediaMs: row["endMediaMs"]
+            ).contains(mediaMs: max(mediaMs, 0))
+        }
+        // A moment past every piece (a stale offset) still belongs somewhere: the last piece.
+        return (owner ?? rows.last)?["conversationId"]
+    }
+
+    /// Every piece of every segment: which conversations own which part of it, in media order.
+    public func membersBySegment() async throws -> [String: [(conversationId: String, member: ConversationMember)]] {
+        try await db.reader.read { db in
+            var out: [String: [(conversationId: String, member: ConversationMember)]] = [:]
+            for row in try Row.fetchAll(
                 db,
-                sql: "SELECT conversationId FROM conversation_segments WHERE segmentId = ?",
-                arguments: [segmentId])
+                sql: """
+                    SELECT segmentId, conversationId, startMediaMs, endMediaMs
+                    FROM conversation_segments ORDER BY segmentId, COALESCE(startMediaMs, 0)
+                    """)
+            {
+                let segmentId: String = row["segmentId"]
+                out[segmentId, default: []].append(
+                    (
+                        row["conversationId"],
+                        ConversationMember(
+                            segmentId: segmentId, startMediaMs: row["startMediaMs"],
+                            endMediaMs: row["endMediaMs"])
+                    ))
+            }
+            return out
         }
     }
 
@@ -562,8 +643,15 @@ public struct ConversationQueries: Sendable {
     public func conversationIdsBySegment() async throws -> [String: String] {
         try await db.reader.read { db in
             var out: [String: String] = [:]
+            // A segment shared by two conversations is filed, for this coarse per-segment
+            // view, under the one that owns its start — the rows arrive latest piece first so
+            // the last write is the earliest piece.
             for row in try Row.fetchAll(
-                db, sql: "SELECT segmentId, conversationId FROM conversation_segments")
+                db,
+                sql: """
+                    SELECT segmentId, conversationId FROM conversation_segments
+                    ORDER BY segmentId, COALESCE(startMediaMs, 0) DESC
+                    """)
             {
                 out[row["segmentId"]] = row["conversationId"]
             }

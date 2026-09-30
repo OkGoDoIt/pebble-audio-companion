@@ -590,6 +590,66 @@ public struct AppDatabase: Sendable {
                 t.column("judgedAtMs", .integer)
             }
         }
+        // Conversations become topic-sized (see `ConversationUnits.swift`): a conversation owns a
+        // RANGE of a segment's stored audio, so one segment can belong to two conversations.
+        //
+        // `conversation_segments` is derived, but it is rebuilt in place rather than dropped so
+        // the library does not read as empty between this migration and the first regroup. The
+        // only changes are the two nullable range columns (nil = the whole segment, which is
+        // what every existing row means) and the UNIQUE on `segmentId` becoming a plain index.
+        //
+        // `conversation_cuts` is where the segmenter's SETTLED decisions live: a cut that has
+        // enough later talk behind it is written once and then held, so a conversation's id and
+        // title do not move every time the recording grows. DERIVED — dropping the table costs
+        // one re-segmentation. `conversation_cut_overrides` is the person's own "start a new
+        // conversation here" / "these are one conversation" at a position inside a segment, and
+        // is AUTHORITATIVE like `boundary_overrides` (which keeps the decisions made at a
+        // segment's own start).
+        migrator.registerMigration("conversation-ranges-v1") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE conversation_segments_v2 (
+                        conversationId TEXT NOT NULL
+                            REFERENCES conversations(id) ON DELETE CASCADE,
+                        segmentId TEXT NOT NULL,
+                        ordinal INTEGER NOT NULL,
+                        transcriptionState TEXT,
+                        startMediaMs INTEGER,
+                        endMediaMs INTEGER,
+                        PRIMARY KEY (conversationId, ordinal)
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_segments_v2
+                        (conversationId, segmentId, ordinal, transcriptionState)
+                    SELECT conversationId, segmentId, ordinal, transcriptionState
+                    FROM conversation_segments
+                    """)
+            try db.execute(sql: "DROP TABLE conversation_segments")
+            try db.execute(
+                sql: "ALTER TABLE conversation_segments_v2 RENAME TO conversation_segments")
+            try db.execute(
+                sql: """
+                    CREATE INDEX conversation_segments_segment
+                    ON conversation_segments(segmentId)
+                    """)
+            try db.create(table: "conversation_cuts") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("mediaMs", .integer).notNull()
+                t.column("reason", .text).notNull()
+                t.column("algorithm", .integer).notNull()
+                t.column("createdAtMs", .integer).notNull()
+                t.primaryKey(["segmentId", "mediaMs"])
+            }
+            try db.create(table: "conversation_cut_overrides") { t in
+                t.column("segmentId", .text).notNull()
+                t.column("mediaMs", .integer).notNull()
+                t.column("decision", .text).notNull()  // split | join
+                t.column("createdAtMs", .integer).notNull()
+                t.primaryKey(["segmentId", "mediaMs"])
+            }
+        }
         try migrator.migrate(writer)
     }
 }

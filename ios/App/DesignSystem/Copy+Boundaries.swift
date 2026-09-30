@@ -54,6 +54,9 @@ extension Copy {
             case .pause: return "Started when you resumed after a pause."
             case .gap: return "Started when recording picked back up."
             case .topicChange: return "Started here — the conversation changed."
+            case .lull: return "Started after a few quiet minutes."
+            // Not a claim about the talk: nothing is known about it yet.
+            case .length: return "Not transcribed yet — divided by length for now."
             case .manual: return "You split the recording here."
             case nil: return nil
             }
