@@ -60,8 +60,13 @@ public enum ConversationLexicon {
         var scalars = 0
         var previousWord: UInt32 = 0
         var wordBytes: [UInt8] = []
+        /// An apostrophe seen after a letter, not yet known to be INSIDE a word. It joins the
+        /// word only if a letter follows ("don't"); after the last letter it is a closing quote
+        /// or a possessive, and the word is the same word without it.
+        var pendingApostrophe = false
 
         func endWord() {
+            pendingApostrophe = false
             guard scalars > 0 else { return }
             let word = hash
             if firstWords.count < 2 { firstWords.append(String(decoding: wordBytes, as: UTF8.self)) }
@@ -82,6 +87,11 @@ public enum ConversationLexicon {
             wordBytes.removeAll(keepingCapacity: true)
         }
         func add(_ byte: UInt8) {
+            if pendingApostrophe {
+                pendingApostrophe = false
+                hash = (hash ^ 0x27) &* fnvPrime
+                if firstWords.count < 2 { wordBytes.append(0x27) }
+            }
             hash = (hash ^ UInt32(byte)) &* fnvPrime
             if firstWords.count < 2 { wordBytes.append(byte) }
         }
@@ -95,9 +105,9 @@ public enum ConversationLexicon {
                     asciiLetters += 1
                     scalars += 1
                     add(lower)
-                } else if byte == 0x27, scalars > 0 {
+                } else if byte == 0x27, scalars > 0, !pendingApostrophe {
                     // Keep contractions whole ("don't"), as one word.
-                    add(byte)
+                    pendingApostrophe = true
                 } else {
                     endWord()
                 }
@@ -107,8 +117,8 @@ public enum ConversationLexicon {
             if byte == 0xE2, let second = bytes.next() {
                 if second == 0x80 || second == 0x81 {
                     let third = bytes.next() ?? 0
-                    if second == 0x80, third == 0x99, scalars > 0 {
-                        add(0x27)  // the curly apostrophe
+                    if second == 0x80, third == 0x99, scalars > 0, !pendingApostrophe {
+                        pendingApostrophe = true  // the curly apostrophe
                     } else {
                         endWord()
                     }

@@ -206,7 +206,9 @@ enum ConversationRunPlanner {
 
         // 1. Hard cuts.
         if policy.quietSplitMs != .max {
-            for cut in quietCuts(members: members, turns: turns, evidence: evidence, policy: policy)
+            for cut in quietCuts(
+                members: members, turns: turns, evidence: evidence, policy: policy,
+                joinedSegments: joinedSegments)
             where !isBlocked(cut.position) {
                 add(cut)
             }
@@ -261,9 +263,16 @@ enum ConversationRunPlanner {
     /// conversation never opens on minutes of nothing — except at the very start of a run,
     /// where there is nothing before, and at the end of one, where the silent tail becomes its
     /// own unit so the conversation can finish.
+    ///
+    /// `joinedSegments` are segments whose own start the person joined to what came before.
+    /// When conversations were whole segments a quiet split landed on the segment join nearest
+    /// the middle of the silence, so "these are one conversation" was recorded against that
+    /// segment. The same silence is now cut at the first word after it, somewhere else — and
+    /// the decision still means what the person meant, so a silence that contains a joined
+    /// segment's start is not cut at all.
     static func quietCuts(
         members: [Member], turns: [RunTurn], evidence: [String: SegmentSpeechEvidence],
-        policy: BoundaryPolicy
+        policy: BoundaryPolicy, joinedSegments: Set<String> = []
     ) -> [PlannedCut] {
         guard !turns.isEmpty, let first = members.first else { return [] }
         let runStartMs = first.startWallMs
@@ -321,6 +330,14 @@ enum ConversationRunPlanner {
             // DEFERRAL, not a decision: a member still transcribing (or still open) looks
             // exactly like a member in which nobody spoke.
             guard overlapping.allSatisfy(\.isSettled) else { continue }
+            if !joinedSegments.isEmpty,
+                overlapping.contains(where: {
+                    joinedSegments.contains($0.meta.segmentId)
+                        && $0.startWallMs >= stretch.startMs && $0.startWallMs <= stretch.endMs
+                })
+            {
+                continue
+            }
             let lostMs = overlapping.reduce(Int64(0)) { total, member in
                 total
                     + ConversationBoundaryDetector.lossSpansMs(member.meta).reduce(Int64(0)) {
