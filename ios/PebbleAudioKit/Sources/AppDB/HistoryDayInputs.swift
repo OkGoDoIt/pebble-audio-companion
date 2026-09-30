@@ -105,7 +105,9 @@ public struct HistoryChapterInput: Equatable, Sendable {
     }
 }
 
-/// A conversation, for the cards that stand in for talk no chapter covers yet.
+/// A conversation from the grouper. NOT USED by the builder any more: the grouper's boundaries
+/// are not conversation-sized, so talk is cut by `HistoryTalkCutter` instead and the cards carry
+/// no conversation title. Kept so callers written against the first version still compile.
 public struct HistoryConversationInput: Equatable, Sendable {
     public var id: String
     public var startMs: Int64
@@ -120,6 +122,19 @@ public struct HistoryConversationInput: Equatable, Sendable {
         self.endMs = endMs
         self.title = title
         self.segmentIds = segmentIds
+    }
+}
+
+/// One turn of a transcript, for a card's snippet: where it starts on the wall clock and what was
+/// said, verbatim. The caller truncates the text (about 160 characters) and supplies the turns in
+/// time order.
+public struct HistoryTurnPreview: Equatable, Sendable {
+    public var startMs: Int64
+    public var text: String
+
+    public init(startMs: Int64, text: String) {
+        self.startMs = startMs
+        self.text = text
     }
 }
 
@@ -221,6 +236,8 @@ public struct HistoryDayRules: Equatable, Sendable {
     /// drops arrive in bursts of dozens of sub-second records, and one item each drew 2026-09-24
     /// of the real backup as 949 rows ("failed 1s, missing 0s, failed 1s, …"); carried, 9.
     public var carryShortLoss: Bool
+    /// Where the builder cuts talk no chapter covers (`HistoryTalkCutter`).
+    public var talkCut: HistoryTalkCutRules
 
     public init(
         talkBridgeMs: Int64? = nil,
@@ -228,7 +245,8 @@ public struct HistoryDayRules: Equatable, Sendable {
         noConversationHoleMs: Int64 = 2 * 60_000,
         foldBelowMs: Int64 = 2 * 60_000,
         followUpSpanShare: Double = 0.8,
-        carryShortLoss: Bool = true
+        carryShortLoss: Bool = true,
+        talkCut: HistoryTalkCutRules = .default
     ) {
         self.talkBridgeMs = talkBridgeMs ?? noConversationMinimumMs
         self.noConversationMinimumMs = noConversationMinimumMs
@@ -236,6 +254,7 @@ public struct HistoryDayRules: Equatable, Sendable {
         self.foldBelowMs = foldBelowMs
         self.followUpSpanShare = followUpSpanShare
         self.carryShortLoss = carryShortLoss
+        self.talkCut = talkCut
     }
 
     public static let `default` = HistoryDayRules()

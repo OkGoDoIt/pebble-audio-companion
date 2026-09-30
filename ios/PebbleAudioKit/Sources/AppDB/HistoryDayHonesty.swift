@@ -160,6 +160,30 @@ extension HistoryDayBuilder {
             fail("recorded audio drawn as a pause the person made")
         }
 
+        // A card standing in for talk no chapter covers has no title or summary of its own; only
+        // it may carry a snippet, and only a verbatim one.
+        let previewTexts = Set(input.turnPreviews.map(\.text))
+        for item in timed {
+            guard case .chapter(let block) = item else { continue }
+            switch block.source {
+            case .conversation:
+                if block.title != nil || block.summary != nil { fail("fallback card \(block.id) has a title or summary") }
+                // Longer than a merge can make it only when no real pause lies inside it.
+                if block.endMs - block.startMs > input.rules.talkCut.mergeCapMs {
+                    let runs = HistoryTalkCutter.mergedRuns(
+                        input.speechRuns.map { $0.startMs..<$0.endMs }, in: block.startMs..<block.endMs)
+                    if !HistoryTalkCutter.pauseCuts(stretch: block.startMs..<block.endMs, runs: runs, rules: input.rules.talkCut).isEmpty {
+                        fail("fallback card \(block.id) is longer than the merge cap across a real pause")
+                    }
+                }
+                if let snippet = block.snippet, !previewTexts.contains(snippet) {
+                    fail("fallback card \(block.id) has a snippet nobody said")
+                }
+            case .chapter:
+                if block.snippet != nil { fail("chapter \(block.id) has a snippet") }
+            }
+        }
+
         // A recording that failed or is not transcribed yet is never inside a card.
         let untranscribed = mergeRanges(
             input.segmentStates.filter { !($0.state == .complete || $0.state == .noSpeech) }

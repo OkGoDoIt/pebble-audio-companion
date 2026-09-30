@@ -49,6 +49,7 @@ struct RealHistoryDayTests {
         // by `spokenRuns`.
         let transcripts = FileTranscriptStore(root: root, nowMs: { 0 })
         var runs: [HistorySpeechRun] = []
+        var previews: [HistoryTurnPreview] = []  // turn texts: printed, never committed
         var states: [HistorySegmentState] = []
         var withoutFile = 0
         for meta in metas {
@@ -70,8 +71,13 @@ struct RealHistoryDayTests {
             let evidence = SegmentSpeechEvidence.of(
                 evidenceMeta,
                 transcriptSpeech: timings.map { SpeechSpan(startMs: $0.startMs, endMs: $0.endMs) })
-            runs += ConversationBoundaryDetector.spokenRuns(evidenceMeta, evidence).map {
+            let placed = ConversationBoundaryDetector.spokenRuns(evidenceMeta, evidence)
+            runs += placed.map {
                 HistorySpeechRun(segmentId: meta.segmentId, startMs: $0.startMs, endMs: $0.endMs)
+            }
+            // One run per transcript turn, in order: the turn's text rides on its placement.
+            previews += zip(placed, timings).map {
+                HistoryTurnPreview(startMs: $0.0.startMs, text: String($0.1.text.prefix(160)))
             }
         }
         print("real-history: \(metas.count) recordings, \(runs.count) speech runs, \(conversations.count) conversations, "
@@ -90,7 +96,7 @@ struct RealHistoryDayTests {
                 let input = HistoryDayBuilder.Input(
                     dateKey: dateKey, windows: HistoryDayWindow.from(timeline.windows(of: dateKey)),
                     segments: inputs, pauses: pauses, speechRuns: runs, segmentStates: states,
-                    conversations: conversations, rules: variant.rules)
+                    conversations: conversations, turnPreviews: previews, rules: variant.rules)
                 let clock = ContinuousClock()
                 var day: HistoryDay!
                 let elapsed = clock.measure { day = HistoryDayBuilder.build(input) }
@@ -100,6 +106,7 @@ struct RealHistoryDayTests {
                 #expect(problems.isEmpty, "\(dateKey) \(variant.name): \(problems.joined(separator: "; "))")
 
                 print("real-history: \(dateKey) [\(variant.name)] \(summary(day)) built in \(format(elapsed))")
+                if variant.name == "default" { print(cardDistribution(day)) }
                 if printDays.contains(dateKey), variant.name == "default" {
                     print(render(day, zone: zone, variant: variant.name))
                 }
@@ -179,7 +186,11 @@ private func label(_ item: HistoryItem) -> String {
     switch item {
     case .chapter(let block):
         let missing = block.missingMs > 0 ? " · \(minutes(block.missingMs)) missing" : ""
-        return "card [\(block.title ?? "untitled")]\(missing)"
+        let words = block.snippet.map { snippet -> String in
+            let flat = snippet.replacingOccurrences(of: "\n", with: " ")
+            return " \u{201C}\(flat.prefix(60))\(flat.count > 60 ? "…" : "")\u{201D}"
+        } ?? ""
+        return "card\(block.title.map { " [\($0)]" } ?? "")\(missing)\(words)"
     case .gap(let gap):
         guard gap.missingMs > 0 else { return gapLabel(gap) }
         let causes = gap.lossCauses.map(\.rawValue).joined(separator: ", ")
@@ -199,6 +210,24 @@ private func gapLabel(_ gap: HistoryGap) -> String {
     case .deleted: return "deleted [\(gap.deletedBy.map(\.rawValue) ?? "?")]"
     default: return gap.kind.rawValue
     }
+}
+
+/// Cards on the day: how many, median / p90 / max length, over an hour, over two, under ten
+/// minutes, and every card over an hour.
+private func cardDistribution(_ day: HistoryDay) -> String {
+    let cards = day.items.compactMap { item -> HistoryChapterBlock? in
+        if case .chapter(let block) = item { return block } else { return nil }
+    }
+    let lengths = cards.map { $0.endMs - $0.startMs }.sorted()
+    guard !lengths.isEmpty else { return "real-history: \(day.dateKey) cards: none" }
+    func percentile(_ p: Double) -> Int64 { lengths[min(lengths.count - 1, Int((Double(lengths.count - 1) * p).rounded()))] }
+    let long = cards.filter { $0.endMs - $0.startMs > 3_600_000 }
+    let list = long.map { "\(clock($0.startMs, day.zoneID))–\(clock($0.endMs, day.zoneID)) \(minutes($0.endMs - $0.startMs))" }
+    return "real-history: \(day.dateKey) cards \(cards.count): median \(minutes(percentile(0.5))), "
+        + "p90 \(minutes(percentile(0.9))), max \(minutes(lengths.last!)); "
+        + "> 60 min \(long.count), > 120 min \(lengths.filter { $0 > 7_200_000 }.count), "
+        + "< 10 min \(lengths.filter { $0 < 600_000 }.count)"
+        + (list.isEmpty ? "" : "; over an hour: " + list.joined(separator: ", "))
 }
 
 private func kindKey(_ item: HistoryItem) -> String {
