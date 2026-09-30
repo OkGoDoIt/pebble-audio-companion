@@ -140,7 +140,9 @@ public struct HistoryPlacedFollowUp: Equatable, Sendable {
 /// - Day summary: the day's line; else its recap whole — never the recap minus a sentence.
 /// - Week headline (the month's row): the week brief's headline; else the headlines of the two
 ///   days with the most talk, distinct, joined — or only the first, when two would not fit the
-///   row's two lines. Week summary: the week brief's line, else none.
+///   row's two lines; else the titles of the week's two most-talked titled conversations, the
+///   same way; else none (the row then has no title line at all). Week summary: the week
+///   brief's line, else none.
 /// - The week's and the month's in-brief card: their briefs' paragraphs, else none ("No summary
 ///   yet").
 /// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying
@@ -192,16 +194,34 @@ public struct HistoryPeriodSources: Sendable {
             let (ta, tb) = (talk(a), talk(b))
             return ta != tb ? ta > tb : a.dateKey < b.dateKey
         }
-        var headlines: [String] = []
+        if let fromDays = Self.joined(ranked.compactMap(dayHeadline)) { return fromDays }
+        // No day has a headline of its own: the week's own most-talked titled conversations.
+        // (A day's headline already falls back to its most-talked titled conversation, so this
+        // is for talk no single day ranks — a conversation whose words are spread across days,
+        // or one not yet counted as transcribed talk on any.) Never a placeholder in its place:
+        // "No summary yet" as a title over a row with tags and follow-ups is what Roger reported.
+        let titled = Self.mergedConversations(days.map(\.conversations))
+            .filter { Self.nonEmpty($0.title) != nil }
+            .sorted { a, b in
+                if a.transcribedMs != b.transcribedMs { return a.transcribedMs > b.transcribedMs }
+                if a.overlapMs != b.overlapMs { return a.overlapMs > b.overlapMs }
+                return a.id < b.id
+            }
+        return Self.joined(titled.compactMap { Self.nonEmpty($0.title) })
+    }
+
+    /// The first `weekHeadlineDays` distinct phrases, joined when they fit the row's two lines,
+    /// else the first alone. Nil when there are none.
+    static func joined(_ phrases: [String]) -> String? {
+        var picked: [String] = []
         var seen: Set<String> = []
-        for day in ranked {
-            guard let headline = dayHeadline(day), seen.insert(headline.lowercased()).inserted else { continue }
-            headlines.append(headline)
-            if headlines.count == Self.weekHeadlineDays { break }
+        for phrase in phrases where seen.insert(phrase.lowercased()).inserted {
+            picked.append(phrase)
+            if picked.count == weekHeadlineDays { break }
         }
-        guard let first = headlines.first else { return nil }
-        let joined = headlines.joined(separator: Self.separator)
-        return joined.count <= Self.joinedHeadlineCharacters ? joined : first
+        guard let first = picked.first else { return nil }
+        let joined = picked.joined(separator: separator)
+        return joined.count <= joinedHeadlineCharacters ? joined : first
     }
 
     public func weekSummary(firstDateKey: String, _ days: [HistoryDayFacts]) -> String? {

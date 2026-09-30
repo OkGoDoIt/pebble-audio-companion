@@ -53,7 +53,7 @@ struct WeekDayRow: View {
             if let summary = summaryText {
                 Text(summary)
                     .font(AppFont.scaled(13, relativeTo: .footnote, dynamicTypeSize))
-                    .foregroundStyle(Tokens.tertiary)
+                    .foregroundStyle(summaryIsPlaceholder ? Tokens.meta : Tokens.tertiary)
                     .lineSpacing(1.5)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -108,20 +108,17 @@ struct WeekDayRow: View {
             Text(Copy.History.today)
                 .font(AppFont.rowTitle).foregroundStyle(Tokens.tint)
         case .recorded:
-            if let headline = row.headline {
+            // No headline: no title line at all (`HistoryLabels.RowText`); a placeholder, when
+            // there is no text either, sits in the summary slot below.
+            if let title = HistoryLabels.weekDayRow(row).title {
                 // Two lines, never a clipped one: a headline is written to fit (36 characters
                 // asked, 42 accepted), but a 390 pt phone fits about 34 beside the date column,
                 // and the fallback is a conversation title of any length. Ellipsised, it was the
                 // cut the briefs exist to remove ("Site tour and a long debugg…").
-                Text(headline)
+                Text(title)
                     .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if row.summary == nil {
-                // Only where there is no text at all: above a summary it read as if the summary
-                // were not one.
-                Text(Copy.History.noSummaryYet)
-                    .font(AppFont.pendingTitle).foregroundStyle(Tokens.meta)
             }
         }
     }
@@ -131,7 +128,13 @@ struct WeekDayRow: View {
         case .nothingRecorded: return nil
         case .notTranscribedYet(let waitingMs):
             return Copy.History.waitingToTranscribe(HistoryFormat.duration(ms: waitingMs))
-        case .today, .recorded: return row.summary
+        case .today: return row.summary
+        case .recorded: return HistoryLabels.weekDayRow(row).summary
         }
+    }
+
+    private var summaryIsPlaceholder: Bool {
+        if case .recorded = row.state { return HistoryLabels.weekDayRow(row).summaryIsPlaceholder }
+        return false
     }
 }

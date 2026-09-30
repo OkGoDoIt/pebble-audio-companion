@@ -128,6 +128,43 @@ struct MockHistoryTests {
         #expect(month.rows.last?.headline?.contains(HistoryPeriodSources.separator) == true)
     }
 
+    /// "No summary yet" is never a row's title — Roger's report of 2026-09-30 was that
+    /// placeholder, large and gray, above a row's tags and follow-ups. Every row of every demo
+    /// week and month, with and without briefs, and the rows the rule is about.
+    @Test func noRowEverTitlesItselfNoSummaryYet() {
+        var monthRows = MockHistory.month(containing: "2026-09-22").rows
+            + MockHistory.monthWithoutBriefs(containing: "2026-09-22").rows
+        var dayRows: [HistoryWeekRow] = []
+        for first in ["2026-08-30", "2026-09-06", "2026-09-13", "2026-09-20"] {
+            let last = HistoryCalendar.key(first, addingDays: 6)
+            dayRows += MockHistory.week(firstDateKey: first, lastDateKey: last).rows
+            dayRows += MockHistory.weekWithoutBriefs(firstDateKey: first, lastDateKey: last).rows
+        }
+        // The shapes the rule is about: no headline with a line, and no text at all.
+        monthRows.append(HistoryMonthRow(
+            firstDateKey: "2026-09-27", lastDateKey: "2026-10-03", isCurrentWeek: false,
+            hasRecordings: true, tags: ["work"], followUpTotal: 2, followUpOpen: 1))
+        monthRows.append(HistoryMonthRow(
+            firstDateKey: "2026-09-27", lastDateKey: "2026-10-03", isCurrentWeek: false,
+            hasRecordings: true, summary: "A line with no headline."))
+        dayRows.append(HistoryWeekRow(dateKey: "2026-09-27", state: .recorded, tags: ["work"]))
+        dayRows.append(HistoryWeekRow(dateKey: "2026-09-27", state: .recorded, summary: "A recap."))
+
+        for row in monthRows where row.hasRecordings {
+            let text = HistoryLabels.monthRow(row)
+            #expect(text.title != Copy.History.noSummaryYet, "\(row.firstDateKey)")
+            #expect(text.title != nil || text.summary != nil, "\(row.firstDateKey): a row says something")
+            #expect(text.summaryIsPlaceholder == (row.headline == nil && row.summary == nil))
+        }
+        for row in dayRows where row.state == .recorded {
+            let text = HistoryLabels.weekDayRow(row)
+            #expect(text.title != Copy.History.noSummaryYet, "\(row.dateKey)")
+            #expect(text.summaryIsPlaceholder == (row.headline == nil && row.summary == nil))
+        }
+        // Without briefs, the demo month's weeks are headed by conversation titles, not by nothing.
+        #expect(MockHistory.monthWithoutBriefs(containing: "2026-09-22").rows.allSatisfy { $0.headline != nil })
+    }
+
     @Test func theMonthIsOldestFirstWithNoFutureWeek() {
         let month = MockHistory.month(containing: "2026-09-22")
         #expect(month.rows.map(\.firstDateKey) == ["2026-08-30", "2026-09-06", "2026-09-13", "2026-09-20"])

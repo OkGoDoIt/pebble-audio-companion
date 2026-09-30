@@ -261,6 +261,31 @@ private func recorded(
         #expect(longWeek.headline == "Garden planning")
     }
 
+    @Test("a week whose days have no headlines is headed by its most-talked titled conversations; else no title")
+    func weekHeadlineFromConversations() {
+        // Titled conversations with no transcribed talk counted on any day: no day headline.
+        let days: [String: HistoryDayFacts] = [
+            "2026-09-01": recorded(
+                "2026-09-01",
+                conversations: [
+                    conversation("a", "Setting up the watch", overlap: 50, transcribed: 0),
+                    conversation("b", "Streaming tests", overlap: 20, transcribed: 0),
+                ]),
+            "2026-09-02": recorded("2026-09-02", conversations: [conversation("c", nil, overlap: 90, transcribed: 0)]),
+        ]
+        let sources = HistoryPeriodSources()
+        let facts = ["2026-09-01", "2026-09-02"].map { days[$0]! }
+        #expect(facts.allSatisfy { sources.dayHeadline($0) == nil })
+        #expect(sources.weekHeadline(firstDateKey: "2026-08-30", facts) == "Setting up the watch · Streaming tests")
+        let month = HistoryPeriodAssembler.month(
+            containing: "2026-09-02", firstWeekday: 1, days: days, todayKey: "2026-09-03")
+        #expect(month.rows.first?.headline == "Setting up the watch · Streaming tests")
+
+        // Nothing titled at all: no headline — never a placeholder.
+        let untitled = [recorded("2026-09-02", conversations: [conversation("c", nil, overlap: 90)])]
+        #expect(sources.weekHeadline(firstDateKey: "2026-08-30", untitled) == nil)
+    }
+
     @Test("tag counts are the days a tag appears on; month totals cover only the month's days")
     func monthTagCountsAndTotals() {
         let days: [String: HistoryDayFacts] = [
