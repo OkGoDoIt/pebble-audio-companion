@@ -400,6 +400,12 @@ protocol ConversationDataSource: AnyObject {
     func setSplit(atSegmentId segmentId: String, on: Bool) async throws
     /// Join this conversation onto the one before it, or clear that decision.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws
+
+    /// The conversation a wall-clock moment falls in, and where on its scrubber (History plan
+    /// 7.9): `focus` is a `.moment` at exactly `atWallMs`, so the transcript lands on the row
+    /// being said then and marks nothing. A moment between recordings opens the nearest one
+    /// (see `MomentResolver.segment`). Nil only when nothing was recorded near the time.
+    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget?
 }
 
 /// The state of one conversation's boundaries: why it starts where it does, whether it can be

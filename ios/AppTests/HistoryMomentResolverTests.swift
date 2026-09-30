@@ -1,5 +1,8 @@
+import AppDB
 import Foundation
+import SegmentStore
 import Testing
+import WireProtocol
 
 // Opening a conversation at a wall-clock moment (History plan 7.9).
 
@@ -102,5 +105,283 @@ struct HistoryMomentRowTests {
         let transcript = (0..<6_000).map { Self.turn("r\($0)", Int64($0) * 14_400) }
         #expect(row(12 * 3_600_000 + 1, in: transcript) == "r3000")
         #expect(row(24 * 3_600_000, in: transcript) == "r5999")
+    }
+}
+
+// MARK: - The shared scrubber walk
+
+@Suite("history moment: the scrubber walk citations and moments share")
+struct HistoryMomentScrubberTests {
+    static let t0: Int64 = 1_727_690_400_000
+
+    /// `wallMs` of wall time at 16 kHz / 20 ms frames starting at `startMs`, holding `storedMs`
+    /// of audio. Received as it ended, so `startWallMs` is the sample-derived start.
+    static func meta(
+        _ id: String, startMs: Int64, wallMs: Int64 = 60_000, storedMs: Int64? = nil,
+        gaps: [GapMeta] = [], extents: Bool = true
+    ) -> SegmentMeta {
+        SegmentMeta(
+            segmentId: id, streamId: 1, protocolVersion: 1, codecIdRaw: 1, channels: 1,
+            frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 16_000, frameDurationMs: 20,
+            startTimeMs: UInt64(startMs), startMonotonicMs: 0,
+            receivedAtMs: startMs + wallMs,
+            firstSampleIndex: extents ? 0 : nil,
+            lastSampleIndexExclusive: extents ? UInt64(wallMs) * 16 : nil,
+            frameCount: (storedMs ?? wallMs) / 20,
+            gaps: gaps)
+    }
+
+    static func gap(atMs: Int64, durationMs: Int64) -> GapMeta {
+        GapMeta(
+            firstMissingSequence: UInt32(atMs / 20), missingFrameCount: UInt32(durationMs / 20),
+            firstMissingSampleIndex: UInt64(atMs) * 16, origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.spoolOverflow.rawValue))
+    }
+
+    /// `LiveWorld.citationTarget`'s member walk exactly as it stood before it was factored out
+    /// (f45e099), kept here as the oracle the shared function must reproduce.
+    static func legacyOffset(
+        citationStartMs: Int64?, citedId: String, members: [String],
+        metas: [String: SegmentMeta]
+    ) -> Int64? {
+        var mediaBeforeMemberMs: Int64 = 0
+        var mediaOffsetMs: Int64?
+        for member in members {
+            guard let meta = metas[member] else { continue }
+            let mediaMs = mediaDurationMs(meta)
+            if member == citedId {
+                guard mediaMs > 0 else { break }
+                let memberStartMs = ConversationGrouper.segmentStartMs(meta)
+                let clock = SegmentMediaClock(meta)
+                let into = min(
+                    max((citationStartMs ?? memberStartMs) - memberStartMs, 0), clock.wallSpanMs)
+                mediaOffsetMs =
+                    mediaBeforeMemberMs
+                    + (clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs))
+                break
+            }
+            mediaBeforeMemberMs += mediaMs
+        }
+        return mediaOffsetMs
+    }
+
+    /// Asserts parity with the oracle and returns the shared function's answer.
+    @discardableResult
+    static func offset(
+        _ wallMs: Int64?, in member: String, _ members: [String], _ metas: [SegmentMeta],
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) -> Int64? {
+        let byId = Dictionary(uniqueKeysWithValues: metas.map { ($0.segmentId, $0) })
+        let shared = ConversationScrubber.mediaOffset(
+            ofWallMs: wallMs, inMember: member, members: members, metas: byId)
+        let legacy = legacyOffset(
+            citationStartMs: wallMs, citedId: member, members: members, metas: byId)
+        #expect(
+            shared == legacy,
+            "shared \(String(describing: shared)) vs legacy \(String(describing: legacy))",
+            sourceLocation: sourceLocation)
+        return shared
+    }
+
+    /// Exact clock: 10 s of loss at 20 s. 30 s of wall time in is 20 s of stored audio.
+    @Test func anExactClockConvertsThroughTheGapRecords() {
+        let a = Self.meta(
+            "a", startMs: Self.t0, storedMs: 50_000,
+            gaps: [Self.gap(atMs: 20_000, durationMs: 10_000)])
+        #expect(SegmentMediaClock(a).isExact)
+        #expect(Self.offset(Self.t0 + 30_000, in: "a", ["a"], [a]) == 20_000)
+        #expect(Self.offset(Self.t0 + 25_000, in: "a", ["a"], [a]) == 20_000)  // inside the gap
+        #expect(Self.offset(Self.t0 + 10_000, in: "a", ["a"], [a]) == 10_000)
+    }
+
+    /// Inexact clock (the records account for none of the missing half): the wall offset
+    /// passes through, clamped to the stored audio, rather than being stretched by a guess.
+    @Test func anInexactClockPassesTheOffsetThroughClamped() {
+        let a = Self.meta("a", startMs: Self.t0, storedMs: 30_000)
+        #expect(!SegmentMediaClock(a).isExact)
+        #expect(Self.offset(Self.t0 + 20_000, in: "a", ["a"], [a]) == 20_000)
+        #expect(Self.offset(Self.t0 + 45_000, in: "a", ["a"], [a]) == 30_000)
+    }
+
+    /// Several members: every member before the named one adds its STORED audio.
+    @Test func earlierMembersAddTheirStoredAudio() {
+        let a = Self.meta("a", startMs: Self.t0, storedMs: 30_000)  // inexact, 30 s stored
+        let b = Self.meta(
+            "b", startMs: Self.t0 + 120_000, storedMs: 50_000,
+            gaps: [Self.gap(atMs: 0, durationMs: 10_000)])
+        let c = Self.meta("c", startMs: Self.t0 + 300_000)
+        let members = ["a", "b", "c"]
+        let metas = [a, b, c]
+        // 30 s of a, then 15 s into b of which the first 10 s were lost: 5 s.
+        #expect(Self.offset(Self.t0 + 135_000, in: "b", members, metas) == 35_000)
+        // a and b whole (30 s + 50 s), then 1 s into c.
+        #expect(Self.offset(Self.t0 + 301_000, in: "c", members, metas) == 81_000)
+        #expect(Self.offset(nil, in: "c", members, metas) == 80_000)
+    }
+
+    /// Outside the member's span, the position clamps to its edges.
+    @Test func timesOutsideTheMemberClampToItsEdges() {
+        let a = Self.meta("a", startMs: Self.t0)
+        let b = Self.meta("b", startMs: Self.t0 + 600_000)
+        #expect(Self.offset(Self.t0 + 300_000, in: "b", ["a", "b"], [a, b]) == 60_000)
+        #expect(Self.offset(Self.t0 + 10_000_000, in: "b", ["a", "b"], [a, b]) == 120_000)
+    }
+
+    /// A member that holds no frames. With sample extents its stored audio is read as its wall
+    /// span (`segmentStoredAudioMs`), the same number the transcript walk and the player use; with
+    /// none it holds nothing, and a moment in it has nowhere to cue.
+    @Test func aMemberWithNoFrames() {
+        let empty = Self.meta("e", startMs: Self.t0, storedMs: 0)
+        let hollow = Self.meta("h", startMs: Self.t0, storedMs: 0, extents: false)
+        let b = Self.meta("b", startMs: Self.t0 + 120_000)
+        #expect(Self.offset(Self.t0 + 120_000, in: "b", ["e", "b"], [empty, b]) == 60_000)
+        #expect(Self.offset(Self.t0 + 1_000, in: "h", ["h", "b"], [hollow, b]) == nil)
+        #expect(Self.offset(Self.t0 + 120_000, in: "b", ["h", "b"], [hollow, b]) == 0)
+    }
+
+    /// A member with no sidecar contributes nothing, and cannot itself be landed in.
+    @Test func aMissingSidecarIsSkipped() {
+        let b = Self.meta("b", startMs: Self.t0 + 120_000)
+        #expect(Self.offset(Self.t0 + 121_000, in: "b", ["gone", "b"], [b]) == 1_000)
+        #expect(Self.offset(Self.t0, in: "gone", ["gone", "b"], [b]) == nil)
+        #expect(Self.offset(Self.t0, in: "stranger", ["b"], [b]) == nil)
+    }
+}
+
+// MARK: - Which recording
+
+@Suite("history moment: which recording a time belongs to")
+struct HistoryMomentSegmentTests {
+    typealias Span = MomentResolver.Span
+    typealias Window = MomentResolver.Window
+    static let minute: Int64 = 60_000
+
+    static func span(
+        _ id: String, _ startMin: Int64, _ endMin: Int64, in conversation: String = "c1",
+        frames: Bool = true
+    ) -> Span {
+        Span(
+            segmentId: id, conversationId: conversation, startMs: startMin * minute,
+            endMs: endMin * minute, hasFrames: frames)
+    }
+
+    static func window(_ id: String, _ startMin: Int64, _ endMin: Int64) -> Window {
+        Window(conversationId: id, range: (startMin * minute)..<(endMin * minute))
+    }
+
+    private func pick(_ atMin: Int64, _ spans: [Span], _ windows: [Window] = [], plusMs: Int64 = 0)
+        -> String?
+    {
+        MomentResolver.segment(atWallMs: atMin * Self.minute + plusMs, in: spans, windows: windows)?
+            .segmentId
+    }
+
+    @Test func aTimeInsideOneRecordingPicksIt() {
+        let spans = [Self.span("a", 0, 10), Self.span("b", 10, 20)]
+        #expect(pick(5, spans) == "a")
+        // Abutting: the boundary belongs to the one starting there.
+        #expect(pick(10, spans) == "b")
+    }
+
+    @Test func overlappingRecordingsPickTheLatestStart() {
+        let spans = [Self.span("a", 0, 30), Self.span("b", 20, 40), Self.span("c", 25, 26)]
+        #expect(pick(22, spans) == "b")
+        #expect(pick(25, spans, plusMs: 1) == "c")
+        #expect(pick(27, spans) == "b")
+        #expect(pick(10, spans) == "a")
+    }
+
+    @Test func aTieOnStartPrefersTheRecordingWithFrames() {
+        let spans = [Self.span("a", 0, 10, frames: false), Self.span("b", 0, 10, frames: true)]
+        #expect(pick(5, spans) == "b")
+        #expect(pick(5, Array(spans.reversed())) == "b")
+        // And with nothing else to choose by, the lower id — never the listing order.
+        let twins = [Self.span("y", 0, 10), Self.span("x", 0, 10)]
+        #expect(pick(5, twins) == "x")
+        #expect(pick(5, Array(twins.reversed())) == "x")
+    }
+
+    @Test func aRecordingWithNoLengthHoldsItsInstant() {
+        #expect(pick(7, [Self.span("p", 7, 7)]) == "p")
+    }
+
+    /// Between two recordings of one conversation (a reconnect): where the audio resumes.
+    @Test func aGapInsideAConversationLandsWhereTheAudioResumes() {
+        let spans = [
+            Self.span("a", 0, 10), Self.span("b", 50, 60),
+            // Another conversation's recording sitting in the gap is not this conversation's.
+            Self.span("x", 30, 31, in: "c2"),
+        ]
+        let windows = [Self.window("c1", 0, 60), Self.window("c2", 30, 31)]
+        #expect(pick(20, spans, windows) == "b")
+        #expect(pick(40, spans, windows) == "b")
+    }
+
+    /// A conversation window can run past its last recording (a live one, a closing gap):
+    /// nothing resumes, so the recording before the time.
+    @Test func aGapAtTheEndOfAConversationLandsOnTheRecordingBefore() {
+        let spans = [
+            Self.span("a", 0, 10), Self.span("b", 12, 20), Self.span("n", 200, 210, in: "c2"),
+        ]
+        let windows = [Self.window("c1", 0, 60)]
+        #expect(pick(40, spans, windows) == "b")
+    }
+
+    @Test func beforeEverythingLandsOnTheFirstRecordingOnlyWhenNear() {
+        let spans = [Self.span("a", 100, 110), Self.span("b", 120, 130)]
+        #expect(pick(90, spans) == "a")
+        #expect(pick(71, spans) == "a")
+        #expect(pick(69, spans) == nil)
+    }
+
+    @Test func afterEverythingLandsOnTheLastRecordingOnlyWhenNear() {
+        let spans = [Self.span("a", 100, 110), Self.span("b", 120, 130)]
+        #expect(pick(140, spans) == "b")
+        #expect(pick(159, spans) == "b")
+        #expect(pick(161, spans) == nil)
+    }
+
+    /// Between two conversations, the one that starts next wins over the one that ended.
+    @Test func betweenConversationsPrefersWhatComesNext() {
+        let spans = [Self.span("a", 0, 10, in: "c1"), Self.span("b", 25, 30, in: "c2")]
+        let windows = [Self.window("c1", 0, 10), Self.window("c2", 25, 30)]
+        #expect(pick(12, spans, windows) == "b")
+        // More than half an hour to the next and within it of the last: the last.
+        let far = [Self.span("a", 0, 10, in: "c1"), Self.span("b", 80, 90, in: "c2")]
+        #expect(pick(20, far) == "a")
+    }
+
+    @Test func nothingRecordedResolvesToNothing() {
+        #expect(pick(0, []) == nil)
+        #expect(pick(0, [], [Self.window("c1", -10, 10)]) == nil)
+    }
+
+    @Test func theExtremesOfTheClockDoNotTrap() {
+        let spans = [Self.span("a", 0, 10)]
+        #expect(MomentResolver.segment(atWallMs: .max, in: spans, windows: []) == nil)
+        #expect(MomentResolver.segment(atWallMs: .min, in: spans, windows: []) == nil)
+    }
+}
+
+// MARK: - The mock stays usable
+
+@Suite("history moment: the demo world") @MainActor
+struct HistoryMomentMockTests {
+    /// `-demo-data` and previews have to be able to open a moment too, and land on the moment
+    /// style — never a citation band.
+    @Test func aMomentInsideADemoConversationOpensItAtThatTime() async throws {
+        let world = MockWorld.shared
+        let display = try #require(try await world.display(id: "long-day"))
+        let start = try #require(display.startedAt)
+        let end = try #require(display.endedAt)
+        let middle = Int64((start.timeIntervalSince1970 + end.timeIntervalSince(start) / 2) * 1000)
+
+        let target = try #require(await world.momentTarget(atWallMs: middle))
+        #expect(target.conversationId == "long-day")
+        #expect(target.focus.style == .moment)
+        #expect(target.focus.startMs == middle && target.focus.endMs == middle)
+        let offset = try #require(target.mediaOffsetMs)
+        let duration = try #require(display.player?.durationMs)
+        #expect(abs(offset - duration / 2) <= 1)
     }
 }
