@@ -180,6 +180,13 @@ public final class EnrichmentWorker: @unchecked Sendable {
         /// The stored annotation was written from other audio and the pieces this conversation
         /// now owns hold no words to write a new one from: what is stored has to go.
         case withdraw
+        /// The stored annotation still stands, but the conversation has lost its leading pieces
+        /// since it was written (retention, or a deleted segment). Nothing is asked of a model;
+        /// the key is brought up to date and the conversation reported as changed, so that what
+        /// search holds for it is rebuilt from the pieces that are left — the delete cascade
+        /// takes a trimmed conversation's index row away, and until this existed nothing ever
+        /// put one back for a conversation whose title was final.
+        case rekey
     }
 
     /// What one piece contributes to a prompt: its words, and where its first turn starts in
@@ -258,6 +265,12 @@ public final class EnrichmentWorker: @unchecked Sendable {
                 annotated.append(conversation.conversationId)
                 continue
             }
+            if case .rekey = plan, var existing {
+                existing.sourceKey = conversation.sourceKey
+                try await annotations.save(existing)
+                annotated.append(conversation.conversationId)
+                continue
+            }
             guard case .generate = plan else { continue }
             // Counted on the PROVIDER call, not on the conversation examined: a library of
             // already-annotated conversations must not eat the budget before reaching the one
@@ -319,7 +332,7 @@ public final class EnrichmentWorker: @unchecked Sendable {
             // A final annotation is only final FOR THE PIECES IT WAS WRITTEN FROM. One whose
             // key no longer describes the conversation is due again like any other.
             if let existing, existing.isFinal, !existing.tags.isEmpty, describesThese {
-                return .none
+                return existing.sourceKey == conversation.sourceKey ? .none : .rekey
             }
             // Waiting out a backoff (`AiRetryPolicy`): a failure, a spent budget or a
             // provisional answer all set one. This used to be "three final attempts, no time

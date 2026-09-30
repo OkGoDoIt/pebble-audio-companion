@@ -278,7 +278,14 @@ struct ConversationPiecesEnrichmentTests {
                 tags: ["fence"], isFinal: true, finalAttempts: 1,
                 sourceKey: key(piece("seg-0", from: 400_000), piece("seg-a", to: 600_000))))
         let provider = RecordingProvider()
-        #expect(try await worker(provider).enrich([fence], transcriptOf: read).isEmpty)
+        let worker = worker(provider)
+        // No model is asked. The conversation is reported once, so that search — which dropped
+        // its row when the segment was deleted — is given the pieces that are left.
+        #expect(try await worker.enrich([fence], transcriptOf: read) == ["conv-seg-a"])
+        let kept = try #require(try await store.load("conv-seg-a"))
+        #expect(kept.title == "Repainting the fence" && kept.isFinal && kept.tags == ["fence"])
+        #expect(kept.sourceKey == fence.sourceKey)
+        #expect(try await worker.enrich([fence], transcriptOf: read).isEmpty)
         #expect(provider.runCount == 0)
 
         // Losing a TRAILING piece is a different conversation, and is.
