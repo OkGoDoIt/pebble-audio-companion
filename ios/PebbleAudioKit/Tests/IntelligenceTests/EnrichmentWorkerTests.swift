@@ -99,6 +99,12 @@ private final class Counter: @unchecked Sendable {
         )
     }
 
+    /// The source key of a conversation that owns these segments whole — what an annotation
+    /// written from them carries.
+    private static func wholeKey(_ segmentIds: String...) -> String {
+        ConversationSourceKey.key(of: segmentIds.map { ConversationMember(segmentId: $0) })
+    }
+
     /// Single conversation per member set; live when any member is still open (the KMP
     /// per-segment cases map onto single-member conversations).
     private func conversations(
@@ -217,7 +223,11 @@ private final class Counter: @unchecked Sendable {
                 tags: [],
                 attempts: 1,
                 isFinal: true,
-                finalAttempts: 1
+                finalAttempts: 1,
+                // Written from the pieces the conversation still has: this is the tag backfill
+                // and nothing else. (One written from OTHER pieces is a different case, with
+                // its own budget — `ConversationPiecesEnrichmentTests`.)
+                sourceKey: Self.wholeKey("seg-1")
             ))
         let provider = FakeAiProvider(
             response: "TITLE: Team sync\nSUMMARY: Discussed the plan.\nTAGS: work, planning")
@@ -554,7 +564,8 @@ private final class Counter: @unchecked Sendable {
             try await store.save(
                 ConversationAnnotation(
                     conversationId: "conv-done-\(index)", title: "Done", summary: "Done",
-                    tags: ["work"], isFinal: true, finalAttempts: 1))
+                    tags: ["work"], isFinal: true, finalAttempts: 1,
+                    sourceKey: Self.wholeKey("seg-done-\(index)")))
         }
         let settled = (0..<20).map { index in
             EnrichmentConversation(

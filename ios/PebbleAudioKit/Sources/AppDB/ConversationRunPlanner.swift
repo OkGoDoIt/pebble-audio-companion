@@ -66,18 +66,38 @@ public struct ConversationCutInputs: Equatable, Sendable {
     public var splits: [String: Set<Int64>]
     /// "This is the same conversation as what came before": no cut at or near these offsets.
     public var joins: [String: Set<Int64>]
+    /// What each join joined: from the start of the earlier conversation to the end of the
+    /// later one, as they were when the person said so. Nothing automatic cuts inside a span —
+    /// not the cut that was there, not a long silence, and not the segmenter deciding that the
+    /// now longer conversation would be better divided a few minutes further on.
+    public var joinSpans: [JoinSpan]
+
+    public struct JoinSpan: Equatable, Sendable {
+        public var from: ConversationCut
+        /// Where the conversation after the joined pair starts; nil = the end of the run.
+        public var to: ConversationCut?
+
+        public init(from: ConversationCut, to: ConversationCut?) {
+            self.from = from
+            self.to = to
+        }
+    }
 
     public init(
         committed: [String: [Int64: ConversationStartReason]] = [:],
-        splits: [String: Set<Int64>] = [:], joins: [String: Set<Int64>] = [:]
+        splits: [String: Set<Int64>] = [:], joins: [String: Set<Int64>] = [:],
+        joinSpans: [JoinSpan] = []
     ) {
         self.committed = committed
         self.splits = splits
         self.joins = joins
+        self.joinSpans = joinSpans
     }
 
     public static let none = ConversationCutInputs()
-    var isEmpty: Bool { committed.isEmpty && splits.isEmpty && joins.isEmpty }
+    var isEmpty: Bool {
+        committed.isEmpty && splits.isEmpty && joins.isEmpty && joinSpans.isEmpty
+    }
 }
 
 struct RunPlan {
@@ -91,7 +111,9 @@ enum ConversationRunPlanner {
     static let preRollMs: Int64 = 1_500
     /// A trailing silence starts this long after the last word.
     static let postRollMs: Int64 = 2_000
-    /// A "these are one conversation" decision keeps automatic cuts this far away from it.
+    /// A "these are one conversation" decision keeps automatic cuts this far (of wall time)
+    /// away from the place it was made at. What a join made in the app really protects is its
+    /// span (`ConversationCutInputs.joinSpans`); this is for a join recorded without one.
     static let joinReachMs: Int64 = 120_000
     /// A segmenter cut is written down once this much settled talk lies after it. Until then
     /// it is re-decided each time more of the day arrives: the search's answer near the end of
@@ -183,16 +205,35 @@ enum ConversationRunPlanner {
         let runStart = RunPosition(seg: 0, mediaMs: 0)
         let runEnd = RunPosition(seg: members.count, mediaMs: 0)
 
-        // Where the person has said "no cut here".
-        var blockedAt: [Int: [Int64]] = [:]
+        // Where the person has said "no cut here": near the point of each join (in wall time —
+        // the talk just before a join is usually in the segment before it), and anywhere inside
+        // the span a join joined.
+        var joinWalls: [Int64] = []
+        var indexOf: [String: Int] = [:]
         for (index, member) in members.enumerated() {
-            var offsets = Array(inputs.joins[member.meta.segmentId] ?? [])
-            if joinedSegments.contains(member.meta.segmentId) { offsets.append(0) }
-            if !offsets.isEmpty { blockedAt[index] = offsets }
+            let id = member.meta.segmentId
+            indexOf[id] = index
+            for offset in inputs.joins[id] ?? [] { joinWalls.append(member.wall(ofMedia: offset)) }
+            if joinedSegments.contains(id) { joinWalls.append(member.startWallMs) }
+        }
+        var spans: [(from: RunPosition, to: RunPosition)] = []
+        for span in inputs.joinSpans {
+            let from = indexOf[span.from.segmentId].map {
+                RunPosition(seg: $0, mediaMs: span.from.mediaMs)
+            }
+            let to = span.to.flatMap { cut in
+                indexOf[cut.segmentId].map { RunPosition(seg: $0, mediaMs: cut.mediaMs) }
+            }
+            // A span with neither end in this run is about another run. One whose start has
+            // been deleted protects from the run's start; one with no end, to the run's end.
+            guard from != nil || to != nil else { continue }
+            spans.append((from ?? runStart, to ?? runEnd))
         }
         func isBlocked(_ position: RunPosition) -> Bool {
-            guard let offsets = blockedAt[position.seg] else { return false }
-            return offsets.contains { abs($0 - position.mediaMs) <= joinReachMs }
+            if spans.contains(where: { $0.from < position && position < $0.to }) { return true }
+            guard !joinWalls.isEmpty, position.seg < members.count else { return false }
+            let wall = members[position.seg].wall(ofMedia: position.mediaMs)
+            return joinWalls.contains { abs($0 - wall) <= joinReachMs }
         }
 
         var cuts: [RunPosition: PlannedCut] = [:]
@@ -206,7 +247,9 @@ enum ConversationRunPlanner {
 
         // 1. Hard cuts.
         if policy.quietSplitMs != .max {
-            for cut in quietCuts(members: members, turns: turns, evidence: evidence, policy: policy)
+            for cut in quietCuts(
+                members: members, turns: turns, evidence: evidence, policy: policy,
+                joinedSegments: joinedSegments)
             where !isBlocked(cut.position) {
                 add(cut)
             }
@@ -229,14 +272,21 @@ enum ConversationRunPlanner {
             }
         }
 
-        // 3. The segmenter, over every stretch the cuts so far leave whole.
+        // 3. The segmenter, over every stretch of talk between two long silences — the WHOLE
+        // stretch, with the fixed cuts inside it forced, rather than each piece between fixed
+        // cuts on its own. The evidence at a cut is read from the talk either side of it, so a
+        // stretch searched in pieces is scored differently near every piece's edge and comes
+        // out with different (more) cuts than the same stretch searched whole; forcing keeps
+        // the scores, and therefore the answer, exactly what they were when the cuts were made.
         if let segmenter = policy.segmenter {
-            let edges = [runStart] + cuts.keys.sorted() + [runEnd]
+            let hard = cuts.values.filter { $0.kind == .hard }.map(\.position).sorted()
+            let fixed = cuts.values.filter { $0.kind == .fixed }.map(\.position).sorted()
+            let edges = [runStart] + hard + [runEnd]
             for (lower, upper) in zip(edges, edges.dropFirst()) {
                 let isLastStretch = upper == runEnd
                 let found = segmenterCuts(
-                    from: lower, to: upper, members: members, turns: turns, policy: segmenter,
-                    isBlocked: isBlocked,
+                    from: lower, to: upper, fixed: fixed.filter { $0 > lower && $0 < upper },
+                    members: members, turns: turns, policy: segmenter, isBlocked: isBlocked,
                     endsOpen: isLastStretch && isOpenEnded)
                 for cut in found { add(cut) }
             }
@@ -254,9 +304,16 @@ enum ConversationRunPlanner {
     /// conversation never opens on minutes of nothing — except at the very start of a run,
     /// where there is nothing before, and at the end of one, where the silent tail becomes its
     /// own unit so the conversation can finish.
+    ///
+    /// `joinedSegments` are segments whose own start the person joined to what came before.
+    /// When conversations were whole segments a quiet split landed on the segment join nearest
+    /// the middle of the silence, so "these are one conversation" was recorded against that
+    /// segment. The same silence is now cut at the first word after it, somewhere else — and
+    /// the decision still means what the person meant, so a silence that contains a joined
+    /// segment's start is not cut at all.
     static func quietCuts(
         members: [Member], turns: [RunTurn], evidence: [String: SegmentSpeechEvidence],
-        policy: BoundaryPolicy
+        policy: BoundaryPolicy, joinedSegments: Set<String> = []
     ) -> [PlannedCut] {
         guard !turns.isEmpty, let first = members.first else { return [] }
         let runStartMs = first.startWallMs
@@ -314,6 +371,14 @@ enum ConversationRunPlanner {
             // DEFERRAL, not a decision: a member still transcribing (or still open) looks
             // exactly like a member in which nobody spoke.
             guard overlapping.allSatisfy(\.isSettled) else { continue }
+            if !joinedSegments.isEmpty,
+                overlapping.contains(where: {
+                    joinedSegments.contains($0.meta.segmentId)
+                        && $0.startWallMs >= stretch.startMs && $0.startWallMs <= stretch.endMs
+                })
+            {
+                continue
+            }
             let lostMs = overlapping.reduce(Int64(0)) { total, member in
                 total
                     + ConversationBoundaryDetector.lossSpansMs(member.meta).reduce(Int64(0)) {
@@ -351,14 +416,20 @@ enum ConversationRunPlanner {
     struct PlacedBlock {
         var block: SegmenterBlock
         var position: RunPosition
+        /// Index of the block's first turn; nil for an opaque block.
+        var firstTurn: Int?
     }
 
     /// The blocks of `[lower, upper)`: settled talk as `ConversationSegmenter` blocks, and each
     /// unsettled member (or the part of one inside the range) as one opaque block.
+    /// `breaks` are positions a block must not run across (ascending): a block starts at the
+    /// first turn at or after each.
     static func blocks(
-        from lower: RunPosition, to upper: RunPosition, members: [Member], turns: [RunTurn]
+        from lower: RunPosition, to upper: RunPosition, breaks: [RunPosition] = [],
+        members: [Member], turns: [RunTurn]
     ) -> [PlacedBlock] {
         var out: [PlacedBlock] = []
+        var nextBreak = 0
         var previousEnd: Int64?
         var speakers = Set<UInt32>()
         var lineSpeaker: UInt32 = 0
@@ -413,8 +484,15 @@ enum ConversationRunPlanner {
                 let features = turn.features
                 let speaker = features?.speaker ?? 0
                 let gap = previousEnd.map { turn.wallStartMs - $0 } ?? Int64.max
+                let here = RunPosition(seg: seg, mediaMs: turn.mediaStartMs)
+                var crossesBreak = false
+                while nextBreak < breaks.count, breaks[nextBreak] <= here {
+                    crossesBreak = true
+                    nextBreak += 1
+                }
                 let joins =
-                    blockSegment == seg && gap < ConversationSegmenter.blockJoinGapMs
+                    !crossesBreak && blockSegment == seg
+                    && gap < ConversationSegmenter.blockJoinGapMs
                     && turn.wallEndMs - (out.last?.block.wallStartMs ?? turn.wallStartMs)
                         < ConversationSegmenter.blockMaxMs
                     && out.last?.block.isOpaque == false
@@ -456,7 +534,7 @@ enum ConversationRunPlanner {
                                 isDialogue: false, isForeign: features?.isForeign ?? false,
                                 isDictation: features?.isDictation ?? false,
                                 opensWithGreeting: features?.opensWithGreeting ?? false),
-                            position: cut))
+                            position: cut, firstTurn: turnCursor))
                 }
                 previousEnd = max(previousEnd ?? turn.wallEndMs, turn.wallEndMs)
                 turnCursor += 1
@@ -468,18 +546,27 @@ enum ConversationRunPlanner {
     }
 
     static func segmenterCuts(
-        from lower: RunPosition, to upper: RunPosition, members: [Member], turns: [RunTurn],
-        policy: SegmenterPolicy, isBlocked: (RunPosition) -> Bool, endsOpen: Bool
+        from lower: RunPosition, to upper: RunPosition, fixed: [RunPosition],
+        members: [Member], turns: [RunTurn], policy: SegmenterPolicy,
+        isBlocked: (RunPosition) -> Bool, endsOpen: Bool
     ) -> [PlannedCut] {
-        let placed = blocks(from: lower, to: upper, members: members, turns: turns)
+        let placed = blocks(
+            from: lower, to: upper, breaks: fixed, members: members, turns: turns)
         guard placed.count > 1 else { return [] }
+        // Each fixed cut forces a unit to start at the first block at or after it. (The cut
+        // itself keeps its own position; this only tells the search a boundary is there.)
+        var forced = Set<Int>()
+        for position in fixed {
+            let index = placed.partitioningIndex { blockStart($0, in: turns) >= position }
+            if index > 0, index < placed.count { forced.insert(index) }
+        }
         var blocked = Set<Int>()
         for (index, block) in placed.enumerated() where index > 0 {
             // A cut must move the position forward, and must not be where the person said no.
             if block.position <= lower || isBlocked(block.position) { blocked.insert(index) }
         }
         let starts = ConversationSegmenter.cuts(
-            blocks: placed.map(\.block), blocked: blocked, policy: policy)
+            blocks: placed.map(\.block), forced: forced, blocked: blocked, policy: policy)
         guard !starts.isEmpty else { return [] }
 
         // How far settled talk runs after each block without an unsettled stretch in the way.
@@ -495,7 +582,7 @@ enum ConversationRunPlanner {
         }
 
         var out: [PlannedCut] = []
-        for (order, start) in starts.enumerated() {
+        for (order, start) in starts.enumerated() where !forced.contains(start) {
             let block = placed[start].block
             let previousStart = order > 0 ? starts[order - 1] : 0
             // Both conversations the cut separates must be fully heard.
@@ -513,6 +600,12 @@ enum ConversationRunPlanner {
                     shouldCommit: settled))
         }
         return out
+    }
+
+    /// Where a block's first turn starts (its cut position sits a little before that).
+    static func blockStart(_ placed: PlacedBlock, in turns: [RunTurn]) -> RunPosition {
+        placed.firstTurn.map { RunPosition(seg: turns[$0].seg, mediaMs: turns[$0].mediaStartMs) }
+            ?? placed.position
     }
 
     // --- tidying -------------------------------------------------------------------------------

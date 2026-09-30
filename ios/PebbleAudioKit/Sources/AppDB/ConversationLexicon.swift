@@ -41,42 +41,110 @@ public struct TurnFeatures: Equatable, Sendable {
 
 public enum ConversationLexicon {
     /// Features of one turn.
+    ///
+    /// Written over the UTF-8 bytes rather than `Character`s or a lowercased copy: this runs
+    /// for every turn of the library each time the app starts, and the obvious version (Unicode
+    /// properties per scalar, a lowercased `String`, a `String` per word) took 7 µs a turn —
+    /// a third of a second for two weeks of talk. ASCII letters are folded to lower case inline;
+    /// every other non-ASCII scalar counts as a letter of whatever word it is in, except the
+    /// General Punctuation block (dashes, curly quotes, ellipses), which separates words like
+    /// its ASCII cousins — and the curly apostrophe, which does what the straight one does.
     public static func features(text: String, speaker: String?) -> TurnFeatures {
-        let lowered = text.lowercased()
         var terms: [UInt32] = []
         var asciiLetters = 0
         var letters = 0
-        var word = String.UnicodeScalarView()
         var firstWords: [String] = []
+        var isDictation = false
 
-        func flush() {
-            guard !word.isEmpty else { return }
-            let text = String(word)
-            word.removeAll(keepingCapacity: true)
-            if firstWords.count < 2 { firstWords.append(text) }
-            guard text.unicodeScalars.count >= 3, !stopWords.contains(text) else { return }
-            terms.append(fnv1a(text))
-        }
-        for scalar in lowered.unicodeScalars {
-            if scalar.properties.isAlphabetic {
-                letters += 1
-                if scalar.isASCII { asciiLetters += 1 }
-                word.append(scalar)
-            } else if scalar == "'" || scalar == "\u{2019}", !word.isEmpty {
-                // Keep contractions whole ("don't"), as one word.
-                word.append("'")
-            } else {
-                flush()
+        var hash: UInt32 = fnvOffset
+        var scalars = 0
+        var previousWord: UInt32 = 0
+        var wordBytes: [UInt8] = []
+        /// An apostrophe seen after a letter, not yet known to be INSIDE a word. It joins the
+        /// word only if a letter follows ("don't"); after the last letter it is a closing quote
+        /// or a possessive, and the word is the same word without it.
+        var pendingApostrophe = false
+
+        func endWord() {
+            pendingApostrophe = false
+            guard scalars > 0 else { return }
+            let word = hash
+            if firstWords.count < 2 { firstWords.append(String(decoding: wordBytes, as: UTF8.self)) }
+            if word == Hashed.comma || word == Hashed.period
+                || (previousWord == Hashed.full && word == Hashed.stop)
+                || (previousWord == Hashed.question && word == Hashed.mark)
+                || (previousWord == Hashed.exclamation
+                    && (word == Hashed.mark || word == Hashed.point))
+                || (previousWord == Hashed.new
+                    && (word == Hashed.line || word == Hashed.paragraph))
+            {
+                isDictation = true
             }
+            if scalars >= 3, !stopWordHashes.contains(word) { terms.append(word) }
+            previousWord = word
+            hash = fnvOffset
+            scalars = 0
+            wordBytes.removeAll(keepingCapacity: true)
         }
-        flush()
+        func add(_ byte: UInt8) {
+            if pendingApostrophe {
+                pendingApostrophe = false
+                hash = (hash ^ 0x27) &* fnvPrime
+                if firstWords.count < 2 { wordBytes.append(0x27) }
+            }
+            hash = (hash ^ UInt32(byte)) &* fnvPrime
+            if firstWords.count < 2 { wordBytes.append(byte) }
+        }
+
+        var bytes = text.utf8.makeIterator()
+        while let byte = bytes.next() {
+            if byte < 0x80 {
+                let lower = byte | 0x20
+                if lower >= 0x61, lower <= 0x7A {
+                    letters += 1
+                    asciiLetters += 1
+                    scalars += 1
+                    add(lower)
+                } else if byte == 0x27, scalars > 0, !pendingApostrophe {
+                    // Keep contractions whole ("don't"), as one word.
+                    pendingApostrophe = true
+                } else {
+                    endWord()
+                }
+                continue
+            }
+            // A multi-byte scalar. General Punctuation is E2 80 xx / E2 81 xx.
+            if byte == 0xE2, let second = bytes.next() {
+                if second == 0x80 || second == 0x81 {
+                    let third = bytes.next() ?? 0
+                    if second == 0x80, third == 0x99, scalars > 0, !pendingApostrophe {
+                        pendingApostrophe = true  // the curly apostrophe
+                    } else {
+                        endWord()
+                    }
+                    continue
+                }
+                letters += 1
+                scalars += 1
+                add(byte)
+                add(second)
+                continue
+            }
+            if byte & 0xC0 != 0x80 {
+                // The lead byte of a scalar outside ASCII.
+                letters += 1
+                scalars += 1
+            }
+            add(byte)
+        }
+        endWord()
 
         let isForeign = letters > 0 && Double(asciiLetters) / Double(letters) < 0.7
         return TurnFeatures(
             terms: terms,
             speaker: speaker.map { $0.isEmpty ? 0 : max(fnv1a($0), 1) } ?? 0,
             isForeign: isForeign,
-            isDictation: dictationMarkers.contains { lowered.contains($0) },
+            isDictation: isDictation,
             opensWithGreeting: opensWithGreeting(firstWords))
     }
 
@@ -87,24 +155,36 @@ public enum ConversationLexicon {
         return greetingPairs.contains("\(first) \(firstWords[1])")
     }
 
+    static let fnvOffset: UInt32 = 2_166_136_261
+    static let fnvPrime: UInt32 = 16_777_619
+
     /// FNV-1a over the UTF-8 bytes: stable across launches and platforms.
     static func fnv1a(_ text: String) -> UInt32 {
-        var hash: UInt32 = 2_166_136_261
+        var hash = fnvOffset
         for byte in text.utf8 {
-            hash ^= UInt32(byte)
-            hash = hash &* 16_777_619
+            hash = (hash ^ UInt32(byte)) &* fnvPrime
         }
         return hash
+    }
+
+    /// The words spoken punctuation is made of.
+    enum Hashed {
+        static let comma = fnv1a("comma")
+        static let period = fnv1a("period")
+        static let full = fnv1a("full")
+        static let stop = fnv1a("stop")
+        static let question = fnv1a("question")
+        static let exclamation = fnv1a("exclamation")
+        static let mark = fnv1a("mark")
+        static let point = fnv1a("point")
+        static let new = fnv1a("new")
+        static let line = fnv1a("line")
+        static let paragraph = fnv1a("paragraph")
     }
 
     static let greetings: Set<String> = ["hello", "hi", "hey", "chào"]
     static let greetingPairs: Set<String> = [
         "good morning", "good afternoon", "good evening", "xin chào",
-    ]
-
-    static let dictationMarkers: [String] = [
-        "full stop", "comma", "question mark", "exclamation mark", "exclamation point",
-        "new line", "new paragraph", "period",
     ]
 
     /// Function words and conversational filler. A word here says nothing about WHAT is being
@@ -128,4 +208,6 @@ public enum ConversationLexicon {
         please sorry hey hi hello bye see say said want need look make take come back now \
         still even way time full stop comma period question mark
         """.split(separator: " ").map(String.init))
+
+    static let stopWordHashes: Set<UInt32> = Set(stopWords.map(fnv1a))
 }

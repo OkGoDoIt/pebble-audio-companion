@@ -34,12 +34,20 @@ public struct ConversationCutStore: Sendable {
                 ConversationStartReason(rawValue: row["reason"]) ?? .topicChange
             inputs.committed[row["segmentId"], default: [:]][row["mediaMs"]] = reason
         }
-        for row in try Row.fetchAll(
-            db, sql: "SELECT segmentId, mediaMs, decision FROM conversation_cut_overrides")
-        {
+        for row in try Row.fetchAll(db, sql: "SELECT * FROM conversation_cut_overrides") {
             guard let decision = BoundaryDecision(rawValue: row["decision"]) else { continue }
             let segmentId: String = row["segmentId"]
             let mediaMs: Int64 = row["mediaMs"]
+            if decision == .join, let from: String = row["spanFromSegmentId"] {
+                let toSegment: String? = row["spanToSegmentId"]
+                inputs.joinSpans.append(
+                    ConversationCutInputs.JoinSpan(
+                        from: ConversationCut(
+                            segmentId: from, mediaMs: row["spanFromMediaMs"] ?? 0),
+                        to: toSegment.map {
+                            ConversationCut(segmentId: $0, mediaMs: row["spanToMediaMs"] ?? 0)
+                        }))
+            }
             if mediaMs <= 0 {
                 overrides[segmentId] = decision
                 continue
@@ -50,6 +58,54 @@ public struct ConversationCutStore: Sendable {
             }
         }
         return inputs
+    }
+
+    /// "This conversation and the one before it are one conversation."
+    ///
+    /// Written from the grouping as it is stored right now: the decision is about those two
+    /// conversations, so what it records is the point between them AND their whole extent —
+    /// the start of the earlier one to the start of whatever follows the later one. Inside
+    /// that span no rule cuts again. Returns the position the join was written at, or nil when
+    /// the conversation does not exist or nothing comes before it.
+    ///
+    /// Undo with `setOverride(at:decision: nil)` at the returned position.
+    @discardableResult
+    public func joinWithPrevious(
+        conversationId: String, atMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> ConversationCut? {
+        try await db.writer.write { db in
+            let grouping = try ConversationGrouper.fetchAll(db)
+            guard let index = grouping.firstIndex(where: { $0.id == conversationId }),
+                index > 0, let first = grouping[index].members.first,
+                let earlier = grouping[index - 1].members.first
+            else { return nil }
+            let at = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
+            let from = ConversationCut(
+                segmentId: earlier.segmentId, mediaMs: earlier.startMediaMs ?? 0)
+            let to: ConversationCut? =
+                index + 1 < grouping.count
+                ? grouping[index + 1].members.first.map {
+                    ConversationCut(segmentId: $0.segmentId, mediaMs: $0.startMediaMs ?? 0)
+                } : nil
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_cut_overrides
+                        (segmentId, mediaMs, decision, createdAtMs, spanFromSegmentId,
+                         spanFromMediaMs, spanToSegmentId, spanToMediaMs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(segmentId, mediaMs) DO UPDATE SET
+                        decision = excluded.decision, createdAtMs = excluded.createdAtMs,
+                        spanFromSegmentId = excluded.spanFromSegmentId,
+                        spanFromMediaMs = excluded.spanFromMediaMs,
+                        spanToSegmentId = excluded.spanToSegmentId,
+                        spanToMediaMs = excluded.spanToMediaMs
+                    """,
+                arguments: [
+                    at.segmentId, at.mediaMs, BoundaryDecision.join.rawValue, atMs,
+                    from.segmentId, from.mediaMs, to?.segmentId, to?.mediaMs,
+                ])
+            return at
+        }
     }
 
     /// Writes newly settled cuts. Existing rows are left exactly as they are: a settled cut is
@@ -108,7 +164,9 @@ public struct ConversationCutStore: Sendable {
                         (segmentId, mediaMs, decision, createdAtMs)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT(segmentId, mediaMs) DO UPDATE SET
-                        decision = excluded.decision, createdAtMs = excluded.createdAtMs
+                        decision = excluded.decision, createdAtMs = excluded.createdAtMs,
+                        spanFromSegmentId = NULL, spanFromMediaMs = NULL,
+                        spanToSegmentId = NULL, spanToMediaMs = NULL
                     """,
                 arguments: [cut.segmentId, cut.mediaMs, decision.rawValue, atMs])
         }

@@ -155,19 +155,41 @@ struct RealConversationSegmentationTests {
         }.count
     }
 
+    /// First to last labelled line of a day.
+    static func dayWindow(_ day: String) throws -> ClosedRange<Int64> {
+        let folder = URL(fileURLWithPath: unitsLabels!)
+        let index = try JSONDecoder().decode(
+            [IndexLine].self,
+            from: Data(contentsOf: folder.appendingPathComponent("days/\(day).index.json")))
+        return (index.first?.ws ?? 0)...(index.last?.ws ?? 0)
+    }
+
     static let days = [
         "2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-27",
         "2026-09-28", "2026-09-29",
     ]
 
-    static func report(_ name: String, _ conversations: [GroupedConversation]) throws
-        -> (score: SegmentationScore, spoken: [Int64])
-    {
+    static func report(
+        _ name: String, _ all: [GroupedConversation],
+        evidence: [String: SegmentSpeechEvidence]
+    ) throws -> (score: SegmentationScore, spoken: [Int64]) {
         var score = SegmentationScore()
+        // A unit nobody spoke in (the silent tail of a run) is not a conversation and is not
+        // shown as one; it neither finds nor misses a marked start.
+        let conversations = all.filter { conversation in
+            conversation.members.contains { member in
+                evidence[member.segmentId]?.speech.contains {
+                    member.contains(mediaMs: $0.startMs)
+                } ?? false
+            }
+        }
         let starts = conversations.map(\.startMs).sorted()
         for day in days { try Self.score(starts: starts, day: day, into: &score) }
-        // Lengths of the conversations that lie in the labelled days and hold speech.
-        let lengths = conversations.map { $0.endMs - $0.startMs }.filter { $0 > 0 }.sorted()
+        // Lengths of the conversations that start inside the labelled days.
+        let windows = try days.map { try dayWindow($0) }
+        let lengths = conversations.filter { conversation in
+            windows.contains { $0.contains(conversation.startMs) }
+        }.map { $0.endMs - $0.startMs }.filter { $0 > 0 }.sorted()
         let line = String(
             format:
                 "%@: certain %d/%d (%.0f%%) unsure %d/%d cuts %d matched %d (%.0f%%) traps hit %d/%d | n=%d median %@ p90 %@ max %@ >1h %d >2h %d",
@@ -195,13 +217,115 @@ struct RealConversationSegmentationTests {
                 fallbackTimeZoneID: "UTC", evidence: library.evidence)
         }
         print("grouping \(library.metas.count) segments took \(elapsed)")
-        let old = try Self.report("long-quiet rule only", before)
-        let new = try Self.report("with the segmenter  ", after)
+        // The same library again, with the cuts the first pass would have written down and a
+        // memo: what a relaunch costs, and what every later pass costs.
+        let first = ConversationGrouper.groupDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence)
+        var committed: [String: [Int64: ConversationStartReason]] = [:]
+        for (cut, reason) in first.cutsToCommit {
+            committed[cut.segmentId, default: [:]][cut.mediaMs] = reason
+        }
+        let inputs = ConversationCutInputs(committed: committed)
+        let memo = GroupingMemo()
+        var relaunch: [GroupedConversation] = []
+        let cold = clock.measure {
+            relaunch = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        let warm = clock.measure {
+            _ = ConversationGrouper.group(
+                segments: library.metas, pauses: [], openSegmentId: nil,
+                fallbackTimeZoneID: "UTC", evidence: library.evidence, cutInputs: inputs,
+                memo: memo)
+        }
+        print(
+            "\(first.cutsToCommit.count) cuts settled; with them a cold regroup took \(cold), a repeat \(warm)")
+        // Holding the settled cuts changes nothing about the answer.
+        #expect(relaunch.map(\.id) == after.map(\.id))
+        let words = library.evidence.values.reduce(0) { $0 + $1.speech.count }
+        let lexicon = clock.measure {
+            for item in library.evidence.values {
+                for span in item.speech {
+                    _ = ConversationLexicon.features(
+                        text: String(repeating: "word ", count: span.wordCount), speaker: "1")
+                }
+            }
+        }
+        print("lexicon over \(words) turns took \(lexicon)")
+        if let dump = unitsEnv["PEBBLE_UNITS_DUMP"] {
+            let rows = after.map { "\($0.startMs)\t\($0.endMs)\t\($0.startReason?.rawValue ?? "-")\t\($0.id)" }
+            try rows.joined(separator: "\n").write(
+                toFile: dump, atomically: true, encoding: .utf8)
+        }
+        let old = try Self.report("long-quiet rule only", before, evidence: library.evidence)
+        let new = try Self.report("with the segmenter  ", after, evidence: library.evidence)
 
         // The direction, pinned: far more of the real starts found, and no conversation of
         // the kind this work exists to remove.
         #expect(new.score.certainFound > old.score.certainFound * 3)
         #expect((new.spoken.last ?? 0) < 3 * 3_600_000)
         #expect(percentile(new.spoken, 0.9) < 3_600_000)
+    }
+
+    /// The upgrade itself, on a copy of the real database: migrate, regroup twice, and check
+    /// what the phone will see — every sample in exactly one conversation, nothing day-long,
+    /// the same ids on the second pass, and nothing written when nothing changed.
+    @Test func theRealDatabaseMigratesAndRegroupsIntoTopicSizedConversations() async throws {
+        let root = URL(fileURLWithPath: unitsBackup!)
+        let source = root.appendingPathComponent("db")
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conversation-units-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        for name in try FileManager.default.contentsOfDirectory(atPath: source.path) {
+            try FileManager.default.copyItem(
+                at: source.appendingPathComponent(name), to: scratch.appendingPathComponent(name))
+        }
+        let database = try AppDatabase.open(at: scratch.appendingPathComponent("companion.sqlite"))
+        let library = try loadLibrary()
+        let before = try await database.reader.read { try ConversationGrouper.fetchAll($0) }
+
+        let memo = GroupingMemo()
+        let first = try await ConversationGrouper.rebuildDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence, memo: memo, db: database)
+        let second = try await ConversationGrouper.rebuildDetailed(
+            segments: library.metas, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: library.evidence, memo: memo, db: database)
+        let settled = try await ConversationCutStore(db: database).committed()
+        let longest = first.conversations.map { $0.endMs - $0.startMs }.max() ?? 0
+        let longestBefore = before.map { $0.endMs - $0.startMs }.max() ?? 0
+        print(
+            "real database: \(before.count) conversations (longest \(minutes(longestBefore))) -> \(first.conversations.count) (longest \(minutes(longest))); \(settled.count) cuts settled")
+
+        #expect(first.changed && first.structureChanged)
+        #expect(!second.changed && !second.structureChanged)
+        #expect(second.conversations.map(\.id) == first.conversations.map(\.id))
+        #expect(Set(first.conversations.map(\.id)).count == first.conversations.count)
+        #expect(longest < 2 * 3_600_000)
+
+        // Every segment's stored audio is covered exactly once, in order.
+        var pieces: [String: [ConversationMember]] = [:]
+        for conversation in first.conversations {
+            for member in conversation.members { pieces[member.segmentId, default: []].append(member) }
+        }
+        #expect(Set(pieces.keys) == Set(library.metas.map(\.segmentId)))
+        for (segmentId, owned) in pieces {
+            let ordered = owned.sorted { ($0.startMediaMs ?? 0) < ($1.startMediaMs ?? 0) }
+            #expect(ordered.first?.startMediaMs == nil, "\(segmentId) does not start at 0")
+            #expect(ordered.last?.endMediaMs == nil, "\(segmentId) does not run to its end")
+            for (earlier, later) in zip(ordered, ordered.dropFirst()) {
+                #expect(earlier.endMediaMs == later.startMediaMs, "\(segmentId) has a hole or overlap")
+            }
+        }
+        // What was read back is what was grouped.
+        let stored = try await database.reader.read { try ConversationGrouper.fetchAll($0) }
+        #expect(stored.map(\.members) == first.conversations.sorted {
+            $0.startMs == $1.startMs ? $0.id < $1.id : $0.startMs < $1.startMs
+        }.map(\.members))
     }
 }
