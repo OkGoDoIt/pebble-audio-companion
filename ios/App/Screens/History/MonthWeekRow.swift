@@ -59,7 +59,8 @@ struct MonthWeekRow: View {
                 }
                 if row.followUpTotal > 0 {
                     HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle")
+                        // Checked only when every one is done; an open one reads as open.
+                        Image(systemName: row.followUpOpen == 0 ? "checkmark.circle" : "circle")
                             .font(AppFont.scaled(14, relativeTo: .footnote, dynamicTypeSize))
                             .accessibilityHidden(true)
                         Text(Copy.History.followUpCount(total: row.followUpTotal, open: row.followUpOpen))

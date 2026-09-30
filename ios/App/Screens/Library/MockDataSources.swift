@@ -309,6 +309,12 @@ final class MockWorld {
                 archivedAtMs: ago(6 * day)),
         ]
 
+        // The History tab's demo follow-ups (DEBUG `-history`), so a follow-up line tapped on a
+        // demo day opens a real demo follow-up rather than "This follow-up is gone".
+        if HistoryLaunch.isEnabled {
+            followUps += MockHistory.demoFollowUps(now: now)
+        }
+
         // ── Ask history (Q18 — up to 5, newest first) ───────────────────────
         askEntries = [
             AskEntry(

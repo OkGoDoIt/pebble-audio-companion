@@ -1,3 +1,4 @@
+import AppDB
 import SwiftUI
 import UIKit
 
@@ -27,6 +28,9 @@ struct JumpCalendarSheet: View {
                     onPick(key)
                 }
                 .padding(.horizontal, 8)
+                // The selection and today's number follow the environment's tint, not only
+                // the view's own `tintColor`; without this they were drawn black.
+                .tint(Tokens.tint)
             }
             .background(Tokens.surface)
             .navigationTitle(Copy.History.jumpToDate)
@@ -59,25 +63,19 @@ struct JumpCalendar: UIViewRepresentable {
         view.calendar = calendar
         view.locale = .current
         view.fontDesign = .default
-        view.tintColor = UIColor(Tokens.tint)
+        view.tintColor = Self.tint
         view.delegate = context.coordinator
         if let first = Self.date(firstDateKey, calendar), let today = Self.date(todayDateKey, calendar) {
             view.availableDateRange = DateInterval(start: calendar.startOfDay(for: first), end: today)
         }
         let selected = Self.components(selectedDateKey)
+        // Nothing is preselected. UICalendarView draws a selected day that is not the system's
+        // today as a black disc (as Calendar does) whatever the tint, so the day — or week —
+        // in view is marked with a large tint dot instead, and a tap picks and closes.
         if selectsWeeks {
-            let selection = UICalendarSelectionWeekOfYear(delegate: context.coordinator)
-            view.selectionBehavior = selection
-            if let date = Self.date(selectedDateKey, calendar) {
-                // After it is attached: the view resolves the week in its own calendar.
-                var week = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-                week.calendar = calendar
-                selection.setSelected(week, animated: false)
-            }
+            view.selectionBehavior = UICalendarSelectionWeekOfYear(delegate: context.coordinator)
         } else {
-            let selection = UICalendarSelectionSingleDate(delegate: context.coordinator)
-            selection.setSelected(selected, animated: false)
-            view.selectionBehavior = selection
+            view.selectionBehavior = UICalendarSelectionSingleDate(delegate: context.coordinator)
         }
         view.visibleDateComponents = selected
         view.setContentHuggingPriority(.required, for: .vertical)
@@ -86,6 +84,21 @@ struct JumpCalendar: UIViewRepresentable {
 
     func updateUIView(_ view: UICalendarView, context: Context) {
         context.coordinator.parent = self
+        view.tintColor = Self.tint
+    }
+
+    /// The app tint as a UIKit dynamic colour. `UIColor(Tokens.tint)` crossed the bridge as a
+    /// colour UICalendarView could not resolve, and the selection was drawn black.
+    static let tint = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x7D / 255, green: 0x7D / 255, blue: 0xE8 / 255, alpha: 1)
+            : UIColor(red: 0x5B / 255, green: 0x5B / 255, blue: 0xD6 / 255, alpha: 1)
+    }
+
+    /// The days the screen is showing: the day, or the whole week on the Week level.
+    var inView: ClosedRange<String> {
+        guard selectsWeeks else { return selectedDateKey...selectedDateKey }
+        return HistoryCalendar.week(containing: selectedDateKey, firstWeekday: Calendar.current.firstWeekday)
     }
 
     // MARK: Keys and dates
@@ -119,9 +132,12 @@ struct JumpCalendar: UIViewRepresentable {
         func calendarView(_ calendarView: UICalendarView, decorationFor dateComponents: DateComponents)
             -> UICalendarView.Decoration?
         {
-            guard let key = JumpCalendar.key(dateComponents), parent.recordedDays.contains(key)
-            else { return nil }
-            return .default(color: UIColor(Tokens.tint), size: .small)
+            guard let key = JumpCalendar.key(dateComponents) else { return nil }
+            if parent.inView.contains(key) {
+                return .default(color: JumpCalendar.tint, size: .large)
+            }
+            guard parent.recordedDays.contains(key) else { return nil }
+            return .default(color: JumpCalendar.tint, size: .small)
         }
 
         func dateSelection(_ selection: UICalendarSelectionSingleDate, didSelectDate dateComponents: DateComponents?) {
