@@ -35,6 +35,9 @@ enum HistoryFormat {
     static func timeRange(_ startMs: Int64, _ endMs: Int64, zone: TimeZone, locale: Locale = .current)
         -> String
     {
+        // A stretch inside one minute reads as that minute, not "5:31 – 5:31 PM".
+        let startTime = time(startMs, zone: zone, locale: locale)
+        if startTime == time(endMs, zone: zone, locale: locale) { return startTime }
         if let a = clockParts(startMs, zone: zone, locale: locale),
             let b = clockParts(endMs, zone: zone, locale: locale)
         {

@@ -27,6 +27,155 @@ struct ChapterCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        let summary = block.source == .chapter ? block.summary.flatMap { $0.isEmpty ? nil : $0 } : nil
+        Group {
+            switch tier {
+            case .full: fullCard
+            case .medium: mediumCard
+            case .compact: compactCard
+            }
+        }
+        .background(Tokens.surface, in: RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
+        .background(alignment: .leading) { TimelineTalkLine() }
+        .contentShape(RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
+        .onTapGesture(perform: onOpen)
+        .contextMenu { menu(summary: summary) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(HistoryLabels.chapterAccessibilityLabel(block))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(Copy.History.A11y.openHint)
+        .accessibilityAction(.default, onOpen)
+        .accessibilityActions {
+            ForEach(block.followUps) { line in
+                Button(Copy.History.A11y.followUpAction(line.text)) { onOpenFollowUp(line) }
+            }
+        }
+    }
+
+    /// Which card this conversation gets (`ChapterCardTier`). DEBUG `-historyNoTiers` draws
+    /// every card full, for comparing the two.
+    private var tier: ChapterCardTier {
+        #if DEBUG
+        if ChapterCard.tiersDisabled { return .full }
+        #endif
+        return ChapterCardTier.tier(
+            durationMs: block.endMs - block.startMs,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
+    #if DEBUG
+    static let tiersDisabled = ProcessInfo.processInfo.arguments.contains("-historyNoTiers")
+    #endif
+
+    private var snippet: String? {
+        HistoryLabels.isUntitled(block) ? block.snippet.flatMap { $0.isEmpty ? nil : $0 } : nil
+    }
+
+    // MARK: Medium: 10 to 25 minutes
+
+    private var mediumCard: some View {
+        let time = HistoryLabels.chapterTimeLine(block)
+        let topics = Array(block.tags.prefix(3))
+        return VStack(alignment: .leading, spacing: ChapterCardMetrics.titleToTime) {
+            Text(HistoryLabels.chapterHeading(block))
+                .font(AppFont.rowTitle)
+                .foregroundStyle(Tokens.label)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .fixedSize(horizontal: false, vertical: true)
+            InlineTrailingLayout(spacing: 8) {
+                timeLine(main: time.main, missing: time.missing)
+                    .lineLimit(1)
+                if let snippet {
+                    quote(snippet)
+                        .lineLimit(1)
+                        .layoutValue(key: InlineTrailingLayout.Truncates.self, value: true)
+                } else if !topics.isEmpty || !block.people.isEmpty {
+                    TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
+                        .fixedSize()
+                }
+            }
+            if let first = block.followUps.first {
+                followUp(first, more: block.followUps.count - 1)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, ChapterCardMetrics.paddingHorizontal)
+        .padding(.top, ChapterCardTier.mediumPaddingTop)
+        .padding(.bottom, ChapterCardTier.mediumPaddingBottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: Compact: under 10 minutes
+
+    private var compactCard: some View {
+        HStack(spacing: 8) {
+            if let snippet {
+                Text(HistoryLabels.chapterHeading(block))
+                    .font(AppFont.rowTitle)
+                    .foregroundStyle(Tokens.label)
+                    .lineLimit(1)
+                    .fixedSize()
+                quote(snippet)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                Spacer(minLength: 0)
+            } else {
+                Text(HistoryLabels.chapterHeading(block))
+                    .font(AppFont.rowTitle)
+                    .foregroundStyle(Tokens.label)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    // The title takes all the room the time leaves; the spacer only what is over.
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
+                if !block.followUps.isEmpty {
+                    followUpIndicator
+                }
+                Text(HistoryLabels.compactTimeLine(block).main)
+                    .font(AppFont.timelineMeta)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            if block.missingMs > 0 {
+                // Loss is never hidden: on the one line it is an amber mark, and spoken in full.
+                Text(Copy.History.missing(HistoryFormat.duration(ms: block.missingMs)))
+                    .font(AppFont.timelineMeta)
+                    .foregroundStyle(Tokens.missingText)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, ChapterCardMetrics.paddingHorizontal)
+        .padding(.vertical, ChapterCardTier.compactPaddingVertical)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    /// An open circle and the number of follow-ups not yet done — or a checked one when all are.
+    private var followUpIndicator: some View {
+        let open = block.followUps.filter { !$0.done }.count
+        return HStack(spacing: 3) {
+            Image(systemName: open == 0 ? "checkmark.circle" : "circle")
+                .font(AppFont.timelineMeta)
+            Text("\(open == 0 ? block.followUps.count : open)")
+                .font(AppFont.timelineMeta.monospacedDigit())
+        }
+        .foregroundStyle(open == 0 ? Tokens.followUpDone : Tokens.tint)
+        .fixedSize()
+    }
+
+    private func quote(_ text: String) -> some View {
+        Text(Copy.History.quote(text))
+            .font(AppFont.historyBody(dynamicTypeSize))
+            .italic()
+            .foregroundStyle(Tokens.tertiary)
+    }
+
+    // MARK: Full: 25 minutes and longer
+
+    @ViewBuilder
+    private var fullCard: some View {
         let sizes = HistoryMetrics.at(dynamicTypeSize)
         let durationMs = block.endMs - block.startMs
         let summary = block.source == .chapter ? block.summary.flatMap { $0.isEmpty ? nil : $0 } : nil
@@ -77,21 +226,6 @@ struct ChapterCard: View {
             top: ChapterCardMetrics.paddingTop, leading: ChapterCardMetrics.paddingHorizontal,
             bottom: ChapterCardMetrics.paddingBottom, trailing: ChapterCardMetrics.paddingHorizontal))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Tokens.surface, in: RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
-        .background(alignment: .leading) { TimelineTalkLine() }
-        .contentShape(RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
-        .onTapGesture(perform: onOpen)
-        .contextMenu { menu(summary: summary) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(HistoryLabels.chapterAccessibilityLabel(block))
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint(Copy.History.A11y.openHint)
-        .accessibilityAction(.default, onOpen)
-        .accessibilityActions {
-            ForEach(block.followUps) { line in
-                Button(Copy.History.A11y.followUpAction(line.text)) { onOpenFollowUp(line) }
-            }
-        }
     }
 
     /// Between summary lines: the mockup's 1.35 line height at 14 pt.
@@ -267,5 +401,59 @@ struct TimelineTalkLine: View {
             .frame(maxHeight: .infinity)
             .offset(x: axisCentre - Tokens.Timeline.gutter - Tokens.Timeline.talkLineWidth / 2)
             .accessibilityHidden(true)
+    }
+}
+
+// MARK: - One line, the second part only if it fits
+
+/// Two views on one line: the first at its own width, the second after it — at its own width
+/// when it fits and hidden when it does not (pills), or given what is left and truncating
+/// (`Truncates`, a quote). Pills never wrap onto a second line of a medium card.
+struct InlineTrailingLayout: Layout {
+    var spacing: CGFloat = 8
+
+    struct Truncates: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        guard let first = subviews.first else { return .zero }
+        let a = first.sizeThatFits(.unspecified)
+        var height = a.height
+        if subviews.count > 1, let b = trailingSize(subviews[1], after: a.width, in: width) {
+            height = max(height, b.height)
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let first = subviews.first else { return }
+        let a = first.sizeThatFits(.unspecified)
+        let b = subviews.count > 1 ? trailingSize(subviews[1], after: a.width, in: bounds.width) : nil
+        let height = max(a.height, b?.height ?? 0)
+        first.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + (height - a.height) / 2),
+            proposal: ProposedViewSize(a))
+        guard subviews.count > 1 else { return }
+        if let b {
+            subviews[1].place(
+                at: CGPoint(x: bounds.minX + a.width + spacing, y: bounds.minY + (height - b.height) / 2),
+                proposal: ProposedViewSize(b))
+        } else {
+            // Does not fit: kept out of sight rather than squeezed or wrapped.
+            subviews[1].place(at: CGPoint(x: -10_000, y: bounds.minY), proposal: .zero)
+        }
+    }
+
+    private func trailingSize(_ view: LayoutSubview, after leading: CGFloat, in width: CGFloat) -> CGSize? {
+        let room = width - leading - spacing
+        guard room > 24 else { return nil }
+        if view[Truncates.self] {
+            let fitted = view.sizeThatFits(ProposedViewSize(width: room, height: nil))
+            return CGSize(width: min(fitted.width, room), height: fitted.height)
+        }
+        let ideal = view.sizeThatFits(.unspecified)
+        return ideal.width <= room ? ideal : nil
     }
 }

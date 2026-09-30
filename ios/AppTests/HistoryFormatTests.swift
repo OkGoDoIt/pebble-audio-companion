@@ -38,6 +38,10 @@ struct HistoryFormatTests {
         #expect(plain(HistoryFormat.timeRange(at(11, 30), at(12, 55), zone: newYork, locale: us)) == "11:30 AM – 12:55 PM")
     }
 
+    @Test func aRangeInsideOneMinuteIsThatMinute() {
+        #expect(plain(HistoryFormat.timeRange(at(17, 31), at(17, 31) + 40_000, zone: newYork, locale: us)) == "5:31 PM")
+    }
+
     @Test func aMeridiemNeverWrapsAwayFromItsTime() {
         let range = HistoryFormat.timeRange(at(9, 5), at(10, 15), zone: newYork, locale: us)
         #expect(range.hasSuffix("10:15\u{00A0}AM"))

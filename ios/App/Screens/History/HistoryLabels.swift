@@ -53,6 +53,18 @@ enum HistoryLabels {
         return block.timesApproximate ? Copy.History.approximately(range) : range
     }
 
+    /// A compact card's trailing meta: its start and length, "9:05 AM · 6 min".
+    static func compactTimeLine(_ block: HistoryChapterBlock, locale: Locale = .current)
+        -> (main: String, missing: String?)
+    {
+        let zone = TimeZone(identifier: block.zoneID) ?? .current
+        var start = HistoryFormat.time(block.startMs, zone: zone, locale: locale)
+        if block.timesApproximate { start = Copy.History.approximately(start) }
+        let missing = block.missingMs > 0
+            ? Copy.History.missing(HistoryFormat.duration(ms: block.missingMs)) : nil
+        return (start + " · " + HistoryFormat.duration(ms: block.endMs - block.startMs), missing)
+    }
+
     /// The live card's time line: "11:20 AM · 21 min so far".
     static func liveTimeLine(_ live: HistoryLiveBlock, locale: Locale = .current) -> String {
         let zone = TimeZone(identifier: live.zoneID) ?? .current

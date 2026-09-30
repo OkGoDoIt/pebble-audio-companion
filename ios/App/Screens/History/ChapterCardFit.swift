@@ -117,3 +117,60 @@ enum ChapterCardFit {
         return full > TimelineGeometry.softMaxHeight(for: span, metrics: timeline)
     }
 }
+
+// MARK: - Size tiers
+
+/// How much of a card a conversation of a given length gets (2026-10: conversations became
+/// topic-sized — median 16 min, a quarter under 5 — and the full card's floor, ~106 pt, is
+/// 90 minutes of the 70 pt/hour scale). Each tier's floor is chosen to sit as close to its
+/// duration's height as legible text allows, so the hour scale Roger tuned survives a day of
+/// short conversations. The scale and the soft maximum are unchanged; a card is still never
+/// shorter than its duration.
+enum ChapterCardTier: String, Equatable, Sendable, CaseIterable {
+    /// 25 min and longer: title (two lines), time line, fitted summary, pills, follow-ups.
+    case full
+    /// 10 to 25 min: title (one line, two if it needs it), the time line with the pills beside
+    /// it when they fit, and follow-ups as one line. No summary.
+    case medium
+    /// Under 10 min: one line — the title, and the time and duration trailing. A follow-up
+    /// indicator when there are any; no pills.
+    case compact
+
+    /// The boundaries, in minutes.
+    static let fullFromMinutes: Double = 25
+    static let mediumFromMinutes: Double = 10
+
+    /// The tier for a duration. At the accessibility text sizes every tier moves one step up
+    /// (compact → medium, medium → full): one line of large type holds a few words, and a card
+    /// that says nothing is worse than a taller one.
+    static func tier(durationMs: Int64, isAccessibilitySize: Bool = false) -> ChapterCardTier {
+        let minutes = Double(max(0, durationMs)) / 60_000
+        let base: ChapterCardTier =
+            minutes >= fullFromMinutes ? .full : minutes >= mediumFromMinutes ? .medium : .compact
+        guard isAccessibilitySize else { return base }
+        switch base {
+        case .full, .medium: return .full
+        case .compact: return .medium
+        }
+    }
+
+    // Paddings per tier. The full tier keeps `ChapterCardMetrics`' 10/11.
+    static let mediumPaddingTop: CGFloat = 8
+    static let mediumPaddingBottom: CGFloat = 9
+    static let compactPaddingVertical: CGFloat = 7
+
+    /// The least a card of this tier is, at these metrics: the full card with one summary
+    /// line and a row of pills; the medium card with a one-line title; the compact line.
+    func floorHeight(_ m: ChapterCardMetrics) -> CGFloat {
+        switch self {
+        case .full:
+            return ChapterCardFit.estimatedHeight(
+                showsSummary: true, hasPills: true, followUps: 0, metrics: m)
+        case .medium:
+            return Self.mediumPaddingTop + m.titleLine + ChapterCardMetrics.titleToTime
+                + max(m.timeLine, m.pillRow) + Self.mediumPaddingBottom
+        case .compact:
+            return Self.compactPaddingVertical * 2 + m.titleLine
+        }
+    }
+}
