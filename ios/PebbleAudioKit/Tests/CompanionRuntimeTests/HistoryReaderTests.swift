@@ -42,9 +42,14 @@ import Transcription
         #expect(HistorySpokenTurn.isDegenerate("the, the, the, the, the, uh, you kn"))
         #expect(HistorySpokenTurn.isDegenerate("저는안녕하세요. 저는안녕하세요. 저는안녕하세요. 저는안녕하세요. 저는안녕하세요."))
         #expect(HistorySpokenTurn.isDegenerate("in an apartment in Boston. I'll double I'll double I'll double I'll double I'll double"))
+        #expect(HistorySpokenTurn.isDegenerate("안녕하세요. 저는안녕하세요. 저는안녕하세요. 저"))
+        #expect(!HistorySpokenTurn.isDegenerate("Hôm nay trời đẹp nên chúng ta đi dạo công viên nhé."))
+        #expect(!HistorySpokenTurn.isDegenerate("この件については明日また話しましょう"))
         #expect(!HistorySpokenTurn.isDegenerate("I think the thing is the thing we said"))
         #expect(!HistorySpokenTurn.isDegenerate("We should call the landlord today and ask about the deposit."))
-        #expect(!HistorySpokenTurn.isDegenerate("Yeah, yeah, yeah."))
+        // "Yeah, yeah, yeah." is a thing people say, but it is no snippet either.
+        #expect(HistorySpokenTurn.isDegenerate("Yeah, yeah, yeah."))
+        #expect(!HistorySpokenTurn.isDegenerate("Yeah, sure, we can do that."))
         #expect(!HistorySpokenTurn.isDegenerate("I'm going to walk you through that checklist again."))
     }
 

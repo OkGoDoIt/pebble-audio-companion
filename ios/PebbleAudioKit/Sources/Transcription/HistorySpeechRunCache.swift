@@ -147,6 +147,7 @@ public struct HistorySpokenTurn: Equatable, Sendable {
     /// than a third of them distinct, or one word said four times or more making up half of them,
     /// or (seven words or more) at most half the word pairs distinct.
     public static func isDegenerate(_ text: String) -> Bool {
+        if repeatsOneRun(text) { return true }
         let words = text.lowercased().split { !$0.isLetter && !$0.isNumber && $0 != "'" }
         guard words.count >= 4 else { return false }
         if Set(words).count * 3 < words.count { return true }
@@ -160,10 +161,42 @@ public struct HistorySpokenTurn: Equatable, Sendable {
         return pairs.count >= 6 && Set(pairs).count * 2 <= pairs.count
     }
 
+    /// The same, for text written without spaces between words, where there are no words to
+    /// count: one run of 2-10 letters said three times or more, making up at least half the
+    /// letters ("안녕하세요. 저는안녕하세요. 저는안녕하세요. 저" — the provider cuts a loop mid-word
+    /// into turns that are not identical, so the across-turn detector never sees it).
+    static func repeatsOneRun(_ text: String) -> Bool {
+        let letters = Array(text.lowercased().filter { $0.isLetter })
+        guard letters.count >= 6 else { return false }
+        for length in 2...min(10, letters.count / 3) {
+            var seen: [String: (count: Int, next: Int)] = [:]
+            var index = 0
+            while index + length <= letters.count {
+                let run = String(letters[index..<(index + length)])
+                var entry = seen[run] ?? (0, 0)
+                if index >= entry.next {  // non-overlapping occurrences only
+                    entry.count += 1
+                    entry.next = index + length
+                    seen[run] = entry
+                    if entry.count >= 3, entry.count * length * 2 >= letters.count { return true }
+                }
+                index += 1
+            }
+        }
+        return false
+    }
+
     /// The turn's text on one line, at most about `maxCharacters`, cut at a word; nil when
     /// nothing was said.
     public static func preview(_ text: String) -> String? {
-        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var words = text.split(whereSeparator: \.isWhitespace)
+        // The provider sometimes starts a turn inside a word ("'m just going to be a bit late.",
+        // the rest of an "I" that ended the turn before): a leading fragment that begins with an
+        // apostrophe is not something anyone said on its own.
+        if let first = words.first, let mark = first.first, mark == "'" || mark == "\u{2019}" {
+            words.removeFirst()
+        }
+        let flat = String(words.joined(separator: " ").drop { ($0.isPunctuation && $0 != "\u{201C}" && $0 != "\"") || $0 == " " })
         guard !flat.isEmpty else { return nil }
         guard flat.count > maxCharacters else { return flat }
         let prefix = flat.prefix(maxCharacters)

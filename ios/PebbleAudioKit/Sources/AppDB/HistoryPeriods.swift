@@ -328,6 +328,9 @@ public enum HistoryPeriodAssembler {
     public static let rowTags = 3
     /// Follow-up lines a week row shows.
     public static let weekRowFollowUps = 2
+    /// Tag pills the month's in-brief card carries (plan 5.2: "a row of tag pills"). On the real
+    /// backup September carried 94 tags, 70 of them on a single day — a wall of pills, not a row.
+    public static let monthTagPills = 8
 
     /// The week `firstDateKey...lastDateKey` (whole, as `HistoryCalendar.week` makes it). Days
     /// after `todayKey` are not listed (plan 5.4); a day with no facts is "Nothing recorded".
@@ -392,7 +395,8 @@ public enum HistoryPeriodAssembler {
         let followUps = monthDays.flatMap(\.followUps)
         return HistoryPeriod(
             firstDateKey: range.lowerBound, lastDateKey: range.upperBound, brief: sources.monthBrief(monthDays),
-            tagCounts: tagCounts(monthDays, sources: sources), rows: rows, followUpTotal: followUps.count,
+            tagCounts: Array(tagCounts(monthDays, sources: sources).prefix(monthTagPills)), rows: rows,
+            followUpTotal: followUps.count,
             followUpOpen: followUps.filter { !$0.line.done }.count)
     }
 

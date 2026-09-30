@@ -236,6 +236,17 @@ private func recorded(
             HistoryTagCount(name: "setup", days: 1),
         ])
         #expect(month.followUpTotal == 2 && month.followUpOpen == 1)
+        // The card carries a row of pills, not every tag of the month.
+        var many: [String: HistoryDayFacts] = [:]
+        for day in 1...3 {
+            let key = "2026-09-0\(day)"
+            many[key] = recorded(key, conversations: [
+                conversation("c\(day)", "C", tags: (0..<6).map { "tag\(day)-\($0)" } + ["common"], overlap: 10)
+            ])
+        }
+        let crowded = HistoryPeriodAssembler.month(containing: "2026-09-10", firstWeekday: 1, days: many, todayKey: "2026-09-03")
+        #expect(crowded.tagCounts.count == HistoryPeriodAssembler.monthTagPills)
+        #expect(crowded.tagCounts.first == HistoryTagCount(name: "common", days: 3))
         // The first week row, whole, does include August's follow-up.
         #expect(month.rows.map(\.firstDateKey) == ["2026-08-30"])
         #expect(month.rows[0].followUpTotal == 3 && month.rows[0].followUpOpen == 2)
