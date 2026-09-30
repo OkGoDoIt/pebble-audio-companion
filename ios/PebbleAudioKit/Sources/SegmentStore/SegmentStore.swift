@@ -74,6 +74,8 @@ public actor SegmentStore: SegmentSink {
     private let fm = FileManager.default
     private let root: URL
     private let nowMs: @Sendable () -> Int64
+    /// IANA id of the phone's time zone right now, stamped on every newly opened segment.
+    private let timeZoneId: @Sendable () -> String
     private let config: SegmentStoreConfig
     private let log: @Sendable (String) -> Void
 
@@ -120,11 +122,13 @@ public actor SegmentStore: SegmentSink {
     public init(
         root: URL,
         nowMs: @escaping @Sendable () -> Int64,
+        timeZoneId: @escaping @Sendable () -> String = { TimeZone.current.identifier },
         config: SegmentStoreConfig = SegmentStoreConfig(),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.root = root
         self.nowMs = nowMs
+        self.timeZoneId = timeZoneId
         self.config = config
         self.log = log
         self.segmentsDir = root.appendingPathComponent("segments", isDirectory: true)
@@ -361,6 +365,15 @@ public actor SegmentStore: SegmentSink {
         // So keep the wire value verbatim and let the pair stay self-consistent. A segment's own
         // start is `SegmentMeta.startWallMs` (= startTimeMs + firstSampleIndex, clamped by
         // receivedAtMs), which is what every consumer wants and is now correct by construction.
+        //
+        // `recordedTimeZone` dates the segment in the zone it was recorded in, so a later zone
+        // change does not re-zone past conversations or move their logical day. It is stamped
+        // here and nowhere else: a reattached Interrupted segment keeps whatever it already had,
+        // and segments written before this field was stamped (almost all of them, until
+        // 2026-09-30) stay nil on purpose — a guessed zone would be indistinguishable from a
+        // recorded one, and consumers already fall back to the current zone for nil. It rides
+        // in the same atomic first meta write as every other field, so it changes nothing about
+        // what is written when.
         let meta = SegmentMeta(
             segmentId: segmentId,
             streamId: start.streamId,
@@ -377,7 +390,8 @@ public actor SegmentStore: SegmentSink {
             provenance: provenance.map {
                 ProvenanceMeta(fwVersionPacked: $0.fwVersionPacked, protocolVersion: $0.protocolVersion)
             },
-            dedupeFloorSequence: dedupeFloorSequence
+            dedupeFloorSequence: dedupeFloorSequence,
+            recordedTimeZone: timeZoneId()
         )
         try writeMetaAtomically(meta)
         current = OpenSegment(

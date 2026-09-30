@@ -685,6 +685,65 @@ import WireProtocol
             "crash-interrupted segments must reattach")
     }
 
+    @Test func newSegmentRecordsItsTimeZoneAndKeepsItAcrossReload() async throws {
+        // A segment is dated in the zone it was recorded in. The phone moving zones later — a
+        // relaunch in another zone here — must not re-zone it, and a reattach must not either.
+        let root = try tempRoot()
+        let segmentId: String
+        do {
+            let store = SegmentStore(
+                root: root, nowMs: { [clock] in clock.now }, timeZoneId: { "Asia/Tokyo" })
+            try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+            segmentId = try #require(await store.openSegmentId)
+            #expect(try #require(await store.readMeta(segmentId)).recordedTimeZone == "Asia/Tokyo")
+            _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 3))
+            // No close: the process dies here, so the zone must already be in the first write.
+        }
+        let sidecar = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: metaFile(root, segmentId))) as? [String: Any]
+        #expect(sidecar?["recordedTimeZone"] as? String == "Asia/Tokyo")
+
+        clock.now += 30_000
+        let relaunched = SegmentStore(
+            root: root, nowMs: { [clock] in clock.now }, timeZoneId: { "America/New_York" })
+        try await relaunched.recover()
+        #expect(try #require(await relaunched.readMeta(segmentId)).recordedTimeZone == "Asia/Tokyo")
+
+        try await relaunched.openSegment(
+            start: streamStart(flags: ProtocolConstants.streamStartFlagResume),
+            receivedAtMs: clock.now,
+            provenance: nil)
+        #expect(await relaunched.openSegmentId == segmentId)
+        #expect(
+            try #require(await relaunched.readMeta(segmentId)).recordedTimeZone == "Asia/Tokyo",
+            "a reattached segment keeps the zone it was recorded in")
+
+        // A segment opened after the move carries the new zone.
+        try await relaunched.openSegment(
+            start: streamStart(id: streamId + 1), receivedAtMs: clock.now, provenance: nil)
+        let fresh = try #require(await relaunched.openSegmentId)
+        #expect(try #require(await relaunched.readMeta(fresh)).recordedTimeZone == "America/New_York")
+    }
+
+    @Test func unstampedSegmentStaysUnstampedAcrossReload() async throws {
+        // Segments written before the zone was stamped are never back-filled with a guess.
+        let root = try tempRoot()
+        let store = makeStore(root)
+        try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+        let segmentId = try #require(await store.openSegmentId)
+        try await store.closeSegment(
+            reason: .stopped(reasonRaw: 1, finalSequence: 0, finalSampleIndex: 0))
+        var legacy = try #require(await store.readMeta(segmentId))
+        legacy.recordedTimeZone = nil
+        try JSONEncoder().encode(legacy).write(to: metaFile(root, segmentId))
+
+        let reopened = makeStore(root)
+        try await reopened.recover()
+        #expect(try #require(await reopened.readMeta(segmentId)).recordedTimeZone == nil)
+        let json = try String(contentsOf: metaFile(root, segmentId), encoding: .utf8)
+        #expect(!json.contains("recordedTimeZone"), "nil is omitted, as the KMP app wrote it")
+    }
+
     @Test func reattachKeepsOriginalRotationBudget() async throws {
         // Reattachment must not grant a fresh 15-minute rotation window, or a blip-prone stream's
         // segment never wall-rotates and grows to the byte cap.
