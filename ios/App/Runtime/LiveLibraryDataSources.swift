@@ -565,32 +565,27 @@ extension LiveWorld: ConversationDataSource {
 
     // --- boundaries (split / join) ---------------------------------------------------------
 
-    /// Every member except the first is a place this conversation could be cut, because a member
-    /// is exactly a stretch the receiver already treats as one piece — a cut anywhere else would
-    /// land inside a segment, which grouping cannot express.
+    /// Where this conversation could be split, and what the person has already decided about
+    /// it. The places offered are where talk resumed after a break — a conversation is a range
+    /// of each member recording now, so a new one can start between any two turns, and the
+    /// joins between recordings (all that could be offered while a conversation was whole
+    /// recordings) are no longer special.
     func boundaries(id: String) async throws -> ConversationBoundariesDisplay {
-        guard let detail = try? await composition.runtime.library.conversation(id: id) else {
-            return .none
-        }
-        let memberIds = detail.members.map(\.segmentId)
-        guard let firstMemberId = memberIds.first else { return .none }
+        guard let detail = try? await composition.runtime.library.conversation(id: id),
+            let first = detail.pieces.first
+        else { return .none }
+        let pieces = detail.pieces
+        let memberIds = pieces.map(\.segmentId)
         let metas = await Self.loadMetas(memberIds, files: composition.files)
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        let decisions = (try? await overrides.all()) ?? [:]
-        let queries = ConversationQueries(db: composition.database)
+        let turns = await Self.loadTurns(memberIds, store: composition.transcripts)
+        let edits = ConversationBoundaryEdits(database: composition.database)
+        let atSegmentStarts =
+            (try? await BoundaryOverrideStore(db: composition.database).all()) ?? [:]
+        let insideSegments =
+            (try? await ConversationCutStore(db: composition.database).overrides()) ?? [:]
         let startReason = try? await queries.startReason(ofConversation: id)
 
         let conversationStartMs = detail.row.startMs
-        let points: [ConversationBoundaryPoint] = memberIds.dropFirst().compactMap { memberId in
-            guard let meta = metas[memberId] else { return nil }
-            let startMs = ConversationGrouper.segmentStartMs(meta)
-            return ConversationBoundaryPoint(
-                id: memberId,
-                startedAt: Date(timeIntervalSince1970: Double(startMs) / 1000),
-                offsetMs: max(0, startMs - conversationStartMs),
-                isSplit: decisions[memberId] == .split
-            )
-        }
         // Something to join BACK to: an earlier conversation has to exist. Asked of the listing
         // rather than inferred from `startReason` being nil, which is also nil for everything
         // grouped before that column existed and would offer the join on conversations that
@@ -599,28 +594,80 @@ extension LiveWorld: ConversationDataSource {
         let hasPrevious = sections.contains { section in
             section.rows.contains { $0.startMs < conversationStartMs }
         }
+        let start = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
         return ConversationBoundariesDisplay(
             startReason: startReason,
             canJoinWithPrevious: hasPrevious,
-            isJoinedWithPrevious: decisions[firstMemberId] == .join,
-            points: points
+            isJoinedWithPrevious: (try? await edits.decision(at: start)) == .join,
+            points: ConversationSplitPoints.points(
+                pieces: pieces, metas: metas, turns: turns,
+                conversationStartMs: conversationStartMs),
+            joins: ConversationSplitPoints.joins(
+                pieces: pieces, metas: metas, turns: turns, insideSegments: insideSegments,
+                atSegmentStarts: atSegmentStarts, conversationStartMs: conversationStartMs)
         )
     }
 
-    func setSplit(atSegmentId segmentId: String, on: Bool) async throws {
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        try await overrides.set(segmentId: segmentId, decision: on ? .split : nil)
+    /// Turn timings and text for the split-point list, off the main actor and WITHOUT the
+    /// per-word arrays: the sheet needs where each turn starts and its first few words, and
+    /// `load` would decode megabytes of word timings to throw them away.
+    static func loadTurns(
+        _ segmentIds: [String], store: FileTranscriptStore
+    ) async -> [String: [Transcription.TranscriptSegment]] {
+        await Task.detached(priority: .userInitiated) {
+            var loaded: [String: [Transcription.TranscriptSegment]] = [:]
+            for id in segmentIds {
+                if let turns = store.loadSpeechTimings(id) { loaded[id] = turns }
+            }
+            return loaded
+        }.value
+    }
+
+    func split(at cut: ConversationCut) async throws {
+        try await ConversationBoundaryEdits(database: composition.database).split(at: cut)
         try await regroupAfterBoundaryChange()
     }
 
+    /// Joins the conversation to the one before it, at the position its first piece starts —
+    /// which is inside a segment as often as not — or clears that join.
+    ///
+    /// A conversation that starts where the person split is joined by taking the split away.
+    /// If the rules would start a conversation at the same place anyway, that alone changes
+    /// nothing anybody can see, so the grouping is looked at again and the join written on
+    /// top: one tap on "Join" always joins.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws {
         guard
             let detail = try? await composition.runtime.library.conversation(id: conversationId),
-            let firstMemberId = detail.members.first?.segmentId
+            let first = detail.pieces.first
         else { return }
-        let overrides = BoundaryOverrideStore(db: composition.database)
-        try await overrides.set(segmentId: firstMemberId, decision: on ? .join : nil)
+        let start = ConversationCut(segmentId: first.segmentId, mediaMs: first.startMediaMs ?? 0)
+        let edits = ConversationBoundaryEdits(database: composition.database)
+        guard on else {
+            try await edits.clearJoin(at: start)
+            try await regroupAfterBoundaryChange()
+            return
+        }
+        let wrote = try await edits.joinWithPrevious(conversationStartingAt: start)
         try await regroupAfterBoundaryChange()
+        if wrote == .clearedSplit, await conversationStarts(at: start) {
+            try await edits.joinWithPrevious(conversationStartingAt: start)
+            try await regroupAfterBoundaryChange()
+        }
+    }
+
+    func separate(at cut: ConversationCut) async throws {
+        try await ConversationBoundaryEdits(database: composition.database).clearJoin(at: cut)
+        try await regroupAfterBoundaryChange()
+    }
+
+    /// Whether some conversation's FIRST piece starts exactly at `cut`.
+    private func conversationStarts(at cut: ConversationCut) async -> Bool {
+        guard
+            let owner = try? await queries.conversationId(
+                ofSegment: cut.segmentId, atMediaMs: cut.mediaMs),
+            let first = try? await queries.detail(id: owner)?.pieces.first
+        else { return false }
+        return first.segmentId == cut.segmentId && (first.startMediaMs ?? 0) == cut.mediaMs
     }
 
     /// Grouping is derived, so a decision only becomes visible once it is recomputed. Doing it

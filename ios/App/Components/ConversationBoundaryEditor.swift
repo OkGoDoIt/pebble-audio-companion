@@ -17,20 +17,36 @@ import SwiftUI
 // Two properties this UI must keep, because they are what make the automatic layer safe to ship:
 //  - nothing here touches audio, transcripts or notes. The footer says so out loud, because a
 //    control called "split" on a recording app reads like destructive editing.
-//  - every action is undoable by repeating it. Overrides are stored per segment and beat the
-//    rules in both directions, so "put it back" is always available.
+//  - every action can be taken back, and the sheet says how. A split makes a new conversation,
+//    and joining that one to the previous conversation undoes it; a join dissolves the later
+//    conversation into the earlier one, so the join is listed INSIDE the conversation it made,
+//    with "separate them again" on it. (The rows used to be switches undone by tapping again.
+//    That stopped being true the moment a split could land anywhere: the place you split at
+//    leaves this conversation, and its row with it.)
+//
+// Where a split is offered changed with the conversation unit. A conversation was whole
+// recordings, so the only places on offer were the joins between them — every fifteen minutes,
+// wherever the file happened to rotate. It is now a range of each recording, and can start
+// between any two turns, so the places offered are the ones a person would pick: where talk
+// resumed after a break (`ConversationSplitPoints`).
 
-/// One place inside a conversation where a new one could start: the member recording that would
-/// begin it. Supplied by the screen, which already has the member metas loaded.
+/// One place inside a conversation: where a new one could start, or where the person joined
+/// two. Supplied by the screen's data source.
 struct ConversationBoundaryPoint: Identifiable, Equatable {
-    /// The member segment that would start the new conversation. Also the override's key.
-    let id: String
-    /// Wall clock where the new conversation would begin.
+    /// The position itself — a recording and an offset into its stored audio. It is what a
+    /// decision is stored against, because it is the only thing a regroup does not move.
+    let cut: ConversationCut
+    /// Wall clock of the first word after it.
     let startedAt: Date
     /// How far into this conversation that is.
     let offsetMs: Int64
-    /// True while the person's own split stands here.
-    var isSplit: Bool
+    /// How long nobody spoke before it. Zero for a join, which is not defined by a pause.
+    var pauseMs: Int64 = 0
+    /// The first few words said after it, so the place can be recognised. Empty when there
+    /// are none to quote.
+    var opening: String = ""
+
+    var id: String { "\(cut.segmentId)@\(cut.mediaMs)" }
 }
 
 /// The sheet. Pure presentation: it holds no store, so it previews and tests without a database
@@ -40,9 +56,20 @@ struct ConversationBoundaryEditor: View {
     /// False for the first conversation there is — nothing to join to.
     let canJoinWithPrevious: Bool
     let isJoinedWithPrevious: Bool
+    /// Places where talk resumed after a break: tapping one starts a new conversation there.
     let points: [ConversationBoundaryPoint]
+    /// Places inside this conversation where the person joined two. Tapping one takes the
+    /// join back.
+    var joins: [ConversationBoundaryPoint] = []
+    /// What the last tap did, in a sentence — a split removes its own row (the place is now
+    /// the start of another conversation), so without this the list just gets shorter.
+    var notice: String? = nil
+    /// Q16 — the places are named by the clock in the zone the audio was recorded in, like the
+    /// stamps in the transcript behind this sheet.
+    var timeZone: TimeZone = .current
     var onToggleJoinWithPrevious: (Bool) -> Void
-    var onToggleSplit: (String, Bool) -> Void
+    var onSplit: (ConversationBoundaryPoint) -> Void
+    var onSeparate: (ConversationBoundaryPoint) -> Void = { _ in }
     var onDone: () -> Void
 
     var body: some View {
@@ -62,6 +89,7 @@ struct ConversationBoundaryEditor: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if canJoinWithPrevious { joinSection }
+                    if !joins.isEmpty { joinedSection }
                     splitSection
                     Text(Copy.Boundaries.footer)
                         .font(AppFont.footnote)
@@ -97,6 +125,30 @@ struct ConversationBoundaryEditor: View {
         }
     }
 
+    /// The joins that made this conversation the size it is. Ticked, because each is a
+    /// decision that currently stands; tapping takes it back.
+    private var joinedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader(Copy.Boundaries.joinedHeader)
+            ListCard {
+                ForEach(joins) { point in
+                    CheckRow(
+                        title: Copy.Boundaries.place(
+                            time: clock(point.startedAt), offsetMs: point.offsetMs),
+                        detail: Copy.Boundaries.opening(point.opening),
+                        isOn: true,
+                        action: { onSeparate(point) }
+                    )
+                    .accessibilityHint(Copy.Boundaries.undoJoin)
+                }
+            }
+            Text(Copy.Boundaries.joinedFooter)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.meta)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var splitSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(Copy.Boundaries.splitHeader)
@@ -108,11 +160,12 @@ struct ConversationBoundaryEditor: View {
             } else {
                 ListCard {
                     ForEach(points) { point in
-                        CheckRow(
-                            title: point.startedAt.formatted(date: .omitted, time: .shortened),
-                            detail: Copy.Boundaries.minutesIn(point.offsetMs),
-                            isOn: point.isSplit,
-                            action: { onToggleSplit(point.id, !point.isSplit) }
+                        PlaceRow(
+                            title: Copy.Boundaries.place(
+                                time: clock(point.startedAt), offsetMs: point.offsetMs),
+                            detail: Copy.Boundaries.afterBreak(
+                                point.pauseMs, opening: point.opening),
+                            action: { onSplit(point) }
                         )
                     }
                 }
@@ -121,7 +174,19 @@ struct ConversationBoundaryEditor: View {
                     .foregroundStyle(Tokens.meta)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Under the list it changed, and only after a tap: the row that was tapped is
+            // gone (that place now starts another conversation), so this is what says so.
+            if let notice {
+                Text(notice)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private func clock(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone))
     }
 
     private func sectionHeader(_ text: String) -> some View {
@@ -168,6 +233,45 @@ private struct CheckRow: View {
     }
 }
 
+/// A place that can be acted on once: no checkmark, because nothing here is on or off. Tapping
+/// starts a new conversation at it, after which the place belongs to that conversation and the
+/// row is gone from this one.
+private struct PlaceRow: View {
+    let title: String
+    var detail: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let detail {
+                        Text(detail)
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.meta)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 10)
+                Image(systemName: "arrow.turn.down.right")
+                    .foregroundStyle(Tokens.tint)
+                    .imageScale(.medium)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(Copy.Boundaries.splitHint)
+    }
+}
+
 /// The one calm line under a conversation's title saying why it starts where it does.
 ///
 /// This is the other half of shipping an automatic splitter: a split the reader cannot account
@@ -185,34 +289,6 @@ struct ConversationStartCaption: View {
     }
 }
 
-/// Reads and writes the person's decisions. Thin on purpose — the grouping itself is derived
-/// and recomputed by the pipeline, so all this owns is the override rows.
-@MainActor
-struct ConversationBoundaryEditing {
-    let overrides: BoundaryOverrideStore
-    /// Called after a write so the caller can rebuild the grouping and refresh the screen.
-    var onChanged: () async -> Void = {}
-
-    func decisions(forSegments segmentIds: [String]) async -> [String: BoundaryDecision] {
-        let all = (try? await overrides.all()) ?? [:]
-        return all.filter { segmentIds.contains($0.key) }
-    }
-
-    /// Toggling a split writes `.split` on the member that would start the new conversation,
-    /// and clearing it hands the join back to the automatic rules.
-    func setSplit(atSegmentId segmentId: String, on: Bool) async {
-        try? await overrides.set(segmentId: segmentId, decision: on ? .split : nil)
-        await onChanged()
-    }
-
-    /// Joining writes `.join` on this conversation's FIRST member, which is the segment whose
-    /// join to the previous conversation is being overruled.
-    func setJoinWithPrevious(firstSegmentId: String, on: Bool) async {
-        try? await overrides.set(segmentId: firstSegmentId, decision: on ? .join : nil)
-        await onChanged()
-    }
-}
-
 #Preview("Split or join") {
     ConversationBoundaryEditor(
         startReason: .quiet,
@@ -220,14 +296,22 @@ struct ConversationBoundaryEditing {
         isJoinedWithPrevious: false,
         points: [
             ConversationBoundaryPoint(
-                id: "seg-2", startedAt: .now.addingTimeInterval(-3600), offsetMs: 15 * 60_000,
-                isSplit: false),
+                cut: ConversationCut(segmentId: "seg-1", mediaMs: 612_000),
+                startedAt: .now.addingTimeInterval(-3600), offsetMs: 15 * 60_000,
+                pauseMs: 95_000, opening: "So about the trip to Lisbon, I was thinking we…"),
             ConversationBoundaryPoint(
-                id: "seg-3", startedAt: .now.addingTimeInterval(-1800), offsetMs: 45 * 60_000,
-                isSplit: true),
+                cut: ConversationCut(segmentId: "seg-3", mediaMs: 0),
+                startedAt: .now.addingTimeInterval(-1800), offsetMs: 45 * 60_000,
+                pauseMs: 240_000, opening: "Right, where were we?"),
+        ],
+        joins: [
+            ConversationBoundaryPoint(
+                cut: ConversationCut(segmentId: "seg-2", mediaMs: 301_500),
+                startedAt: .now.addingTimeInterval(-2700), offsetMs: 30 * 60_000,
+                opening: "Anyway, the other thing was the budget.")
         ],
         onToggleJoinWithPrevious: { _ in },
-        onToggleSplit: { _, _ in },
+        onSplit: { _ in },
         onDone: {}
     )
 }
@@ -239,7 +323,7 @@ struct ConversationBoundaryEditing {
         isJoinedWithPrevious: true,
         points: [],
         onToggleJoinWithPrevious: { _ in },
-        onToggleSplit: { _, _ in },
+        onSplit: { _ in },
         onDone: {}
     )
 }

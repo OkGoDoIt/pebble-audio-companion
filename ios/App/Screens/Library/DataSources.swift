@@ -400,23 +400,30 @@ protocol ConversationDataSource: AnyObject {
     /// whether someone ended a meeting or just blanked out a moment, the split is predictable
     /// and putting it back is one tap.
     func boundaries(id: String) async throws -> ConversationBoundariesDisplay
-    /// Split so `segmentId` starts a new conversation, or clear that decision and hand the join
-    /// back to the automatic rules. Keyed by the segment alone — segment ids are the only stable
-    /// thing across a regroup, and the conversation this is being done FROM is about to stop
-    /// existing in its current shape anyway.
-    func setSplit(atSegmentId segmentId: String, on: Bool) async throws
+    /// Start a new conversation at `cut`. Keyed by the position alone — a recording and an
+    /// offset into it are the only things stable across a regroup, and the conversation this
+    /// is being done FROM is about to stop existing in its current shape anyway. Taken back by
+    /// joining the conversation it creates to the one before it.
+    func split(at cut: ConversationCut) async throws
     /// Join this conversation onto the one before it, or clear that decision.
     func setJoinWithPrevious(conversationId: String, on: Bool) async throws
+    /// "Separate them again": take back the person's join at a place INSIDE a conversation
+    /// (`ConversationBoundariesDisplay.joins`), handing that place back to the automatic rules.
+    func separate(at cut: ConversationCut) async throws
 }
 
 /// The state of one conversation's boundaries: why it starts where it does, whether it can be
-/// joined backwards, and every interior point that could become a split.
+/// joined backwards, the places inside it where a new one could start, and the places where
+/// the person joined two.
 struct ConversationBoundariesDisplay: Equatable {
     var startReason: ConversationStartReason?
     /// False for the oldest conversation there is — nothing to join to.
     var canJoinWithPrevious: Bool
     var isJoinedWithPrevious: Bool
+    /// Where talk resumed after a pause, in the order it happened.
     var points: [ConversationBoundaryPoint]
+    /// The person's joins inside this conversation, each of which can be taken back.
+    var joins: [ConversationBoundaryPoint] = []
 
     static let none = ConversationBoundariesDisplay(
         startReason: nil, canJoinWithPrevious: false, isJoinedWithPrevious: false, points: [])
