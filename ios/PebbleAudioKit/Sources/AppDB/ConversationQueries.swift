@@ -251,18 +251,69 @@ public struct ConversationQueries: Sendable {
 
     // --- the library build (shared by fetch + observation) --------------------------------------
 
-    static func buildRows(_ db: Database) throws -> [ConversationListRow] {
-        let convoRows = try Row.fetchAll(
-            db,
-            sql: """
-                SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs,
-                    c.timezone AS timezone, c.state AS state,
-                    a.title AS title, a.summary AS summary, a.finalAttempts AS finalAttempts
-                FROM conversations c
-                LEFT JOIN annotations a ON a.conversationId = c.id
-                ORDER BY c.startMs DESC, c.id
-                """
-        )
+    /// Which conversations a row build reads.
+    enum RowScope: Sendable {
+        /// The whole library (the Library screen, its observation, the widget and Spotlight).
+        case all
+        /// Just these conversations — one, for `detail(id:)`.
+        case ids([String])
+        /// Conversations whose `[startMs, endMs)` overlaps the window (see
+        /// `rows(overlappingMs:)` for the edges).
+        case overlapping(Range<Int64>)
+    }
+
+    /// The conversation rows in `scope`, newest first. Every per-conversation read (members,
+    /// tags, follow-ups, coverage) is restricted to the conversations the scope selected, so a
+    /// scoped build does work in proportion to what it returns rather than to the library. For
+    /// `.all` the queries are the ones it always ran.
+    static func buildRows(_ db: Database, scope: RowScope = .all) throws -> [ConversationListRow] {
+        let select = """
+            SELECT c.id AS id, c.startMs AS startMs, c.endMs AS endMs,
+                c.timezone AS timezone, c.state AS state,
+                a.title AS title, a.summary AS summary, a.finalAttempts AS finalAttempts
+            FROM conversations c
+            LEFT JOIN annotations a ON a.conversationId = c.id
+            """
+        let order = "ORDER BY c.startMs DESC, c.id"
+        let convoRows: [Row]
+        switch scope {
+        case .all:
+            convoRows = try Row.fetchAll(db, sql: "\(select)\n\(order)")
+        case .ids(let ids):
+            guard !ids.isEmpty else { return [] }
+            convoRows = try Row.fetchAll(
+                db,
+                sql: "\(select)\nWHERE c.id IN (\(databaseQuestionMarks(count: ids.count)))\n\(order)",
+                arguments: StatementArguments(ids))
+        case .overlapping(let window):
+            guard !window.isEmpty else { return [] }
+            // Overlap of [startMs, endMs) with the window. A row with no end runs on; one with no
+            // length (a recording that never received audio) is a point, and is in the window
+            // when its start is. `startMs < ?` is what `conversations_start` serves.
+            convoRows = try Row.fetchAll(
+                db,
+                sql: """
+                    \(select)
+                    WHERE c.startMs < ?
+                        AND (c.endMs IS NULL OR c.endMs > ? OR c.startMs >= ?)
+                    \(order)
+                    """,
+                arguments: [window.upperBound, window.lowerBound, window.lowerBound])
+        }
+        // For a scoped build, the per-conversation reads below take `WHERE … IN (<these ids>)`;
+        // for the whole library they take nothing, exactly as before.
+        let scopedIds: [String]?
+        switch scope {
+        case .all: scopedIds = nil
+        case .ids, .overlapping:
+            guard !convoRows.isEmpty else { return [] }
+            scopedIds = convoRows.map { $0["id"] }
+        }
+        func restricted(_ column: String, joiner: String) -> String {
+            guard let scopedIds else { return "" }
+            return "\(joiner) \(column) IN (\(databaseQuestionMarks(count: scopedIds.count)))"
+        }
+        let scopedArguments = StatementArguments(scopedIds ?? [])
 
         var memberStates: [String: [ConversationMemberState]] = [:]
         for row in try Row.fetchAll(
@@ -272,8 +323,10 @@ public struct ConversationQueries: Sendable {
                     cs.transcriptionState AS segmentState
                 FROM conversation_segments cs
                 LEFT JOIN transcription_tasks tt ON tt.segmentId = cs.segmentId
+                \(restricted("cs.conversationId", joiner: "WHERE"))
                 ORDER BY cs.conversationId, cs.ordinal
-                """
+                """,
+            arguments: scopedArguments
         ) {
             memberStates[row["conversationId"], default: []].append(
                 ConversationMemberState(
@@ -291,8 +344,10 @@ public struct ConversationQueries: Sendable {
                 SELECT ct.conversationId AS conversationId, t.name AS name
                 FROM conversation_tags ct JOIN tags t ON t.id = ct.tagId
                 WHERE ct.source <> '\(TagSource.removed)'
+                \(restricted("ct.conversationId", joiner: "AND"))
                 ORDER BY t.name COLLATE NOCASE ASC
-                """
+                """,
+            arguments: scopedArguments
         ) {
             tagNames[row["conversationId"], default: []].append(row["name"])
         }
@@ -306,8 +361,10 @@ public struct ConversationQueries: Sendable {
                         CASE WHEN done = 0 AND archivedAtMs IS NULL THEN 1 ELSE 0 END
                     ) AS open
                 FROM follow_ups WHERE sourceConversationId IS NOT NULL
+                \(restricted("sourceConversationId", joiner: "AND"))
                 GROUP BY sourceConversationId
-                """
+                """,
+            arguments: scopedArguments
         ) {
             followUps[row["conversationId"]] = (row["total"], row["open"])
         }
@@ -428,8 +485,11 @@ public struct ConversationQueries: Sendable {
         }.values(in: db.reader)
     }
 
+    /// One conversation's row and members. Builds only that conversation's row — it used to build
+    /// the row of every conversation in the library and pick one, on every open of a
+    /// conversation and on every database change while one was on screen.
     static func buildDetail(_ db: Database, id: String) throws -> ConversationDetail? {
-        guard let row = try buildRows(db).first(where: { $0.id == id }) else { return nil }
+        guard let row = try buildRows(db, scope: .ids([id])).first else { return nil }
         let members = try Row.fetchAll(
             db,
             sql: """
@@ -458,6 +518,20 @@ public struct ConversationQueries: Sendable {
             )
         }
         return ConversationDetail(row: row, members: members)
+    }
+
+    /// The conversations whose `[startMs, endMs)` overlaps `window` (epoch ms), newest first — a
+    /// History day's, week's or month's conversations without building the whole library.
+    ///
+    /// Edges: touching is not overlapping (a conversation ending exactly at the window's start,
+    /// or starting exactly at its end, is out); a conversation spanning the whole window is in;
+    /// a conversation with no length (opened, no audio ever arrived) is in when its start is
+    /// inside the window; an empty window has nothing in it. A live conversation is read at its
+    /// extent so far — the grouper writes every conversation's end, a live one's included, and
+    /// keeps it current each pass — and a row with no end at all (the column is nullable) is
+    /// treated as running on from its start.
+    public func rows(overlappingMs window: Range<Int64>) async throws -> [ConversationListRow] {
+        try await db.reader.read { db in try Self.buildRows(db, scope: .overlapping(window)) }
     }
 
     /// One conversation with ordered members and per-segment provenance.
