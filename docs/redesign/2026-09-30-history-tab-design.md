@@ -61,8 +61,13 @@ the natural unit.
 - **Gap kinds on the day:** quiet = bare axis + gray "Quiet · 1 hr 5 min"; paused = tint-striped
   axis + "Paused · 30 min" and who paused; **audio missing = solid amber axis for the whole
   stretch + "Audio missing · 3 hr 30 min", its time range and the cause.** Loss inside a topic is
-  an amber suffix on the block's time line ("56 min · 4 min missing"). Long-gap labels sit at the
-  top of the gap (should pin while scrolling through it).
+  an amber suffix on the block's time line ("56 min · 4 min missing"). Gap labels are centred in
+  their gap and **pinned at both edges while scrolling**: the label's resting place is the middle
+  of the gap, clamped to the visible part of the scroll view and to the gap itself, so it slides
+  to the top as the gap scrolls out above and to the bottom as it comes in from below, and is
+  never off-screen while any usable part of the gap is on screen. (SwiftUI: `visualEffect` with
+  the label's frame and the scroll view's bounds in the `.scrollView` coordinate space — no
+  scroll-offset state.)
 - **Follow-up state:** done items show a checked circle and dimmed text everywhere. Where only
   some are shown (two per day on the week, or a collapsed block), open ones come first. The
   circles are NOT tap targets on the week (too small); the row opens the day.
