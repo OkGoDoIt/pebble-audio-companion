@@ -2,7 +2,7 @@
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design round 7, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design round 10, nothing implemented.** Mockups are in `history-mockups/`.
 
 ## Why the Library fails on real data
 
@@ -46,8 +46,8 @@ the natural unit.
   count ("16 follow-ups · 11 open"), not the items.
 - **The day's time scale (rounds 5–6).** Hour spacing driven purely by content was "too
   variable" (2–3 PM came out about four times the height of 7–8 PM). Rule now:
-  - **Every hour inside the day keeps a minimum height (105 pt, i.e. 1.75 pt/min), with no
-    exceptions for gaps.** Collapsing long gaps to a short break was tried and rejected as
+  - **Every hour inside the day keeps a minimum height of 70 pt (1.17 pt/min), with no
+    exceptions for gaps.** (105, 90 and 80 were tried; Roger chose 70 on 2026-09-30.) Collapsing long gaps to a short break was tried and rejected as
     disorienting. Compression is allowed only before the first and after the last recording of
     the day. The timeline starts AT the first recording and ends at the last, with one line at
     each end ("Quiet until 8:12 AM", "Quiet after 9:44 PM") — never a rounded-hour label plus
@@ -68,6 +68,21 @@ the natural unit.
   never off-screen while any usable part of the gap is on screen. (SwiftUI: `visualEffect` with
   the label's frame and the scroll view's bounds in the `.scrollView` coordinate space — no
   scroll-offset state.)
+- **Background audio (round 10, proposed — awaiting Roger's read).** Sound that was recorded
+  but holds no conversation (music, TV, a café, a fan, a few stray words) is a fourth gap kind,
+  in the same calm family as quiet: a soft gray bar on the axis, "Background audio · 45 min", the
+  time range and a short reason ("music, no conversation"). Unlike quiet it is tappable, because
+  the audio exists — it opens the recording at that time. It never becomes a topic block, feeds
+  no follow-ups and is left out of the day/week/month briefs. Why not just call it quiet: the
+  audio is there to hear, and "no speech" verdicts have been wrong before (53 of 575 old ones
+  later produced transcripts).
+  What decides it, from what exists today (see the 2026-09-30 progress-log entry):
+  - *No words at all* is known per ~15-min segment (`NoSpeech`, with who decided), and between
+    turns inside a transcribed segment.
+  - *Words that are not a conversation* (lyrics, TV dialogue) cannot be told from speech by any
+    signal the app keeps: no music/TV classifier, Soniox's `is_audio_event` tokens are dropped,
+    per-turn confidence is stored but never used. The topic stage has to make this call from the
+    transcript, and it will sometimes be wrong — so the row is always openable, never hidden.
 - **Follow-up state:** done items show a checked circle and dimmed text everywhere. Where only
   some are shown (two per day on the week, or a collapsed block), open ones come first. The
   circles are NOT tap targets on the week (too small); the row opens the day.
@@ -109,7 +124,8 @@ one day boundary at every zoom level.
 `history-mockups/direction-{a,b,c,d}` — round 1, four directions.
 `history-mockups/round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
 content-sized and as calendar blocks.
-`history-mockups/round7-day-merged-edge-quiet` — the current day (round 6 plus merged edge labels). `round5-week-followup-state`
+`history-mockups/round10-background-audio` — the current day (70 pt minimum hour, merged edge
+labels, centred gap labels, background-audio gaps). Rounds 6–9 are the steps that led to it. `round5-week-followup-state`
 — the current week (its two day phones are superseded by round 6).
 `history-mockups/round4-white-blocks-followups` — the current month; day and week superseded.
 `history-mockups/round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
