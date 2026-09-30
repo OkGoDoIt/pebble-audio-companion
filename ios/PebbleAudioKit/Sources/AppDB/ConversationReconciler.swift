@@ -124,13 +124,14 @@ public struct ConversationReconciler: Sendable {
     ///
     /// `reconcile` needs the grouping as it WAS, and that exists only in the rebuild that
     /// replaced it: the grouper writes the new grouping in its own transaction and hands the
-    /// old one back. If the process dies between that write and the reconcile — the first
-    /// rebuild after the re-cut is the longest the app ever runs, and iOS kills what it
-    /// suspends — the old grouping is gone for good, and with it the only record of which
-    /// follow-ups moved. This is how that heals: every moment-record is checked against who
-    /// owns its moment now, and every conversation-record whose id no longer exists is carried
-    /// to the conversation holding the position its ID names (`conv-<segment>` starts at the
-    /// segment's first frame, `conv-<segment>-m<ms>` at that offset).
+    /// old one back. If the process dies between that write and the reconcile, or the
+    /// reconcile's own write fails, the old grouping is gone for good, and with it the only
+    /// record of which follow-ups moved — and the rebuild this matters most for, the first one
+    /// after the re-cut, moves every one of them. This is how that heals: every moment-record
+    /// is checked against who owns its moment now, and every conversation-record whose id no
+    /// longer exists is carried to the conversation holding the position its ID names
+    /// (`conv-<segment>` starts at the segment's first frame, `conv-<segment>-m<ms>` at that
+    /// offset).
     ///
     /// Reads every follow-up and pending candidate once, and the distinct conversation ids of
     /// five small tables. Meant for the first regroup of a launch, not for every pass.
@@ -163,26 +164,40 @@ public struct ConversationReconciler: Sendable {
                             WHERE named NOT IN (SELECT id FROM conversations)
                             """))
             }
-            let departed = orphans.sorted().compactMap(Self.startPosition(ofConversationId:))
+            // The reading of an id whose segment is actually in the grouping; an id that names
+            // no such segment (its audio is gone, or it is not one of ours) is left alone.
+            let departed = try orphans.sorted().compactMap { id in
+                try Self.startPositions(ofConversationId: id).first { reading in
+                    try Bool.fetchOne(
+                        d,
+                        sql: """
+                            SELECT EXISTS(SELECT 1 FROM conversation_segments WHERE segmentId = ?)
+                            """,
+                        arguments: [reading.segmentId]) == true
+                }
+            }
             try Self.supersede(d, departed, into: &outcome)
             return outcome
         }
     }
 
-    /// Where the conversation an id names started: `conv-<segmentId>` at the segment's first
-    /// frame, `conv-<segmentId>-m<ms>` at that offset (`ConversationCut.conversationId`). Nil
-    /// for an id of any other shape, which no position can be read from.
-    static func startPosition(ofConversationId id: String) -> Departed? {
-        guard id.hasPrefix("conv-"), id.count > 5 else { return nil }
+    /// Where the conversation an id names started (`ConversationCut.conversationId`):
+    /// `conv-<segmentId>` at the segment's first frame, `conv-<segmentId>-m<ms>` at that
+    /// offset. Both readings of an id that could be either, the whole-segment one first — the
+    /// caller takes the first whose segment exists. Empty for an id of any other shape, which
+    /// no position can be read from.
+    static func startPositions(ofConversationId id: String) -> [Departed] {
+        guard id.hasPrefix("conv-"), id.count > 5 else { return [] }
         let rest = String(id.dropFirst(5))
+        var readings = [Departed(id: id, segmentId: rest, mediaMs: 0)]
         if let marker = rest.range(of: "-m", options: .backwards),
             let mediaMs = Int64(rest[marker.upperBound...]), mediaMs > 0,
             marker.lowerBound > rest.startIndex
         {
-            return Departed(
-                id: id, segmentId: String(rest[..<marker.lowerBound]), mediaMs: mediaMs)
+            readings.append(
+                Departed(id: id, segmentId: String(rest[..<marker.lowerBound]), mediaMs: mediaMs))
         }
-        return Departed(id: id, segmentId: rest, mediaMs: 0)
+        return readings
     }
 
     // MARK: - Moments
