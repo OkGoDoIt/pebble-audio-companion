@@ -82,10 +82,11 @@ extension Copy {
             return "\(after) · \(quoted)"
         }
 
-        /// Shown under the list after a split: the tapped row is gone, so this says where
-        /// the new conversation starts.
+        /// Shown under the list after a split, in place of the instruction: the tapped row is
+        /// gone, so this says where the new conversation starts and how to take it back.
         static func didSplit(at time: String) -> String {
-            "A new conversation now starts at \(time)."
+            "A new conversation now starts at \(time). To undo, open it and join it with the "
+                + "previous one."
         }
 
         /// The calm one-liner under a conversation's title saying why it starts here. Nil where

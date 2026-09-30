@@ -61,8 +61,9 @@ struct ConversationBoundaryEditor: View {
     /// Places inside this conversation where the person joined two. Tapping one takes the
     /// join back.
     var joins: [ConversationBoundaryPoint] = []
-    /// What the last tap did, in a sentence — a split removes its own row (the place is now
-    /// the start of another conversation), so without this the list just gets shorter.
+    /// What the last split did — a split removes its own row (the place is now the start of
+    /// another conversation), so without this the list just gets shorter. Shown in place of
+    /// the list's instruction.
     var notice: String? = nil
     /// Q16 — the places are named by the clock in the zone the audio was recorded in, like the
     /// stamps in the transcript behind this sheet.
@@ -169,17 +170,20 @@ struct ConversationBoundaryEditor: View {
                         )
                     }
                 }
-                Text(Copy.Boundaries.splitFooter)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            // Under the list it changed, and only after a tap: the row that was tapped is
-            // gone (that place now starts another conversation), so this is what says so.
+            // After a tap the instruction gives way to what the tap did: the row that was
+            // tapped is gone (that place now starts another conversation), so this is what
+            // says so — and how to take it back, since the split may have used the last row
+            // and the instruction with it.
             if let notice {
                 Text(notice)
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !points.isEmpty {
+                Text(Copy.Boundaries.splitFooter)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
