@@ -1,5 +1,6 @@
 import AppDB
 import OSLog
+import QuartzCore
 import SwiftUI
 
 // The day timeline (plan 5.3 "Layout", 7.12 "The day timeline").
@@ -140,10 +141,75 @@ struct DayTimelineLayout: Layout {
 enum HistoryPerformance {
     static let signposter = OSSignposter(subsystem: "dev.audiocompanion.app", category: "History")
 
+    /// When the History tab was selected (or the screen first appeared), for "tab to first
+    /// content" (plan 7.13: under 150 ms).
+    @MainActor static var shownAt: ContinuousClock.Instant?
+
+    @MainActor static func markShown() {
+        shownAt = ContinuousClock.now
+        signposter.emitEvent("history shown")
+    }
+
+    /// The visible page's content has appeared: logs the time since `markShown`, once.
+    @MainActor static func firstContent(_ page: HistoryPageID, isCurrent: Bool) {
+        guard isCurrent, let shownAt else { return }
+        self.shownAt = nil
+        signposter.emitEvent("history first content")
+        #if DEBUG
+        let elapsed = ContinuousClock.now - shownAt
+        let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
+        print(String(format: "[history] first content (%@) %.1f ms after the tab was shown", page.id, ms))
+        #endif
+    }
+
+    #if DEBUG
+    /// DEBUG `-historyHitchLog`: logs every display frame that took more than 1.5 frames, to
+    /// check paging to an unbuilt neighbour (plan 7.13: a swipe never drops a frame).
+    @MainActor static func startHitchLogIfAsked() {
+        guard ProcessInfo.processInfo.arguments.contains("-historyHitchLog"), hitchMonitor == nil
+        else { return }
+        let monitor = HitchMonitor()
+        monitor.start()
+        hitchMonitor = monitor
+    }
+
+    @MainActor private static var hitchMonitor: HitchMonitor?
+
+    @MainActor private final class HitchMonitor: NSObject {
+        private var link: CADisplayLink?
+        private var last: CFTimeInterval = 0
+
+        func start() {
+            let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        }
+
+        @objc private func tick(_ link: CADisplayLink) {
+            defer { last = link.timestamp }
+            guard last > 0 else { return }
+            let expected = link.targetTimestamp - link.timestamp
+            let delta = link.timestamp - last
+            if expected > 0, delta > expected * 1.5 {
+                print(String(format: "[history] %.3f slow frame %.1f ms (expected %.1f)", CACurrentMediaTime(), delta * 1000, expected * 1000))
+            }
+        }
+    }
+    #endif
+
+    /// DEBUG: a timestamped line in the hitch log, to place a slow frame against what happened.
+    static func mark(_ event: String) {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-historyHitchLog") {
+            print(String(format: "[history] %.3f %@", CACurrentMediaTime(), event))
+        }
+        #endif
+    }
+
     static func reportMeasure(_ elapsed: Duration, items: Int) {
         #if DEBUG
         let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
-        print(String(format: "[history] day timeline measured %d views in %.1f ms", items, ms))
+        print(String(format: "[history] %.3f day timeline measured %d views in %.1f ms", CACurrentMediaTime(), items, ms))
         #endif
     }
 }
@@ -227,10 +293,14 @@ struct DayTimeline: View {
     /// The live transcript's last line, for today's Live card.
     var liveLine: String?
     var nowMs: Int64?
+    /// False while only the first screenful of `day.items` is drawn (`DayReveal`): the end of
+    /// the day — the now marker, an open-ended last gap — is not drawn until it is there.
+    var isComplete = true
     var onOpenChapter: (HistoryChapterBlock) -> Void = { _ in }
     var onOpenFollowUp: (HistoryFollowUpLine) -> Void = { _ in }
     var onOpenGap: (HistoryGap) -> Void = { _ in }
     var onOpenLive: () -> Void = {}
+    var onOpenTag: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -262,7 +332,7 @@ struct DayTimeline: View {
 
     /// Today's "now": the end of the live card, or of an open-ended last gap.
     private var nowMarkMs: Int64? {
-        guard day.isToday, let last = day.items.last else { return nil }
+        guard isComplete, day.isToday, let last = day.items.last else { return nil }
         if case .live = last { return last.endMs }
         return nowMs.map { min($0, last.endMs) }
     }
@@ -327,12 +397,13 @@ struct DayTimeline: View {
         switch item {
         case .chapter(let block):
             ChapterCard(
-                block: block, onOpen: { onOpenChapter(block) }, onOpenFollowUp: onOpenFollowUp)
+                block: block, onOpen: { onOpenChapter(block) }, onOpenFollowUp: onOpenFollowUp,
+                onOpenTag: onOpenTag)
         case .gap(let gap):
             if HistoryLabels.isPendingCard(gap) {
                 PendingChapterCard(gap: gap) { onOpenGap(gap) }
             } else {
-                TimelineGap(gap: gap, openEnded: day.isToday && isLast) { onOpenGap(gap) }
+                TimelineGap(gap: gap, openEnded: day.isToday && isLast && isComplete) { onOpenGap(gap) }
             }
         case .zoneChange(let change):
             ZoneChangeDivider(change: change)

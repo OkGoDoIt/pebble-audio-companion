@@ -23,6 +23,10 @@ extension Tokens {
     static let nowMarker = Color(light: 0x1F9D47, dark: 0x30D158)
     /// A done follow-up's circle and text: dimmed, and the icon changes too (5.9).
     static let followUpDone = Color(light: 0xA0A0A6, dark: 0x6C6C70)
+    /// The axis beside a card: light tint for the card's whole duration.
+    static let timelineTalk = Tokens.tint.adaptiveOpacity(light: 0.40, dark: 0.75)
+    /// The axis beside the Live card.
+    static let timelineLive = Tokens.good.adaptiveOpacity(light: 0.45, dark: 0.6)
     /// The dashed outline of a recording that is not transcribed yet.
     static let pendingOutline = Color(light: 0xC7C7CC, dark: 0x48484A)
 
@@ -33,6 +37,8 @@ extension Tokens {
         /// The axis line's x, inside the gutter.
         static let axisX: CGFloat = 50
         static let axisWidth: CGFloat = 1.5
+        /// The tint line beside a card (`TimelineTalkLine`).
+        static let talkLineWidth: CGFloat = 2
         /// Vertical space between two items: consecutive chapters touch in time, so the cards
         /// need it to read as two.
         static let itemSpacing: CGFloat = 6

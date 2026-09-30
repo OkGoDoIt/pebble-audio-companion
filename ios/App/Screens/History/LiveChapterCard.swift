@@ -47,6 +47,7 @@ struct LiveChapterCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius)
                 .strokeBorder(Tokens.good, lineWidth: 1.5))
+        .background(alignment: .leading) { TimelineTalkLine(color: Tokens.timelineLive) }
         .contentShape(RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
         .onTapGesture(perform: onOpen)
         .accessibilityElement(children: .ignore)

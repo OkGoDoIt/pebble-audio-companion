@@ -21,6 +21,8 @@ struct ChapterCard: View {
     let block: HistoryChapterBlock
     var onOpen: () -> Void = {}
     var onOpenFollowUp: (HistoryFollowUpLine) -> Void = { _ in }
+    /// A topic pill's results (plan 5.7). Nil: the pills do nothing.
+    var onOpenTag: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -28,7 +30,11 @@ struct ChapterCard: View {
         let sizes = HistoryMetrics.at(dynamicTypeSize)
         let durationMs = block.endMs - block.startMs
         let summary = block.source == .chapter ? block.summary.flatMap { $0.isEmpty ? nil : $0 } : nil
-        let showsSummary = ChapterCardFit.showsSummary(durationMs: durationMs, hasSummary: summary != nil)
+        // An untitled stretch's body is its first words, shown at every length: without them
+        // the card would be a time and nothing else.
+        let snippet = HistoryLabels.isUntitled(block) ? block.snippet.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let showsSummary = snippet != nil
+            || ChapterCardFit.showsSummary(durationMs: durationMs, hasSummary: summary != nil)
         let topics = Array(block.tags.prefix(3))
         let hasPills = !topics.isEmpty || !block.people.isEmpty
         let collapses = ChapterCardFit.collapsesFollowUps(
@@ -39,10 +45,23 @@ struct ChapterCard: View {
 
         ChapterCardLayout(
             softMaxHeight: softMax - ChapterCardMetrics.paddingTop - ChapterCardMetrics.paddingBottom,
-            minSummaryHeight: sizes.card.summaryLine
+            // At the accessibility sizes a summary keeps at least two lines: one line of large
+            // type is a few words, which says nothing. The card may exceed its band there.
+            minSummaryHeight: dynamicTypeSize.isAccessibilitySize
+                ? sizes.card.summaryLine * 2 + ChapterCard.summaryLineSpacing
+                : sizes.card.summaryLine
         ) {
             header
-            if showsSummary, let summary {
+            if let snippet {
+                // Verbatim, so it is quoted and set like the Live card's line.
+                Text(Copy.History.quote(snippet))
+                    .font(AppFont.historyBody(dynamicTypeSize))
+                    .italic()
+                    .foregroundStyle(Tokens.tertiary)
+                    .lineSpacing(ChapterCard.summaryLineSpacing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutValue(key: ChapterCardPart.self, value: .summary)
+            } else if showsSummary, let summary {
                 Text(summary)
                     .font(AppFont.historyBody(dynamicTypeSize))
                     .foregroundStyle(Tokens.tertiary)
@@ -59,6 +78,7 @@ struct ChapterCard: View {
             bottom: ChapterCardMetrics.paddingBottom, trailing: ChapterCardMetrics.paddingHorizontal))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Tokens.surface, in: RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
+        .background(alignment: .leading) { TimelineTalkLine() }
         .contentShape(RoundedRectangle(cornerRadius: Tokens.Timeline.cardRadius))
         .onTapGesture(perform: onOpen)
         .contextMenu { menu(summary: summary) }
@@ -80,10 +100,10 @@ struct ChapterCard: View {
     private var header: some View {
         let time = HistoryLabels.chapterTimeLine(block)
         return VStack(alignment: .leading, spacing: ChapterCardMetrics.titleToTime) {
-            Text(HistoryLabels.chapterTitle(block))
+            Text(HistoryLabels.chapterHeading(block))
                 .font(AppFont.rowTitle)
                 .foregroundStyle(Tokens.label)
-                .lineLimit(2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 .fixedSize(horizontal: false, vertical: true)
             timeLine(main: time.main, missing: time.missing)
         }
@@ -106,14 +126,8 @@ struct ChapterCard: View {
     private func footer(topics: [String], collapses: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if !topics.isEmpty || !block.people.isEmpty {
-                FlowLayout(
-                    horizontalSpacing: ChapterCardMetrics.pillSpacing,
-                    verticalSpacing: ChapterCardMetrics.pillSpacing
-                ) {
-                    ForEach(topics, id: \.self) { TagChip(text: $0, tone: .topic) }
-                    ForEach(block.people, id: \.self) { TagChip(text: $0, tone: .person) }
-                }
-                .padding(.top, ChapterCardMetrics.pillsTop)
+                TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
+                    .padding(.top, ChapterCardMetrics.pillsTop)
             }
             if !block.followUps.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
@@ -233,5 +247,25 @@ enum HistoryMetrics {
             card: ChapterCardMetrics(dynamicTypeSize: size))
         cache[size] = sizes
         return sizes
+    }
+}
+
+// MARK: - The axis beside talk
+
+/// The hour axis beside a card, drawn in light tint for the card's whole duration: the day's
+/// talk reads down the axis at a glance, and gaps keep their own axis styles (bare, stripes,
+/// amber, the soft gray bar, dashes). Drawn behind the card, offset into the gutter; the hour
+/// ticks and labels are placed after the items, so they sit on top of it.
+struct TimelineTalkLine: View {
+    var color: Color = Tokens.timelineTalk
+
+    var body: some View {
+        let axisCentre = Tokens.Timeline.axisX + Tokens.Timeline.axisWidth / 2
+        Capsule()
+            .fill(color)
+            .frame(width: Tokens.Timeline.talkLineWidth)
+            .frame(maxHeight: .infinity)
+            .offset(x: axisCentre - Tokens.Timeline.gutter - Tokens.Timeline.talkLineWidth / 2)
+            .accessibilityHidden(true)
     }
 }

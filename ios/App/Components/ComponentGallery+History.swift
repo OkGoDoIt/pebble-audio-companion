@@ -154,7 +154,8 @@ struct HistoryComponentGallery: View {
                 ]),
             HistoryChapterBlock(
                 id: "g4", startMs: at(16, 0), endMs: at(16, 40), zoneID: zone,
-                source: .conversation, title: nil, summary: "Never shown on a fallback card."),
+                source: .conversation, title: nil, summary: nil,
+                snippet: "Can you pull up the live data again? I want to see it tick over once."),
         ]
 
         static let gaps: [HistoryGap] = [

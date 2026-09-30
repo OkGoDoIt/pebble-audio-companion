@@ -20,6 +20,8 @@ struct BriefCard: View {
     var note: String?
     /// Opens the Follow-ups tab filtered to the period. Nil: the footer is plain text.
     var onFooterTap: (() -> Void)?
+    /// A month tag's results (plan 5.7). Nil: the pills do nothing.
+    var onTagTap: ((String) -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -56,12 +58,8 @@ struct BriefCard: View {
                 }
 
                 if !tagCounts.isEmpty {
-                    FlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
-                        ForEach(tagCounts) { tag in
-                            FilterChip(text: tag.name, count: tag.days)
-                        }
-                    }
-                    .padding(.top, 10)
+                    TagCountRow(tags: tagCounts, onSelect: onTagTap)
+                        .padding(.top, 8)
                 }
 
                 if let footer {
@@ -92,6 +90,24 @@ struct BriefCard: View {
         } else {
             label
         }
+    }
+}
+
+/// A month's tag with the number of days it appears on: "apartment 14" (plan 5.2), 12/500 tint
+/// on 10 % tint — the size round 4 drew, so a month's four tags sit on one line.
+struct TagCountPill: View {
+    let tag: HistoryTagCount
+
+    var body: some View {
+        Text(Copy.History.tagCount(tag.name, days: tag.days))
+            .font(.system(.caption, weight: .medium))
+            .foregroundStyle(Tokens.tint)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.vertical, 3)
+            .padding(.horizontal, 10)
+            .background(Capsule().fill(Tokens.tintFill10))
+            .accessibilityLabel(Copy.History.A11y.tagDays(tag.name, days: tag.days))
     }
 }
 

@@ -164,13 +164,16 @@ struct DashedAxis: View {
 /// Pure position, not animation: it tracks under Reduce Motion too.
 struct GapLabelPin: ViewModifier {
     nonisolated static let space = "history.timeline.gap"
+    /// Kept between a pinned label and the edge of the visible area, so it never sits flush
+    /// against the level control or the tab bar.
+    nonisolated static let margin: CGFloat = 6
 
     func body(content: Content) -> some View {
         content.visualEffect { effect, proxy in
             let gap = proxy.bounds(of: .named(Self.space)) ?? .zero
             let visible = proxy.bounds(of: .scrollView(axis: .vertical)) ?? gap
             return effect.offset(y: TimelineGeometry.pinOffset(
-                labelHeight: proxy.size.height, gap: gap, visible: visible))
+                labelHeight: proxy.size.height, gap: gap, visible: visible, margin: Self.margin))
         }
     }
 }

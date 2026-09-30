@@ -1,41 +1,74 @@
 import AppDB
 import SwiftUI
 
-/// One day (plan 5.3): its two-line title drawn in the page (so it slides away with the day when
-/// a pager is added), the in-brief card, the leading edge line, the timeline and the trailing
-/// edge line, in one vertical scroll view. Every state of plan 5.8 is drawn here.
+/// One day (plan 5.3): its two-line title drawn in the page, the in-brief card, the leading edge
+/// line, the timeline and the trailing edge line, in the page's own vertical scroll view. Every
+/// state of plan 5.8 is drawn here.
 ///
-/// The page owns only its own vertical scroll position. It subscribes to its day while it is on
-/// screen (`.task(id:)` cancels the stream when it goes) and writes no state the timeline does
-/// not need: every write re-runs the timeline's measurement.
-struct DayPage: View {
-    let dateKey: String
-    let todayKey: String
-    var source: any HistoryDataSource
-    var actions = HistoryActions()
+/// Only the page in view subscribes to its day (`.task(id:)` ends the stream when it stops
+/// being current); a neighbour takes one value and lets go — the pager's `prefetch` has built
+/// it — so a swipe lands on a drawn page without a neighbour ever being observed. The page
+/// writes no state the timeline does not need: every write re-runs the timeline's measurement.
+struct DayPage: View, Equatable {
+    let context: HistoryPageContext
+    let services: HistoryPageServices
 
     @State private var page: HistoryDayPage?
+    /// How many of the day's items are drawn. A page appearing for the first time draws its
+    /// first screenful at once and the rest over the next frames (`DayReveal`).
+    @State private var revealed = Int.max
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    private var dateKey: String { context.page.key }
+    private var todayKey: String { context.todayKey }
+    private var source: any HistoryDataSource { services.source }
+    private var actions: HistoryActions { services.actions }
+
+    nonisolated static func == (a: DayPage, b: DayPage) -> Bool {
+        a.context == b.context && a.services === b.services
+    }
+
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 0) {
-                HistoryPageTitle(title: title.title, subtitle: title.subtitle)
-                if let page {
-                    content(page)
-                } else {
-                    loadingFrame
+        HistoryPageFrame(
+            context: context, services: services, title: title.title, subtitle: title.subtitle
+        ) {
+            if let page {
+                content(page)
+                    .onAppear { HistoryPerformance.firstContent(context.page, isCurrent: context.isCurrent) }
+            } else {
+                loadingFrame
+            }
+        }
+        .task(id: HistoryStreamKey(context)) {
+            guard context.isNear else { return }
+            if context.isCurrent {
+                for await next in source.day(dateKey) where next != page {
+                    show(next)
+                }
+            } else if page == nil {
+                // A neighbour: one value, no observation.
+                for await next in source.day(dateKey) {
+                    show(next)
+                    break
                 }
             }
-            .padding(.horizontal, Tokens.screenMargin)
-            .padding(.bottom, Tokens.blockGap)
         }
-        .background(Tokens.ground)
-        .task(id: dateKey) {
-            for await next in source.day(dateKey) where next != page {
-                page = next
-            }
+        .task(id: revealed) {
+            // One more batch a frame at a time until the whole day is drawn.
+            guard let page, revealed < page.day.items.count else { return }
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
+            revealed = DayReveal.next(after: revealed, count: page.day.items.count)
         }
+    }
+
+    /// The first time a page gets its day, only the first screenful is drawn; a later update of
+    /// a page already on screen is drawn whole.
+    private func show(_ next: HistoryDayPage) {
+        if page == nil {
+            revealed = DayReveal.firstScreenful(next.day.items)
+        }
+        page = next
     }
 
     private var title: (title: String, subtitle: String) {
@@ -59,11 +92,13 @@ struct DayPage: View {
             if let edge = page.day.leadingEdge {
                 TimelineEdgeLine(edge: edge, leading: true, zoneID: zoneID(of: page.day.items.first))
             }
+            let complete = revealed >= page.day.items.count
             DayTimeline(
-                day: page.day, liveLine: page.liveLine,
+                day: complete ? page.day : DayReveal.prefix(page.day, revealed),
+                liveLine: page.liveLine, isComplete: complete,
                 onOpenChapter: actions.openChapter, onOpenFollowUp: actions.openFollowUp,
-                onOpenGap: actions.openGap, onOpenLive: actions.openLive)
-            if let edge = page.day.trailingEdge {
+                onOpenGap: actions.openGap, onOpenLive: actions.openLive, onOpenTag: actions.openTag)
+            if complete, let edge = page.day.trailingEdge {
                 TimelineEdgeLine(edge: edge, leading: false, zoneID: zoneID(of: page.day.items.last))
             }
         }
@@ -108,35 +143,6 @@ struct DayPage: View {
     }
 }
 
-/// A History page's title, drawn in the page under the level control (plan 5.1, 7.12): large
-/// and left-aligned, one line ("Sep 20 – 26") or two ("Tuesday" / "September 22").
-struct HistoryPageTitle: View {
-    let title: String
-    var subtitle: String?
-
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(AppFont.historyTitle(dynamicTypeSize))
-                .foregroundStyle(Tokens.label)
-            if let subtitle {
-                Text(subtitle)
-                    .font(AppFont.bodyPlain)
-                    .foregroundStyle(Tokens.meta)
-            }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.horizontal, 4)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-    }
-}
-
 /// Where History's taps go. The shell wires these to routes; until then they do nothing.
 struct HistoryActions {
     var openChapter: (HistoryChapterBlock) -> Void = { _ in }
@@ -145,4 +151,40 @@ struct HistoryActions {
     var openLive: () -> Void = {}
     /// The brief's footer: the Follow-ups tab, filtered to the period starting at this day.
     var openFollowUps: (String) -> Void = { _ in }
+    /// A topic's results (plan 5.7).
+    var openTag: (String) -> Void = { _ in }
+}
+
+/// Paging onto a day that has never been built costs its whole layout in the frame the page
+/// comes into view — about 60 ms for a 25-card day in the simulator, three dropped frames in a
+/// swipe. So a new page draws what the first screen can show, and the rest a batch per frame
+/// (plan 7.12). The day always opens at its top, so nothing visibly changes.
+enum DayReveal {
+    /// Enough items to fill what a swipe shows under the title and the brief card, counted on
+    /// the floor scale (cards are taller than their floor, so this over-fills), and never
+    /// fewer than three.
+    static let screenfulPoints: CGFloat = 500
+    static let batch = 4
+
+    static func firstScreenful(_ items: [HistoryItem]) -> Int {
+        var height: CGFloat = 0
+        var count = 0
+        for item in items {
+            count += 1
+            height += max(TimelineSpan(startMs: item.startMs, endMs: item.endMs).minutes
+                * TimelineScale.pointsPerMinute, 44)
+            if height >= screenfulPoints && count >= 3 { break }
+        }
+        return count
+    }
+
+    static func next(after revealed: Int, count: Int) -> Int {
+        min(count, revealed + batch)
+    }
+
+    static func prefix(_ day: HistoryDay, _ count: Int) -> HistoryDay {
+        var partial = day
+        partial.items = Array(day.items.prefix(count))
+        return partial
+    }
 }
