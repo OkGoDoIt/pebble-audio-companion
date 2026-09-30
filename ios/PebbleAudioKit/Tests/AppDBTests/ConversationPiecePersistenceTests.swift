@@ -486,6 +486,271 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
     }
 }
 
+// MARK: - "these two are one conversation", through the store
+
+/// The app path for a join: `ConversationCutStore.joinWithPrevious` reads the stored grouping and
+/// records the point between the two conversations AND the span they covered, and the next
+/// `rebuildDetailed` reads it back.
+@Suite struct ConversationJoinTests {
+    let t0 = testEpochMs
+    private let preRoll = ConversationRunPlanner.preRollMs
+
+    private func rebuild(_ day: Day, in db: AppDatabase, policy: BoundaryPolicy = frozenPolicy)
+        async throws -> ConversationGrouper.RebuiltGrouping
+    {
+        let rebuilt = try await ConversationGrouper.rebuildDetailed(
+            segments: day.segments, pauses: [], openSegmentId: day.open, fallbackTimeZoneID: "UTC",
+            evidence: day.evidence, policy: policy, db: db)
+        expectPiecesTile(rebuilt.conversations, segments: day.segments)
+        return rebuilt
+    }
+
+    /// Two people (0–30), dictation (34–90), two people about something else (94–150).
+    private var threeConversations: Day {
+        day(minutes: 150, talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150, cookingWords)])
+    }
+    private var second: ConversationCut {
+        ConversationCut(segmentId: "s2", mediaMs: minutesMs(4) - preRoll)
+    }
+    private var third: ConversationCut {
+        ConversationCut(segmentId: "s6", mediaMs: minutesMs(4) - preRoll)
+    }
+
+    private func spanRows(_ db: AppDatabase) async throws -> [[String?]] {
+        try await db.reader.read { d in
+            var out: [[String?]] = []
+            for row in try Row.fetchAll(
+                d, sql: "SELECT * FROM conversation_cut_overrides ORDER BY segmentId, mediaMs")
+            {
+                let segmentId: String = row["segmentId"]
+                let mediaMs: Int64 = row["mediaMs"]
+                let decision: String = row["decision"]
+                let from: String? = row["spanFromSegmentId"]
+                let fromMs: Int64? = row["spanFromMediaMs"]
+                let to: String? = row["spanToSegmentId"]
+                let toMs: Int64? = row["spanToMediaMs"]
+                out.append([
+                    segmentId, String(mediaMs), decision, from, fromMs.map { String($0) }, to,
+                    toMs.map { String($0) },
+                ])
+            }
+            return out
+        }
+    }
+
+    @Test func joiningAConversationToTheOneBeforeItLeavesOneAndItStaysOne() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        let before = try await rebuild(threeConversations, in: db)
+        #expect(
+            before.conversations.map(\.id)
+                == ["conv-s0", second.conversationId, third.conversationId])
+
+        // "The second and the first are one conversation."
+        let at = try await store.joinWithPrevious(conversationId: second.conversationId, atMs: 77)
+        #expect(at == second)
+        // What is written: the point between them, and the span they covered — from the start
+        // of the first to the start of the third.
+        #expect(
+            try await spanRows(db) == [
+                ["s2", String(second.mediaMs), "join", "s0", "0", "s6", String(third.mediaMs)]
+            ])
+        #expect(try await store.overrides() == [second: .join])
+
+        let joined = try await rebuild(threeConversations, in: db)
+        // One conversation where there were two, under the first one's id; the third is
+        // untouched — the span does not block the cut exactly at its end.
+        #expect(joined.conversations.map(\.id) == ["conv-s0", third.conversationId])
+        #expect(
+            joined.conversations.map(\.brief) == [
+                ["s0", "s1", "s2", "s3", "s4", "s5", "s6[..\(third.mediaMs))"],
+                ["s6[\(third.mediaMs)..)", "s7", "s8", "s9"],
+            ])
+        #expect(joined.structureChanged)
+        #expect(joined.previous.map(\.id) == before.conversations.map(\.id))
+
+        // And it stays one: the next rebuild changes nothing and writes nothing.
+        let changesBefore = try await totalChanges(db)
+        let again = try await rebuild(threeConversations, in: db)
+        #expect(again.conversations == joined.conversations)
+        #expect(!again.changed)
+        #expect(try await totalChanges(db) == changesBefore)
+    }
+
+    @Test func undoingAJoinRestoresTheTwoWithTheIdsTheyHad() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        let before = try await rebuild(threeConversations, in: db)
+        let at = try #require(
+            try await store.joinWithPrevious(conversationId: second.conversationId))
+        #expect(try await rebuild(threeConversations, in: db).conversations.count == 2)
+
+        try await store.setOverride(at: at, decision: nil)
+        #expect(try await store.overrides().isEmpty)
+        #expect(try await spanRows(db).isEmpty)
+        let restored = try await rebuild(threeConversations, in: db)
+        #expect(restored.conversations.map(\.id) == before.conversations.map(\.id))
+        #expect(restored.conversations.map(\.members) == before.conversations.map(\.members))
+        #expect(
+            restored.conversations.map(\.startReason) == before.conversations.map(\.startReason))
+    }
+
+    @Test func joinsChain() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        _ = try await rebuild(threeConversations, in: db)
+        // The second into the first, regroup, then the third into what that made.
+        try await store.joinWithPrevious(conversationId: second.conversationId, atMs: 1)
+        #expect(
+            try await rebuild(threeConversations, in: db).conversations.map(\.id)
+                == ["conv-s0", third.conversationId])
+        let at = try await store.joinWithPrevious(conversationId: third.conversationId, atMs: 2)
+        #expect(at == third)
+        // The second span runs from the start of the (already joined) first conversation to
+        // the end of the run: nothing follows the third.
+        #expect(
+            try await spanRows(db) == [
+                ["s2", String(second.mediaMs), "join", "s0", "0", "s6", String(third.mediaMs)],
+                ["s6", String(third.mediaMs), "join", "s0", "0", nil, nil],
+            ])
+        let all = try await rebuild(threeConversations, in: db)
+        #expect(all.conversations.map(\.id) == ["conv-s0"])
+        #expect(all.conversations[0].members == (0..<10).map { ConversationMember(segmentId: "s\($0)") })
+
+        // Undoing the later join gives back the third and keeps the first join.
+        try await store.setOverride(at: third, decision: nil)
+        #expect(
+            try await rebuild(threeConversations, in: db).conversations.map(\.id)
+                == ["conv-s0", third.conversationId])
+    }
+
+    @Test func thereIsNothingToJoinTheFirstConversationOrAnUnknownOneTo() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        #expect(try await store.joinWithPrevious(conversationId: "conv-s0") == nil)
+        _ = try await rebuild(threeConversations, in: db)
+        #expect(try await store.joinWithPrevious(conversationId: "conv-s0") == nil)
+        #expect(try await store.joinWithPrevious(conversationId: "conv-nope") == nil)
+        #expect(try await store.overrides().isEmpty)
+    }
+
+    @Test func aPlainDecisionAtTheSamePlaceReplacesTheJoinAndItsSpan() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        _ = try await rebuild(threeConversations, in: db)
+        try await store.joinWithPrevious(conversationId: second.conversationId)
+        func spans() async throws -> [ConversationCutInputs.JoinSpan] {
+            try await db.reader.read { d in
+                var overrides: [String: BoundaryDecision] = [:]
+                return try ConversationCutStore.fetchInputs(d, into: &overrides).joinSpans
+            }
+        }
+        #expect(
+            try await spans()
+                == [.init(from: ConversationCut(segmentId: "s0", mediaMs: 0), to: third)])
+
+        // "Start a new conversation here" at the very place: the join and its span are gone.
+        try await store.setOverride(at: second, decision: .split)
+        #expect(try await spans().isEmpty)
+        #expect(
+            try await spanRows(db) == [["s2", String(second.mediaMs), "split", nil, nil, nil, nil]])
+        let split = try await rebuild(threeConversations, in: db)
+        #expect(
+            split.conversations.map(\.id)
+                == ["conv-s0", second.conversationId, third.conversationId])
+        // (The reason it carries is the held cut's — `lull` — not `manual`: the settled cut at
+        // the same position was read first. Reported as a small thing; not pinned.)
+
+        // A join written without a span (a row from before spans existed) is a point join.
+        try await store.joinWithPrevious(conversationId: second.conversationId)
+        #expect(try await spans().count == 1)
+        try await store.setOverride(at: second, decision: .join)
+        #expect(try await spans().isEmpty)
+        #expect(try await store.overrides() == [second: .join])
+    }
+
+    @Test func aJoinAtASegmentsOwnStartAlsoJoinsAcrossAStop() async throws {
+        // A Stop ends a conversation; the person says the talk after it is the same one.
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        var stopped = day(minutes: 30, talk: [.dialogue(0, 30)])
+        stopped.segments[1].closeReason = userStopClose
+        let resumed = day(
+            minutes: 30, prefix: "t", startTimeMs: t0 + minutesMs(33), stream: 9,
+            talk: [.dictation(0, 30)])
+        let library = stopped + resumed
+        let before = try await rebuild(library, in: db)
+        #expect(before.conversations.map(\.id) == ["conv-s0", "conv-t0"])
+        #expect(before.conversations[1].startReason == .userStop)
+
+        let at = try await store.joinWithPrevious(conversationId: "conv-t0")
+        #expect(at == ConversationCut(segmentId: "t0", mediaMs: 0))
+        for policy in [BoundaryPolicy.quietOnly, frozenPolicy] {
+            let joined = try await rebuild(library, in: db, policy: policy)
+            #expect(joined.conversations.map(\.brief) == [["s0", "s1", "t0", "t1"]], "\(policy.segmenter == nil)")
+        }
+        // Undone, the Stop splits again.
+        try await store.setOverride(at: ConversationCut(segmentId: "t0", mediaMs: 0), decision: nil)
+        #expect(try await rebuild(library, in: db).conversations.map(\.id) == ["conv-s0", "conv-t0"])
+    }
+
+    @Test func aJoinAcrossALongSilenceThroughTheStore() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        // Talk, three hours of nothing, talk, an hour of nothing, talk.
+        let quiet = day(
+            minutes: 360, talk: [.dialogue(0, 20), .dialogue(200, 240), .dialogue(300, 360)])
+        let before = try await rebuild(quiet, in: db)
+        #expect(before.conversations.map(\.startReason) == [nil, .quiet, .quiet])
+        try await store.joinWithPrevious(conversationId: before.conversations[1].id)
+        let joined = try await rebuild(quiet, in: db)
+        #expect(joined.conversations.map(\.id) == ["conv-s0", before.conversations[2].id])
+        #expect(joined.conversations.map(\.startReason) == [nil, .quiet])
+    }
+
+    /// Joining the LATEST conversation to the one before it — the join a person is most likely
+    /// to make, on the conversation they have just had. Nothing follows it, so its span has no
+    /// end. The two are one conversation; what is recorded AFTERWARDS is not part of what the
+    /// person joined, and is divided like any other talk.
+    ///
+    /// REPORTED 2026-09-30 and FAILING: a span with no end is read as "to the end of the run",
+    /// and the run is still growing. Every automatic cut — the long-quiet rule included — is
+    /// blocked from the join to wherever the run ends, however much later that is: here an hour
+    /// of silence and two more hours of different talk all land in the conversation that was
+    /// joined, which is now four and three-quarter hours long.
+    @Test func joiningTheLatestConversationDoesNotSwallowWhatIsRecordedAfterIt() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = ConversationCutStore(db: db)
+        let morning: [Stretch] = [.dialogue(0, 30), .dictation(34, 90)]
+        let soFar = day(minutes: 90, talk: morning, recording: true)
+        let modeChange = ConversationCut(segmentId: "s2", mediaMs: minutesMs(4) - preRoll)
+        #expect(
+            try await rebuild(soFar, in: db).conversations.map(\.id)
+                == ["conv-s0", modeChange.conversationId])
+        try await store.joinWithPrevious(conversationId: modeChange.conversationId)
+        #expect(try await rebuild(soFar, in: db).conversations.map(\.id) == ["conv-s0"])
+
+        // The day goes on in the same run: an hour of nothing, fifty minutes of two people on
+        // another subject, then an hour of dictation.
+        let later = day(
+            minutes: 270,
+            talk: morning + [.dialogue(150, 200, cookingWords), .dictation(204, 270, sailingWords)],
+            recording: true)
+        let unjoined = ConversationGrouper.group(
+            segments: later.segments, pauses: [], openSegmentId: later.open,
+            fallbackTimeZoneID: "UTC", evidence: later.evidence, policy: frozenPolicy)
+        #expect(unjoined.map(\.startReason) == [nil, .lull, .quiet, .lull])
+
+        let grown = try await rebuild(later, in: db)
+        // The joined pair is still one conversation, and ends where it ended: the hour of
+        // silence ends it, and the afternoon's two conversations are their own.
+        #expect(
+            grown.conversations.map(\.id) == ["conv-s0", unjoined[2].id, unjoined[3].id],
+            "\(grown.conversations.map(\.id)) \(grown.conversations.map { ($0.endMs - $0.startMs) / 60_000 }) min")
+        #expect(grown.conversations.map(\.startReason) == [nil, .quiet, .lull])
+    }
+}
+
 // MARK: - the cut store
 
 @Suite struct ConversationCutStoreTests {
