@@ -35,7 +35,7 @@ the natural unit.
 
 ## What the research established
 
-Data layer (all `path:line` detail is in the session-107 progress-log entry):
+Data layer (all `path:line` detail is in the 2026-09-30 History progress-log entry):
 
 - **Hour/topic summaries do not exist.** The `HH:mm:` paragraphs in two recaps are a truncation
   artifact of an on-device run, not a format. A new pipeline stage is needed; the closest thing to
