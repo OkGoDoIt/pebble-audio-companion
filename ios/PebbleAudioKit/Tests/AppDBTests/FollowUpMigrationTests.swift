@@ -154,6 +154,25 @@ import Testing
             #expect(applied.contains("v5-follow-up-detail"))
             #expect(applied.contains("v6-follow-up-candidates"))
             #expect(applied.contains("v7-refresh-follow-ups"))
+            #expect(applied.contains("v15-follow-up-wall-times"))
+        }
+    }
+
+    /// v15 alters `follow_ups` (in this fixture) and `follow_up_candidates` (created by v6 on
+    /// the way up), so the fixture needs nothing new — but the legacy rows must arrive with no
+    /// wall time rather than an invented one: they have no located quote to compute it from.
+    @Test func theLegacyRowsArriveWithNoWallTime() async throws {
+        try await withUpgradedDatabase(rows: 3) { db in
+            let withWallTime = try await db.reader.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*) FROM follow_ups
+                        WHERE sourceWallStartMs IS NOT NULL OR sourceWallEndMs IS NOT NULL
+                            OR sourceWallApproximate IS NOT NULL
+                        """) ?? -1
+            }
+            #expect(withWallTime == 0)
         }
     }
 

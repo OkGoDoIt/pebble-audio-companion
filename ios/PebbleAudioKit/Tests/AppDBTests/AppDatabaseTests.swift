@@ -116,3 +116,97 @@ import Testing
         #expect(identifiers.contains("v14-history-indexes"))
     }
 }
+
+/// `v15-follow-up-wall-times`: when a follow-up was said, on the wall clock, on both follow-up
+/// tables, plus the two indexes that read it.
+@Suite struct FollowUpWallTimeMigrationTests {
+    private static let columns = ["sourceWallStartMs", "sourceWallEndMs", "sourceWallApproximate"]
+    private static let tables = ["follow_ups", "follow_up_candidates"]
+    private static let indexes = ["follow_ups_wall", "follow_ups_wall_unfilled"]
+
+    private static func columns(_ db: AppDatabase, _ table: String) throws -> Set<String> {
+        try db.reader.read { Set(try $0.columns(in: table).map(\.name)) }
+    }
+
+    private static func indexSQL(_ db: AppDatabase) throws -> [String: String] {
+        try db.reader.read { d in
+            var out: [String: String] = [:]
+            for row in try Row.fetchAll(
+                d, sql: "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL")
+            {
+                out[row["name"]] = row["sql"]
+            }
+            return out
+        }
+    }
+
+    @Test func aFreshDatabaseHasTheColumnsAndIndexes() throws {
+        let db = try AppDatabase.inMemory()
+        for table in Self.tables {
+            #expect(try Self.columns(db, table).isSuperset(of: Self.columns), "\(table)")
+        }
+        let found = try Self.indexSQL(db)
+        #expect(found["follow_ups_wall"]?.contains("follow_ups(sourceWallStartMs)") == true)
+        // Partial: only rows the one-time fill still has to visit.
+        let unfilled = found["follow_ups_wall_unfilled"] ?? ""
+        #expect(unfilled.contains("follow_ups(sourceSegmentId)"))
+        #expect(unfilled.contains("WHERE sourceWallStartMs IS NULL"))
+    }
+
+    @Test func aDatabaseAtV14UpgradesAndKeepsItsRows() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("v15-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("companion.sqlite")
+
+        // A database exactly as v14 left it: every migration through v14, none of v15's columns
+        // or indexes, and a row in each table.
+        do {
+            let db = try AppDatabase.open(at: url)
+            try db.writer.write { d in
+                for name in Self.indexes { try d.execute(sql: "DROP INDEX \(name)") }
+                for table in Self.tables {
+                    for column in Self.columns {
+                        try d.execute(sql: "ALTER TABLE \(table) DROP COLUMN \(column)")
+                    }
+                }
+                try d.execute(
+                    sql: "DELETE FROM grdb_migrations WHERE identifier = 'v15-follow-up-wall-times'")
+                try d.execute(
+                    sql: """
+                        INSERT INTO follow_ups
+                            (id, text, sourceSegmentId, createdAtMs, sourceStartMs, sourceEndMs)
+                        VALUES ('f1', 'x', 's1', 1, 1000, 2000)
+                        """)
+                try d.execute(
+                    sql: """
+                        INSERT INTO follow_up_candidates (id, conversationId, task, createdAtMs)
+                        VALUES ('c1', 'conv', 't', 1)
+                        """)
+            }
+            for table in Self.tables {
+                #expect(try Self.columns(db, table).isDisjoint(with: Self.columns))
+            }
+        }
+
+        let upgraded = try AppDatabase.open(at: url)
+        for table in Self.tables {
+            #expect(try Self.columns(upgraded, table).isSuperset(of: Self.columns))
+        }
+        #expect(Set(try Self.indexSQL(upgraded).keys).isSuperset(of: Self.indexes))
+        let rows = try upgraded.reader.read { d in
+            try Self.tables.map { table in
+                try Row.fetchAll(
+                    d, sql: "SELECT sourceWallStartMs, sourceWallEndMs, sourceWallApproximate FROM \(table)"
+                ).map { row in Self.columns.map { (row[$0] as Int64?) } }
+            }
+        }
+        // Kept, and unknown until something computes them — never a made-up default.
+        #expect(rows == [[[nil, nil, nil]], [[nil, nil, nil]]])
+        let identifiers = try upgraded.reader.read {
+            try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(identifiers.contains("v15-follow-up-wall-times"))
+    }
+}
