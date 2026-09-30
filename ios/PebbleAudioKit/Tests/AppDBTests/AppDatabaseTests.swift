@@ -13,7 +13,8 @@ import Testing
             "tags", "conversation_tags", "follow_ups", "ask_history", "notes", "people",
             "speaker_assignments", "pause_intervals", "custom_templates", "conversations",
             "conversation_segments", "annotations", "recaps", "coverage_days",
-            "transcription_tasks",
+            "transcription_tasks", "boundary_overrides", "boundary_reviews",
+            "conversation_cuts", "conversation_cut_overrides",
         ]
         for table in expected {
             #expect(tables.contains(table), "missing table \(table)")
@@ -114,5 +115,331 @@ import Testing
             try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations")
         }
         #expect(identifiers.contains("v14-history-indexes"))
+    }
+}
+
+/// `conversation-ranges-v1`: a conversation owns a RANGE of a segment's stored audio, so one
+/// segment can belong to two conversations. `conversation_segments` is rebuilt in place — not
+/// dropped — so the library does not read as empty between the upgrade and the first regroup.
+@Suite struct ConversationRangesMigrationTests {
+    private static let migration = "conversation-ranges-v1"
+
+    private func temporaryDatabaseURL() throws -> (dir: URL, url: URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ranges-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (dir, dir.appendingPathComponent("companion.sqlite"))
+    }
+
+    /// A database exactly as the migration before this one left it: every earlier migration
+    /// applied, `conversation_segments` in its v1+v2 shape (UNIQUE on `segmentId`, no range
+    /// columns), neither of the new tables, and a grouping already stored.
+    private func stageDatabaseJustBeforeTheMigration(at url: URL) throws {
+        let db = try AppDatabase.open(at: url)
+        try db.writer.write { d in
+            try d.execute(sql: "DROP TABLE conversation_cuts")
+            try d.execute(sql: "DROP TABLE conversation_cut_overrides")
+            try d.execute(sql: "DROP TABLE conversation_segments")
+            // Verbatim v1 (`AppDatabase.swift`) plus the column `v2` adds.
+            try d.execute(
+                sql: """
+                    CREATE TABLE conversation_segments (
+                        conversationId TEXT NOT NULL
+                            REFERENCES conversations(id) ON DELETE CASCADE,
+                        segmentId TEXT NOT NULL UNIQUE,
+                        ordinal INTEGER NOT NULL,
+                        transcriptionState TEXT,
+                        PRIMARY KEY (conversationId, ordinal)
+                    )
+                    """)
+            try d.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: [Self.migration])
+            try d.execute(
+                sql: """
+                    INSERT INTO conversations (id, startMs, endMs, timezone, state, startReason)
+                    VALUES ('conv-a', 1000, 2000, 'UTC', 'closed', NULL),
+                           ('conv-c', 5000, 6000, 'Asia/Tokyo', 'live', 'quiet')
+                    """)
+            try d.execute(
+                sql: """
+                    INSERT INTO conversation_segments
+                        (conversationId, segmentId, ordinal, transcriptionState)
+                    VALUES ('conv-a', 'a', 0, 'Complete'), ('conv-a', 'b', 1, NULL),
+                           ('conv-c', 'c', 0, 'Pending')
+                    """)
+            // Things keyed on those conversations, which the upgrade must not disturb.
+            try d.execute(
+                sql: """
+                    INSERT INTO annotations (conversationId, title, summary)
+                    VALUES ('conv-a', 'Coffee with Dana', 'Trip planning.')
+                    """)
+            try d.execute(
+                sql: "INSERT INTO boundary_overrides (segmentId, decision, createdAtMs) VALUES ('c', 'join', 7)")
+        }
+        // The fixture really is the old shape: one segment, one conversation.
+        #expect(throws: (any Error).self) {
+            try db.writer.write { d in
+                try d.execute(
+                    sql: """
+                        INSERT INTO conversation_segments (conversationId, segmentId, ordinal)
+                        VALUES ('conv-c', 'b', 1)
+                        """)
+            }
+        }
+        let identifiers = try db.reader.read {
+            try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(identifiers.contains("audio-content-judgements-v1"))
+        #expect(!identifiers.contains(Self.migration))
+        let tables = try db.reader.read {
+            try String.fetchAll($0, sql: "SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        #expect(!tables.contains("conversation_cuts"))
+        #expect(!tables.contains("conversation_cut_overrides"))
+        try (db.writer as? DatabasePool)?.close()
+    }
+
+    @Test func theUpgradeKeepsEveryRowAsAWholeSegment() throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+
+        let upgraded = try AppDatabase.open(at: url)
+        let identifiers = try upgraded.reader.read {
+            try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(identifiers.contains(Self.migration))
+
+        // Every row is still there, in order, with its state — and no range: NULL/NULL is the
+        // whole segment, which is what every existing row means.
+        let rows = try upgraded.reader.read { d in
+            try Row.fetchAll(
+                d, sql: "SELECT * FROM conversation_segments ORDER BY conversationId, ordinal"
+            ).map { row -> [String?] in
+                let ordinal: Int = row["ordinal"]
+                let start: Int64? = row["startMediaMs"]
+                let end: Int64? = row["endMediaMs"]
+                return [
+                    row["conversationId"], row["segmentId"], String(ordinal),
+                    row["transcriptionState"], start.map { String($0) }, end.map { String($0) },
+                ]
+            }
+        }
+        #expect(
+            rows == [
+                ["conv-a", "a", "0", "Complete", nil, nil],
+                ["conv-a", "b", "1", nil, nil, nil],
+                ["conv-c", "c", "0", "Pending", nil, nil],
+            ])
+        // The library reads exactly as it did: the grouper sees whole-segment conversations.
+        let stored = try upgraded.reader.read { try ConversationGrouper.fetchAll($0) }
+        #expect(stored.map(\.id) == ["conv-a", "conv-c"])
+        #expect(stored.map(\.brief) == [["a", "b"], ["c"]])
+        #expect(stored.map(\.isLive) == [false, true])
+        #expect(stored.map(\.startReason) == [nil, .quiet])
+        // And nothing beside it moved.
+        let kept = try upgraded.reader.read { d in
+            [
+                try String.fetchOne(d, sql: "SELECT title FROM annotations WHERE conversationId = 'conv-a'"),
+                try String.fetchOne(d, sql: "SELECT decision FROM boundary_overrides WHERE segmentId = 'c'"),
+            ]
+        }
+        #expect(kept == ["Coffee with Dana", "join"])
+    }
+
+    @Test func afterTheUpgradeOneSegmentCanBelongToTwoConversations() throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+        let upgraded = try AppDatabase.open(at: url)
+
+        // The same `segmentId` in a second conversation, with a range.
+        try upgraded.writer.write { d in
+            try d.execute(
+                sql: """
+                    UPDATE conversation_segments SET endMediaMs = 400000
+                    WHERE conversationId = 'conv-a' AND segmentId = 'b'
+                    """)
+            try d.execute(
+                sql: """
+                    INSERT INTO conversation_segments
+                        (conversationId, segmentId, ordinal, transcriptionState, startMediaMs, endMediaMs)
+                    VALUES ('conv-c', 'b', 1, NULL, 400000, NULL)
+                    """)
+        }
+        let owners = try upgraded.reader.read {
+            try String.fetchAll(
+                $0,
+                sql: """
+                    SELECT conversationId FROM conversation_segments WHERE segmentId = 'b'
+                    ORDER BY COALESCE(startMediaMs, 0)
+                    """)
+        }
+        #expect(owners == ["conv-a", "conv-c"])
+
+        // What made a row a row is still enforced: one piece per ordinal of a conversation …
+        #expect(throws: (any Error).self) {
+            try upgraded.writer.write { d in
+                try d.execute(
+                    sql: "INSERT INTO conversation_segments (conversationId, segmentId, ordinal) VALUES ('conv-a', 'z', 0)")
+            }
+        }
+        // … a piece belongs to a conversation that exists …
+        #expect(throws: (any Error).self) {
+            try upgraded.writer.write { d in
+                try d.execute(
+                    sql: "INSERT INTO conversation_segments (conversationId, segmentId, ordinal) VALUES ('conv-nope', 'z', 0)")
+            }
+        }
+        // … and goes when its conversation does.
+        try upgraded.writer.write { try $0.execute(sql: "DELETE FROM conversations WHERE id = 'conv-a'") }
+        let left = try upgraded.reader.read {
+            try String.fetchAll(
+                $0, sql: "SELECT conversationId || '/' || segmentId FROM conversation_segments ORDER BY 1")
+        }
+        #expect(left == ["conv-c/b", "conv-c/c"])
+    }
+
+    @Test func theUpgradeCreatesTheTwoCutTablesAndTheSegmentIndex() throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+        let upgraded = try AppDatabase.open(at: url)
+
+        let schema = try upgraded.reader.read { d in
+            var out: [String: String] = [:]
+            for row in try Row.fetchAll(
+                d, sql: "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL")
+            {
+                out[row["name"]] = row["sql"]
+            }
+            return out
+        }
+        #expect(schema["conversation_cuts"] != nil)
+        #expect(schema["conversation_cut_overrides"] != nil)
+        #expect(schema["conversation_segments_segment"]?.contains("conversation_segments(segmentId)") == true)
+        // The scratch table the rebuild went through is gone, and `segmentId` is no longer unique.
+        #expect(schema["conversation_segments_v2"] == nil)
+        #expect(schema["conversation_segments"]?.uppercased().contains("UNIQUE") == false)
+
+        // Both new tables are keyed by position: one row per (segment, offset).
+        try upgraded.writer.write { d in
+            try d.execute(
+                sql: """
+                    INSERT INTO conversation_cuts (segmentId, mediaMs, reason, algorithm, createdAtMs)
+                    VALUES ('a', 5, 'lull', 1, 1), ('a', 6, 'lull', 1, 1)
+                    """)
+            try d.execute(
+                sql: """
+                    INSERT INTO conversation_cut_overrides (segmentId, mediaMs, decision, createdAtMs)
+                    VALUES ('a', 5, 'split', 1), ('a', 6, 'join', 1)
+                    """)
+        }
+        for table in ["conversation_cuts", "conversation_cut_overrides"] {
+            #expect(throws: (any Error).self, "\(table)") {
+                try upgraded.writer.write { d in
+                    if table == "conversation_cuts" {
+                        try d.execute(
+                            sql: "INSERT INTO conversation_cuts (segmentId, mediaMs, reason, algorithm, createdAtMs) VALUES ('a', 5, 'lull', 1, 2)")
+                    } else {
+                        try d.execute(
+                            sql: "INSERT INTO conversation_cut_overrides (segmentId, mediaMs, decision, createdAtMs) VALUES ('a', 5, 'join', 2)")
+                    }
+                }
+            }
+        }
+        let counts = try upgraded.reader.read { d in
+            [
+                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM conversation_cuts") ?? -1,
+                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM conversation_cut_overrides") ?? -1,
+            ]
+        }
+        #expect(counts == [2, 2])
+    }
+
+    @Test func theFirstRegroupAfterTheUpgradeKeepsTheIdsTheLibraryHad() async throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+        let upgraded = try AppDatabase.open(at: url)
+
+        // The migrated grouping says `conv-a` is segments `a` and `b`. The first regroup cuts
+        // inside `b`: the part that holds the old start keeps the old id, so the title that was
+        // written for `conv-a` still has a conversation to belong to.
+        let t0 = testEpochMs
+        let a = makeSegment(id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(15))
+        let b = makeSegment(
+            id: "b", stream: 1, startTimeMs: t0, firstSample: minutesSamples(15),
+            durationSamples: minutesSamples(60))
+        let evidence = evidenceMap([
+            settledEvidence("a", minutes: [(0, 15)]),
+            settledEvidence("b", minutes: [(0, 5), (40, 60)]),
+        ])
+        let rebuilt = try await ConversationGrouper.rebuildDetailed(
+            segments: [a, b], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
+            evidence: evidence, policy: .quietOnly, db: upgraded)
+        let at = minutesMs(40) - ConversationRunPlanner.preRollMs
+        #expect(rebuilt.conversations.map(\.id) == ["conv-a", "conv-b-m\(at)"])
+        #expect(rebuilt.conversations.map(\.brief) == [["a", "b[..\(at))"], ["b[\(at)..)"]])
+        // The caller is told what the library looked like before, to move records across.
+        #expect(rebuilt.previous.map(\.id) == ["conv-a", "conv-c"])
+        #expect(rebuilt.previous.map(\.brief) == [["a", "b"], ["c"]])
+    }
+
+    @Test func openingAnUpgradedDatabaseAgainChangesNothing() throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+        do {
+            let upgraded = try AppDatabase.open(at: url)
+            try upgraded.writer.write { d in
+                try d.execute(
+                    sql: """
+                        INSERT INTO conversation_cuts (segmentId, mediaMs, reason, algorithm, createdAtMs)
+                        VALUES ('a', 5, 'lull', 1, 1)
+                        """)
+                try d.execute(
+                    sql: "UPDATE conversation_segments SET startMediaMs = 7 WHERE segmentId = 'c'")
+            }
+            try (upgraded.writer as? DatabasePool)?.close()
+        }
+        let again = try AppDatabase.open(at: url)
+        let (cuts, start, pieces) = try again.reader.read { d in
+            (
+                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM conversation_cuts") ?? -1,
+                try Int64.fetchOne(d, sql: "SELECT startMediaMs FROM conversation_segments WHERE segmentId = 'c'"),
+                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM conversation_segments") ?? -1
+            )
+        }
+        #expect(cuts == 1)
+        #expect(start == 7)
+        #expect(pieces == 3)
+    }
+
+    @Test func aFreshDatabaseHasTheSameShapeAsAnUpgradedOne() throws {
+        let (dir, url) = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try stageDatabaseJustBeforeTheMigration(at: url)
+        let upgraded = try AppDatabase.open(at: url)
+        let fresh = try AppDatabase.inMemory()
+        func columns(_ db: AppDatabase, _ table: String) throws -> [String] {
+            try db.reader.read { d in
+                try Row.fetchAll(d, sql: "PRAGMA table_info(\(table))").map { row in
+                    let name: String = row["name"]
+                    let type: String = row["type"]
+                    let notNull: Int = row["notnull"]
+                    let pk: Int = row["pk"]
+                    return "\(name) \(type) \(notNull) \(pk)"
+                }
+            }
+        }
+        for table in ["conversation_segments", "conversation_cuts", "conversation_cut_overrides"] {
+            #expect(try columns(upgraded, table) == columns(fresh, table), "\(table)")
+        }
+        #expect(
+            try columns(fresh, "conversation_segments") == [
+                "conversationId TEXT 1 1", "segmentId TEXT 1 0", "ordinal INTEGER 1 2",
+                "transcriptionState TEXT 0 0", "startMediaMs INTEGER 0 0", "endMediaMs INTEGER 0 0",
+            ])
     }
 }
