@@ -484,7 +484,8 @@ extension View {
 
 /// DEBUG launch arguments for testing History: `-historyDay 2026-09-22` opens the tab on that
 /// day, `-historyLevel week|month` at that level, `-historyEmpty` gives the demo world an empty
-/// archive. Release builds never see them.
+/// archive, `-historyNoBriefs` a demo world the brief pass has not reached. Release builds never
+/// see them.
 enum HistoryLaunch {
     static var dayKey: String? { value(after: "-historyDay") }
 
@@ -492,6 +493,15 @@ enum HistoryLaunch {
     static var isEmptyArchive: Bool {
         #if DEBUG
         return ProcessInfo.processInfo.arguments.contains("-historyEmpty")
+        #else
+        return false
+        #endif
+    }
+
+    /// `-historyNoBriefs`: the demo world's weeks and months on their fallbacks.
+    static var isWithoutBriefs: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-historyNoBriefs")
         #else
         return false
         #endif

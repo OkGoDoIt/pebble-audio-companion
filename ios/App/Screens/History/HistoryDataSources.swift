@@ -137,5 +137,6 @@ struct HistoryDataSources {
     /// The demo world until `LiveHistory` lands (plan step 9). History is reachable only
     /// through the DEBUG `-history` launch argument until then.
     static var current = HistoryDataSources(
-        history: MockHistory(isEmptyArchive: HistoryLaunch.isEmptyArchive))
+        history: MockHistory(
+            isEmptyArchive: HistoryLaunch.isEmptyArchive, withoutBriefs: HistoryLaunch.isWithoutBriefs))
 }
