@@ -647,6 +647,14 @@ public struct AppDatabase: Sendable {
                 t.column("mediaMs", .integer).notNull()
                 t.column("decision", .text).notNull()  // split | join
                 t.column("createdAtMs", .integer).notNull()
+                // A join says "these two are one conversation", and that is a statement about
+                // everything the two held, not about one instant: the span from the start of
+                // the earlier one to the end of the later one, inside which nothing automatic
+                // may cut again. `spanTo*` NULL means "to the end of the run".
+                t.column("spanFromSegmentId", .text)
+                t.column("spanFromMediaMs", .integer)
+                t.column("spanToSegmentId", .text)
+                t.column("spanToMediaMs", .integer)
                 t.primaryKey(["segmentId", "mediaMs"])
             }
         }

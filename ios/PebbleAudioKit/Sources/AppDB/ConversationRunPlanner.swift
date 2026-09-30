@@ -66,18 +66,38 @@ public struct ConversationCutInputs: Equatable, Sendable {
     public var splits: [String: Set<Int64>]
     /// "This is the same conversation as what came before": no cut at or near these offsets.
     public var joins: [String: Set<Int64>]
+    /// What each join joined: from the start of the earlier conversation to the end of the
+    /// later one, as they were when the person said so. Nothing automatic cuts inside a span —
+    /// not the cut that was there, not a long silence, and not the segmenter deciding that the
+    /// now longer conversation would be better divided a few minutes further on.
+    public var joinSpans: [JoinSpan]
+
+    public struct JoinSpan: Equatable, Sendable {
+        public var from: ConversationCut
+        /// Where the conversation after the joined pair starts; nil = the end of the run.
+        public var to: ConversationCut?
+
+        public init(from: ConversationCut, to: ConversationCut?) {
+            self.from = from
+            self.to = to
+        }
+    }
 
     public init(
         committed: [String: [Int64: ConversationStartReason]] = [:],
-        splits: [String: Set<Int64>] = [:], joins: [String: Set<Int64>] = [:]
+        splits: [String: Set<Int64>] = [:], joins: [String: Set<Int64>] = [:],
+        joinSpans: [JoinSpan] = []
     ) {
         self.committed = committed
         self.splits = splits
         self.joins = joins
+        self.joinSpans = joinSpans
     }
 
     public static let none = ConversationCutInputs()
-    var isEmpty: Bool { committed.isEmpty && splits.isEmpty && joins.isEmpty }
+    var isEmpty: Bool {
+        committed.isEmpty && splits.isEmpty && joins.isEmpty && joinSpans.isEmpty
+    }
 }
 
 struct RunPlan {
@@ -91,7 +111,9 @@ enum ConversationRunPlanner {
     static let preRollMs: Int64 = 1_500
     /// A trailing silence starts this long after the last word.
     static let postRollMs: Int64 = 2_000
-    /// A "these are one conversation" decision keeps automatic cuts this far away from it.
+    /// A "these are one conversation" decision keeps automatic cuts this far (of wall time)
+    /// away from the place it was made at. What a join made in the app really protects is its
+    /// span (`ConversationCutInputs.joinSpans`); this is for a join recorded without one.
     static let joinReachMs: Int64 = 120_000
     /// A segmenter cut is written down once this much settled talk lies after it. Until then
     /// it is re-decided each time more of the day arrives: the search's answer near the end of
@@ -183,16 +205,35 @@ enum ConversationRunPlanner {
         let runStart = RunPosition(seg: 0, mediaMs: 0)
         let runEnd = RunPosition(seg: members.count, mediaMs: 0)
 
-        // Where the person has said "no cut here".
-        var blockedAt: [Int: [Int64]] = [:]
+        // Where the person has said "no cut here": near the point of each join (in wall time —
+        // the talk just before a join is usually in the segment before it), and anywhere inside
+        // the span a join joined.
+        var joinWalls: [Int64] = []
+        var indexOf: [String: Int] = [:]
         for (index, member) in members.enumerated() {
-            var offsets = Array(inputs.joins[member.meta.segmentId] ?? [])
-            if joinedSegments.contains(member.meta.segmentId) { offsets.append(0) }
-            if !offsets.isEmpty { blockedAt[index] = offsets }
+            let id = member.meta.segmentId
+            indexOf[id] = index
+            for offset in inputs.joins[id] ?? [] { joinWalls.append(member.wall(ofMedia: offset)) }
+            if joinedSegments.contains(id) { joinWalls.append(member.startWallMs) }
+        }
+        var spans: [(from: RunPosition, to: RunPosition)] = []
+        for span in inputs.joinSpans {
+            let from = indexOf[span.from.segmentId].map {
+                RunPosition(seg: $0, mediaMs: span.from.mediaMs)
+            }
+            let to = span.to.flatMap { cut in
+                indexOf[cut.segmentId].map { RunPosition(seg: $0, mediaMs: cut.mediaMs) }
+            }
+            // A span with neither end in this run is about another run. One whose start has
+            // been deleted protects from the run's start; one with no end, to the run's end.
+            guard from != nil || to != nil else { continue }
+            spans.append((from ?? runStart, to ?? runEnd))
         }
         func isBlocked(_ position: RunPosition) -> Bool {
-            guard let offsets = blockedAt[position.seg] else { return false }
-            return offsets.contains { abs($0 - position.mediaMs) <= joinReachMs }
+            if spans.contains(where: { $0.from < position && position < $0.to }) { return true }
+            guard !joinWalls.isEmpty, position.seg < members.count else { return false }
+            let wall = members[position.seg].wall(ofMedia: position.mediaMs)
+            return joinWalls.contains { abs($0 - wall) <= joinReachMs }
         }
 
         var cuts: [RunPosition: PlannedCut] = [:]
