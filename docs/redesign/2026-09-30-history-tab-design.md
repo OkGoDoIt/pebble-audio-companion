@@ -2,7 +2,7 @@
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design round 3, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design round 4, nothing implemented.** Mockups are in `history-mockups/`.
 
 ## Why the Library fails on real data
 
@@ -39,8 +39,16 @@ the natural unit.
 - **Week and Month carry no missing-audio notes at all.** Loss is shown on the day, in the block
   where it happened. Each week/month row gets its top few topic tags (max three).
 - Today's day view ends in a Live block at the current time that opens the Live screen.
-- Open: week/month tags as chips (two-line summary) or as a quiet line of text (one-line
-  summary, the week fits one screen) — see `round3-*`.
+- **Round 4:** day blocks are WHITE cards (the tinted style was "a bit much"); topic tags are
+  tint pills, people are gray pills with a person icon. Tags on Week/Month are pills, not a text
+  line. Week and Month may run past the fold — keep the two-line summaries.
+- **Week rows show up to two follow-ups per day**, then "N more". Month rows show a follow-up
+  count ("16 follow-ups · 11 open"), not the items.
+- **The day is a timeline with a floor on its scale:** every minute gets at least 1 pt (60 pt per
+  hour). Quiet gaps are drawn at exactly that scale, capped at 120 pt, so a quiet hour looks like
+  an hour; a block is at least as tall as its duration and grows when its content needs more. A
+  continuous axis line runs down the gutter; it is dashed where time is compressed (before the
+  first and after the last recording of the day).
 
 ## What the research established
 
@@ -79,5 +87,6 @@ one day boundary at every zoom level.
 `history-mockups/direction-{a,b,c,d}` — round 1, four directions.
 `history-mockups/round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
 content-sized and as calendar blocks.
-`history-mockups/round3-day-week-month` — the current design. `round3-today-and-week-text-tags`
+`history-mockups/round4-white-blocks-followups` — the current design.
+`history-mockups/round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
 — today's day view with the live block, and the week with text tags.
