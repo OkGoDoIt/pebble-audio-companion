@@ -150,67 +150,6 @@ enum MomentResolver {
     }
 }
 
-/// The hop from a wall-clock instant inside one member to a position on the conversation's
-/// scrubber, shared by citations and moments so the two can never land in different places.
-enum ConversationScrubber {
-    /// Where `wallMs` inside member `segmentId` falls on the conversation's scrubber: MEDIA
-    /// time, gaps excluded — the same accumulation `LiveWorld.walkMembers` lays the transcript
-    /// rows out on, so a moment, a citation and a tap on the turn they name all agree.
-    ///
-    /// Nil when the member is not among `members`, its sidecar is missing, or it holds no audio
-    /// — which is also when there is nothing to play. `wallMs` nil means the member's start.
-    ///
-    /// A member whose sidecar is missing adds nothing to the members after it, exactly as the
-    /// transcript walk skips it; the two have to agree on every member or every later position
-    /// is off by that member's audio.
-    static func mediaOffset(
-        ofWallMs wallMs: Int64?,
-        inMember segmentId: String,
-        members: [String],
-        metas: [String: SegmentMeta]
-    ) -> Int64? {
-        var mediaBeforeMemberMs: Int64 = 0
-        for member in members {
-            guard let meta = metas[member] else { continue }
-            let mediaMs = segmentStoredAudioMs(meta)
-            guard member == segmentId else {
-                mediaBeforeMemberMs += mediaMs
-                continue
-            }
-            // Where the instant sits on the scrubber, not where its recording starts — the same
-            // wall→media conversion the transcript rows and the missing ticks use, through the
-            // member's own gap records.
-            //
-            // This used to interpolate proportionally (a point 40% through the wall span is 40%
-            // through the stored audio), which is only true when the gaps are spread evenly.
-            // `SegmentMediaClock` replaced that guess for the transcript screen; leaving the copy
-            // here meant tapping a citation and tapping the turn it cites landed in different
-            // places on the same scrubber. Watch-side silence suppression (PebbleOS a47acac74)
-            // makes the disagreement routine rather than occasional: the withheld quiet is
-            // 4.1-13.8% of airtime, concentrated in the stretches where nobody is talking, which
-            // is exactly where "evenly spread" stops being true.
-            //
-            // The anchor is `ConversationGrouper.segmentStartMs`, not `startTimeMs`, for the
-            // reason `SegmentMeta.startWallMs` documents: `startTimeMs` is the STREAM's birth, so
-            // for every mid-stream segment it is early by `firstSampleIndex` samples — a median
-            // of 1 h across this library. Subtracting it from a wall time put `into` past the end
-            // of the span and pinned the target at the segment's last sample.
-            guard mediaMs > 0 else { return nil }
-            let memberStartMs = ConversationGrouper.segmentStartMs(meta)
-            let clock = SegmentMediaClock(meta)
-            let into = min(max((wallMs ?? memberStartMs) - memberStartMs, 0), clock.wallSpanMs)
-            // Untouched on the way in, untouched on the way out. `LiveWorld.drafts` (and
-            // `TranscriptItems`) leave an inexact segment's offsets on the media clock rather
-            // than acting on the proportional guess, so converting back here would apply an
-            // inverse that was never applied — on the 2026-09-08 backup that is 169 segments and
-            // 4,813 turns that move by over a minute, worst 14 h 44 m.
-            return mediaBeforeMemberMs
-                + (clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs))
-        }
-        return nil
-    }
-}
-
 extension Route {
     /// The conversation a wall-clock moment falls in, opened there — History's one line:
     ///

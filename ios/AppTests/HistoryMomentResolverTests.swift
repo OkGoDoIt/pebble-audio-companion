@@ -110,6 +110,11 @@ struct HistoryMomentRowTests {
 
 // MARK: - The shared scrubber walk
 
+/// Citations and moments go through one hop (`LiveWorld.position(ofSegment:atWallMs:)`): the
+/// wall time onto the segment's stored-audio clock (`LiveWorld.mediaMs(ofWallMs:meta:)`), then
+/// its place on the conversation's pieces laid end to end (`ConversationTimeline`). For a
+/// conversation of WHOLE segments that must still land exactly where the member walk it
+/// replaced did, which is what this suite pins; `HistoryMomentPieceTests` below pins the pieces.
 @Suite("history moment: the scrubber walk citations and moments share")
 struct HistoryMomentScrubberTests {
     static let t0: Int64 = 1_727_690_400_000
@@ -139,7 +144,7 @@ struct HistoryMomentScrubberTests {
     }
 
     /// `LiveWorld.citationTarget`'s member walk exactly as it stood before it was factored out
-    /// (f45e099), kept here as the oracle the shared function must reproduce.
+    /// (f45e099), kept here as the oracle the shared hop must reproduce for whole segments.
     static func legacyOffset(
         citationStartMs: Int64?, citedId: String, members: [String],
         metas: [String: SegmentMeta]
@@ -172,8 +177,10 @@ struct HistoryMomentScrubberTests {
         sourceLocation: SourceLocation = #_sourceLocation
     ) -> Int64? {
         let byId = Dictionary(uniqueKeysWithValues: metas.map { ($0.segmentId, $0) })
-        let shared = ConversationScrubber.mediaOffset(
-            ofWallMs: wallMs, inMember: member, members: members, metas: byId)
+        let shared = byId[member].flatMap { meta in
+            ConversationTimeline(members: members.map { ConversationMember(segmentId: $0) }, metas: byId)
+                .offset(segmentId: member, mediaMs: LiveWorld.mediaMs(ofWallMs: wallMs, meta: meta))
+        }
         let legacy = legacyOffset(
             citationStartMs: wallMs, citedId: member, members: members, metas: byId)
         #expect(
@@ -360,6 +367,108 @@ struct HistoryMomentSegmentTests {
         let spans = [Self.span("a", 0, 10)]
         #expect(MomentResolver.segment(atWallMs: .max, in: spans, windows: []) == nil)
         #expect(MomentResolver.segment(atWallMs: .min, in: spans, windows: []) == nil)
+    }
+}
+
+// MARK: - Topic-sized conversations: a moment belongs to the piece it falls in
+
+/// A recording usually holds the end of one conversation and the start of the next, so which
+/// conversation a moment opens is decided by WHERE in the recording it falls. The library is
+/// `PieceLibrary`'s: two one-minute recordings shared by three conversations.
+///
+///     seg-a  |-- first ------------|-- second ---------------------|
+///     seg-b  |-- second (cont.) ------------|-- third -------------|
+@Suite("history moment: pieces") @MainActor
+struct HistoryMomentPieceTests {
+    typealias Library = PieceLibrary
+
+    static func wall(_ segmentId: String, _ mediaMs: Int64) -> Int64 {
+        // The fixture's recordings hold every millisecond of their wall span, so the two
+        // clocks differ only by where the segment starts.
+        ConversationGrouper.segmentStartMs(Library.metas[segmentId]!) + mediaMs
+    }
+
+    static func moment(_ wallMs: Int64, in db: AppDatabase, hiding hidden: Set<String> = [])
+        async throws -> (segmentId: String, conversationId: String, mediaOffsetMs: Int64?)?
+    {
+        let queries = ConversationQueries(db: db)
+        let spans = LiveWorld.momentSpans(
+            Array(Library.metas.values), owners: try await queries.membersBySegment(), hiding: hidden)
+        let windows = try await queries.rows(overlappingMs: wallMs..<(wallMs + 1))
+            .filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
+            .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
+        let resolved = await LiveWorld.momentPosition(
+            atWallMs: wallMs, spans: spans, windows: windows, queries: queries,
+            loadMetas: { ids in Library.metas.filter { ids.contains($0.key) } })
+        return resolved.map {
+            ($0.segment.segmentId, $0.position.detail.row.id, $0.position.mediaOffsetMs)
+        }
+    }
+
+    /// Each side of a cut opens its own conversation, at its own place on THAT conversation's
+    /// scrubber — the pieces before it, plus how far into its own piece the moment is.
+    @Test func eachSideOfACutOpensItsOwnConversation() async throws {
+        let db = try await Library.sharedLibrary()
+
+        let early = try #require(try await Self.moment(Self.wall("seg-a", 10_000), in: db))
+        #expect(early.segmentId == "seg-a")
+        #expect(early.conversationId == Library.first)
+        #expect(early.mediaOffsetMs == 10_000)
+
+        // One millisecond either side of the cut in seg-a.
+        let before = try #require(try await Self.moment(Self.wall("seg-a", Library.cutA - 1), in: db))
+        #expect(before.conversationId == Library.first)
+        let after = try #require(try await Self.moment(Self.wall("seg-a", Library.cutA), in: db))
+        #expect(after.conversationId == Library.second)
+        #expect(after.mediaOffsetMs == 0)
+
+        let flying = try #require(try await Self.moment(Self.wall("seg-a", 50_000), in: db))
+        #expect(flying.conversationId == Library.second)
+        #expect(flying.mediaOffsetMs == 50_000 - Library.cutA)
+
+        // seg-b: its first half continues the second conversation (after its 21.5 s of seg-a),
+        // its second half is the third.
+        let flights = try #require(try await Self.moment(Self.wall("seg-b", 1_000), in: db))
+        #expect(flights.segmentId == "seg-b")
+        #expect(flights.conversationId == Library.second)
+        #expect(flights.mediaOffsetMs == 22_500)
+        let costs = try #require(try await Self.moment(Self.wall("seg-b", 40_000), in: db))
+        #expect(costs.conversationId == Library.third)
+        #expect(costs.mediaOffsetMs == 40_000 - Library.cutB)
+    }
+
+    /// A moment and a citation of the same instant are the same hop, so they land together.
+    @Test func aMomentAndACitationOfTheSameInstantAgree() async throws {
+        let db = try await Library.sharedLibrary()
+        let queries = ConversationQueries(db: db)
+        for (segmentId, mediaMs) in [("seg-a", 5_000), ("seg-a", 45_000), ("seg-b", 3_000), ("seg-b", 50_000)] {
+            let wallMs = Self.wall(segmentId, Int64(mediaMs))
+            let moment = try #require(try await Self.moment(wallMs, in: db))
+            let cited = try #require(
+                await LiveWorld.citedPosition(
+                    of: AskCitation(segmentId: segmentId, number: 1, startMs: wallMs, endMs: wallMs + 1_000),
+                    queries: queries,
+                    loadMetas: { ids in Library.metas.filter { ids.contains($0.key) } }))
+            #expect(moment.conversationId == cited.detail.row.id)
+            #expect(moment.mediaOffsetMs == cited.mediaOffsetMs)
+        }
+    }
+
+    /// A conversation in its undo window is not a candidate: its recordings drop out of the
+    /// spans only where nothing else holds a piece of them.
+    @Test func aHiddenConversationsPiecesAreNotCandidates() async throws {
+        let db = try await Library.sharedLibrary()
+        let owners = try await ConversationQueries(db: db).membersBySegment()
+        let all = LiveWorld.momentSpans(Array(Library.metas.values), owners: owners)
+        #expect(all.map { "\($0.segmentId)/\($0.conversationId)" }.sorted() == [
+            "seg-a/\(Library.first)", "seg-a/\(Library.second)",
+            "seg-b/\(Library.second)", "seg-b/\(Library.third)",
+        ])
+        let hiding = LiveWorld.momentSpans(
+            Array(Library.metas.values), owners: owners, hiding: [Library.second])
+        #expect(hiding.map { "\($0.segmentId)/\($0.conversationId)" }.sorted() == [
+            "seg-a/\(Library.first)", "seg-b/\(Library.third)",
+        ])
     }
 }
 

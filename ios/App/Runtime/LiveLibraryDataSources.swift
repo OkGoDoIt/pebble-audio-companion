@@ -1195,10 +1195,17 @@ extension LiveWorld: AskDataSource {
     /// this library. Subtracting it from a wall citation put the moment past the end of the
     /// span and pinned every target at the segment's last sample.
     nonisolated static func citedMediaMs(_ citation: AskCitation, meta: SegmentMeta) -> Int64 {
+        mediaMs(ofWallMs: citation.startMs, meta: meta)
+    }
+
+    /// A wall-clock instant inside a segment, on the segment's stored-audio clock: the
+    /// conversion `citedMediaMs` documents, for anything that names a moment by the time it
+    /// happened (a citation's start, a moment History opens). Nil is the segment's first
+    /// instant; a time outside the segment clamps to its nearer edge.
+    nonisolated static func mediaMs(ofWallMs wallMs: Int64?, meta: SegmentMeta) -> Int64 {
         let segmentStartMs = ConversationGrouper.segmentStartMs(meta)
         let clock = SegmentMediaClock(meta)
-        let into = min(
-            max((citation.startMs ?? segmentStartMs) - segmentStartMs, 0), clock.wallSpanMs)
+        let into = min(max((wallMs ?? segmentStartMs) - segmentStartMs, 0), clock.wallSpanMs)
         return clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs)
     }
 
@@ -1383,21 +1390,43 @@ extension LiveWorld: AskDataSource {
         queries: ConversationQueries,
         loadMetas: ([String]) async -> [String: SegmentMeta]
     ) async -> CitedPosition? {
-        let citedId = citation.segmentId
-        let citedMeta = await loadMetas([citedId])[citedId]
-        let mediaMs = citedMeta.map { citedMediaMs(citation, meta: $0) } ?? 0
-        guard
-            let conversationId = try? await queries.conversationId(
-                ofSegment: citedId, atMediaMs: mediaMs),
-            let detail = try? await queries.detail(id: conversationId)
-        else { return nil }
+        await position(
+            ofSegment: citation.segmentId, atWallMs: citation.startMs, queries: queries,
+            loadMetas: loadMetas)
+    }
+
+    /// A wall-clock moment of one segment resolved to a conversation and a scrubber position —
+    /// the one hop citations (`citedPosition`) and History's moments (`momentTarget`) share, so
+    /// the two can never land in different conversations or at different places for the same
+    /// instant.
+    ///
+    /// `conversationId` nil asks the grouping which conversation owns the moment
+    /// (`conversationId(ofSegment:atMediaMs:)`). A caller that already knows it — a moment
+    /// between two recordings of one conversation, clamped to the edge of one of them — names
+    /// it, and the position is then that conversation's nearest piece of the segment.
+    static func position(
+        ofSegment segmentId: String,
+        atWallMs wallMs: Int64?,
+        in conversationId: String? = nil,
+        queries: ConversationQueries,
+        loadMetas: ([String]) async -> [String: SegmentMeta]
+    ) async -> CitedPosition? {
+        let segmentMeta = await loadMetas([segmentId])[segmentId]
+        let mediaMs = segmentMeta.map { Self.mediaMs(ofWallMs: wallMs, meta: $0) } ?? 0
+        let owner: String?
+        if let conversationId {
+            owner = conversationId
+        } else {
+            owner = try? await queries.conversationId(ofSegment: segmentId, atMediaMs: mediaMs)
+        }
+        guard let owner, let detail = try? await queries.detail(id: owner) else { return nil }
         var metas = await loadMetas(detail.members.map(\.segmentId))
-        if let citedMeta { metas[citedId] = citedMeta }
+        if let segmentMeta { metas[segmentId] = segmentMeta }
         return CitedPosition(
             detail: detail,
             mediaOffsetMs: ConversationTimeline(members: detail.pieces, metas: metas)
-                .offset(segmentId: citedId, mediaMs: mediaMs),
-            meta: citedMeta)
+                .offset(segmentId: segmentId, mediaMs: mediaMs),
+            meta: segmentMeta)
     }
 }
 
@@ -1405,45 +1434,83 @@ extension LiveWorld: AskDataSource {
 
 extension LiveWorld {
     /// A wall-clock moment resolved the way a citation is — conversation, scrubber position —
-    /// but from a TIME rather than a segment id: History knows when a chapter started, not which
-    /// recording it started in. Which recording is `MomentResolver.segment`'s rule; the scrubber
-    /// position is the walk `citationTarget` uses (`ConversationScrubber`).
+    /// but from a TIME rather than a segment id: History knows when a card started, not which
+    /// recording it started in. Which recording is `MomentResolver.segment`'s rule; from there
+    /// it is `position(ofSegment:atWallMs:)`, the hop citations take: the time onto the
+    /// segment's stored-audio clock, the conversation that owns THAT moment of the segment (a
+    /// recording usually holds the end of one conversation and the start of the next), and its
+    /// place on that conversation's pieces laid end to end (`ConversationTimeline`).
     ///
-    /// Reads the spool's in-memory index (no sidecar decoding) and two small queries. Only
+    /// Reads the spool's in-memory index (no sidecar decoding) and three small queries. Only
     /// grouped recordings are candidates: one the grouper has not filed yet has no conversation
     /// to open, and choosing it would turn a tap near an older recording into nothing.
     func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget? {
         let library = composition.runtime.library
-        guard let owners = try? await library.conversationIdsBySegment() else { return nil }
+        let queries = self.queries
+        guard let owners = try? await queries.membersBySegment() else { return nil }
         // A conversation inside its undo window is gone as far as the person is concerned.
-        let spans = await composition.store.listSegments().compactMap { meta in
-            owners[meta.segmentId]
-                .flatMap { pendingDeletes[$0] == nil ? $0 : nil }
-                .map { MomentResolver.Span(meta: meta, conversationId: $0) }
-        }
+        let hidden = Set(pendingDeletes.keys)
+        let spans = Self.momentSpans(
+            await composition.store.listSegments(), owners: owners, hiding: hidden)
         // Only needed when the time is between recordings, but one indexed query is cheaper
         // than the branch it would save.
         let instant = wallMs..<(wallMs == .max ? wallMs : wallMs + 1)
         let windows = ((try? await library.conversationRows(overlappingMs: instant)) ?? [])
-            .filter { pendingDeletes[$0.id] == nil && $0.endMs > $0.startMs }
+            .filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
             .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
+        let files = composition.files
         guard
-            let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
-            let detail = try? await library.conversation(id: segment.conversationId)
+            let (segment, position) = await Self.momentPosition(
+                atWallMs: wallMs, spans: spans, windows: windows, queries: queries,
+                loadMetas: { await Self.loadMetas($0, files: files) }),
+            !hidden.contains(position.detail.row.id)
         else { return nil }
-
-        let memberIds = detail.members.map(\.segmentId)
-        let metas = await Self.loadMetas(memberIds, files: composition.files)
         return CitationTarget(
-            conversationId: segment.conversationId,
-            conversationTitle: detail.row.title ?? "Conversation",
+            conversationId: position.detail.row.id,
+            conversationTitle: position.detail.row.title ?? "Conversation",
             focus: .moment(segmentId: segment.segmentId, atWallMs: wallMs),
-            // A time between recordings clamps to the chosen one's edge: its start when it is
-            // the recording after the gap, its end when it is the one before.
-            mediaOffsetMs: ConversationScrubber.mediaOffset(
-                ofWallMs: wallMs, inMember: segment.segmentId, members: memberIds, metas: metas),
+            mediaOffsetMs: position.mediaOffsetMs,
             startedAt: Date(timeIntervalSince1970: Double(wallMs) / 1000)
         )
+    }
+
+    /// The recordings a moment can land in: one span per recording AND conversation holding a
+    /// piece of it, so a time between two recordings of one conversation can stay in that
+    /// conversation even when a recording it names also holds a piece of another. Recordings
+    /// the grouping has not filed, and pieces of `hidden` conversations, are not candidates.
+    nonisolated static func momentSpans(
+        _ metas: [SegmentMeta],
+        owners: [String: [(conversationId: String, member: ConversationMember)]],
+        hiding hidden: Set<String> = []
+    ) -> [MomentResolver.Span] {
+        metas.flatMap { meta in
+            Set((owners[meta.segmentId] ?? []).map(\.conversationId))
+                .subtracting(hidden)
+                .sorted()
+                .map { MomentResolver.Span(meta: meta, conversationId: $0) }
+        }
+    }
+
+    /// Which recording a moment is in (`MomentResolver.segment`), then `position`: inside the
+    /// recording the moment itself decides the conversation, because a recording usually holds
+    /// the end of one and the start of the next. Between recordings the resolver chose this one
+    /// FOR a conversation (the one whose extent holds the time, or the nearest), and the time
+    /// clamps to that recording's edge — which, in a shared recording, is that conversation's
+    /// piece and not the neighbour's.
+    static func momentPosition(
+        atWallMs wallMs: Int64,
+        spans: [MomentResolver.Span],
+        windows: [MomentResolver.Window],
+        queries: ConversationQueries,
+        loadMetas: ([String]) async -> [String: SegmentMeta]
+    ) async -> (segment: MomentResolver.Span, position: CitedPosition)? {
+        guard let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
+            let position = await position(
+                ofSegment: segment.segmentId, atWallMs: wallMs,
+                in: segment.contains(wallMs) ? nil : segment.conversationId,
+                queries: queries, loadMetas: loadMetas)
+        else { return nil }
+        return (segment, position)
     }
 }
 
