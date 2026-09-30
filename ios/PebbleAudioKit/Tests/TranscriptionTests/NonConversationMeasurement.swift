@@ -224,6 +224,49 @@ import Testing
         }
     }
 
+    /// What the shipped classifier does to a whole library: hours of each verdict, how many
+    /// segments carry a loop (and so change their boundary evidence), and the CPU it took.
+    /// Runs when `PEBBLE_NONCONV_ROOTS` is set; newest root wins per segment. Prints only.
+    @Test func shippedClassifierOverLibrary() throws {
+        guard let rootsRaw = ProcessInfo.processInfo.environment["PEBBLE_NONCONV_ROOTS"] else { return }
+        let roots = rootsRaw.split(separator: ":").map {
+            URL(fileURLWithPath: String($0), isDirectory: true)
+        }
+        var chosen: [String: URL] = [:]
+        for root in roots {
+            for meta in SegmentFileReader(root: root).listSegments() { chosen[meta.segmentId] = root }
+        }
+        var hours: [String: Double] = [:]
+        var segments = 0, unclassified = 0, loopSegments = 0, fewWordSpans = 0
+        let clock = ContinuousClock()
+        var busy = Duration.zero
+        for (id, root) in chosen.sorted(by: { $0.key < $1.key }) {
+            guard let meta = SegmentFileReader(root: root).readMeta(id) else { continue }
+            let started = clock.now
+            let turns = FileTranscriptStore(root: root, nowMs: { 0 }).loadSpeechTimings(id)
+            let spans = AudioContentClassifier.classify(meta: meta, turns: turns)
+            busy += clock.now - started
+            guard let spans else {
+                unclassified += 1
+                continue
+            }
+            segments += 1
+            if spans.contains(where: { $0.decidedBy == AudioContentDecider.loop }) { loopSegments += 1 }
+            for span in spans {
+                let key = "\(span.kind.rawValue)/\(span.decidedBy)"
+                hours[key, default: 0] += Double(span.endMs - span.startMs) / 3_600_000
+                if span.descriptor == AudioContentDescriptor.fewWords { fewWordSpans += 1 }
+            }
+        }
+        print("shipped classifier v\(AudioContentMethod.version) over \(chosen.count) segments:")
+        print("  classified \(segments), unclassified \(unclassified) (not transcribed, open or no file)")
+        for (key, value) in hours.sorted(by: { $0.key < $1.key }) {
+            print(String(format: "  %@: %.1f h", key, value))
+        }
+        print("  few-words spans \(fewWordSpans); segments with a loop span \(loopSegments)")
+        print("  read + classify time: \(busy)")
+    }
+
     #if canImport(SoundAnalysis)
         private final class Collector: NSObject, SNResultsObserving, @unchecked Sendable {
             let classes: [String]
