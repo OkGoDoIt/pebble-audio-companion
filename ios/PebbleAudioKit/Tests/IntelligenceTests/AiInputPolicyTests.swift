@@ -102,11 +102,13 @@ private func wholeDay(_ template: AiPromptTemplate, chars: Int) -> AiRunRequest 
 
 @Suite("AI input policy — refuse, never silently cut, a whole-input template")
 struct AiInputPolicyTests {
-    @Test func theTemplatesThatClaimTheirWholeInputAreExactlyTheseFive() {
+    @Test func theTemplatesThatClaimTheirWholeInputAreExactlyTheseEight() {
+        // The five that summarise transcripts, and History's three briefs, each stored against a
+        // fingerprint of its whole input.
         #expect(
             AiInputPolicy.wholeInputTemplateIds
                 == ["extended-summary", "daily-summary", "ask", "ask-sweep-findings",
-                    "ask-sweep-answer"])
+                    "ask-sweep-answer", "day-brief", "week-brief", "month-brief"])
         for template in [
             AiPromptTemplates.extendedSummary, AiPromptTemplates.dailySummary,
             AiPromptTemplates.ask, AiPromptTemplates.askSweepFindings,

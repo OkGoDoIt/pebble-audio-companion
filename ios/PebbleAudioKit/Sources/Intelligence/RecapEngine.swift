@@ -28,11 +28,21 @@ public struct DailyRecap: Equatable, Sendable, Codable {
     /// (whether or not it produced usable output). Two jobs: it stops the pass re-running on
     /// every refresh, and it stops a stale `shortText` being shown over a regenerated digest.
     public var shortOfHash: String?
+    /// History's week-row text for the day (`DayBrief`): a phrase naming what the day was about,
+    /// and one line under it. Nil until the brief pass has run, or when it ran and the answer was
+    /// unusable — the row then falls back to a conversation title and the recap itself.
+    public var headline: String?
+    public var lineSummary: String?
+    /// `RecapCondenser.fingerprint` of the `text` the brief pass last COMPLETED against, with the
+    /// same two jobs as `shortOfHash`: it is asked once per recap text, and a headline written
+    /// about superseded text is never shown over the new one.
+    public var briefOfHash: String?
 
     public init(
         dateKey: String, text: String, segmentIds: [String] = [],
         provider: String? = nil, model: String? = nil, updatedAtMs: Int64 = 0,
-        shortText: String? = nil, shortOfHash: String? = nil
+        shortText: String? = nil, shortOfHash: String? = nil,
+        headline: String? = nil, lineSummary: String? = nil, briefOfHash: String? = nil
     ) {
         self.dateKey = dateKey
         self.text = text
@@ -42,6 +52,9 @@ public struct DailyRecap: Equatable, Sendable, Codable {
         self.updatedAtMs = updatedAtMs
         self.shortText = shortText
         self.shortOfHash = shortOfHash
+        self.headline = headline
+        self.lineSummary = lineSummary
+        self.briefOfHash = briefOfHash
     }
 }
 
@@ -73,7 +86,9 @@ public struct DailyRecapStore: Sendable {
         return DailyRecap(
             dateKey: row["dateKey"], text: row["text"], segmentIds: ids,
             provider: row["provider"], model: row["model"], updatedAtMs: row["updatedAtMs"],
-            shortText: row["shortText"], shortOfHash: row["shortOfHash"])
+            shortText: row["shortText"], shortOfHash: row["shortOfHash"],
+            headline: row["headline"], lineSummary: row["lineSummary"],
+            briefOfHash: row["briefOfHash"])
     }
 
     /// Upserts by dateKey, stamping `updatedAtMs` with the store clock (KMP `save` stamped
@@ -81,7 +96,8 @@ public struct DailyRecapStore: Sendable {
     ///
     /// `shortText`/`shortOfHash` are written from the value like every other column, so a
     /// regenerated digest — which `DailyRecapEngine` builds without them — CLEARS the previous
-    /// condensation rather than leaving a summary of superseded text on the card.
+    /// condensation rather than leaving a summary of superseded text on the card. The day's
+    /// brief (`headline`/`lineSummary`/`briefOfHash`) is cleared the same way.
     @discardableResult
     public func save(_ recap: DailyRecap) async throws -> DailyRecap {
         var stamped = recap
@@ -94,21 +110,43 @@ public struct DailyRecapStore: Sendable {
                 sql: """
                     INSERT INTO recaps
                         (dateKey, text, segmentIds, provider, model, updatedAtMs,
-                         shortText, shortOfHash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         shortText, shortOfHash, headline, lineSummary, briefOfHash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dateKey) DO UPDATE SET
                         text = excluded.text, segmentIds = excluded.segmentIds,
                         provider = excluded.provider, model = excluded.model,
                         updatedAtMs = excluded.updatedAtMs,
-                        shortText = excluded.shortText, shortOfHash = excluded.shortOfHash
+                        shortText = excluded.shortText, shortOfHash = excluded.shortOfHash,
+                        headline = excluded.headline, lineSummary = excluded.lineSummary,
+                        briefOfHash = excluded.briefOfHash
                     """,
                 arguments: [
                     toWrite.dateKey, toWrite.text, idsJson, toWrite.provider, toWrite.model,
                     toWrite.updatedAtMs, toWrite.shortText, toWrite.shortOfHash,
+                    toWrite.headline, toWrite.lineSummary, toWrite.briefOfHash,
                 ]
             )
         }
         return toWrite
+    }
+
+    /// Records the outcome of one day-brief pass WITHOUT touching the recap, guarded on the text
+    /// it read exactly as `saveCondensation` is (a recap regenerated while the call was in
+    /// flight keeps its own, still-owed, state). Nil fields record a COMPLETED attempt that
+    /// produced nothing usable, so the same text is not asked about again.
+    public func saveDayBrief(
+        dateKey: String, sourceText: String, headline: String?, lineSummary: String?
+    ) async throws {
+        let hash = RecapCondenser.fingerprint(sourceText)
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE recaps SET headline = ?, lineSummary = ?, briefOfHash = ?
+                    WHERE dateKey = ? AND text = ?
+                    """,
+                arguments: [headline, lineSummary, hash, dateKey, sourceText]
+            )
+        }
     }
 
     /// Records the outcome of one condense pass WITHOUT touching the digest.
@@ -309,7 +347,7 @@ public actor DailyRecapEngine {
     }
 
     /// Serialization chain: refreshes never overlap (the KMP engine's refresh mutex).
-    private var refreshChain: Task<Void, Error>?
+    private var refreshChain: Task<Bool, Error>?
     private var loopTask: Task<Void, Never>?
 
     struct SegmentFingerprint: Hashable {
@@ -385,7 +423,7 @@ public actor DailyRecapEngine {
         guard loopTask == nil else { return }
         loopTask = Task { [intervalMs, sleepMs] in
             while !Task.isCancelled {
-                try? await self.refreshDigests()
+                _ = try? await self.refreshDigests()
                 do { try await sleepMs(intervalMs) } catch { break }
             }
         }
@@ -415,15 +453,21 @@ public actor DailyRecapEngine {
     /// Honours cancellation: the work runs in a serialization `Task`, which does not inherit the
     /// caller's cancellation, so a pass that was cancelled (background entry, a loop restart)
     /// used to wait for a whole day's recap to finish anyway.
-    public func refreshDigests(onProgress: (@Sendable () -> Void)? = nil) async throws {
+    ///
+    /// Returns whether it wrote anything — a digest or a condensation. The pass reads that to
+    /// know History's day headlines and briefs have something new to read (`.briefs`), instead
+    /// of that stage re-reading every recap on every pass to find out.
+    @discardableResult
+    public func refreshDigests(onProgress: (@Sendable () -> Void)? = nil) async throws -> Bool {
         let previous = refreshChain
-        let task = Task {
+        let task = Task { () throws -> Bool in
             _ = try? await previous?.value
-            try await self.performRefresh(onProgress: onProgress)
-            try await self.performCondensation()
+            let saved = try await self.performRefresh(onProgress: onProgress)
+            let condensed = try await self.performCondensation()
+            return saved || condensed
         }
         refreshChain = task
-        try await withTaskCancellationHandler {
+        return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
             task.cancel()
@@ -436,12 +480,13 @@ public actor DailyRecapEngine {
     /// back to the full digest without it. A THROWN provider error is deliberately not recorded
     /// as an attempt, so an afternoon without connectivity does not permanently strand a day on
     /// its long form; only a completed call stamps the fingerprint.
-    private func performCondensation() async throws {
-        guard let run else { return }
+    private func performCondensation() async throws -> Bool {
+        guard let run else { return false }
         let candidates = try await store.longestFirstCandidates(
             minCharacters: RecapCondenser.mediumParagraphCharacters,
             limit: Self.condensationCandidateDepth)
         var condensed = 0
+        var wrote = false
         for recap in candidates {
             if condensed >= maxCondensationsPerRefresh { break }
             try Task.checkCancellation()
@@ -455,7 +500,7 @@ public actor DailyRecapEngine {
                 // Provider down / no consent / out of quota. Leave the day unstamped so the
                 // next pass tries again, and stop: the rest would fail the same way.
                 log("recap condense failed \(recap.dateKey) — \(error.localizedDescription)")
-                return
+                return wrote
             }
             condensed += 1
             switch outcome {
@@ -463,16 +508,19 @@ public actor DailyRecapEngine {
                 log("recap condensed \(recap.dateKey) \(recap.text.count) → \(text.count) chars")
                 try await store.saveCondensation(
                     dateKey: recap.dateKey, sourceText: recap.text, shortText: text)
+                wrote = true
             case .notShorter:
                 log("recap condense refused \(recap.dateKey) — not shorter than \(recap.text.count) chars")
                 try await store.saveCondensation(
                     dateKey: recap.dateKey, sourceText: recap.text, shortText: nil)
             }
         }
+        return wrote
     }
 
-    private func performRefresh(onProgress: (@Sendable () -> Void)?) async throws {
-        guard let run else { return }
+    private func performRefresh(onProgress: (@Sendable () -> Void)?) async throws -> Bool {
+        guard let run else { return false }
+        var wrote = false
         let segments = await listSegments().filter { !$0.isOpen }
         var byDay: [String: [SegmentMeta]] = [:]
         for meta in segments {
@@ -564,8 +612,10 @@ public actor DailyRecapEngine {
             settledDays[day] = fingerprint
             failures[day] = nil
             partials[day] = nil
+            wrote = true
             await onRecapSaved(saved)
         }
+        return wrote
     }
 
     // MARK: - One day

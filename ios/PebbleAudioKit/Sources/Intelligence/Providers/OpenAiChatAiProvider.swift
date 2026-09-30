@@ -488,6 +488,12 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
                 "format": jsonSchemaFormat(
                     name: "segment_annotation", schema: segmentAnnotationSchema())
             ]
+        case DayBrief.templateId:
+            return ["format": jsonSchemaFormat(name: "day_brief", schema: dayBriefSchema())]
+        case PeriodBriefWriter.weekTemplateId, PeriodBriefWriter.monthTemplateId:
+            return [
+                "format": jsonSchemaFormat(name: "period_brief", schema: periodBriefSchema())
+            ]
         default:
             return nil
         }
@@ -596,6 +602,37 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
                         ],
                     ],
                 ]
+            ],
+        ]
+    }
+
+    /// History's day headline. The limits are the prompt's; `HistoryBriefText` enforces them.
+    private func dayBriefSchema() -> [String: Any] {
+        [
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["headline", "lineSummary"],
+            "properties": [
+                "headline": schemaString(
+                    "A noun phrase of 2 to 6 words naming what the day was about; no full stop."),
+                "lineSummary": schemaString(
+                    "One or two short sentences, at most 130 characters, that stand on their own."),
+            ],
+        ]
+    }
+
+    /// History's week and month briefs.
+    private func periodBriefSchema() -> [String: Any] {
+        [
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text", "headline", "lineSummary"],
+            "properties": [
+                "text": schemaString("3 or 4 sentences, at most 480 characters."),
+                "headline": schemaString(
+                    "A noun phrase of 2 to 6 words naming the main threads; no full stop."),
+                "lineSummary": schemaString(
+                    "One or two short sentences, at most 130 characters, that stand on their own."),
             ],
         ]
     }

@@ -136,6 +136,12 @@ public enum OnDeviceTemplateBudget {
             return 200
         case "daily-summary", "recap-condense":
             return 224
+        case "day-brief":
+            // A phrase and a line of JSON: about 60 words.
+            return 160
+        case "week-brief", "month-brief":
+            // Four sentences, a phrase and a line, as JSON.
+            return 400
         case "personal-context-terms":
             return 256
         case "extended-summary":
