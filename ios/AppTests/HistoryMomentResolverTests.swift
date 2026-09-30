@@ -437,6 +437,19 @@ struct HistoryMomentPieceTests {
         #expect(costs.mediaOffsetMs == 40_000 - Library.cutB)
     }
 
+    /// A History card starts at its conversation's start; a tap on it must open that
+    /// conversation, never the one whose recording it shares — including the cards whose
+    /// conversation starts in the second half of a recording.
+    @Test func everyConversationsStartOpensThatConversation() async throws {
+        let db = try await Library.sharedLibrary()
+        let rows = try await ConversationQueries(db: db).rows(overlappingMs: Int64.min..<Int64.max)
+        #expect(Set(rows.map(\.id)) == [Library.first, Library.second, Library.third])
+        for row in rows {
+            let landed = try #require(try await Self.moment(row.startMs, in: db))
+            #expect(landed.conversationId == row.id, "\(row.id) at \(row.startMs)")
+        }
+    }
+
     /// A moment and a citation of the same instant are the same hop, so they land together.
     @Test func aMomentAndACitationOfTheSameInstantAgree() async throws {
         let db = try await Library.sharedLibrary()
