@@ -311,6 +311,40 @@ public struct AudioContentStore: AudioContentSource {
         }
     }
 
+    /// For every classified segment, the stretches of its STORED audio classified as
+    /// conversation (before corrections; the service applies those) — empty for a segment with
+    /// none. One query at launch.
+    ///
+    /// `conversationPresence` answers for a whole segment, which was the question while a
+    /// conversation was made of whole segments. A conversation now owns a range of one, so
+    /// "does this conversation hold any conversation" needs to know WHERE in the segment the
+    /// talk was: the quiet tail of a segment is a conversation of its own, and it holds none
+    /// however much was said in the segment's first ten minutes.
+    public func conversationMediaRanges() async throws -> [String: [Range<Int64>]] {
+        try await db.reader.read { db in
+            var out: [String: [Range<Int64>]] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT s.segmentId AS segmentId, p.mediaStartMs AS mediaStartMs,
+                        p.mediaEndMs AS mediaEndMs
+                    FROM audio_content_segments s
+                    LEFT JOIN audio_content_spans p
+                        ON p.segmentId = s.segmentId AND p.kind = 'conversation'
+                    ORDER BY s.segmentId, p.spanIndex
+                    """)
+            {
+                let segmentId: String = row["segmentId"]
+                var ranges = out[segmentId] ?? []
+                if let start: Int64 = row["mediaStartMs"], let end: Int64 = row["mediaEndMs"] {
+                    ranges.append(start..<max(end, start))
+                }
+                out[segmentId] = ranges
+            }
+            return out
+        }
+    }
+
     /// Delete-cascade and retention: a segment that no longer exists keeps no classification.
     /// Corrections are kept; they are about time, not about a file.
     public func forget(segmentIds: [String]) async throws {

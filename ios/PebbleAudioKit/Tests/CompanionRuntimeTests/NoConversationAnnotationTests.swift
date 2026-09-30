@@ -66,7 +66,7 @@ struct NoConversationAnnotationTests {
         try await enrichment.regroupPass()
 
         // Classified as holding no conversation: a stand-in, no AI call.
-        mask.setHolds(segmentId, false)
+        mask.setConversationRanges(segmentId, [])
         let changed = try await enrichment.enrichPass()
         #expect(changed.count == 1)
         let standIn = try #require(try await fixture.annotations.load(changed[0]))
@@ -80,7 +80,7 @@ struct NoConversationAnnotationTests {
 
         // A correction (or a new transcript) says it holds talk: the stand-in goes and the AI
         // titles it.
-        mask.setHolds(segmentId, true)
+        mask.setConversationRanges(segmentId, [0..<60_000])
         let retitled = try await enrichment.enrichPass()
         #expect(retitled.contains(changed[0]))
         #expect(provider.lock.withLock { provider.runs } == 1)

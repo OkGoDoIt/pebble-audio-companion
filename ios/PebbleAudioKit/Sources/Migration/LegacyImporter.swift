@@ -822,10 +822,22 @@ public struct LegacyImporter: @unchecked Sendable {
 
         // Old segment id → the conversation it now belongs to. Citations and note placement both
         // resolve through this; a segment that did not survive simply is not in it.
+        //
+        // A segment can be shared by two or more conversations now (each owns a range of it),
+        // and a legacy output names whole segments, so "the conversation of a segment" here
+        // means the one that owns the segment's START — the same reading
+        // `ConversationQueries.conversationIdsBySegment` gives. The rows arrive latest piece
+        // first so that the last write is the earliest piece; without the order, which of a
+        // shared segment's conversations an imported note landed in was whatever SQLite
+        // happened to return last.
         let conversationBySegment: [String: String] = try await database.reader.read { db in
             var map: [String: String] = [:]
             for row in try Row.fetchAll(
-                db, sql: "SELECT segmentId, conversationId FROM conversation_segments")
+                db,
+                sql: """
+                    SELECT segmentId, conversationId FROM conversation_segments
+                    ORDER BY segmentId, COALESCE(startMediaMs, 0) DESC
+                    """)
             {
                 map[row["segmentId"]] = row["conversationId"]
             }

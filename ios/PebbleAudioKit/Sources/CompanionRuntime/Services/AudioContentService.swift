@@ -50,7 +50,10 @@ public final class AudioContentMask: @unchecked Sendable {
     private let lock = NSLock()
     private var ai: [String: [Range<Int64>]] = [:]
     private var speech: [String: [Range<Int64>]] = [:]
-    private var holds: [String: Bool] = [:]
+    /// The stretches of each CLASSIFIED segment's stored audio that are conversation
+    /// (corrections applied). A segment with an entry has been classified; an empty entry says
+    /// none of it is conversation.
+    private var conversation: [String: [Range<Int64>]] = [:]
     private var aiGenerations: [String: Int] = [:]
     private var speechGenerations: [String: Int] = [:]
 
@@ -88,11 +91,31 @@ public final class AudioContentMask: @unchecked Sendable {
     /// while it has not been classified. A conversation whose every member answers false holds
     /// no conversation at all, and is presented and treated as such (`EnrichmentService`).
     public func holdsConversation(_ segmentId: String) -> Bool? {
-        lock.withLock { holds[segmentId] }
+        lock.withLock { conversation[segmentId].map { !$0.isEmpty } }
     }
 
-    func setHolds(_ segmentId: String, _ value: Bool) {
-        lock.withLock { holds[segmentId] = value }
+    /// The same question about one PIECE of a segment: whether any stretch classified as
+    /// conversation overlaps the range the piece owns; nil while the segment has not been
+    /// classified.
+    ///
+    /// This is the one a conversation is asked with. A conversation owns a range of each of its
+    /// segments, and the whole-segment answer is wrong for it in the direction that matters:
+    /// the quiet end of a segment, cut off as a conversation of its own, would be sent to a
+    /// model to be titled because people talked at the start of the same file. In memory, one
+    /// lock and a scan of a handful of ranges — it is asked for every conversation on every AI
+    /// pass.
+    public func holdsConversation(in piece: ConversationMember) -> Bool? {
+        lock.withLock {
+            guard let ranges = conversation[piece.segmentId] else { return nil }
+            if piece.isWhole { return !ranges.isEmpty }
+            let start = piece.startMediaMs ?? 0
+            let end = piece.endMediaMs ?? Int64.max
+            return ranges.contains { $0.lowerBound < end && $0.upperBound > start }
+        }
+    }
+
+    func setConversationRanges(_ segmentId: String, _ ranges: [Range<Int64>]) {
+        lock.withLock { conversation[segmentId] = ranges }
     }
 
     /// Returns true when anything changed.
@@ -117,7 +140,7 @@ public final class AudioContentMask: @unchecked Sendable {
             for id in segmentIds {
                 ai[id] = nil
                 speech[id] = nil
-                holds[id] = nil
+                conversation[id] = nil
             }
         }
     }
@@ -182,7 +205,9 @@ public actor AudioContentService {
         if !loaded {
             inputKeys = try await store.inputKeys()
             judgements = try await store.judgements()
-            for (id, present) in try await store.conversationPresence() { mask.setHolds(id, present) }
+            for (id, ranges) in try await store.conversationMediaRanges() {
+                mask.setConversationRanges(id, ranges)
+            }
             try await loadMasks(segments: segments)
             loaded = true
         }
@@ -500,6 +525,10 @@ public actor AudioContentService {
             if Self.speechMaskingDeciders.contains(piece.decidedBy) { speech.append(range) }
         }
         mask.set(segmentId: meta.segmentId, ai: ai, speech: speech)
-        mask.setHolds(meta.segmentId, effective.contains { $0.kind == .conversation })
+        // Every conversation stretch is kept, an empty one included: "is any of this segment
+        // conversation" is whether the list has an entry, exactly as it was when this stored a
+        // flag, and a piece is answered by overlap.
+        mask.setConversationRanges(
+            meta.segmentId, effective.filter { $0.kind == .conversation }.map(media))
     }
 }
