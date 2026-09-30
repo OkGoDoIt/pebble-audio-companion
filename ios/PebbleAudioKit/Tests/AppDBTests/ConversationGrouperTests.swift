@@ -177,8 +177,11 @@ import WireProtocol
         #expect(first == second)
         #expect(first.map(\.id) == ["conv-a", "conv-c"])
 
+        // What is stored is what was returned, less `isProvisional` — a property of the pass
+        // (here: `conv-c` is the end of a run that could still grow), which is not persisted.
         let persisted = try await db.reader.read { try ConversationGrouper.fetchAll($0) }
-        #expect(persisted == first)
+        #expect(persisted == first.map(\.asStored))
+        #expect(first.map(\.isProvisional) == [false, true])
         let memberCount = try await db.reader.read {
             try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM conversation_segments") ?? -1
         }

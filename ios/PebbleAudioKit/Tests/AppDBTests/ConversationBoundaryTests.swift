@@ -476,8 +476,10 @@ private let hour = minutesMs(60)
             evidence: talkQuietTalk, policy: .quietOnly, db: db)
         #expect(first.map(\.startReason) == [nil, .quiet])
 
+        // What is stored is what was returned, less `isProvisional`: that is a property of the
+        // pass (the last conversation of a run that can still grow), not of the conversation.
         let persisted = try await db.reader.read { try ConversationGrouper.fetchAll($0) }
-        #expect(persisted == first)
+        #expect(persisted == first.map(\.asStored))
 
         // Same input twice ⇒ same ids, same reasons, same rows.
         let second = try await ConversationGrouper.rebuild(

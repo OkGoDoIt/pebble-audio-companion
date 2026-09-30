@@ -179,14 +179,21 @@ func dictationTurns(fromMs: Int64, toMs: Int64, vocabulary: [String] = cookingWo
     return out
 }
 
-/// The segmenter's numbers as they stood on 2026-09-30, written out one by one. Tests that pin
-/// an exact answer pass THIS, never `SegmenterPolicy.default`, so retuning the default cannot
-/// move them; tests that state a guarantee the shipped policy must keep run against both.
+/// A segmenter policy that belongs to the TESTS: every number written out, none of them read
+/// from `SegmenterPolicy.default`, which is a fit that is still being re-run. Tests that pin an
+/// exact answer pass THIS, so retuning the default cannot move them; tests that state a
+/// guarantee the shipped policy must keep run against both.
+///
+/// The numbers are round on purpose (a unit costs 8, plus 0.004 × the square of its minutes past
+/// 40, plus 1.5 for each minute it falls short of 3), so an expected division can be worked out
+/// by hand. Like the shipped policy it scores a unit by its mix of modes and not by its words or
+/// its rhythm (`wordWeight` and `rhythmWeight` are 0).
 var frozenSegmenterPolicy: SegmenterPolicy {
     var policy = SegmenterPolicy()
     policy.wordPrior = 0.3
-    policy.wordWeight = 0.25
-    policy.rhythmWeight = 0.5
+    policy.vocabularySize = 2_000
+    policy.wordWeight = 0
+    policy.rhythmWeight = 0
     policy.dialogueWeight = 0.5
     policy.foreignWeight = 0.5
     policy.dictationWeight = 0.5
@@ -198,6 +205,7 @@ var frozenSegmenterPolicy: SegmenterPolicy {
     policy.pauseWeight = 6.0
     policy.pause2MinWeight = 0.0
     policy.pause5MinWeight = 2.0
+    policy.pause8MinWeight = 0.0
     policy.turnRateWeight = 2.0
     policy.wordRateWeight = 0.0
     policy.dialogueShiftWeight = 3.0
@@ -296,4 +304,12 @@ extension ConversationMember {
 
 extension GroupedConversation {
     var brief: [String] { members.map(\.brief) }
+
+    /// The conversation as the database holds it. `isProvisional` is a property of one grouping
+    /// pass and is not persisted, so a grouping read back reads as settled.
+    var asStored: GroupedConversation {
+        var copy = self
+        copy.isProvisional = false
+        return copy
+    }
 }
