@@ -71,13 +71,20 @@ public struct HistoryConversationFact: Equatable, Sendable {
     public var overlapMs: Int64
     /// Recorded time inside the day of its members that have a finished transcript with words.
     public var transcribedMs: Int64
+    /// The whole conversation's length, start to end, whatever day it runs into. A title that
+    /// describes hours of the day describes a blob, not a conversation.
+    public var durationMs: Int64
 
-    public init(id: String, title: String?, tags: [String] = [], overlapMs: Int64, transcribedMs: Int64) {
+    public init(
+        id: String, title: String?, tags: [String] = [], overlapMs: Int64, transcribedMs: Int64,
+        durationMs: Int64? = nil
+    ) {
         self.id = id
         self.title = title
         self.tags = tags
         self.overlapMs = overlapMs
         self.transcribedMs = transcribedMs
+        self.durationMs = durationMs ?? overlapMs
     }
 }
 
@@ -135,32 +142,55 @@ public protocol HistoryPeriodSources: Sendable {
 
 /// INTERIM (until the chapter and brief stages exist): only facts the app already has.
 ///
-/// - Day headline: the title of the conversation with the most transcribed time inside the day.
-/// - Day summary: the day's recap.
+/// - Day headline: the title of the conversation with the most transcribed time inside the day —
+///   unless that conversation runs longer than `longTitleMs` (its title describes a blob of the
+///   day, not a conversation) or has no title, and the day has a recap: then the recap's first
+///   sentence, cut to about `headlineCharacters` at a word boundary. Without a recap, the title
+///   whatever its length.
+/// - Day summary: the day's recap (without that first sentence when it became the headline and
+///   more follows).
 /// - Tags: conversation tags, ranked by the overlapping duration of the conversations carrying them.
-/// - Week headline: none. Week summary: the distinct titles of the week's longest conversations,
-///   joined — a list of facts, not a generated sentence.
+/// - Week headline: none. Week summary: the distinct headlines of the week's days, the days with
+///   the most transcribed talk first, joined — a list of facts, not a generated sentence.
 /// - Week and month briefs: none (no such summaries exist).
 public struct InterimHistoryPeriodSources: HistoryPeriodSources {
     /// How many titles a week's summary lists.
     public static let weekSummaryTitles = 3
     public static let separator = " · "
+    /// A conversation longer than this does not name the day when a recap can.
+    public static let longTitleMs: Int64 = 2 * 3_600_000
+    /// About how long a headline taken from a recap may be.
+    public static let headlineCharacters = 60
 
     public init() {}
 
     // INTERIM: replaced by the day's first chapter headline / the day brief's headline.
     public func dayHeadline(_ day: HistoryDayFacts) -> String? {
-        let ranked = day.conversations
-            .filter { $0.transcribedMs > 0 }
-            .sorted { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
-        // The longest talk decides the headline. When it has no title yet the row says so
-        // (nil) rather than promoting a shorter conversation's title to stand for the day.
-        return ranked.first.flatMap { Self.nonEmpty($0.title) }
+        headline(day).text
     }
 
     // INTERIM: replaced by the day brief's line summary.
     public func daySummary(_ day: HistoryDayFacts) -> String? {
-        day.recap.flatMap { Self.nonEmpty($0.summary) }
+        guard let recap = day.recap.flatMap({ Self.nonEmpty($0.summary) }) else { return nil }
+        if headline(day).fromRecap, let rest = Self.nonEmpty(Self.firstSentence(of: recap).rest) { return rest }
+        return recap
+    }
+
+    /// The day's headline and whether it came from the recap.
+    func headline(_ day: HistoryDayFacts) -> (text: String?, fromRecap: Bool) {
+        let longest = day.conversations
+            .filter { $0.transcribedMs > 0 }
+            .min { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
+        guard let longest else { return (nil, false) }
+        let title = Self.nonEmpty(longest.title)
+        if let title, longest.durationMs <= Self.longTitleMs { return (title, false) }
+        if let recap = day.recap.flatMap({ Self.nonEmpty($0.summary) }),
+            let sentence = Self.nonEmpty(Self.firstSentence(of: recap).sentence)
+        {
+            return (Self.cut(sentence, to: Self.headlineCharacters), true)
+        }
+        // No recap: the title, however long its conversation; an untitled one says nothing.
+        return (title, false)
     }
 
     // INTERIM: replaced by chapter tags.
@@ -173,13 +203,17 @@ public struct InterimHistoryPeriodSources: HistoryPeriodSources {
 
     // INTERIM: replaced by the week brief's line summary.
     public func weekSummary(_ days: [HistoryDayFacts]) -> String? {
-        let merged = Self.mergedConversations(days.map(\.conversations))
-            .filter { $0.transcribedMs > 0 }
-            .sorted { $0.transcribedMs != $1.transcribedMs ? $0.transcribedMs > $1.transcribedMs : $0.id < $1.id }
+        func talk(_ day: HistoryDayFacts) -> Int64 {
+            day.conversations.reduce(Int64(0)) { $0 + $1.transcribedMs }
+        }
+        let ranked: [HistoryDayFacts] = days.filter { talk($0) > 0 }.sorted { a, b in
+            let (ta, tb) = (talk(a), talk(b))
+            return ta != tb ? ta > tb : a.dateKey < b.dateKey
+        }
         var titles: [String] = []
         var seen: Set<String> = []
-        for conversation in merged {
-            guard let title = Self.nonEmpty(conversation.title) else { continue }
+        for day in ranked {
+            guard let title = dayHeadline(day) else { continue }
             let key = title.lowercased()
             guard !seen.contains(key) else { continue }
             seen.insert(key)
@@ -202,6 +236,39 @@ public struct InterimHistoryPeriodSources: HistoryPeriodSources {
 
     // --- helpers ------------------------------------------------------------------------------
 
+    /// The first sentence of a recap and what follows it. A recap may be bullet lines; a leading
+    /// bullet mark is not part of the sentence.
+    static func firstSentence(of text: String) -> (sentence: String, rest: String) {
+        var body = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        while let first = body.first, "-•*".contains(first) {
+            body = body.dropFirst().drop(while: { $0 == " " })
+        }
+        var index = body.startIndex
+        while index < body.endIndex {
+            let character = body[index]
+            let next = body.index(after: index)
+            if character == "\n" { return (String(body[..<index]), String(body[next...])) }
+            if ".!?".contains(character), next == body.endIndex || body[next].isWhitespace {
+                return (String(body[...index]), String(body[next...]))
+            }
+            index = next
+        }
+        return (String(body), "")
+    }
+
+    /// At most about `limit` characters, cut at a word boundary with an ellipsis; a sentence
+    /// that fits keeps its end but not its full stop.
+    static func cut(_ text: String, to limit: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else {
+            return trimmed.last == "." ? String(trimmed.dropLast()) : trimmed
+        }
+        let prefix = trimmed.prefix(limit + 1)
+        let cutAt = prefix.lastIndex(where: \.isWhitespace) ?? trimmed.index(trimmed.startIndex, offsetBy: limit)
+        let kept = trimmed[..<cutAt].trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        return kept + "…"
+    }
+
     static func nonEmpty(_ text: String?) -> String? {
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
@@ -218,6 +285,7 @@ public struct InterimHistoryPeriodSources: HistoryPeriodSources {
             if var existing = byId[conversation.id] {
                 existing.overlapMs += conversation.overlapMs
                 existing.transcribedMs += conversation.transcribedMs
+                existing.durationMs = max(existing.durationMs, conversation.durationMs)
                 if existing.title == nil { existing.title = conversation.title }
                 existing.tags = Array(Set(existing.tags).union(conversation.tags))
                 byId[conversation.id] = existing

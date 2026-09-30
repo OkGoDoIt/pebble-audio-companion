@@ -12,6 +12,10 @@ import SegmentStore
 /// placement on the clock; only a transcript that changed is read again. Reads happen here, on the
 /// actor's executor — never on the main actor.
 ///
+/// The same pass keeps each turn's text, cut to `HistorySpokenTurn.maxCharacters` and placed on
+/// the wall clock the same way, so the day's verbatim snippets cost no second decode and share
+/// the runs' memoisation key.
+///
 /// The runs are exactly the grouper's (`SegmentSpeechEvidence.of` placed by
 /// `ConversationBoundaryDetector.spokenRuns`), so a card sits where the conversation screen puts
 /// the words.
@@ -21,6 +25,8 @@ public actor HistorySpeechRunCache {
         public var runs: [HistorySpeechRun]
         /// Recordings whose transcript file is present (a `.complete` without one is a fault).
         public var withTranscript: Set<String>
+        /// Their turns' text, in time order.
+        public var turns: [HistorySpokenTurn]
     }
 
     private struct Entry {
@@ -28,6 +34,7 @@ public actor HistorySpeechRunCache {
         var placement: [Int64]
         /// Nil: no transcript file.
         var runs: [HistorySpeechRun]?
+        var turns: [HistorySpokenTurn] = []
     }
 
     private let transcripts: FileTranscriptStore
@@ -38,7 +45,7 @@ public actor HistorySpeechRunCache {
     /// Transcripts actually decoded, for tests and signposts.
     public private(set) var reads = 0
 
-    public init(transcripts: FileTranscriptStore, capacity: Int = 4_000) {
+    public init(transcripts: FileTranscriptStore, capacity: Int = 700) {
         self.transcripts = transcripts
         self.capacity = capacity
     }
@@ -47,6 +54,7 @@ public actor HistorySpeechRunCache {
     /// state History draws each in; a recording missing from it uses its own).
     public func runs(for metas: [SegmentMeta], states: [String: TranscriptionState]) -> Result {
         var runs: [HistorySpeechRun] = []
+        var turns: [HistorySpokenTurn] = []
         var present: Set<String> = []
         for meta in metas {
             let state = states[meta.segmentId] ?? meta.transcriptionState
@@ -57,19 +65,22 @@ public actor HistorySpeechRunCache {
             if let cached = entries[meta.segmentId], cached.version == version, cached.placement == placement {
                 entry = cached
             } else {
-                entry = Entry(version: version, placement: placement, runs: read(meta))
+                let read = read(meta)
+                entry = Entry(version: version, placement: placement, runs: read?.runs, turns: read?.turns ?? [])
                 if entries.count >= capacity { entries.removeAll(keepingCapacity: true) }
                 entries[meta.segmentId] = entry
             }
             if let segmentRuns = entry.runs {
                 present.insert(meta.segmentId)
                 runs += segmentRuns
+                turns += entry.turns
             }
         }
-        return Result(runs: runs, withTranscript: present)
+        turns.sort { $0.startMs != $1.startMs ? $0.startMs < $1.startMs : $0.segmentId < $1.segmentId }
+        return Result(runs: runs, withTranscript: present, turns: turns)
     }
 
-    private func read(_ meta: SegmentMeta) -> [HistorySpeechRun]? {
+    private func read(_ meta: SegmentMeta) -> (runs: [HistorySpeechRun], turns: [HistorySpokenTurn])? {
         reads += 1
         guard let timings = transcripts.loadSpeechTimings(meta.segmentId) else { return nil }
         var evidenceMeta = meta
@@ -81,9 +92,19 @@ public actor HistorySpeechRunCache {
                     startMs: $0.startMs, endMs: $0.endMs,
                     wordCount: $0.text.split(whereSeparator: \.isWhitespace).count)
             })
-        return ConversationBoundaryDetector.spokenRuns(evidenceMeta, evidence).map {
-            HistorySpeechRun(segmentId: meta.segmentId, startMs: $0.startMs, endMs: $0.endMs)
+        let placed = ConversationBoundaryDetector.spokenRuns(evidenceMeta, evidence)
+        let runs = placed.map { HistorySpeechRun(segmentId: meta.segmentId, startMs: $0.startMs, endMs: $0.endMs) }
+        // `spokenRuns` maps the evidence one to one, and a `.complete` recording's evidence is
+        // its timings unchanged, so run i is timing i on the wall clock.
+        var turns: [HistorySpokenTurn] = []
+        if placed.count == timings.count {
+            for (run, timing) in zip(placed, timings) {
+                guard let text = HistorySpokenTurn.preview(timing.text) else { continue }
+                turns.append(
+                    HistorySpokenTurn(segmentId: meta.segmentId, startMs: run.startMs, endMs: run.endMs, text: text))
+            }
         }
+        return (runs, turns)
     }
 
     /// What `spokenRuns` places a recording's runs by: its wall anchor and its extent.
@@ -94,5 +115,33 @@ public actor HistorySpeechRunCache {
             Int64(bitPattern: meta.lastSampleIndexExclusive ?? .max),
             meta.closedAtMs ?? -1,
         ]
+    }
+}
+
+/// One transcript turn on the wall clock, its text cut for a preview line.
+public struct HistorySpokenTurn: Equatable, Sendable {
+    public static let maxCharacters = 160
+
+    public var segmentId: String
+    public var startMs: Int64
+    public var endMs: Int64
+    public var text: String
+
+    public init(segmentId: String, startMs: Int64, endMs: Int64, text: String) {
+        self.segmentId = segmentId
+        self.startMs = startMs
+        self.endMs = endMs
+        self.text = text
+    }
+
+    /// The turn's text on one line, at most about `maxCharacters`, cut at a word; nil when
+    /// nothing was said.
+    public static func preview(_ text: String) -> String? {
+        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !flat.isEmpty else { return nil }
+        guard flat.count > maxCharacters else { return flat }
+        let prefix = flat.prefix(maxCharacters)
+        let cut = prefix.lastIndex(of: " ").map { prefix[..<$0] } ?? prefix
+        return cut + "…"
     }
 }

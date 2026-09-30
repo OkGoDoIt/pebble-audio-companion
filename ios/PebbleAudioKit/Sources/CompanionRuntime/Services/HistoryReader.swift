@@ -191,22 +191,36 @@ public actor HistoryReader {
     public func day(
         _ dateKey: String, _ library: Library, nowMs: Int64, isToday: Bool, isLive: Bool
     ) async throws -> DayBuild {
-        let (input, placed) = try await dayInput(dateKey, library, nowMs: nowMs, isToday: isToday, isLive: isLive)
-        let day = HistoryDayBuilder.build(input)
+        let inputs = try await dayInput(dateKey, library, nowMs: nowMs, isToday: isToday, isLive: isLive)
+        let placed = inputs.followUps
+        let day = HistoryDayBuilder.build(inputs.builder)
         let recap = try await sources.recaps.load(dateKey: dateKey)
         return DayBuild(
             day: day, brief: recap.flatMap(Self.brief), followUpTotal: placed.count,
             followUpOpen: placed.filter { !$0.record.done }.count)
     }
 
-    /// The builder's inputs for one day, and the follow-ups placed on it.
+    /// What one day is built from.
+    public struct DayInputs: Sendable {
+        public var builder: HistoryDayBuilder.Input
+        /// Every follow-up placed on the day.
+        public var followUps: [HistoryPlacedRecord]
+        /// The day's transcript turns on the wall clock, in time order — for the builder's
+        /// verbatim snippets on untitled cards once it takes them (read in the same memoised
+        /// pass as the speech runs).
+        public var turns: [HistorySpokenTurn]
+    }
+
+    /// The builder's inputs for one day, the follow-ups placed on it, and its turns.
     public func dayInput(
         _ dateKey: String, _ library: Library, nowMs: Int64, isToday: Bool, isLive: Bool
-    ) async throws -> (HistoryDayBuilder.Input, [HistoryPlacedRecord]) {
+    ) async throws -> DayInputs {
         let (hullOrNil, windows) = library.windows(of: dateKey)
         guard let hull = hullOrNil else {
-            return (HistoryDayBuilder.Input(dateKey: dateKey, windows: windows, segments: [],
-                nowMs: isToday ? nowMs : nil), [])
+            return DayInputs(
+                builder: HistoryDayBuilder.Input(
+                    dateKey: dateKey, windows: windows, segments: [], nowMs: isToday ? nowMs : nil),
+                followUps: [], turns: [])
         }
         let metas = library.segments(overlapping: hull, withNext: true)
         let dayIds = library.segments(overlapping: hull, withNext: false).map(\.segmentId)
@@ -278,7 +292,10 @@ public actor HistoryReader {
             followUps: placed.map { HistoryFollowUpInput(record: $0.record, placement: $0.placement, nowMs: nowMs) },
             contentSpans: content.map(HistoryContentSpanInput.init(span:)),
             deletedSpans: deleted, nowMs: isToday ? nowMs : nil, isLive: isToday && isLive)
-        return (input, placed)
+        let turns = speech.turns.filter {
+            $0.startMs < hull.upperBound && $0.endMs >= hull.lowerBound && !hiddenSegments.contains($0.segmentId)
+        }
+        return DayInputs(builder: input, followUps: placed, turns: turns)
     }
 
     /// The in-brief card's text: the condensed form while it is current, else the digest.
@@ -392,7 +409,8 @@ public actor HistoryReader {
                 }
                 facts.conversations.append(
                     HistoryConversationFact(
-                        id: row.id, title: row.title, tags: row.tags, overlapMs: overlap, transcribedMs: transcribed))
+                        id: row.id, title: row.title, tags: row.tags, overlapMs: overlap, transcribedMs: transcribed,
+                        durationMs: max(0, row.endMs - row.startMs)))
             }
             if let recap = try await sources.recaps.load(dateKey: day), let brief = Self.brief(recap) {
                 facts.recap = HistoryRecapFact(summary: brief.text, updatedAtMs: brief.updatedAtMs)

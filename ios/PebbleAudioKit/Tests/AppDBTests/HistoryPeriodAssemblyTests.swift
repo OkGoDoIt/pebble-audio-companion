@@ -141,9 +141,44 @@ private func recorded(
 
     // MARK: - Month
 
-    @Test("a month row lists its week's longest conversations' titles, once each, at most three")
+    @Test("a long conversation's title gives way to the recap's first sentence")
+    func longTitlesGiveWayToTheRecap() {
+        let sources = InterimHistoryPeriodSources()
+        let blob = HistoryConversationFact(
+            id: "a", title: "Garden, Kitchen Repairs, and Projects", overlapMs: 300 * minute,
+            transcribedMs: 200 * minute, durationMs: 9 * 60 * minute)
+        let recap = "- The day focused on improving an AI system's model options and generation latency. Then dinner."
+        let day = recorded("2026-09-18", recap: recap)
+        var withBlob = day
+        withBlob.conversations = [blob]
+        #expect(sources.dayHeadline(withBlob) == "The day focused on improving an AI system's model options…")
+        #expect(sources.daySummary(withBlob) == "Then dinner.")
+
+        // No recap: the title, however long its conversation.
+        var noRecap = withBlob
+        noRecap.recap = nil
+        #expect(sources.dayHeadline(noRecap) == "Garden, Kitchen Repairs, and Projects")
+
+        // A conversation of an hour keeps its title; the recap stays whole as the summary.
+        var hour = withBlob
+        hour.conversations = [HistoryConversationFact(id: "b", title: "Dinner", overlapMs: 60 * minute, transcribedMs: 60 * minute)]
+        #expect(sources.dayHeadline(hour) == "Dinner")
+        #expect(sources.daySummary(hour) == recap)
+
+        // The longest talk has no title: the recap names the day rather than nothing.
+        var untitled = withBlob
+        untitled.conversations = [HistoryConversationFact(id: "c", title: nil, overlapMs: 30 * minute, transcribedMs: 30 * minute)]
+        #expect(sources.dayHeadline(untitled)?.hasPrefix("The day focused") == true)
+
+        #expect(InterimHistoryPeriodSources.cut("Short sentence.", to: 60) == "Short sentence")
+        #expect(InterimHistoryPeriodSources.firstSentence(of: "One. Two.").sentence == "One.")
+        #expect(InterimHistoryPeriodSources.firstSentence(of: "Version 2.5 shipped today").sentence == "Version 2.5 shipped today")
+    }
+
+    @Test("a month row lists its days' headlines, the days with most talk first, once each, at most three")
     func monthRowSummary() {
         let days: [String: HistoryDayFacts] = [
+            "2026-09-20": recorded("2026-09-20", conversations: [conversation("x", "Coffee", overlap: 20)]),
             "2026-09-21": recorded(
                 "2026-09-21",
                 conversations: [
@@ -152,20 +187,23 @@ private func recorded(
                 ]),
             "2026-09-22": recorded(
                 "2026-09-22",
+                conversations: [conversation("c", "garden planning", overlap: 80), conversation("d", "Dinner", overlap: 30)]),
+            "2026-09-23": recorded(
+                "2026-09-23",
                 conversations: [
-                    // "a" runs past 5 AM into this day: its time adds up across the two.
-                    conversation("a", "Garden planning", overlap: 20),
-                    conversation("c", "garden planning", overlap: 80),  // same title, other case
-                    conversation("d", "Dinner", overlap: 60),
-                    conversation("e", "Untitled", overlap: 1),
-                    conversation("f", nil, overlap: 200),
-                ]),
+                    HistoryConversationFact(
+                        id: "e", title: "A whole day", overlapMs: 200 * minute, transcribedMs: 60 * minute,
+                        durationMs: 10 * 60 * minute)
+                ],
+                recap: "Budget review and report checks. More."),
         ]
         let month = HistoryPeriodAssembler.month(
             containing: "2026-09-22", firstWeekday: 1, days: days, todayKey: "2026-09-26")
         let week = month.rows.first { $0.firstDateKey == "2026-09-20" }!
         #expect(week.headline == nil)
-        #expect(week.summary == "Garden planning · Dinner · Bank transfer")
+        // 21st (130 min): Garden planning; 22nd (110): same title again, skipped; 23rd (60):
+        // the recap's sentence, not the blob's title; 20th (20): Coffee.
+        #expect(week.summary == "Garden planning · Budget review and report checks · Coffee")
         #expect(week.isCurrentWeek)
         #expect(week.hasRecordings)
     }
@@ -218,7 +256,7 @@ private func recorded(
         let first = october.rows.first!
         #expect(last.firstDateKey == "2026-09-27" && last.lastDateKey == "2026-10-03")
         #expect(first == last)
-        #expect(first.summary == "End of September · Start of October")
+        #expect(first.summary == "End of September · Start of October")  // the 29th has more talk
         // October's own days only: weeks after today are not listed.
         #expect(october.rows.count == 1)
         #expect(september.rows.count == 5)

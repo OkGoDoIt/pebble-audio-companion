@@ -79,7 +79,8 @@ struct RealHistoryPeriodTests {
             let elapsed = try await clock.measure {
                 built = try await reader.day(day, library, nowMs: nowMs, isToday: isToday, isLive: false)
             }
-            (input, _) = try await reader.dayInput(day, library, nowMs: nowMs, isToday: isToday, isLive: false)
+            let inputs = try await reader.dayInput(day, library, nowMs: nowMs, isToday: isToday, isLive: false)
+            input = inputs.builder
             let builderOnly = clock.measure { _ = HistoryDayBuilder.build(input) }
             if elapsed > slowest.1 { slowest = (day, elapsed) }
             let problems = HistoryDayBuilder.honestyViolations(of: built.day, input: input)
@@ -88,7 +89,7 @@ struct RealHistoryPeriodTests {
             let cards = built.day.items.filter { if case .chapter = $0 { return true } else { return false } }.count
             print("real-periods: day \(day) \(built.day.items.count) items, \(cards) cards, "
                 + "follow-ups \(built.followUpTotal)/\(built.followUpOpen) open, brief \(built.brief == nil ? "none" : "yes"), "
-                + "built cold \(format(cold)), warm \(format(elapsed)) (the pure builder alone \(format(builderOnly)))")
+                + "\(inputs.turns.count) turns, built cold \(format(cold)), warm \(format(elapsed)) (the pure builder alone \(format(builderOnly)))")
         }
         print("real-periods: slowest day \(slowest.0) \(format(slowest.1)); \(violations) violations")
 
