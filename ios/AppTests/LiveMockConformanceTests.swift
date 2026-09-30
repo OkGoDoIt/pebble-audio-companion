@@ -45,6 +45,7 @@ struct LiveMockConformanceTests {
         "App/Runtime/LiveLibraryDataSources.swift",
         "App/Runtime/LiveTodayDataSource.swift",
         "App/Runtime/LiveSettingsDataSources.swift",
+        "App/Runtime/LiveHistory.swift",
     ]
 
     static let mockFiles = [
@@ -98,12 +99,7 @@ struct LiveMockConformanceTests {
         // deliberately returns nil (it has no audio). Registered so `coversEveryProtocol` can
         // still see that a decision was made about it.
         Pair(protocolName: "ConversationPlayback", live: "", mock: ""),
-        // History is not wired to the database yet: `LiveHistory` (the digest-gated,
-        // visibility-gated source of plan 7.10) is its own build step, and until it exists the
-        // screen is reachable only behind the DEBUG `-history` argument, on `MockHistory`.
-        // Registering `live: ""` records that decision; the day `LiveHistory` lands, this entry
-        // becomes `live: "LiveHistory"` and every rule above applies to it.
-        Pair(protocolName: "HistoryDataSource", live: "", mock: "MockHistory"),
+        Pair(protocolName: "HistoryDataSource", live: "LiveHistory", mock: "MockHistory"),
     ]
 
     // MARK: - Exemptions
