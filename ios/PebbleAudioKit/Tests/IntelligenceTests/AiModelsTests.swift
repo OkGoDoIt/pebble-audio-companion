@@ -6,8 +6,8 @@ import Testing
 // Port of `core/ai/src/commonTest/.../AiModelsTest.kt` — all 5 cases, same names.
 
 @Suite struct AiModelsTests {
-    @Test func defaultIsGpt56Luna() {
-        #expect(AiModels.defaultModelId == "gpt-5.6-luna")
+    @Test func defaultIsGpt6Luna() {
+        #expect(AiModels.defaultModelId == "gpt-6-luna")
         #expect(AiModels.default.id == AiModels.defaultModelId)
         #expect(AiModels.default.recommended)
     }
@@ -17,7 +17,7 @@ import Testing
         #expect(ids.contains("gpt-5.6-luna"))
         #expect(ids.contains("gpt-5.6-terra"))
         #expect(ids.contains("gpt-5.6-sol"))
-        // The GPT-6 family sits beside 5.6, which stays (and stays the default).
+        // The GPT-6 family sits beside 5.6, which stays as an option.
         #expect(ids.contains("gpt-6-luna"))
         #expect(ids.contains("gpt-6.1-sol"))
         #expect(ids.contains("gpt-6-astra"))

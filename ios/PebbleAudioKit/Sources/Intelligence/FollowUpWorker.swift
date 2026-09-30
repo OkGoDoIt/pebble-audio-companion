@@ -255,7 +255,12 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// thinking. It is one call per conversation, it decides what appears on a list the person
     /// is meant to trust, and the cheap model's failure mode here is exactly the one that makes
     /// the feature worth turning off: reading ambient chatter as commitments.
-    public static let modelId = "gpt-5.6-terra"
+    ///
+    /// GPT-6.1 Sol since 2026-09-30 (was GPT-5.6 Terra): the same input price, cheaper output,
+    /// a tier up. Not measured against Terra on our own conversations. Extraction state is
+    /// keyed by the transcript, not the model, so the change re-reads nothing; a key that
+    /// cannot use the pinned model gets the person's own (`OpenAiChatAiProvider`).
+    public static let modelId = "gpt-6.1-sol"
     public static let reasoningEffort = "medium"
 
     private let candidates: FollowUpCandidateStore

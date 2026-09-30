@@ -59,7 +59,9 @@ struct AskBudgetTests {
         #expect(luna > terra)
         // An id we do not know resolves to the model we would actually SEND, so the budget can
         // never exceed what the request will really be answered by.
-        #expect(AskBudget.forModel(id: "no-such-model").transcriptChars == luna)
+        #expect(
+            AskBudget.forModel(id: "no-such-model").transcriptChars
+                == AskBudget.forModel(id: AiModels.defaultModelId).transcriptChars)
     }
 }
 

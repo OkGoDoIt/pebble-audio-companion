@@ -29,7 +29,7 @@ public struct AiModelSpec: Equatable, Sendable {
 }
 
 public enum AiModels {
-    public static let defaultModelId = "gpt-5.6-luna"
+    public static let defaultModelId = "gpt-6-luna"
 
     /// Assumed window for a model we have no catalog entry for. Deliberately small: reading
     /// less of the archive than we could is a slower answer, reading more than the model can
@@ -37,28 +37,6 @@ public enum AiModels {
     public static let conservativeContextTokens = 128_000
 
     public static let all: [AiModelSpec] = [
-        AiModelSpec(
-            id: "gpt-5.6-luna",
-            displayName: "GPT-5.6 Luna",
-            description: "Fast and inexpensive, with a million-token context for long days of "
-                + "transcript. Recommended for automatic titles and summaries.",
-            recommended: true,
-            contextTokens: 1_000_000
-        ),
-        AiModelSpec(
-            id: "gpt-5.6-terra",
-            displayName: "GPT-5.6 Terra",
-            description: "Balances intelligence and cost. Stronger on long, noisy, or "
-                + "many-speaker transcripts; roughly ten times Luna's price.",
-            contextTokens: 400_000
-        ),
-        AiModelSpec(
-            id: "gpt-5.6-sol",
-            displayName: "GPT-5.6 Sol",
-            description: "Frontier model for demanding questions across a whole archive. Best "
-                + "answers, highest cost.",
-            contextTokens: 400_000
-        ),
         // The GPT-6 family (added 2026-09-30, beside 5.6 rather than in place of it). Ids,
         // windows and prices are from OpenAI's model pages on that date. All three take the
         // Responses API, `reasoning.effort` of low and medium (the two this app sends) and
@@ -70,8 +48,9 @@ public enum AiModels {
         AiModelSpec(
             id: "gpt-6-luna",
             displayName: "GPT-6 Luna",
-            description: "The newer small model: about half GPT-5.6 Luna's price, with the same "
-                + "room for a long day of transcript.",
+            description: "Fast and the least expensive, with room for a long day of transcript. "
+                + "Recommended for automatic titles and summaries.",
+            recommended: true,
             contextTokens: 922_000
         ),
         AiModelSpec(
@@ -87,6 +66,28 @@ public enum AiModels {
             description: "OpenAI's most capable model, for the most demanding questions across "
                 + "a whole archive. By far the highest cost.",
             contextTokens: 922_000
+        ),
+        // The GPT-5.6 family, kept as options. GPT-5.6 Luna was the default until 2026-09-30;
+        // a phone that stored it as a choice keeps it.
+        AiModelSpec(
+            id: "gpt-5.6-luna",
+            displayName: "GPT-5.6 Luna",
+            description: "The previous small model: about twice GPT-6 Luna's price, with a "
+                + "million-token context.",
+            contextTokens: 1_000_000
+        ),
+        AiModelSpec(
+            id: "gpt-5.6-terra",
+            displayName: "GPT-5.6 Terra",
+            description: "Balances intelligence and cost. Stronger on long, noisy, or "
+                + "many-speaker transcripts; GPT-6.1 Sol costs slightly less.",
+            contextTokens: 400_000
+        ),
+        AiModelSpec(
+            id: "gpt-5.6-sol",
+            displayName: "GPT-5.6 Sol",
+            description: "The previous frontier model, at twice GPT-6.1 Sol's price.",
+            contextTokens: 400_000
         ),
     ]
 

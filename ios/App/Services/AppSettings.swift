@@ -411,6 +411,25 @@ final class AppSettings {
         return keychain.remove(provider.keychainKey)
     }
 
+    /// The stored cloud model, after moving the OLD default to the new one exactly once.
+    ///
+    /// The default became GPT-6 Luna on 2026-09-30. A phone that has "gpt-5.6-luna" stored
+    /// cannot say whether that was a choice or the default the old app wrote down (the
+    /// migration importer copied it), and leaving it would make the new default reach nobody
+    /// who already has the app. So the first launch after the change moves that one value, and
+    /// records that it did: GPT-5.6 Luna stays in the picker, and picking it afterwards sticks.
+    /// Any other stored model is a choice and is left alone.
+    static func storedAiModel(_ defaults: UserDefaults) -> String {
+        let stored = defaults.string(forKey: Keys.aiModel)
+        guard !defaults.bool(forKey: Keys.aiModelMovedToGpt6Default) else {
+            return stored ?? AiModels.defaultModelId
+        }
+        defaults.set(true, forKey: Keys.aiModelMovedToGpt6Default)
+        guard stored == "gpt-5.6-luna" else { return stored ?? AiModels.defaultModelId }
+        defaults.set(AiModels.defaultModelId, forKey: Keys.aiModel)
+        return AiModels.defaultModelId
+    }
+
     // ─── Init ───────────────────────────────────────────────────────────────
 
     init(
@@ -445,7 +464,7 @@ final class AppSettings {
         cloudTranscriptionProvider =
             defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) ?? .soniox
         aiMode = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) ?? .remoteFirst
-        aiModel = defaults.string(forKey: Keys.aiModel) ?? "gpt-5.6-luna"
+        aiModel = AppSettings.storedAiModel(defaults)
         remoteAiProvider =
             defaults.string(forKey: Keys.remoteAiProvider).flatMap(RemoteAiProvider.init)
             ?? .default
@@ -573,6 +592,7 @@ final class AppSettings {
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"
         static let aiModel = "ai_model"
+        static let aiModelMovedToGpt6Default = "ai_model_moved_to_gpt6_default"
         static let wavExport = "automatic_wav_export"
         static let onboardingComplete = "onboarding_complete"
         static let retentionDays = "retention_days"
