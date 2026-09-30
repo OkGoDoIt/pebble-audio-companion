@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SegmentStore
 
 // The staging table between the two follow-up passes.
 //
@@ -71,6 +72,9 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
     /// The model that proposed it (`RoutedAiResult.modelUsed`), carried onto the follow-up
     /// curation keeps, so its provenance can say which model found it.
     public var model: String?
+    /// `startMs..endMs` on the wall clock, computed through the segment's clock when the quote
+    /// was located, and carried onto the follow-up curation keeps (`FollowUp.sourceWall`).
+    public var sourceWall: SegmentWallRange?
 
     public init(
         id: String,
@@ -89,7 +93,8 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         attempts: Int = 0,
         decidedAtMs: Int64? = nil,
         reason: String? = nil,
-        model: String? = nil
+        model: String? = nil,
+        sourceWall: SegmentWallRange? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -108,6 +113,7 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         self.decidedAtMs = decidedAtMs
         self.reason = reason
         self.model = model
+        self.sourceWall = sourceWall
     }
 }
 
@@ -133,7 +139,8 @@ public struct FollowUpCandidateStore: Sendable {
             attempts: row["attempts"] ?? 0,
             decidedAtMs: row["decidedAtMs"],
             reason: row["reason"],
-            model: row["model"])
+            model: row["model"],
+            sourceWall: SegmentWallRange.sourceWall(from: row))
     }
 
     /// Upsert by id. Ids are content-addressed by the extractor, so re-reading a conversation
@@ -146,14 +153,18 @@ public struct FollowUpCandidateStore: Sendable {
                     INSERT INTO follow_up_candidates
                         (id, conversationId, segmentId, task, quote, why, confidence,
                          dueAtMs, startMs, endMs, createdAtMs, recordedAtMs, state, attempts,
-                         decidedAtMs, reason, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         decidedAtMs, reason, model, sourceWallStartMs, sourceWallEndMs,
+                         sourceWallApproximate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task = excluded.task, quote = excluded.quote, why = excluded.why,
                         confidence = excluded.confidence, dueAtMs = excluded.dueAtMs,
                         segmentId = excluded.segmentId, recordedAtMs = excluded.recordedAtMs,
                         startMs = excluded.startMs, endMs = excluded.endMs,
-                        model = COALESCE(excluded.model, follow_up_candidates.model)
+                        model = COALESCE(excluded.model, follow_up_candidates.model),
+                        sourceWallStartMs = excluded.sourceWallStartMs,
+                        sourceWallEndMs = excluded.sourceWallEndMs,
+                        sourceWallApproximate = excluded.sourceWallApproximate
                     """,
                 arguments: [
                     candidate.id, candidate.conversationId, candidate.segmentId, candidate.task,
@@ -161,6 +172,8 @@ public struct FollowUpCandidateStore: Sendable {
                     candidate.dueAtMs, candidate.startMs, candidate.endMs, candidate.createdAtMs,
                     candidate.recordedAtMs, candidate.state.rawValue, candidate.attempts,
                     candidate.decidedAtMs, candidate.reason, candidate.model,
+                    candidate.sourceWall?.startMs, candidate.sourceWall?.endMs,
+                    candidate.sourceWall?.isApproximate,
                 ])
         }
     }
@@ -272,5 +285,18 @@ public struct FollowUpCandidateStore: Sendable {
                 sql: "DELETE FROM follow_up_candidates WHERE conversationId = ?",
                 arguments: [conversationId])
         }
+    }
+}
+
+extension SegmentWallRange {
+    /// The `sourceWallStartMs`/`sourceWallEndMs`/`sourceWallApproximate` columns both follow-up
+    /// tables carry, as one value. Nil when the start is NULL — the moment is unknown. A NULL
+    /// flag beside a present start is read as approximate: nothing vouched for its exactness.
+    static func sourceWall(from row: Row) -> SegmentWallRange? {
+        guard let start: Int64 = row["sourceWallStartMs"] else { return nil }
+        let end: Int64 = row["sourceWallEndMs"] ?? start
+        return SegmentWallRange(
+            startMs: start, endMs: max(end, start),
+            isApproximate: row["sourceWallApproximate"] ?? true)
     }
 }

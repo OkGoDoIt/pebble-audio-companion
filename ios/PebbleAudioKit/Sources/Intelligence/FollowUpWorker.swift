@@ -547,6 +547,8 @@ public final class FollowUpWorker: @unchecked Sendable {
     ) async throws -> Int {
         var written = 0
         var seen = Set<String>()
+        // One clock per segment: building one unions every gap record of the recording.
+        var clocks: [String: SegmentMediaClock] = [:]
         for item in items {
             guard let location = FollowUpQuoteLocator.locate(quote: item.quote, in: parts) else {
                 continue
@@ -554,6 +556,8 @@ public final class FollowUpWorker: @unchecked Sendable {
             let id = Self.candidateId(
                 conversationId: conversation.conversationId, text: item.task)
             guard seen.insert(id).inserted else { continue }
+            let wall = Self.wallRange(
+                of: location, members: conversation.members, clocks: &clocks)
             try await candidates.save(
                 FollowUpCandidate(
                     id: id,
@@ -570,10 +574,38 @@ public final class FollowUpWorker: @unchecked Sendable {
                     // When the CONVERSATION happened, which is what "tomorrow" inside it is
                     // relative to. `createdAtMs` is when this pass got round to reading it.
                     recordedAtMs: parts.first?.startedAtMs,
-                    model: model))
+                    model: model,
+                    sourceWall: wall))
             written += 1
         }
         return written
+    }
+
+    /// When a located quote was said, on the wall clock — through the shared
+    /// `SegmentMediaClock.wallRange(ofMediaStartMs:endMs:)`, so History, the transcript and "play
+    /// the moment this came from" (`LiveFollowUps.source(of:)`) cannot disagree about it. Not
+    /// clamped to the segment, for the same reason `source(of:)` does not clamp.
+    ///
+    /// Nil when the locator found the recording but no diarized turn to time it by: the moment is
+    /// then unknown and History places the item by its segment's span, never by a guess. The
+    /// range is marked approximate when the segment's gap records do not account for it.
+    static func wallRange(
+        of location: QuoteLocation, members: [SegmentMeta],
+        clocks: inout [String: SegmentMediaClock]
+    ) -> SegmentWallRange? {
+        guard let startMs = location.startMs else { return nil }
+        let clock: SegmentMediaClock
+        if let cached = clocks[location.segmentId] {
+            clock = cached
+        } else {
+            // The locator only ever returns a segment it was handed as a part, and parts are
+            // built from these members; a miss would be a bug upstream, and gets no time.
+            guard let meta = members.first(where: { $0.segmentId == location.segmentId })
+            else { return nil }
+            clock = SegmentMediaClock(meta)
+            clocks[location.segmentId] = clock
+        }
+        return clock.wallRange(ofMediaStartMs: startMs, endMs: location.endMs ?? startMs)
     }
 
     /// The zone a conversation's audio was recorded in: its first member that says. Nil for
