@@ -55,6 +55,10 @@ final class AppComposition {
     let annotations: AnnotationStore
     let aiOutputs: AiOutputStore
     let recapStore: DailyRecapStore
+    /// What recorded audio holds (conversation or not) — the History screens' `AudioContentSource`.
+    let audioContentStore: AudioContentStore
+    /// Classifies it, keeps the model-input masks, and records a person's corrections.
+    let audioContent: AudioContentService
     let personalContext: FilePersonalContextStore
     /// Produces `PersonalContext.derivedTerms` — the keyword list the OpenAI STT prompt is
     /// built from. Held so a surface that edits "About you" can ask for an immediate refresh
@@ -685,12 +689,33 @@ final class AppComposition {
         // recording, rather than only from the second one onwards.
         Task { await personalContextTerms.refreshIfNeeded() }
 
+        // What recorded audio holds. Built before enrichment because its mask is part of what the
+        // AI layer reads: stretches judged to hold no conversation are left out of titles,
+        // summaries, follow-ups and recaps (never out of search, playback or the transcript).
+        let audioContentStore = AudioContentStore(db: database)
+        self.audioContentStore = audioContentStore
+        let audioContent = AudioContentService(
+            listSegments: { await store.listSegments() },
+            speechTimingsOf: { transcripts.loadSpeechTimings($0) },
+            transcriptVersionOf: { transcripts.version($0) },
+            store: audioContentStore,
+            nowMs: nowMs,
+            log: AppRuntimeLog.runtimeLog
+        )
+        self.audioContent = audioContent
+        let audioContentMask = audioContent.mask
+        // The AI workers memoise against this. A verdict that withholds part of a transcript
+        // from the models changes it, so what was built from that text is built again.
+        let aiTranscriptVersion: @Sendable (String) -> String = {
+            "\(transcripts.version($0))#\(audioContentMask.aiGeneration($0))"
+        }
+
         let enrichment = EnrichmentService(
             worker: EnrichmentWorker(
                 annotations: annotations, router: aiRouter, nowMs: nowMs,
                 // One `stat` per member per pass instead of a decoded transcript: the workers
                 // memoise what they learned from a transcript against this.
-                transcriptVersionOf: { transcripts.version($0) }
+                transcriptVersionOf: aiTranscriptVersion
             ),
             // Follow-ups are two passes over one store of candidates: extraction proposes from
             // a single conversation, curation decides across all of them. Both are handed the
@@ -708,7 +733,7 @@ final class AppComposition {
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
                 },
-                transcriptVersionOf: { transcripts.version($0) }
+                transcriptVersionOf: aiTranscriptVersion
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,
@@ -752,7 +777,8 @@ final class AppComposition {
             log: AppRuntimeLog.runtimeLog,
             // For the held-AI-account probe's schedule: opening the app is when a person who
             // just topped up is looking.
-            isForeground: { AppForegroundProbe.shared.isForeground }
+            isForeground: { AppForegroundProbe.shared.isForeground },
+            audioContentMask: audioContentMask
         )
 
         let recap = RecapService(
@@ -763,7 +789,12 @@ final class AppComposition {
                 // Collapsed, like every other model input (see `TranscriptCleanup.swift`): a
                 // day containing one looped recording would otherwise hand the recap 12 000
                 // words of the same sentence and get a day summarised around it.
-                transcriptTextOf: { transcripts.load($0)?.withLoopedArtefactsCollapsed().text },
+                // And without the stretches judged to hold no conversation: a day is not
+                // summarised around the TV that was on.
+                transcriptTextOf: {
+                    transcripts.load($0)?.withLoopedArtefactsCollapsed()
+                        .withStretchesWithheld(audioContentMask.aiRanges($0)).text
+                },
                 store: recapStore,
                 run: { request in try await aiRouter.run(request) },
                 prompt: AiPromptTemplates.dailySummary,
@@ -893,6 +924,7 @@ final class AppComposition {
             // A manual split/join is keyed by the segment after the join, so deleting that segment
             // must take the decision with it.
             boundaryOverrides: BoundaryOverrideStore(db: database),
+            audioContent: audioContent,
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog
@@ -1052,7 +1084,8 @@ final class AppComposition {
                 startup: startup,
                 snapshots: snapshots,
                 foreground: foreground,
-                log: AppRuntimeLog.runtimeLog
+                log: AppRuntimeLog.runtimeLog,
+                audioContent: audioContent
             ),
             wake: wake
         )

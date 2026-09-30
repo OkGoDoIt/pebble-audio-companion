@@ -73,6 +73,24 @@ import Transcription
         #expect(transcript.loopedArtefactWordCount == 0)
     }
 
+    @Test func withheldStretchIsLeftOutWithOneNoteAndTheRestUntouched() {
+        let transcript = make([
+            ("Did you get the parcel sorted?", 0),
+            ("Lift up my hands, lift up my eyes.", 70_000),
+            ("Lift up my voice, lift up my song.", 100_000),
+            ("Sorry, the radio. Blue, finally.", 200_000),
+        ])
+        // Nothing inside the range: the very same transcript comes back.
+        #expect(transcript.withStretchesWithheld([]) == transcript)
+        #expect(transcript.withStretchesWithheld([300_000..<400_000]) == transcript)
+
+        let withheld = transcript.withStretchesWithheld([60_000..<180_000])
+        #expect(withheld.segments.map(\.startMs) == [0, 200_000])
+        #expect(withheld.text.hasPrefix("Did you get the parcel sorted? [about 1 minute of background audio"))
+        #expect(withheld.text.hasSuffix("Sorry, the radio. Blue, finally."))
+        #expect(!withheld.text.contains("Lift up"))
+    }
+
     private func make(_ turns: [(String, Int64)]) -> SegmentTranscript {
         SegmentTranscript(
             segmentId: "seg",

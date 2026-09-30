@@ -35,6 +35,8 @@ import Testing
                 // Retention runs BEFORE the regroup, so a sweep's deletions are reflected by the
                 // same pass that made them.
                 .retention,
+                // What the audio holds is decided before grouping reads its speech evidence.
+                .classifyAudio,
                 // Grouping precedes the AI layer and never waits on it — the whole UI reads the
                 // grouped tables.
                 .regroup,
@@ -478,7 +480,8 @@ final class Recorder: @unchecked Sendable {
         // ...the announced order is the same contract as ever...
         #expect(
             recorder.stages == [
-                .reconsiderDisabled, .enqueueClosedSegments, .drainQueue, .retention, .regroup,
+                .reconsiderDisabled, .enqueueClosedSegments, .drainQueue, .retention,
+                .classifyAudio, .regroup,
                 .enrich, .donate, .followUps, .recap, .liveLocal, .liveCloudPrune, .wavExport,
                 .idleModelRelease,
             ]

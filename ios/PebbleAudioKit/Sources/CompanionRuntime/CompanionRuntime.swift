@@ -39,6 +39,9 @@ public struct CompanionRuntimeEnvironment: Sendable {
     /// Shared foreground/catch-up policy — the pass and diagnostics read the same object.
     public var foreground: RuntimeForegroundState
     public var log: RuntimeLog
+    /// What recorded audio holds (conversation or not). Optional so a runtime built without it
+    /// behaves exactly as before: nothing is classified and nothing is masked.
+    public var audioContent: AudioContentService?
 
     public init(
         database: AppDatabase,
@@ -58,7 +61,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
         startup: StartupSequencer,
         snapshots: CoverageSnapshotService,
         foreground: RuntimeForegroundState = RuntimeForegroundState(),
-        log: RuntimeLog = .silent
+        log: RuntimeLog = .silent,
+        audioContent: AudioContentService? = nil
     ) {
         self.database = database
         self.store = store
@@ -78,6 +82,7 @@ public struct CompanionRuntimeEnvironment: Sendable {
         self.snapshots = snapshots
         self.foreground = foreground
         self.log = log
+        self.audioContent = audioContent
     }
 }
 
@@ -695,6 +700,7 @@ public actor CompanionRuntime {
             // launch — a settings write wakes the loop, and the changed policy is itself the
             // trigger.
             enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
+            classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
             regroup: { try await env.enrichment.regroupPass() },
             enrich: { try await env.enrichment.enrichPass() },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
