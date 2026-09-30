@@ -396,6 +396,15 @@ enum HistoryLaunch {
 
     static var dayKey: String? { value(after: "-historyDay") }
 
+    /// `-historyEmpty`: the demo world with nothing ever recorded.
+    static var isEmptyArchive: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-historyEmpty")
+        #else
+        return false
+        #endif
+    }
+
     static var level: HistoryLevel {
         value(after: "-historyLevel").flatMap(HistoryLevel.init(rawValue:)) ?? .day
     }
