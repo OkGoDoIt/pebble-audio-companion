@@ -236,6 +236,15 @@ final class RecordingIndex: TranscriptIndexing, @unchecked Sendable {
 
     var ids: Set<String> { lock.withLock { Set(items.values.map(\.id)) } }
 
+    /// The text search holds for one document, for tests that assert what is NOT findable.
+    func fullText(id: String, kind: IndexKind) -> String? {
+        lock.withLock { items[key(id, kind)]?.fullText }
+    }
+
+    func contains(id: String, kind: IndexKind) -> Bool {
+        lock.withLock { items[key(id, kind)] != nil }
+    }
+
     private func key(_ id: String, _ kind: IndexKind) -> String { "\(kind.rawValue):\(id)" }
 }
 
