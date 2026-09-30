@@ -137,12 +137,15 @@ cuts, a relaunch takes 26 ms and an unchanged pass 2 ms (memoised per run).
 
 - **It does not understand what is said.** About half of the clear starts are found. The misses
   are mostly a change of person or place with no change in rhythm ("Hey Biscuit, I'm home" thirty
-  seconds after the last dictated message). A model that reads the words could find those. One
-  was tried as a check — a small model given a whole day and asked for conversation starts — and
-  it did worse than the segmenter on the same labels (found 16–50% of certain starts per day,
-  units up to 3 h 10 m). A reading stage is worth building only measured against these labels
-  with the model the app actually uses; the table that holds settled cuts is where its answers
-  would go.
+  seconds after the last dictated message). A model that reads the words could find those, and
+  two ways of using one were tried as a check, with a small model standing in for the app's:
+  given a whole day and asked for the conversation starts, it did worse than the segmenter on
+  the same labels (16–50% of certain starts per day, units up to 3 h 10 m); asked to confirm or
+  reject each cut of the finer setting from the ten lines either side, it came out level with
+  the shipped setting on the four held-out days (50% of certain starts found against 56%; 71%
+  of cuts on a mark against 64%; one unit of 2 h 08 m). So a reading stage is not an obvious
+  win, and is worth building only measured against these labels with the model the app
+  actually uses; the table that holds settled cuts is where its answers would go.
 - The labels were made by reading transcripts, not by Roger. His own marks on two or three days
   would be a better yardstick and the harness takes them in the same format.
 - A pause of 15 minutes always ends a conversation. The labels say a third of those are one
