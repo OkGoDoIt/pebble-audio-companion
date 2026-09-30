@@ -299,3 +299,79 @@ private final class Recorder: @unchecked Sendable {
     var values: [String] { lock.withLock { _values } }
     func append(_ value: String) { lock.withLock { _values.append(value) } }
 }
+
+// MARK: - Placement
+
+@Suite struct FollowUpPlacementTests {
+    private static let segmentId = "seg-1788193000000-00000001-7"
+    private static let span: Range<Int64> = 1_788_192_900_000..<1_788_193_800_000
+
+    private func row(
+        origin: FollowUpOrigin = .ai, segment: String? = segmentId,
+        wall: SegmentWallRange? = nil, createdAtMs: Int64 = 1_799_999_999_999
+    ) -> FollowUp {
+        FollowUp(
+            id: "f", text: "t", done: false, sourceConversationId: nil, sourceSegmentId: segment,
+            createdAtMs: createdAtMs, origin: origin, sourceWall: wall)
+    }
+
+    private func place(_ row: FollowUp, exists: Bool = true) -> FollowUpPlacement? {
+        FollowUpPlacement.placement(of: row) { id in
+            exists && id == Self.segmentId ? Self.span : nil
+        }
+    }
+
+    @Test func aStoredWallTimeIsTheMoment() {
+        let exact = SegmentWallRange(startMs: 1_788_193_420_000, endMs: 1_788_193_423_500, isApproximate: false)
+        #expect(place(row(wall: exact)) == .moment(1_788_193_420_000, isApproximate: false))
+        let rough = SegmentWallRange(startMs: 5, endMs: 6, isApproximate: true)
+        #expect(place(row(wall: rough)) == .moment(5, isApproximate: true))
+        // It outlives the segment: that is what storing it is for.
+        #expect(place(row(wall: exact), exists: false) == .moment(1_788_193_420_000, isApproximate: false))
+        #expect(place(row(wall: exact))?.isApproximate == false)
+        #expect(place(row(wall: rough))?.isApproximate == true)
+    }
+
+    @Test func noWallTimeButTheSegmentExistsIsItsSpan() {
+        #expect(place(row()) == .span(Self.span))
+        #expect(place(row())?.isApproximate == true)
+        // A hand-written item attached to a recording is about that recording.
+        #expect(place(row(origin: .user)) == .span(Self.span))
+    }
+
+    @Test func aGoneSegmentLeavesTheDayItsIdCarries() {
+        #expect(place(row(), exists: false) == .dayOnly(approximateMs: 1_788_193_000_000))
+        #expect(place(row(origin: .user), exists: false) == .dayOnly(approximateMs: 1_788_193_000_000))
+    }
+
+    @Test func aHandWrittenItemWithNoSegmentIsTheDayItWasWritten() {
+        #expect(
+            place(row(origin: .user, segment: nil, createdAtMs: 1_790_000_000_000))
+                == .dayOnly(approximateMs: 1_790_000_000_000))
+    }
+
+    /// `createdAtMs` is when extraction ran: never a placement for an extracted row.
+    @Test func anExtractedRowIsNeverPlacedByWhenExtractionRan() {
+        #expect(place(row(segment: nil)) == nil)
+        #expect(place(row(segment: "seg-1"), exists: false) == nil)
+        #expect(place(row(origin: .user, segment: "seg-1"), exists: false) == nil)
+    }
+
+    @Test func onlyTheStoresIdShapeCarriesATime() {
+        let parse = FollowUpPlacement.receivedAtMs(ofSegmentId:)
+        #expect(parse("seg-1788193000000-00000001-7") == 1_788_193_000_000)
+        #expect(parse("seg-1000000000000-x") == 1_000_000_000_000)
+        #expect(parse("seg-9999999999999-x") == 9_999_999_999_999)
+        for malformed in [
+            "", "seg-", "seg-1", "seg-1-2-3", "seg-abc-1", "seg-178819300000-1",  // 12 digits
+            "seg-17881930000000-1",  // 14 digits
+            "seg-1788193000000",  // no separator after the time
+            "seg-1788193000000_1", "seg-178819300000x-1", "seg--1788193000000-1",
+            "xseg-1788193000000-1", "SEG-1788193000000-1", "seg-+788193000000-1",
+            "seg-١٧٨٨١٩٣٠٠٠٠٠٠-1",  // Arabic-Indic digits: digits, but not ASCII
+            "conv-1788193000000-1",
+        ] {
+            #expect(parse(malformed) == nil, "\(malformed)")
+        }
+    }
+}

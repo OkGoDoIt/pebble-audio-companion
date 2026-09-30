@@ -153,3 +153,84 @@ public struct FollowUpWallTimeFill: Sendable {
         }
     }
 }
+
+// MARK: - Placement
+
+/// Where a follow-up sits on History's clock (plan 7.5), strongest evidence first. A follow-up
+/// belongs to the chapter containing the moment it was said; when that moment is unknown it
+/// belongs to the day only, and is never attached to a chapter by guess.
+public enum FollowUpPlacement: Equatable, Sendable {
+    /// When the quote was said (wall ms). Approximate when the segment's clock was not exact.
+    case moment(Int64, isApproximate: Bool)
+    /// The source segment's wall span: the recording is known, the moment inside it is not.
+    case span(Range<Int64>)
+    /// Only the day is known: the segment is gone (its receive time, from the id) or the item
+    /// was written by hand (when it was written).
+    case dayOnly(approximateMs: Int64)
+
+    /// Whether the time shown for it can only be approximate — anything short of an exact moment.
+    public var isApproximate: Bool {
+        switch self {
+        case .moment(_, let isApproximate): return isApproximate
+        case .span, .dayOnly: return true
+        }
+    }
+}
+
+/// What placement reads from a row.
+public protocol FollowUpPlacementSource {
+    var origin: FollowUpOrigin { get }
+    var sourceSegmentId: String? { get }
+    var sourceWall: SegmentWallRange? { get }
+    var createdAtMs: Int64 { get }
+}
+
+extension FollowUp: FollowUpPlacementSource {}
+
+extension FollowUpPlacement {
+    /// In order: a stored wall time → `.moment`; else the segment still exists → `.span`; else
+    /// its id carries a receive time → `.dayOnly` at that; else, for an item written by hand
+    /// with no segment at all → `.dayOnly` at its creation.
+    ///
+    /// Nil when none of that holds — an extracted row whose segment is gone and whose id is not
+    /// the store's shape, or a hand-written one attached to such a segment. `createdAtMs` is
+    /// never used for an extracted row: it is when extraction ran, days later for a backlog, and
+    /// placing by it would put the item on a day nothing was said. For a hand-written row
+    /// attached to a recording, the recording is what it is about, so its creation is not used
+    /// either once the recording cannot be found.
+    ///
+    /// - Parameter segmentSpan: the segment's wall span, or nil when it no longer exists.
+    public static func placement(
+        of followUp: some FollowUpPlacementSource,
+        segmentSpan: (String) -> Range<Int64>?
+    ) -> FollowUpPlacement? {
+        if let wall = followUp.sourceWall {
+            return .moment(wall.startMs, isApproximate: wall.isApproximate)
+        }
+        guard let segmentId = followUp.sourceSegmentId else {
+            return followUp.origin == .user ? .dayOnly(approximateMs: followUp.createdAtMs) : nil
+        }
+        if let span = segmentSpan(segmentId) { return .span(span) }
+        return receivedAtMs(ofSegmentId: segmentId).map { .dayOnly(approximateMs: $0) }
+    }
+
+    /// The receive time a segment id embeds: `seg-<receivedAtMs>-<streamId>-<counter>`
+    /// (`SegmentStore.openSegmentInternal`, and the KMP store before it). When the phone
+    /// received the first frame, so it is at or after the recording's start — a day, not a
+    /// moment.
+    ///
+    /// Strict on purpose: exactly thirteen digits (every epoch-ms time from 2001-09-09 to
+    /// 2286-11-20) followed by `-`. A test id like `seg-1` or anything else that merely starts
+    /// with `seg-` is not a time, and reading it as one would put an item in 1970.
+    public static func receivedAtMs(ofSegmentId segmentId: String) -> Int64? {
+        let prefix = "seg-"
+        guard segmentId.hasPrefix(prefix) else { return nil }
+        let rest = segmentId.utf8.dropFirst(prefix.utf8.count)
+        let digits = rest.prefix(13)
+        let isDigit = { (byte: UInt8) in byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9") }
+        guard digits.count == 13, digits.allSatisfy(isDigit),
+            rest.dropFirst(13).first == UInt8(ascii: "-")
+        else { return nil }
+        return Int64(String(decoding: digits, as: UTF8.self))
+    }
+}
