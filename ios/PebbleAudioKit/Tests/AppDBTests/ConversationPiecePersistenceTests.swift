@@ -184,8 +184,9 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
     // MARK: - rebuild
 
     @Test func rebuildStoresSilentPiecesAsNoSpeechAndLeavesWholeMembersAlone() async throws {
-        // Talk, an hour of nothing, talk — every segment transcribed. The first conversation
-        // ends with two whole silent segments and the silent head of `s3`.
+        // Talk, an hour of nothing, talk — every segment transcribed. The silence is a unit of
+        // its own: the silent tail of `s0`, two whole silent segments and the silent head of
+        // `s3`.
         let db = try AppDatabase.inMemory()
         var segments = rotations(4)
         for index in segments.indices { segments[index].transcriptionState = .complete }
@@ -196,20 +197,26 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         let rebuilt = try await ConversationGrouper.rebuildDetailed(
             segments: segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: evidence, policy: .quietOnly, db: db)
+        let after = minutesMs(18) + ConversationRunPlanner.postRollMs
         let at = minutesMs(18) - ConversationRunPlanner.preRollMs
-        #expect(rebuilt.conversations.map(\.id) == ["conv-s0", "conv-s3-m\(at)"])
+        #expect(
+            rebuilt.conversations.map(\.id) == ["conv-s0", "conv-s0-m\(after)", "conv-s3-m\(at)"])
         #expect(
             try await storedPieces(db) == [
-                ["conv-s0", "s0", "0", "Complete", nil, nil],
+                ["conv-s0", "s0", "0", "Complete", nil, String(after)],
+                // The piece of `s0` after its last word holds none of its turns.
+                ["conv-s0-m\(after)", "s0", "0", "NoSpeech", String(after), nil],
                 // Whole members keep their segment's own state, whatever was said in them.
-                ["conv-s0", "s1", "1", "Complete", nil, nil],
-                ["conv-s0", "s2", "2", "Complete", nil, nil],
-                // The piece of `s3` before its first word holds none of its turns.
-                ["conv-s0", "s3", "3", "NoSpeech", nil, String(at)],
+                ["conv-s0-m\(after)", "s1", "1", "Complete", nil, nil],
+                ["conv-s0-m\(after)", "s2", "2", "Complete", nil, nil],
+                // The piece of `s3` before its first word holds none of its turns either.
+                ["conv-s0-m\(after)", "s3", "3", "NoSpeech", nil, String(at)],
                 ["conv-s3-m\(at)", "s3", "0", "Complete", String(at), nil],
             ])
 
-        // A piece of a segment still waiting for its transcript says only that.
+        // A piece of a segment still waiting for its transcript says only that. (The talk in
+        // `s0` still ends after its last word — forty-two settled minutes follow it before
+        // `s3` — and the silence runs on through `s3`, which nobody has heard yet.)
         var waiting = segments
         waiting[3].transcriptionState = .pending
         var unsettled = evidence
@@ -225,7 +232,7 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         #expect(
             try await storedPieces(db).filter { $0[1] == "s3" }.map { [$0[0], $0[3], $0[4], $0[5]] }
                 == [
-                    ["conv-s0", "Pending", nil, "300000"],
+                    ["conv-s0-m\(after)", "Pending", nil, "300000"],
                     ["conv-s3-m300000", "Pending", "300000", nil],
                 ])
     }
@@ -607,11 +614,15 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         let at = try await store.joinWithPrevious(conversationId: third.conversationId, atMs: 2)
         #expect(at == third)
         // The second span runs from the start of the (already joined) first conversation to
-        // the end of the run: nothing follows the third.
+        // the end of the third's last piece — all of `s9`: nothing follows the third, and what
+        // is recorded after it is not part of what was joined.
         #expect(
             try await spanRows(db) == [
                 ["s2", String(second.mediaMs), "join", "s0", "0", "s6", String(third.mediaMs)],
-                ["s6", String(third.mediaMs), "join", "s0", "0", nil, nil],
+                [
+                    "s6", String(third.mediaMs), "join", "s0", "0", "s9",
+                    String(ConversationCutStore.endOfSegment),
+                ],
             ])
         let all = try await rebuild(threeConversations, in: db)
         #expect(all.conversations.map(\.id) == ["conv-s0"])
@@ -658,8 +669,9 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         #expect(
             split.conversations.map(\.id)
                 == ["conv-s0", second.conversationId, third.conversationId])
-        // (The reason it carries is the held cut's — `lull` — not `manual`: the settled cut at
-        // the same position was read first. Reported as a small thing; not pinned.)
+        // The segmenter's settled cut sits at the same position; the cut there is the
+        // person's, and says so.
+        #expect(split.conversations[1].startReason == .manual)
 
         // A join written without a span (a row from before spans existed) is a point join.
         try await store.joinWithPrevious(conversationId: second.conversationId)
@@ -694,30 +706,53 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         #expect(try await rebuild(library, in: db).conversations.map(\.id) == ["conv-s0", "conv-t0"])
     }
 
+    /// Joining the talk after a long silence to the talk before it. Each long silence is a
+    /// unit of its own, so the conversation just before the talk is the silence — and joining a
+    /// conversation to a quarter of an hour of nothing is never what was meant: the join steps
+    /// over the silent unit, and its span covers the talk before, the silence and the talk
+    /// after, which become one conversation under the earlier one's id.
     @Test func aJoinAcrossALongSilenceThroughTheStore() async throws {
         let db = try AppDatabase.inMemory()
         let store = ConversationCutStore(db: db)
-        // Talk, three hours of nothing, talk, an hour of nothing, talk.
-        let quiet = day(
+        // Talk, three hours of nothing, talk, an hour of nothing, talk. A recording nobody
+        // spoke in is left `NoSpeech` by the transcriber.
+        var quiet = day(
             minutes: 360, talk: [.dialogue(0, 20), .dialogue(200, 240), .dialogue(300, 360)])
+        for index in quiet.segments.indices
+        where quiet.evidence[quiet.segments[index].segmentId]?.speech.isEmpty == true {
+            quiet.segments[index].transcriptionState = .noSpeech
+        }
         let before = try await rebuild(quiet, in: db)
-        #expect(before.conversations.map(\.startReason) == [nil, .quiet, .quiet])
-        try await store.joinWithPrevious(conversationId: before.conversations[1].id)
+        // Talk, silence, talk, silence, talk.
+        #expect(before.conversations.map(\.startReason) == [nil, .quiet, .quiet, .quiet, .quiet])
+        let at = try #require(
+            try await store.joinWithPrevious(conversationId: before.conversations[2].id))
         let joined = try await rebuild(quiet, in: db)
-        #expect(joined.conversations.map(\.id) == ["conv-s0", before.conversations[2].id])
-        #expect(joined.conversations.map(\.startReason) == [nil, .quiet])
+        #expect(
+            joined.conversations.map(\.id)
+                == ["conv-s0", before.conversations[3].id, before.conversations[4].id])
+        #expect(joined.conversations.map(\.startReason) == [nil, .quiet, .quiet])
+        #expect(joined.conversations[0].memberSegmentIds == (0..<16).map { "s\($0)" })
+
+        // Undone, the silence is a unit of its own again, between the two conversations it
+        // separated, and all five have the ids they had.
+        try await store.setOverride(at: at, decision: nil)
+        let undone = try await rebuild(quiet, in: db)
+        #expect(undone.conversations.map(\.id) == before.conversations.map(\.id))
+        #expect(undone.conversations.map(\.members) == before.conversations.map(\.members))
     }
 
     /// Joining the LATEST conversation to the one before it — the join a person is most likely
-    /// to make, on the conversation they have just had. Nothing follows it, so its span has no
-    /// end. The two are one conversation; what is recorded AFTERWARDS is not part of what the
-    /// person joined, and is divided like any other talk.
+    /// to make, on the conversation they have just had. Nothing follows it, so its span ends
+    /// where its last piece ends (here: all of the recording that was open when it was joined).
+    /// The two are one conversation; what is recorded AFTERWARDS is not part of what the person
+    /// joined, and is divided like any other talk.
     ///
-    /// REPORTED 2026-09-30 and FAILING: a span with no end is read as "to the end of the run",
-    /// and the run is still growing. Every automatic cut — the long-quiet rule included — is
-    /// blocked from the join to wherever the run ends, however much later that is: here an hour
-    /// of silence and two more hours of different talk all land in the conversation that was
-    /// joined, which is now four and three-quarter hours long.
+    /// Reported 2026-09-30 and fixed since: the span used to have no end, which was read as
+    /// "to the end of the run" while the run was still growing. Every automatic cut — the
+    /// long-quiet rule included — was blocked from the join to wherever the run ended: an hour
+    /// of silence and two more hours of different talk all landed in the conversation that was
+    /// joined, which grew to four and three-quarter hours.
     @Test func joiningTheLatestConversationDoesNotSwallowWhatIsRecordedAfterIt() async throws {
         let db = try AppDatabase.inMemory()
         let store = ConversationCutStore(db: db)
@@ -736,16 +771,20 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
             minutes: 270,
             talk: morning + [.dialogue(150, 200, cookingWords), .dictation(204, 270, sailingWords)],
             recording: true)
+        // Unjoined: the morning's two conversations, the hour of silence, the afternoon's two.
         let unjoined = ConversationGrouper.group(
             segments: later.segments, pauses: [], openSegmentId: later.open,
             fallbackTimeZoneID: "UTC", evidence: later.evidence, policy: frozenPolicy)
-        #expect(unjoined.map(\.startReason) == [nil, .lull, .quiet, .lull])
+        #expect(unjoined.map(\.startReason) == [nil, .lull, .quiet, .quiet, .lull])
 
         let grown = try await rebuild(later, in: db)
-        // The joined pair is still one conversation, and ends where it ended: the hour of
-        // silence ends it, and the afternoon's two conversations are their own.
+        // The joined pair is still one conversation. Its span runs to the end of the recording
+        // that was open when it was joined, and the cut just after its last word falls inside
+        // that — so the silence after it stays with it, up to the first word after the
+        // silence. That word is not part of what was joined: the afternoon's two conversations
+        // are their own.
         #expect(
-            grown.conversations.map(\.id) == ["conv-s0", unjoined[2].id, unjoined[3].id],
+            grown.conversations.map(\.id) == ["conv-s0", unjoined[3].id, unjoined[4].id],
             "\(grown.conversations.map(\.id)) \(grown.conversations.map { ($0.endMs - $0.startMs) / 60_000 }) min")
         #expect(grown.conversations.map(\.startReason) == [nil, .quiet, .lull])
     }
@@ -829,15 +868,17 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
                 [
                     self.cut("b", 9): .lull, self.cut("a", 700): .topicChange,
                     self.cut("a", 30): .lull,
-                    // A segment's own start is not a position inside it: never written.
+                    // A segmenter cut can fall on a segment's own start: it is held like any
+                    // other, or the conversation it ends could not be called finished.
                     self.cut("a", 0): .topicChange,
                 ], atMs: 100, in: $0)
         }
-        #expect(try await store.committed() == [cut("a", 30), cut("a", 700), cut("b", 9)])
+        #expect(
+            try await store.committed() == [cut("a", 0), cut("a", 30), cut("a", 700), cut("b", 9)])
         #expect(
             try await inputs(db).inputs
                 == ConversationCutInputs(
-                    committed: ["a": [30: .lull, 700: .topicChange], "b": [9: .lull]]))
+                    committed: ["a": [0: .topicChange, 30: .lull, 700: .topicChange], "b": [9: .lull]]))
 
         // Offered again with another reason at another time: the row is left exactly as it is.
         try await db.writer.write {
@@ -851,7 +892,7 @@ private func storedPieces(_ db: AppDatabase) async throws -> [[String?]] {
         #expect(row == ["lull", "100"])
         // Committing nothing is nothing.
         try await db.writer.write { try ConversationCutStore.commit([:], atMs: 5, in: $0) }
-        #expect(try await store.committed().count == 3)
+        #expect(try await store.committed().count == 4)
     }
 
     @Test func cutsWrittenByAnotherVersionOfTheSegmenterAreIgnoredAndReplaced() async throws {

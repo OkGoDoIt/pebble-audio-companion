@@ -185,7 +185,10 @@ import WireProtocol
 
     @Test func everyExtentSitsInsideItsOwnPiecesAndNoTwoOverlap() {
         // Conversations in one run share segments, so their extents must not claim the same
-        // wall time twice: each ends at or before the next begins.
+        // wall time twice: each ends at or before the next begins. Each of the three long
+        // silences is a unit of its own between the talk either side of it, so the four
+        // stretches of talk and the three silences alternate — and the silences' extents (whole
+        // minutes: 9–30, 34–53, 60–109) sit exactly between the talk's.
         let segments = rotations(4, minutesEach: 30)
         let evidence = evidenceMap([
             settledEvidence("s0", minutes: [(1, 9)]),
@@ -194,10 +197,12 @@ import WireProtocol
             settledEvidence("s3", minutes: [(20, 22)]),
         ])
         let convos = group(segments, evidence: evidence)
-        #expect(convos.map(\.memberSegmentIds) == [["s0"], ["s1"], ["s1", "s2", "s3"], ["s3"]])
+        #expect(
+            convos.map(\.memberSegmentIds)
+                == [["s0"], ["s0"], ["s1"], ["s1"], ["s1"], ["s2", "s3"], ["s3"]])
         #expect(
             convos.map { [($0.startMs - t0) / 60_000, ($0.endMs - t0) / 60_000] }
-                == [[1, 9], [30, 34], [54, 60], [110, 112]])
+                == [[1, 9], [9, 30], [30, 34], [34, 53], [54, 60], [60, 109], [110, 112]])
         for convo in convos {
             #expect(convo.endMs >= convo.startMs)
             #expect(convo.startMs >= t0)

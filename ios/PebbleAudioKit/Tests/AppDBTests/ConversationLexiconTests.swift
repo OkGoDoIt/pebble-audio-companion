@@ -190,7 +190,6 @@ import Testing
         "what a day exclamation point",
         "first item new line second item",
         "and that is all new paragraph",
-        "See you Monday period",
         "FULL STOP",
     ])
     func spokenPunctuationMarksDictation(text: String) {
@@ -201,6 +200,11 @@ import Testing
         #expect(!features("we should stop for lunch and then mark the route").isDictation)
         #expect(!features("the harbour was full").isDictation)
         #expect(!features("").isDictation)
+        // "Period" on its own is not spoken punctuation: it is also an ordinary noun ("the
+        // trial period", "a period of time"), so it marks nothing, however it is written.
+        #expect(!features("See you Monday period").isDictation)
+        #expect(!features("hello, PERIOD.").isDictation)
+        #expect(!features("the trial period ends on Friday").isDictation)
         // The two-word marks are PAIRS: either word alone, or the two apart, is ordinary talk.
         #expect(!features("the tank is full so we can stop").isDictation)
         #expect(!features("the question he asked was about the mark").isDictation)
@@ -212,7 +216,7 @@ import Testing
 
     @Test func dictationIsReadFromWholeWordsWhateverTheirCase() {
         #expect(features("Comma").isDictation)
-        #expect(features("hello, PERIOD.").isDictation)
+        #expect(features("hello, FULL STOP.").isDictation)
         #expect(features("Question Mark").isDictation)
         #expect(features("new\nparagraph").isDictation)
         #expect(features("exclamation-point").isDictation)

@@ -14,10 +14,14 @@ import WireProtocol
 //
 // PORTED 2026-09-30 from the suite of the same name that tested `groupWithCandidates`. What
 // changed with conversations becoming pieces of segments:
-//  - a quiet cut no longer snaps to the segment join nearest the middle of the silence. It lands
-//    at the FIRST WORD AFTER the silence (less `ConversationRunPlanner.preRollMs`), which is a
-//    position inside a segment — so the silence stays with the conversation it followed, and a
-//    silence wholly inside one segment now splits it;
+//  - a quiet cut no longer snaps to the segment join nearest the middle of the silence. A long
+//    silence between two turns now cuts TWICE: just after the last word before it (plus
+//    `ConversationRunPlanner.postRollMs`) and at the FIRST WORD AFTER it (less
+//    `ConversationRunPlanner.preRollMs`). Both are positions inside segments, the silence
+//    between them is a unit of its own with nothing said in it, and a silence wholly inside one
+//    segment now divides it into talk, silence, talk. Each end is decided on the SETTLED part
+//    of the silence on its own side, so a conversation that has ended stays ended whatever is
+//    recorded after it;
 //  - the 8–15 minute candidate band, the semantic reviewer's verdicts and the flanking-flow
 //    guard no longer exist as far as grouping is concerned. Their tests are gone; what is left
 //    of them is "under the threshold nothing happens" and "the retired knobs change nothing".
@@ -29,6 +33,11 @@ private let hour = minutesMs(60)
     /// Where the cut before a turn that starts `minutes` into its segment sits.
     private func cut(beforeMinute minutes: Int64) -> Int64 {
         minutesMs(minutes) - ConversationRunPlanner.preRollMs
+    }
+    /// Where the cut after a turn that ends `minutes` into its segment sits (the silence after
+    /// it starts there).
+    private func cut(afterMinute minutes: Int64) -> Int64 {
+        minutesMs(minutes) + ConversationRunPlanner.postRollMs
     }
 
     private func group(
@@ -73,19 +82,27 @@ private let hour = minutesMs(60)
 
     @Test func aLongSettledStretchWithNoSpeechEndsTheConversation() {
         // The v1 rules see four abutting rotations and one conversation; this is the case the
-        // rule exists for. The new conversation starts at its first word — a position inside
-        // `s3` — and the hour of silence stays with the conversation it followed.
+        // rule exists for. The conversation ends just after its last word — a position inside
+        // `s0` — the hour of silence is a unit of its own, and the next conversation starts at
+        // its first word, a position inside `s3`.
         let result = group(rotations(4), evidence: talkQuietTalk)
+        let after = cut(afterMinute: 18)
         let at = cut(beforeMinute: 18)
         #expect(
-            result.map(\.brief) == [["s0", "s1", "s2", "s3[..\(at))"], ["s3[\(at)..)"]])
-        #expect(result.map(\.startReason) == [nil, .quiet])
-        #expect(result.map(\.id) == ["conv-s0", "conv-s3-m\(at)"])
-        // Each shows first word to last word: the silence is in neither.
+            result.map(\.brief) == [
+                ["s0[..\(after))"], ["s0[\(after)..)", "s1", "s2", "s3[..\(at))"],
+                ["s3[\(at)..)"],
+            ])
+        #expect(result.map(\.startReason) == [nil, .quiet, .quiet])
+        #expect(result.map(\.id) == ["conv-s0", "conv-s0-m\(after)", "conv-s3-m\(at)"])
+        // Each conversation shows first word to last word, and the silence shows exactly the
+        // silence: the talk is in neither of the others.
         #expect(result[0].startMs == t0)
         #expect(result[0].endMs == t0 + minutesMs(18))
-        #expect(result[1].startMs == t0 + minutesMs(78))
-        #expect(result[1].endMs == t0 + minutesMs(80))
+        #expect(result[1].startMs == t0 + after)
+        #expect(result[1].endMs == t0 + minutesMs(60) + at)
+        #expect(result[2].startMs == t0 + minutesMs(78))
+        #expect(result[2].endMs == t0 + minutesMs(80))
     }
 
     @Test func quietUnderTheThresholdDoesNotSplit() {
@@ -111,7 +128,8 @@ private let hour = minutesMs(60)
             ]))
         #expect(three.map(\.brief) == [["s0", "s1", "s2"]])
 
-        // One second under the bar, and exactly on it.
+        // One second under the bar, and exactly on it — where the silence cuts twice and the
+        // segment becomes talk, silence, talk.
         func run(quietSeconds: Int64) -> Int {
             let segment = makeSegment(
                 id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(40))
@@ -125,14 +143,15 @@ private let hour = minutesMs(60)
             return group([segment], evidence: ["a": evidence]).count
         }
         #expect(run(quietSeconds: 15 * 60 - 1) == 1)
-        #expect(run(quietSeconds: 15 * 60) == 2)
+        #expect(run(quietSeconds: 15 * 60) == 3)
     }
 
     @Test func theRetiredCandidateBandAndFlankingFlowGuardChangeNothing() {
         // Twenty minutes of silence with the wearer talking hard on both sides of it (600 words
         // in the ten minutes before and after). The flanking-flow guard used to WITHHOLD this
         // split and hand it to the reviewer; the guard no longer reads anything, so the policy's
-        // leftover knobs must make no difference to the grouping.
+        // leftover knobs must make no difference to the grouping. (The talk fills `s0` and `s3`
+        // to their edges, so both cuts of the silence land on segment joins.)
         let segments = rotations(4, minutesEach: 10)
         let evidence = evidenceMap([
             settledEvidence("s0", minutes: [(0, 10)], words: 600),
@@ -141,8 +160,8 @@ private let hour = minutesMs(60)
             settledEvidence("s3", minutes: [(0, 10)], words: 600),
         ])
         let shipped = group(segments, evidence: evidence)
-        #expect(shipped.map(\.brief) == [["s0", "s1", "s2"], ["s3"]])
-        #expect(shipped[1].startReason == .quiet)
+        #expect(shipped.map(\.brief) == [["s0"], ["s1", "s2"], ["s3"]])
+        #expect(shipped.map(\.startReason) == [nil, .quiet, .quiet])
 
         var knobs = BoundaryPolicy.quietOnly
         knobs.flankFlowWordsPerMinute = 0
@@ -157,17 +176,33 @@ private let hour = minutesMs(60)
         // THE trap: watch audio backfills hours late and transcription lags behind capture, so
         // "no transcript yet" and "nobody spoke" look identical. Deferring costs nothing —
         // grouping is derived, and the next rebuild decides with the evidence in hand.
+        //
+        // Each end of a long silence is read only as far as it is settled. With `s1` still
+        // transcribing, two settled minutes follow the last word — not enough to end the
+        // conversation there, so it does not — while the 38 settled minutes before the first
+        // word of `s3` are enough to start the next conversation at that word.
         let segments = rotations(4)
+        let at = cut(beforeMinute: 18)
+        let deferred = [["s0", "s1", "s2", "s3[..\(at))"], ["s3[\(at)..)"]]
         var evidence = talkQuietTalk
-        evidence["s2"] = unsettledEvidence("s2")
-        #expect(group(segments, evidence: evidence).map(\.brief) == [["s0", "s1", "s2", "s3"]])
+        evidence["s1"] = unsettledEvidence("s1")
+        #expect(group(segments, evidence: evidence).map(\.brief) == deferred)
 
         // A member with no evidence entry at all is just as unknown.
-        evidence["s2"] = nil
-        #expect(group(segments, evidence: evidence).count == 1)
+        evidence["s1"] = nil
+        #expect(group(segments, evidence: evidence).map(\.brief) == deferred)
 
-        // Same segments, same rules, once the transcript lands and says nobody spoke.
-        #expect(group(segments, evidence: talkQuietTalk).count == 2)
+        // Same segments, same rules, once the transcript lands and says nobody spoke: the
+        // conversation ends after its last word and the silence is a unit of its own.
+        let settled = group(segments, evidence: talkQuietTalk)
+        #expect(settled.count == 3)
+
+        // An unsettled member further from the last word defers nothing: with `s2` still
+        // transcribing, 22 settled minutes already follow the last word and 18 precede the next
+        // one, so both ends are decided exactly as the landed transcript decides them.
+        evidence = talkQuietTalk
+        evidence["s2"] = unsettledEvidence("s2")
+        #expect(group(segments, evidence: evidence).map(\.brief) == settled.map(\.brief))
     }
 
     @Test func settlingRuleTreatsRetryableAndMissingTranscriptsAsUnknown() {
@@ -200,9 +235,9 @@ private let hour = minutesMs(60)
     @Test func aLateBackfillSegmentRegroupsRatherThanLeavingAWrongSplit() {
         // The spool hands over a segment that belongs in the middle of the quiet stretch, and
         // it turns out to be full of speech. Because grouping is recomputed rather than
-        // patched, the split simply stops existing.
+        // patched, both cuts of the silence simply stop existing.
         let segments = rotations(4)
-        #expect(group(segments, evidence: talkQuietTalk).count == 2)
+        #expect(group(segments, evidence: talkQuietTalk).count == 3)
 
         // The backfill fills the silence outright: new evidence dissolves an old split, so the
         // evidence has to actually be new.
@@ -213,17 +248,35 @@ private let hour = minutesMs(60)
         #expect(group(segments, evidence: backfilled).map(\.brief) == [["s0", "s1", "s2", "s3"]])
     }
 
-    @Test func theOpenSegmentNeverSettlesSoALiveConversationIsNotSplitAtItsTail() {
+    @Test func theOpenSegmentNeverCountsAsSilenceAtALiveConversationsTail() {
+        // The open segment never settles: what it holds is unknown, not quiet. Ten settled
+        // minutes after the last word and then the open segment is a conversation still going,
+        // however long the open segment has been recording.
         var segments = rotations(3)
         segments[2].closeReason = nil
-        let evidence = evidenceMap([
+        let pausing = evidenceMap([
             settledEvidence("s0", minutes: [(0, 18)]),
-            settledEvidence("s1", minutes: []),
+            settledEvidence("s1", minutes: [(0, 10)]),
             unsettledEvidence("s2"),
         ])
-        let result = group(segments, evidence: evidence, open: "s2")
-        #expect(result.map(\.brief) == [["s0", "s1", "s2"]])
-        #expect(result[0].isLive)
+        let live = group(segments, evidence: pausing, open: "s2")
+        #expect(live.map(\.brief) == [["s0", "s1", "s2"]])
+        #expect(live[0].isLive)
+
+        // Twenty-two SETTLED minutes after the last word are enough on their own: the
+        // conversation ended just after it, and stays ended whatever the open segment turns out
+        // to hold. The silence after it is the live unit.
+        let ended = group(
+            segments,
+            evidence: evidenceMap([
+                settledEvidence("s0", minutes: [(0, 18)]),
+                settledEvidence("s1", minutes: []),
+                unsettledEvidence("s2"),
+            ]), open: "s2")
+        let after = cut(afterMinute: 18)
+        #expect(ended.map(\.brief) == [["s0[..\(after))"], ["s0[\(after)..)", "s1", "s2"]])
+        #expect(ended.map(\.isLive) == [false, true])
+        #expect(ended.map(\.startReason) == [nil, .quiet])
     }
 
     // MARK: - loss is not quiet
@@ -250,12 +303,16 @@ private let hour = minutesMs(60)
         var relaxed = BoundaryPolicy.quietOnly
         relaxed.lossThresholdMultiplier = 1
         let split = group(segments, evidence: evidence, policy: relaxed)
+        let after = cut(afterMinute: 2)
         let at = cut(beforeMinute: 3)
         #expect(
-            split.map(\.brief)
-                == [["s0", "s1", "s2", "s3", "s4", "s5[..\(at))"], ["s5[\(at)..)"]])
-        // …and it is called what it is. Quiet and a hole in the record are never conflated.
-        #expect(split[1].startReason == .interrupted)
+            split.map(\.brief) == [
+                ["s0[..\(after))"], ["s0[\(after)..)", "s1", "s2", "s3", "s4", "s5[..\(at))"],
+                ["s5[\(at)..)"],
+            ])
+        // …and it is called what it is, at both ends. Quiet and a hole in the record are never
+        // conflated.
+        #expect(split.map(\.startReason) == [nil, .interrupted, .interrupted])
 
         // Twice the bar of mostly-missing air does split, without relaxing anything: the same
         // shape with a ten-minute hole in each of the four silent members (42 minutes unspoken,
@@ -272,8 +329,8 @@ private let hour = minutesMs(60)
             settledEvidence("s4", minutes: []), settledEvidence("s5", minutes: [(1, 10)]),
         ])
         let interrupted = group(longer, evidence: longerEvidence)
-        #expect(interrupted.count == 2)
-        #expect(interrupted.last?.startReason == .interrupted)
+        #expect(interrupted.count == 3)
+        #expect(interrupted.map(\.startReason) == [nil, .interrupted, .interrupted])
     }
 
     @Test func vadSuppressedSilenceCountsAsQuietNotAsLoss() {
@@ -283,28 +340,33 @@ private let hour = minutesMs(60)
         withSilenceGaps[1].gaps = [silenceGap(atSample: minutesSamples(20), minutes: 19)]
         withSilenceGaps[2].gaps = [silenceGap(atSample: minutesSamples(40), minutes: 19)]
         let result = group(withSilenceGaps, evidence: talkQuietTalk)
-        #expect(result.count == 2)
-        #expect(result[1].startReason == .quiet)
+        #expect(result.count == 3)
+        #expect(result.map(\.startReason) == [nil, .quiet, .quiet])
     }
 
     // MARK: - inside one segment
 
-    @Test func quietEntirelyInsideOneMemberNowSplitsItAtTheFirstWordAfter() {
+    @Test func quietEntirelyInsideOneMemberNowDividesItIntoTalkSilenceTalk() {
         // This was `quietEntirelyInsideOneMemberNeverSplits`: a conversation was a set of whole
-        // segments, so there was nowhere to cut. There is now — the first word after the
-        // silence — and both conversations are pieces of the same segment.
+        // segments, so there was nowhere to cut. There is now — just after the last word before
+        // the silence, and at the first word after it — and the talk, the silence and the talk
+        // after it are three pieces of the same segment.
         let segments = [
             makeSegment(
                 id: "s0", stream: 7, startTimeMs: t0, durationSamples: minutesSamples(90))
         ]
         let evidence = evidenceMap([settledEvidence("s0", minutes: [(0, 2), (85, 90)])])
         let result = group(segments, evidence: evidence)
+        let after = cut(afterMinute: 2)
         let at = cut(beforeMinute: 85)
-        #expect(result.map(\.brief) == [["s0[..\(at))"], ["s0[\(at)..)"]])
-        #expect(result.map(\.id) == ["conv-s0", "conv-s0-m\(at)"])
-        #expect(result.map(\.startReason) == [nil, .quiet])
+        #expect(
+            result.map(\.brief) == [["s0[..\(after))"], ["s0[\(after)..\(at))"], ["s0[\(at)..)"]])
+        #expect(result.map(\.id) == ["conv-s0", "conv-s0-m\(after)", "conv-s0-m\(at)"])
+        #expect(result.map(\.startReason) == [nil, .quiet, .quiet])
         #expect(result[0].endMs == t0 + minutesMs(2))
-        #expect(result[1].startMs == t0 + minutesMs(85))
+        #expect(result[1].startMs == t0 + after)
+        #expect(result[1].endMs == t0 + at)
+        #expect(result[2].startMs == t0 + minutesMs(85))
 
         // With the quiet rule off there is still nowhere to cut.
         #expect(
@@ -419,25 +481,35 @@ private let hour = minutesMs(60)
         #expect(group(segments, evidence: leading).count == 2)
         #expect(group(segments, evidence: leading, overrides: ["s3": .join]).count == 1)
 
-        // One that lands inside a segment is defeated by a join at that position.
+        // One that lands inside a segment is defeated by a join at that position. A long silence
+        // between two turns cuts twice, and each cut is its own position: a join at the first
+        // word after the silence gives the silence to the talk that follows it, and it takes a
+        // join at each cut to make the whole stretch one conversation.
+        let after = cut(afterMinute: 18)
         let at = cut(beforeMinute: 18)
-        #expect(group(segments, evidence: talkQuietTalk).count == 2)
+        #expect(group(segments, evidence: talkQuietTalk).count == 3)
         #expect(
             group(
                 segments, evidence: talkQuietTalk,
                 cutInputs: ConversationCutInputs(joins: ["s3": [at]])
+            ).map(\.brief) == [["s0[..\(after))"], ["s0[\(after)..)", "s1", "s2", "s3"]])
+        #expect(
+            group(
+                segments, evidence: talkQuietTalk,
+                cutInputs: ConversationCutInputs(joins: ["s0": [after], "s3": [at]])
             ).map(\.brief) == [["s0", "s1", "s2", "s3"]])
     }
 
     /// A join the person made BEFORE conversations became pieces. The quiet split it undid
     /// landed on a segment join (the one nearest the middle of the silence), so the decision is
     /// stored against that segment — `boundary_overrides(s2, join)`. The same silence now cuts
-    /// at the first word after it, 18 minutes into `s3`, and the stored decision has to keep
-    /// meaning what the person meant: these are one conversation. (It did not, until 25f14fe:
-    /// a silence that contains a joined segment's start is not cut at all.)
+    /// just after the last word before it (18 minutes into `s0`) and at the first word after it
+    /// (18 minutes into `s3`), and the stored decision has to keep meaning what the person
+    /// meant: these are one conversation. (It did not, until 25f14fe: a silence that contains a
+    /// joined segment's start is not cut at all — at either end.)
     @Test func aJoinMadeAtTheOldJoinStillDefeatsTheQuietSplitItWasMadeAgainst() {
         let segments = rotations(4)
-        #expect(group(segments, evidence: talkQuietTalk).count == 2)
+        #expect(group(segments, evidence: talkQuietTalk).count == 3)
         // The old rule could have put the split on either join inside the silence.
         for joined in ["s1", "s2"] {
             #expect(
@@ -446,7 +518,7 @@ private let hour = minutesMs(60)
         }
         // A join about a segment whose start is NOT in the silence is about something else: the
         // talk of `s0` runs to minute 18, so `s0`'s own start is well clear of it.
-        #expect(group(segments, evidence: talkQuietTalk, overrides: ["s0": .join]).count == 2)
+        #expect(group(segments, evidence: talkQuietTalk, overrides: ["s0": .join]).count == 3)
 
         // The same for the silent tail of a run, and for the silence before its first word.
         let trailing = evidenceMap([
@@ -489,7 +561,7 @@ private let hour = minutesMs(60)
         let first = try await ConversationGrouper.rebuild(
             segments: segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: talkQuietTalk, policy: .quietOnly, db: db)
-        #expect(first.map(\.startReason) == [nil, .quiet])
+        #expect(first.map(\.startReason) == [nil, .quiet, .quiet])
 
         // What is stored is what was returned, less `isProvisional`: that is a property of the
         // pass (the last conversation of a run that can still grow), not of the conversation.
@@ -506,21 +578,29 @@ private let hour = minutesMs(60)
     @Test func aNewSplitLeavesTheFirstHalfWithTheOriginalId() async throws {
         // Annotations, tags and follow-ups are keyed by conversation id. When a split appears
         // later (the transcript finally landed), the first half must keep what the user has
-        // attached to it; only the new second half starts empty.
+        // attached to it; only the new part starts empty.
+        //
+        // With `s1` and `s2` still transcribing, only two settled minutes follow the last word
+        // of `s0`, so the first conversation has not ended yet; the next one already starts at
+        // the first word in `s3` (18 settled minutes before it). Once the transcripts land, the
+        // first conversation ends after its last word, and the silence is the new unit.
         let db = try AppDatabase.inMemory()
         let segments = rotations(4)
         var unsettled = talkQuietTalk
         unsettled["s1"] = unsettledEvidence("s1")
         unsettled["s2"] = unsettledEvidence("s2")
+        let at = cut(beforeMinute: 18)
         let before = try await ConversationGrouper.rebuild(
             segments: segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: unsettled, policy: .quietOnly, db: db)
-        #expect(before.map(\.id) == ["conv-s0"])
+        #expect(before.map(\.id) == ["conv-s0", "conv-s3-m\(at)"])
+        #expect(before[0].brief == ["s0", "s1", "s2", "s3[..\(at))"])
 
         let after = try await ConversationGrouper.rebuild(
             segments: segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: talkQuietTalk, policy: .quietOnly, db: db)
-        #expect(after.map(\.id) == ["conv-s0", "conv-s3-m\(cut(beforeMinute: 18))"])
+        #expect(
+            after.map(\.id) == ["conv-s0", "conv-s0-m\(cut(afterMinute: 18))", "conv-s3-m\(at)"])
     }
 
     @Test func overridesArePersistentAndReadByTheRebuild() async throws {

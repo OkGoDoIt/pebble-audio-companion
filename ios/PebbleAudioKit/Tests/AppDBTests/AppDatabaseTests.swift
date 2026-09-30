@@ -364,7 +364,8 @@ import Testing
         let upgraded = try AppDatabase.open(at: url)
 
         // The migrated grouping says `conv-a` is segments `a` and `b`. The first regroup cuts
-        // inside `b`: the part that holds the old start keeps the old id, so the title that was
+        // inside `b`, twice — after the last word before its long silence and at the first word
+        // after it: the part that holds the old start keeps the old id, so the title that was
         // written for `conv-a` still has a conversation to belong to.
         let t0 = testEpochMs
         let a = makeSegment(id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(15))
@@ -378,9 +379,12 @@ import Testing
         let rebuilt = try await ConversationGrouper.rebuildDetailed(
             segments: [a, b], pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: evidence, policy: .quietOnly, db: upgraded)
+        let after = minutesMs(5) + ConversationRunPlanner.postRollMs
         let at = minutesMs(40) - ConversationRunPlanner.preRollMs
-        #expect(rebuilt.conversations.map(\.id) == ["conv-a", "conv-b-m\(at)"])
-        #expect(rebuilt.conversations.map(\.brief) == [["a", "b[..\(at))"], ["b[\(at)..)"]])
+        #expect(rebuilt.conversations.map(\.id) == ["conv-a", "conv-b-m\(after)", "conv-b-m\(at)"])
+        #expect(
+            rebuilt.conversations.map(\.brief)
+                == [["a", "b[..\(after))"], ["b[\(after)..\(at))"], ["b[\(at)..)"]])
         // The caller is told what the library looked like before, to move records across.
         #expect(rebuilt.previous.map(\.id) == ["conv-a", "conv-c"])
         #expect(rebuilt.previous.map(\.brief) == [["a", "b"], ["c"]])

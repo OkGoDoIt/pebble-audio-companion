@@ -157,7 +157,8 @@ private var backupAvailable: Bool { RealLibrary.isAvailable(segmentsPath: segmen
 
     /// Whatever the segmenter's numbers are, the shipped policy keeps the model's invariants on
     /// a real library: the pieces tile, every start has a reason, and what is offered for
-    /// committing is a segmenter cut inside a segment that starts one of the conversations.
+    /// committing is a segmenter cut that starts one of the conversations — inside a settled
+    /// segment or on its own start, where it is held like any other.
     @Test(.enabled(if: backupAvailable))
     func theShippedPolicyKeepsTheInvariantsOnTheRealLibrary() throws {
         let library = try RealLibrary.load(segmentsPath: segmentsPath)
@@ -177,7 +178,6 @@ private var backupAvailable: Bool { RealLibrary.isAvailable(segmentsPath: segmen
                 }
             }, uniquingKeysWith: { first, _ in first })
         for (cut, reason) in grouping.cutsToCommit {
-            #expect(cut.mediaMs > 0)
             #expect(reason == .topicChange || reason == .lull, "\(cut): \(reason)")
             #expect(starts[cut]?.startReason == reason, "\(cut)")
             #expect(library.evidence[cut.segmentId]?.isSettled == true, "\(cut)")

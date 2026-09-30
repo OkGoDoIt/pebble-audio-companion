@@ -199,7 +199,9 @@ private typealias Member = ConversationMember
 
     @Test func everyTurnOfARegroupedLibraryOpensTheConversationThatHoldsIt() async throws {
         // Two people talking, a pause, one voice dictating — then an hour of nothing, and more
-        // talk. Cut by the segmenter once and by the long silence once; `s2` and `s9` are shared.
+        // talk. Cut by the segmenter once and by the long silence twice (after the last word
+        // and at the first word after it, the silence a unit of its own); `s2`, `s5` and `s9`
+        // are shared.
         let db = try AppDatabase.inMemory()
         let talk = day(
             minutes: 180,
@@ -207,12 +209,13 @@ private typealias Member = ConversationMember
         let rebuilt = try await ConversationGrouper.rebuild(
             segments: talk.segments, pauses: [], openSegmentId: nil, fallbackTimeZoneID: "UTC",
             evidence: talk.evidence, policy: frozenPolicy, db: db)
-        #expect(rebuilt.map(\.startReason) == [nil, .lull, .quiet])
+        #expect(rebuilt.map(\.startReason) == [nil, .lull, .quiet, .quiet])
         expectPiecesTile(rebuilt, segments: talk.segments)
 
         let queries = ConversationQueries(db: db)
         let bySegment = try await queries.membersBySegment()
         #expect(bySegment["s2"]?.count == 2)
+        #expect(bySegment["s5"]?.count == 2)
         #expect(bySegment["s9"]?.count == 2)
         var checked = 0
         for (segmentId, evidence) in talk.evidence {
@@ -225,8 +228,10 @@ private typealias Member = ConversationMember
             }
         }
         #expect(checked > 300)
-        // A shared segment's start belongs to the conversation that was already going.
+        // A shared segment's start belongs to the conversation that was already going — for
+        // `s9`, the silence.
         #expect(try await queries.conversationIdsBySegment()["s2"] == "conv-s0")
-        #expect(try await queries.conversationIdsBySegment()["s9"] == rebuilt[1].id)
+        #expect(try await queries.conversationIdsBySegment()["s5"] == rebuilt[1].id)
+        #expect(try await queries.conversationIdsBySegment()["s9"] == rebuilt[2].id)
     }
 }
