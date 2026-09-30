@@ -8,7 +8,8 @@ struct TagResultsScreen: View {
     let tag: String
     var source: any HistoryDataSource = HistoryDataSources.current.history
     let todayKey: String
-    var openMoment: (Int64) -> Void
+    /// Opens a result's conversation at its start (`HistoryScreen.openMoment`).
+    var openMoment: (Int64, String?) -> Void
 
     @State private var results: [HistoryTagResult]?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -68,7 +69,7 @@ struct TagResultsScreen: View {
                 .padding(.horizontal, 4)
                 .accessibilityAddTraits(.isHeader)
             ListCard {
-                ForEach(rows) { TagResultRow(result: $0) { openMoment($0.startMs) } }
+                ForEach(rows) { TagResultRow(result: $0) { openMoment($0.startMs, $0.conversationId) } }
             }
         }
         .padding(.bottom, 20)

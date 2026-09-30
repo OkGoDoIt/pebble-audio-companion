@@ -20,10 +20,11 @@ struct HistoryScreen: View {
     var source: any HistoryDataSource = HistoryDataSources.current.history
     /// Bumped by the tab bar when the History tab is tapped while already selected.
     var reselectToken: Int = 0
-    /// Opens the conversation at a wall-clock moment (a chapter's start, a no-conversation
-    /// stretch, a recording not transcribed yet). Nil resolves it with `Route.moment(atWallMs:)`
-    /// (plan 7.9); a test or preview can pass its own.
-    var openMoment: ((Int64) -> Void)?
+    /// Opens the conversation at a wall-clock moment (a card's start, a no-conversation
+    /// stretch, a recording not transcribed yet), pinned to a conversation when the caller knows
+    /// which (a card: `HistoryChapterBlock.chapterId`). Nil resolves it with
+    /// `Route.moment(atWallMs:inConversation:)` (plan 7.9); a test or preview can pass its own.
+    var openMoment: ((Int64, String?) -> Void)?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
@@ -198,8 +199,11 @@ struct HistoryScreen: View {
     /// the mock conversation world is built around the real today, so their clocks never meet.
     /// There a moment that finds nothing opens the demo conversation instead, so a tap in
     /// `-demo-data` still visibly goes somewhere.
-    static func openMoment(_ ms: Int64, source: any HistoryDataSource, router: AppRouter) async {
-        if let route = await Route.moment(atWallMs: ms) {
+    static func openMoment(
+        _ ms: Int64, inConversation conversationId: String? = nil, source: any HistoryDataSource,
+        router: AppRouter
+    ) async {
+        if let route = await Route.moment(atWallMs: ms, inConversation: conversationId) {
             router.push(route)
         } else if source is MockHistory {
             router.push(.conversation(id: MockHistory.demoConversationID, atMs: nil))
@@ -207,11 +211,16 @@ struct HistoryScreen: View {
     }
 
     /// `openMoment`, or the real resolver.
-    private var momentOpener: (Int64) -> Void {
+    private var momentOpener: (Int64, String?) -> Void {
         if let openMoment { return openMoment }
         let router = self.router
         let source = self.source
-        return { ms in Task { await Self.openMoment(ms, source: source, router: router) } }
+        return { ms, conversationId in
+            Task {
+                await Self.openMoment(
+                    ms, inConversation: conversationId, source: source, router: router)
+            }
+        }
     }
 
     private func enterSearch() {
@@ -344,9 +353,11 @@ struct HistoryScreen: View {
         return HistoryPageServices(
             source: source,
             actions: HistoryActions(
-                openChapter: { block in openMoment(block.startMs) },
+                // A card opens its own conversation: its start can be a few seconds of quiet
+                // folded in from the one before it, in the same recording.
+                openChapter: { block in openMoment(block.startMs, block.chapterId) },
                 openFollowUp: { line in router.push(.followUp(id: line.id)) },
-                openGap: { gap in if gap.isOpenable { openMoment(gap.startMs) } },
+                openGap: { gap in if gap.isOpenable { openMoment(gap.startMs, nil) } },
                 openLive: { router.push(.live) },
                 // No period filter on the Follow-ups tab yet (plan 5.2 wants one).
                 openFollowUps: { _ in router.selectedTab = .followUps },

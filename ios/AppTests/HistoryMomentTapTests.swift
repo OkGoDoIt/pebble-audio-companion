@@ -38,6 +38,22 @@ struct HistoryMomentTapTests {
         #expect(focus?.startMs == today(9, 20))
     }
 
+    /// A card names its conversation, and the tap opens that one even from a moment just
+    /// outside it (quiet the day folded into the card).
+    @Test func aCardsTapOpensItsOwnConversation() async {
+        AskLibraryDataSources.current = .mocks()
+        let router = AppRouter()
+        router.selectedTab = .library
+        await HistoryScreen.openMoment(
+            today(9, 11), inConversation: "coffee-dana", source: Plain(), router: router)
+        guard case .conversation(let id, _, let focus)? = router.libraryPath.last else {
+            Issue.record("expected a conversation push, got \(router.libraryPath)")
+            return
+        }
+        #expect(id == "coffee-dana")
+        #expect(focus?.style == .moment)
+    }
+
     @Test func aMomentWithNothingNearItDoesNothing() async {
         AskLibraryDataSources.current = .mocks()
         let router = AppRouter()

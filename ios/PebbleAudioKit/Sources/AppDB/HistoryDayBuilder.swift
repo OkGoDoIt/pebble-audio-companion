@@ -408,6 +408,9 @@ public enum HistoryDayBuilder {
         var tags: [String] = []
         var people: [String] = []
         var timesApproximate = false
+        /// The chapter this card is a piece of (`HistoryChapterBlock.chapterId`); nil for a
+        /// fallback stretch.
+        var chapterId: String?
     }
 
     struct Piece: Equatable {
@@ -477,7 +480,7 @@ public enum HistoryDayBuilder {
                     CardSeed(
                         id: id, groupKey: "chapter:\(chapter.id)", source: .chapter, title: chapter.title,
                         summary: chapter.summary, tags: chapter.tags, people: chapter.people,
-                        timesApproximate: chapter.timesApproximate)
+                        timesApproximate: chapter.timesApproximate, chapterId: chapter.id)
                 ))
                 pieceIndex += 1
             }
@@ -911,7 +914,8 @@ public enum HistoryDayBuilder {
                 HistoryChapterBlock(
                     id: seed.id, startMs: piece.start, endMs: piece.end, zoneID: zoneID, source: seed.source,
                     title: seed.title, summary: seed.summary, tags: seed.tags, people: seed.people,
-                    missingMs: piece.missingMs, timesApproximate: seed.timesApproximate))
+                    missingMs: piece.missingMs, timesApproximate: seed.timesApproximate,
+                    chapterId: seed.chapterId))
         case .gap(let detail):
             var gap = HistoryGap(
                 id: "\(detail.kind.rawValue)-\(piece.start)", kind: detail.kind, startMs: piece.start,

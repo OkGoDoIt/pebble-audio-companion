@@ -245,7 +245,8 @@ final class LiveHistory: HistoryDataSource {
             HistoryTagResult(
                 dateKey: hit.dateKey, startMs: hit.startMs, endMs: hit.endMs, zoneID: hit.zoneID,
                 title: hit.title.flatMap { $0.isEmpty ? nil : $0 } ?? Copy.History.untitledTagResult,
-                summary: hit.summary.flatMap { $0.isEmpty ? nil : $0 })
+                summary: hit.summary.flatMap { $0.isEmpty ? nil : $0 },
+                conversationId: hit.conversationId)
         }
     }
 

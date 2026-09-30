@@ -388,17 +388,20 @@ struct HistoryMomentPieceTests {
         ConversationGrouper.segmentStartMs(Library.metas[segmentId]!) + mediaMs
     }
 
-    static func moment(_ wallMs: Int64, in db: AppDatabase, hiding hidden: Set<String> = [])
-        async throws -> (segmentId: String, conversationId: String, mediaOffsetMs: Int64?)?
-    {
+    /// `LiveWorld.momentTarget`'s resolution over the fixture, without a composition root.
+    static func moment(
+        _ wallMs: Int64, in db: AppDatabase, hiding hidden: Set<String> = [], pinnedTo pinned: String? = nil
+    ) async throws -> (segmentId: String, conversationId: String, mediaOffsetMs: Int64?)? {
         let queries = ConversationQueries(db: db)
         let spans = LiveWorld.momentSpans(
-            Array(Library.metas.values), owners: try await queries.membersBySegment(), hiding: hidden)
+            Array(Library.metas.values), owners: try await queries.membersBySegment(), hiding: hidden,
+            only: pinned)
         let windows = try await queries.rows(overlappingMs: wallMs..<(wallMs + 1))
             .filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
+            .filter { pinned == nil || $0.id == pinned }
             .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
         let resolved = await LiveWorld.momentPosition(
-            atWallMs: wallMs, spans: spans, windows: windows, queries: queries,
+            atWallMs: wallMs, spans: spans, windows: windows, pinnedTo: pinned, queries: queries,
             loadMetas: { ids in Library.metas.filter { ids.contains($0.key) } })
         return resolved.map {
             ($0.segment.segmentId, $0.position.detail.row.id, $0.position.mediaOffsetMs)
@@ -448,6 +451,29 @@ struct HistoryMomentPieceTests {
             let landed = try #require(try await Self.moment(row.startMs, in: db))
             #expect(landed.conversationId == row.id, "\(row.id) at \(row.startMs)")
         }
+    }
+
+    /// A card's start can be a few seconds early: the day's tidying folds a sliver of quiet in
+    /// front of it, and that quiet belongs to the conversation before, in the same recording
+    /// (found on the real backup: a tap on "Garden plans and grocery errands" opened the
+    /// end of "bike repair, weekend plans"). A tap names its card's conversation, and the
+    /// moment is placed on that conversation's pieces — here, clamped to its start.
+    @Test func aMomentPinnedToAConversationOpensItEvenFromTheQuietBeforeIt() async throws {
+        let db = try await Library.sharedLibrary()
+        let rows = try await ConversationQueries(db: db).rows(overlappingMs: Int64.min..<Int64.max)
+        let second = try #require(rows.first { $0.id == Library.second })
+        let early = second.startMs - 5_000  // before the cut in seg-a: the first conversation's
+        let unpinned = try #require(try await Self.moment(early, in: db))
+        #expect(unpinned.conversationId == Library.first)
+        let pinned = try #require(try await Self.moment(early, in: db, pinnedTo: Library.second))
+        #expect(pinned.segmentId == "seg-a")
+        #expect(pinned.conversationId == Library.second)
+        #expect(pinned.mediaOffsetMs == 0)
+        // Pinned or not, a moment inside the conversation lands in the same place.
+        let inside = second.startMs + 5_000
+        let a = try #require(try await Self.moment(inside, in: db))
+        let b = try #require(try await Self.moment(inside, in: db, pinnedTo: Library.second))
+        #expect(a.conversationId == b.conversationId && a.mediaOffsetMs == b.mediaOffsetMs)
     }
 
     /// A moment and a citation of the same instant are the same hop, so they land together.

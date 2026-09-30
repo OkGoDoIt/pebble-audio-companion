@@ -153,20 +153,32 @@ enum MomentResolver {
 extension Route {
     /// The conversation a wall-clock moment falls in, opened there — History's one line:
     ///
-    ///     if let route = await Route.moment(atWallMs: chapter.startMs) { router.push(route) }
+    ///     if let route = await Route.moment(atWallMs: card.startMs, inConversation: card.chapterId) {
+    ///         router.push(route)
+    ///     }
     ///
-    /// Nil when nothing was recorded near the time, which is when a tap must not navigate.
+    /// `conversationId` pins the moment to that conversation (a card knows which it is; see
+    /// `ConversationDataSource.momentTarget(atWallMs:inConversation:)`). Nil when nothing was
+    /// recorded near the time, which is when a tap must not navigate.
     @MainActor
-    static func moment(atWallMs wallMs: Int64) async -> Route? {
-        await moment(atWallMs: wallMs, in: AskLibraryDataSources.current.conversations)
+    static func moment(atWallMs wallMs: Int64, inConversation conversationId: String? = nil) async
+        -> Route?
+    {
+        await moment(
+            atWallMs: wallMs, inConversation: conversationId,
+            in: AskLibraryDataSources.current.conversations)
     }
 
     /// The same, against a named source.
     @MainActor
-    static func moment(atWallMs wallMs: Int64, in source: any ConversationDataSource) async
-        -> Route?
-    {
-        guard let target = await source.momentTarget(atWallMs: wallMs) else { return nil }
+    static func moment(
+        atWallMs wallMs: Int64, inConversation conversationId: String? = nil,
+        in source: any ConversationDataSource
+    ) async -> Route? {
+        guard
+            let target = await source.momentTarget(
+                atWallMs: wallMs, inConversation: conversationId)
+        else { return nil }
         return .moment(
             conversationId: target.conversationId, segmentId: target.focus.segmentId,
             atWallMs: wallMs, mediaOffsetMs: target.mediaOffsetMs)

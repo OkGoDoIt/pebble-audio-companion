@@ -58,8 +58,8 @@ struct HistoryDayPage: Equatable, Sendable {
     }
 }
 
-/// One chapter (or conversation stretch) carrying a topic, for the topic's results screen
-/// (plan 5.7). Results come newest first; the screen groups them by day.
+/// One conversation carrying a topic, for the topic's results screen (plan 5.7). Results come
+/// newest first; the screen groups them by day.
 struct HistoryTagResult: Equatable, Sendable, Identifiable {
     var dateKey: String
     var startMs: Int64
@@ -67,11 +67,13 @@ struct HistoryTagResult: Equatable, Sendable, Identifiable {
     var zoneID: String
     var title: String
     var summary: String?
+    /// The conversation it is, which a tap opens.
+    var conversationId: String?
     var id: String { "\(dateKey)-\(startMs)" }
 
     init(
         dateKey: String, startMs: Int64, endMs: Int64, zoneID: String = TimeZone.current.identifier,
-        title: String, summary: String? = nil
+        title: String, summary: String? = nil, conversationId: String? = nil
     ) {
         self.dateKey = dateKey
         self.startMs = startMs
@@ -79,6 +81,7 @@ struct HistoryTagResult: Equatable, Sendable, Identifiable {
         self.zoneID = zoneID
         self.title = title
         self.summary = summary
+        self.conversationId = conversationId
     }
 }
 

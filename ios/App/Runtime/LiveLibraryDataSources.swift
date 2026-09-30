@@ -1444,25 +1444,28 @@ extension LiveWorld {
     /// Reads the spool's in-memory index (no sidecar decoding) and three small queries. Only
     /// grouped recordings are candidates: one the grouper has not filed yet has no conversation
     /// to open, and choosing it would turn a tap near an older recording into nothing.
-    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget? {
+    func momentTarget(atWallMs wallMs: Int64, inConversation pinned: String?) async
+        -> CitationTarget?
+    {
         let library = composition.runtime.library
         let queries = self.queries
         guard let owners = try? await queries.membersBySegment() else { return nil }
         // A conversation inside its undo window is gone as far as the person is concerned.
         let hidden = Set(pendingDeletes.keys)
         let spans = Self.momentSpans(
-            await composition.store.listSegments(), owners: owners, hiding: hidden)
+            await composition.store.listSegments(), owners: owners, hiding: hidden, only: pinned)
         // Only needed when the time is between recordings, but one indexed query is cheaper
         // than the branch it would save.
         let instant = wallMs..<(wallMs == .max ? wallMs : wallMs + 1)
         let windows = ((try? await library.conversationRows(overlappingMs: instant)) ?? [])
             .filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
+            .filter { pinned == nil || $0.id == pinned }
             .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
         let files = composition.files
         guard
             let (segment, position) = await Self.momentPosition(
-                atWallMs: wallMs, spans: spans, windows: windows, queries: queries,
-                loadMetas: { await Self.loadMetas($0, files: files) }),
+                atWallMs: wallMs, spans: spans, windows: windows, pinnedTo: pinned,
+                queries: queries, loadMetas: { await Self.loadMetas($0, files: files) }),
             !hidden.contains(position.detail.row.id)
         else { return nil }
         return CitationTarget(
@@ -1478,14 +1481,18 @@ extension LiveWorld {
     /// piece of it, so a time between two recordings of one conversation can stay in that
     /// conversation even when a recording it names also holds a piece of another. Recordings
     /// the grouping has not filed, and pieces of `hidden` conversations, are not candidates.
+    ///
+    /// `only` keeps just that conversation's recordings (a moment pinned to it).
     nonisolated static func momentSpans(
         _ metas: [SegmentMeta],
         owners: [String: [(conversationId: String, member: ConversationMember)]],
-        hiding hidden: Set<String> = []
+        hiding hidden: Set<String> = [],
+        only: String? = nil
     ) -> [MomentResolver.Span] {
         metas.flatMap { meta in
             Set((owners[meta.segmentId] ?? []).map(\.conversationId))
                 .subtracting(hidden)
+                .filter { only == nil || $0 == only }
                 .sorted()
                 .map { MomentResolver.Span(meta: meta, conversationId: $0) }
         }
@@ -1496,18 +1503,21 @@ extension LiveWorld {
     /// the end of one and the start of the next. Between recordings the resolver chose this one
     /// FOR a conversation (the one whose extent holds the time, or the nearest), and the time
     /// clamps to that recording's edge — which, in a shared recording, is that conversation's
-    /// piece and not the neighbour's.
+    /// piece and not the neighbour's. A moment pinned to a conversation (`pinnedTo`) is placed
+    /// on that conversation's pieces wherever it falls — the caller has already kept only its
+    /// recordings in `spans`.
     static func momentPosition(
         atWallMs wallMs: Int64,
         spans: [MomentResolver.Span],
         windows: [MomentResolver.Window],
+        pinnedTo pinned: String? = nil,
         queries: ConversationQueries,
         loadMetas: ([String]) async -> [String: SegmentMeta]
     ) async -> (segment: MomentResolver.Span, position: CitedPosition)? {
         guard let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
             let position = await position(
                 ofSegment: segment.segmentId, atWallMs: wallMs,
-                in: segment.contains(wallMs) ? nil : segment.conversationId,
+                in: pinned ?? (segment.contains(wallMs) ? nil : segment.conversationId),
                 queries: queries, loadMetas: loadMetas)
         else { return nil }
         return (segment, position)

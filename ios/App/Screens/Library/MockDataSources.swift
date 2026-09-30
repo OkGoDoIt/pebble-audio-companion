@@ -854,13 +854,15 @@ extension MockWorld: ConversationDataSource {
     /// its rows, so a moment resolves through the live world's own rule
     /// (`MomentResolver.segment`) and History can be driven in previews and `-demo-data`. The
     /// scrubber position is proportional, as the mock's row positions are.
-    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget? {
+    func momentTarget(atWallMs wallMs: Int64, inConversation pinned: String?) async
+        -> CitationTarget?
+    {
         func extent(_ conversation: MockConversation) -> (start: Int64, end: Int64) {
             let start = ms(conversation.start)
             return (start, max(ms(conversation.isLive ? Date() : conversation.end), start))
         }
         var spans: [MomentResolver.Span] = []
-        for conversation in conversations {
+        for conversation in conversations where pinned == nil || conversation.id == pinned {
             let (start, end) = extent(conversation)
             let rows = conversation.transcript.count
             let half = Int64((rows + 1) / 2)
@@ -875,7 +877,7 @@ extension MockWorld: ConversationDataSource {
                     segmentId: Self.member(conversation.id, 2), conversationId: conversation.id,
                     startMs: split, endMs: end, hasFrames: hasFrames))
         }
-        let windows = conversations.map { conversation in
+        let windows = conversations.filter { pinned == nil || $0.id == pinned }.map { conversation in
             let (start, end) = extent(conversation)
             return MomentResolver.Window(conversationId: conversation.id, range: start..<end)
         }

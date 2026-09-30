@@ -617,6 +617,9 @@ private extension HistoryDay {
         #expect(cards[0].id == "ch-1" && cards[0].source == .chapter && cards[0].missingMs == 30_000)
         #expect(cards[1].id == "ch-1~\(at(10, 10))" && cards[1].endMs == at(10, 30))
         #expect(cards[2].source == .conversation && cards[2].startMs == at(10, 30))
+        // Every piece of the chapter names it — a tap opens the chapter's conversation whatever
+        // the piece's own start is — and a stretch no chapter covers names none.
+        #expect(cards.map(\.chapterId) == ["ch-1", "ch-1", nil])
     }
 
     @Test("a piece of a chapter with no words in it is not a card; its time is drawn by its own kind")

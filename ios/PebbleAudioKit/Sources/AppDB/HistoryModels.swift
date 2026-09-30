@@ -139,6 +139,14 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
     public var timesApproximate: Bool
     /// Already in display order: open first, then done, each by time.
     public var followUps: [HistoryFollowUpLine]
+    /// The chapter this card is a piece of (`HistoryChapterInput.id`) — since conversations
+    /// are topic-sized, the CONVERSATION's id — for every piece of it, the first (whose `id` it
+    /// is) and the ones after a barrier (`<id>~<start>`). Nil for a stretch no chapter covers.
+    ///
+    /// A card's tap has to open this conversation, and its `startMs` alone cannot say so: the
+    /// day's tidying can fold a few seconds of quiet in front of a card, and those seconds
+    /// belong to the conversation before it — in the same recording, more often than not.
+    public var chapterId: String?
 
     /// No title to show: the card leads with its time range and quotes its `snippet`. The same
     /// rule the app's card draws by (`HistoryLabels.isUntitled`).
@@ -148,7 +156,7 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
         id: String, startMs: Int64, endMs: Int64, zoneID: String, source: Source,
         title: String?, summary: String?, snippet: String? = nil, tags: [String] = [], people: [String] = [],
         missingMs: Int64 = 0, timesApproximate: Bool = false,
-        followUps: [HistoryFollowUpLine] = []
+        followUps: [HistoryFollowUpLine] = [], chapterId: String? = nil
     ) {
         self.id = id
         self.startMs = startMs
@@ -163,6 +171,7 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
         self.missingMs = missingMs
         self.timesApproximate = timesApproximate
         self.followUps = followUps
+        self.chapterId = chapterId
     }
 }
 

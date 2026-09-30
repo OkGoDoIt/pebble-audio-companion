@@ -415,7 +415,20 @@ protocol ConversationDataSource: AnyObject {
     /// 7.9): `focus` is a `.moment` at exactly `atWallMs`, so the transcript lands on the row
     /// being said then and marks nothing. A moment between recordings opens the nearest one
     /// (see `MomentResolver.segment`). Nil only when nothing was recorded near the time.
-    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget?
+    ///
+    /// `conversationId` pins the answer to that conversation: a History card knows which
+    /// conversation it is, and its start can sit a few seconds inside the one before it (the
+    /// day's tidying folds quiet into the card). The moment is then placed on the pinned
+    /// conversation's pieces, clamped to the nearest of them.
+    func momentTarget(atWallMs wallMs: Int64, inConversation conversationId: String?) async
+        -> CitationTarget?
+}
+
+extension ConversationDataSource {
+    /// A moment in whichever conversation owns it.
+    func momentTarget(atWallMs wallMs: Int64) async -> CitationTarget? {
+        await momentTarget(atWallMs: wallMs, inConversation: nil)
+    }
 }
 
 /// The state of one conversation's boundaries: why it starts where it does, whether it can be
