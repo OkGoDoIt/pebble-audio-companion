@@ -619,6 +619,37 @@ private extension HistoryDay {
         #expect(cards[2].source == .conversation && cards[2].startMs == at(10, 30))
     }
 
+    @Test("a piece of a chapter with no words in it is not a card; its time is drawn by its own kind")
+    func wordlessChapterPieces() throws {
+        // A conversation that runs through a burst of reconnects: two-second recordings, most
+        // not transcribed yet, with a transcribed sliver of quiet between each. Cutting the
+        // chapter at every one of them left a card per sliver — seven cards in a minute, each
+        // with the conversation's title and nothing said in it.
+        var day = HonestyDay()
+        day.record("a", at(9), at(9, 10))
+        day.speech("a", at(9), at(9, 10))
+        var cursor = at(9, 10)
+        for index in 0..<6 {
+            day.record("p\(index)", cursor, cursor + 2_000, .pending)
+            day.record("q\(index)", cursor + 2_000, cursor + 4_000)
+            cursor += 4_000
+        }
+        day.record("b", cursor, at(9, 20))
+        day.speech("b", cursor + 60_000, at(9, 20))
+        day.chapters = [HistoryChapterInput(id: "walk", startMs: at(9), endMs: at(9, 20), title: "Walk")]
+        let built = day.build()
+        let cards = built.cards
+        // The second card takes the last sliver: nothing cuts it from the words that follow.
+        #expect(cards.map(\.id) == ["walk", "walk~\(cursor - 2_000)"])
+        #expect(cards.allSatisfy { $0.title == "Walk" })
+        // Nothing between the two cards is inside a card; the untranscribed slivers are still
+        // said (folded into what surrounds them, never into a card).
+        #expect(!built.items.contains { item in
+            if case .chapter(let card) = item { return card.startMs > at(9, 10) && card.endMs < cursor }
+            return false
+        })
+    }
+
     // MARK: - Follow-ups
 
     @Test("follow-ups attach by moment, by an 80% share of a span, or not at all; open first")

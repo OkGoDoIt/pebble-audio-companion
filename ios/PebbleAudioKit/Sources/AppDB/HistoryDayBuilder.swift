@@ -12,7 +12,8 @@ import WireProtocol
 //   4 not recording       — coverage `off`: no audio and no record of why
 //   5 quiet               — watch-reported suppressed silence
 //   6 not transcribed yet / transcription failed — recorded time of a recording in that state
-//   7 chapter             — a chapter row
+//   7 chapter             — a chapter row (a conversation), cut at barriers; a piece of it with
+//                           no words in it is not a card
 //   8 no conversation     — the classifier's no-conversation span, else transcribed time with
 //                           no words
 //   9 fallback card       — transcribed words no chapter covers: a stretch of talk, cut where
@@ -444,7 +445,11 @@ public enum HistoryDayBuilder {
         var claimed = [Bool](repeating: false, count: atoms.count)
         var cards: [(range: Range<Int64>, seed: CardSeed)] = []
 
-        // Rule 7: chapters, cut at every barrier inside them.
+        // Rule 7: chapters, cut at every barrier inside them. A piece with no words in it is not
+        // a card: between two barriers a conversation can hold nothing but a second of quiet (a
+        // burst of reconnects, each a recording of its own, most not transcribed yet), and a
+        // card there would say the conversation carried on in it. Its time is left to be drawn
+        // by its own kind, and tidied like any other gap.
         var chapterFloor = domainStart
         for chapter in input.chapters.sorted(by: { $0.startMs < $1.startMs }) {
             let lower = max(chapter.startMs, chapterFloor)
@@ -452,9 +457,20 @@ public enum HistoryDayBuilder {
             else { continue }
             chapterFloor = range.upperBound
             var pieceStart: Int64?
+            var pieceAtoms: [Int] = []
             var pieceIndex = 0
             func close(at end: Int64) {
+                defer { pieceAtoms = [] }
                 guard let start = pieceStart else { return }
+                pieceStart = nil
+                let hasWords = pieceAtoms.contains { index in
+                    if case .speech = atoms[index].atom { return true }
+                    return false
+                }
+                guard hasWords else {
+                    for index in pieceAtoms { claimed[index] = false }
+                    return
+                }
                 let id = pieceIndex == 0 ? chapter.id : "\(chapter.id)~\(start)"
                 cards.append((
                     start..<end,
@@ -464,7 +480,6 @@ public enum HistoryDayBuilder {
                         timesApproximate: chapter.timesApproximate)
                 ))
                 pieceIndex += 1
-                pieceStart = nil
             }
             for index in atoms.indices where atoms[index].range.lowerBound < range.upperBound
                 && atoms[index].range.upperBound > range.lowerBound
@@ -474,6 +489,7 @@ public enum HistoryDayBuilder {
                     close(at: atom.range.lowerBound)
                 } else {
                     claimed[index] = true
+                    pieceAtoms.append(index)
                     if pieceStart == nil { pieceStart = atom.range.lowerBound }
                 }
             }
