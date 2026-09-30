@@ -80,6 +80,14 @@ import Testing
                         finalAttempts INTEGER NOT NULL DEFAULT 0,
                         updatedAtMs INTEGER NOT NULL DEFAULT 0
                     );
+                    -- Indexed by `v14-history-indexes` (as are `conversations` and `follow_ups`,
+                    -- above). Verbatim v1.
+                    CREATE TABLE pause_intervals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        startMs INTEGER NOT NULL,
+                        endMs INTEGER,
+                        source TEXT NOT NULL
+                    );
                     """)
             for index in 0..<rows {
                 try db.execute(
