@@ -424,6 +424,42 @@ public actor AudioContentService {
         mask.forget([id])
     }
 
+    /// Range-delete cascade: part of this segment's stored audio was silenced and the words in
+    /// it taken out of the transcript (`DeleteCascade`), while the segment itself — its state,
+    /// its closedness — did not move.
+    ///
+    /// That is exactly the change `classifyPass` cannot see: it re-keys a segment only when
+    /// `observed` says its state moved, and nothing here moved it. So the segment is handed
+    /// back as never looked at. The next pass keys it against the transcript as it now is,
+    /// finds the key differs, classifies it again, and looks at its neighbours too (their keys
+    /// name it, and the stray-remark rule reads them).
+    ///
+    /// A correction lying wholly inside the deleted stretch goes with it — a statement about
+    /// audio the person has since deleted — and one that also covers surviving audio stays,
+    /// the same rule `forget(segment:)` applies to a whole segment. The masks are brought up
+    /// to date at once rather than at the next pass, so nothing reads a correction that is no
+    /// longer there.
+    public func audioRewritten(segment meta: SegmentMeta, mediaRangeMs: Range<Int64>) async {
+        let id = meta.segmentId
+        observed[id] = nil
+        dirty.insert(id)
+        let clock = SegmentMediaClock(meta)
+        let start = meta.startWallMs + clock.wall(fromMedia: mediaRangeMs.lowerBound)
+        let end = meta.startWallMs + clock.wall(fromMedia: mediaRangeMs.upperBound)
+        guard end > start else { return }
+        do {
+            var removed = false
+            for correction in try await store.overrides(overlappingMs: start..<end)
+            where correction.startMs >= start && correction.endMs <= end {
+                try await store.removeOverride(id: correction.id)
+                removed = true
+            }
+            if removed { try await refreshMasks(overlapping: start..<end) }
+        } catch {
+            log.failure("audio content range cascade", error)
+        }
+    }
+
     // MARK: Masks
 
     static func isSettled(_ meta: SegmentMeta) -> Bool {
