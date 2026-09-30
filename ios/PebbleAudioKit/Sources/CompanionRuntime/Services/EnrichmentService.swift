@@ -637,6 +637,15 @@ public actor EnrichmentService {
         return out
     }
 
+    /// Range-delete support: the words of a stretch of this segment were taken out of its
+    /// transcript (`DeleteCascade`), and the evidence memoised above does not know. Its key is
+    /// the segment's state, closedness and mask generation — none of which a redaction moves —
+    /// so without this the next regroup would plan the run around turns that no longer exist,
+    /// and the conversation that was just deleted would be grouped straight back.
+    public func invalidateSpeechEvidence(segmentId: String) {
+        evidenceCache[segmentId] = nil
+    }
+
     private func grouping() async -> [GroupedConversation] {
         if let cachedGrouping { return cachedGrouping }
         return (try? await regroup()) ?? []

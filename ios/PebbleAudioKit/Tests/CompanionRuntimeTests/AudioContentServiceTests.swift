@@ -130,6 +130,45 @@ struct AudioContentServiceTests {
         #expect(try await AudioContentStore(db: db).spans(segmentId: "a").map(\.kind) == [.conversation])
     }
 
+    /// A range delete takes words out of a transcript without moving the segment's state, which
+    /// is the one change a pass cannot see by itself.
+    @Test("a segment whose audio was rewritten is classified again, and a correction inside the deleted stretch goes")
+    func rewrittenAudioIsReclassified() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = AudioContentStore(db: db)
+        let world = world(["a"])
+        let service = service(world, db: db)
+        #expect(try await service.classifyPass())
+        #expect(try await store.spans(segmentId: "a").map(\.kind) == [.conversation, .noConversation])
+        let start = world.metas[0].startWallMs
+        let inside = try await service.correct(
+            startMs: start + 60_000, endMs: start + 120_000, kind: .noConversation)
+        let straddling = try await service.correct(
+            startMs: start + 240_000, endMs: start + 360_000, kind: .noConversation)
+        #expect(service.mask.aiRanges("a") == [60_000..<120_000, 240_000..<360_000])
+
+        // The first five minutes — all of the talk — are deleted: the transcript is rewritten,
+        // the state stays `.complete`.
+        world.lock.withLock {
+            world.turns["a"] = []
+            world.versions["a"] = "v2"
+        }
+        // Untold, the pass sees a segment whose state has not moved and looks no further.
+        #expect(try await service.classifyPass() == false)
+
+        await service.audioRewritten(segment: world.metas[0], mediaRangeMs: 0..<300_000)
+
+        // The correction that was only about deleted audio is gone, at once; the one that
+        // also covers what is left stays.
+        let corrections = try await store.overrides(overlappingMs: start..<(start + 600_000))
+        #expect(!corrections.contains(inside))
+        #expect(corrections.contains(straddling))
+        #expect(service.mask.aiRanges("a") == [240_000..<360_000])
+        // And the next pass reads the transcript as it now is.
+        #expect(try await service.classifyPass())
+        #expect(try await store.spans(segmentId: "a").allSatisfy { $0.kind == .noConversation })
+    }
+
     @Test("a correction masks the model input of exactly the stretch it covers, and undoes cleanly")
     func correctionMasksModelInput() async throws {
         let db = try AppDatabase.inMemory()

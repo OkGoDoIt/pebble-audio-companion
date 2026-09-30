@@ -58,6 +58,39 @@ import WireProtocol
 
     private let decoder = EvenLoudDecoder()
 
+    /// Deleting part of a segment silences frames in place, so the frame count — the cache's
+    /// key — does not move. Until it is told, the builder goes on drawing the deleted audio.
+    @Test func aRewrittenSegmentIsRebuiltOnceTheCacheIsTold() async {
+        /// Loud for a frame with audio in it, silent for one that has been silenced.
+        struct PayloadDecoder: LiveFrameDecoder {
+            func decode(_ frames: [[UInt8]]) async -> [Int16] {
+                frames.flatMap { [Int16](repeating: $0.first == 0xEE ? 0 : 8_000, count: 320) }
+            }
+        }
+        let builder = SegmentWaveformBuilder(decoder: PayloadDecoder(), maxBars: 10)
+        let loud = frames(100)
+        let silenced = loud.map {
+            FrameRecord(
+                sequence: $0.sequence, sampleIndex: $0.sampleIndex,
+                payload: [UInt8](repeating: 0xEE, count: 25))
+        }
+        let before = await builder.build(meta: meta(frameCount: 100)) { loud }
+        #expect(before.bars.allSatisfy { $0.state == .recorded })
+
+        // Same meta, same count: the cache answers, and answers with what is no longer there.
+        let stale = await builder.build(meta: meta(frameCount: 100)) { silenced }
+        #expect(stale == before)
+
+        // Another segment's invalidation is none of this one's business.
+        await builder.invalidate(segmentId: "seg-other")
+        #expect(await builder.build(meta: meta(frameCount: 100)) { silenced } == before)
+
+        await builder.invalidate(segmentId: "seg-1")
+        let after = await builder.build(meta: meta(frameCount: 100)) { silenced }
+        #expect(after.bars.count == before.bars.count)
+        #expect(after.bars.allSatisfy { $0.state == .silence })
+    }
+
     @Test func buildsBoundedBarsWithAmplitudeAndDuration() async {
         let builder = SegmentWaveformBuilder(decoder: decoder, maxBars: 10)
         let wave = await builder.build(meta: meta(frameCount: 100)) { frames(100) }
