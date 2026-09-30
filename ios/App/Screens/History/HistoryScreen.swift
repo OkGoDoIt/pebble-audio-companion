@@ -20,6 +20,13 @@ struct HistoryScreen: View {
     var source: any HistoryDataSource = HistoryDataSources.current.history
     /// Bumped by the tab bar when the History tab is tapped while already selected.
     var reselectToken: Int = 0
+    /// Opens the conversation at a wall-clock moment (a chapter's start, a no-conversation
+    /// stretch, a recording not transcribed yet). Nil uses `demoOpenMoment`.
+    ///
+    /// TODO(history integration): pass `{ router.navigate(to: .moment(atWallMs: $0)) }` once
+    /// `Route.moment(atWallMs:)` and its resolver (plan 7.9, `momentTarget(atWallMs:)`) land
+    /// from their branch. Until then every moment opens the demo conversation at that time.
+    var openMoment: ((Int64) -> Void)?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
@@ -163,6 +170,12 @@ struct HistoryScreen: View {
 
     // MARK: Search and pushes
 
+    /// The stand-in for the moment route: pushes the demo world's conversation, opened at the
+    /// moment's time, so a tap visibly goes somewhere. See `openMoment`.
+    static func demoOpenMoment(_ ms: Int64, router: AppRouter) {
+        router.push(.conversation(id: MockHistory.demoConversationID, atMs: ms))
+    }
+
     private func enterSearch() {
         searchActive = true
     }
@@ -268,8 +281,17 @@ struct HistoryScreen: View {
     }
 
     private func makeServices(_ model: HistoryModel) -> HistoryPageServices {
-        HistoryPageServices(
+        let router = self.router
+        let openMoment = self.openMoment ?? { ms in Self.demoOpenMoment(ms, router: router) }
+        return HistoryPageServices(
             source: source,
+            actions: HistoryActions(
+                openChapter: { block in openMoment(block.startMs) },
+                openFollowUp: { line in router.push(.followUp(id: line.id)) },
+                openGap: { gap in if gap.isOpenable { openMoment(gap.startMs) } },
+                openLive: { router.push(.live) },
+                // No period filter on the Follow-ups tab yet (plan 5.2 wants one).
+                openFollowUps: { _ in router.selectedTab = .followUps }),
             adjust: { offset in
                 guard let target = model.page(offset: offset) else { return }
                 model.visiblePage = target
