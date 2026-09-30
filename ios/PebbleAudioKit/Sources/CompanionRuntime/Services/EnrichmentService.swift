@@ -25,6 +25,11 @@ public actor EnrichmentService {
     private let pauseJournal: PauseJournal?
     private let database: AppDatabase
     private let transcriptOf: @Sendable (String) -> SegmentTranscript?
+    /// The same transcript with ONLY the looped artefacts collapsed — what search and Spotlight
+    /// are given. Audio judged to hold no conversation (TV, lyrics) stays findable: a person may
+    /// well search for a line they heard, and a label that can be wrong must not decide what
+    /// can be found. See `AudioContentMask`.
+    private let searchTranscriptOf: @Sendable (String) -> SegmentTranscript?
     /// Turn timings only, for the boundary layer's whole-library sweep. Defaults to reading the
     /// full transcript and throwing the words away; `FileTranscriptStore.loadSpeechTimings`
     /// avoids decoding them at all and is what the app supplies.
@@ -45,6 +50,7 @@ public actor EnrichmentService {
     /// Whether the app is on screen, for the held-account probe's schedule (a person who just
     /// topped up is looking). `{ false }` keeps it on the hold's own backoff alone.
     private let isForeground: @Sendable () -> Bool
+    private let audioContentMask: AudioContentMask?
 
     public init(
         worker: EnrichmentWorker,
@@ -61,7 +67,8 @@ public actor EnrichmentService {
         speechTimingsOf: (@Sendable (String) -> [Transcription.TranscriptSegment]?)? = nil,
         clock: RuntimeClock,
         log: RuntimeLog = .silent,
-        isForeground: @escaping @Sendable () -> Bool = { false }
+        isForeground: @escaping @Sendable () -> Bool = { false },
+        audioContentMask: AudioContentMask? = nil
     ) {
         self.isForeground = isForeground
         self.worker = worker
@@ -79,11 +86,34 @@ public actor EnrichmentService {
         //
         // It is a VIEW, not a rewrite: `withLoopedArtefactsCollapsed()` returns `self` when
         // there is nothing to collapse, and never touches the file the transcript screen reads.
-        self.transcriptOf = { transcriptOf($0)?.withLoopedArtefactsCollapsed() }
+        //
+        // The audio-content mask is the second half of the same seam: stretches judged to hold
+        // no conversation (TV dialogue, lyrics, or a person's own "this was not a
+        // conversation") are left out of what the MODELS read, with a note in their place, so
+        // a song does not become a title or a follow-up. Search reads `searchTranscriptOf`.
+        self.searchTranscriptOf = { transcriptOf($0)?.withLoopedArtefactsCollapsed() }
+        self.transcriptOf = { id in
+            guard let transcript = transcriptOf(id)?.withLoopedArtefactsCollapsed() else { return nil }
+            guard let audioContentMask else { return transcript }
+            return transcript.withStretchesWithheld(audioContentMask.aiRanges(id))
+        }
         self.liveTextOf = liveTextOf
         self.donator = donator
         self.boundaryReviewer = boundaryReviewer
-        self.speechTimingsOf = speechTimingsOf ?? { transcriptOf($0)?.segments }
+        let timings = speechTimingsOf ?? { transcriptOf($0)?.segments }
+        // Turns inside a stretch judged to hold no conversation are not speech evidence: lyrics
+        // and transcriber loops used to keep a conversation open straight through them.
+        self.speechTimingsOf = { id in
+            guard let turns = timings(id) else { return nil }
+            guard let audioContentMask else { return turns }
+            let ranges = audioContentMask.speechRanges(id)
+            guard !ranges.isEmpty else { return turns }
+            return turns.filter { turn in
+                let middle = turn.startMs + max(turn.endMs - turn.startMs, 0) / 2
+                return !ranges.contains { $0.contains(middle) }
+            }
+        }
+        self.audioContentMask = audioContentMask
         self.clock = clock
         self.log = log
     }
@@ -246,7 +276,7 @@ public actor EnrichmentService {
             do {
                 let annotation = try await annotations.load(id)
                 let transcript = conversation.memberSegmentIds
-                    .compactMap { transcriptOf($0)?.text }
+                    .compactMap { searchTranscriptOf($0)?.text }
                     .joined(separator: "\n")
                 try await donator.donateConversation(
                     conversationId: id,
@@ -324,15 +354,18 @@ public actor EnrichmentService {
     /// transcript on disk each time — the megabytes-of-JSON shape that has already cost this app
     /// one stall. After the first sweep only a segment whose transcription state or closed-ness
     /// moved is read again, which is normally none of them.
-    private var evidenceCache: [String: (state: TranscriptionState, closed: Bool, evidence: SegmentSpeechEvidence)] = [:]
+    private var evidenceCache: [String: (state: TranscriptionState, closed: Bool, mask: Int, evidence: SegmentSpeechEvidence)] = [:]
 
     private func speechEvidence(for segments: [SegmentMeta]) -> [String: SegmentSpeechEvidence] {
         var out: [String: SegmentSpeechEvidence] = [:]
         out.reserveCapacity(segments.count)
         for meta in segments {
             let closed = meta.closeReason != nil
+            // The third key: a new audio-content verdict about this segment changes which of
+            // its turns count as speech.
+            let maskGeneration = audioContentMask?.speechGeneration(meta.segmentId) ?? 0
             if let cached = evidenceCache[meta.segmentId], cached.state == meta.transcriptionState,
-                cached.closed == closed
+                cached.closed == closed, cached.mask == maskGeneration
             {
                 out[meta.segmentId] = cached.evidence
                 continue
@@ -352,7 +385,7 @@ public actor EnrichmentService {
                 }
                 : nil
             let evidence = SegmentSpeechEvidence.of(meta, transcriptSpeech: timings)
-            evidenceCache[meta.segmentId] = (meta.transcriptionState, closed, evidence)
+            evidenceCache[meta.segmentId] = (meta.transcriptionState, closed, maskGeneration, evidence)
             out[meta.segmentId] = evidence
         }
         // Segments that no longer exist keep no cache entry.
