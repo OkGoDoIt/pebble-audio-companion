@@ -81,9 +81,9 @@ struct RealHistoryDayTests {
         let inputs = metas.map { SegmentCoverageInput(meta: $0) }
         let dayKeys = Set(metas.map { timeline.dayKey(forMs: $0.startWallMs) }).sorted()
         var failures = 0
-        // Every day under the specified rules, and again under the proposed `carryShortLoss`.
+        // Every day under the default rules, and again under the strict loss form.
         let variants: [(name: String, rules: HistoryDayRules)] = [
-            ("specified", .default), ("carryShortLoss", HistoryDayRules(carryShortLoss: true)),
+            ("default", .default), ("strict", HistoryDayRules(carryShortLoss: false)),
         ]
         for dateKey in dayKeys {
             for variant in variants {
@@ -100,7 +100,7 @@ struct RealHistoryDayTests {
                 #expect(problems.isEmpty, "\(dateKey) \(variant.name): \(problems.joined(separator: "; "))")
 
                 print("real-history: \(dateKey) [\(variant.name)] \(summary(day)) built in \(format(elapsed))")
-                if printDays.contains(dateKey) {
+                if printDays.contains(dateKey), variant.name == "default" {
                     print(render(day, zone: zone, variant: variant.name))
                 }
             }
@@ -226,9 +226,15 @@ private func summary(_ day: HistoryDay) -> String {
         }
     }
     let kinds = counts.keys.sorted().map { "\($0) \(counts[$0]!)×\(minutes(totals[$0]!))" }.joined(separator: ", ")
+    let cards = day.items.compactMap { item -> HistoryChapterBlock? in
+        if case .chapter(let block) = item { return block } else { return nil }
+    }
+    let longest = cards.map { $0.endMs - $0.startMs }.max() ?? 0
+    let short = cards.filter { $0.endMs - $0.startMs < HistoryDayRules.default.foldBelowMs }.count
     let lead = day.leadingEdge.map { "\($0.kind.rawValue) until \(clock($0.atMs, day.zoneID))" } ?? "-"
     let trail = day.trailingEdge.map { "\($0.kind.rawValue) after \(clock($0.atMs, day.zoneID))" } ?? "-"
-    return "\(day.items.count) items (\(kinds)); carried missing \(minutes(missing)); edges \(lead) / \(trail);"
+    return "\(day.items.count) items, \(cards.count) cards (longest \(minutes(longest)), \(short) under 2 min) "
+        + "(\(kinds)); carried missing \(minutes(missing)); edges \(lead) / \(trail);"
 }
 
 private func render(_ day: HistoryDay, zone: String, variant: String) -> String {

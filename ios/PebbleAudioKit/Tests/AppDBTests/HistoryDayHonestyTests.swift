@@ -165,9 +165,10 @@ private extension HistoryDay {
 
     // MARK: - Loss
 
-    @Test("loss outside a card is its own item however short, and names its recorded cause")
+    @Test("strict form: loss outside a card is its own item however short, and names its cause")
     func shortLossStays() throws {
         var day = Day()
+        day.rules = HistoryDayRules(carryShortLoss: false)
         day.record(
             "a", at(9), at(11),
             gaps: [gap(at: 3_600, seconds: 10, reason: .transportReset)], conversation: "c")
@@ -195,6 +196,7 @@ private extension HistoryDay {
     @Test("loss causes: largest share first, each once, and an undecodable reason names none")
     func lossCauses() throws {
         var day = Day()
+        day.rules = HistoryDayRules(carryShortLoss: false)  // the strict form: each its own item
         day.record(
             "a", at(9), at(10),
             gaps: [
@@ -288,6 +290,48 @@ private extension HistoryDay {
         #expect(built.trailingEdge == HistoryEdge(atMs: at(11, 30), kind: .notListening))
     }
 
+    @Test("a lone recorded sliver beside the watch's power save or unrecorded time joins it, so the night is an edge")
+    func sliverJoinsTheNight() {
+        var day = Day()
+        day.record("a", at(9), at(10))
+        day.speech("a", at(9), at(10))
+        // 10:00-15:00 the watch rests in power save (the record rides on the blip's recording),
+        // then a 14-second recording, then nothing.
+        let blip = makeSegment(
+            id: "blip", stream: 9, startTimeMs: at(10), firstSample: UInt64(5 * 3_600 * 16_000),
+            durationSamples: 14 * 16_000,
+            gaps: [gap(at: 0, seconds: 5 * 3_600, reason: .powerSave)])
+        day.segments.append(blip)
+        day.states["blip"] = .pending
+        var built = day.build()
+        #expect(built.shape == ["card"])
+        #expect(built.trailingEdge == HistoryEdge(atMs: at(10), kind: .notListening))
+
+        // Two slivers side by side are not "alone": neither is handed to the night, so both stay
+        // (a pending recording never becomes a failed one, so they do not join each other).
+        var pair = day
+        let second = makeSegment(
+            id: "second", stream: 10, startTimeMs: at(15, 0, 14), durationSamples: 100 * 16_000)
+        pair.segments.append(second)
+        pair.states["second"] = .failed
+        built = pair.build()
+        #expect(built.gaps(.notTranscribedYet).count == 1 && built.gaps(.transcriptionFailed).count == 1)
+        #expect(built.trailingEdge?.atMs == at(15, 1, 54))
+
+        // A card is never a sliver that folds, and a pause the person made takes in nothing.
+        var talk = Day()
+        talk.record("a", at(9), at(10))
+        talk.speech("a", at(9), at(10))
+        talk.record("t", at(10), at(10, 1))
+        talk.speech("t", at(10), at(10, 1))
+        talk.pauses = [PauseInterval(startMs: at(10, 1), endMs: at(11), source: "statusCard")]
+        talk.record("q", at(11), at(11, 1), .pending)
+        talk.pauses.append(PauseInterval(startMs: at(11, 1), endMs: at(12), source: "statusCard"))
+        built = talk.build()
+        #expect(built.shape == ["card", "paused", "notTranscribedYet", "paused"])
+        #expect(built.cards[0].endMs == at(10, 1))
+    }
+
     @Test("a pause the person made is its own item, even at the end of the day and however short")
     func userPause() {
         var day = Day()
@@ -328,12 +372,24 @@ private extension HistoryDay {
         var day = Day()
         day.record("a", at(9), at(10, 5))
         day.speech("a", at(9), at(9, 10))
-        day.speech("a", at(9, 30), at(9, 40))  // 20 min wordless before
-        day.speech("a", at(9, 50), at(10))  // 10 min wordless before
-        let built = day.build()
-        #expect(built.shape == ["card", "noConversation", "card", "quiet", "card"])
+        day.speech("a", at(9, 30), at(9, 40))  // 20 min wordless before: its own item
+        day.speech("a", at(9, 50), at(10))  // 10 min wordless before: bridged into the card
+        var built = day.build()
+        #expect(built.shape == ["card", "noConversation", "card"])
+        #expect(built.cards[1].startMs == at(9, 30) && built.cards[1].endMs == at(10))
         let noConversation = built.gaps(.noConversation)[0]
         #expect(noConversation.isOpenable && noConversation.descriptor == nil)
+        #expect(built.trailingEdge?.atMs == at(10))  // the 5-min wordless tail is calm
+
+        // Ten wordless minutes that no talk bridges (a pause follows) are quiet, not an item.
+        var paused = Day()
+        paused.record("a", at(9), at(9, 40))
+        paused.speech("a", at(9), at(9, 30))
+        paused.pauses = [PauseInterval(startMs: at(9, 40), endMs: at(10), source: "statusCard")]
+        paused.record("b", at(10), at(10, 30))
+        paused.speech("b", at(10), at(10, 30))
+        built = paused.build()
+        #expect(built.shape == ["card", "quiet", "paused", "card"])
         #expect(built.gaps(.quiet)[0].isOpenable == false)
     }
 
@@ -407,12 +463,20 @@ private extension HistoryDay {
         day.record("b", at(10), at(10, 45), conversation: "c2")
         day.speech("a", at(9), at(9, 20))
         day.speech("a", at(9, 27), at(9, 58))  // 7 min: bridged
-        day.speech("b", at(10), at(10, 20))  // same minute, other conversation: split
-        day.speech("b", at(10, 29), at(10, 40))  // 9 min: not bridged
-        let built = day.build()
-        #expect(built.shape == ["card", "quiet", "card", "quiet", "card"])
-        #expect(built.cards.map(\.title) == ["Title c1", "Title c2", "Title c2"])
-        #expect(built.cards.map(\.id) == ["talk-a-\(at(9))", "talk-b-\(at(10))", "talk-b-\(at(10, 29))"])
+        day.speech("b", at(10), at(10, 10))  // other conversation: split (2 min of quiet between)
+        day.speech("b", at(10, 24), at(10, 30))  // 14 min: bridged (under the 15-min bridge)
+        var built = day.build()
+        #expect(built.shape == ["card", "quiet", "card", "noConversation"])  // 15-min wordless tail
+        #expect(built.cards.map(\.title) == ["Title c1", "Title c2"])
+        #expect(built.cards.map(\.id) == ["talk-a-\(at(9))", "talk-b-\(at(10))"])
+        #expect(built.cards[1].endMs == at(10, 30))
+
+        // 15 minutes without words is no longer bridged: it is a no-conversation item.
+        day.record("c", at(10, 45), at(11, 10), conversation: "c2")
+        day.speech("c", at(11, 0), at(11, 10))
+        built = day.build()
+        #expect(built.shape == ["card", "quiet", "card", "noConversation", "card"])
+        #expect(built.cards.map(\.id).last == "talk-c-\(at(11))")
     }
 
     @Test("a pause, deletion or unrecorded time always ends a stretch")
@@ -505,7 +569,10 @@ private extension HistoryDay {
         lossy.speech("a", at(9), at(11))
         lossy.record("p", at(11, 50), at(12), .pending)
         built = lossy.build()
-        #expect(built.shape == ["card", "noConversation", "audioMissing", "noConversation", "live"])
+        // The 30 s of loss is carried by the wordless stretch (as its missing time), and the
+        // block stops there rather than take it in.
+        #expect(built.shape == ["card", "noConversation", "live"])
+        #expect(built.gaps(.noConversation)[0].missingMs == 30_000)
         guard case .live(let tail)? = built.items.last else { throw TestFailure() }
         #expect(tail.startMs == at(11, 50) && tail.endMs == at(12))
 
@@ -558,8 +625,9 @@ private extension HistoryDay {
         day.record("p", at(9), at(10), .pending, gaps: drops)
         day.record("z", at(8), at(8, 30))
         day.speech("z", at(8), at(8, 30))
+        day.rules = HistoryDayRules(carryShortLoss: false)
         #expect(day.build().gaps(.audioMissing).count == 16)
-        day.rules = HistoryDayRules(carryShortLoss: true)
+        day.rules = .default
         let built = day.build()
         #expect(built.shape == ["card", "notRecording", "notTranscribedYet", "audioMissing", "notTranscribedYet"])
         let carrier = built.gaps(.notTranscribedYet)[0]

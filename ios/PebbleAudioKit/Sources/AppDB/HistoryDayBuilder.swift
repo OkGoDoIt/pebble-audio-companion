@@ -26,16 +26,18 @@ import WireProtocol
 // A CARD (rules 7 and 9) is a range, not a set of minutes: it absorbs the quiet, the wordless
 // recorded time and the loss inside it — loss as `missingMs`, never dropped — and it is cut by
 // anything that says nobody was listening or that the words are not known: a deletion, a pause,
-// time nothing recorded, a recording not yet (or never) transcribed.
+// time nothing recorded (except a sub-`foldBelowMs` hole between two recordings of one talk
+// stretch), a recording not yet (or never) transcribed.
 //
 // Then the day is tidied, in this order, and no step may relabel loss:
-//   a. neighbours of the same kind merge (and, only under the opt-in
-//      `HistoryDayRules.carryShortLoss`, loss under `foldBelowMs` beside recorded time or a card
-//      becomes that neighbour's `missingMs` — see the rule for why it exists);
+//   a. neighbours of the same kind merge, and (`HistoryDayRules.carryShortLoss`, the default)
+//      loss under `foldBelowMs` beside recorded time or a card becomes that neighbour's
+//      `missingMs` — see the rule for why;
 //   b. no-conversation shorter than `noConversationMinimumMs` (holes of quiet up to
 //      `noConversationHoleMs` bridged) becomes quiet;
 //   c. items shorter than `foldBelowMs` fold into a neighbour that can honestly take them
-//      (`canFold`); loss, deletions and a pause the person made never fold, and what an item
+//      (`canFold`) — including a recorded sliver into the watch's power save or unrecorded time
+//      beside it; loss, cards, deletions and a pause the person made never fold, and what an item
 //      has already taken in travels with it, so folds cannot chain into a relabel no single
 //      fold may make;
 //   d. calm time at both ends (quiet, not recording, the watch's power save) becomes the
@@ -466,12 +468,18 @@ public enum HistoryDayBuilder {
         }
         func bridgeable(_ from: Int, _ to: Int) -> Bool {
             // Atoms strictly between two speech atoms: only quiet, wordless recorded time and
-            // loss, and none of it inside a chapter.
+            // loss, and none of it inside a chapter. Plus one exception: a hole with nothing
+            // recorded that is shorter than `foldBelowMs` — the seconds between two 15-minute
+            // recordings of one stream. The tidy step would fold such a sliver into the card
+            // anyway (`canFold`), but only once the stretch had already been cut at it, leaving
+            // "card, quiet 4m, card" of one conversation around a four-second rotation gap.
             guard from + 1 < to else { return true }
             for index in (from + 1)..<to {
                 if claimed[index] { return false }
                 switch atoms[index].atom {
                 case .quiet, .missing, .noConversation: continue
+                case .off where atoms[index].range.upperBound - atoms[index].range.lowerBound < input.rules.foldBelowMs:
+                    continue
                 default: return false
                 }
             }
@@ -677,16 +685,32 @@ public enum HistoryDayBuilder {
     /// Whether a short item may be drawn as part of a neighbour. Only where the neighbour's claim
     /// stays true of the item's time — so loss never folds (and nothing folds into loss), unrecorded
     /// time never becomes quiet, and a recording without a transcript never goes inside a card.
-    static func canFold(_ item: Piece, into target: Piece) -> Bool {
+    static func canFold(_ item: Piece, into target: Piece, otherNeighbour: Piece? = nil) -> Bool {
         guard let detail = item.gap else { return false }
         // What the item has already taken in travels with it.
         if item.holdsUnrecorded, target.gap == .quiet { return false }
         if item.holdsUntranscribed, target.card != nil { return false }
+        // A recorded sliver that says nothing (no card, no loss) may be drawn as part of the
+        // watch's power save or of time nothing recorded beside it, so a 14-second blip cannot
+        // keep a five-hour night out of the edge. Only a sliver standing ALONE: with recorded
+        // time on its other side it joins that instead, or two slivers side by side would hand
+        // minutes of audio to "nobody was listening". Never a card, never into a pause the
+        // person made or a deletion.
+        if item.missingMs == 0, !(otherNeighbour.map(isRecorded) ?? false) {
+            switch (detail, target.gap) {
+            case (.quiet, .paused(.watchPowerSave)?), (.quiet, .notRecording?),
+                (.noConversation, .paused(.watchPowerSave)?), (.noConversation, .notRecording?),
+                (.notTranscribedYet, .paused(.watchPowerSave)?), (.notTranscribedYet, .notRecording?),
+                (.transcriptionFailed, .paused(.watchPowerSave)?), (.transcriptionFailed, .notRecording?):
+                return true
+            default: break
+            }
+        }
         switch detail {
         case .quiet, .notRecording:
             // A card's range, wordless recorded time, or a recording waiting for (or failed at)
             // its transcript may span a sliver of quiet or of nothing recorded. Quiet may never
-            // take unrecorded time ("off is never quiet"), nor may unrecorded time take quiet.
+            // take unrecorded time ("off is never quiet").
             if target.card != nil { return true }
             switch target.gap {
             case .noConversation?, .notTranscribedYet?, .transcriptionFailed?: return true
@@ -709,6 +733,15 @@ public enum HistoryDayBuilder {
         }
     }
 
+    /// A card, or a gap that stands for recorded audio.
+    static func isRecorded(_ piece: Piece) -> Bool {
+        if piece.card != nil { return true }
+        switch piece.gap {
+        case .quiet?, .noConversation?, .notTranscribedYet?, .transcriptionFailed?: return true
+        default: return false
+        }
+    }
+
     static func folded(_ input: [Piece], rules: HistoryDayRules) -> [Piece] {
         var pieces = input
         while true {
@@ -717,7 +750,11 @@ public enum HistoryDayBuilder {
             var best: (index: Int, target: Int)?
             for index in pieces.indices where pieces[index].duration < rules.foldBelowMs {
                 let candidates = [index - 1, index + 1].filter {
-                    pieces.indices.contains($0) && canFold(pieces[index], into: pieces[$0])
+                    let other = $0 < index ? index + 1 : index - 1
+                    return pieces.indices.contains($0)
+                        && canFold(
+                            pieces[index], into: pieces[$0],
+                            otherNeighbour: pieces.indices.contains(other) ? pieces[other] : nil)
                 }
                 guard let target = candidates.max(by: { pieces[$0].duration < pieces[$1].duration }) else { continue }
                 if best == nil || pieces[index].duration < pieces[best!.index].duration {

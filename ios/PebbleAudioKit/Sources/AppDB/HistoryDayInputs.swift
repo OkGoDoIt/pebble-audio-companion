@@ -189,10 +189,19 @@ public struct HistoryDeletedSpanInput: Equatable, Sendable {
 
 /// Every threshold the day builder uses, in one place so they can be tuned against real days.
 public struct HistoryDayRules: Equatable, Sendable {
-    /// Two runs of speech belong to one card when less than this separates them and the time
-    /// between holds nothing but quiet, recorded time with no words, or loss. The grouper's own
-    /// "a silence this long may be a boundary" threshold (`BoundaryPolicy.quietCandidateMs`,
-    /// 8 min), so a card never bridges a silence the grouper would consider cutting at.
+    /// Two runs of speech belong to one fallback card when less than this separates them and
+    /// the time between holds nothing but quiet, recorded time with no words, or loss (which the
+    /// card then counts as `missingMs`). Defaults to `noConversationMinimumMs`, 15 min.
+    ///
+    /// It used to be the grouper's `BoundaryPolicy.quietCandidateMs` (8 min), and on the real
+    /// backup that drew every 8-15 minute lull inside one conversation as "card, quiet 11m,
+    /// card" with the same title three times: the lull was too long to bridge and too short to
+    /// be a no-conversation item, so it fell to quiet between two halves of one card. With the
+    /// two thresholds equal, what separates two cards of one conversation is always something
+    /// with its own label — no conversation (15 min or more), a pause, loss, time nothing
+    /// recorded, a recording without a transcript — or nothing at all. Deciding where a
+    /// conversation really changes subject is the chapter stage's job; its chapters are taken
+    /// as given.
     public var talkBridgeMs: Int64
     /// Recorded sound with no conversation is drawn as its own item only from this length on;
     /// shorter runs are part of the surrounding quiet (plan 7.6).
@@ -204,23 +213,24 @@ public struct HistoryDayRules: Equatable, Sendable {
     public var foldBelowMs: Int64
     /// A follow-up said across a span attaches to the card holding at least this share of it.
     public var followUpSpanShare: Double
-    /// OFF by default — the specified rule is that loss outside a card is always its own item,
-    /// however short. On: loss shorter than `foldBelowMs` beside a card or beside recorded time
+    /// ON by default. Loss shorter than `foldBelowMs` beside a card or beside recorded time
     /// (quiet, no conversation, not transcribed yet, transcription failed) is carried as that
-    /// neighbour's `missingMs` instead, still counted and still named (`HistoryGap.missingMs`,
-    /// `lossCauses`). Proposed after the real backup: the watch's buffer drops arrive in bursts
-    /// of dozens of sub-second records, and one item each drew 2026-09-24 as 949 rows.
+    /// neighbour's `missingMs`, still counted to the millisecond and still named
+    /// (`HistoryGap.missingMs`, `lossCauses`). Off is the strict form — every loss outside a
+    /// card its own item, however short — kept so it stays testable. Why on: the watch's buffer
+    /// drops arrive in bursts of dozens of sub-second records, and one item each drew 2026-09-24
+    /// of the real backup as 949 rows ("failed 1s, missing 0s, failed 1s, …"); carried, 9.
     public var carryShortLoss: Bool
 
     public init(
-        talkBridgeMs: Int64 = BoundaryPolicy.default.quietCandidateMs,
+        talkBridgeMs: Int64? = nil,
         noConversationMinimumMs: Int64 = 15 * 60_000,
         noConversationHoleMs: Int64 = 2 * 60_000,
         foldBelowMs: Int64 = 2 * 60_000,
         followUpSpanShare: Double = 0.8,
-        carryShortLoss: Bool = false
+        carryShortLoss: Bool = true
     ) {
-        self.talkBridgeMs = talkBridgeMs
+        self.talkBridgeMs = talkBridgeMs ?? noConversationMinimumMs
         self.noConversationMinimumMs = noConversationMinimumMs
         self.noConversationHoleMs = noConversationHoleMs
         self.foldBelowMs = foldBelowMs

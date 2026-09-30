@@ -187,8 +187,8 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
     public var lossCauses: [HistoryLossCause]
     /// Audio lost inside this gap that is not drawn as its own `.audioMissing` item ("· 4 s
     /// missing"), exactly as on a card. Always 0 for `.audioMissing` itself (its whole range is
-    /// the loss). Only non-zero under `HistoryDayRules.carryShortLoss`; a gap that carries loss
-    /// is never folded into an edge or the live block.
+    /// the loss). Non-zero only under `HistoryDayRules.carryShortLoss` (the default); a gap that
+    /// carries loss is never folded into an edge or the live block.
     public var missingMs: Int64 = 0
     /// Set for `.noConversation` ONLY when the audio classifier supplied one that met its
     /// accuracy bar ("music", "TV or video"). Nil means "No conversation", styled like quiet.
@@ -204,7 +204,7 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
         id: String, kind: Kind, startMs: Int64, endMs: Int64, zoneID: String,
         pausedBy: HistoryPauseActor? = nil, lossCauses: [HistoryLossCause] = [],
         descriptor: String? = nil, deletedBy: HistoryDeletionCause? = nil,
-        failureReason: String? = nil, isOpenable: Bool = false
+        failureReason: String? = nil, isOpenable: Bool = false, missingMs: Int64 = 0
     ) {
         self.id = id
         self.kind = kind
@@ -217,6 +217,7 @@ public struct HistoryGap: Equatable, Sendable, Identifiable {
         self.deletedBy = deletedBy
         self.failureReason = failureReason
         self.isOpenable = isOpenable
+        self.missingMs = missingMs
     }
 }
 

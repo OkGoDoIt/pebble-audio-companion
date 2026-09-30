@@ -141,6 +141,25 @@ extension HistoryDayBuilder {
         if let edge = day.leadingEdge, edge.atMs != first.startMs { fail("leading edge is not where the items start") }
         if let edge = day.trailingEdge, edge.atMs != last.endMs { fail("trailing edge is not where the items end") }
 
+        // Recorded time drawn as nobody listening (the watch's power save, time nothing recorded)
+        // is only ever a sliver folded in beside it — never a real stretch of audio.
+        let notListening = ranges {
+            guard case .gap(let gap) = $0 else { return false }
+            return gap.kind == .notRecording || (gap.kind == .paused && gap.pausedBy == .watchPowerSave)
+        }
+        for run in intersect(mergeRanges(recorded + quiet), notListening)
+        where run.upperBound - run.lowerBound >= input.rules.foldBelowMs {
+            fail("\(run.upperBound - run.lowerBound) ms of recorded audio drawn as not listening at \(run.lowerBound)")
+        }
+        // A pause the person made, or a deletion, never takes in recorded time.
+        let personalPauses = ranges {
+            guard case .gap(let gap) = $0 else { return false }
+            return gap.kind == .paused && gap.pausedBy != .watchPowerSave
+        }
+        if total(intersect(mergeRanges(recorded + quiet), personalPauses)) > 0 {
+            fail("recorded audio drawn as a pause the person made")
+        }
+
         // A recording that failed or is not transcribed yet is never inside a card.
         let untranscribed = mergeRanges(
             input.segmentStates.filter { !($0.state == .complete || $0.state == .noSpeech) }
