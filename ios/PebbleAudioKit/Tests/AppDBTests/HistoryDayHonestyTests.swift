@@ -42,6 +42,7 @@ private struct Day {
     var runs: [HistorySpeechRun] = []
     var pauses: [PauseInterval] = []
     var conversations: [HistoryConversationInput] = []
+    var turnPreviews: [HistoryTurnPreview] = []
     var chapters: [HistoryChapterInput] = []
     var followUps: [HistoryFollowUpInput] = []
     var content: [HistoryContentSpanInput] = []
@@ -89,7 +90,8 @@ private struct Day {
             segmentStates: segments.compactMap {
                 HistorySegmentState(meta: $0, state: states[$0.segmentId], failureReason: reasons[$0.segmentId])
             },
-            chapters: chapters, conversations: conversations, followUps: followUps,
+            chapters: chapters, conversations: conversations, turnPreviews: turnPreviews,
+            followUps: followUps,
             contentSpans: content, deletedSpans: deleted, nowMs: nowMs, isLive: isLive, rules: rules)
     }
 
@@ -145,7 +147,8 @@ private extension HistoryDay {
         #expect(built.shape == ["card"])
         let card = try #require(built.cards.first)
         #expect(card.startMs == at(9, 10) && card.endMs == at(9, 50))
-        #expect(card.source == .conversation && card.title == "Title c1" && card.summary == nil)
+        // The grouper's title is not the card's: a fallback card is untitled.
+        #expect(card.source == .conversation && card.title == nil && card.summary == nil)
         #expect(card.id == "talk-a-\(at(9, 10))")
         // 05:00-09:00 nothing recorded + 10 min of wordless recording (quiet by the 15-min rule).
         #expect(built.leadingEdge == HistoryEdge(atMs: at(9, 10), kind: .notListening))
@@ -186,8 +189,8 @@ private extension HistoryDay {
     func lossInsideCard() throws {
         var day = Day()
         day.record("a", at(9), at(10), gaps: [gap(at: 1_800, seconds: 90, reason: .spoolOverflow)], conversation: "c")
-        day.speech("a", at(9, 10), at(9, 29))
-        day.speech("a", at(9, 33), at(9, 50))
+        day.speech("a", at(9, 10), at(9, 30))
+        day.speech("a", at(9, 32), at(9, 50))  // 2 min between: not a real pause, no cut
         let built = day.build()
         #expect(built.shape == ["card"])
         #expect(built.cards[0].missingMs == 90_000)
@@ -373,10 +376,13 @@ private extension HistoryDay {
         day.record("a", at(9), at(10, 5))
         day.speech("a", at(9), at(9, 10))
         day.speech("a", at(9, 30), at(9, 40))  // 20 min wordless before: its own item
-        day.speech("a", at(9, 50), at(10))  // 10 min wordless before: bridged into the card
+        day.speech("a", at(9, 50), at(10))  // 10 min wordless before: bridged, then cut there
         var built = day.build()
-        #expect(built.shape == ["card", "noConversation", "card"])
-        #expect(built.cards[1].startMs == at(9, 30) && built.cards[1].endMs == at(10))
+        // The 10-minute lull stays inside the stretch (no quiet item between two cards), and the
+        // cutter cuts at the talk after it: two cards, 20 and 10 minutes, back to back.
+        #expect(built.shape == ["card", "noConversation", "card", "card"])
+        #expect(built.cards[1].startMs == at(9, 30) && built.cards[1].endMs == at(9, 50))
+        #expect(built.cards[2].startMs == at(9, 50) && built.cards[2].endMs == at(10))
         let noConversation = built.gaps(.noConversation)[0]
         #expect(noConversation.isOpenable && noConversation.descriptor == nil)
         #expect(built.trailingEdge?.atMs == at(10))  // the 5-min wordless tail is calm
@@ -456,27 +462,74 @@ private extension HistoryDay {
 
     // MARK: - Fallback cards
 
-    @Test("a stretch splits where the conversation changes, and bridges only short wordless gaps")
-    func fallbackSplitting() throws {
+    @Test("fallback cards ignore the grouper: cut only at real pauses, untitled, never forced short")
+    func fallbackCutting() throws {
         var day = Day()
         day.record("a", at(9), at(10), conversation: "c1")
         day.record("b", at(10), at(10, 45), conversation: "c2")
         day.speech("a", at(9), at(9, 20))
-        day.speech("a", at(9, 27), at(9, 58))  // 7 min: bridged
-        day.speech("b", at(10), at(10, 10))  // other conversation: split (2 min of quiet between)
-        day.speech("b", at(10, 24), at(10, 30))  // 14 min: bridged (under the 15-min bridge)
+        day.speech("a", at(9, 22), at(10))  // 2-min pause: no cut
+        day.speech("b", at(10), at(10, 10))  // conversation changes here: ignored, no cut
+        day.speech("b", at(10, 14), at(10, 30))  // 4-min pause: cut at 10:14
         var built = day.build()
-        #expect(built.shape == ["card", "quiet", "card", "noConversation"])  // 15-min wordless tail
-        #expect(built.cards.map(\.title) == ["Title c1", "Title c2"])
-        #expect(built.cards.map(\.id) == ["talk-a-\(at(9))", "talk-b-\(at(10))"])
-        #expect(built.cards[1].endMs == at(10, 30))
+        #expect(built.shape == ["card", "card", "noConversation"])  // 15-min wordless tail
+        #expect(built.cards.map(\.title) == [nil, nil])
+        #expect(built.cards.map(\.startMs) == [at(9), at(10, 14)])
+        #expect(built.cards.map(\.id) == ["talk-a-\(at(9))", "talk-b-\(at(10, 14))"])
 
-        // 15 minutes without words is no longer bridged: it is a no-conversation item.
-        day.record("c", at(10, 45), at(11, 10), conversation: "c2")
-        day.speech("c", at(11, 0), at(11, 10))
+        // Two hours with no real pause stays one two-hour card.
+        var long = Day()
+        long.record("a", at(9), at(11, 5))
+        var t = at(9)
+        while t < at(11) {
+            long.speech("a", t, t + min(2))
+            t += min(3)  // one-minute pauses
+        }
+        built = long.build()
+        #expect(built.shape == ["card"])
+        #expect(built.cards[0].endMs - built.cards[0].startMs >= min(119))
+    }
+
+    @Test("a fallback card's snippet: an early turn of 8+ words, else the longest early one, else the first of 4+")
+    func snippets() throws {
+        var day = Day()
+        day.record("a", at(9), at(10))
+        day.speech("a", at(9), at(9, 20))
+        day.speech("a", at(9, 30), at(9, 50))
+        day.turnPreviews = [
+            HistoryTurnPreview(startMs: at(8, 59), text: "Before the card starts here"),
+            HistoryTurnPreview(startMs: at(9, 0, 5), text: "Okay."),
+            HistoryTurnPreview(startMs: at(9, 1), text: "Yeah, sure."),
+            HistoryTurnPreview(startMs: at(9, 2), text: "So the library on Monday then"),
+            HistoryTurnPreview(startMs: at(9, 3), text: "So the library on Monday then, at ten, okay?"),
+            HistoryTurnPreview(startMs: at(9, 30), text: "Hmm"),
+            HistoryTurnPreview(startMs: at(9, 31), text: "Right okay"),
+            HistoryTurnPreview(startMs: at(9, 40), text: "this one is late but long enough to use"),
+        ]
+        var built = day.build()
+        // First card: the first early turn of 8+ words. Second: none of 8+ early, so the longest
+        // early turn — not the later long one.
+        #expect(built.cards.map(\.snippet) == ["So the library on Monday then, at ten, okay?", "Right okay"])
+        // No early 8-word turn in the first card either: the longest of its first five minutes.
+        day.turnPreviews.remove(at: 4)
+        #expect(day.build().cards.first?.snippet == "So the library on Monday then")
+        // No turn at all in the first five minutes: the first of 4+ words later in the card.
+        day.turnPreviews = [
+            HistoryTurnPreview(startMs: at(9, 10), text: "ok"),
+            HistoryTurnPreview(startMs: at(9, 11), text: "then we go there"),
+        ]
         built = day.build()
-        #expect(built.shape == ["card", "quiet", "card", "noConversation", "card"])
-        #expect(built.cards.map(\.id).last == "talk-c-\(at(11))")
+        #expect(built.cards.first?.snippet == "then we go there")
+        // A script written without spaces: 12 characters is long enough.
+        day.turnPreviews = [
+            HistoryTurnPreview(startMs: at(9, 0, 10), text: "はい"),
+            HistoryTurnPreview(startMs: at(9, 0, 20), text: "来週の月曜日に図書館へ行きます"),
+            HistoryTurnPreview(startMs: at(9, 0, 30), text: "That is a very long English sentence with many words"),
+        ]
+        #expect(day.build().cards.first?.snippet == "来週の月曜日に図書館へ行きます")
+        // A chapter never gets one.
+        day.chapters = [HistoryChapterInput(id: "ch", startMs: at(9), endMs: at(9, 20), title: "T")]
+        #expect(day.build().cards.first?.snippet == nil)
     }
 
     @Test("a pause, deletion or unrecorded time always ends a stretch")
@@ -705,7 +758,11 @@ private func randomHistoryDay(_ rng: inout SeededGenerator) -> Day {
         var speechAt = cursor
         while speechAt < cursor + length {
             let talk = Int64.random(in: 5...600, using: &rng) * 1_000
-            if Bool.random(using: &rng) { day.speech(id, speechAt, Swift.min(speechAt + talk, cursor + length)) }
+            if Bool.random(using: &rng) {
+                day.speech(id, speechAt, Swift.min(speechAt + talk, cursor + length))
+                day.turnPreviews.append(
+                    HistoryTurnPreview(startMs: speechAt, text: ["ok", "yes sure", "one two three four"].randomElement(using: &rng)!))
+            }
             speechAt += talk + Int64.random(in: 0...900, using: &rng) * 1_000
         }
         cursor += length

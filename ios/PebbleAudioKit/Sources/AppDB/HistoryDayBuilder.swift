@@ -15,7 +15,9 @@ import WireProtocol
 //   7 chapter             — a chapter row
 //   8 no conversation     — the classifier's no-conversation span, else transcribed time with
 //                           no words
-//   9 fallback card       — transcribed words no chapter covers: a stretch of a conversation
+//   9 fallback card       — transcribed words no chapter covers: a stretch of talk, cut where
+//                           the talk really stopped (`HistoryTalkCutter`), untitled, with a
+//                           verbatim snippet
 //
 // Rules 1-5 are not re-derived here. They are `CoverageComputer.computeAttributed` — the same
 // placement the Today strip draws — with its watch-quiet recut, so History can never call a
@@ -57,7 +59,10 @@ public enum HistoryDayBuilder {
         public var speechRuns: [HistorySpeechRun]
         public var segmentStates: [HistorySegmentState]
         public var chapters: [HistoryChapterInput]
+        /// Unused (see `HistoryConversationInput`).
         public var conversations: [HistoryConversationInput]
+        /// Transcript turns in time order, for the snippets of cards with no title of their own.
+        public var turnPreviews: [HistoryTurnPreview]
         public var followUps: [HistoryFollowUpInput]
         public var contentSpans: [HistoryContentSpanInput]
         public var deletedSpans: [HistoryDeletedSpanInput]
@@ -72,6 +77,7 @@ public enum HistoryDayBuilder {
             pauses: [PauseInterval] = [], speechRuns: [HistorySpeechRun] = [],
             segmentStates: [HistorySegmentState] = [], chapters: [HistoryChapterInput] = [],
             conversations: [HistoryConversationInput] = [],
+            turnPreviews: [HistoryTurnPreview] = [],
             followUps: [HistoryFollowUpInput] = [],
             contentSpans: [HistoryContentSpanInput] = [],
             deletedSpans: [HistoryDeletedSpanInput] = [], nowMs: Int64? = nil,
@@ -85,6 +91,7 @@ public enum HistoryDayBuilder {
             self.segmentStates = segmentStates
             self.chapters = chapters
             self.conversations = conversations
+            self.turnPreviews = turnPreviews
             self.followUps = followUps
             self.contentSpans = contentSpans
             self.deletedSpans = deletedSpans
@@ -157,10 +164,16 @@ public enum HistoryDayBuilder {
             (entries, live) = Self.liveTail(entries, nowMs: nowMs)
         }
 
+        let previews = input.turnPreviews.sorted { $0.startMs < $1.startMs }
         var items: [HistoryItem] = []
         for entry in entries {
             if let piece = entry.piece {
-                items.append(Self.item(piece, zoneID: entry.zoneID, lossRecords: built[entry.window].lossRecords))
+                var item = Self.item(piece, zoneID: entry.zoneID, lossRecords: built[entry.window].lossRecords)
+                if case .chapter(var block) = item, block.source == .conversation {
+                    block.snippet = Self.snippet(in: block.startMs..<block.endMs, previews: previews)
+                    item = .chapter(block)
+                }
+                items.append(item)
             } else if let atMs = entry.zoneChangeAt {
                 items.append(.zoneChange(HistoryZoneChange(atMs: atMs, zoneID: entry.zoneID)))
             }
@@ -461,18 +474,17 @@ public enum HistoryDayBuilder {
             close(at: range.upperBound)
         }
 
-        // Rule 9: stretches of talk no chapter covers, one conversation at a time.
-        var conversationOf: [String: HistoryConversationInput] = [:]
-        for conversation in input.conversations {
-            for segmentId in conversation.segmentIds { conversationOf[segmentId] = conversation }
-        }
+        // Rule 9: talk no chapter covers. A stretch runs while less than `talkBridgeMs` separates
+        // one run of words from the next and nothing between them cuts it; `HistoryTalkCutter`
+        // then cuts it where the talk really stopped. The grouper's conversations play no part:
+        // its boundaries (and so its titles) are not conversation-sized — one "conversation" in
+        // the 2026-09-30 backup runs 24 h 53 min.
         func bridgeable(_ from: Int, _ to: Int) -> Bool {
             // Atoms strictly between two speech atoms: only quiet, wordless recorded time and
             // loss, and none of it inside a chapter. Plus one exception: a hole with nothing
             // recorded that is shorter than `foldBelowMs` — the seconds between two 15-minute
             // recordings of one stream. The tidy step would fold such a sliver into the card
-            // anyway (`canFold`), but only once the stretch had already been cut at it, leaving
-            // "card, quiet 4m, card" of one conversation around a four-second rotation gap.
+            // anyway (`canFold`), but only once the stretch had already been cut at it.
             guard from + 1 < to else { return true }
             for index in (from + 1)..<to {
                 if claimed[index] { return false }
@@ -485,45 +497,44 @@ public enum HistoryDayBuilder {
             }
             return true
         }
-        struct Stretch {
-            var startIndex: Int
-            var endIndex: Int
-            var owner: String?
-            var segmentIds: [String]
-        }
-        var stretches: [Stretch] = []
+        var stretches: [[Int]] = []  // the speech atoms of each stretch
         for index in atoms.indices where !claimed[index] {
-            guard case .speech(let segmentId) = atoms[index].atom else { continue }
-            let owner = conversationOf[segmentId]?.id
-            if var current = stretches.last, current.owner == owner,
-                atoms[index].range.lowerBound - atoms[current.endIndex].range.upperBound < input.rules.talkBridgeMs,
-                bridgeable(current.endIndex, index)
+            guard case .speech = atoms[index].atom else { continue }
+            if let current = stretches.last, let lastIndex = current.last,
+                atoms[index].range.lowerBound - atoms[lastIndex].range.upperBound < input.rules.talkBridgeMs,
+                bridgeable(lastIndex, index)
             {
-                current.endIndex = index
-                if current.segmentIds.last != segmentId { current.segmentIds.append(segmentId) }
-                stretches[stretches.count - 1] = current
+                stretches[stretches.count - 1].append(index)
             } else {
-                stretches.append(Stretch(startIndex: index, endIndex: index, owner: owner, segmentIds: [segmentId]))
+                stretches.append([index])
             }
         }
-        let stateById = Dictionary(input.segmentStates.map { ($0.segmentId, $0) }, uniquingKeysWith: { a, _ in a })
+        let states = input.segmentStates.sorted {
+            $0.startMs != $1.startMs ? $0.startMs < $1.startMs : $0.segmentId < $1.segmentId
+        }
         for stretch in stretches {
-            let range = atoms[stretch.startIndex].range.lowerBound..<atoms[stretch.endIndex].range.upperBound
-            let conversation = stretch.owner.flatMap { owner in input.conversations.first { $0.id == owner } }
-            // Stable id: the conversation's first recording that overlaps the stretch (segment
-            // ids survive a regroup; conversation ids do not), and where the stretch starts.
-            let anchor =
-                conversation?.segmentIds.first { id in
-                    guard let state = stateById[id] else { return false }
-                    return state.startMs < range.upperBound && state.endMs > range.lowerBound
-                } ?? stretch.segmentIds[0]
-            cards.append((
-                range,
-                CardSeed(
-                    id: "talk-\(anchor)-\(range.lowerBound)",
-                    groupKey: "conversation:\(stretch.owner ?? "-")", source: .conversation,
-                    title: conversation?.title, summary: nil)
-            ))
+            let range = atoms[stretch.first!].range.lowerBound..<atoms[stretch.last!].range.upperBound
+            let runs = stretch.map { atoms[$0].range }
+            let bounds = [range.lowerBound]
+                + HistoryTalkCutter.cuts(stretch: range, speechRuns: runs, rules: input.rules.talkCut)
+                + [range.upperBound]
+            for (start, end) in zip(bounds, bounds.dropFirst()) {
+                // Stable id: the first recording overlapping the piece (segment ids survive a
+                // regroup; conversation ids do not), and where the piece starts.
+                let anchor =
+                    states.first { $0.startMs < end && $0.endMs > start }?.segmentId
+                    ?? stretch.lazy.compactMap { index -> String? in
+                        if case .speech(let segmentId) = atoms[index].atom, atoms[index].range.lowerBound >= start {
+                            return segmentId
+                        }
+                        return nil
+                    }.first ?? "-"
+                let id = "talk-\(anchor)-\(start)"
+                cards.append((
+                    start..<end,
+                    CardSeed(id: id, groupKey: id, source: .conversation, title: nil, summary: nil)
+                ))
+            }
         }
         cards.sort { $0.range.lowerBound < $1.range.lowerBound }
 
@@ -893,6 +904,55 @@ public enum HistoryDayBuilder {
             }
             return .gap(gap)
         }
+    }
+
+    /// A fallback card's snippet, verbatim (`previews` is sorted by start). Among the turns in
+    /// the card's first five minutes: the first that is long enough to say something (8 words or
+    /// more), else the longest; with no turn in those five minutes, the first turn of the card
+    /// with 4 words or more; else nil.
+    ///
+    /// Words are whitespace-separated, which is right for languages written with spaces. Text
+    /// with no whitespace at all (Chinese, Japanese, Thai; Korean usually has spaces) counts as
+    /// 8 words from 12 characters and as 4 words from 6 — simple, and enough to skip "嗯" and
+    /// "はい" without a tokenizer. The 4-word threshold alone picked "That sounds fine then." and
+    /// "I left it outside." on the real backup.
+    static func snippet(in range: Range<Int64>, previews: [HistoryTurnPreview]) -> String? {
+        var low = 0
+        var high = previews.count
+        while low < high {
+            let mid = (low + high) / 2
+            if previews[mid].startMs < range.lowerBound { low = mid + 1 } else { high = mid }
+        }
+        func words(_ text: String) -> Int {
+            let parts = text.split(whereSeparator: \.isWhitespace)
+            guard parts.count == 1 else { return parts.count }
+            // One unbroken token: a spaceless script (or one long word).
+            let characters = parts[0].count
+            return characters >= 12 ? 8 : (characters >= 6 ? 4 : 1)
+        }
+        let earlyEnd = range.lowerBound + 5 * 60_000
+        var longest: HistoryTurnPreview?
+        var longestCount = 0
+        var fallback: HistoryTurnPreview?
+        var index = low
+        while index < previews.count, previews[index].startMs < range.upperBound {
+            let preview = previews[index]
+            let text = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let count = words(text)
+            if preview.startMs < earlyEnd {
+                if count >= 8 { return preview.text }
+                if !text.isEmpty, text.count > longestCount {
+                    longest = preview
+                    longestCount = text.count
+                }
+            } else {
+                if let longest { return longest.text }
+                if count >= 4 { return preview.text }
+            }
+            if fallback == nil, count >= 4 { fallback = preview }
+            index += 1
+        }
+        return longest?.text ?? fallback?.text
     }
 
     /// The recorded causes of the loss in a range, largest share first, each once. `records` is

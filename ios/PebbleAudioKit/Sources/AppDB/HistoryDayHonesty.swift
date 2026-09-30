@@ -160,6 +160,35 @@ extension HistoryDayBuilder {
             fail("recorded audio drawn as a pause the person made")
         }
 
+        // A card standing in for talk no chapter covers has no title or summary of its own; only
+        // it may carry a snippet, and only a verbatim one.
+        let previewTexts = Set(input.turnPreviews.map(\.text))
+        for item in timed {
+            guard case .chapter(let block) = item else { continue }
+            switch block.source {
+            case .conversation:
+                if block.title != nil || block.summary != nil { fail("fallback card \(block.id) has a title or summary") }
+                // Longer than the merge cap only as one unbroken stretch of talk, plus pieces too
+                // small to stand alone.
+                if block.endMs - block.startMs > input.rules.talkCut.mergeCapMs {
+                    let span = block.startMs..<block.endMs
+                    let runs = HistoryTalkCutter.mergedRuns(input.speechRuns.map { $0.startMs..<$0.endMs }, in: span)
+                    let bounds = [span.lowerBound]
+                        + HistoryTalkCutter.pauseCuts(stretch: span, runs: runs, rules: input.rules.talkCut)
+                        + [span.upperBound]
+                    let pieces = zip(bounds, bounds.dropFirst()).map { $0.1 - $0.0 }
+                    if !HistoryTalkCutter.isReachableByMerging(pieces, rules: input.rules.talkCut) {
+                        fail("fallback card \(block.id) is longer than the merge cap across a real pause")
+                    }
+                }
+                if let snippet = block.snippet, !previewTexts.contains(snippet) {
+                    fail("fallback card \(block.id) has a snippet nobody said")
+                }
+            case .chapter:
+                if block.snippet != nil { fail("chapter \(block.id) has a snippet") }
+            }
+        }
+
         // A recording that failed or is not transcribed yet is never inside a card.
         let untranscribed = mergeRanges(
             input.segmentStates.filter { !($0.state == .complete || $0.state == .noSpeech) }
