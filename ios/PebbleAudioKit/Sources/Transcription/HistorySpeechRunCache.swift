@@ -98,8 +98,14 @@ public actor HistorySpeechRunCache {
         // its timings unchanged, so run i is timing i on the wall clock.
         var turns: [HistorySpokenTurn] = []
         if placed.count == timings.count {
-            for (run, timing) in zip(placed, timings) {
-                guard let text = HistorySpokenTurn.preview(timing.text) else { continue }
+            // A transcriber stuck in a loop repeats one phrase for minutes; those lines are never
+            // a card's snippet (`TranscriptArtefacts`, the same verdicts the transcript view hides).
+            let looped = TranscriptArtefacts.loopedArtefacts(
+                in: timings.map { ArtefactTurn(text: $0.text, startMs: $0.startMs) })
+            for (index, (run, timing)) in zip(placed, timings).enumerated() where !looped[index] {
+                guard !HistorySpokenTurn.isDegenerate(timing.text),
+                    let text = HistorySpokenTurn.preview(timing.text)
+                else { continue }
                 turns.append(
                     HistorySpokenTurn(segmentId: meta.segmentId, startMs: run.startMs, endMs: run.endMs, text: text))
             }
@@ -132,6 +138,26 @@ public struct HistorySpokenTurn: Equatable, Sendable {
         self.startMs = startMs
         self.endMs = endMs
         self.text = text
+    }
+
+    /// A single turn that is one word said over and over — the transcriber's loop inside one
+    /// turn, which the across-turn detector cannot see. On the real backup: ", the, the, the,
+    /// the, the, uh, you kn", "저는안녕하세요. 저는안녕하세요. 저는안녕하세요. …" and "in an apartment
+    /// in Boston. I'll double I'll double I'll double I'll double". Four words or more, and fewer
+    /// than a third of them distinct, or one word said four times or more making up half of them,
+    /// or (seven words or more) at most half the word pairs distinct.
+    public static func isDegenerate(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter && !$0.isNumber && $0 != "'" }
+        guard words.count >= 4 else { return false }
+        if Set(words).count * 3 < words.count { return true }
+        var counts: [Substring: Int] = [:]
+        for word in words { counts[word, default: 0] += 1 }
+        let top = counts.values.max() ?? 0
+        if top >= 4 && top * 2 >= words.count { return true }
+        // A short phrase said over and over ("I'll double I'll double I'll double I'll double"):
+        // most word pairs are repeats.
+        let pairs = zip(words, words.dropFirst()).map { "\($0) \($1)" }
+        return pairs.count >= 6 && Set(pairs).count * 2 <= pairs.count
     }
 
     /// The turn's text on one line, at most about `maxCharacters`, cut at a word; nil when

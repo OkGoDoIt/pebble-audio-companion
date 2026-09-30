@@ -23,7 +23,8 @@ public struct HistoryDayFacts: Equatable, Sendable {
     public var recordings: Int
     /// Of those, the ones with a finished transcript (words or settled no-speech).
     public var transcribedRecordings: Int
-    /// Recorded time inside the day whose recording is still waiting for its transcript.
+    /// Stored audio inside the day whose recording is still waiting for its transcript (media
+    /// time, not the wall span its recordings cover).
     public var waitingMs: Int64
     /// Conversations overlapping the day (never one hidden by a pending delete).
     public var conversations: [HistoryConversationFact]

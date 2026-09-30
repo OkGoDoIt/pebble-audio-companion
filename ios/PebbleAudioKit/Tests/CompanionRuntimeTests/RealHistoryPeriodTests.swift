@@ -117,6 +117,24 @@ struct RealHistoryPeriodTests {
             print(render(period, elapsed: elapsed))
             month = HistoryCalendar.month(containing: HistoryCalendar.key(month.upperBound, addingDays: 1))
         }
+
+        // Snippets of the days asked for (PEBBLE_HISTORY_DAYS), and the results of the most used tag.
+        let snippetDays = (ProcessInfo.processInfo.environment["PEBBLE_HISTORY_DAYS"] ?? "2026-09-22,2026-09-23")
+            .split(separator: ",").map(String.init)
+        for day in snippetDays {
+            let built = try await reader.day(day, library, nowMs: nowMs, isToday: day == bounds.todayDateKey, isLive: false)
+            for case .chapter(let card) in built.day.items {
+                print("real-periods: snippet \(day) \(clip(card.title ?? card.snippet.map { "“\($0)”" }, 70))")
+            }
+        }
+        let thisMonth = try await reader.month(
+            containing: bounds.todayDateKey, firstWeekday: firstWeekday, library, nowMs: nowMs, isLive: false)
+        if let tag = thisMonth.tagCounts.first?.name {
+            var hits: [HistoryReader.TagHit] = []
+            let elapsed = try await clock.measure { hits = try await reader.tagHits(tag: tag, library) }
+            print("real-periods: tag “\(tag)”: \(hits.count) results on \(Set(hits.map(\.dateKey)).count) days in \(format(elapsed))")
+            for hit in hits.prefix(8) { print("real-periods:    \(hit.dateKey) \(clip(hit.title, 60))") }
+        }
     }
 }
 
