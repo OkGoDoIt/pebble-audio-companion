@@ -82,22 +82,33 @@ enum HistoryLabels {
             ? Copy.History.since(name, time: HistoryFormat.time(gap.startMs, zone: zone, locale: locale))
             : Copy.History.gapLabel(name, duration: HistoryFormat.duration(ms: gap.endMs - gap.startMs))
 
+        // Loss carried inside a gap (`HistoryGap.missingMs`, "· 4 s missing") is said exactly as
+        // on a card. It used to be dropped here: 09-24 of the real backup drew a 20-hour "Not
+        // transcribed yet" whose 5 minutes of lost audio appeared nowhere.
+        let missing = gap.kind != .audioMissing && gap.missingMs > 0
+            ? Copy.History.missing(HistoryFormat.duration(ms: gap.missingMs)) : nil
+        func joined(_ parts: String?...) -> String? {
+            let present = parts.compactMap { $0 }
+            return present.isEmpty ? nil : present.joined(separator: " · ")
+        }
+
         switch gap.kind {
         case .quiet:
-            guard minutes >= quietLabelMinimumMinutes else { return GapText() }
-            return GapText(title: title, detail: minutes > quietRangeMinimumMinutes ? range : nil)
+            // A gap carrying loss is always labelled: the loss must be said somewhere.
+            guard minutes >= quietLabelMinimumMinutes || missing != nil else { return GapText() }
+            return GapText(title: title, detail: joined(minutes > quietRangeMinimumMinutes || missing != nil ? range : nil, missing))
         case .noConversation where gap.descriptor == nil:
             // Styled exactly like quiet: it says less rather than guess what the sound was.
-            guard minutes >= quietLabelMinimumMinutes else { return GapText() }
-            return GapText(title: title, detail: minutes > quietRangeMinimumMinutes ? range : nil)
+            guard minutes >= quietLabelMinimumMinutes || missing != nil else { return GapText() }
+            return GapText(title: title, detail: joined(minutes > quietRangeMinimumMinutes || missing != nil ? range : nil, missing))
         case .paused, .audioMissing, .notRecording, .noConversation, .deleted:
             let detail = Copy.History.gapDetail(gap).map { range + " · " + $0 } ?? range
-            return GapText(title: title, detail: openEnded ? Copy.History.gapDetail(gap) : detail)
+            return GapText(title: title, detail: openEnded ? joined(Copy.History.gapDetail(gap), missing) : joined(detail, missing))
         case .notTranscribedYet, .transcriptionFailed:
             // Drawn as a dashed card (`PendingChapterCard`), whose own lines these are.
             let detail = Copy.History.gapDetail(gap).map { range + " · " + $0 }
-            return GapText(title: name, detail: detail ?? range + " · "
-                + HistoryFormat.duration(ms: gap.endMs - gap.startMs))
+                ?? range + " · " + HistoryFormat.duration(ms: gap.endMs - gap.startMs)
+            return GapText(title: name, detail: joined(detail, missing))
         }
     }
 
@@ -173,6 +184,9 @@ enum HistoryLabels {
                 name, HistoryFormat.spokenDuration(ms: gap.endMs - gap.startMs),
                 HistoryFormat.spokenTimeRange(gap.startMs, gap.endMs, zone: zone, locale: locale),
             ]
+        }
+        if gap.kind != .audioMissing, gap.missingMs > 0 {
+            parts.append(Copy.History.A11y.missing(HistoryFormat.spokenDuration(ms: gap.missingMs)))
         }
         if gap.kind == .audioMissing, gap.lossCauses.count > 1 {
             parts.append(gap.lossCauses.map(Copy.History.lossCause).joined(separator: ", "))

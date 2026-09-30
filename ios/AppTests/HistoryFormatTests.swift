@@ -285,6 +285,20 @@ struct HistoryFormatTests {
         #expect(plain(failed.detail ?? "") == "9:30 – 9:44 PM · \(TranscriptionFailureKind.providerRefusedAudio.reason)")
     }
 
+    @Test func lossCarriedInsideAGapIsSaid() {
+        var waiting = gap(.notTranscribedYet, at(8, 17), at(16, 17))
+        waiting.missingMs = 5 * 60_000
+        let text = HistoryLabels.gapText(waiting, locale: us)
+        #expect(plain(text.detail ?? "") == "8:17 AM – 4:17 PM · 8 hr · 5 min missing")
+        #expect(HistoryLabels.gapAccessibilityLabel(waiting, locale: us).contains("missing"))
+        // A short quiet gap is bare — unless it carries loss, which is never left unsaid.
+        var quiet = gap(.quiet, at(10, 0), at(10, 5))
+        #expect(HistoryLabels.gapText(quiet, locale: us).title == nil)
+        quiet.missingMs = 4_000
+        #expect(HistoryLabels.gapText(quiet, locale: us).title != nil)
+        #expect(plain(HistoryLabels.gapText(quiet, locale: us).detail ?? "").hasSuffix("missing"))
+    }
+
     @Test func anOpenEndedPauseSaysSince() {
         let text = HistoryLabels.gapText(gap(.paused, at(14, 30), at(15, 5), pausedBy: .you), openEnded: true, locale: us)
         #expect(plain(text.title ?? "") == "Paused since 2:30 PM")
