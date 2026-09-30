@@ -176,16 +176,18 @@ enum TranscriptItems {
         let wallSegments: [SearchKit.TranscriptSegment]
         let wallWords: [SearchKit.TranscriptWord]
         if convertsFromMedia {
+            // `wallOffset(ofMedia:)` is the shared form of this rule (exact → converted); this
+            // branch only runs on an exact clock, so it is `wall(fromMedia:)` here.
             wallSegments = ownSegments.map {
                 var span = $0
-                span.startMs = clock.wall(fromMedia: $0.startMs)
-                span.endMs = clock.wall(fromMedia: max($0.endMs, $0.startMs))
+                span.startMs = clock.wallOffset(ofMedia: $0.startMs)
+                span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
                 return span
             }
             wallWords = ownWords.map {
                 var span = $0
-                span.startMs = clock.wall(fromMedia: $0.startMs)
-                span.endMs = clock.wall(fromMedia: max($0.endMs, $0.startMs))
+                span.startMs = clock.wallOffset(ofMedia: $0.startMs)
+                span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
                 return span
             }
         } else {

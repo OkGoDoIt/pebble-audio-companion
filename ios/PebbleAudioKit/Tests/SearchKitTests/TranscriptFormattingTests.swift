@@ -121,6 +121,33 @@ import WireProtocol
         #expect(items[1].asSpeech != nil)
     }
 
+    /// The watch's power-save pause is not loss (`GapClassifier`), but nothing was heard either.
+    /// The transcript has only two row kinds, so it keeps the interruption row, named by its
+    /// cause — never "quiet", which would describe a room nobody was listening to.
+    @Test func transcriptTimelineItemsKeepAPowerSavePauseOutOfQuiet() throws {
+        let items = transcriptTimelineItems(
+            meta: testMeta(
+                gaps: [
+                    GapMeta(
+                        firstMissingSequence: 0,
+                        missingFrameCount: 500,  // 10 s
+                        firstMissingSampleIndex: 0,
+                        origin: GapMeta.originWatch,
+                        reasonRaw: Int(GapReason.powerSave.rawValue)
+                    )
+                ],
+                lastSampleIndexExclusive: 320_000  // 20 s
+            ),
+            segments: [
+                TranscriptSegment(text: "back after the pause", startMs: 12_000, endMs: 14_000)
+            ]
+        )
+
+        let pause = try #require(items.first?.asPause)
+        #expect(pause.missing == true)
+        #expect(pause.label == "audio interrupted for 10 sec (watch was saving power)")
+    }
+
     @Test func transcriptTimelineItemsCountReasonsWhenLossReasonsCollapseTogether() throws {
         let items = transcriptTimelineItems(
             meta: testMeta(

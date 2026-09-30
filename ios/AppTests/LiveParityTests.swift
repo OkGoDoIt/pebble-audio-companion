@@ -127,7 +127,7 @@ struct LiveParityTests {
     }
 
     /// A gap reason we cannot decode is loss, never quiet — the fail-closed half of the same
-    /// rule `CoverageComputer.isVisibleLoss` applies.
+    /// rule `GapClassifier` (behind `CoverageComputer`) applies.
     @Test func anUnknownGapReasonIsNotTreatedAsQuiet() {
         let unknown = GapMeta(
             firstMissingSequence: 0, missingFrameCount: 50, firstMissingSampleIndex: 16_000,

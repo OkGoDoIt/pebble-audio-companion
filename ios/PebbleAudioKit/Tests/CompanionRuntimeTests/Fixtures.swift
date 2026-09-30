@@ -640,6 +640,9 @@ final class RuntimeFixture: @unchecked Sendable {
                 enforceRetention: { try await retention.enforce() },
                 cascadeDeleted: { _ = await cascade.deleteSegment($0) },
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
+                fillFollowUpWallTimes: { [database] in
+                    try await runFollowUpWallTimeFill(database: database, store: store)
+                },
                 refreshDiagnostics: { await diagnostics.refresh() }
             )
         )

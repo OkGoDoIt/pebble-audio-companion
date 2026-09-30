@@ -1,11 +1,11 @@
 import SwiftUI
 
-// MARK: - Layout roles
+// Corrected after the 2026-09-30 simulator spike. Changes vs. the sketch are marked `SPIKE:`.
 
 enum TimelineRole: Equatable, Sendable {
     case axis
     case item(TimelineSpan, floor: CGFloat)
-    case mark(Int64)            // hour tick+label or the "now" marker, centred on its instant
+    case mark(Int64)
 }
 
 struct TimelineRoleKey: LayoutValueKey {
@@ -16,7 +16,6 @@ extension View {
     func timelineRole(_ role: TimelineRole) -> some View { layoutValue(key: TimelineRoleKey.self, value: role) }
 }
 
-/// One pass: items stacked with min heights, then axis + marks placed from the item frames.
 struct DayTimelineLayout: Layout {
     var spacing: CGFloat = 6
     var gutterWidth: CGFloat = 58
@@ -25,6 +24,9 @@ struct DayTimelineLayout: Layout {
     struct Cache { var width: CGFloat = -1; var heights: [CGFloat] = [] }
 
     func makeCache(subviews: Subviews) -> Cache { Cache() }
+    // Called on every update of the parent body (any @State write on the page), and each
+    // re-measure after it cost 13-15 ms in the spike (vs ~100 ms cold). So: do not write page
+    // state that nothing needs (the sketch's `insets` state was one such write).
     func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
 
     private func itemHeights(width: CGFloat, subviews: Subviews, cache: inout Cache) -> [CGFloat] {
@@ -40,12 +42,17 @@ struct DayTimelineLayout: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let width = proposal.width ?? 360
+        // SPIKE: a non-lazy HStack pager proposed width 0 and then 58 before the real width; each
+        // degenerate pass measured all 25 cards (~120 ms at width 0). Don't measure children for
+        // a width the content column cannot have.
+        guard width > gutterWidth + 44 else { return CGSize(width: width, height: 0) }
         let heights = itemHeights(width: width, subviews: subviews, cache: &cache).filter { $0 >= 0 }
         let total = heights.reduce(0, +) + spacing * CGFloat(max(0, heights.count - 1))
         return CGSize(width: width, height: total)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        guard bounds.width > gutterWidth + 44 else { return }
         let heights = itemHeights(width: bounds.width, subviews: subviews, cache: &cache)
         var y = bounds.minY
         var spans: [TimelineSpan] = []
@@ -63,10 +70,12 @@ struct DayTimelineLayout: Layout {
                 sub.place(at: CGPoint(x: bounds.minX + axisX, y: bounds.minY), anchor: .top,
                           proposal: ProposedViewSize(width: 1.5, height: bounds.height))
             case .mark(let ms):
-                // Marks are trailing-aligned to the axis; their instant is their vertical centre.
                 if let my = TimelineGeometry.y(for: ms, spans: spans, frames: frames) {
+                    // SPIKE: propose the gutter width instead of `.unspecified`. At AX5 text the
+                    // unconstrained "6 AM" was wider than the gutter and ran off the leading edge
+                    // (shots/q10-day-AX5-text-size-scrolled.png). HourMark scales down to fit.
                     sub.place(at: CGPoint(x: bounds.minX + axisX + 5, y: my), anchor: .trailing,
-                              proposal: .unspecified)
+                              proposal: ProposedViewSize(width: axisX + 5, height: nil))
                 }
             case .item: break
             }
@@ -74,10 +83,8 @@ struct DayTimelineLayout: Layout {
     }
 }
 
-// MARK: - Elastic chapter card: proposes the soft max to its child, reports the child unclamped
-
-/// `.frame(maxHeight:)` would clamp the reported size and overlap the next item when even the
-/// last candidate overflows (Dynamic Type); this reports the true size so the cap yields.
+/// Unchanged from the sketch; behaved as designed (the card grows past the band when even the
+/// last candidate overflows, e.g. a 50-min chapter with 3 follow-ups: 158 pt vs 150 pt band).
 struct ProposeHeight: Layout {
     var height: CGFloat
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -90,6 +97,85 @@ struct ProposeHeight: Layout {
     }
 }
 
+// MARK: - Pinned gap label
+
+struct GapLabelPin: ViewModifier {
+    nonisolated static let space = "timeline.gap"
+    /// SPIKE: no `insets` parameter. `bounds(of: .scrollView(axis: .vertical))` already excludes
+    /// the nav bar + safeAreaBar (151 pt) and the tab bar (83 pt). The sketch's subtraction made
+    /// the visible band 406 pt instead of 640 pt and pinned the label 151 pt below the bar.
+    /// Dropping it also removes the page's `onScrollGeometryChange(contentInsets)` → @State write.
+    var margin: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        let margin = self.margin
+        return content.visualEffect { effect, proxy in
+            let gap = proxy.bounds(of: .named(Self.space)) ?? .zero
+            let visible = proxy.bounds(of: .scrollView(axis: .vertical)) ?? gap
+            return effect.offset(y: TimelineGeometry.pinOffset(
+                labelHeight: proxy.size.height, gap: gap, visible: visible, margin: margin))
+        }
+    }
+}
+
+struct GapRow: View {
+    var title: String?
+    var detail: String?
+    var span: TimelineSpan
+
+    var body: some View {
+        // SPIKE: floor depends on whether the gap is labelled (sketch always used 44).
+        let floor = title == nil ? TimelineScale.quietGapFloor : TimelineScale.labelledGapFloor
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: TimelineGeometry.minHeight(for: span, floor: floor))
+            .overlay(alignment: .leading) {
+                if let title {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.caption)
+                        if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
+                    }
+                    // SPIKE: the gap row spans the gutter too; without this the label sat on the
+                    // hour labels. 58 gutter + 8 = aligned with the card content column.
+                    .padding(.leading, 66)
+                    .modifier(GapLabelPin())
+                }
+            }
+            .coordinateSpace(.named(GapLabelPin.space))
+            .accessibilityElement(children: .combine)
+    }
+}
+
+struct HourMark: View {
+    var ms: Int64
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(Date(timeIntervalSince1970: Double(ms) / 1000), format: .dateTime.hour())
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.5)          // SPIKE: fits the gutter at AX sizes
+            Rectangle().fill(.secondary).frame(width: 7, height: 1)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Pills: SPIKE: `.fixedSize()` — at AX5 "Oliver" broke inside its pill ("Oli/ver").
+struct Pill: View {
+    var text: String
+    var person: Bool
+    var body: some View {
+        HStack(spacing: 3) {
+            if person { Image(systemName: "person") }
+            Text(text).lineLimit(1)
+        }
+        .font(.caption2.weight(.medium))
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .fixedSize()
+    }
+}
+
+/// Chapter card. The ViewThatFits approach WORKS visually but costs ~90-120 ms per 25-card page
+/// on the first layout (simulator, Debug and Release alike) vs 14-21 ms with one candidate.
+/// Keep this shape only until the computed-line-count fallback (plan 7.12) is in.
 struct ChapterCardSketch: View {
     var title: String
     var timeLine: String
@@ -108,13 +194,14 @@ struct ChapterCardSketch: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 14))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .combine)
     }
 
     private func content(summaryLines: Int, collapseFollowUps: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(title).font(.callout.weight(.semibold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Text(timeLine).font(.caption).fixedSize(horizontal: false, vertical: true)
             if let summary, span.minutes >= CGFloat(TimelineScale.noSummaryUnderMinutes) {
                 Text(summary).font(.subheadline).lineLimit(summaryLines)
@@ -125,69 +212,5 @@ struct ChapterCardSketch: View {
             }
         }
         .padding(EdgeInsets(top: 10, leading: 13, bottom: 11, trailing: 13))
-    }
-}
-
-// MARK: - Pinned gap label
-
-struct GapLabelPin: ViewModifier {
-    nonisolated static let space = "timeline.gap"
-    /// Top/bottom insets of the vertical scroll view (nav bar + safeAreaBar, floating tab bar),
-    /// read once per change via onScrollGeometryChange — not per frame.
-    var insets: EdgeInsets
-
-    func body(content: Content) -> some View {
-        content.visualEffect { effect, proxy in
-            let local = proxy.size.height
-            let gap = proxy.bounds(of: .named(Self.space)) ?? .zero
-            let viewport = proxy.bounds(of: .scrollView(axis: .vertical)) ?? gap
-            let visible = CGRect(x: viewport.minX, y: viewport.minY + insets.top,
-                                 width: viewport.width,
-                                 height: max(0, viewport.height - insets.top - insets.bottom))
-            return effect.offset(y: TimelineGeometry.pinOffset(labelHeight: local, gap: gap, visible: visible))
-        }
-    }
-}
-
-struct GapRowSketch: View {
-    var label: String
-    var span: TimelineSpan
-    var insets: EdgeInsets
-    var body: some View {
-        Color.clear
-            .frame(maxWidth: .infinity, minHeight: TimelineGeometry.minHeight(for: span, floor: 44))
-            .overlay(alignment: .leading) {
-                Text(label).font(.caption).modifier(GapLabelPin(insets: insets))
-            }
-            .coordinateSpace(.named(GapLabelPin.space))
-            .accessibilityElement(children: .combine)
-    }
-}
-
-struct DayTimelineSketch: View {
-    var items: [(TimelineSpan, Bool)]
-    var marks: [Int64]
-    var insets: EdgeInsets
-    var body: some View {
-        DayTimelineLayout {
-            Rectangle().fill(.gray.opacity(0.3)).timelineRole(.axis).accessibilityHidden(true)
-            ForEach(items.indices, id: \.self) { i in
-                let (span, isGap) = items[i]
-                Group {
-                    if isGap {
-                        GapRowSketch(label: "Quiet · 1 hr 5 min", span: span, insets: insets)
-                    } else {
-                        ChapterCardSketch(title: "T", timeLine: "9:05 – 10:15 AM", summary: "S",
-                                          followUps: [], span: span)
-                            .padding(.leading, 58)
-                    }
-                }
-                .timelineRole(.item(span, floor: isGap ? 8 : 0))
-            }
-            ForEach(marks, id: \.self) { ms in
-                Text(Date(timeIntervalSince1970: Double(ms) / 1000), format: .dateTime.hour())
-                    .font(.caption).timelineRole(.mark(ms)).accessibilityHidden(true)
-            }
-        }
     }
 }

@@ -16,7 +16,6 @@ struct FollowUpsScreen: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model = FollowUpsViewModel()
-    @State private var snackbar: SnackbarItem?
 
     var body: some View {
         content
@@ -25,7 +24,8 @@ struct FollowUpsScreen: View {
             .navigationDestination(for: Route.self) { route in
                 destination(for: route)
             }
-            .snackbar(item: $snackbar)
+            // Its snackbars post to `UndoCenter.shared`, which `RootView` hosts once for the
+            // whole app — a second host here would stack one snackbar on top of the other.
             .task { await model.start(scope: router.consumePendingFollowUpScope()) }
             // A link that arrives while this screen is already up never re-runs `.task`, so
             // without this it did nothing now and silently flipped the filter minutes later,
@@ -275,7 +275,7 @@ struct FollowUpsScreen: View {
     /// decision, and a mis-swipe on a row you were only reading is easy.
     private func restore(_ item: FollowUpItem) {
         model.setArchived(item, archived: false)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.restored, actionTitle: Copy.Common.undo
         ) {
             model.setArchived(item, archived: true)
@@ -373,7 +373,7 @@ struct FollowUpsScreen: View {
     private func delete(_ item: FollowUpItem) {
         Haptics.destructiveConfirmed()
         model.delete(item)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.deleted, actionTitle: Copy.Common.undo
         ) {
             model.undoDelete(item)
@@ -384,7 +384,7 @@ struct FollowUpsScreen: View {
     /// list is easy.
     private func snooze(_ item: FollowUpItem, until date: Date) {
         model.snooze(item, until: date)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.putOff(FollowUpFormatting.day(date, now: model.now)),
             actionTitle: Copy.Common.undo
         ) {
@@ -394,7 +394,7 @@ struct FollowUpsScreen: View {
 
     private func archive(_ item: FollowUpItem) {
         model.setArchived(item, archived: true)
-        snackbar = SnackbarItem(
+        UndoCenter.shared.snackbar = SnackbarItem(
             message: Copy.FollowUps.filedAway, actionTitle: Copy.Common.undo
         ) {
             model.setArchived(item, archived: false)

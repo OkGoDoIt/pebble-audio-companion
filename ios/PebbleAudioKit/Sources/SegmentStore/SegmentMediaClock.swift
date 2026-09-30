@@ -67,6 +67,9 @@ public func segmentStoredAudioMs(_ meta: SegmentMeta) -> Int64 {
 public struct SegmentMediaClock: Sendable {
     public let wallSpanMs: Int64
     public let mediaSpanMs: Int64
+    /// Where the segment's first sample sits on the wall clock (`SegmentMeta.startWallMs` — the
+    /// anchor every consumer files this recording under, never the stream's `startTimeMs`).
+    public let startWallMs: Int64
 
     /// Unioned gap spans in wall ms since the segment's first sample.
     private let starts: [Int64]
@@ -94,6 +97,7 @@ public struct SegmentMediaClock: Sendable {
         let media = segmentStoredAudioMs(meta)
         wallSpanMs = wall
         mediaSpanMs = media
+        startWallMs = meta.startWallMs
 
         let rate = Int64(max(meta.sampleRateHz, 1))
         var raw: [(Int64, Int64)] = []
@@ -179,6 +183,42 @@ public struct SegmentMediaClock: Sendable {
         return min(point + skipped, wallSpanMs)
     }
 
+    /// A transcript offset (media time — the provider's clock) as an offset on the wall clock,
+    /// under the one rule every consumer follows: converted through the gap records ONLY when they
+    /// account for the recording (`isExact`), and otherwise left exactly as it is.
+    ///
+    /// Not `wall(fromMedia:)`, whose inexact fallback is a proportional guess. On a segment whose
+    /// records do not add up that guess spreads the turns across phantom wall time — on the
+    /// 2026-09-08 backup 169 transcribed segments are inexact and stretching their 14,272 turns
+    /// moved 4,813 by over a minute, the worst from 14 m 43 s to 14 h 59 m. Left alone, an offset
+    /// at least sits where the audio does. The conversation split, the transcript screen, Ask's
+    /// excerpts and a follow-up's source all take it from here so they cannot disagree about
+    /// when a word was said.
+    ///
+    /// Not clamped: callers differ on that on purpose (the live preview can run ahead of its
+    /// metadata), so each clamps where it renders.
+    public func wallOffset(ofMedia mediaMs: Int64) -> Int64 {
+        isExact ? wall(fromMedia: mediaMs) : mediaMs
+    }
+
+    /// One transcript turn (media `startMs..<endMs`, as the provider reports it) on the wall
+    /// clock, as epoch ms. The end is never before the start. Unclamped — see
+    /// `SegmentWallRange.clamped(to:)`.
+    public func wallRange(ofMediaStartMs startMs: Int64, endMs: Int64) -> SegmentWallRange {
+        SegmentWallRange(
+            startMs: startWallMs + wallOffset(ofMedia: startMs),
+            endMs: startWallMs + wallOffset(ofMedia: max(endMs, startMs)),
+            isApproximate: !isExact)
+    }
+
+    /// `wallRange(ofMediaStartMs:endMs:)` for a one-off. Building the clock unions every gap
+    /// record of the segment, so a caller converting many turns should build it once.
+    public static func wallRange(
+        ofMediaStartMs startMs: Int64, endMs: Int64, in meta: SegmentMeta
+    ) -> SegmentWallRange {
+        SegmentMediaClock(meta).wallRange(ofMediaStartMs: startMs, endMs: endMs)
+    }
+
     /// The wall stretches a range of STORED audio occupies, gaps cut out.
     ///
     /// `wall(fromMedia:)` maps a point; a range needs this instead, because a stretch of stored
@@ -231,5 +271,29 @@ public struct SegmentMediaClock: Sendable {
             }
         }
         return found
+    }
+}
+
+/// A transcript turn placed on the wall clock (epoch ms).
+public struct SegmentWallRange: Equatable, Sendable {
+    public var startMs: Int64
+    public var endMs: Int64
+    /// True when the segment's gap records do not account for the difference between its stored
+    /// audio and its elapsed wall time, so the turn's offsets were left on the media clock
+    /// (`SegmentMediaClock.wallOffset(ofMedia:)`). The time is then only as good as the
+    /// assumption that nothing was withheld before it; say "about" rather than a precise time.
+    public var isApproximate: Bool
+
+    public init(startMs: Int64, endMs: Int64, isApproximate: Bool) {
+        self.startMs = startMs
+        self.endMs = endMs
+        self.isApproximate = isApproximate
+    }
+
+    /// Pinned inside `bounds`: the start into it, the end into `start...upperBound`.
+    public func clamped(to bounds: ClosedRange<Int64>) -> SegmentWallRange {
+        let start = min(max(startMs, bounds.lowerBound), bounds.upperBound)
+        let end = min(max(endMs, start), bounds.upperBound)
+        return SegmentWallRange(startMs: start, endMs: end, isApproximate: isApproximate)
     }
 }

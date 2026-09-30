@@ -128,6 +128,8 @@ final class AppComposition {
     /// may apply receive-only to it.
     private(set) static var sceneHasBeenActive = false
     private var todaySource: LiveTodayDataSource?
+    /// History's live source; `LiveWorld` tells it when a delete's undo window opens or closes.
+    private(set) var history: LiveHistory?
     /// The flight recorder's liveness pulse — see `startHeartbeat`.
     private var heartbeatTask: Task<Void, Never>?
     /// Per-heartbeat counters for the battery telemetry: how many Bluetooth notifications woke
@@ -1083,6 +1085,12 @@ final class AppComposition {
                 enforceRetention: { try await retention.enforce() },
                 cascadeDeleted: { _ = await cascade.deleteSegment($0) },
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
+                // History places a follow-up by when it was said; rows extracted before that was
+                // stored get it here, once per launch, after the receiver is already up.
+                fillFollowUpWallTimes: {
+                    try await runFollowUpWallTimeFill(
+                        database: database, store: store, log: AppRuntimeLog.runtimeLog)
+                },
                 refreshDiagnostics: { await diagnostics.refresh() }
             ),
             onStep: { startupActivity.record($0) },
@@ -1223,6 +1231,9 @@ final class AppComposition {
         if !Self.usesDemoData {
             AppDataSources.current = AppDataSources(today: today, live: today)
             AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
+            let history = makeHistory(today: today)
+            self.history = history
+            HistoryDataSources.current = HistoryDataSources(history: history)
             SettingsDataSources.current = LiveSettingsDataSources.make(
                 composition: self, capture: today
             )

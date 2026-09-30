@@ -435,6 +435,39 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(reasons == ["watch dictation used the mic"])
     }
 
+    /// The day strip has drawn the watch's power-save pause as PAUSED since ee0b1f6; gap status
+    /// still counted it as loss, so the same stretch was paused on the strip and "missing" beside
+    /// the recording. There is one classifier now, and it says pause.
+    @Test func powerSavePauseIsNotCountedAsMissing() {
+        let powerSave = GapMeta(
+            firstMissingSequence: 100,
+            missingFrameCount: 200, // 4 s, inside the 10 s extent
+            firstMissingSampleIndex: 100 * 320,
+            origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.powerSave.rawValue)
+        )
+        let segment = meta("seg-power-save", 0, gaps: [powerSave])
+        #expect(visibleLossGaps(segment).isEmpty)
+        #expect(totalGapMs(segment) == 0)
+        #expect(displayGapMs(segment) == 0)
+        #expect(!isVisibleLossGap(powerSave, allGaps: segment.gaps))
+    }
+
+    /// `.userDisabled` stays loss here, as it always has been: how a watch-side stop should be
+    /// shown is an open product decision, and unifying the classifiers did not make it.
+    @Test func userDisabledGapStillCountsAsMissing() {
+        let stop = GapMeta(
+            firstMissingSequence: 100,
+            missingFrameCount: 200,
+            firstMissingSampleIndex: 100 * 320,
+            origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.userDisabled.rawValue)
+        )
+        let segment = meta("seg-user-disabled", 0, gaps: [stop])
+        #expect(visibleLossGaps(segment) == [stop])
+        #expect(totalGapMs(segment) == 4_000)
+    }
+
     @Test func duplicateSequenceSkipCoveredBySuppressedSilenceIsQuiet() {
         let quiet = GapMeta(
             firstMissingSequence: 100,

@@ -372,19 +372,21 @@ public enum ConversationBoundaryDetector {
     }
 
     /// The same runs, keeping the word count, for the rules that need to know how much was
-    /// said and not merely that something was.
-    static func spokenRuns(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
+    /// said and not merely that something was. Public for History's day, which draws its talk
+    /// stretches from exactly these runs.
+    public static func spokenRuns(_ meta: SegmentMeta, _ evidence: SegmentSpeechEvidence?)
         -> [(startMs: Int64, endMs: Int64, wordCount: Int)]
     {
         guard let evidence, !evidence.speech.isEmpty else { return [] }
+        // Clamped into the member's placement, which is `segmentEndMs` — bounded by the close,
+        // so it can be shorter than the clock's own wall span.
         let start = ConversationGrouper.segmentStartMs(meta)
-        let span = max(ConversationGrouper.segmentEndMs(meta) - start, 0)
+        let end = max(ConversationGrouper.segmentEndMs(meta), start)
         let clock = SegmentMediaClock(meta)
-        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
         return evidence.speech.map { run in
-            let a = min(max(toWall(run.startMs), 0), span)
-            let b = min(max(toWall(run.endMs), a), span)
-            return (start + a, start + b, run.wordCount)
+            let wall = clock.wallRange(ofMediaStartMs: run.startMs, endMs: run.endMs)
+                .clamped(to: start...end)
+            return (wall.startMs, wall.endMs, run.wordCount)
         }
     }
 

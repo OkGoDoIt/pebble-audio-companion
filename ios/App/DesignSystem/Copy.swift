@@ -1176,8 +1176,11 @@ enum Copy {
     enum Popover {
         /// e.g. "quiet 2:10–2:14 PM".
         static func quietSpan(_ range: String) -> String { "quiet \(range)" }
-        /// e.g. "missing 40 sec — Bluetooth".
-        static func missingSpan(_ duration: String) -> String { "missing \(duration) — Bluetooth" }
+        /// e.g. "missing 40 sec". No cause: a strip span is merged loss from any number of gap
+        /// records and carries none of their reasons, and this used to append "— Bluetooth" to
+        /// every one of them — a guess, often wrong (a full watch buffer, watch dictation, a
+        /// dropped notification). The transcript's interruption rows name the recorded cause.
+        static func missingSpan(_ duration: String) -> String { "missing \(duration)" }
         /// e.g. "paused 1:00–1:20 PM".
         static func pausedSpan(_ range: String) -> String { "paused \(range)" }
     }

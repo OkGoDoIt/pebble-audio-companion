@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SegmentStore
 
 // UI-facing stores over the AppDatabase (plan 6.5). Async APIs for mutations/fetches plus
 // GRDB ValueObservation wrappers (AsyncSequence) so the UI observes the DB and never polls
@@ -96,6 +97,12 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
     /// The model that found it, for an AI item — shown on its provenance card. Nil for an item
     /// a person wrote, and for rows written before this was recorded.
     public var model: String?
+    /// When the quote was said, on the wall clock (epoch ms): `sourceStartMs`/`sourceEndMs`
+    /// converted through the segment's own clock at the moment they were located, so it
+    /// survives the segment's sidecar. `isApproximate` when that clock's gap records did not
+    /// account for the recording. Nil when the moment is unknown — a hand-written item, an
+    /// item whose quote matched no diarized turn, or a row nothing has filled yet.
+    public var sourceWall: SegmentWallRange?
 
     public init(
         id: String, text: String, done: Bool, sourceConversationId: String?,
@@ -112,7 +119,8 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         editedAtMs: Int64? = nil,
         touchedAtMs: Int64? = nil,
         origin: FollowUpOrigin = .ai,
-        model: String? = nil
+        model: String? = nil,
+        sourceWall: SegmentWallRange? = nil
     ) {
         self.id = id
         self.text = text
@@ -133,6 +141,7 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         self.touchedAtMs = touchedAtMs
         self.origin = origin
         self.model = model
+        self.sourceWall = sourceWall
     }
 
     public var isArchived: Bool { archivedAtMs != nil }
@@ -679,7 +688,8 @@ public struct FollowUpStore: Sendable {
             editedAtMs: row["editedAtMs"],
             touchedAtMs: row["touchedAtMs"],
             origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai,
-            model: row["model"])
+            model: row["model"],
+            sourceWall: SegmentWallRange.sourceWall(from: row))
     }
 
     /// Every column, in one place, so `add` and `upsert` cannot drift apart.
@@ -688,8 +698,8 @@ public struct FollowUpStore: Sendable {
             (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs,
              quote, why, dueAtMs, priority, sourceStartMs, sourceEndMs,
              completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, touchedAtMs, origin,
-             model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             model, sourceWallStartMs, sourceWallEndMs, sourceWallApproximate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     private static func arguments(_ item: FollowUp) -> StatementArguments {
@@ -698,7 +708,8 @@ public struct FollowUpStore: Sendable {
             item.createdAtMs, item.quote, item.why, item.dueAtMs, item.priority.rawValue,
             item.sourceStartMs, item.sourceEndMs, item.completedAtMs, item.archivedAtMs,
             item.snoozedUntilMs, item.editedAtMs, item.touchedAtMs, item.origin.rawValue,
-            item.model,
+            item.model, item.sourceWall?.startMs, item.sourceWall?.endMs,
+            item.sourceWall?.isApproximate,
         ]
     }
 
@@ -741,11 +752,31 @@ public struct FollowUpStore: Sendable {
                         sourceSegmentId = excluded.sourceSegmentId,
                         sourceStartMs = excluded.sourceStartMs,
                         sourceEndMs = excluded.sourceEndMs,
-                        model = COALESCE(excluded.model, follow_ups.model)
+                        model = COALESCE(excluded.model, follow_ups.model),
+                        \(Self.keepWallTimeUnlessRelocated)
                     """,
                 arguments: Self.arguments(item))
         }
     }
+
+    /// The wall-time half of `upsertExtracted`'s conflict clause. The incoming value wins —
+    /// it was computed from the location being written — except where it is NULL and the
+    /// location (segment and media offsets) is the one already on the row: a writer that did
+    /// not compute a wall time must not erase one the fill or an earlier extraction stored for
+    /// the very same words. A MOVED location takes the incoming value, NULL included, so a
+    /// stale time never outlives the quote it described. In an upsert, `follow_ups.x` is the
+    /// row's value before the update.
+    private static let keepWallTimeUnlessRelocated =
+        ["sourceWallStartMs", "sourceWallEndMs", "sourceWallApproximate"].map { column in
+            """
+            \(column) = CASE
+                    WHEN excluded.sourceWallStartMs IS NULL
+                        AND excluded.sourceSegmentId IS follow_ups.sourceSegmentId
+                        AND excluded.sourceStartMs IS follow_ups.sourceStartMs
+                        AND excluded.sourceEndMs IS follow_ups.sourceEndMs
+                    THEN follow_ups.\(column) ELSE excluded.\(column) END
+            """
+        }.joined(separator: ",\n")
 
     public func load(id: String) async throws -> FollowUp? {
         try await db.reader.read { db in

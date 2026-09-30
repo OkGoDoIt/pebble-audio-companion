@@ -33,23 +33,26 @@ struct LiveMockConformanceTests {
         var mock: String
     }
 
-    /// The three files that declare the app's data-source seams.
+    /// The files that declare the app's data-source seams.
     static let protocolFiles = [
         "App/Screens/Library/DataSources.swift",
         "App/Screens/Settings/SettingsDataSources.swift",
         "App/Screens/Today/TodayDisplayModels.swift",
+        "App/Screens/History/HistoryDataSources.swift",
     ]
 
     static let liveFiles = [
         "App/Runtime/LiveLibraryDataSources.swift",
         "App/Runtime/LiveTodayDataSource.swift",
         "App/Runtime/LiveSettingsDataSources.swift",
+        "App/Runtime/LiveHistory.swift",
     ]
 
     static let mockFiles = [
         "App/Screens/Library/MockDataSources.swift",
         "App/Screens/Settings/SettingsDataSources.swift",
         "App/Screens/Today/PreviewTodayData.swift",
+        "App/Screens/History/MockHistory.swift",
     ]
 
     /// Every protocol in `protocolFiles`, with the type that implements it for real and the
@@ -96,6 +99,7 @@ struct LiveMockConformanceTests {
         // deliberately returns nil (it has no audio). Registered so `coversEveryProtocol` can
         // still see that a decision was made about it.
         Pair(protocolName: "ConversationPlayback", live: "", mock: ""),
+        Pair(protocolName: "HistoryDataSource", live: "LiveHistory", mock: "MockHistory"),
     ]
 
     // MARK: - Exemptions

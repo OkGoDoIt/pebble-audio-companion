@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import Migration
 import SegmentStore
@@ -8,13 +9,17 @@ import SegmentStore
 ///
 /// plus the M8 legacy import, which runs ONCE **before all of it** — the importer writes the
 /// segment index and `transcription_tasks` rows that every later step reads, so running it after
-/// recovery would make the first launch look empty.
+/// recovery would make the first launch look empty — and the follow-up wall-time fill for
+/// History, just before diagnostics.
 public enum StartupStep: String, Sendable, Equatable, CaseIterable {
     case legacyImport
     case storeRecover
     case queueRecover
     case retentionEnforce
     case enqueueClosedSegments
+    /// Follow-up wall times for rows that have none yet (`FollowUpWallTimeFill`). After
+    /// retention, so it never computes a time for a row the sweep is about to cascade away.
+    case followUpWallTimes
     case refreshDiagnostics
 }
 
@@ -30,6 +35,11 @@ public struct StartupSteps: Sendable {
     public var enforceRetention: @Sendable () async throws -> [String]
     public var cascadeDeleted: @Sendable (String) async -> Void
     public var enqueueClosedSegments: @Sendable () async throws -> Void
+    /// Gives follow-ups written before `v15-follow-up-wall-times` the wall time extraction now
+    /// stores. Once per process like the rest of this half: with nothing left to fill it is two
+    /// indexed reads, and it catches rows a later write left unfilled (a candidate curated from
+    /// before the upgrade, an item restored after a delete) on the next launch.
+    public var fillFollowUpWallTimes: @Sendable () async throws -> Void = {}
     public var refreshDiagnostics: @Sendable () async -> Void
 
     public init(
@@ -40,6 +50,7 @@ public struct StartupSteps: Sendable {
         enforceRetention: @escaping @Sendable () async throws -> [String] = { [] },
         cascadeDeleted: @escaping @Sendable (String) async -> Void = { _ in },
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
+        fillFollowUpWallTimes: @escaping @Sendable () async throws -> Void = {},
         refreshDiagnostics: @escaping @Sendable () async -> Void = {}
     ) {
         self.runLegacyImportIfNeeded = runLegacyImportIfNeeded
@@ -49,6 +60,7 @@ public struct StartupSteps: Sendable {
         self.enforceRetention = enforceRetention
         self.cascadeDeleted = cascadeDeleted
         self.enqueueClosedSegments = enqueueClosedSegments
+        self.fillFollowUpWallTimes = fillFollowUpWallTimes
         self.refreshDiagnostics = refreshDiagnostics
     }
 }
@@ -143,6 +155,12 @@ public actor StartupSequencer {
             log.failure("enqueue closed segments", error)
         }
 
+        onStep(.followUpWallTimes)
+        do { try await steps.fillFollowUpWallTimes() } catch {
+            // Nothing depends on it: History places an unfilled row by its segment instead.
+            log.failure("follow-up wall times", error)
+        }
+
         onStep(.refreshDiagnostics)
         await steps.refreshDiagnostics()
     }
@@ -156,6 +174,22 @@ public func retentionConfig(for settings: any RuntimeSettings) -> RetentionConfi
         maxTotalBytes: inputs.maxTotalBytes,
         maxAgeMs: inputs.maxAgeMs
     )
+}
+
+/// The `fillFollowUpWallTimes` startup step as the app wires it: segment clocks come from the
+/// store's in-memory index (`SegmentStore.readMeta`, no sidecar read once recovery has built
+/// it), and a line is logged only when something was actually filled — rows whose segment is
+/// gone stay unfilled and are found again every launch, which is not news.
+public func runFollowUpWallTimeFill(
+    database: AppDatabase, store: SegmentStore, log: RuntimeLog = .silent
+) async throws {
+    let outcome = try await FollowUpWallTimeFill(db: database).run(metaOf: {
+        await store.readMeta($0)
+    })
+    guard outcome.filled > 0 else { return }
+    log.write(
+        "follow-up wall times: filled \(outcome.followUps) follow-ups, "
+            + "\(outcome.candidates) candidates; \(outcome.segmentGone) without a segment")
 }
 
 /// One-shot legacy import (plan Part 4.8 / M8). Wraps the importer so the runtime only sees

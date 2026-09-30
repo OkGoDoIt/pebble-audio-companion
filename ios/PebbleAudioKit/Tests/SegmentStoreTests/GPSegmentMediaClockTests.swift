@@ -206,3 +206,86 @@ struct GPSegmentMediaClockTests {
         #expect(clock.wallRanges(fromMedia: 60_000..<120_000) == [120_000..<240_000])
     }
 }
+
+/// The shared turn → wall-clock helper every consumer of a transcript's timings goes through.
+@Suite("segment media clock — turn to wall clock")
+struct SegmentWallRangeTests {
+    private let startMs: Int64 = 1_700_000_000_000
+
+    private func meta(wallMs: Int64, runs: [(Int64, Int64)], storedMs: Int64? = nil) -> SegmentMeta {
+        let withheld = runs.reduce(Int64(0)) { $0 + $1.1 }
+        return SegmentMeta(
+            segmentId: "seg-wr", streamId: 1, protocolVersion: 1, codecIdRaw: 1, channels: 1,
+            frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 9_800, frameDurationMs: 20,
+            startTimeMs: UInt64(startMs), startMonotonicMs: 0, receivedAtMs: startMs + wallMs,
+            firstSampleIndex: 0, lastSampleIndexExclusive: UInt64(wallMs) * 16,
+            frameCount: (storedMs ?? (wallMs - withheld)) / 20,
+            gaps: runs.map {
+                GapMeta(
+                    firstMissingSequence: UInt32($0.0 / 20), missingFrameCount: UInt32($0.1 / 20),
+                    firstMissingSampleIndex: UInt64($0.0) * 16, origin: GapMeta.originWatch,
+                    reasonRaw: Int(GapReason.silenceSuppressed.rawValue))
+            },
+            closeReason: .rotated)
+    }
+
+    @Test("an exact clock converts the turn through the gap records, anchored on the segment start")
+    func exactClockConverts() {
+        let segment = meta(wallMs: 900_000, runs: [(100_000, 40_000), (300_000, 20_000)])
+        let clock = SegmentMediaClock(segment)
+        #expect(clock.isExact)
+        #expect(clock.startWallMs == segment.startWallMs)
+
+        // Media 160-170 s is 40 s behind the wall clock: the first run was withheld before it.
+        let turn = clock.wallRange(ofMediaStartMs: 160_000, endMs: 170_000)
+        #expect(turn == SegmentWallRange(startMs: startMs + 200_000, endMs: startMs + 210_000, isApproximate: false))
+        #expect(clock.wallOffset(ofMedia: 160_000) == clock.wall(fromMedia: 160_000))
+        // The one-off form builds the same clock.
+        #expect(SegmentMediaClock.wallRange(ofMediaStartMs: 160_000, endMs: 170_000, in: segment) == turn)
+        // A reversed turn is a point, never an end before its start.
+        let reversed = clock.wallRange(ofMediaStartMs: 170_000, endMs: 160_000)
+        #expect(reversed.startMs == reversed.endMs)
+        #expect(reversed.startMs == startMs + 210_000)
+    }
+
+    @Test("an inexact clock leaves the offsets on the media clock and says the time is approximate")
+    func inexactClockPassesThrough() {
+        // 15 min of claimed wall time around 15 s of audio and nothing recorded to explain it.
+        let segment = meta(wallMs: 900_000, runs: [], storedMs: 15_000)
+        let clock = SegmentMediaClock(segment)
+        #expect(!clock.isExact)
+
+        let turn = clock.wallRange(ofMediaStartMs: 5_000, endMs: 8_000)
+        #expect(turn == SegmentWallRange(startMs: startMs + 5_000, endMs: startMs + 8_000, isApproximate: true))
+        // Not the proportional guess `wall(fromMedia:)` falls back to (5 s of 15 → 300 s of 900).
+        #expect(clock.wall(fromMedia: 5_000) == 300_000)
+        #expect(clock.wallOffset(ofMedia: 5_000) == 5_000)
+    }
+
+    @Test("clamping pins the start into the bounds and the end between the start and the upper bound")
+    func clampingAtBothEnds() {
+        let bounds: ClosedRange<Int64> = 1_000...2_000
+        func range(_ a: Int64, _ b: Int64) -> SegmentWallRange {
+            SegmentWallRange(startMs: a, endMs: b, isApproximate: false)
+        }
+        // Inside: untouched.
+        #expect(range(1_200, 1_500).clamped(to: bounds) == range(1_200, 1_500))
+        // Before the start: pinned to the lower bound.
+        #expect(range(500, 800).clamped(to: bounds) == range(1_000, 1_000))
+        #expect(range(500, 1_300).clamped(to: bounds) == range(1_000, 1_300))
+        // Past the end: pinned to the upper bound.
+        #expect(range(1_800, 2_600).clamped(to: bounds) == range(1_800, 2_000))
+        #expect(range(2_500, 2_900).clamped(to: bounds) == range(2_000, 2_000))
+        // Spanning the whole window.
+        #expect(range(0, 9_000).clamped(to: bounds) == range(1_000, 2_000))
+        // The flag survives.
+        #expect(SegmentWallRange(startMs: 0, endMs: 1, isApproximate: true).clamped(to: bounds).isApproximate)
+
+        // And on a real clock: a turn the provider placed past the end of the stored audio.
+        let clock = SegmentMediaClock(meta(wallMs: 60_000, runs: []))
+        let segmentBounds = clock.startWallMs...(clock.startWallMs + clock.wallSpanMs)
+        let late = clock.wallRange(ofMediaStartMs: 58_000, endMs: 75_000).clamped(to: segmentBounds)
+        #expect(late.startMs == startMs + 58_000)
+        #expect(late.endMs == startMs + 60_000)
+    }
+}

@@ -543,12 +543,15 @@ extension LiveWorld: ConversationDataSource {
             pendingDeletes[id] = nil
         }
         pendingDeletes[id] = (token, timer)
+        // The undo buffer is memory-only, so no database observation sees the conversation go.
+        composition.history?.pendingDeletesChanged(conversationId: id)
     }
 
     func undoDelete(id: String) async throws {
         guard let pending = pendingDeletes.removeValue(forKey: id) else { return }
         pending.timer.cancel()
         _ = await composition.runtime.restoreDelete(pending.token)
+        composition.history?.pendingDeletesChanged(conversationId: id)
     }
 
     func toggleFollowUp(id: String) async throws {
@@ -1192,10 +1195,17 @@ extension LiveWorld: AskDataSource {
     /// this library. Subtracting it from a wall citation put the moment past the end of the
     /// span and pinned every target at the segment's last sample.
     nonisolated static func citedMediaMs(_ citation: AskCitation, meta: SegmentMeta) -> Int64 {
+        mediaMs(ofWallMs: citation.startMs, meta: meta)
+    }
+
+    /// A wall-clock instant inside a segment, on the segment's stored-audio clock: the
+    /// conversion `citedMediaMs` documents, for anything that names a moment by the time it
+    /// happened (a citation's start, a moment History opens). Nil is the segment's first
+    /// instant; a time outside the segment clamps to its nearer edge.
+    nonisolated static func mediaMs(ofWallMs wallMs: Int64?, meta: SegmentMeta) -> Int64 {
         let segmentStartMs = ConversationGrouper.segmentStartMs(meta)
         let clock = SegmentMediaClock(meta)
-        let into = min(
-            max((citation.startMs ?? segmentStartMs) - segmentStartMs, 0), clock.wallSpanMs)
+        let into = min(max((wallMs ?? segmentStartMs) - segmentStartMs, 0), clock.wallSpanMs)
         return clock.isExact ? clock.media(fromWall: into) : min(into, clock.mediaSpanMs)
     }
 
@@ -1304,8 +1314,9 @@ extension LiveWorld: AskDataSource {
         // 14 h 59 m. `TranscriptItems` and `ConversationBoundaryDetector.spokenRuns` both
         // decline the same way, and all three must agree or the transcript screen, the split
         // and the citation describe different recordings.
+        //
+        // The rule itself is `SegmentMediaClock.wallOffset(ofMedia:)`, shared with all of them.
         let clock = SegmentMediaClock(meta)
-        let toWall: (Int64) -> Int64 = clock.isExact ? { clock.wall(fromMedia: $0) } : { $0 }
         let startMs = ConversationGrouper.segmentStartMs(meta)
         // `segmentStartMs` stays the SEGMENT's: it is the anchor the span offsets are added
         // to, and those are offsets into the segment whichever piece they were cut for. Only
@@ -1321,8 +1332,8 @@ extension LiveWorld: AskDataSource {
             spans: transcript.segments.map {
                 TranscriptSpan(
                     text: $0.text,
-                    startMs: toWall($0.startMs),
-                    endMs: toWall(max($0.endMs, $0.startMs)))
+                    startMs: clock.wallOffset(ofMedia: $0.startMs),
+                    endMs: clock.wallOffset(ofMedia: max($0.endMs, $0.startMs)))
             },
             wholeText: transcript.text)
     }
@@ -1379,21 +1390,137 @@ extension LiveWorld: AskDataSource {
         queries: ConversationQueries,
         loadMetas: ([String]) async -> [String: SegmentMeta]
     ) async -> CitedPosition? {
-        let citedId = citation.segmentId
-        let citedMeta = await loadMetas([citedId])[citedId]
-        let mediaMs = citedMeta.map { citedMediaMs(citation, meta: $0) } ?? 0
-        guard
-            let conversationId = try? await queries.conversationId(
-                ofSegment: citedId, atMediaMs: mediaMs),
-            let detail = try? await queries.detail(id: conversationId)
-        else { return nil }
+        await position(
+            ofSegment: citation.segmentId, atWallMs: citation.startMs, queries: queries,
+            loadMetas: loadMetas)
+    }
+
+    /// A wall-clock moment of one segment resolved to a conversation and a scrubber position —
+    /// the one hop citations (`citedPosition`) and History's moments (`momentTarget`) share, so
+    /// the two can never land in different conversations or at different places for the same
+    /// instant.
+    ///
+    /// `conversationId` nil asks the grouping which conversation owns the moment
+    /// (`conversationId(ofSegment:atMediaMs:)`). A caller that already knows it — a moment
+    /// between two recordings of one conversation, clamped to the edge of one of them — names
+    /// it, and the position is then that conversation's nearest piece of the segment.
+    static func position(
+        ofSegment segmentId: String,
+        atWallMs wallMs: Int64?,
+        in conversationId: String? = nil,
+        queries: ConversationQueries,
+        loadMetas: ([String]) async -> [String: SegmentMeta]
+    ) async -> CitedPosition? {
+        let segmentMeta = await loadMetas([segmentId])[segmentId]
+        let mediaMs = segmentMeta.map { Self.mediaMs(ofWallMs: wallMs, meta: $0) } ?? 0
+        let owner: String?
+        if let conversationId {
+            owner = conversationId
+        } else {
+            owner = try? await queries.conversationId(ofSegment: segmentId, atMediaMs: mediaMs)
+        }
+        guard let owner, let detail = try? await queries.detail(id: owner) else { return nil }
         var metas = await loadMetas(detail.members.map(\.segmentId))
-        if let citedMeta { metas[citedId] = citedMeta }
+        if let segmentMeta { metas[segmentId] = segmentMeta }
         return CitedPosition(
             detail: detail,
             mediaOffsetMs: ConversationTimeline(members: detail.pieces, metas: metas)
-                .offset(segmentId: citedId, mediaMs: mediaMs),
-            meta: citedMeta)
+                .offset(segmentId: segmentId, mediaMs: mediaMs),
+            meta: segmentMeta)
+    }
+}
+
+// MARK: - Moments (ConversationDataSource)
+
+extension LiveWorld {
+    /// A wall-clock moment resolved the way a citation is — conversation, scrubber position —
+    /// but from a TIME rather than a segment id: History knows when a card started, not which
+    /// recording it started in. Which recording is `MomentResolver.segment`'s rule; from there
+    /// it is `position(ofSegment:atWallMs:)`, the hop citations take: the time onto the
+    /// segment's stored-audio clock, the conversation that owns THAT moment of the segment (a
+    /// recording usually holds the end of one conversation and the start of the next), and its
+    /// place on that conversation's pieces laid end to end (`ConversationTimeline`).
+    ///
+    /// Reads the spool's in-memory index (no sidecar decoding) and three small queries. Only
+    /// grouped recordings are candidates: one the grouper has not filed yet has no conversation
+    /// to open, and choosing it would turn a tap near an older recording into nothing.
+    func momentTarget(atWallMs wallMs: Int64, inConversation pinned: String?) async
+        -> CitationTarget?
+    {
+        let library = composition.runtime.library
+        let queries = self.queries
+        guard let owners = try? await queries.membersBySegment() else { return nil }
+        // A conversation inside its undo window is gone as far as the person is concerned.
+        let hidden = Set(pendingDeletes.keys)
+        let spans = Self.momentSpans(
+            await composition.store.listSegments(), owners: owners, hiding: hidden, only: pinned)
+        // Only needed when the time is between recordings, but one indexed query is cheaper
+        // than the branch it would save.
+        let instant = wallMs..<(wallMs == .max ? wallMs : wallMs + 1)
+        let windows = ((try? await library.conversationRows(overlappingMs: instant)) ?? [])
+            .filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
+            .filter { pinned == nil || $0.id == pinned }
+            .map { MomentResolver.Window(conversationId: $0.id, range: $0.startMs..<$0.endMs) }
+        let files = composition.files
+        guard
+            let (segment, position) = await Self.momentPosition(
+                atWallMs: wallMs, spans: spans, windows: windows, pinnedTo: pinned,
+                queries: queries, loadMetas: { await Self.loadMetas($0, files: files) }),
+            !hidden.contains(position.detail.row.id)
+        else { return nil }
+        return CitationTarget(
+            conversationId: position.detail.row.id,
+            conversationTitle: position.detail.row.title ?? "Conversation",
+            focus: .moment(segmentId: segment.segmentId, atWallMs: wallMs),
+            mediaOffsetMs: position.mediaOffsetMs,
+            startedAt: Date(timeIntervalSince1970: Double(wallMs) / 1000)
+        )
+    }
+
+    /// The recordings a moment can land in: one span per recording AND conversation holding a
+    /// piece of it, so a time between two recordings of one conversation can stay in that
+    /// conversation even when a recording it names also holds a piece of another. Recordings
+    /// the grouping has not filed, and pieces of `hidden` conversations, are not candidates.
+    ///
+    /// `only` keeps just that conversation's recordings (a moment pinned to it).
+    nonisolated static func momentSpans(
+        _ metas: [SegmentMeta],
+        owners: [String: [(conversationId: String, member: ConversationMember)]],
+        hiding hidden: Set<String> = [],
+        only: String? = nil
+    ) -> [MomentResolver.Span] {
+        metas.flatMap { meta in
+            Set((owners[meta.segmentId] ?? []).map(\.conversationId))
+                .subtracting(hidden)
+                .filter { only == nil || $0 == only }
+                .sorted()
+                .map { MomentResolver.Span(meta: meta, conversationId: $0) }
+        }
+    }
+
+    /// Which recording a moment is in (`MomentResolver.segment`), then `position`: inside the
+    /// recording the moment itself decides the conversation, because a recording usually holds
+    /// the end of one and the start of the next. Between recordings the resolver chose this one
+    /// FOR a conversation (the one whose extent holds the time, or the nearest), and the time
+    /// clamps to that recording's edge — which, in a shared recording, is that conversation's
+    /// piece and not the neighbour's. A moment pinned to a conversation (`pinnedTo`) is placed
+    /// on that conversation's pieces wherever it falls — the caller has already kept only its
+    /// recordings in `spans`.
+    static func momentPosition(
+        atWallMs wallMs: Int64,
+        spans: [MomentResolver.Span],
+        windows: [MomentResolver.Window],
+        pinnedTo pinned: String? = nil,
+        queries: ConversationQueries,
+        loadMetas: ([String]) async -> [String: SegmentMeta]
+    ) async -> (segment: MomentResolver.Span, position: CitedPosition)? {
+        guard let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
+            let position = await position(
+                ofSegment: segment.segmentId, atWallMs: wallMs,
+                in: pinned ?? (segment.contains(wallMs) ? nil : segment.conversationId),
+                queries: queries, loadMetas: loadMetas)
+        else { return nil }
+        return (segment, position)
     }
 }
 
@@ -1935,8 +2062,10 @@ extension LiveFollowUps: FollowUpsDataSource {
             // moment nothing was said at (169 segments on the 2026-09-08 backup, 4,813 turns
             // moved by over a minute, worst 14 h 44 m). Left alone, the offset at least sits
             // where the audio does — the same choice `TranscriptItems` and `spokenRuns` make.
-            let offset = clock.isExact ? clock.wall(fromMedia: mediaOffsetMs) : mediaOffsetMs
-            return ConversationGrouper.segmentStartMs(meta) + offset
+            // (`SegmentMediaClock.wallOffset(ofMedia:)` is that rule.) Each half is converted on
+            // its own: either can be absent, and this has never reordered them.
+            return ConversationGrouper.segmentStartMs(meta)
+                + clock.wallOffset(ofMedia: mediaOffsetMs)
         }
         let citation = AskCitation(
             segmentId: segmentId,

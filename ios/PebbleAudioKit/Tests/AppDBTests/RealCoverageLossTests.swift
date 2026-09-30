@@ -21,6 +21,11 @@ import WireProtocol
 // (2,703 min) — `PowerSave` is deliberately a calm but genuine gap, and the same reason inside a
 // segment's frames was already drawn as missing (9.6 h of the 10.9 h missing before).
 //
+// Power save has since become a pause (ee0b1f6), and the day strip and gap status now share one
+// classifier (`GapClassifier`). Over the 2026-09-30 backup the unification changed nothing here,
+// to the millisecond: recorded 772,341,820 ms and missing 5,827,720 ms (12,872 / 97 min) before
+// and after — no receiver skip in that backup lies wholly inside a single silence record.
+//
 // Gated: set PEBBLE_GAP_BACKUP to a backup root.
 
 private let backupRoot: String? = ProcessInfo.processInfo.environment["PEBBLE_GAP_BACKUP"]
@@ -46,7 +51,8 @@ struct RealCoverageLossTests {
         for meta in metas {
             guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive else { continue }
             let frameSamples = UInt64(meta.frameSamples)
-            for gap in meta.gaps where CoverageComputer.isVisibleLoss(gap) && gap.missingFrameCount > 0 {
+            let classifier = GapClassifier(meta.gaps)
+            for gap in meta.gaps where classifier.isVisibleLoss(gap) && gap.missingFrameCount > 0 {
                 let start = gap.firstMissingSampleIndex
                 let end = start + UInt64(gap.missingFrameCount) * frameSamples
                 guard end <= first || start >= last else { continue }
@@ -82,14 +88,16 @@ struct RealCoverageLossTests {
                     + "missing \(coverage.totalMissingMs / 60_000) min")
         }
         print(
-            "real-coverage: \(keys.count) days, recorded \(recorded / 60_000) min, missing \(missing / 60_000) min")
+            "real-coverage: \(keys.count) days, recorded \(recorded / 60_000) min, missing \(missing / 60_000) min "
+                + "(\(recorded) ms / \(missing) ms)")
 
         // Every loss record's own time is inside a missing span on the day it happened, unless
         // recorded audio covers the same moment (recorded always wins).
         var hidden: Int64 = 0
         for meta in metas {
             let frameSamples = UInt64(meta.frameSamples)
-            for gap in meta.gaps where CoverageComputer.isVisibleLoss(gap) && gap.missingFrameCount > 0 {
+            let classifier = GapClassifier(meta.gaps)
+            for gap in meta.gaps where classifier.isVisibleLoss(gap) && gap.missingFrameCount > 0 {
                 let startMs = ConversationGrouper.wallMs(ofSample: gap.firstMissingSampleIndex, in: meta)
                 let endMs = ConversationGrouper.wallMs(
                     ofSample: gap.firstMissingSampleIndex + UInt64(gap.missingFrameCount) * frameSamples,

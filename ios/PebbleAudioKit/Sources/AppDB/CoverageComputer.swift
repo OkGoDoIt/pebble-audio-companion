@@ -49,6 +49,72 @@ public struct DayCoverage: Equatable, Sendable {
     }
 }
 
+/// One gap record as coverage placed it: the wall-clock range it painted (clipped to the day and
+/// bounded by its segment's close exactly as the layer is), and the record itself.
+public struct CoverageGapRecord: Equatable, Sendable {
+    public var range: Range<Int64>
+    public var segmentId: String
+    public var gap: GapMeta
+
+    public init(range: Range<Int64>, segmentId: String, gap: GapMeta) {
+        self.range = range
+        self.segmentId = segmentId
+        self.gap = gap
+    }
+}
+
+/// One pause-journal row as coverage placed it (an open pause runs to the domain's end).
+public struct CoveragePauseRecord: Equatable, Sendable {
+    public var range: Range<Int64>
+    /// The journal's `source` (`PauseSource.rawValue`, or whatever an older build wrote).
+    public var source: String
+
+    public init(range: Range<Int64>, source: String) {
+        self.range = range
+        self.source = source
+    }
+}
+
+/// A day's coverage together with what it was drawn from.
+///
+/// `coverage` is exactly what `CoverageComputer.compute` returns. The record lists are clipped to
+/// `domain` and are NOT flattened: a loss record under recorded audio, or under a pause, is
+/// still listed, because the priority that hides it belongs to `coverage.spans`. A reader asks
+/// "which records overlap this missing span" and gets only the ones that can explain it.
+public struct AttributedDayCoverage: Equatable, Sendable {
+    public var coverage: DayCoverage
+    /// The computed domain (5 AM → 5 AM, or → now); nil when the day has none.
+    public var domain: Range<Int64>?
+    /// Every visible-loss record (`GapClassifier` class `.loss`), each at its own placed range.
+    public var lossRecords: [CoverageGapRecord]
+    /// Every watch power-save record (`GapClassifier` class `.watchPause`), placed the same way.
+    public var watchPauseRecords: [CoverageGapRecord]
+    /// The pause journal's rows, clipped to the domain.
+    public var pauseRecords: [CoveragePauseRecord]
+    /// Watch-reported suppressed silence (`CoverageComputer.silenceWindows`), clipped to the
+    /// domain, merged.
+    public var silence: [Range<Int64>]
+
+    public init(
+        coverage: DayCoverage, domain: Range<Int64>?, lossRecords: [CoverageGapRecord],
+        watchPauseRecords: [CoverageGapRecord], pauseRecords: [CoveragePauseRecord],
+        silence: [Range<Int64>]
+    ) {
+        self.coverage = coverage
+        self.domain = domain
+        self.lossRecords = lossRecords
+        self.watchPauseRecords = watchPauseRecords
+        self.pauseRecords = pauseRecords
+        self.silence = silence
+    }
+
+    /// `coverage.spans` with the watch-reported silence cut out of recorded time as quiet —
+    /// what Today's strip and the Live timeline draw.
+    public var spansWithWatchQuiet: [CoverageSpan] {
+        CoverageComputer.applyingQuiet(coverage.spans, silence: silence)
+    }
+}
+
 /// One segment's contribution to coverage: its meta plus (optionally) the sample-index ranges
 /// its persisted frames cover, read from the frame log. Without frame ranges the whole extent
 /// minus loss gaps counts as recorded (no quiet detection — used where the log wasn't read).
@@ -129,27 +195,19 @@ public enum CoverageComputer {
     /// seconds (±32 s across the real library — see `SegmentStore.openSegmentInternal`).
     static let recordAfterCloseSlackMs: Int64 = 60_000
 
-    /// Visible-loss filter: `sequence_skip` gaps (receiver-synthesized) always count as loss;
-    /// watch-reported gaps count unless the reason is SilenceSuppressed (known quiet, not
-    /// loss). Unknown reasons count as loss — never silently hidden.
-    static func isVisibleLoss(_ gap: GapMeta) -> Bool {
-        if gap.origin == GapMeta.originSequenceSkip { return true }
-        guard let raw = gap.reasonRaw,
-            let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
-        else { return true }
-        return !reason.isSilence && reason != .powerSave
-    }
-
-    /// The watch's own power-save pause: a stretch it CHOSE not to listen to (stationary mute —
-    /// the phone's status card already says "Paused while the watch is saving power"). Drawn as
-    /// paused, never as missing: a night on the nightstand is not lost audio, and the 2026-09-29
-    /// backup would otherwise have drawn 45 h of it as loss (570 min on 09-22 alone).
-    static func isWatchPause(_ gap: GapMeta) -> Bool {
-        guard gap.origin == GapMeta.originWatch, let raw = gap.reasonRaw,
-            let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:))
-        else { return false }
-        return reason == .powerSave
-    }
+    // Which gap records are loss, which are the watch's own pause, and which are quiet is decided
+    // by `SegmentStore.GapClassifier` — the same classifier the transcript, the per-recording
+    // missing time, Ask and the loss notification use, so a minute cannot be "paused" here and
+    // "missing" in the recording it belongs to.
+    //
+    // - Loss: every receiver `sequence_skip` except one that a single watch-reported silence
+    //   record fully covers (that is quiet — a duplicate a few field builds stored); every
+    //   watch-reported reason other than silence and power-save, and any reason we cannot decode.
+    //   Never silently hidden.
+    // - The watch's own power-save pause: a stretch it CHOSE not to listen to (stationary mute —
+    //   the phone's status card already says "Paused while the watch is saving power"). Drawn as
+    //   paused, never as missing: a night on the nightstand is not lost audio, and the 2026-09-29
+    //   backup would otherwise have drawn 45 h of it as loss (570 min on 09-22 alone).
 
     /// Computes one logical day's coverage. `nowMs` clamps the domain for the current day
     /// ("today so far"); nil renders the full 24 h domain.
@@ -160,24 +218,46 @@ public enum CoverageComputer {
         pauses: [PauseInterval],
         nowMs: Int64? = nil
     ) -> DayCoverage {
-        guard let bounds = LogicalDay.bounds(ofDateKey: dateKey, timeZoneID: timeZoneID) else {
-            return DayCoverage(
+        computeAttributed(
+            dateKey: dateKey, timeZoneID: timeZoneID, segments: segments, pauses: pauses,
+            nowMs: nowMs
+        ).coverage
+    }
+
+    /// `compute`, plus the records each span was drawn from — for a reader that has to say WHY
+    /// a stretch is missing or paused, not merely that it is (History's day, plan 7.10).
+    ///
+    /// This is the same computation, not a second one: `compute` is this function's `coverage`,
+    /// to the millisecond (`CoverageAttributionTests` pins that against the previous
+    /// implementation over fuzzed days). The attribution lists are collected on the way through
+    /// the very placement code that builds the layers, so a record can never be credited with a
+    /// range the strip did not draw for it.
+    public static func computeAttributed(
+        dateKey: String,
+        timeZoneID: String,
+        segments: [SegmentCoverageInput],
+        pauses: [PauseInterval],
+        nowMs: Int64? = nil
+    ) -> AttributedDayCoverage {
+        let empty = AttributedDayCoverage(
+            coverage: DayCoverage(
                 dateKey: dateKey, timeZoneID: timeZoneID, spans: [],
-                totalRecordedMs: 0, totalMissingMs: 0)
+                totalRecordedMs: 0, totalMissingMs: 0),
+            domain: nil, lossRecords: [], watchPauseRecords: [], pauseRecords: [], silence: [])
+        guard let bounds = LogicalDay.bounds(ofDateKey: dateKey, timeZoneID: timeZoneID) else {
+            return empty
         }
         let domainStart = bounds.startMs
         let domainEnd = min(bounds.endMs, nowMs ?? bounds.endMs)
-        guard domainEnd > domainStart else {
-            return DayCoverage(
-                dateKey: dateKey, timeZoneID: timeZoneID, spans: [],
-                totalRecordedMs: 0, totalMissingMs: 0)
-        }
+        guard domainEnd > domainStart else { return empty }
         let domain = domainStart..<domainEnd
 
         var recorded: [Range<Int64>] = []
         var missing: [Range<Int64>] = []
         var quiet: [Range<Int64>] = []
         var watchPaused: [Range<Int64>] = []
+        var lossRecords: [CoverageGapRecord] = []
+        var watchPauseRecords: [CoverageGapRecord] = []
 
         for input in segments {
             let meta = input.meta
@@ -207,27 +287,34 @@ public enum CoverageComputer {
             // past the segment's close (plus the watch/phone clock skew the rest of the timeline
             // already tolerates); that keeps one corrupt count from painting a whole day.
             let closeBound = meta.closedAtMs.map { $0 + Self.recordAfterCloseSlackMs }
-            let lossSamples = mergeRanges(
-                meta.gaps.filter { isVisibleLoss($0) && $0.missingFrameCount > 0 }.map { gap in
-                    let start = gap.firstMissingSampleIndex
-                    return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
-                }
-            )
-            missing += toWall(lossSamples).compactMap { range in
+            let classifier = GapClassifier(meta.gaps)
+            func samples(of gap: GapMeta) -> Range<UInt64> {
+                let start = gap.firstMissingSampleIndex
+                return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
+            }
+            func bounded(_ range: Range<Int64>) -> Range<Int64>? {
                 guard let closeBound else { return range }
                 return clip(range, to: range.lowerBound..<max(range.lowerBound, closeBound))
             }
+            // Each record placed on its own, by the same two steps the layer takes (to the wall
+            // clock, clipped to the domain; then bounded by the close). The layer below is the
+            // union of these; the list is what lets a reader name a missing span's causes.
+            func attributed(_ gaps: [GapMeta]) -> [CoverageGapRecord] {
+                gaps.compactMap { gap in
+                    guard let placed = toWall([samples(of: gap)]).first, let range = bounded(placed)
+                    else { return nil }
+                    return CoverageGapRecord(range: range, segmentId: meta.segmentId, gap: gap)
+                }
+            }
+            let lossGaps = meta.gaps.filter { classifier.classify($0) == .loss && $0.missingFrameCount > 0 }
+            let lossSamples = mergeRanges(lossGaps.map(samples(of:)))
+            missing += toWall(lossSamples).compactMap(bounded)
+            lossRecords += attributed(lossGaps)
             // The watch's power-save pauses, placed exactly like loss and bounded the same way.
-            let pausedSamples = mergeRanges(
-                meta.gaps.filter { isWatchPause($0) && $0.missingFrameCount > 0 }.map { gap in
-                    let start = gap.firstMissingSampleIndex
-                    return start..<(start + UInt64(gap.missingFrameCount) * frameSamples)
-                }
-            )
-            watchPaused += toWall(pausedSamples).compactMap { range in
-                guard let closeBound else { return range }
-                return clip(range, to: range.lowerBound..<max(range.lowerBound, closeBound))
-            }
+            let pauseGaps = meta.gaps.filter { classifier.classify($0) == .watchPause && $0.missingFrameCount > 0 }
+            let pausedSamples = mergeRanges(pauseGaps.map(samples(of:)))
+            watchPaused += toWall(pausedSamples).compactMap(bounded)
+            watchPauseRecords += attributed(pauseGaps)
 
             // Recorded and quiet are claims about THIS segment's own span, and stay inside it.
             guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
@@ -252,11 +339,14 @@ public enum CoverageComputer {
             quiet += toWall(quietSamples)
         }
 
-        let paused = pauses.compactMap { pause -> Range<Int64>? in
+        let pauseRecords = pauses.compactMap { pause -> CoveragePauseRecord? in
             let end = pause.endMs ?? domainEnd
-            guard end > pause.startMs else { return nil }
-            return clip(pause.startMs..<end, to: domain)
-        } + watchPaused
+            guard end > pause.startMs, let range = clip(pause.startMs..<end, to: domain) else {
+                return nil
+            }
+            return CoveragePauseRecord(range: range, source: pause.source)
+        }
+        let paused = pauseRecords.map(\.range) + watchPaused
 
         let layers: [(kind: CoverageKind, ranges: [Range<Int64>])] = [
             (.recorded, mergeRanges(recorded)),
@@ -267,6 +357,12 @@ public enum CoverageComputer {
 
         // Flatten: at every elementary interval the highest-priority covering layer wins;
         // uncovered time is off. Output covers the whole domain contiguously.
+        //
+        // Every boundary is tested against every range, which looks quadratic, and was measured
+        // before anyone rewrote it (2026-09-30, the 2026-09-30 backup, every segment of the
+        // library passed in): the heaviest day (09-24, 964 spans from ~2,000 spool-overflow
+        // records) costs 0.8 ms in a release build and 39 ms in a debug one; a typical day
+        // 0.5 ms. The layers are merged first, so the ranges stay in the hundreds.
         var boundaries: Set<Int64> = [domainStart, domainEnd]
         for layer in layers {
             for range in layer.ranges {
@@ -290,9 +386,111 @@ public enum CoverageComputer {
 
         let totalRecorded = spans.filter { $0.kind == .recorded }.map(\.durationMs).reduce(0, +)
         let totalMissing = spans.filter { $0.kind == .missing }.map(\.durationMs).reduce(0, +)
-        return DayCoverage(
-            dateKey: dateKey, timeZoneID: timeZoneID, spans: spans,
-            totalRecordedMs: totalRecorded, totalMissingMs: totalMissing)
+        return AttributedDayCoverage(
+            coverage: DayCoverage(
+                dateKey: dateKey, timeZoneID: timeZoneID, spans: spans,
+                totalRecordedMs: totalRecorded, totalMissingMs: totalMissing),
+            domain: domain,
+            lossRecords: lossRecords,
+            watchPauseRecords: watchPauseRecords,
+            pauseRecords: pauseRecords,
+            silence: mergeRanges(silenceWindows(segments.map(\.meta)).compactMap { clip($0, to: domain) })
+        )
+    }
+
+    // --- the watch-reported quiet layer -------------------------------------------------------
+    //
+    // `compute` can only separate VAD quiet from audio when it is handed the frame log's sample
+    // ranges, and reading the frame log is megabytes on paths that run every few seconds — so
+    // Today, the Live timeline and History pass none, and everything the watch chose not to send
+    // counts as RECORDED. The watch already says where it suppressed silence (a reported gap
+    // whose reason is `silenceSuppressed`), so the recut below turns those windows back into
+    // quiet. It began life in the app (`LiveTimeline.silenceWindows` / `applyingQuiet`, which
+    // Today's day strip runs too); this is the same code, moved down so History's day builder
+    // cuts the same minutes the same way. `CoverageAttributionTests` pins the two together.
+
+    /// The windows the watch reported as suppressed silence, in wall-clock ms, clipped to each
+    /// segment's own extent, merged.
+    ///
+    /// Deliberately the WATCH's claim rather than an inference from the frame log: a
+    /// `silenceSuppressed` gap is the watch saying "I heard nothing here and did not send it",
+    /// which is precisely the calm-quiet case. Every other reason, and any reason we cannot
+    /// decode, stays loss — never silently reclassified as quiet.
+    public static func silenceWindows(_ metas: [SegmentMeta]) -> [Range<Int64>] {
+        var windows: [Range<Int64>] = []
+        for meta in metas {
+            guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
+                last > first
+            else { continue }
+            let frameSamples = UInt64(meta.frameSamples > 0 ? meta.frameSamples : 320)
+            for gap in meta.gaps {
+                guard gap.origin != GapMeta.originSequenceSkip,
+                    let raw = gap.reasonRaw,
+                    let reason = UInt8(exactly: raw).flatMap(GapReason.init(rawValue:)),
+                    reason.isSilence
+                else { continue }
+                let lower = max(gap.firstMissingSampleIndex, first)
+                let upper = min(
+                    gap.firstMissingSampleIndex + UInt64(gap.missingFrameCount) * frameSamples,
+                    last)
+                guard upper > lower else { continue }
+                windows.append(
+                    ConversationGrouper.wallMs(ofSample: lower, in: meta)
+                        ..< ConversationGrouper.wallMs(ofSample: upper, in: meta))
+            }
+        }
+        return mergeRanges(windows)
+    }
+
+    /// Recuts recorded spans so the stretches the watch skipped read as quiet, then joins
+    /// abutting spans of the same kind. `silence` must be sorted and non-overlapping (as
+    /// `silenceWindows` returns it). Only recorded time can turn out to have been quiet: loss
+    /// stays loss and a pause stays a pause — quiet inside either is a claim nothing supports.
+    ///
+    /// One pass over both lists (both are in time order), so a day's thousands of silence
+    /// records cost a merge, not spans × records.
+    public static func applyingQuiet(
+        _ spans: [CoverageSpan], silence: [Range<Int64>]
+    ) -> [CoverageSpan] {
+        var pieces: [CoverageSpan] = []
+        pieces.reserveCapacity(spans.count)
+        var windowIndex = 0
+        for span in spans {
+            guard span.kind == .recorded, !silence.isEmpty else {
+                pieces.append(span)
+                continue
+            }
+            while windowIndex < silence.count, silence[windowIndex].upperBound <= span.startMs {
+                windowIndex += 1
+            }
+            var cursor = span.startMs
+            var index = windowIndex
+            while index < silence.count, silence[index].lowerBound < span.endMs {
+                let lower = max(silence[index].lowerBound, cursor)
+                let upper = min(silence[index].upperBound, span.endMs)
+                if upper > lower {
+                    if lower > cursor {
+                        pieces.append(CoverageSpan(kind: .recorded, startMs: cursor, endMs: lower))
+                    }
+                    pieces.append(CoverageSpan(kind: .quiet, startMs: lower, endMs: upper))
+                    cursor = upper
+                }
+                index += 1
+            }
+            if cursor < span.endMs {
+                pieces.append(CoverageSpan(kind: .recorded, startMs: cursor, endMs: span.endMs))
+            }
+        }
+        var merged: [CoverageSpan] = []
+        merged.reserveCapacity(pieces.count)
+        for span in pieces {
+            if let last = merged.last, last.kind == span.kind, last.endMs == span.startMs {
+                merged[merged.count - 1].endMs = span.endMs
+            } else {
+                merged.append(span)
+            }
+        }
+        return merged
     }
 
     /// "Today so far": the logical day containing `nowMs`, rendered 5 AM → now.

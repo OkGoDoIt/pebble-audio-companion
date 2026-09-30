@@ -23,6 +23,7 @@ struct ComponentGallery: View {
                 rows
                 sheetChrome
                 snackbarSection
+                HistoryComponentGallery()
             }
             .padding(Tokens.screenMargin)
         }

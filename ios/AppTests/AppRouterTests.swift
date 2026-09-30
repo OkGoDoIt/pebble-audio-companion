@@ -123,6 +123,105 @@ struct AppRouterTests {
         #expect(Route.parse(empty) == nil)
     }
 
+    // MARK: - Where the transcript lands: citation or moment
+
+    /// A citation link spells exactly what it always did — no `fk` — and reads back as a
+    /// citation. Every chip, note and Shortcut written before the style existed depends on this.
+    @Test func aCitationLinkIsUnchangedByTheStyle() throws {
+        let focus = TranscriptFocus(segmentId: "seg-1", startMs: 1_000, endMs: 2_000)
+        #expect(focus.style == .citation)
+        let route = Route.conversation(id: "conv-seg-1", atMs: 500, focus: focus)
+        #expect(
+            route.url.absoluteString
+                == "companion://conversation/conv-seg-1?t=500&s=seg-1&fs=1000&fe=2000")
+        #expect(Route.parse(route.url) == route)
+
+        // A link from before the style existed parses as a citation.
+        let old = try #require(
+            URL(string: "companion://conversation/conv-seg-1?t=500&s=seg-1&fs=1000&fe=2000"))
+        #expect(Route.parse(old) == route)
+        // And one with no stretch at all, the oldest shape, still names just the member.
+        let bare = try #require(URL(string: "companion://conversation/conv-seg-1?s=seg-1"))
+        #expect(
+            Route.parse(bare)
+                == .conversation(
+                    id: "conv-seg-1", atMs: nil, focus: TranscriptFocus(segmentId: "seg-1")))
+    }
+
+    @Test func aMomentLinkRoundTripsCompactly() throws {
+        let focus = TranscriptFocus.moment(segmentId: "seg-2", atWallMs: 1_727_700_000_000)
+        #expect(focus.style == .moment)
+        #expect(focus.startMs == 1_727_700_000_000 && focus.endMs == 1_727_700_000_000)
+        let route = Route.conversation(id: "conv-seg-1", atMs: 61_000, focus: focus)
+        #expect(
+            route.url.absoluteString
+                == "companion://conversation/conv-seg-1?t=61000&s=seg-2"
+                + "&fs=1727700000000&fe=1727700000000&fk=m")
+        #expect(Route.parse(route.url) == route)
+    }
+
+    /// An `fk` this build does not know is read as what the link meant before `fk` existed,
+    /// rather than dropping the focus or failing the link.
+    @Test func anUnknownFocusKindReadsAsACitation() throws {
+        let url = try #require(URL(string: "companion://conversation/c?s=seg&fs=1&fe=2&fk=zz"))
+        guard case .conversation(_, _, let focus)? = Route.parse(url) else {
+            Issue.record("not a conversation route")
+            return
+        }
+        #expect(focus?.style == .citation)
+        #expect(focus?.startMs == 1 && focus?.endMs == 2)
+    }
+
+    /// Opening at a moment is still a conversation open: it lands where every conversation
+    /// does, with the focus intact.
+    @Test func aMomentOpensInsideLibraryLikeAnyConversation() {
+        let router = AppRouter()
+        let route = Route.conversation(
+            id: "conv-1", atMs: 0, focus: .moment(segmentId: "seg-1", atWallMs: 42))
+        router.navigate(to: route)
+        #expect(router.selectedTab == .library)
+        #expect(router.libraryPath == [route])
+    }
+
+    /// The one-liner History writes: both clocks in the right slots, and the link survives.
+    @Test func theMomentHelperBuildsTheConversationRoute() {
+        let route = Route.moment(
+            conversationId: "conv-a", segmentId: "b", atWallMs: 1_727_700_000_000,
+            mediaOffsetMs: 95_000)
+        #expect(
+            route
+                == .conversation(
+                    id: "conv-a", atMs: 95_000,
+                    focus: TranscriptFocus(
+                        segmentId: "b", startMs: 1_727_700_000_000, endMs: 1_727_700_000_000,
+                        style: .moment)))
+        #expect(Route.parse(route.url) == route)
+        // No audio to cue: the transcript still lands, the player stays at its default.
+        let silent = Route.moment(
+            conversationId: "conv-a", segmentId: "b", atWallMs: 5, mediaOffsetMs: nil)
+        #expect(Route.parse(silent.url) == silent)
+    }
+
+    /// From a wall time straight to a route, through the data source.
+    @Test func aWallTimeResolvesToAMomentRoute() async throws {
+        let world = MockWorld.shared
+        let display = try #require(try await world.display(id: "coffee-dana"))
+        let start = try #require(display.startedAt)
+        let wallMs = Int64(start.timeIntervalSince1970 * 1000) + 60_000
+
+        let route = try #require(await Route.moment(atWallMs: wallMs, in: world))
+        guard case .conversation(let id, let atMs, let focus) = route else {
+            Issue.record("not a conversation route")
+            return
+        }
+        #expect(id == "coffee-dana")
+        #expect(atMs != nil)
+        #expect(focus?.style == .moment)
+        #expect(focus?.startMs == wallMs)
+        // A time nobody recorded anywhere near opens nothing.
+        #expect(await Route.moment(atWallMs: 0, in: world) == nil)
+    }
+
     @Test func followUpsOpenInTheirOwnTab() {
         let router = AppRouter()
         router.selectedTab = .today
@@ -169,5 +268,48 @@ struct AppRouterTests {
         router.selectedTab = .settings
         router.push(.note(id: "n2"))
         #expect(router.settingsPath == [.note(id: "n2")])
+    }
+
+    // MARK: - History is the tab
+
+    @Test func aHistoryLinkRoundTripsAndOpensThatPage() throws {
+        let route = Route.history(date: "2026-09-22", level: "week")
+        #expect(route.url.absoluteString == "companion://history?date=2026-09-22&level=week")
+        #expect(Route.parse(route.url) == route)
+        #expect(Route.parse(URL(string: "companion://history")!) == .history(date: nil, level: nil))
+        // An unknown level still carries its date.
+        #expect(Route.parse(URL(string: "companion://history?date=2026-09-01&level=year")!)
+            == .history(date: "2026-09-01", level: nil))
+
+        let router = AppRouter()
+        router.libraryPath = [.note(id: "n")]
+        router.navigate(to: route)
+        #expect(router.selectedTab == .library)
+        #expect(router.libraryPath.isEmpty)
+        #expect(router.consumePendingHistory() == AppRouter.HistoryRequest(date: "2026-09-22", level: .week))
+        #expect(router.consumePendingHistory() == nil)
+    }
+
+    @Test func aPastDayOnTodayOpensHistoryOnThatDay() {
+        let router = AppRouter()
+        router.todayKey = { "2026-09-30" }
+        router.navigate(to: .today(date: "2026-09-22"))
+        #expect(router.selectedTab == .library)
+        #expect(router.consumePendingHistory() == AppRouter.HistoryRequest(date: "2026-09-22", level: .day))
+
+        // Today's own date, or none, is Today.
+        router.navigate(to: .today(date: "2026-09-30"))
+        #expect(router.selectedTab == .today)
+        router.selectedTab = .settings
+        router.navigate(to: .today(date: nil))
+        #expect(router.selectedTab == .today)
+        #expect(router.pendingHistory == nil)
+    }
+
+    @Test func aTagLinkOpensTheTopicInHistory() throws {
+        let router = AppRouter()
+        router.navigate(to: try #require(Route.parse(URL(string: "companion://library?tag=apartment")!)))
+        #expect(router.selectedTab == .library)
+        #expect(router.consumePendingLibraryTag() == "apartment")
     }
 }

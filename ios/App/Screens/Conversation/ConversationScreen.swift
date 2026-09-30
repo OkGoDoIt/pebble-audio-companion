@@ -14,8 +14,9 @@ import AppDB
 struct ConversationScreen: View {
     let conversationId: String
     var atMs: Int64?
-    /// The stretch a Saved Notes / Ask chip sent us to: the transcript scrolls to it, bands
-    /// those lines, and offers to play from there. Nil on every ordinary open.
+    /// Where the transcript lands on arrival. A citation's stretch (a Saved Notes / Ask chip)
+    /// is scrolled to, banded and offered to play from; a moment (History) is scrolled to and
+    /// nothing more. Nil on every ordinary open.
     var focus: TranscriptFocus?
 
     @Environment(AppRouter.self) private var router
@@ -27,7 +28,10 @@ struct ConversationScreen: View {
     @State private var titleInBar = false
     /// One jump per arrival: re-scrolling on every reload (rename, tag edit, retranscribe)
     /// would yank the screen back under the user mid-read.
-    @State private var didScrollToCited = false
+    @State private var didScrollToFocus = false
+    /// True once the reader has dragged the transcript. The arrival's settling scroll stands
+    /// down from then on.
+    @State private var readerHasScrolled = false
     /// True once the header has scrolled off the top, which is when a playing player is pinned
     /// and needs a bar behind it rather than the page colour. Only ever true while playing —
     /// `pinnedViews` is empty otherwise, so nothing is docked to dress.
@@ -191,6 +195,7 @@ struct ConversationScreen: View {
             // `.animating` is our own scrollTo, and keying on that would switch following off
             // the moment it turned on.
             .onScrollPhaseChange { _, phase, _ in
+                if phase == .interacting, !readerHasScrolled { readerHasScrolled = true }
                 guard phase == .interacting, following else { return }
                 withAnimation(Motion.animation(.snappy(duration: 0.25))) { following = false }
             }
@@ -217,7 +222,7 @@ struct ConversationScreen: View {
                 }
             }
             .motionAware(.snappy(duration: 0.25), value: showsScrollToBottom)
-            .onAppear { scrollToCitedMoment(proxy, transcript: display.transcript) }
+            .onAppear { scrollToFocus(proxy, display: display) }
         }
     }
 
@@ -343,34 +348,66 @@ struct ConversationScreen: View {
         }
     }
 
-    /// Keeps the paragraph being spoken on screen, a little above centre so there is something
-    /// to read ahead into.
+    /// A little above centre, so there is something to read ahead into: where the paragraph
+    /// being spoken is kept, and where a moment's row is put on arrival.
+    private static let readingLine = UnitPoint(x: 0, y: 0.34)
+
+    /// Keeps the paragraph being spoken on screen at the reading line.
     private func followPlayhead(_ proxy: ScrollViewProxy, turnId: String?) {
         guard following, player.playhead.isPlaying, let turnId else { return }
         withAnimation(Motion.animation(.easeInOut(duration: 0.35))) {
-            proxy.scrollTo(turnId, anchor: UnitPoint(x: 0, y: 0.34))
+            proxy.scrollTo(turnId, anchor: Self.readingLine)
         }
     }
 
-    /// Land on the cited stretch rather than at the top of a long transcript — the chip named
-    /// a moment, so the moment is what should be on screen.
-    private func scrollToCitedMoment(_ proxy: ScrollViewProxy, transcript: [TranscriptItem]) {
-        guard let focus, !didScrollToCited else { return }
-        let present = transcript.contains { item in
-            if case .turn(let turn) = item {
-                return focus.contains(segmentId: turn.segmentId, at: turn.startedAt)
-            }
-            return false
+    /// Land where the link pointed rather than at the top of a long transcript.
+    ///
+    /// A citation lands on its band, centred, and only when the band exists — a row inside the
+    /// stretch. A moment lands on the row it would be reading at that time
+    /// (`MomentResolver.rowIndex`), which exists in a gap too: the last row before the gap.
+    private func scrollToFocus(_ proxy: ScrollViewProxy, display: ConversationDisplay) {
+        guard let focus, !didScrollToFocus else { return }
+        let transcript = display.transcript
+        // The same rows the transcript draws: scroll targets have to be ROW ids, because a lazy
+        // stack can only find a row it has not built yet by the id its `ForEach` knows it by.
+        let layout = TranscriptLayout(
+            transcript: transcript, provenance: display.provenance, focus: focus)
+        let target: String
+        let anchor: UnitPoint
+        switch focus.style {
+        case .citation:
+            guard let band = layout.citedRowId else { return }
+            target = band
+            anchor = .center
+        case .moment:
+            guard let wallMs = focus.startMs,
+                let row = MomentResolver.rowIndex(in: transcript, atWallMs: wallMs)
+            else { return }
+            target = layout.rowId(forItemId: transcript[row].id)
+            anchor = Self.readingLine
         }
-        guard present else { return }
-        didScrollToCited = true
+        didScrollToFocus = true
         Task { @MainActor in
-            // One frame after the transcript is laid out; scrolling into a card that does not
-            // have its height yet lands short.
+            // A beat after the first rows are laid out; aiming before the stack has measured
+            // anything lands short.
             try? await Task.sleep(for: .milliseconds(120))
             withAnimation(Motion.animation(.easeOut(duration: 0.25))) {
-                proxy.scrollTo(TranscriptView.citedAnchor, anchor: .center)
+                proxy.scrollTo(target, anchor: anchor)
             }
+            // One settling request. The transcript is a lazy stack, so a far scroll is aimed
+            // through rows it has only estimated. Mid-transcript it lands anyway (measured on a
+            // 6,000-row day: the row settles at the reading line as the ride ends), but near the
+            // end the estimate of what lies below runs long and the ride stopped ~115 pt short
+            // of the bottom. By now the rows around the target are real, and asking again lands.
+            // Not once the reader has taken the scroll: that would yank it back from under them.
+            //
+            // The ride stays animated even thousands of rows away. An instant jump avoids
+            // building the rows the animation passes (a ~0.14 s stall as it arrives), but near
+            // the end it stranded the view short of the target, and settling sooner after it
+            // left the view further off still.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !readerHasScrolled else { return }
+            proxy.scrollTo(target, anchor: anchor)
         }
     }
 

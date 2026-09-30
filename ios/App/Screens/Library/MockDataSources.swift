@@ -311,6 +311,10 @@ final class MockWorld {
                 archivedAtMs: ago(6 * day)),
         ]
 
+        // The History tab's demo follow-ups, so a follow-up line tapped on a demo day opens a
+        // real demo follow-up rather than "This follow-up is gone".
+        followUps += MockHistory.demoFollowUps(now: now)
+
         // ── Ask history (Q18 — up to 5, newest first) ───────────────────────
         askEntries = [
             AskEntry(
@@ -844,6 +848,52 @@ extension MockWorld: ConversationDataSource {
     func separate(at cut: ConversationCut) async throws {
         mockSeparated.insert("\(cut.segmentId)@\(cut.mediaMs)")
         bump()
+    }
+
+    /// Each artboard conversation stands in for two recordings, split where `stamped` splits
+    /// its rows, so a moment resolves through the live world's own rule
+    /// (`MomentResolver.segment`) and History can be driven in previews and `-demo-data`. The
+    /// scrubber position is proportional, as the mock's row positions are.
+    func momentTarget(atWallMs wallMs: Int64, inConversation pinned: String?) async
+        -> CitationTarget?
+    {
+        func extent(_ conversation: MockConversation) -> (start: Int64, end: Int64) {
+            let start = ms(conversation.start)
+            return (start, max(ms(conversation.isLive ? Date() : conversation.end), start))
+        }
+        var spans: [MomentResolver.Span] = []
+        for conversation in conversations where pinned == nil || conversation.id == pinned {
+            let (start, end) = extent(conversation)
+            let rows = conversation.transcript.count
+            let half = Int64((rows + 1) / 2)
+            let split = rows > 1 ? start + (end - start) * half / Int64(rows) : (start + end) / 2
+            let hasFrames = (conversation.player?.durationMs ?? 0) > 0
+            spans.append(
+                MomentResolver.Span(
+                    segmentId: Self.member(conversation.id, 1), conversationId: conversation.id,
+                    startMs: start, endMs: split, hasFrames: hasFrames))
+            spans.append(
+                MomentResolver.Span(
+                    segmentId: Self.member(conversation.id, 2), conversationId: conversation.id,
+                    startMs: split, endMs: end, hasFrames: hasFrames))
+        }
+        let windows = conversations.filter { pinned == nil || $0.id == pinned }.map { conversation in
+            let (start, end) = extent(conversation)
+            return MomentResolver.Window(conversationId: conversation.id, range: start..<end)
+        }
+        guard let segment = MomentResolver.segment(atWallMs: wallMs, in: spans, windows: windows),
+            let index = index(of: segment.conversationId)
+        else { return nil }
+        let conversation = conversations[index]
+        let (start, end) = extent(conversation)
+        let duration = conversation.player?.durationMs ?? 0
+        let into = min(max(wallMs - start, 0), end - start)
+        return CitationTarget(
+            conversationId: conversation.id,
+            conversationTitle: conversation.title.isEmpty ? "Conversation" : conversation.title,
+            focus: .moment(segmentId: segment.segmentId, atWallMs: wallMs),
+            mediaOffsetMs: duration > 0 && end > start ? duration * into / (end - start) : nil,
+            startedAt: Date(timeIntervalSince1970: Double(wallMs) / 1000))
     }
 }
 

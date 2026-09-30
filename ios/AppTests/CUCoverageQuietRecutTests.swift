@@ -124,7 +124,7 @@ struct CUCoverageQuietRecutTests {
     }
 
     /// A gap reason we cannot decode fails closed to loss, never to quiet — the same rule
-    /// `CoverageComputer.isVisibleLoss` and `LiveTimeline.silenceWindows` both apply.
+    /// `GapClassifier` (behind `CoverageComputer`) and `LiveTimeline.silenceWindows` both apply.
     @Test func anUndecodableGapReasonStaysLoss() throws {
         let unknown = GapMeta(
             firstMissingSequence: 0, missingFrameCount: 50 * 30,
@@ -136,6 +136,60 @@ struct CUCoverageQuietRecutTests {
                 nowOffset: 600))
         #expect(!display.spans.contains { $0.span.kind == .quiet })
         #expect(display.missingText == Copy.Today.missing(Formatting.duration(30_000)))
+    }
+
+    /// The strip's explain-on-tap for missing time names no cause. A strip span is merged loss
+    /// from any number of gap records and carries none of their reasons; it used to append
+    /// "— Bluetooth" to every one of them regardless.
+    @Test func aMissingSpanNamesNoCauseItDoesNotHave() throws {
+        let display = try #require(
+            Self.coverage(
+                [
+                    Self.meta(
+                        startMs: Self.noonMs, seconds: 600,
+                        gaps: [Self.gap(at: 300, seconds: 30, reason: .spoolOverflow)])
+                ],
+                nowOffset: 600))
+        let missing = try #require(display.spans.first { $0.span.kind == .missing })
+        #expect(missing.popoverText == "missing 30 sec")
+        #expect(
+            LiveTimeline.popoverText(
+                AppDB.CoverageSpan(kind: .missing, startMs: 0, endMs: 40_000), timeZone: .gmt)
+                == "missing 40 sec")
+    }
+
+    /// The watch's power-save pause is paused on the strip, never missing — and, now that the
+    /// strip and the recording's own gap status share one classifier, never missing there either.
+    @Test func aPowerSavePauseIsPausedNotMissing() throws {
+        let metas = [
+            Self.meta(
+                startMs: Self.noonMs, seconds: 600,
+                gaps: [Self.gap(at: 300, seconds: 120, reason: .powerSave)])
+        ]
+        let display = try #require(Self.coverage(metas, nowOffset: 600))
+        #expect(display.spans.contains { $0.span.kind == .paused })
+        #expect(!display.spans.contains { $0.span.kind == .missing })
+        #expect(display.missingText == nil)
+        #expect(displayGapMs(metas[0]) == 0)
+    }
+
+    /// A receiver sequence skip wholly inside the watch's own silence record is the same
+    /// stretch reported twice; the watch's reason wins on the strip as it always did beside the
+    /// recording.
+    @Test func aSkipInsideASilenceRecordIsQuietNotMissing() throws {
+        let skip = GapMeta(
+            firstMissingSequence: 300 * 50, missingFrameCount: 60 * 50,
+            firstMissingSampleIndex: 300 * 16_000, origin: GapMeta.originSequenceSkip)
+        let metas = [
+            Self.meta(
+                startMs: Self.noonMs, seconds: 600,
+                gaps: [Self.gap(at: 300, seconds: 60, reason: .silenceSuppressed), skip])
+        ]
+        let display = try #require(Self.coverage(metas, nowOffset: 600))
+        #expect(!display.spans.contains { $0.span.kind == .missing })
+        #expect(display.spans.contains { $0.span.kind == .quiet })
+        #expect(display.missingText == nil)
+        #expect(displayGapMs(metas[0]) == 0)
     }
 
     /// A day with no suppressed silence is unchanged — the recut is a no-op, not a rounding

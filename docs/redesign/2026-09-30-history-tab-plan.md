@@ -1,6 +1,56 @@
 # History tab — plan
 
-**Status (2026-09-30):** design agreed with Roger after ten mockup rounds. Nothing is built.
+**Status (2026-09-30, night):** built and merged. History is the tab that used to be Library,
+reading the live library; its cards are the app's topic-sized conversations (`ConversationUnits`,
+see `docs/conversation-units.md`). Not yet on a phone: the first deploy owes the battery gate.
+
+What shipped differs from the plan below in these ways (the progress log has the detail):
+
+- Cards are conversations, not a separate chapter layer (sections 7.2–7.3 are superseded; the
+  chapter groundwork is parked on branch `history-chapters`).
+- Talk that no conversation covers, and conversations with no title yet, show the time range
+  and the first substantive thing said, verbatim. `HistoryTalkCutter` cuts such talk only at
+  real pauses of three minutes or more.
+- Three card sizes by duration: under 10 minutes one line, 10–25 minutes title and time line,
+  25 minutes and up the full card. A card is always at least the height of its duration, and
+  the axis beside every card is drawn in a light tint.
+- Lost audio under two minutes is carried on its neighbour ("· 20 s missing") instead of being
+  its own item; longer loss is its own amber gap.
+- Week and month briefs (7.4) are not built; week rows use the day recap, month rows have no
+  headline. The Library screen's code is unused but still in the tree (step 29).
+- Still unproven: iOS 26, a real device, VoiceOver.
+
+> **Change of architecture, 2026-09-30.** Roger: "There is never a real world situation where
+> there is a 24 hour conversation … If a conversation actually does last longer, the box
+> displaying it should be the full size according to the timeline … separately we probably need
+> to fix our algorithm for splitting long audio up into shorter conversations around specific
+> topics." A separate session ("Split long recordings into topic-sized conversations", branch
+> `conversation-units`) is making **conversations themselves topic-sized** (sub-segment
+> membership; one unit, no separate chapter layer). Consequences for this plan:
+>
+> - Sections 7.2–7.3 (a separate chapter layer and stage) are **superseded**. The groundwork on
+>   branch `history-chapters` is parked. History's cards will be the conversations overlapping
+>   the day (id, start, end, title, summary, tags), read through the day builder's existing
+>   `chapters` input.
+> - Until that lands, and whenever a stretch of talk has no conversation unit to show, the day
+>   is drawn without the grouper: talk is cut only where it really paused for three minutes or
+>   more (`HistoryTalkCutter`), and each untitled card shows its time range and the first
+>   substantive thing said, verbatim. The grouper's multi-hour conversations and their titles
+>   are not used on the day.
+> - A card is always the full height of its duration, however long. Nothing is cut or shortened
+>   to avoid a long card. The axis beside every card is drawn in a light tint (Roger liked it).
+> - Week and month briefs (7.4) wait for the new conversation unit.
+>
+> **Landed (merge of `main` into History, 2026-09-30):** `ConversationUnits.isTopicSized` is
+> true and History reads it. A day's cards are the conversations overlapping it that hold speech
+> (`HistoryReader.chapters(from:hiding:)`); a long silence (a unit of its own, every piece
+> `NoSpeech`) and audio not transcribed yet are never cards and are drawn from coverage. Right
+> after the upgrade most conversations have no title (a title written about other audio is
+> withdrawn at regroup), so any untitled card — conversation or fallback stretch — quotes a
+> verbatim snippet. A card tap opens the conversation that owns that moment of the recording
+> (`LiveWorld.momentTarget`, the hop citations take). Tag results are one row per conversation;
+> the week headline is the recap's first sentence, else the most-talked conversation's title.
+
 This document is the plan to build it. It supersedes `2026-09-30-history-tab-design.md`, which
 stays as the record of how the design was reached.
 
@@ -1170,10 +1220,12 @@ delete and undo) and its whole-library build is deleted in the last step.
 
 ### 7.12 The screen (SwiftUI)
 
-Type-checked sketches of the pieces below are in `docs/redesign/history-sketches/`
-(`Geometry.swift`, `Timeline.swift`, `Screen.swift`). They compile against the iOS 26 simulator
-SDK under Swift 6 and the geometry was run against sample data on the Mac. **Nothing in them
-has run in a simulator**, which is what the spike in [section 8](#8-build-sequence) is for.
+Sketches of the pieces below are in `docs/redesign/history-sketches/` (`Geometry.swift`,
+`Timeline.swift`, `Screen.swift`, `Stubs.swift`). They are the versions **corrected by the
+Phase 0 spike**, which ran them in the iOS 27.0 simulator on 2026-09-30; screenshots are in
+`docs/redesign/history-spike/`. What the spike found is folded into the text below and listed
+under [Phase 0](#phase-0--spike-done-2026-09-30). Not yet run: iOS 26, a real device,
+VoiceOver.
 
 #### Files
 
@@ -1223,7 +1275,10 @@ struct HistoryPageID: Hashable, Comparable { var level: HistoryLevel; var key: S
 
 `ScrollView(.horizontal)` + `LazyHStack(spacing: 0)` + `.containerRelativeFrame(.horizontal)` +
 `.scrollTargetLayout()` + `.scrollTargetBehavior(.paging)` + `.scrollPosition(id:)`, one pager
-per level (`.id(level)`), starting at the trailing edge (today is the last page).
+per level (`.id(level)`). The page to open on is set as the bound id **before the first
+layout**; `defaultScrollAnchor(.trailing)` does nothing here and is not used (spike). Pages
+more than one away from the visible page draw only their title, which stops the lazy stack
+fully building pages 0 and 1 at launch.
 
 - Pages are equal width, so only the visible page and its neighbours are built.
 - The list only appends (a new day at 5 AM). It never prepends.
@@ -1256,9 +1311,13 @@ the reason the levels are state and not pushes.
 - **Jump to date**: `UICalendarView` in a `UIViewRepresentable`, `availableDateRange` first
   recorded day to today, dot decorations on recorded days, single-date selection (week-of-year
   selection when the level is Week), `.presentationDetents([.medium, .large])`.
-- **Tab re-tap**: there is no public event. A custom `Binding` setter on
-  `TabView(selection:)` that fires when the value set equals the current one is the candidate;
-  the spike confirms it.
+- **Tab re-tap**: a custom `Binding` setter on `TabView(selection:)` fires when the tab that
+  is already selected is tapped (spike). If a screen is pushed, the system pops to the root by
+  itself and History does nothing; otherwise History scrolls the page to the top, and on the
+  next tap goes to today. The system's own scroll-to-top targets the pager, not the page, so
+  History does its own.
+- **Scroll edge effect** under the level control belongs to the outer pager; setting a style on
+  the page scroll views does nothing. The automatic style is kept.
 
 #### The day timeline
 
@@ -1278,22 +1337,29 @@ item (with its time span and floor height) or a mark (an instant: an hour label 
 - Times are epoch milliseconds and hours come from `Calendar` in the day's zone, so a
   daylight-saving day works.
 
-**Fitting a chapter's text.** `ViewThatFits(in: .vertical)` over candidates in the mockup's
-order: summary limited to 7, 6, … 1 lines with follow-ups expanded, then 1 line with follow-ups
-collapsed to "first + N more". It sits in a tiny `ProposeHeight` layout that proposes the soft
-maximum (`duration × 3 pt`) and reports the chosen candidate's real height. When nothing fits,
-the last candidate is used and the card exceeds the band; it never truncates the floor content.
-All candidates are measured in one pass, so there is no measure-then-relayout loop. If
-profiling on the 24-hour day shows the eight candidates per card are too costly, the fallback is
-to measure one summary line and compute the count.
+**Fitting a chapter's text.** The spike measured the first idea, `ViewThatFits` over eight
+candidates per card, at 90–120 ms to lay out a 25-card day (debug and release alike), which
+drops a dozen frames on a swipe to a new day. With a single candidate the same page takes
+13–21 ms. So the card is laid out with **one** measure:
+
+- a small `ChapterCardLayout` measures the fixed parts (title, time line, pills, follow-ups)
+  and proposes the summary text the height that is left under the soft maximum
+  (`duration × 3 pt`), never less than one line; the text truncates itself to whole lines;
+- whether follow-ups collapse to "first + N more" is decided before layout by a pure function
+  of the duration, the number of follow-ups and the scaled line heights;
+- the floor content (title, time, one summary line, pills) is never truncated, so a very short
+  chapter exceeds the band.
+
+Swiping to a day that has never been built still costs its layout during the swipe. If a device
+profile shows dropped frames, the page renders its first screenful at once and the rest of the
+timeline a frame later (the day always opens at its top, so nothing visibly changes).
 
 **Pinned gap labels.**
 
 ```swift
 label.visualEffect { effect, proxy in
     let gap = proxy.bounds(of: .named(GapLabelPin.space)) ?? .zero
-    let viewport = proxy.bounds(of: .scrollView(axis: .vertical)) ?? gap
-    let visible = viewport.inset(top: insets.top, bottom: insets.bottom)
+    let visible = proxy.bounds(of: .scrollView(axis: .vertical)) ?? gap
     return effect.offset(y: TimelineGeometry.pinOffset(
         labelHeight: proxy.size.height, gap: gap, visible: visible))
 }
@@ -1305,9 +1371,10 @@ static func pinOffset(labelHeight h: CGFloat, gap: CGRect, visible: CGRect) -> C
 ```
 
 `.scrollView(axis: .vertical)` names the innermost vertically scrolling container, which skips
-the horizontal pager. The gap clamp is applied last so a label whose gap is almost gone slides
-out with the gap's edge. Bar insets come from `onScrollGeometryChange` and change only when the
-bars do, not per frame.
+the horizontal pager. Its bounds **already exclude the area under the bars** (spike: 640 pt of
+an 874 pt screen), so no insets are subtracted and the page keeps no inset state. The gap clamp
+is applied last so a label whose gap is almost gone slides out with the gap's edge. All four
+states are in `history-spike/pinned-labels-four-states.png`.
 
 #### Components
 
@@ -1357,9 +1424,24 @@ One commit per numbered step, each leaving the app working. Commits go in
 `pebble-audio-companion` with explicit paths staged (other sessions share the repo), and each
 phase ends with a progress-log entry.
 
-### Phase 0 — Spike (a branch, not merged)
+### Phase 0 — Spike (done 2026-09-30)
 
-A throwaway screen in the simulator to settle the things that could only be read from the SDK:
+A throwaway app in the simulator (kept outside the repo) settled the things that could only be
+read from the SDK. Results, all on the iOS 27.0 simulator:
+
+| Question | Answer |
+|---|---|
+| Pager with a vertical scroll view per page | Works in both axes; bars never collapse or jump. A sideways swipe made while a page is still coasting vertically only stops the scroll; the next swipe pages. |
+| Pinned-label viewport | Already excludes the bars. The sketch subtracted the insets twice; fixed. Tracking is per frame with no visible lag. |
+| Opening on a page | The bound id wins; the trailing anchor does nothing. No visible jump on a cold launch. |
+| Tab re-tap | The setter fires. The system pops a pushed stack itself; it does not scroll the page to top. |
+| Back-swipe | Edge and in-content pans both pop cleanly from a pushed screen. At the root both page the pager. |
+| Back button | A bare chevron on iOS 27; its long-press menu reads "History". |
+| Layout cost | 90–120 ms per 25-card day with `ViewThatFits`; 13–21 ms with one candidate. `ViewThatFits` is dropped. |
+| Largest text size | Hour labels overflow the gutter and people pills break mid-word. Fixed in the sketches: labels capped, pills unbreakable. |
+| VoiceOver paging | Not testable in the simulator. The scroll and adjustable actions are attached and compile. |
+
+Still unproven: iOS 26, a real device, VoiceOver. The questions the spike was given:
 
 | Question | If the answer is bad |
 |---|---|

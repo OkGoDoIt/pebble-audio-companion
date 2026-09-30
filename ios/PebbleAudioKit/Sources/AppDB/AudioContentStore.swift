@@ -451,30 +451,34 @@ public struct AudioContentStore: AudioContentSource {
     }
 
     public func digest(overlappingMs window: Range<Int64>) async throws -> Int64 {
-        try await db.reader.read { db in
-            let args: StatementArguments = [window.lowerBound, window.upperBound]
-            let spans = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT COUNT(*) AS n, COALESCE(SUM(rowHash), 0) AS h FROM audio_content_spans
-                    WHERE endMs > ? AND startMs < ?
-                    """,
-                arguments: args)
-            let overrides = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT COUNT(*) AS n, COALESCE(SUM(startMs % 1000003 + endMs % 999983), 0) AS h,
-                           COALESCE(MAX(createdAtMs), 0) AS t
-                    FROM audio_content_overrides WHERE endMs > ? AND startMs < ?
-                    """,
-                arguments: args)
-            let n1: Int64 = spans?["n"] ?? 0, h1: Int64 = spans?["h"] ?? 0
-            let n2: Int64 = overrides?["n"] ?? 0, h2: Int64 = overrides?["h"] ?? 0
-            let t2: Int64 = overrides?["t"] ?? 0
-            var hasher = Hasher64()
-            for value in [n1, h1, n2, h2, t2] { hasher.combine(value) }
-            return hasher.value
-        }
+        try await db.reader.read { db in try Self.digest(in: db, overlappingMs: window) }
+    }
+
+    /// `digest(overlappingMs:)` inside a caller's own read, so History can fold it into the one
+    /// observation it keeps per visible window.
+    public static func digest(in db: Database, overlappingMs window: Range<Int64>) throws -> Int64 {
+        let args: StatementArguments = [window.lowerBound, window.upperBound]
+        let spans = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) AS n, COALESCE(SUM(rowHash), 0) AS h FROM audio_content_spans
+                WHERE endMs > ? AND startMs < ?
+                """,
+            arguments: args)
+        let overrides = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) AS n, COALESCE(SUM(startMs % 1000003 + endMs % 999983), 0) AS h,
+                       COALESCE(MAX(createdAtMs), 0) AS t
+                FROM audio_content_overrides WHERE endMs > ? AND startMs < ?
+                """,
+            arguments: args)
+        let n1: Int64 = spans?["n"] ?? 0, h1: Int64 = spans?["h"] ?? 0
+        let n2: Int64 = overrides?["n"] ?? 0, h2: Int64 = overrides?["h"] ?? 0
+        let t2: Int64 = overrides?["t"] ?? 0
+        var hasher = Hasher64()
+        for value in [n1, h1, n2, h2, t2] { hasher.combine(value) }
+        return hasher.value
     }
 
     // MARK: Pure: corrections applied over the computed spans
