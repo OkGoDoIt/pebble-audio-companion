@@ -875,6 +875,37 @@ private func expectWellFormed(
         }
     }
 
+    /// "These are one conversation", said at a cut the segmenter made where the talk changed.
+    /// The two conversations become one — the person's answer beats the evidence, however
+    /// strong the evidence is. It does not move the cut three minutes further on.
+    ///
+    /// REPORTED 2026-09-30 and FAILING: a join only keeps cuts out of the two minutes either
+    /// side of it, and the evidence for the cut (two voices giving way to one dictating) is
+    /// still there just outside that reach. The search puts the cut back at the nearest block
+    /// it is allowed to — here `s1@13:58.5`, the LAST MINUTE OF THE DIALOGUE, on the far side
+    /// of the four-minute pause — labelled `topicChange`. So merging leaves two conversations
+    /// with the boundary nudged along, and merging again nudges it again.
+    @Test func aJoinAtASegmenterCutLeavesOneConversationNotTheCutMovedAlong() {
+        let talk = twoModes(minutes: 90)
+        let joined = ConversationCutInputs(joins: ["s2": [modeChange.mediaMs]])
+        for (name, policy) in [("default", BoundaryPolicy.default), ("frozen", frozenPolicy)] {
+            #expect(
+                group(talk, policy: policy).map(\.id) == ["conv-s0", modeChange.conversationId],
+                "\(name)")
+            let result = group(talk, policy: policy, cutInputs: joined)
+            #expect(
+                result.map(\.id) == ["conv-s0"],
+                "\(name): \(result.map(\.id)) \(result.map(\.startReason))")
+            // The same with the cut already held: the join removes it, and it stays removed.
+            let held = group(
+                talk, policy: policy,
+                cutInputs: ConversationCutInputs(
+                    committed: ["s2": [modeChange.mediaMs: .lull]],
+                    joins: ["s2": [modeChange.mediaMs]]))
+            #expect(held.map(\.id) == ["conv-s0"], "\(name), held: \(held.map(\.id))")
+        }
+    }
+
     @Test func aJoinAtASegmentsOwnStartKeepsCutsOutOfItsFirstTwoMinutes() {
         let talk = day(minutes: 45, talk: [.dialogue(0, 45)])
         let committed = ConversationCutInputs(
