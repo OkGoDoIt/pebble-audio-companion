@@ -441,5 +441,19 @@ import Testing
                 "conversationId TEXT 1 1", "segmentId TEXT 1 0", "ordinal INTEGER 1 2",
                 "transcriptionState TEXT 0 0", "startMediaMs INTEGER 0 0", "endMediaMs INTEGER 0 0",
             ])
+        #expect(
+            try columns(fresh, "conversation_cuts") == [
+                "segmentId TEXT 1 1", "mediaMs INTEGER 1 2", "reason TEXT 1 0",
+                "algorithm INTEGER 1 0", "createdAtMs INTEGER 1 0",
+            ])
+        // A join carries the span it joined; all four columns are nullable (a split has none,
+        // and a span with no end runs to the end of its run).
+        #expect(
+            try columns(fresh, "conversation_cut_overrides") == [
+                "segmentId TEXT 1 1", "mediaMs INTEGER 1 2", "decision TEXT 1 0",
+                "createdAtMs INTEGER 1 0", "spanFromSegmentId TEXT 0 0",
+                "spanFromMediaMs INTEGER 0 0", "spanToSegmentId TEXT 0 0",
+                "spanToMediaMs INTEGER 0 0",
+            ])
     }
 }
