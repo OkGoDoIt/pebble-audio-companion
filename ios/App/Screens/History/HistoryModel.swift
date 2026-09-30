@@ -42,6 +42,11 @@ final class HistoryModel {
     var visiblePage: HistoryPageID? {
         didSet { if let visiblePage { focusDateKey = focus(keeping: focusDateKey, in: visiblePage) } }
     }
+    /// The page the pager last came to rest on. Its neighbours are the pages drawn in full;
+    /// it trails `visiblePage` by a moment (`settle()`), so the page two away is built after a
+    /// swipe has finished animating rather than in the middle of it (profiled 2026-09-30: that
+    /// build was ~30 ms of main thread inside the swipe).
+    private(set) var settledPage: HistoryPageID?
     /// Bumped to rebuild the pager at a far target (cross-faded) instead of scrolling past
     /// hundreds of pages.
     private(set) var jumpToken = 0
@@ -77,6 +82,7 @@ final class HistoryModel {
         self.focusDateKey = wanted
         self.visiblePage = nil
         self.visiblePage = page(for: level, containing: wanted)
+        self.settledPage = self.visiblePage
     }
 
     // MARK: Pages
@@ -141,11 +147,17 @@ final class HistoryModel {
     /// Pages further than one from the visible page draw only their title, which stops the
     /// lazy stack fully building pages 0 and 1 at launch (spike).
     func isNear(_ page: HistoryPageID) -> Bool {
-        guard let visiblePage, page.level == visiblePage.level else { return false }
+        if page == visiblePage { return true }
+        guard let center = settledPage ?? visiblePage, page.level == center.level else { return false }
         let pages = pages(for: page.level)
-        guard let a = pages.firstIndex(of: visiblePage), let b = pages.firstIndex(of: page)
+        guard let a = pages.firstIndex(of: center), let b = pages.firstIndex(of: page)
         else { return false }
         return abs(a - b) <= 1
+    }
+
+    /// The pager has come to rest on `visiblePage`: build its neighbours now.
+    func settle() {
+        if settledPage != visiblePage { settledPage = visiblePage }
     }
 
     /// The pages either side of the visible one (for `prefetch`).
@@ -196,6 +208,8 @@ final class HistoryModel {
         self.level = level
         focusDateKey = clamped
         visiblePage = target
+        // A rebuilt pager opens on its target with the neighbours drawn at once.
+        if move == .rebuild { settledPage = target }
         if move == .rebuild && !levelChanged { jumpToken += 1 }
         return move
     }

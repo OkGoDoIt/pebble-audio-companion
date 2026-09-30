@@ -146,4 +146,18 @@ struct HistoryModelTests {
         #expect(m.pages(for: .day).first?.key == "2026-09-01")
         #expect(m.pages(for: .day).count == 26)
     }
+
+    @Test func newNeighboursAreDrawnOnlyOnceThePagerSettles() {
+        let m = model(focus: "2026-09-22")
+        m.visiblePage = HistoryPageID(level: .day, key: "2026-09-21")
+        // Mid-swipe: the page arrived at is drawn, the one beyond it not yet.
+        #expect(m.isNear(HistoryPageID(level: .day, key: "2026-09-21")))
+        #expect(!m.isNear(HistoryPageID(level: .day, key: "2026-09-20")))
+        m.settle()
+        #expect(m.isNear(HistoryPageID(level: .day, key: "2026-09-20")))
+        #expect(!m.isNear(HistoryPageID(level: .day, key: "2026-09-23")))
+        // A far jump rebuilds the pager with its neighbours drawn at once.
+        m.show(.day, containing: "2026-09-05")
+        #expect(m.isNear(HistoryPageID(level: .day, key: "2026-09-04")))
+    }
 }

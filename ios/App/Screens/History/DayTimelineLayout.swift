@@ -191,16 +191,25 @@ enum HistoryPerformance {
             let expected = link.targetTimestamp - link.timestamp
             let delta = link.timestamp - last
             if expected > 0, delta > expected * 1.5 {
-                print(String(format: "[history] slow frame %.1f ms (expected %.1f)", delta * 1000, expected * 1000))
+                print(String(format: "[history] %.3f slow frame %.1f ms (expected %.1f)", CACurrentMediaTime(), delta * 1000, expected * 1000))
             }
         }
     }
     #endif
 
+    /// DEBUG: a timestamped line in the hitch log, to place a slow frame against what happened.
+    static func mark(_ event: String) {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-historyHitchLog") {
+            print(String(format: "[history] %.3f %@", CACurrentMediaTime(), event))
+        }
+        #endif
+    }
+
     static func reportMeasure(_ elapsed: Duration, items: Int) {
         #if DEBUG
         let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
-        print(String(format: "[history] day timeline measured %d views in %.1f ms", items, ms))
+        print(String(format: "[history] %.3f day timeline measured %d views in %.1f ms", CACurrentMediaTime(), items, ms))
         #endif
     }
 }

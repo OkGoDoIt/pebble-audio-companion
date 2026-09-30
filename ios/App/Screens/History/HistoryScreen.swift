@@ -59,6 +59,7 @@ struct HistoryScreen: View {
             }
         }
         .background(Tokens.ground)
+        .historyWarmUp(isReady: model != nil)
         .navigationTitle(searchActive ? Copy.History.search : Copy.History.tab)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)
@@ -102,7 +103,17 @@ struct HistoryScreen: View {
                 }
             }
         }
-        .onChange(of: model?.visiblePage) { prefetchNeighbours() }
+        .onChange(of: model?.visiblePage) {
+            HistoryPerformance.mark("visible \(model?.visiblePage?.key ?? "-")")
+            prefetchNeighbours()
+        }
+        // Build the new neighbours once the swipe has come to rest, not during it.
+        .task(id: model?.visiblePage) {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            HistoryPerformance.mark("settle")
+            model?.settle()
+        }
     }
 
     // MARK: Content
@@ -342,18 +353,30 @@ struct HistoryPager: View {
     let titleFocusToken: Int
 
     var body: some View {
+        // The scroll view is `lookAhead` wider than the screen on each side, and each page is
+        // the screen's width, inset by the same margin: at rest the pages either side of the
+        // one in view intersect the scroll view's bounds by that margin while staying off
+        // screen, so the lazy stack builds them while the pager is idle rather than in the
+        // first frame of the next swipe (profiled 2026-09-30: that build was a 35–45 ms frame
+        // on every swipe onto a page not yet built).
         ScrollView(.horizontal) {
             LazyHStack(spacing: 0) {
                 ForEach(model.pages(for: model.level), id: \.self) { page in
                     pageView(page)
+                        // The container's length already excludes the content margins.
                         .containerRelativeFrame(.horizontal)
                 }
             }
             .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
+        .contentMargins(.horizontal, Self.lookAhead, for: .scrollContent)
+        .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
         .scrollPosition(id: $model.visiblePage)
+        .padding(.horizontal, -Self.lookAhead)
         .scrollIndicators(.hidden)
+        #if DEBUG
+        .onScrollPhaseChange { _, phase in HistoryPerformance.mark("pager \(phase)") }
+        #endif
         // Swipes belong to VoiceOver; a three-finger scroll pages instead.
         .accessibilityScrollAction { edge in
             let offset: Int
@@ -369,6 +392,8 @@ struct HistoryPager: View {
         .id(PagerIdentity(level: model.level, jump: model.jumpToken))
         .transition(Motion.transition(.opacity.combined(with: .scale(scale: 0.98))))
     }
+
+    static let lookAhead: CGFloat = 1
 
     private struct PagerIdentity: Hashable {
         var level: HistoryLevel
