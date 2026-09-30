@@ -23,6 +23,8 @@ public struct TurnFeatures: Equatable, Sendable {
     /// usual one, which is how announcements, television and a bystander's call usually appear.
     public var isForeign: Bool
     /// Spoken punctuation ("full stop", "comma", "question mark"): the wearer is dictating.
+    /// ("Period" is not one of them: it is also an ordinary noun, and leaving it out changes
+    /// one cut in 234 on the labelled days.)
     public var isDictation: Bool
     /// The turn opens with a greeting.
     public var opensWithGreeting: Bool
@@ -70,7 +72,7 @@ public enum ConversationLexicon {
             guard scalars > 0 else { return }
             let word = hash
             if firstWords.count < 2 { firstWords.append(String(decoding: wordBytes, as: UTF8.self)) }
-            if word == Hashed.comma || word == Hashed.period
+            if word == Hashed.comma
                 || (previousWord == Hashed.full && word == Hashed.stop)
                 || (previousWord == Hashed.question && word == Hashed.mark)
                 || (previousWord == Hashed.exclamation
@@ -170,7 +172,6 @@ public enum ConversationLexicon {
     /// The words spoken punctuation is made of.
     enum Hashed {
         static let comma = fnv1a("comma")
-        static let period = fnv1a("period")
         static let full = fnv1a("full")
         static let stop = fnv1a("stop")
         static let question = fnv1a("question")

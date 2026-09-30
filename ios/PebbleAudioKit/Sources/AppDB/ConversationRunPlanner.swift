@@ -257,20 +257,21 @@ enum ConversationRunPlanner {
 
         // 2. Fixed cuts: the person's splits beat a blocked neighbourhood (a split is the newer,
         // more specific decision about that exact place); settled segmenter cuts do not.
+        // (The person's first: where both name the same place, it is the person's cut.)
         for (index, member) in members.enumerated() {
             let id = member.meta.segmentId
+            for media in inputs.splits[id] ?? [] where media > 0 && media < member.mediaSpanMs {
+                add(
+                    PlannedCut(
+                        position: RunPosition(seg: index, mediaMs: media), reason: .manual,
+                        kind: .fixed))
+            }
             for (media, reason) in inputs.committed[id] ?? [:] where media >= 0 {
                 let position = RunPosition(seg: index, mediaMs: media)
                 guard media == 0 || media < member.mediaSpanMs, !isBlocked(position) else {
                     continue
                 }
                 add(PlannedCut(position: position, reason: reason, kind: .fixed))
-            }
-            for media in inputs.splits[id] ?? [] where media > 0 && media < member.mediaSpanMs {
-                add(
-                    PlannedCut(
-                        position: RunPosition(seg: index, mediaMs: media), reason: .manual,
-                        kind: .fixed))
             }
         }
 

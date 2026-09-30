@@ -41,7 +41,9 @@ public struct ConversationCutStore: Sendable {
             guard let decision = BoundaryDecision(rawValue: row["decision"]) else { continue }
             let segmentId: String = row["segmentId"]
             let mediaMs: Int64 = row["mediaMs"]
+            var hasSpan = false
             if decision == .join, let from: String = row["spanFromSegmentId"] {
+                hasSpan = true
                 let toSegment: String? = row["spanToSegmentId"]
                 inputs.joinSpans.append(
                     ConversationCutInputs.JoinSpan(
@@ -57,7 +59,11 @@ public struct ConversationCutStore: Sendable {
             }
             switch decision {
             case .split: inputs.splits[segmentId, default: []].insert(mediaMs)
-            case .join: inputs.joins[segmentId, default: []].insert(mediaMs)
+            // A join that recorded its span is protected by the span — exactly the two
+            // conversations it joined — and must not also push away the cut that starts the
+            // conversation after them, which a two-minute reach around the point would do
+            // whenever the joined conversation was short.
+            case .join: if !hasSpan { inputs.joins[segmentId, default: []].insert(mediaMs) }
             }
         }
         return inputs
