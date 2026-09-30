@@ -242,3 +242,83 @@ enum HistoryLabels {
         return parts.joined(separator: ", ")
     }
 }
+
+// MARK: - Stretches (one block between conversations)
+
+extension HistoryLabels {
+    /// What a stretch's one block says. Gray throughout (`Tokens.faint`), amber only for loss.
+    struct StretchText: Equatable {
+        /// Nil: the block is bare, the axis alone.
+        var title: String?
+        /// The title is the loss itself ("Audio missing · 32 min"), drawn amber.
+        var titleIsLoss = false
+        /// Only when loss is the primary class: the stretch's time range, gray.
+        var secondLine: String?
+        /// "3 min missing", amber, after the title on the same line.
+        var lossWords: String?
+    }
+
+    static func className(_ cls: HistoryStretch.Class, in stretch: HistoryStretch) -> String {
+        switch cls {
+        case .quiet:
+            return stretch.quietIsMostlyNoConversation ? Copy.History.noConversation : Copy.History.quiet
+        case .described:
+            let descriptor = stretch.dominantDescriptor ?? Copy.History.backgroundAudio
+            return descriptor.prefix(1).uppercased() + descriptor.dropFirst()
+        case .paused: return Copy.History.paused
+        case .notRecording: return Copy.History.notRecording
+        case .deleted:
+            let causes = Set(stretch.parts.filter { $0.kind == .deleted }.map(\.deletedBy))
+            if causes == [.retention] { return Copy.History.removedToSaveSpace }
+            if causes == [.user] { return Copy.History.deletedByYou }
+            return Copy.History.deleted
+        case .loss: return Copy.History.audioMissing
+        }
+    }
+
+    static func stretchText(_ stretch: HistoryStretch, locale: Locale = .current) -> StretchText {
+        let summary = stretch.summary
+        guard !summary.isBare else { return StretchText() }
+        let name = className(summary.primary, in: stretch)
+        let duration = HistoryFormat.duration(ms: summary.primaryMs)
+        if summary.primary == .loss {
+            let zone = TimeZone(identifier: stretch.zoneID) ?? .current
+            return StretchText(
+                title: Copy.History.stretchOne(name, duration), titleIsLoss: true,
+                secondLine: HistoryFormat.timeRange(stretch.startMs, stretch.endMs, zone: zone, locale: locale))
+        }
+        let title: String
+        if let second = summary.secondary {
+            title = Copy.History.stretchTwo(
+                name, duration, className(second.cls, in: stretch), HistoryFormat.duration(ms: second.ms))
+        } else {
+            title = Copy.History.stretchOne(name, duration)
+        }
+        return StretchText(
+            title: title,
+            lossWords: summary.lossWordsMs.map { Copy.History.missing(HistoryFormat.duration(ms: $0)) })
+    }
+
+    /// Whether a tap on the stretch opens its detail: it has words, or it carries loss.
+    static func stretchOpensDetail(_ stretch: HistoryStretch) -> Bool {
+        stretch.singleOpenablePiece == nil && (!stretch.summary.isBare || stretch.hasLoss)
+    }
+
+    /// One element per stretch, saying everything, loss under a minute included:
+    /// "Paused 1 hour 43 minutes. 10:13 PM to 12:33 AM. Under 1 minute of audio missing."
+    static func stretchAccessibilityLabel(_ stretch: HistoryStretch, locale: Locale = .current) -> String {
+        let summary = stretch.summary
+        let zone = TimeZone(identifier: stretch.zoneID) ?? .current
+        var head = className(summary.primary, in: stretch) + " "
+            + HistoryFormat.spokenDuration(ms: summary.primaryMs)
+        if let second = summary.secondary {
+            head += ", " + className(second.cls, in: stretch).lowercased() + " "
+                + HistoryFormat.spokenDuration(ms: second.ms)
+        }
+        var sentences = [head, HistoryFormat.spokenTimeRange(stretch.startMs, stretch.endMs, zone: zone, locale: locale)]
+        if stretch.hasLoss && summary.primary != .loss {
+            sentences.append(Copy.History.A11y.stretchLoss(HistoryFormat.spokenDuration(ms: stretch.lossMs)))
+        }
+        return sentences.joined(separator: ". ") + "."
+    }
+}

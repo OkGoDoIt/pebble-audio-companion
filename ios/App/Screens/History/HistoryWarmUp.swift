@@ -21,7 +21,7 @@ struct HistoryWarmUp: View {
                 footer: Copy.History.followUpCount(total: 2, open: 1), note: Copy.History.topicsPreparing,
                 onFooterTap: {})
             TimelineEdgeLine(edge: HistoryEdge(atMs: day.items[0].startMs, kind: .quiet), leading: true, zoneID: day.zoneID)
-            DayTimeline(day: day, liveLine: "warm-up", onOpenTag: { _ in })
+            DayTimeline(day: day, entries: Self.entries, liveLine: "warm-up", onOpenTag: { _ in })
             TimelineEdgeLine(edge: HistoryEdge(atMs: day.items.last!.endMs, kind: .notListening), leading: false, zoneID: day.zoneID)
             ListCard {
                 WeekDayRow(row: HistoryWeekRow(
@@ -38,6 +38,8 @@ struct HistoryWarmUp: View {
         }
         .frame(width: 390)
     }
+
+    static let entries = HistoryStretches.combine(day)
 
     /// A small day holding every kind of item.
     static let day: HistoryDay = {

@@ -55,10 +55,10 @@ struct DayPage: View, Equatable {
         }
         .task(id: revealed) {
             // One more batch a frame at a time until the whole day is drawn.
-            guard let page, revealed < page.day.items.count else { return }
+            guard let page, revealed < page.entries.count else { return }
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
-            revealed = DayReveal.next(after: revealed, count: page.day.items.count)
+            revealed = DayReveal.next(after: revealed, count: page.entries.count)
         }
     }
 
@@ -66,7 +66,7 @@ struct DayPage: View, Equatable {
     /// a page already on screen is drawn whole.
     private func show(_ next: HistoryDayPage) {
         if page == nil {
-            revealed = DayReveal.firstScreenful(next.day.items)
+            revealed = DayReveal.firstScreenful(next.entries)
         }
         page = next
     }
@@ -92,9 +92,10 @@ struct DayPage: View, Equatable {
             if let edge = page.day.leadingEdge {
                 TimelineEdgeLine(edge: edge, leading: true, zoneID: zoneID(of: page.day.items.first))
             }
-            let complete = revealed >= page.day.items.count
+            let complete = revealed >= page.entries.count
             DayTimeline(
-                day: complete ? page.day : DayReveal.prefix(page.day, revealed),
+                day: complete ? page.day : DayReveal.prefix(page.day, until: page.entries, revealed),
+                entries: complete ? page.entries : Array(page.entries.prefix(revealed)),
                 liveLine: page.liveLine, isComplete: complete,
                 onOpenChapter: actions.openChapter, onOpenFollowUp: actions.openFollowUp,
                 onOpenGap: actions.openGap, onOpenLive: actions.openLive, onOpenTag: actions.openTag)
@@ -166,7 +167,7 @@ enum DayReveal {
     static let screenfulPoints: CGFloat = 500
     static let batch = 4
 
-    static func firstScreenful(_ items: [HistoryItem]) -> Int {
+    static func firstScreenful(_ items: [HistoryDayEntry]) -> Int {
         var height: CGFloat = 0
         var count = 0
         for item in items {
@@ -182,9 +183,16 @@ enum DayReveal {
         min(count, revealed + batch)
     }
 
-    static func prefix(_ day: HistoryDay, _ count: Int) -> HistoryDay {
+    /// The day cut where the first `count` entries end, so its items (which set the hour
+    /// marks) cover exactly the entries drawn.
+    static func prefix(_ day: HistoryDay, until entries: [HistoryDayEntry], _ count: Int) -> HistoryDay {
         var partial = day
-        partial.items = Array(day.items.prefix(count))
+        guard count > 0, count <= entries.count else {
+            partial.items = []
+            return partial
+        }
+        let end = entries[count - 1].endMs
+        partial.items = day.items.filter { $0.startMs < end || ($0.startMs == end && $0.endMs == end) }
         return partial
     }
 }

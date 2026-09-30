@@ -92,6 +92,19 @@ extension Copy {
         static let removedToSaveSpace = "Removed to save space"
 
         /// The gap's name, before its duration.
+        /// "Deleted", for a stretch whose deleted pieces had more than one cause.
+        static let deleted = "Deleted"
+
+        /// "10:13 PM – 12:33 AM", the title of a stretch's detail sheet.
+        static let stretchDetailDone = "Done"
+
+        /// A stretch's label with one class: "Paused · 1 hr 43 min".
+        static func stretchOne(_ name: String, _ duration: String) -> String { "\(name) · \(duration)" }
+        /// With a second class: "Paused 1 hr 10 min · quiet 50 min".
+        static func stretchTwo(_ name: String, _ duration: String, _ second: String, _ secondDuration: String) -> String {
+            "\(name) \(duration) · \(second.lowercased()) \(secondDuration)"
+        }
+
         static func gapName(_ gap: HistoryGap) -> String {
             switch gap.kind {
             case .quiet: return quiet
@@ -242,6 +255,12 @@ extension Copy {
         // MARK: Accessibility (5.9)
 
         enum A11y {
+            /// A stretch's spoken loss: "Under 1 minute of audio missing".
+            static func stretchLoss(_ spoken: String) -> String {
+                let text = "\(spoken) of audio missing"
+                return text.prefix(1).uppercased() + text.dropFirst()
+            }
+            static let stretchHint = "Shows what happened in this time"
             /// "2 follow-ups, 1 open".
             static func followUps(total: Int, open: Int) -> String {
                 guard total > 0 else { return "" }

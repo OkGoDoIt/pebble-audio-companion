@@ -376,4 +376,91 @@ struct HistoryFormatTests {
         let label = HistoryLabels.chapterAccessibilityLabel(block(at(14, 0), at(14, 18)), locale: us)
         #expect(!label.contains("Order numbers"))
     }
+
+    // MARK: Stretches (one block between conversations)
+
+    private func piece(
+        _ kind: HistoryGap.Kind, _ start: Int64, _ end: Int64, missingSeconds: Int64 = 0,
+        descriptor: String? = nil, deletedBy: HistoryDeletionCause? = nil, openable: Bool = false
+    ) -> HistoryGap {
+        HistoryGap(
+            id: "p\(start)", kind: kind, startMs: start, endMs: end, zoneID: newYork.identifier,
+            pausedBy: kind == .paused ? .watchPowerSave : nil, descriptor: descriptor, deletedBy: deletedBy,
+            isOpenable: openable, missingMs: missingSeconds * 1000)
+    }
+
+    private func stretch(_ parts: HistoryGap...) -> HistoryStretch { HistoryStretch(parts: parts) }
+
+    @Test func aStretchSaysOnlyItsLargestClassWithoutCauseOrRange() {
+        let text = HistoryLabels.stretchText(
+            stretch(piece(.paused, at(18, 40), at(19, 50)), piece(.quiet, at(19, 50), at(20, 10))), locale: us)
+        #expect(text.title == "Paused · 1 hr 10 min")
+        #expect(text.secondLine == nil && text.lossWords == nil && !text.titleIsLoss)
+    }
+
+    @Test func aSecondClassIsNamedPastBothThresholds() {
+        let two = HistoryLabels.stretchText(
+            stretch(piece(.paused, at(18, 40), at(19, 50)), piece(.quiet, at(19, 50), at(20, 40))), locale: us)
+        #expect(two.title == "Paused 1 hr 10 min · quiet 50 min")
+    }
+
+    @Test func aStretchMostlyLostSaysSoInAmberWithItsRange() {
+        let text = HistoryLabels.stretchText(
+            stretch(piece(.quiet, at(0, 47, day: 23), at(0, 50, day: 23)),
+                    piece(.audioMissing, at(0, 50, day: 23), at(1, 21, day: 23))), locale: us)
+        #expect(text.title == "Audio missing · 31 min")
+        #expect(text.titleIsLoss)
+        #expect(plain(text.secondLine ?? "") == "12:47 – 1:21 AM")
+        #expect(text.lossWords == nil)
+    }
+
+    @Test func lossOfAMinuteOrMoreIsSaidAfterTheLabelAndLessIsNot() {
+        let minutes = HistoryLabels.stretchText(
+            stretch(piece(.paused, at(22, 13), at(22, 51)), piece(.quiet, at(22, 51), at(22, 58), missingSeconds: 120)),
+            locale: us)
+        #expect(minutes.title == "Paused · 38 min")
+        #expect(minutes.lossWords == "2 min missing")
+        let seconds = HistoryLabels.stretchText(
+            stretch(piece(.paused, at(22, 13), at(22, 51)), piece(.quiet, at(22, 51), at(22, 58), missingSeconds: 20)),
+            locale: us)
+        #expect(seconds.title == "Paused · 38 min")
+        #expect(seconds.lossWords == nil)
+    }
+
+    @Test func aBareStretchHasNoWordsButStillOpensWhenItCarriesLoss() {
+        let calm = stretch(piece(.quiet, at(21, 2), at(21, 9)), piece(.quiet, at(21, 9), at(21, 27)))
+        #expect(HistoryLabels.stretchText(calm, locale: us).title == nil)
+        #expect(!HistoryLabels.stretchOpensDetail(calm))
+        let lossy = stretch(piece(.quiet, at(21, 2), at(21, 9), missingSeconds: 20), piece(.quiet, at(21, 9), at(21, 27)))
+        #expect(HistoryLabels.stretchText(lossy, locale: us).title == nil)
+        #expect(HistoryLabels.stretchOpensDetail(lossy))
+    }
+
+    @Test func aStretchNamesItsQuietAndItsDescribedAndItsDeleted() {
+        let noConversation = stretch(
+            piece(.quiet, at(13, 0), at(13, 10)), piece(.noConversation, at(13, 10), at(13, 50)))
+        #expect(HistoryLabels.stretchText(noConversation, locale: us).title == "No conversation · 50 min")
+        let music = stretch(
+            piece(.noConversation, at(13, 0), at(13, 45), descriptor: "music"), piece(.quiet, at(13, 45), at(13, 50)))
+        #expect(HistoryLabels.stretchText(music, locale: us).title == "Music · 45 min")
+        let removed = stretch(piece(.deleted, at(13, 0), at(13, 40), deletedBy: .retention))
+        #expect(HistoryLabels.stretchText(removed, locale: us).title == "Removed to save space · 40 min")
+    }
+
+    @Test func aSingleOpenablePieceKeepsItsOwnTap() {
+        let only = stretch(piece(.noConversation, at(21, 9), at(21, 45), openable: true))
+        #expect(only.singleOpenablePiece != nil)
+        #expect(!HistoryLabels.stretchOpensDetail(only))
+    }
+
+    @Test func aStretchIsOneSpokenElementLossIncluded() {
+        let night = stretch(
+            piece(.paused, at(22, 13), at(23, 56)),
+            piece(.quiet, at(23, 56), at(0, 33, day: 23), missingSeconds: 20))
+        #expect(plain(HistoryLabels.stretchAccessibilityLabel(night, locale: us))
+            == "Paused 1 hour 43 minutes. 10:13 PM to 12:33 AM. Under a minute of audio missing.")
+        let two = stretch(piece(.paused, at(18, 40), at(19, 50)), piece(.quiet, at(19, 50), at(20, 40)))
+        #expect(plain(HistoryLabels.stretchAccessibilityLabel(two, locale: us))
+            == "Paused 1 hour 10 minutes, quiet 50 minutes. 6:40 to 8:40 PM.")
+    }
 }

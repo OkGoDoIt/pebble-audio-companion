@@ -3,6 +3,19 @@ import SwiftUI
 
 // Time on the day that is not a card (plan 5.3 "Gap kinds").
 //
+// Since 2026-10 the timeline does not draw gaps one by one: every run of consecutive gaps
+// between two things that are not gaps is ONE block (`HistoryStretch`, drawn by
+// `TimelineStretch`) with one gray label — the class holding the most time and its own total
+// ("Paused · 1 hr 43 min"), a second class only past 30 min and a third of the block, loss of a
+// minute or more in amber after it, no cause and no range. A block that is mostly loss says
+// "Audio missing · 32 min" in amber with its range beneath. Quiet-led blocks under 30 min and
+// any block under 10 min are bare unless they lose a minute or more. The table below is how
+// each piece is still drawn ON THE AXIS inside its block (carried loss is a 3 pt amber tick),
+// and how the block's detail sheet words it. This view itself now draws only:
+//   - a block that is a single openable no-conversation piece (chevron, opens the audio), and
+//   - the open-ended last gap of today ("Paused since 2:30 PM").
+// The labels in the right column are also what `-historyNoStretches` (DEBUG) shows.
+//
 // | Kind              | On the axis                          | Label                         |
 // |-------------------|--------------------------------------|-------------------------------|
 // | quiet             | bare line                            | faint, ≥ 30 min; range > 90   |

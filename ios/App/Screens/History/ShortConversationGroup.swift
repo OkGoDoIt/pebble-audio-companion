@@ -11,11 +11,14 @@ import SwiftUI
 enum HistoryDisplayItem: Equatable, Identifiable {
     case item(HistoryItem)
     case shortRun([HistoryChapterBlock])
+    /// A run of gaps drawn as one block (`HistoryStretch`).
+    case stretch(HistoryStretch)
 
     var id: String {
         switch self {
         case .item(let item): return item.id
         case .shortRun(let blocks): return "run-" + (blocks.first?.id ?? "")
+        case .stretch(let stretch): return stretch.id
         }
     }
 
@@ -23,6 +26,7 @@ enum HistoryDisplayItem: Equatable, Identifiable {
         switch self {
         case .item(let item): return item.startMs
         case .shortRun(let blocks): return blocks.first?.startMs ?? 0
+        case .stretch(let stretch): return stretch.startMs
         }
     }
 
@@ -30,6 +34,7 @@ enum HistoryDisplayItem: Equatable, Identifiable {
         switch self {
         case .item(let item): return item.endMs
         case .shortRun(let blocks): return blocks.last?.endMs ?? 0
+        case .stretch(let stretch): return stretch.endMs
         }
     }
 }
@@ -53,10 +58,22 @@ enum HistoryDisplayGrouping {
     /// one's end. A 10-minute-or-longer card, or any other gap, ends a run; a run of one stays
     /// a card.
     static func group(_ items: [HistoryItem], enabled: Bool = true) -> [HistoryDisplayItem] {
-        guard enabled else { return items.map { .item($0) } }
+        group(items.map { HistoryDayEntry.item($0) }, enabled: enabled)
+    }
+
+    /// The same over a page's entries, where the quiet between two short conversations may be
+    /// a stretch: it joins when it is quiet only and shorter than the minimum.
+    static func group(_ entries: [HistoryDayEntry], enabled: Bool = true) -> [HistoryDisplayItem] {
+        func display(_ entry: HistoryDayEntry) -> HistoryDisplayItem {
+            switch entry {
+            case .item(let item): return .item(item)
+            case .stretch(let stretch): return .stretch(stretch)
+            }
+        }
+        guard enabled else { return entries.map(display) }
         var result: [HistoryDisplayItem] = []
         var run: [HistoryChapterBlock] = []
-        var pendingQuiet: [HistoryItem] = []
+        var pendingQuiet: [HistoryDayEntry] = []
 
         func flush() {
             if run.count >= 2 {
@@ -65,13 +82,13 @@ enum HistoryDisplayGrouping {
                 result.append(.item(.chapter(only)))
             }
             run = []
-            result += pendingQuiet.map { .item($0) }
+            result += pendingQuiet.map(display)
             pendingQuiet = []
         }
 
-        for item in items {
-            switch item {
-            case .chapter(let block) where isShort(block):
+        for entry in entries {
+            switch entry {
+            case .item(.chapter(let block)) where isShort(block):
                 if run.isEmpty {
                     run = [block]
                 } else {
@@ -79,11 +96,14 @@ enum HistoryDisplayGrouping {
                     pendingQuiet = []
                     run.append(block)
                 }
-            case .gap(let gap) where !run.isEmpty && joins(gap):
-                pendingQuiet.append(item)
+            case .item(.gap(let gap)) where !run.isEmpty && joins(gap):
+                pendingQuiet.append(entry)
+            case .stretch(let stretch) where !run.isEmpty && stretch.parts.allSatisfy(joins)
+                && Double(stretch.durationMs) / 60_000 < quietJoinsBelowMinutes:
+                pendingQuiet.append(entry)
             default:
                 flush()
-                result.append(.item(item))
+                result.append(display(entry))
             }
         }
         flush()
