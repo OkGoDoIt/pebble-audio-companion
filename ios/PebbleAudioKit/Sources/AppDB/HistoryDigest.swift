@@ -24,7 +24,10 @@ import GRDB
 // - pause intervals overlapping the window;
 // - the window's follow-up rows (`FollowUpStore.historySQL`, archived ones never), with every
 //   field a line or its placement reads;
-// - the recaps of the window's days: `updatedAtMs` and `shortOfHash` (the condensed form landing);
+// - the recaps of the window's days: `updatedAtMs`, `shortOfHash` (the condensed form landing)
+//   and `briefOfHash` (the day's headline and line landing, or being refused);
+// - the week and month briefs the page shows (`briefKeys`): the input each was written from and
+//   when. A failed attempt writes neither, so a failing brief never rebuilds an open page;
 // - the audio classifier's digest of the window (`AudioContentStore.digest(in:overlappingMs:)`).
 //
 // Not in it: anything memory-only (the pending-delete buffer — the live source adds its own
@@ -44,16 +47,20 @@ public struct HistoryDigestScope: Equatable, Sendable {
     public var includeTags: Bool
     /// A day whose cards are the conversations themselves draws their summaries.
     public var includeSummaries: Bool
+    /// The `period_briefs` rows the page shows (`PeriodBriefKey`): a week page its week's; a
+    /// month page its own and each of its weeks'.
+    public var briefKeys: [String]
 
     public init(
         window: Range<Int64>, segmentIds: [String], recapDateKeys: [String], includeTags: Bool,
-        includeSummaries: Bool = false
+        includeSummaries: Bool = false, briefKeys: [String] = []
     ) {
         self.window = window
         self.segmentIds = segmentIds
         self.recapDateKeys = recapDateKeys
         self.includeTags = includeTags
         self.includeSummaries = includeSummaries
+        self.briefKeys = briefKeys
     }
 }
 
@@ -105,6 +112,24 @@ extension HistoryDigest {
     public static func fetch(_ db: Database, scope: HistoryDigestScope) throws -> HistoryDigest {
         let window = scope.window
         var hasher = Hasher64()
+        // Briefs first, and even for an empty window: a month page's brief can land while the
+        // window it covers is still being resolved, and a week of nothing but a brief is a page.
+        hasher.combine("briefs")
+        if !scope.briefKeys.isEmpty {
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT periodKey, sourceHash, updatedAtMs FROM period_briefs
+                    WHERE periodKey IN (SELECT value FROM json_each(?)) AND sourceHash IS NOT NULL
+                    ORDER BY periodKey
+                    """,
+                arguments: [try jsonArray(scope.briefKeys)])
+            {
+                hasher.combine(row["periodKey"] as String)
+                hasher.combine(row["sourceHash"] as String? ?? "")
+                hasher.combine(row["updatedAtMs"] as Int64)
+            }
+        }
         guard !window.isEmpty else { return HistoryDigest(conversationIds: [], fingerprint: hasher.value) }
 
         // Conversations overlapping the window: the same edges as `ConversationQueries.rows`.
@@ -231,7 +256,7 @@ extension HistoryDigest {
             for row in try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT dateKey, updatedAtMs, shortOfHash FROM recaps
+                    SELECT dateKey, updatedAtMs, shortOfHash, briefOfHash FROM recaps
                     WHERE dateKey IN (SELECT value FROM json_each(?))
                     ORDER BY dateKey
                     """,
@@ -240,6 +265,7 @@ extension HistoryDigest {
                 hasher.combine(row["dateKey"] as String)
                 hasher.combine(row["updatedAtMs"] as Int64)
                 hasher.combine(row["shortOfHash"] as String? ?? "")
+                hasher.combine(row["briefOfHash"] as String? ?? "")
             }
         }
 

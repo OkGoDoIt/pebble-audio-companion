@@ -32,12 +32,22 @@ struct MonthWeekRow: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 0) {
                 rangeLine
-                if row.hasRecordings {
-                    Text(row.headline ?? Copy.History.noSummaryYet)
-                        .font(row.headline == nil ? AppFont.pendingTitle : AppFont.rowTitle)
-                        .foregroundStyle(row.headline == nil ? Tokens.meta : Tokens.label)
+                if let headline = row.headline {
+                    Text(headline)
+                        .font(AppFont.rowTitle)
+                        .foregroundStyle(Tokens.label)
                         .lineLimit(1)
                         .padding(.top, 2)
+                } else if row.hasRecordings {
+                    // "No summary yet" only where there is no text at all. A week with a line and
+                    // no headline shows the line; the placeholder above real text read as if the
+                    // text below it were not a summary.
+                    if row.summary == nil {
+                        Text(Copy.History.noSummaryYet)
+                            .font(AppFont.pendingTitle)
+                            .foregroundStyle(Tokens.meta)
+                            .padding(.top, 2)
+                    }
                 } else {
                     Text(Copy.History.nothingRecorded)
                         .font(AppFont.pendingTitle)

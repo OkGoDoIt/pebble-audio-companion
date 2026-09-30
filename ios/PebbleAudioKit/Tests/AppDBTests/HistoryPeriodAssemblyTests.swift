@@ -3,9 +3,10 @@ import Testing
 
 @testable import AppDB
 
-// Weeks and months from per-day facts (plan 5.4, 5.5, 5.6): the day-state roll-up, which title
-// heads a day, how tags are ranked, follow-up order and the "more" count, the month's tag
-// day-counts and totals, and a week that straddles two months.
+// Weeks and months from per-day facts (plan 5.4, 5.5, 5.6): the day-state roll-up, which words
+// head a day and a week (the written briefs, and the fallbacks before they exist), how tags are
+// ranked, follow-up order and the "more" count, the month's tag day-counts and totals, and a week
+// that straddles two months.
 
 private let minute: Int64 = 60_000
 
@@ -22,11 +23,12 @@ private func followUp(_ id: String, done: Bool, at: Int64, snoozed: Bool = false
 
 private func recorded(
     _ key: String, conversations: [HistoryConversationFact] = [], recap: String? = nil,
-    followUps: [HistoryPlacedFollowUp] = []
+    headline: String? = nil, line: String? = nil, followUps: [HistoryPlacedFollowUp] = []
 ) -> HistoryDayFacts {
     HistoryDayFacts(
         dateKey: key, recordings: 4, transcribedRecordings: 4, conversations: conversations,
-        recap: recap.map { HistoryRecapFact(summary: $0, updatedAtMs: 1) }, followUps: followUps)
+        recap: recap.map { HistoryRecapFact(summary: $0, updatedAtMs: 1, headline: headline, lineSummary: line) },
+        followUps: followUps)
 }
 
 @Suite struct HistoryPeriodAssemblyTests {
@@ -51,9 +53,9 @@ private func recorded(
 
     // MARK: - Week rows
 
-    @Test("headline is the title of the conversation with the most transcribed time")
+    @Test("without a written headline, the title of the most-talked TITLED conversation")
     func headlineChoice() {
-        let sources = InterimHistoryPeriodSources()
+        let sources = HistoryPeriodSources()
         let day = recorded(
             "2026-09-22",
             conversations: [
@@ -64,10 +66,11 @@ private func recorded(
             ])
         #expect(sources.dayHeadline(day) == "Garden planning")
 
-        // The longest talk has no title yet: no headline, rather than a shorter one's title.
+        // The longest talk has no title yet: the most-talked conversation that HAS one. A title
+        // is already a short phrase, which is all the row asks for.
         let untitled = recorded(
             "2026-09-22", conversations: [conversation("a", nil, overlap: 90), conversation("b", "Short", overlap: 5)])
-        #expect(sources.dayHeadline(untitled) == nil)
+        #expect(sources.dayHeadline(untitled) == "Short")
 
         // Nothing transcribed: nothing to headline.
         let wordless = recorded("2026-09-22", conversations: [conversation("a", "Title", overlap: 30, transcribed: 0)])
@@ -85,11 +88,11 @@ private func recorded(
                 conversation("d", "D", tags: ["games"], overlap: 5),
             ],
             recap: "Garden work and a bank transfer.")
-        let row = HistoryPeriodAssembler.weekRow(day, sources: InterimHistoryPeriodSources())
+        let row = HistoryPeriodAssembler.weekRow(day, sources: HistoryPeriodSources())
         #expect(row.summary == "Garden work and a bank transfer.")
         // banking 50 > apartment 45 > work 30 > Travel 20 > games 5; three shown.
         #expect(row.tags == ["banking", "apartment", "work"])
-        #expect(InterimHistoryPeriodSources().dayTags(day) == ["banking", "apartment", "work", "Travel", "games"])
+        #expect(HistoryPeriodSources().dayTags(day) == ["banking", "apartment", "work", "Travel", "games"])
     }
 
     @Test("follow-ups: open first, then done, each by time; the rest counted as more")
@@ -103,7 +106,7 @@ private func recorded(
                 followUp("done-late", done: true, at: 1_000),
                 followUp("open-early", done: false, at: 200),
             ])
-        let row = HistoryPeriodAssembler.weekRow(day, sources: InterimHistoryPeriodSources())
+        let row = HistoryPeriodAssembler.weekRow(day, sources: HistoryPeriodSources())
         #expect(row.followUps.map(\.id) == ["open-early", "snoozed-mid"])
         #expect(row.moreFollowUps == 3)
     }
@@ -114,7 +117,7 @@ private func recorded(
             dateKey: "2026-09-24", recordings: 2, transcribedRecordings: 0, waitingMs: 30 * minute,
             conversations: [conversation("a", "Stale title", tags: ["x"], overlap: 30)],
             recap: HistoryRecapFact(summary: "old", updatedAtMs: 1))
-        let row = HistoryPeriodAssembler.weekRow(waiting, sources: InterimHistoryPeriodSources())
+        let row = HistoryPeriodAssembler.weekRow(waiting, sources: HistoryPeriodSources())
         #expect(row.state == .notTranscribedYet(waitingMs: 30 * minute))
         #expect(row.headline == nil && row.summary == nil && row.tags.isEmpty)
     }
@@ -141,46 +144,87 @@ private func recorded(
 
     // MARK: - Month
 
-    @Test("the recap's first sentence heads the day; without a recap, the most-talked title")
-    func theRecapHeadsTheDay() {
-        let sources = InterimHistoryPeriodSources()
-        let blob = HistoryConversationFact(
-            id: "a", title: "Garden, Kitchen Repairs, and Projects", overlapMs: 300 * minute,
-            transcribedMs: 200 * minute, durationMs: 9 * 60 * minute)
-        let recap = "- The day focused on improving an AI system's model options and generation latency. Then dinner."
-        let day = recorded("2026-09-18", recap: recap)
-        var withBlob = day
-        withBlob.conversations = [blob]
-        #expect(sources.dayHeadline(withBlob) == "The day focused on improving an AI system's model options…")
-        #expect(sources.daySummary(withBlob) == "Then dinner.")
+    @Test("a day's written headline and line head it; before they exist, a title and the recap whole")
+    func theWrittenBriefHeadsTheDay() {
+        let sources = HistoryPeriodSources()
+        let recap = "The day began with a long planning session and some reading, followed by errands. "
+            + "Later, you worked with friends on the new garden."
+        let talk = [conversation("a", "Errands in town", overlap: 60), conversation("b", nil, overlap: 90)]
 
-        // No recap: the title, however long its conversation.
-        var noRecap = withBlob
-        noRecap.recap = nil
-        #expect(sources.dayHeadline(noRecap) == "Garden, Kitchen Repairs, and Projects")
+        let written = recorded(
+            "2026-09-27", conversations: talk, recap: recap, headline: "Office in Unit 4 and Fernwood",
+            line: "Signed a new office lease in Unit 4; weighed short terms.")
+        #expect(sources.dayHeadline(written) == "Office in Unit 4 and Fernwood")
+        #expect(sources.daySummary(written) == "Signed a new office lease in Unit 4; weighed short terms.")
 
-        // A topic-sized conversation's title names twenty minutes of the day, not the day: with
-        // a recap, the recap still heads it. (Until conversations were topic-sized, a
-        // conversation under two hours kept its title here; every real one ran longer.)
-        var hour = withBlob
-        hour.conversations = [HistoryConversationFact(id: "b", title: "Dinner", overlapMs: 60 * minute, transcribedMs: 60 * minute)]
-        #expect(sources.dayHeadline(hour) == "The day focused on improving an AI system's model options…")
-        #expect(sources.daySummary(hour) == "Then dinner.")
-        hour.recap = nil
-        #expect(sources.dayHeadline(hour) == "Dinner")
+        // Not written yet: never the recap's first sentence cut short (the screen Roger reported:
+        // "The day began with a long planning…" over "Later, you worked with friends…").
+        let pending = recorded("2026-09-27", conversations: talk, recap: recap)
+        #expect(sources.dayHeadline(pending) == "Errands in town")
+        #expect(sources.daySummary(pending) == recap, "the recap whole; the view clamps it to two lines")
+        // No titled conversation either: no headline at all, rather than a cut.
+        let bare = recorded("2026-09-27", conversations: [conversation("b", nil, overlap: 90)], recap: recap)
+        #expect(sources.dayHeadline(bare) == nil)
+        #expect(sources.daySummary(bare) == recap)
 
-        // The longest talk has no title: the recap names the day rather than nothing.
-        var untitled = withBlob
-        untitled.conversations = [HistoryConversationFact(id: "c", title: nil, overlapMs: 30 * minute, transcribedMs: 30 * minute)]
-        #expect(sources.dayHeadline(untitled)?.hasPrefix("The day focused") == true)
+        // A headline but no usable line: the recap under it, whole.
+        let headlineOnly = recorded("2026-09-27", conversations: talk, recap: recap, headline: "Road trip to Denver")
+        #expect(sources.daySummary(headlineOnly) == recap)
 
-        #expect(InterimHistoryPeriodSources.cut("Short sentence.", to: 60) == "Short sentence")
-        #expect(InterimHistoryPeriodSources.firstSentence(of: "One. Two.").sentence == "One.")
-        #expect(InterimHistoryPeriodSources.firstSentence(of: "Version 2.5 shipped today").sentence == "Version 2.5 shipped today")
+        // Whatever the text, no headline is ever a cut and none is the recap's opening.
+        for day in [written, pending, bare, headlineOnly] {
+            let headline = sources.dayHeadline(day)
+            #expect(headline?.hasSuffix("…") != true)
+            #expect(headline.map { recap.hasPrefix($0) } != true)
+        }
     }
 
-    @Test("a month row lists its days' headlines, the days with most talk first, once each, at most three")
-    func monthRowSummary() {
+    @Test("today's row keeps its state; its summary follows the day's rule")
+    func todayRow() {
+        var today = recorded(
+            "2026-09-30", conversations: [conversation("a", "Lunch", overlap: 20)], recap: "Lunch and a walk.",
+            line: "Lunch near the office; a walk through the park.")
+        today.isToday = true
+        let row = HistoryPeriodAssembler.weekRow(today, sources: HistoryPeriodSources())
+        #expect(row.state == .today(isLive: false))
+        #expect(row.summary == "Lunch near the office; a walk through the park.")
+        today.recap?.lineSummary = nil
+        #expect(HistoryPeriodAssembler.weekRow(today, sources: HistoryPeriodSources()).summary == "Lunch and a walk.")
+    }
+
+    @Test("a week's brief heads its month row and fills the week and month cards")
+    func writtenBriefs() {
+        let days: [String: HistoryDayFacts] = [
+            "2026-09-21": recorded("2026-09-21", conversations: [conversation("a", "Garden planning", overlap: 90)])
+        ]
+        let sources = HistoryPeriodSources(briefs: [
+            PeriodBriefKey.week(firstDateKey: "2026-09-20"): HistoryBrief(
+                text: "Garden work took the week.", headline: "Garden work and banking",
+                lineSummary: "Two workdays and the shopping behind them.", updatedAtMs: 5),
+            PeriodBriefKey.month(containing: "2026-09-01"): HistoryBrief(
+                text: "The garden project.", headline: "The move", lineSummary: nil, updatedAtMs: 6),
+        ])
+        let month = HistoryPeriodAssembler.month(
+            containing: "2026-09-22", firstWeekday: 1, days: days, todayKey: "2026-09-26", sources: sources)
+        let row = month.rows.first { $0.firstDateKey == "2026-09-20" }!
+        #expect(row.headline == "Garden work and banking")
+        #expect(row.summary == "Two workdays and the shopping behind them.")
+        #expect(month.brief?.text == "The garden project.")
+        let week = HistoryPeriodAssembler.week(
+            firstDateKey: "2026-09-20", lastDateKey: "2026-09-26", days: days, todayKey: "2026-09-26",
+            sources: sources)
+        #expect(week.brief?.text == "Garden work took the week.")
+        // A brief with only a row's words (its paragraph was refused) is no card.
+        let rowOnly = HistoryPeriodSources(briefs: [
+            PeriodBriefKey.week(firstDateKey: "2026-09-20"): HistoryBrief(
+                text: "", headline: "Garden work", lineSummary: nil, updatedAtMs: 5)
+        ])
+        #expect(rowOnly.weekBrief(firstDateKey: "2026-09-20") == nil)
+        #expect(rowOnly.weekHeadline(firstDateKey: "2026-09-20", []) == "Garden work")
+    }
+
+    @Test("before its brief, a week row is headed by its two most-talked days' headlines; no summary")
+    func monthRowFallback() {
         let days: [String: HistoryDayFacts] = [
             "2026-09-20": recorded("2026-09-20", conversations: [conversation("x", "Coffee", overlap: 20)]),
             "2026-09-21": recorded(
@@ -194,22 +238,26 @@ private func recorded(
                 conversations: [conversation("c", "garden planning", overlap: 80), conversation("d", "Dinner", overlap: 30)]),
             "2026-09-23": recorded(
                 "2026-09-23",
-                conversations: [
-                    HistoryConversationFact(
-                        id: "e", title: "A whole day", overlapMs: 200 * minute, transcribedMs: 60 * minute,
-                        durationMs: 10 * 60 * minute)
-                ],
-                recap: "Budget review and report checks. More."),
+                conversations: [conversation("e", "A whole day", overlap: 200, transcribed: 60)],
+                recap: "Budget review and report checks. More.", headline: "Budget review"),
         ]
         let month = HistoryPeriodAssembler.month(
             containing: "2026-09-22", firstWeekday: 1, days: days, todayKey: "2026-09-26")
         let week = month.rows.first { $0.firstDateKey == "2026-09-20" }!
-        #expect(week.headline == nil)
-        // 21st (130 min): Garden planning; 22nd (110): same title again, skipped; 23rd (60):
-        // the recap's sentence, not a title; 20th (20): Coffee.
-        #expect(week.summary == "Garden planning · Budget review and report checks · Coffee")
+        // 21st (130 min): Garden planning; 22nd (110): the same headline again, skipped; 23rd
+        // (60): its written headline. Two phrases, never a sentence; no summary until the brief.
+        #expect(week.headline == "Garden planning · Budget review")
+        #expect(week.summary == nil)
         #expect(week.isCurrentWeek)
         #expect(week.hasRecordings)
+
+        // Two that would not fit one line: the first alone, never a clipped second.
+        var long = days
+        long["2026-09-23"]?.recap?.headline = "Budget review and the quarterly report"
+        let longWeek = HistoryPeriodAssembler.month(
+            containing: "2026-09-22", firstWeekday: 1, days: long, todayKey: "2026-09-26"
+        ).rows.first { $0.firstDateKey == "2026-09-20" }!
+        #expect(longWeek.headline == "Garden planning")
     }
 
     @Test("tag counts are the days a tag appears on; month totals cover only the month's days")
@@ -271,7 +319,7 @@ private func recorded(
         let first = october.rows.first!
         #expect(last.firstDateKey == "2026-09-27" && last.lastDateKey == "2026-10-03")
         #expect(first == last)
-        #expect(first.summary == "End of September · Start of October")  // the 29th has more talk
+        #expect(first.headline == "End of September · Start of October")  // the 29th has more talk
         // October's own days only: weeks after today are not listed.
         #expect(october.rows.count == 1)
         #expect(september.rows.count == 5)

@@ -573,10 +573,14 @@ struct ReaderHistoryBackend: HistoryLiveBackend {
         case .day(let key):
             return await reader.dayScope(key, library)
         case .week(let first, let last):
-            return await reader.periodScope(days: HistoryCalendar.days(in: first...last), library)
+            return await reader.periodScope(
+                days: HistoryCalendar.days(in: first...last),
+                briefKeys: HistoryReader.weekBriefKeys(firstDateKey: first), library)
         case .month(let first, let firstWeekday):
             return await reader.periodScope(
-                days: HistoryReader.monthDays(containing: first, firstWeekday: firstWeekday), library)
+                days: HistoryReader.monthDays(containing: first, firstWeekday: firstWeekday),
+                briefKeys: HistoryReader.monthBriefKeys(containing: first, firstWeekday: firstWeekday),
+                library)
         }
     }
 

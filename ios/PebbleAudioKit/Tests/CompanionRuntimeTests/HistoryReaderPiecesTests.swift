@@ -205,6 +205,61 @@ struct HistoryReaderPiecesTests {
         #expect(try #require(facts[day]).recordings == 2)
     }
 
+    @Test("a week and a month read the written briefs; a day's headline only for its current recap")
+    func weekAndMonthReadBriefs() async throws {
+        let world = try PieceWorld()
+        defer { world.remove() }
+        let recaps = DailyRecapStore(db: world.database)
+        let text = "Coffee, then lunch plans, then more plans."
+        try await recaps.save(DailyRecap(dateKey: day, text: text))
+        let library = await world.reader.library()
+        let now = t0 + 7 * 24 * 60 * minute
+
+        // Before anything is written: the most-talked titled conversation (c3 has 15 min, c1 10;
+        // c2 is untitled), the recap whole, and no cards.
+        var week = try await world.reader.week(
+            firstDateKey: "2026-09-20", lastDateKey: "2026-09-26", library, nowMs: now, isLive: false)
+        var row = try #require(week.rows.first { $0.dateKey == day })
+        #expect(row.headline == "Plans")
+        #expect(row.summary == text)
+        #expect(week.brief == nil)
+
+        try await recaps.saveDayBrief(
+            dateKey: day, sourceText: text, headline: "Coffee and lunch plans", lineSummary: "Beans, then lunch.")
+        let briefs = PeriodBriefStore(db: world.database)
+        try await briefs.saveCompleted(
+            periodKey: PeriodBriefKey.week(firstDateKey: "2026-09-20"), kind: .week, text: "A week of plans.",
+            headline: "Plans all week", lineSummary: "Coffee and lunch.", sourceHash: "s", provider: nil, model: nil,
+            atMs: 5)
+        try await briefs.saveCompleted(
+            periodKey: PeriodBriefKey.month(containing: day), kind: .month, text: "September was plans.",
+            headline: "Plans", lineSummary: nil, sourceHash: "m", provider: nil, model: nil, atMs: 6)
+        week = try await world.reader.week(
+            firstDateKey: "2026-09-20", lastDateKey: "2026-09-26", library, nowMs: now, isLive: false)
+        row = try #require(week.rows.first { $0.dateKey == day })
+        #expect(row.headline == "Coffee and lunch plans")
+        #expect(row.summary == "Beans, then lunch.")
+        #expect(week.brief?.text == "A week of plans.")
+        let month = try await world.reader.month(
+            containing: day, firstWeekday: 1, library, nowMs: now, isLive: false)
+        let weekRow = try #require(month.rows.first { $0.firstDateKey == "2026-09-20" })
+        #expect(weekRow.headline == "Plans all week" && weekRow.summary == "Coffee and lunch.")
+        #expect(month.brief?.text == "September was plans.")
+
+        // The recap is regenerated: its old headline is not shown over the new text.
+        try await recaps.save(DailyRecap(dateKey: day, text: "A new account of the day."))
+        week = try await world.reader.week(
+            firstDateKey: "2026-09-20", lastDateKey: "2026-09-26", library, nowMs: now, isLive: false)
+        row = try #require(week.rows.first { $0.dateKey == day })
+        #expect(row.headline == "Plans")
+        #expect(row.summary == "A new account of the day.")
+
+        // The month page's digest watches its own brief and its weeks'.
+        let keys = HistoryReader.monthBriefKeys(containing: day, firstWeekday: 1)
+        #expect(keys.first == PeriodBriefKey.month(containing: day))
+        #expect(keys.contains(PeriodBriefKey.week(firstDateKey: "2026-09-20")))
+    }
+
     @Test("a tag's results are its conversations, one each, with their own start, title and summary")
     func tagResults() async throws {
         let world = try PieceWorld()

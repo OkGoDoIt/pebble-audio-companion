@@ -112,7 +112,9 @@ struct WeekDayRow: View {
                 Text(headline)
                     .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
                     .lineLimit(1)
-            } else {
+            } else if row.summary == nil {
+                // Only where there is no text at all: above a summary it read as if the summary
+                // were not one.
                 Text(Copy.History.noSummaryYet)
                     .font(AppFont.pendingTitle).foregroundStyle(Tokens.meta)
             }
