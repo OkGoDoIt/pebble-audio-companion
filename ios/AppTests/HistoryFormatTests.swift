@@ -4,6 +4,7 @@ import Foundation
 import SegmentStore
 import StatusUI
 import Testing
+import Transcription
 
 // What History says (plan 5.1, 5.3, 5.9): its times, titles, gap labels and spoken labels. The
 // mockups' exact strings are the expectations, with the no-break space before a meridiem read
@@ -276,9 +277,12 @@ struct HistoryFormatTests {
         let text = HistoryLabels.gapText(waiting, locale: us)
         #expect(text.title == "Not transcribed yet")
         #expect(plain(text.detail ?? "") == "9:30 – 9:44 PM · 14 min")
-        let failed = HistoryLabels.gapText(gap(.transcriptionFailed, at(21, 30), at(21, 44), failure: "the provider refused the file"), locale: us)
+        // The reason is a `TranscriptionFailureKind`, worded as Diagnostics words it.
+        let failed = HistoryLabels.gapText(
+            gap(.transcriptionFailed, at(21, 30), at(21, 44), failure: TranscriptionFailureKind.providerRefusedAudio.rawValue),
+            locale: us)
         #expect(failed.title == "Could not be transcribed")
-        #expect(plain(failed.detail ?? "") == "9:30 – 9:44 PM · the provider refused the file")
+        #expect(plain(failed.detail ?? "") == "9:30 – 9:44 PM · \(TranscriptionFailureKind.providerRefusedAudio.reason)")
     }
 
     @Test func anOpenEndedPauseSaysSince() {

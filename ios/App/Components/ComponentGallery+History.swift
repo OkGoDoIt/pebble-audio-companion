@@ -1,5 +1,6 @@
 import AppDB
 import SwiftUI
+import Transcription
 
 /// The History tab's components in every state (plan 7.12: every new component gets a gallery
 /// entry). Rendered as sections of `ComponentGallery`.
@@ -60,7 +61,7 @@ struct HistoryComponentGallery: View {
                 PendingChapterCard(
                     gap: Samples.gap(
                         .transcriptionFailed, 21, 30, 21, 44,
-                        failure: "the provider could not read the audio"))
+                        failure: TranscriptionFailureKind.providerRefusedAudio.rawValue))
             }
 
             section("History · gaps") {
