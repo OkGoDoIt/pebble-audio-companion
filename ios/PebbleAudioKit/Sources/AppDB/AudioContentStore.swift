@@ -237,6 +237,27 @@ public struct AudioContentStore: AudioContentSource {
         }
     }
 
+    /// For every classified segment, whether any of its stored time is conversation (before
+    /// corrections; the service applies those). One query at launch.
+    public func conversationPresence() async throws -> [String: Bool] {
+        try await db.reader.read { db in
+            var out: [String: Bool] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT s.segmentId AS segmentId,
+                        COALESCE(MAX(p.kind = 'conversation'), 0) AS present
+                    FROM audio_content_segments s
+                    LEFT JOIN audio_content_spans p ON p.segmentId = s.segmentId
+                    GROUP BY s.segmentId
+                    """)
+            {
+                out[row["segmentId"]] = (row["present"] as Int64? ?? 0) != 0
+            }
+            return out
+        }
+    }
+
     /// Delete-cascade and retention: a segment that no longer exists keeps no classification.
     /// Corrections are kept; they are about time, not about a file.
     public func forget(segmentIds: [String]) async throws {

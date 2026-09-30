@@ -782,7 +782,8 @@ final class AppComposition {
             // For the held-AI-account probe's schedule: opening the app is when a person who
             // just topped up is looking.
             isForeground: { AppForegroundProbe.shared.isForeground },
-            audioContentMask: audioContentMask
+            audioContentMask: audioContentMask,
+            audioContentStore: audioContentStore
         )
 
         let recap = RecapService(

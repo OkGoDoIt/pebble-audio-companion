@@ -51,6 +51,7 @@ public actor EnrichmentService {
     /// topped up is looking). `{ false }` keeps it on the hold's own backoff alone.
     private let isForeground: @Sendable () -> Bool
     private let audioContentMask: AudioContentMask?
+    private let audioContentStore: AudioContentStore?
 
     public init(
         worker: EnrichmentWorker,
@@ -68,7 +69,8 @@ public actor EnrichmentService {
         clock: RuntimeClock,
         log: RuntimeLog = .silent,
         isForeground: @escaping @Sendable () -> Bool = { false },
-        audioContentMask: AudioContentMask? = nil
+        audioContentMask: AudioContentMask? = nil,
+        audioContentStore: AudioContentStore? = nil
     ) {
         self.isForeground = isForeground
         self.worker = worker
@@ -114,6 +116,7 @@ public actor EnrichmentService {
             }
         }
         self.audioContentMask = audioContentMask
+        self.audioContentStore = audioContentStore
         self.clock = clock
         self.log = log
     }
@@ -160,11 +163,85 @@ public actor EnrichmentService {
         } catch {
             log.failure("boundary review", error)
         }
-        let inputs = await enrichmentInputs()
-        guard !inputs.isEmpty else { return [] }
-        return try await worker.enrich(
-            inputs, transcriptOf: transcriptOf, liveTextOf: liveTextOf
-        )
+        let (inputs, settled) = await settleNoConversation(await enrichmentInputs())
+        guard !inputs.isEmpty else { return settled }
+        return settled
+            + (try await worker.enrich(inputs, transcriptOf: transcriptOf, liveTextOf: liveTextOf))
+    }
+
+    /// Finished conversations with no conversation in them — every member's classified time is
+    /// "no conversation" (all no-speech, or a stray remark) — are not the AI's to title. They get
+    /// a plain stand-in annotation ("No conversation", with no AI tags) so every screen that
+    /// shows a title says what they are, and they are left out of titling and follow-ups. A
+    /// stand-in is withdrawn the moment the conversation turns out to hold talk (a correction, a
+    /// new transcript), which hands it back to the AI. A person's own tags are never touched.
+    ///
+    /// Returns the conversations still to enrich, and the ids whose annotation this changed.
+    private func settleNoConversation(
+        _ inputs: [EnrichmentConversation]
+    ) async -> (remaining: [EnrichmentConversation], changed: [String]) {
+        guard audioContentMask != nil else { return (inputs, []) }
+        let existing = (try? await annotations.all()) ?? [:]
+        var remaining: [EnrichmentConversation] = []
+        var changed: [String] = []
+        for conversation in inputs {
+            let current = existing[conversation.conversationId]
+            if holdsNoConversation(conversation) {
+                let standIn = await noConversationAnnotation(for: conversation)
+                if current?.title != standIn.title || current?.summary != standIn.summary
+                    || current?.providerId != standIn.providerId || current?.tags.isEmpty == false
+                {
+                    do {
+                        _ = try await annotations.save(standIn)
+                        changed.append(conversation.conversationId)
+                    } catch {
+                        log.failure("no-conversation annotation", error)
+                    }
+                }
+                continue
+            }
+            if current?.providerId == AudioContentPresentation.providerId {
+                do {
+                    try await annotations.delete(conversation.conversationId)
+                    changed.append(conversation.conversationId)
+                } catch {
+                    log.failure("no-conversation annotation withdraw", error)
+                }
+            }
+            remaining.append(conversation)
+        }
+        return (remaining, changed)
+    }
+
+    /// Closed, with members, and every member classified as holding no conversation.
+    private func holdsNoConversation(_ conversation: EnrichmentConversation) -> Bool {
+        guard let audioContentMask, !conversation.isOpen, !conversation.members.isEmpty else {
+            return false
+        }
+        return conversation.members.allSatisfy {
+            audioContentMask.holdsConversation($0.segmentId) == false
+        }
+    }
+
+    private func noConversationAnnotation(
+        for conversation: EnrichmentConversation
+    ) async -> ConversationAnnotation {
+        var words = 0
+        if let audioContentStore {
+            for member in conversation.members {
+                words += ((try? await audioContentStore.spans(segmentId: member.segmentId)) ?? [])
+                    .reduce(0) { $0 + $1.wordCount }
+            }
+        }
+        return ConversationAnnotation(
+            conversationId: conversation.conversationId,
+            title: AudioContentPresentation.noConversationTitle,
+            summary: words > 0
+                ? AudioContentPresentation.fewWordsSummary : AudioContentPresentation.noWordsSummary,
+            tags: [],
+            providerId: AudioContentPresentation.providerId,
+            updatedAtMs: clock.nowMs,
+            isFinal: true)
     }
 
     /// The conversation grouping as the worker sees it: current grouping + member metas.
@@ -217,7 +294,7 @@ public actor EnrichmentService {
         var changed = false
         if try await curator.archiveStale() > 0 { changed = true }
 
-        let inputs = await enrichmentInputs()
+        let inputs = await enrichmentInputs().filter { !holdsNoConversation($0) }
         if !inputs.isEmpty {
             let proposed = try await followUps.extract(inputs, transcriptOf: transcriptOf)
             if proposed > 0 { changed = true }
@@ -275,6 +352,8 @@ public actor EnrichmentService {
             guard let conversation = conversations[id] else { continue }
             do {
                 let annotation = try await annotations.load(id)
+                // A stand-in says the conversation holds none; there is nothing to find it by.
+                if annotation?.providerId == AudioContentPresentation.providerId { continue }
                 let transcript = conversation.memberSegmentIds
                     .compactMap { searchTranscriptOf($0)?.text }
                     .joined(separator: "\n")

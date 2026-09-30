@@ -15,6 +15,17 @@ import Transcription
 // time; it only runs when the pass itself runs (foreground, or backgrounded on a cool
 // charger — `BackgroundWorkPolicy`).
 
+/// What a conversation that holds no conversation is called wherever a title is shown. Plain
+/// and calm, like quiet: it is a fact about the recording, not an error.
+public enum AudioContentPresentation {
+    /// `ConversationAnnotation.providerId` of the stand-in, so it is never mistaken for an AI
+    /// title and can be withdrawn.
+    public static let providerId = "audioContent"
+    public static let noConversationTitle = "No conversation"
+    public static let noWordsSummary = "Sound was recorded, but no words were heard."
+    public static let fewWordsSummary = "A few words were heard, but no conversation."
+}
+
 /// Which stored stretches of each segment are withheld from whom, on the segment's
 /// stored-audio clock (what transcript turns are timed on).
 ///
@@ -24,6 +35,7 @@ public final class AudioContentMask: @unchecked Sendable {
     private let lock = NSLock()
     private var ai: [String: [Range<Int64>]] = [:]
     private var speech: [String: [Range<Int64>]] = [:]
+    private var holds: [String: Bool] = [:]
     private var aiGenerations: [String: Int] = [:]
     private var speechGenerations: [String: Int] = [:]
 
@@ -57,6 +69,17 @@ public final class AudioContentMask: @unchecked Sendable {
         lock.withLock { speechGenerations[segmentId] ?? 0 }
     }
 
+    /// Whether any of this segment's classified time is conversation (corrections applied); nil
+    /// while it has not been classified. A conversation whose every member answers false holds
+    /// no conversation at all, and is presented and treated as such (`EnrichmentService`).
+    public func holdsConversation(_ segmentId: String) -> Bool? {
+        lock.withLock { holds[segmentId] }
+    }
+
+    func setHolds(_ segmentId: String, _ value: Bool) {
+        lock.withLock { holds[segmentId] = value }
+    }
+
     /// Returns true when anything changed.
     @discardableResult
     func set(segmentId: String, ai newAi: [Range<Int64>], speech newSpeech: [Range<Int64>]) -> Bool {
@@ -79,6 +102,7 @@ public final class AudioContentMask: @unchecked Sendable {
             for id in segmentIds {
                 ai[id] = nil
                 speech[id] = nil
+                holds[id] = nil
             }
         }
     }
@@ -137,6 +161,7 @@ public actor AudioContentService {
         let segments = await listSegments()
         if !loaded {
             inputKeys = try await store.inputKeys()
+            for (id, present) in try await store.conversationPresence() { mask.setHolds(id, present) }
             try await loadMasks(segments: segments)
             loaded = true
         }
@@ -337,5 +362,6 @@ public actor AudioContentService {
             if Self.speechMaskingDeciders.contains(piece.decidedBy) { speech.append(range) }
         }
         mask.set(segmentId: meta.segmentId, ai: ai, speech: speech)
+        mask.setHolds(meta.segmentId, effective.contains { $0.kind == .conversation })
     }
 }
