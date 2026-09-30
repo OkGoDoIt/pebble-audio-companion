@@ -41,29 +41,42 @@ struct Stretch {
 struct Day {
     var segments: [SegmentMeta]
     var evidence: [String: SegmentSpeechEvidence]
+    /// The segment still being recorded into, when the day was built with `recording: true`.
+    var open: String?
 
     static func + (a: Day, b: Day) -> Day {
         Day(
             segments: a.segments + b.segments,
-            evidence: a.evidence.merging(b.evidence) { first, _ in first })
+            evidence: a.evidence.merging(b.evidence) { first, _ in first },
+            open: b.open ?? a.open)
     }
 }
 
 /// `minutes` of recording as abutting `rotation`-minute segments (`s0`, `s1`, …), with `talk`
 /// laid out in wall minutes from the start. Every segment is transcribed and settled unless its
 /// index is in `unsettled`, in which case nothing is known about it.
+///
+/// `recording: true` appends one more rotation that is still OPEN — no close reason, no
+/// transcript — and names it in `Day.open`: the run is being recorded into, which is what makes
+/// it open-ended. Without it nothing is open and what is there is all there will be.
 func day(
     minutes: Int64, rotation: Int64 = 15, prefix: String = "s", startTimeMs: Int64 = testEpochMs,
-    stream: UInt32 = 7, talk: [Stretch] = [], unsettled: Set<Int> = []
+    stream: UInt32 = 7, talk: [Stretch] = [], unsettled: Set<Int> = [], recording: Bool = false
 ) -> Day {
-    let count = Int((minutes + rotation - 1) / rotation)
+    let heard = Int((minutes + rotation - 1) / rotation)
+    let count = heard + (recording ? 1 : 0)
     var segments = rotations(
         count, minutesEach: UInt64(rotation), stream: stream, startTimeMs: startTimeMs,
         prefix: prefix)
     var evidence: [String: SegmentSpeechEvidence] = [:]
+    var open: String?
+    if recording {
+        segments[heard].closeReason = nil
+        open = segments[heard].segmentId
+    }
     for index in 0..<count {
         let id = segments[index].segmentId
-        guard !unsettled.contains(index) else {
+        guard !unsettled.contains(index), index < heard else {
             evidence[id] = unsettledEvidence(id)
             continue
         }
@@ -85,7 +98,7 @@ func day(
         }
         evidence[id] = settledEvidence(id, turns: turns.sorted { $0.startMs < $1.startMs })
     }
-    return Day(segments: segments, evidence: evidence)
+    return Day(segments: segments, evidence: evidence, open: open)
 }
 
 private let hardReasons: Set<ConversationStartReason> = [.quiet, .interrupted]
@@ -178,7 +191,7 @@ private func expectWellFormed(
         sourceLocation: SourceLocation = #_sourceLocation
     ) -> ConversationGrouper.Grouping {
         let grouping = ConversationGrouper.groupDetailed(
-            segments: day.segments, pauses: pauses, openSegmentId: open,
+            segments: day.segments, pauses: pauses, openSegmentId: open ?? day.open,
             fallbackTimeZoneID: "UTC", previous: previous, evidence: day.evidence,
             overrides: overrides, policy: policy, cutInputs: cutInputs, memo: memo)
         expectPiecesTile(grouping.conversations, segments: day.segments, sourceLocation: sourceLocation)
@@ -218,7 +231,7 @@ private func expectWellFormed(
         stopped.segments[3].closeReason = userStopClose
 
         let shapes: [(name: String, day: Day, open: String?, overrides: [String: BoundaryDecision], inputs: ConversationCutInputs)] = [
-            ("nothing at all", Day(segments: [], evidence: [:]), nil, [:], .none),
+            ("nothing at all", Day(segments: [], evidence: [:], open: nil), nil, [:], .none),
             ("one short segment, no evidence", day(minutes: 5, rotation: 5, unsettled: [0]), nil, [:], .none),
             ("ten untranscribed hours", day(minutes: 600, unsettled: Set(0..<40)), nil, [:], .none),
             ("two silent hours", day(minutes: 120), nil, [:], .none),
@@ -294,7 +307,7 @@ private func expectWellFormed(
         var seen = Set<ConversationStartReason>()
         var offered = 0
         for scenario in 0..<40 {
-            var whole = Day(segments: [], evidence: [:])
+            var whole = Day(segments: [], evidence: [:], open: nil)
             var clock = t0
             let runs = Int.random(in: 1...3, using: &generator)
             var inputs = ConversationCutInputs()
@@ -672,44 +685,71 @@ private func expectWellFormed(
         #expect(group(talk, policy: .quietOnly, cutInputs: nowhere).count == 1)
     }
 
+    /// In the run being recorded into, a cut is written down only when 45 minutes of settled
+    /// talk lie after it (and both conversations it separates have been heard in full). Until
+    /// then it is re-decided each time more of the day arrives.
     @Test func aSegmenterCutIsOfferedForCommittingOnlyOnceFortyFiveMinutesOfSettledTalkFollowIt() {
-        // 41 minutes of settled talk after the cut, and the run could still grow: not yet.
-        let recent = grouping(twoModes(minutes: 75), policy: frozenPolicy)
-        #expect(recent.conversations.map(\.id) == ["conv-s0", modeChange.conversationId])
+        // Two people, then dictation from minute 34, then two people again from minute 64 — and
+        // the watch still recording. Two cuts; the question is when the FIRST is old enough.
+        let second = ConversationCut(segmentId: "s4", mediaMs: minutesMs(4) - preRoll)
+        func recordingDay(talkUntil end: Int64) -> Day {
+            day(
+                minutes: ((end + 14) / 15) * 15,
+                talk: [.dialogue(0, 30), .dictation(34, 60), .dialogue(64, end)], recording: true)
+        }
+        // 41 minutes of settled talk after it: not yet.
+        let recent = grouping(recordingDay(talkUntil: 75), policy: frozenPolicy)
+        #expect(
+            recent.conversations.map(\.id)
+                == ["conv-s0", modeChange.conversationId, second.conversationId])
+        #expect(recent.conversations.map(\.startReason) == [nil, .lull, .lull])
         #expect(recent.cutsToCommit.isEmpty)
 
-        // 56 minutes after it: now.
-        let settled = grouping(twoModes(minutes: 90), policy: frozenPolicy)
-        #expect(settled.conversations.map(\.id) == ["conv-s0", modeChange.conversationId])
+        // 56 minutes after it: now — and only it. The second cut is 26 minutes old, and the
+        // conversation after it runs into the recording that has not been heard.
+        let settled = grouping(recordingDay(talkUntil: 90), policy: frozenPolicy)
+        #expect(
+            settled.conversations.map(\.id)
+                == ["conv-s0", modeChange.conversationId, second.conversationId])
         #expect(settled.cutsToCommit == [modeChange: .lull])
 
-        // Either side of the line. The lag is measured from the first word of the new conversation
-        // to the last word of the settled talk after it.
+        // Either side of the line. The lag is measured from the first word of the new
+        // conversation to the last word of the settled talk after it.
         #expect(ConversationRunPlanner.commitLagMs == 45 * 60_000)
-        let under = day(minutes: 90, talk: [.dialogue(0, 30), .dictation(34, 78)])
-        #expect(grouping(under, policy: frozenPolicy).cutsToCommit.isEmpty)
-        let over = day(minutes: 90, talk: [.dialogue(0, 30), .dictation(34, 80)])
-        #expect(grouping(over, policy: frozenPolicy).cutsToCommit == [modeChange: .lull])
+        #expect(grouping(recordingDay(talkUntil: 78), policy: frozenPolicy).cutsToCommit.isEmpty)
+        #expect(
+            grouping(recordingDay(talkUntil: 80), policy: frozenPolicy).cutsToCommit
+                == [modeChange: .lull])
     }
 
-    @Test func inAClosedRunACutIsCommittedAtOnce() {
-        // The same recent cut — but something has ended the run for good.
+    @Test func inARunThatIsNotBeingRecordedIntoACutIsCommittedAtOnce() {
+        // The same recent cut, 41 minutes old — but nothing is open: what is there is all
+        // there will be.
+        #expect(grouping(twoModes(minutes: 75), policy: frozenPolicy).cutsToCommit == [modeChange: .lull])
+
+        // Something is open, but in a LATER run: this one has ended for good.
         let later = day(
-            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9, unsettled: [0])
+            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9, recording: true)
         let followed = grouping(twoModes(minutes: 75) + later, policy: frozenPolicy)
         #expect(followed.conversations.map(\.id) == ["conv-s0", modeChange.conversationId, "conv-t0"])
         #expect(followed.cutsToCommit == [modeChange: .lull])
 
-        // An explicit Stop ends it just as finally, with nothing after it.
-        var stopped = twoModes(minutes: 75)
-        stopped.segments[4].closeReason = userStopClose
-        #expect(grouping(stopped, policy: frozenPolicy).cutsToCommit == [modeChange: .lull])
-
-        // A long silence after the talk closes the STRETCH the cut is in, which is enough.
-        let quietAfter = day(minutes: 120, talk: [.dialogue(0, 30), .dictation(34, 60)])
+        // Still recording, but a long settled silence has closed the STRETCH the cut is in.
+        let quietAfter = day(
+            minutes: 180, talk: [.dialogue(0, 30), .dictation(34, 60), .dialogue(140, 180)],
+            recording: true)
         let result = grouping(quietAfter, policy: frozenPolicy)
         #expect(result.conversations.map(\.startReason) == [nil, .lull, .quiet])
         #expect(result.cutsToCommit == [modeChange: .lull])
+
+        // An explicit Stop is not what decides it either way: with the Stop and nothing open,
+        // committed; the same talk still being recorded into, not.
+        var stopped = twoModes(minutes: 75)
+        stopped.segments[4].closeReason = userStopClose
+        #expect(grouping(stopped, policy: frozenPolicy).cutsToCommit == [modeChange: .lull])
+        let recording = day(
+            minutes: 75, talk: [.dialogue(0, 30), .dictation(34, 75)], recording: true)
+        #expect(grouping(recording, policy: frozenPolicy).cutsToCommit.isEmpty)
     }
 
     @Test func aCutBesideUnheardAudioIsNotCommitted() {
@@ -792,7 +832,9 @@ private func expectWellFormed(
         #expect(group(talk, policy: .quietOnly, cutInputs: outside).count == 1)
     }
 
-    @Test func aJoinRemovesACommittedCutAndKeepsAutomaticCutsTwoMinutesAway() {
+    /// A join recorded at a POINT (a row without a span — see the span tests below for what the
+    /// app writes now): it removes a held cut there and keeps automatic cuts two minutes away.
+    @Test func aPointJoinRemovesACommittedCutAndKeepsAutomaticCutsTwoMinutesAway() {
         #expect(ConversationRunPlanner.joinReachMs == 120_000)
         let talk = day(minutes: 45, talk: [.dialogue(0, 45)])
         // Three held cuts in `s1`: at the join itself, 100 seconds after it, 130 seconds after.
@@ -817,7 +859,32 @@ private func expectWellFormed(
         #expect(edges.map(\.id) == ["conv-s0", "conv-s1-m179999", "conv-s1-m420001"])
     }
 
-    @Test func aJoinAlsoRemovesAQuietCutAndASplitAtTheSamePlaceBeatsTheJoin() {
+    @Test func aPointJoinsReachIsWallTimeSoItCoversTheEndOfTheRecordingBefore() {
+        // A join thirty seconds into `s1`. The talk just before it is in `s0`: a held cut a
+        // minute before the end of `s0` is 90 seconds away on the wall and is removed; one
+        // 130 seconds away is not.
+        let talk = day(minutes: 45, talk: [.dialogue(0, 45)])
+        let committed: [String: [Int64: ConversationStartReason]] = [
+            "s0": [840_000: .topicChange, 800_000: .topicChange],
+            "s1": [60_000: .topicChange, 200_000: .topicChange],
+        ]
+        let joined = group(
+            talk, policy: .quietOnly,
+            cutInputs: ConversationCutInputs(committed: committed, joins: ["s1": [30_000]]))
+        #expect(joined.map(\.id) == ["conv-s0", "conv-s0-m800000", "conv-s1-m200000"])
+
+        // The same for a join recorded against the segment's own start (`boundary_overrides`).
+        let atStart = group(
+            talk, policy: .quietOnly, overrides: ["s1": .join],
+            cutInputs: ConversationCutInputs(
+                committed: [
+                    "s0": [840_000: .topicChange, 770_000: .topicChange],
+                    "s1": [60_000: .topicChange, 130_000: .topicChange],
+                ]))
+        #expect(atStart.map(\.id) == ["conv-s0", "conv-s0-m770000", "conv-s1-m130000"])
+    }
+
+    @Test func aPointJoinAlsoRemovesAQuietCutAndASplitAtTheSamePlaceBeatsTheJoin() {
         let quiet = day(minutes: 120, talk: [.dialogue(0, 20), .dialogue(80, 120)])
         let at = minutesMs(5) - preRoll
         #expect(group(quiet, policy: .quietOnly).map(\.id) == ["conv-s0", "conv-s5-m\(at)"])
@@ -833,7 +900,7 @@ private func expectWellFormed(
         #expect(
             group(
                 quiet, policy: .quietOnly,
-                cutInputs: ConversationCutInputs(joins: ["s5": [at + 200_000], "s4": [at]])
+                cutInputs: ConversationCutInputs(joins: ["s5": [at + 200_000], "s3": [at]])
             ).count == 2)
 
         // A split is the newer, more specific decision about that exact place: it stands.
@@ -844,19 +911,27 @@ private func expectWellFormed(
         #expect(both[1].startReason == .manual)
     }
 
+    // MARK: - fixed cuts: a join protects the span it joined
+
+    /// What the app writes for "these two are one conversation": the span from the start of the
+    /// earlier one to the start of whatever follows the later one. Nothing automatic cuts
+    /// strictly inside it — not the cut that was there, not a long silence, not the segmenter
+    /// deciding the now longer conversation would be better divided a little further on.
+    private func span(_ from: ConversationCut, _ to: ConversationCut?) -> ConversationCutInputs {
+        ConversationCutInputs(joinSpans: [.init(from: from, to: to)])
+    }
+    private var runStart: ConversationCut { ConversationCut(segmentId: "s0", mediaMs: 0) }
+
     /// "These are one conversation", said where a long silence had split one. The quiet cut goes
-    /// — and nothing else may put a cut back a couple of minutes further on because the silence
-    /// the person has just joined across makes the conversation long.
+    /// — and nothing else puts a cut back a little further on because the silence the person
+    /// has just joined across makes the conversation long.
     ///
-    /// REPORTED 2026-09-30 and FAILING for silences of an hour and more (half an hour holds):
-    /// the silent span counts toward the length of the unit that holds it, so the search pays
-    /// dearly for the joined conversation and cuts as close to the silence as the join's
-    /// two-minute reach allows. With the join at `s<k>@4:58.5` the cut comes back at
-    /// `s<k>@7:58.5` — the first block outside the reach — labelled `topicChange`; across a
-    /// three-hour silence a second one appears a minute BEFORE the silence as well, so joining
-    /// two conversations leaves three.
+    /// (This failed while a join was a point with a two-minute reach: the silent span counts
+    /// toward the length of the unit that holds it, so the search cut again at the first block
+    /// outside the reach, and across three hours on BOTH sides of the silence. Reported
+    /// 2026-09-30; a join made in the app now records its span.)
     @Test(arguments: [30, 60, 90, 180] as [Int64])
-    func aJoinAcrossALongSilenceIsNotUndoneByTheSegmenterJustOutsideItsReach(silence: Int64) {
+    func aJoinAcrossALongSilenceLeavesOneConversation(silence: Int64) {
         // Twenty minutes of talk, the silence, forty minutes of the same talk. The talk resumes
         // five minutes into its segment.
         let resumes = 20 + silence
@@ -865,45 +940,139 @@ private func expectWellFormed(
         let segment = "s\(resumes / 15)"
         let at = minutesMs(5) - preRoll
         #expect(group(quiet, policy: .quietOnly).map(\.id) == ["conv-s0", "conv-\(segment)-m\(at)"])
-        let joined = ConversationCutInputs(joins: [segment: [at]])
-        #expect(group(quiet, policy: .quietOnly, cutInputs: joined).count == 1)
-        for (name, policy) in [("default", BoundaryPolicy.default), ("frozen", frozenPolicy)] {
-            let result = group(quiet, policy: policy, cutInputs: joined)
+        for (name, policy) in [
+            ("quietOnly", BoundaryPolicy.quietOnly), ("default", .default), ("frozen", frozenPolicy),
+        ] {
+            let result = group(quiet, policy: policy, cutInputs: span(runStart, nil))
             #expect(
-                result.count == 1,
+                result.map(\.id) == ["conv-s0"],
                 "\(name), \(silence) min: \(result.map(\.id)) \(result.map(\.startReason))")
         }
     }
 
     /// "These are one conversation", said at a cut the segmenter made where the talk changed.
     /// The two conversations become one — the person's answer beats the evidence, however
-    /// strong the evidence is. It does not move the cut three minutes further on.
+    /// strong the evidence is. It does not move the cut along.
     ///
-    /// REPORTED 2026-09-30 and FAILING: a join only keeps cuts out of the two minutes either
-    /// side of it, and the evidence for the cut (two voices giving way to one dictating) is
-    /// still there just outside that reach. The search puts the cut back at the nearest block
-    /// it is allowed to — here `s1@13:58.5`, the LAST MINUTE OF THE DIALOGUE, on the far side
-    /// of the four-minute pause — labelled `topicChange`. So merging leaves two conversations
-    /// with the boundary nudged along, and merging again nudges it again.
+    /// (This failed while a join was a point: the evidence for the cut — two voices giving way
+    /// to one dictating — was still there just outside the join's reach, and the search put the
+    /// cut back in the last minute of the dialogue. Reported 2026-09-30.)
     @Test func aJoinAtASegmenterCutLeavesOneConversationNotTheCutMovedAlong() {
         let talk = twoModes(minutes: 90)
-        let joined = ConversationCutInputs(joins: ["s2": [modeChange.mediaMs]])
         for (name, policy) in [("default", BoundaryPolicy.default), ("frozen", frozenPolicy)] {
             #expect(
                 group(talk, policy: policy).map(\.id) == ["conv-s0", modeChange.conversationId],
                 "\(name)")
-            let result = group(talk, policy: policy, cutInputs: joined)
+            let result = group(talk, policy: policy, cutInputs: span(runStart, nil))
             #expect(
                 result.map(\.id) == ["conv-s0"],
                 "\(name): \(result.map(\.id)) \(result.map(\.startReason))")
-            // The same with the cut already held: the join removes it, and it stays removed.
-            let held = group(
-                talk, policy: policy,
-                cutInputs: ConversationCutInputs(
-                    committed: ["s2": [modeChange.mediaMs: .lull]],
-                    joins: ["s2": [modeChange.mediaMs]]))
-            #expect(held.map(\.id) == ["conv-s0"], "\(name), held: \(held.map(\.id))")
+            // The same with the cut already held: it is inside the span, and stays removed.
+            var held = span(runStart, nil)
+            held.committed = ["s2": [modeChange.mediaMs: .lull]]
+            #expect(
+                group(talk, policy: policy, cutInputs: held).map(\.id) == ["conv-s0"], "\(name), held")
         }
+        // A point join at the same place — a row from before spans — promises less: no cut
+        // within two minutes of it, and the search is free to cut further off.
+        let point = group(
+            talk, policy: frozenPolicy,
+            cutInputs: ConversationCutInputs(joins: ["s2": [modeChange.mediaMs]]))
+        #expect(!point.contains { $0.id == modeChange.conversationId })
+    }
+
+    @Test func aSpanBlocksOnlyWhatIsStrictlyInsideIt() {
+        // Three hours: two people (0–30), dictation (34–90), two people about something else
+        // (94–150), dictation again (154–180). Three cuts.
+        let talk = day(
+            minutes: 180,
+            talk: [
+                .dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150, cookingWords),
+                .dictation(154, 180, sailingWords),
+            ])
+        let second = ConversationCut(segmentId: "s6", mediaMs: minutesMs(4) - preRoll)
+        let third = ConversationCut(segmentId: "s10", mediaMs: minutesMs(4) - preRoll)
+        let free = group(talk, policy: frozenPolicy)
+        #expect(
+            free.map(\.id)
+                == ["conv-s0", modeChange.conversationId, second.conversationId, third.conversationId])
+
+        // Join the second into the first: the span runs from the first's start to the third's.
+        let joined = group(talk, policy: frozenPolicy, cutInputs: span(runStart, second))
+        // The cut exactly at `to` is not inside the span: the third conversation still starts
+        // where it did, with the id it had, and so does the fourth.
+        #expect(joined.map(\.id) == ["conv-s0", second.conversationId, third.conversationId])
+        #expect(joined[1].startReason == .lull)
+
+        // Join the third into the second: the cut exactly at `from` stays too.
+        let middle = group(talk, policy: frozenPolicy, cutInputs: span(modeChange, third))
+        #expect(middle.map(\.id) == ["conv-s0", modeChange.conversationId, third.conversationId])
+
+        // Held cuts are blocked inside a span and honoured at its edges.
+        var held = span(modeChange, third)
+        held.committed = [
+            "s2": [modeChange.mediaMs: .lull], "s6": [second.mediaMs: .lull],
+            "s10": [third.mediaMs: .lull], "s4": [300_000: .topicChange],
+        ]
+        let withHeld = group(talk, policy: .quietOnly, cutInputs: held)
+        #expect(withHeld.map(\.id) == ["conv-s0", modeChange.conversationId, third.conversationId])
+
+        // The person's own split inside a span still wins: it is the newer decision.
+        var split = span(runStart, nil)
+        split.splits = ["s5": [450_000]]
+        let withSplit = group(talk, policy: frozenPolicy, cutInputs: split)
+        #expect(withSplit.map(\.id) == ["conv-s0", "conv-s5-m450000"])
+        #expect(withSplit[1].startReason == .manual)
+    }
+
+    @Test func aSpanBlocksALongSilenceInsideItAndNothingOutsideIt() {
+        // Talk, an hour of nothing, talk, an hour of nothing, talk.
+        let quiet = day(
+            minutes: 240, talk: [.dialogue(0, 20), .dialogue(80, 110), .dialogue(170, 240)])
+        let first = ConversationCut(segmentId: "s5", mediaMs: minutesMs(5) - preRoll)
+        let second = ConversationCut(segmentId: "s11", mediaMs: minutesMs(5) - preRoll)
+        #expect(
+            group(quiet, policy: .quietOnly).map(\.id)
+                == ["conv-s0", first.conversationId, second.conversationId])
+        // The first two joined: the first silence no longer cuts, the second still does.
+        for policy in [BoundaryPolicy.quietOnly, frozenPolicy] {
+            let joined = group(quiet, policy: policy, cutInputs: span(runStart, second))
+            #expect(joined.map(\.id) == ["conv-s0", second.conversationId])
+            #expect(joined[1].startReason == .quiet)
+        }
+    }
+
+    @Test func aSpanWhoseStartIsGoneProtectsFromTheRunsStartAndOneAboutAnotherRunIsIgnored() {
+        let gone = ConversationCut(segmentId: "deleted-by-retention", mediaMs: 0)
+        // Three conversations; the first two were joined, and then retention deleted the
+        // segment the earlier one started in. What is left of the pair is still one
+        // conversation, up to where the span ends — and the third still starts there.
+        let three = day(
+            minutes: 150, talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150)])
+        let third = ConversationCut(segmentId: "s6", mediaMs: minutesMs(4) - preRoll)
+        #expect(
+            group(three, policy: frozenPolicy).map(\.id)
+                == ["conv-s0", modeChange.conversationId, third.conversationId])
+        let trimmed = group(three, policy: frozenPolicy, cutInputs: span(gone, third))
+        #expect(trimmed.map(\.id) == ["conv-s0", third.conversationId])
+
+        let talk = twoModes(minutes: 90)
+        // Neither end is in this run: it is about another run, and changes nothing here. (A span
+        // with no end and a start that is gone is the same: there is nothing left to place it.)
+        let elsewhere = ConversationCut(segmentId: "also-not-here", mediaMs: 5)
+        #expect(
+            group(talk, policy: frozenPolicy, cutInputs: span(gone, elsewhere))
+                == group(talk, policy: frozenPolicy))
+        #expect(
+            group(talk, policy: frozenPolicy, cutInputs: span(gone, nil))
+                == group(talk, policy: frozenPolicy))
+
+        // A span in one run does not reach into the next.
+        let later = day(
+            minutes: 90, prefix: "t", startTimeMs: t0 + minutesMs(400), stream: 9,
+            talk: [.dialogue(0, 30), .dictation(34, 90)])
+        let both = group(talk + later, policy: frozenPolicy, cutInputs: span(runStart, nil))
+        #expect(both.map(\.id) == ["conv-s0", "conv-t0", "conv-t2-m\(modeChange.mediaMs)"])
     }
 
     @Test func aJoinAtASegmentsOwnStartKeepsCutsOutOfItsFirstTwoMinutes() {
@@ -1014,75 +1183,104 @@ private func expectWellFormed(
 
     // MARK: - provisional
 
-    @Test func theTailOfARunThatCanStillGrowIsProvisional() {
-        // Whatever the policy, the last conversation of the last run has an end that is not
-        // decided yet.
+    @Test func theTailOfTheRunBeingRecordedIntoIsProvisional() {
+        // Whatever the policy, the last conversation of the run that holds the open segment has
+        // an end that is not decided yet.
+        for policy in [BoundaryPolicy.structuralOnly, .quietOnly, frozenPolicy] {
+            let result = group(
+                day(minutes: 45, talk: [.dialogue(0, 45)], recording: true), policy: policy)
+            #expect(result.map(\.isProvisional) == [true])
+            #expect(result.map(\.isLive) == [true])
+        }
+        // With nothing open, what is there is all there will be: a finished library's last
+        // conversation is not left waiting for the watch to be worn again.
         for policy in [BoundaryPolicy.structuralOnly, .quietOnly, frozenPolicy] {
             let result = group(day(minutes: 45, talk: [.dialogue(0, 45)]), policy: policy)
-            #expect(result.map(\.isProvisional) == [true])
+            #expect(result.map(\.isProvisional) == [false])
         }
-        // An earlier run is closed by the existence of a later one.
+        // An earlier run is over; only the one being recorded into is open-ended.
         let two =
             day(minutes: 45, talk: [.dialogue(0, 45)])
-            + day(minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9, talk: [.dialogue(0, 15)])
+            + day(
+                minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9,
+                talk: [.dialogue(0, 15)], recording: true)
         #expect(group(two, policy: frozenPolicy).map(\.isProvisional) == [false, true])
+        // The open segment has to be IN the last run: an id that is not there opens nothing.
+        let stale = grouping(
+            day(minutes: 45, talk: [.dialogue(0, 45)]), policy: frozenPolicy, open: "not-here")
+        #expect(stale.conversations.map(\.isProvisional) == [false])
     }
 
     @Test func provisionalClearsOnceBothBoundariesAreHeld() {
-        // A cut with 41 minutes of settled talk after it in a run that can still grow: neither
-        // side of it is final.
-        #expect(group(twoModes(minutes: 75), policy: frozenPolicy).map(\.isProvisional) == [true, true])
-        // 56 minutes after it: the conversation BEFORE the cut has both its boundaries; the one
-        // after it is still the tail of the run.
-        #expect(group(twoModes(minutes: 90), policy: frozenPolicy).map(\.isProvisional) == [false, true])
+        // Still recording. Two people, dictation from 34, two people from 64: two cuts.
+        func recordingDay(talkUntil end: Int64) -> Day {
+            day(
+                minutes: ((end + 14) / 15) * 15,
+                talk: [.dialogue(0, 30), .dictation(34, 60), .dialogue(64, end)], recording: true)
+        }
+        // The first cut has 41 minutes of settled talk after it: nothing either side of either
+        // cut is final.
+        #expect(
+            group(recordingDay(talkUntil: 75), policy: frozenPolicy).map(\.isProvisional)
+                == [true, true, true])
+        // 56 minutes after the first cut: the conversation BEFORE it has both its boundaries.
+        // The one after it still ends at a cut that is 26 minutes old.
+        #expect(
+            group(recordingDay(talkUntil: 90), policy: frozenPolicy).map(\.isProvisional)
+                == [false, true, true])
 
-        // Three conversations: the middle one clears when the cut that ends it is 45 minutes old
-        // too.
-        let three = day(
-            minutes: 150, talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150)])
-        let result = group(three, policy: frozenPolicy)
-        #expect(result.map(\.startReason) == [nil, .lull, .lull])
-        #expect(result.map(\.isProvisional) == [false, false, true])
-        let younger = day(
-            minutes: 120, talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 120)])
-        #expect(group(younger, policy: frozenPolicy).map(\.isProvisional) == [false, true, true])
+        // Four conversations: the second clears when the cut that ends it is 45 minutes old too.
+        let four = day(
+            minutes: 165,
+            talk: [.dialogue(0, 30), .dictation(34, 90), .dialogue(94, 150), .dictation(154, 165)],
+            recording: true)
+        let result = group(four, policy: frozenPolicy)
+        #expect(result.map(\.startReason) == [nil, .lull, .lull, .lull])
+        #expect(result.map(\.isProvisional) == [false, false, true, true])
 
         // A held cut is a fixed boundary from the start.
         let held = group(
-            twoModes(minutes: 75), policy: frozenPolicy,
+            recordingDay(talkUntil: 75), policy: frozenPolicy,
             cutInputs: ConversationCutInputs(committed: ["s2": [modeChange.mediaMs: .lull]]))
-        #expect(held.map(\.isProvisional) == [false, true])
+        #expect(held.map(\.isProvisional) == [false, true, true])
         // So is a long silence, and so is the person's own split.
         let quiet = group(
-            day(minutes: 120, talk: [.dialogue(0, 20), .dialogue(80, 120)]), policy: frozenPolicy)
+            day(minutes: 120, talk: [.dialogue(0, 20), .dialogue(80, 120)], recording: true),
+            policy: frozenPolicy)
+        #expect(quiet.map(\.startReason) == [nil, .quiet])
         #expect(quiet.map(\.isProvisional) == [false, true])
         let split = group(
-            day(minutes: 45, talk: [.dialogue(0, 45)]), policy: frozenPolicy,
+            day(minutes: 45, talk: [.dialogue(0, 45)], recording: true), policy: frozenPolicy,
             cutInputs: ConversationCutInputs(splits: ["s1": [400_000]]))
         #expect(split.map(\.isProvisional) == [false, true])
     }
 
-    @Test func nothingHeardInAClosedRunIsProvisional() {
-        // A later run closes it …
-        let later = day(
-            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9, talk: [.dialogue(0, 15)])
+    @Test func nothingHeardIsProvisionalOnceNothingIsOpen() {
+        // The same recent cut that kept three conversations provisional while recording.
+        let talk: [Stretch] = [.dialogue(0, 30), .dictation(34, 60), .dialogue(64, 75)]
         #expect(
-            group(twoModes(minutes: 75) + later, policy: frozenPolicy).map(\.isProvisional)
-                == [false, false, true])
-        // … and so does an explicit Stop, even with nothing after it.
-        var stopped = twoModes(minutes: 75)
-        stopped.segments[4].closeReason = userStopClose
-        #expect(group(stopped, policy: frozenPolicy).map(\.isProvisional) == [false, false])
+            group(day(minutes: 75, talk: talk), policy: frozenPolicy).map(\.isProvisional)
+                == [false, false, false])
         for policy in [BoundaryPolicy.structuralOnly, .quietOnly] {
-            #expect(group(stopped, policy: policy).map(\.isProvisional) == [false])
+            #expect(group(day(minutes: 75, talk: talk), policy: policy).map(\.isProvisional) == [false])
         }
-        // A Stop that the person has joined across has not ended anything.
-        var resumed = twoModes(minutes: 75)
-        resumed.segments[4].closeReason = userStopClose
+        // A run closed by a later one is final even while that later one is being recorded.
+        let later = day(
+            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9,
+            talk: [.dialogue(0, 15)], recording: true)
+        #expect(
+            group(day(minutes: 75, talk: talk) + later, policy: frozenPolicy).map(\.isProvisional)
+                == [false, false, false, true])
+        // A Stop the person has joined across has not ended anything: the run that now holds
+        // the open segment is one run, and its tail is provisional.
+        var stopped = day(minutes: 75, talk: [.dialogue(0, 75)])
+        stopped.segments[4].closeReason = userStopClose
         let more = day(
-            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(76), stream: 9, talk: [.dictation(0, 15)])
-        let joined = group(resumed + more, policy: .quietOnly, overrides: ["t0": .join])
-        #expect(joined.map(\.brief) == [["s0", "s1", "s2", "s3", "s4", "t0"]])
+            minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(76), stream: 9,
+            talk: [.dialogue(0, 15)], recording: true)
+        #expect(group(stopped + more, policy: .quietOnly).map(\.isProvisional) == [false, true])
+        let joined = group(stopped + more, policy: .quietOnly, overrides: ["t0": .join])
+        #expect(joined.map(\.brief) == [["s0", "s1", "s2", "s3", "s4", "t0", "t1"]])
         #expect(joined.map(\.isProvisional) == [true])
     }
 
@@ -1155,7 +1353,7 @@ private func expectWellFormed(
             cutInputs: ConversationCutInputs(committed: ["s0": [300_000: .topicChange]]), memo: memo)
         #expect(memo.storedCount == 3)
         #expect(held.conversations.contains { $0.id == "conv-s0-m300000" })
-        // A split, and a join.
+        // A split, a point join, and a join with its span.
         _ = grouping(
             library, policy: frozenPolicy,
             cutInputs: ConversationCutInputs(splits: ["s0": [300_000]]), memo: memo)
@@ -1164,18 +1362,23 @@ private func expectWellFormed(
             library, policy: frozenPolicy,
             cutInputs: ConversationCutInputs(joins: ["s2": [238_500]]), memo: memo)
         #expect(memo.storedCount == 5)
+        let spanned = grouping(
+            library, policy: frozenPolicy, cutInputs: span(runStart, nil), memo: memo)
+        #expect(memo.storedCount == 6)
+        #expect(spanned.conversations.count == 1)
         // A join at a segment's own start.
         _ = grouping(library, policy: frozenPolicy, overrides: ["s3": .join], memo: memo)
-        #expect(memo.storedCount == 6)
-        // The open segment.
-        _ = grouping(library, policy: frozenPolicy, open: "s5", memo: memo)
         #expect(memo.storedCount == 7)
+        // The open segment: the run is now being recorded into.
+        let recording = grouping(library, policy: frozenPolicy, open: "s5", memo: memo)
+        #expect(memo.storedCount == 8)
+        #expect(recording.conversations.last?.isProvisional == true)
         // A member settling.
         var unsettled = library
         unsettled.evidence["s5"] = unsettledEvidence("s5")
         _ = grouping(unsettled, policy: frozenPolicy, memo: memo)
-        #expect(memo.storedCount == 8)
-        // The run closing: a later run appears (and is itself one more search).
+        #expect(memo.storedCount == 9)
+        // A later run appears: one more search for it, and none for the run that did not change.
         let later = day(
             minutes: 15, prefix: "t", startTimeMs: t0 + minutesMs(300), stream: 9, unsettled: [0])
         _ = grouping(library + later, policy: frozenPolicy, memo: memo)
@@ -1184,6 +1387,7 @@ private func expectWellFormed(
         // And every one of those is answered from memory the second time.
         _ = grouping(library, policy: frozenPolicy, memo: memo)
         _ = grouping(library, policy: .quietOnly, memo: memo)
+        _ = grouping(library, policy: frozenPolicy, cutInputs: span(runStart, nil), memo: memo)
         _ = grouping(library + later, policy: frozenPolicy, memo: memo)
         #expect(memo.storedCount == 10)
     }
