@@ -224,6 +224,54 @@ import Testing
         }
     }
 
+    /// Writes the decoded audio of listed minutes as 16 kHz mono WAV files, for a listening
+    /// judge. `PEBBLE_NONCONV_CLIPS` names a CSV (`name,segmentId,minute`) and
+    /// `PEBBLE_NONCONV_OUT` a directory outside the repo; roots as above, newest wins.
+    @Test func exportMinuteClips() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let rootsRaw = env["PEBBLE_NONCONV_ROOTS"], let listPath = env["PEBBLE_NONCONV_CLIPS"],
+            let outPath = env["PEBBLE_NONCONV_OUT"]
+        else { return }
+        let roots = rootsRaw.split(separator: ":").map {
+            URL(fileURLWithPath: String($0), isDirectory: true)
+        }
+        let out = URL(fileURLWithPath: outPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        var decoded: [String: (Data, Int)] = [:]
+        var written = 0
+        for line in try String(contentsOfFile: listPath, encoding: .utf8).split(whereSeparator: \.isNewline) {
+            let f = line.split(separator: ",").map(String.init)
+            guard f.count >= 3, let minute = Int(f[2]) else { continue }
+            let (name, id) = (f[0], f[1])
+            if decoded[id] == nil {
+                for root in roots.reversed() {
+                    let reader = SegmentFileReader(root: root)
+                    guard let meta = reader.readMeta(id) else { continue }
+                    let frames = reader.readFrames(id)
+                    guard !frames.isEmpty else { continue }
+                    let decoder = SpeexFrameDecoder(
+                        sampleRateHz: Int(meta.sampleRateHz), bitRateBps: Int(meta.bitRateBps),
+                        frameSamples: meta.frameSamples)
+                    decoded[id] = (
+                        try decoder.decodeAll(frames: frames.map { Data($0.payload) }),
+                        Int(meta.sampleRateHz)
+                    )
+                    break
+                }
+            }
+            guard let (pcm, rate) = decoded[id] else { continue }
+            let bytesPerMinute = rate * 2 * 60
+            let start = min(minute * bytesPerMinute, pcm.count)
+            let end = min(start + bytesPerMinute, pcm.count)
+            guard end > start else { continue }
+            let body = pcm.subdata(in: start..<end)
+            try PcmWav.encodeMono16(pcm: body, sampleRateHz: rate).write(
+                to: out.appendingPathComponent("\(name).wav"))
+            written += 1
+        }
+        print("exported \(written) minute clips to \(out.path)")
+    }
+
     /// What the shipped classifier does to a whole library: hours of each verdict, how many
     /// segments carry a loop (and so change their boundary evidence), and the CPU it took.
     /// Runs when `PEBBLE_NONCONV_ROOTS` is set; newest root wins per segment. Prints only.
