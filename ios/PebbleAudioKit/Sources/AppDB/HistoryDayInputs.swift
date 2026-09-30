@@ -78,8 +78,11 @@ public struct HistorySegmentState: Equatable, Sendable {
     }
 }
 
-/// A chapter written by the chapter stage (plan 7.3). No such stage exists yet; the builder
-/// takes them so the day is ready for it.
+/// A card's worth of the day the builder is handed rather than cuts itself. Conversations are
+/// topic-sized (`ConversationUnits.isTopicSized`), so these are the conversations overlapping the
+/// day that hold speech (`HistoryReader.chapters(from:hiding:)`); the separate chapter stage of
+/// plan 7.3 is superseded. The title may be nil (not written yet, or withdrawn when the
+/// conversation was re-cut): the card is then untitled and quotes its snippet.
 public struct HistoryChapterInput: Equatable, Sendable {
     public var id: String
     public var startMs: Int64

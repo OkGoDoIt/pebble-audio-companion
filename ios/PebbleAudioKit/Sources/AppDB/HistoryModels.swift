@@ -110,7 +110,9 @@ public enum HistoryItem: Equatable, Sendable, Identifiable {
 /// A card on the day: a stretch of talk.
 public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
     public enum Source: String, Sendable {
-        /// A chapter written by the chapter stage.
+        /// A chapter the builder was handed (`HistoryChapterInput`): since conversations became
+        /// topic-sized, a conversation — its title, summary and tags, and a snippet while it
+        /// has no title yet.
         case chapter
         /// No chapter covers this talk yet (or AI is off): the card is a stretch of talk cut
         /// where the talk really stopped (`HistoryTalkCutter`). It carries no title (the
@@ -125,8 +127,9 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
     /// Nil when there is no title to show (an untitled conversation stretch).
     public var title: String?
     public var summary: String?
-    /// For a card with no title or summary of its own (source `.conversation`): the first
-    /// substantive thing that was said in it, verbatim from the transcript. Nil otherwise.
+    /// For a card with no title (`isUntitled`) — a stretch no chapter covers, or a chapter
+    /// whose title has not been written yet: the first substantive thing that was said in it,
+    /// verbatim from the transcript. Nil for a titled card.
     public var snippet: String?
     public var tags: [String]
     public var people: [String]
@@ -136,6 +139,10 @@ public struct HistoryChapterBlock: Equatable, Sendable, Identifiable {
     public var timesApproximate: Bool
     /// Already in display order: open first, then done, each by time.
     public var followUps: [HistoryFollowUpLine]
+
+    /// No title to show: the card leads with its time range and quotes its `snippet`. The same
+    /// rule the app's card draws by (`HistoryLabels.isUntitled`).
+    public var isUntitled: Bool { title?.isEmpty ?? true }
 
     public init(
         id: String, startMs: Int64, endMs: Int64, zoneID: String, source: Source,

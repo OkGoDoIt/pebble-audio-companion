@@ -171,8 +171,8 @@ public actor HistoryReader {
         return HistoryDigestScope(
             window: hull,
             segmentIds: library.segments(overlapping: hull, withNext: false).map(\.segmentId),
-            recapDateKeys: [dateKey], includeTags: Self.readsConversationsAsCards,
-            includeSummaries: Self.readsConversationsAsCards)
+            recapDateKeys: [dateKey], includeTags: ConversationUnits.isTopicSized,
+            includeSummaries: ConversationUnits.isTopicSized)
     }
 
     public func periodScope(days: [String], _ library: Library) -> HistoryDigestScope {
@@ -261,35 +261,22 @@ public actor HistoryReader {
             }
         }
 
-        // Conversations inside their undo window: their recorded time is drawn as deleted (plan
-        // 7.10 rule 1) — left alone, their words would still be cut into cards. The builder takes
-        // no other conversation input: its cards are cut from the talk itself
-        // (`HistoryTalkCutter`), unless `readsConversationsAsCards` says the conversations are
-        // topic-sized and are the cards.
-        let members = try await queries.members(ofConversations: rows.map(\.id))
-        var deleted: [HistoryDeletedSpanInput] = []
-        var hiddenSegments: Set<String> = []
-        for row in rows {
-            let segmentIds = members[row.id] ?? []
-            if hidden.contains(row.id) {
-                hiddenSegments.formUnion(segmentIds)
-                let extents = segmentIds.compactMap { library.extents[$0] }.filter { !$0.isEmpty }
-                if extents.isEmpty {
-                    deleted.append(HistoryDeletedSpanInput(startMs: row.startMs, endMs: row.endMs, cause: .user))
-                } else {
-                    deleted += extents.map { HistoryDeletedSpanInput(startMs: $0.lowerBound, endMs: $0.upperBound, cause: .user) }
-                }
-                continue
-            }
-        }
-        let chapters = Self.readsConversationsAsCards ? Self.chapters(from: rows, hiding: hidden) : []
+        // Conversations inside their undo window: the time their pieces hold is drawn as deleted
+        // (plan 7.10 rule 1) — left alone, their words would still be cut into cards. The cards
+        // are the conversations themselves (`chapters(from:hiding:)`) while they are topic-sized;
+        // talk no card covers is cut from the talk (`HistoryTalkCutter`).
+        let hiddenHere = rows.map(\.id).filter(hidden.contains)
+        let pieces = hiddenHere.isEmpty ? [:] : try await queries.pieces(ofConversations: hiddenHere)
+        let hiding = try await Self.hidden(
+            hiddenHere, hidden: hidden, pieces: pieces, rows: rows, library, queries: queries)
+        let chapters = ConversationUnits.isTopicSized ? Self.chapters(from: rows, hiding: hidden) : []
 
         let placed = HistoryPlacedRecord.place(
-            records, segmentSpan: { library.extents[$0] }, hiddenSegmentIds: hiddenSegments,
-            dayKey: { library.timeline.dayKey(forMs: $0) }
+            records, segmentSpan: { library.extents[$0] }, hiddenSegmentIds: hiding.wholeSegments,
+            hiddenWallRanges: hiding.wallRanges, dayKey: { library.timeline.dayKey(forMs: $0) }
         ).filter { $0.dayKey == dateKey }
         let turns = speech.turns.filter {
-            $0.startMs < hull.upperBound && $0.endMs >= hull.lowerBound && !hiddenSegments.contains($0.segmentId)
+            $0.startMs < hull.upperBound && $0.endMs >= hull.lowerBound && !hiding.hides($0)
         }
 
         let input = HistoryDayBuilder.Input(
@@ -298,7 +285,7 @@ public actor HistoryReader {
             turnPreviews: Self.turnPreviews(turns, content: content),
             followUps: placed.map { HistoryFollowUpInput(record: $0.record, placement: $0.placement, nowMs: nowMs) },
             contentSpans: content.map(HistoryContentSpanInput.init(span:)),
-            deletedSpans: deleted, nowMs: isToday ? nowMs : nil, isLive: isToday && isLive)
+            deletedSpans: hiding.deleted, nowMs: isToday ? nowMs : nil, isLive: isToday && isLive)
         return DayInputs(builder: input, followUps: placed, turns: turns)
     }
 
@@ -311,25 +298,77 @@ public actor HistoryReader {
             .map { HistoryTurnPreview(startMs: $0.startMs, text: $0.text) }
     }
 
-    // MARK: - Conversations as cards (the seam for topic-sized conversations)
-
-    /// OFF until the grouper's conversations are topic-sized. The `conversation-units` branch
-    /// makes them so and exposes `ConversationUnits.isTopicSized` in AppDB; when it lands this
-    /// becomes `ConversationUnits.isTopicSized` (a one-line change). On, each conversation
-    /// overlapping the day is a card (`chapters(from:hiding:)`) with its title, summary and tags,
-    /// and the day digest carries tags and summaries, so an edit to either rebuilds the page.
-    public static let readsConversationsAsCards = false
+    // MARK: - Conversations as cards
 
     /// Each conversation as the builder's chapter input: its extent, title, summary and tags.
-    /// Conversations inside their undo window are not cards (they are drawn as deleted).
+    /// Conversations are topic-sized (`ConversationUnits.isTopicSized`), so each is a card.
+    ///
+    /// Not every conversation is: one inside its undo window is drawn as deleted; one with no
+    /// speech — a long silence, which is now a unit of its own (every piece `NoSpeech`), or audio
+    /// whose transcripts have not arrived (the `length` units, nothing settled in them) — is left
+    /// out, so the builder draws that time from coverage by its own rules (quiet, no
+    /// conversation, not transcribed yet). A conversation still being re-cut (today's tail) is a
+    /// card like any other; its id may change on the next pass, and nothing keeps anything by it.
+    /// The title may be nil — not written yet, or withdrawn when the conversation was re-cut —
+    /// and the card is then untitled and quotes its snippet.
     public static func chapters(from rows: [ConversationListRow], hiding hidden: Set<String>) -> [HistoryChapterInput] {
-        rows.filter { !hidden.contains($0.id) && $0.endMs > $0.startMs }
+        rows.filter { !hidden.contains($0.id) && $0.hasSpeech && $0.endMs > $0.startMs }
             .sorted { $0.startMs != $1.startMs ? $0.startMs < $1.startMs : $0.id < $1.id }
             .map { row in
                 HistoryChapterInput(
                     id: row.id, startMs: row.startMs, endMs: row.endMs, title: row.title, summary: row.summary,
                     tags: row.tags, people: [], timesApproximate: false)
             }
+    }
+
+    /// What conversations inside their undo window take off the page.
+    struct Hiding: Sendable {
+        /// Their pieces, drawn as deleted; a conversation with no placeable piece is drawn over
+        /// its extent.
+        var deleted: [HistoryDeletedSpanInput] = []
+        /// The wall ranges of their pieces.
+        var wallRanges: [Range<Int64>] = []
+        /// Recordings they hold entirely.
+        var wholeSegments: Set<String> = []
+
+        /// A turn said inside a hidden conversation.
+        func hides(_ turn: HistorySpokenTurn) -> Bool {
+            wholeSegments.contains(turn.segmentId) || wallRanges.contains { $0.contains(turn.startMs) }
+        }
+    }
+
+    /// The pieces of the hidden conversations among `ids`, on the wall clock. Reads nothing when
+    /// none of them is hidden, which is always but for the five seconds after a delete.
+    static func hidden(
+        _ ids: [String], hidden: Set<String>, pieces: [String: [HistoryLibraryQueries.Piece]],
+        rows: [ConversationListRow], _ library: Library, queries: HistoryLibraryQueries
+    ) async throws -> Hiding {
+        let hiddenIds = Set(ids).intersection(hidden)
+        guard !hiddenIds.isEmpty else { return Hiding() }
+        let members = pieces.filter { hiddenIds.contains($0.key) }.mapValues { $0.map(\.member) }
+        let segmentIds = Set(members.values.flatMap { $0.map(\.segmentId) })
+        let owners = try await queries.owners(ofSegments: segmentIds.sorted())
+        let metas = Dictionary(
+            library.metas.filter { segmentIds.contains($0.segmentId) }.map { ($0.segmentId, $0) },
+            uniquingKeysWith: { first, _ in first })
+        let held = HistoryPieces.hidden(
+            hiddenIds, pieces: members, owners: owners, metas: metas, extents: library.extents)
+        var deleted: [HistoryDeletedSpanInput] = []
+        for row in rows where hiddenIds.contains(row.id) {
+            let ranges = (members[row.id] ?? []).compactMap { piece -> Range<Int64>? in
+                guard let meta = metas[piece.segmentId], let extent = library.extents[piece.segmentId] else {
+                    return nil
+                }
+                let range = HistoryPieces.wallRange(of: piece, meta: meta, extent: extent)
+                return range.isEmpty ? nil : range
+            }
+            if ranges.isEmpty {
+                deleted.append(HistoryDeletedSpanInput(startMs: row.startMs, endMs: row.endMs, cause: .user))
+            } else {
+                deleted += ranges.map { HistoryDeletedSpanInput(startMs: $0.lowerBound, endMs: $0.upperBound, cause: .user) }
+            }
+        }
+        return Hiding(deleted: deleted, wallRanges: held.wallRanges, wholeSegments: held.wholeSegments)
     }
 
     /// The stored audio of a recording that falls inside a day: its media time (frames × frame
@@ -372,16 +411,16 @@ public actor HistoryReader {
         public var title: String?
     }
 
-    /// INTERIM, until conversations are topic-sized (`readsConversationsAsCards`): every
-    /// conversation whose tags include `tag`, one hit per day it overlaps that has speech in it,
-    /// starting at its first speech that day; newest first. Reads the tag's rows, those
-    /// conversations' members, and only their transcripts' timings (memoised).
+    /// Every conversation whose tags include `tag`, one hit per day it overlaps that has speech
+    /// in it, starting at its first speech that day; newest first. Reads the tag's rows, those
+    /// conversations' pieces, and only their recordings' transcript timings (memoised).
     public func tagHits(tag: String, _ library: Library) async throws -> [TagHit] {
         let queries = HistoryLibraryQueries(db: sources.database)
         let hidden = await sources.hiddenConversationIds()
         let tagged = try await queries.conversations(taggedWith: tag).filter { !hidden.contains($0.id) }
         guard !tagged.isEmpty else { return [] }
-        let members = try await queries.members(ofConversations: tagged.map(\.id))
+        let members = try await queries.pieces(ofConversations: tagged.map(\.id))
+            .mapValues { $0.map(\.member.segmentId) }
         let metaById = Dictionary(library.metas.map { ($0.segmentId, $0) }, uniquingKeysWith: { a, _ in a })
         let memberMetas = tagged.flatMap { members[$0.id] ?? [] }.compactMap { metaById[$0] }
         let tasks = try await queries.tasks(segmentIds: memberMetas.map(\.segmentId))
@@ -481,14 +520,21 @@ public actor HistoryReader {
                 segment: meta.transcriptionState, task: tasks[meta.segmentId]?.state, hasTranscriptFile: hasFile)
         }
 
-        let members = try await queries.members(ofConversations: rows.map(\.id))
-        var hiddenSegments: Set<String> = []
-        for id in hidden { hiddenSegments.formUnion(members[id] ?? []) }
-        let visibleRows = rows.filter { !hidden.contains($0.id) }
+        let pieces = try await queries.pieces(ofConversations: rows.map(\.id))
+        let hiding = try await Self.hidden(
+            rows.map(\.id), hidden: hidden, pieces: pieces, rows: rows, library, queries: queries)
+        // The day's conversations: the ones with speech. A silent unit (a long silence is a
+        // conversation of its own) or one whose transcripts have not arrived has no title, no
+        // tags and no talk to count.
+        let visibleRows = rows.filter { !hidden.contains($0.id) && $0.hasSpeech }
+        let pieceSegments = Set(visibleRows.flatMap { (pieces[$0.id] ?? []).map(\.member.segmentId) })
+        let pieceMetas = Dictionary(
+            library.metas.filter { pieceSegments.contains($0.segmentId) }.map { ($0.segmentId, $0) },
+            uniquingKeysWith: { first, _ in first })
 
         let placed = HistoryPlacedRecord.place(
-            records, segmentSpan: { library.extents[$0] }, hiddenSegmentIds: hiddenSegments,
-            dayKey: { library.timeline.dayKey(forMs: $0) })
+            records, segmentSpan: { library.extents[$0] }, hiddenSegmentIds: hiding.wholeSegments,
+            hiddenWallRanges: hiding.wallRanges, dayKey: { library.timeline.dayKey(forMs: $0) })
         var followUpsOf: [String: [HistoryPlacedFollowUp]] = [:]
         for record in placed { followUpsOf[record.dayKey, default: []].append(record.placed(nowMs: nowMs)) }
 
@@ -503,7 +549,7 @@ public actor HistoryReader {
             var facts = HistoryDayFacts(dateKey: day, isToday: day == todayKey, isLive: day == todayKey && isLive)
             for meta in metas {
                 guard let extent = library.extents[meta.segmentId], !extent.isEmpty, inside(extent) > 0,
-                    !hiddenSegments.contains(meta.segmentId)
+                    !hiding.wholeSegments.contains(meta.segmentId)
                 else { continue }
                 let segmentState = state[meta.segmentId] ?? meta.transcriptionState
                 facts.recordings += 1
@@ -515,9 +561,15 @@ public actor HistoryReader {
             for row in visibleRows {
                 let overlap = inside(row.startMs..<max(row.endMs, row.startMs))
                 guard overlap > 0 else { continue }
-                let transcribed = (members[row.id] ?? []).reduce(Int64(0)) { total, segmentId in
-                    guard state[segmentId] == .complete, let extent = library.extents[segmentId] else { return total }
-                    return total + inside(extent)
+                // The talk inside the day: each PIECE's wall range, where its recording has a
+                // transcript and the piece is not a silent one. Counting whole recordings added
+                // the neighbour's half of every shared recording to both conversations.
+                let transcribed = (pieces[row.id] ?? []).reduce(Int64(0)) { total, piece in
+                    let segmentId = piece.member.segmentId
+                    guard state[segmentId] == .complete, piece.state != .noSpeech,
+                        let meta = pieceMetas[segmentId], let extent = library.extents[segmentId]
+                    else { return total }
+                    return total + inside(HistoryPieces.wallRange(of: piece.member, meta: meta, extent: extent))
                 }
                 facts.conversations.append(
                     HistoryConversationFact(

@@ -543,9 +543,42 @@ private extension HistoryDay {
             HistoryTurnPreview(startMs: at(9, 0, 30), text: "That is a very long English sentence with many words"),
         ]
         #expect(day.build().cards.first?.snippet == "来週の月曜日に図書館へ行きます")
-        // A chapter never gets one.
+        // A titled chapter never gets one.
         day.chapters = [HistoryChapterInput(id: "ch", startMs: at(9), endMs: at(9, 20), title: "T")]
         #expect(day.build().cards.first?.snippet == nil)
+        // An untitled one — a conversation whose title is not written yet, or was withdrawn when
+        // it was re-cut — gets one by the same rule, from its own range.
+        for title in [nil, ""] as [String?] {
+            day.chapters = [HistoryChapterInput(id: "ch", startMs: at(9), endMs: at(9, 20), title: title)]
+            let untitled = day.build()
+            #expect(untitled.cards.first?.source == .chapter)
+            #expect(untitled.cards.first?.snippet == "来週の月曜日に図書館へ行きます")
+        }
+    }
+
+    @Test("the checker: a titled card never quotes, and a quote is always something said")
+    func snippetPromises() throws {
+        var day = HonestyDay()
+        day.record("a", at(9), at(10))
+        day.speech("a", at(9), at(9, 20))
+        day.speech("a", at(9, 30), at(9, 50))
+        day.turnPreviews = [HistoryTurnPreview(startMs: at(9, 1), text: "So the library on Monday then, at ten")]
+        day.chapters = [
+            HistoryChapterInput(id: "titled", startMs: at(9), endMs: at(9, 20), title: "Viewing"),
+            HistoryChapterInput(id: "untitled", startMs: at(9, 30), endMs: at(9, 50), title: nil),
+        ]
+        let input = day.input
+        let built = HistoryDayBuilder.build(input)
+        #expect(HistoryDayBuilder.honestyViolations(of: built, input: input).isEmpty)
+        var tampered = built
+        tampered.items = built.items.map { item in
+            guard case .chapter(var block) = item else { return item }
+            block.snippet = block.id == "titled" ? "So the library on Monday then, at ten" : "Nobody said this"
+            return .chapter(block)
+        }
+        let problems = HistoryDayBuilder.honestyViolations(of: tampered, input: input)
+        #expect(problems.contains("titled card titled has a snippet"))
+        #expect(problems.contains("card untitled has a snippet nobody said"))
     }
 
     @Test("a pause, deletion or unrecorded time always ends a stretch")
@@ -805,7 +838,9 @@ private func randomHistoryDay(_ rng: inout SplitMixGenerator) -> HonestyDay {
     }
     for index in 0..<Int.random(in: 0...2, using: &rng) {
         let (start, end) = randomSpan()
-        day.chapters.append(HistoryChapterInput(id: "ch\(index)", startMs: start, endMs: end, title: "T"))
+        // Every other one untitled, as a conversation is until its title is written.
+        day.chapters.append(
+            HistoryChapterInput(id: "ch\(index)", startMs: start, endMs: end, title: index % 2 == 0 ? "T" : nil))
     }
     for index in 0..<Int.random(in: 0...5, using: &rng) {
         let (start, end) = randomSpan()

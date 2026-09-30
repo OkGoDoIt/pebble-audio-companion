@@ -19,6 +19,9 @@ import WireProtocol
 //                           the talk really stopped (`HistoryTalkCutter`), untitled, with a
 //                           verbatim snippet
 //
+// Any card with no title (a fallback card always; a chapter whose title is not written yet)
+// carries a verbatim snippet; a titled card never does.
+//
 // Rules 1-5 are not re-derived here. They are `CoverageComputer.computeAttributed` — the same
 // placement the Today strip draws — with its watch-quiet recut, so History can never call a
 // minute missing that Today calls paused. The one ordering that comes from coverage rather than
@@ -169,7 +172,10 @@ public enum HistoryDayBuilder {
         for entry in entries {
             if let piece = entry.piece {
                 var item = Self.item(piece, zoneID: entry.zoneID, lossRecords: built[entry.window].lossRecords)
-                if case .chapter(var block) = item, block.source == .conversation {
+                // A card with no title of its own shows what was said in it: a fallback stretch
+                // always, and a chapter whose title has not been written yet (a conversation
+                // right after it was re-cut, or with AI off) just the same. A titled card never.
+                if case .chapter(var block) = item, block.isUntitled {
                     block.snippet = Self.snippet(in: block.startMs..<block.endMs, previews: previews)
                     item = .chapter(block)
                 }
@@ -915,7 +921,7 @@ public enum HistoryDayBuilder {
         }
     }
 
-    /// A fallback card's snippet, verbatim (`previews` is sorted by start). Among the turns in
+    /// An untitled card's snippet, verbatim (`previews` is sorted by start). Among the turns in
     /// the card's first five minutes: the first that is long enough to say something (8 words or
     /// more), else the longest; with no turn in those five minutes, the first turn of the card
     /// with 4 words or more; else nil.

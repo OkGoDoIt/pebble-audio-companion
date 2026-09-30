@@ -119,19 +119,28 @@ public struct HistoryPlacedRecord: Equatable, Sendable {
 
 extension HistoryPlacedRecord {
     /// Places each record (`FollowUpPlacement.placement`) and files it under the day of its
-    /// moment. A record that cannot be placed at all, or that belongs to a recording hidden by a
-    /// pending delete, is left out: it is not on any day.
+    /// moment. A record that cannot be placed at all, or that was said inside a conversation
+    /// hidden by a pending delete, is left out: it is not on any day.
+    ///
+    /// A conversation owns a RANGE of a recording, so hiding is decided by where the follow-up
+    /// was said: a record placed at a moment inside a hidden piece is hidden; one that could only
+    /// be placed by its recording (no located quote) is hidden only when the whole recording is.
     ///
     /// - Parameters:
     ///   - segmentSpan: a recording's wall extent, nil when it no longer exists.
-    ///   - hiddenSegmentIds: recordings of conversations inside their undo window.
+    ///   - hiddenSegmentIds: recordings held entirely by conversations inside their undo window.
+    ///   - hiddenWallRanges: the wall ranges of those conversations' pieces.
     public static func place(
         _ records: [HistoryFollowUpRecord], segmentSpan: (String) -> Range<Int64>?,
-        hiddenSegmentIds: Set<String> = [], dayKey: (Int64) -> String
+        hiddenSegmentIds: Set<String> = [], hiddenWallRanges: [Range<Int64>] = [],
+        dayKey: (Int64) -> String
     ) -> [HistoryPlacedRecord] {
         records.compactMap { record in
             if let segmentId = record.sourceSegmentId, hiddenSegmentIds.contains(segmentId) { return nil }
             guard let placement = FollowUpPlacement.placement(of: record, segmentSpan: segmentSpan) else {
+                return nil
+            }
+            if case .moment(let ms, _) = placement, hiddenWallRanges.contains(where: { $0.contains(ms) }) {
                 return nil
             }
             return HistoryPlacedRecord(record: record, placement: placement, dayKey: dayKey(placement.atMs))
@@ -139,11 +148,59 @@ extension HistoryPlacedRecord {
     }
 }
 
+// MARK: - Conversation pieces on the wall clock
+
+/// Where the pieces of conversations sit on the wall clock. A conversation is an ordered list
+/// of PIECES (`ConversationMember`: a range of one recording's stored audio), so "the
+/// conversation's recordings" over-reads: a recording usually holds the end of one conversation
+/// and the start of the next.
+public enum HistoryPieces {
+    /// A piece's wall range: its media bounds through the recording's own clock
+    /// (`SegmentMediaClock.wallOffset(ofMedia:)`, the rule every other reader converts by) from
+    /// the recording's wall anchor, clamped into `extent` (the recording's placement,
+    /// `HistorySegmentState`). An open bound is the extent's edge; a whole piece is the extent.
+    public static func wallRange(
+        of piece: ConversationMember, meta: SegmentMeta, extent: Range<Int64>
+    ) -> Range<Int64> {
+        guard !piece.isWhole else { return extent }
+        let clock = SegmentMediaClock(meta)
+        func wall(_ mediaMs: Int64) -> Int64 {
+            min(max(meta.startWallMs + clock.wallOffset(ofMedia: mediaMs), extent.lowerBound), extent.upperBound)
+        }
+        let lower = piece.startMediaMs.map(wall) ?? extent.lowerBound
+        let upper = piece.endMediaMs.map(wall) ?? extent.upperBound
+        return lower..<max(upper, lower)
+    }
+
+    /// What a set of conversations holds, as History hides it while they are in their undo
+    /// window: the wall ranges of their pieces, and the recordings they hold ENTIRELY (every
+    /// piece of which is theirs — `owners` lists each recording's pieces across the library).
+    public static func hidden(
+        _ conversationIds: Set<String>, pieces: [String: [ConversationMember]],
+        owners: [String: [String]], metas: [String: SegmentMeta], extents: [String: Range<Int64>]
+    ) -> (wallRanges: [Range<Int64>], wholeSegments: Set<String>) {
+        var ranges: [Range<Int64>] = []
+        var whole: Set<String> = []
+        for id in conversationIds.sorted() {
+            for piece in pieces[id] ?? [] {
+                if let meta = metas[piece.segmentId], let extent = extents[piece.segmentId] {
+                    let range = wallRange(of: piece, meta: meta, extent: extent)
+                    if !range.isEmpty { ranges.append(range) }
+                }
+                if (owners[piece.segmentId] ?? [id]).allSatisfy(conversationIds.contains) {
+                    whole.insert(piece.segmentId)
+                }
+            }
+        }
+        return (ranges, whole)
+    }
+}
+
 // MARK: - Reads
 
-/// The two small windowed reads History needs besides `ConversationQueries.rows(overlappingMs:)`
-/// and `FollowUpStore.history(inWallWindow:segmentIds:)`: each is one indexed query over the ids
-/// the caller already has, never a table scan of the library.
+/// The small windowed reads History needs besides `ConversationQueries.rows(overlappingMs:)` and
+/// `FollowUpStore.history(inWallWindow:segmentIds:)`: each is one indexed query over the ids the
+/// caller already has, never a table scan of the library.
 public struct HistoryLibraryQueries: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
@@ -207,22 +264,63 @@ public struct HistoryLibraryQueries: Sendable {
         }
     }
 
-    /// Each conversation's member recordings, in order.
-    public func members(ofConversations conversationIds: [String]) async throws -> [String: [String]] {
+    /// One piece of a conversation as History reads it: the range of the recording, and the
+    /// state the grouping stored for THAT piece (`NoSpeech` for the silent part of a transcribed
+    /// recording, whatever the rest of it holds).
+    public struct Piece: Equatable, Sendable {
+        public var member: ConversationMember
+        public var state: TranscriptionState?
+
+        public init(member: ConversationMember, state: TranscriptionState?) {
+            self.member = member
+            self.state = state
+        }
+    }
+
+    /// Each conversation's pieces, in order.
+    public func pieces(ofConversations conversationIds: [String]) async throws -> [String: [Piece]] {
         guard !conversationIds.isEmpty else { return [:] }
         let ids = String(decoding: try JSONEncoder().encode(conversationIds), as: UTF8.self)
         return try await db.reader.read { db in
-            var out: [String: [String]] = [:]
+            var out: [String: [Piece]] = [:]
             for row in try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT conversationId, segmentId FROM conversation_segments
+                    SELECT conversationId, segmentId, startMediaMs, endMediaMs, transcriptionState
+                    FROM conversation_segments
                     WHERE conversationId IN (SELECT value FROM json_each(?))
                     ORDER BY conversationId, ordinal
                     """,
                 arguments: [ids])
             {
-                out[row["conversationId"], default: []].append(row["segmentId"])
+                out[row["conversationId"], default: []].append(
+                    Piece(
+                        member: ConversationMember(
+                            segmentId: row["segmentId"], startMediaMs: row["startMediaMs"],
+                            endMediaMs: row["endMediaMs"]),
+                        state: (row["transcriptionState"] as String?).flatMap(TranscriptionState.init(rawValue:))))
+            }
+            return out
+        }
+    }
+
+    /// Every conversation holding a piece of each of these recordings (indexed by
+    /// `conversation_segments_segment`).
+    public func owners(ofSegments segmentIds: [String]) async throws -> [String: [String]] {
+        guard !segmentIds.isEmpty else { return [:] }
+        let ids = String(decoding: try JSONEncoder().encode(segmentIds), as: UTF8.self)
+        return try await db.reader.read { db in
+            var out: [String: [String]] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT segmentId, conversationId FROM conversation_segments
+                    WHERE segmentId IN (SELECT value FROM json_each(?))
+                    ORDER BY segmentId, COALESCE(startMediaMs, 0)
+                    """,
+                arguments: [ids])
+            {
+                out[row["segmentId"], default: []].append(row["conversationId"])
             }
             return out
         }

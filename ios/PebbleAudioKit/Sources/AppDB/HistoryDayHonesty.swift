@@ -160,11 +160,15 @@ extension HistoryDayBuilder {
             fail("recorded audio drawn as a pause the person made")
         }
 
-        // A card standing in for talk no chapter covers has no title or summary of its own; only
-        // it may carry a snippet, and only a verbatim one.
+        // A card standing in for talk no chapter covers has no title or summary of its own. Only
+        // a card with no title may carry a snippet, and only a verbatim one.
         let previewTexts = Set(input.turnPreviews.map(\.text))
         for item in timed {
             guard case .chapter(let block) = item else { continue }
+            if !block.isUntitled, block.snippet != nil { fail("titled card \(block.id) has a snippet") }
+            if let snippet = block.snippet, !previewTexts.contains(snippet) {
+                fail("card \(block.id) has a snippet nobody said")
+            }
             switch block.source {
             case .conversation:
                 if block.title != nil || block.summary != nil { fail("fallback card \(block.id) has a title or summary") }
@@ -181,11 +185,8 @@ extension HistoryDayBuilder {
                         fail("fallback card \(block.id) is longer than the merge cap across a real pause")
                     }
                 }
-                if let snippet = block.snippet, !previewTexts.contains(snippet) {
-                    fail("fallback card \(block.id) has a snippet nobody said")
-                }
             case .chapter:
-                if block.snippet != nil { fail("chapter \(block.id) has a snippet") }
+                break
             }
         }
 

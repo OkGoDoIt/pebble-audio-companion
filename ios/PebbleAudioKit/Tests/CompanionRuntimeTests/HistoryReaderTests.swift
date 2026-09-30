@@ -52,9 +52,10 @@ import Transcription
         #expect(!HistorySpokenTurn.isDegenerate("I'm going to walk you through that checklist again."))
     }
 
-    @Test("behind the seam: each conversation is a card with its title, summary and tags")
+    @Test("each conversation with speech is a card with its title, summary and tags")
     func conversationsAsCards() {
-        #expect(HistoryReader.readsConversationsAsCards == false)
+        // Conversations are topic-sized, so History reads them as its cards.
+        #expect(ConversationUnits.isTopicSized)
         let rows = [
             ConversationListRow(
                 id: "b", title: "Rent negotiation", summary: "Lower rent for a longer lease.", startMs: 5_000,
@@ -62,6 +63,13 @@ import Transcription
             ConversationListRow(id: "a", title: nil, summary: nil, startMs: 1_000, endMs: 4_000),
             ConversationListRow(id: "hidden", title: "Deleted", startMs: 9_000, endMs: 9_500),
             ConversationListRow(id: "empty", title: "No audio", startMs: 9_600, endMs: 9_600),
+            // A long silence is a unit of its own with nothing said in it, and audio whose
+            // transcripts have not arrived holds no speech yet: neither is a card — the builder
+            // draws that time from coverage (quiet, no conversation, not transcribed yet).
+            ConversationListRow(id: "silence", title: nil, startMs: 10_000, endMs: 40_000, hasSpeech: false),
+            ConversationListRow(
+                id: "waiting", title: nil, startMs: 40_000, endMs: 90_000, lifecycle: .capturedWaiting,
+                hasSpeech: false),
         ]
         let chapters = HistoryReader.chapters(from: rows, hiding: ["hidden"])
         #expect(chapters == [
