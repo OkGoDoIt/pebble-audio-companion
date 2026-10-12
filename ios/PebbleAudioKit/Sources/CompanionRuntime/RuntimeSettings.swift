@@ -134,7 +134,7 @@ public enum RuntimeSettingsDefaults {
     /// every 15 minutes, so the exposure went up, not down.
     ///
     /// The device is already protected without deleting anything: `RetentionConfig`'s free-space
-    /// floors raise LOW_STORAGE at 500 MB free and ask the watch to PAUSE capture at 200 MB. That
+    /// floors raise LOW_STORAGE at 2 GB free and ask the watch to PAUSE capture at 1 GB. That
     /// is a reversible, surfaced, user-visible response; deleting the user's only copy of a
     /// conversation is neither. So the byte cap is now opt-in: it evicts nothing unless the user
     /// set a limit themselves, which is the only way "no audio disappears without you having been

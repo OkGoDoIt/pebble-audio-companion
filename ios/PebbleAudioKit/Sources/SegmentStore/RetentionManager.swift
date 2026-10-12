@@ -13,22 +13,35 @@ public struct RetentionConfig: Sendable {
     public var maxTotalBytes: Int64
     /// Maximum segment age (default 30 days).
     public var maxAgeMs: Int64
-    /// Below this much free device storage the LOW_STORAGE receiver flag is set (500 MB).
+    /// Below this much free device storage the LOW_STORAGE receiver flag is set (2 GB).
     public var lowStorageFloorBytes: Int64
-    /// Below this much free device storage we ask the watch to pause (200 MB).
+    /// Below this much free device storage we ask the watch to pause (1 GB).
+    ///
+    /// The floors are the ONLY thing standing between a filling phone and a failed write, now
+    /// that the byte cap is opt-in (`RuntimeSettingsDefaults.retentionMaxBytes`): nothing is
+    /// deleted on the user's behalf, so the honest response to a phone that is nearly full is to
+    /// pause capture — a reversible, surfaced state (Today says "Paused: phone storage low"), and
+    /// the watch records the pause as a gap with its reason. They were 500 MB / 200 MB, which
+    /// on a 512 GB phone is the last 0.04%: iOS itself gets unreliable well above that, and the
+    /// free-space reading counts purgeable caches the system may or may not reclaim in time. At
+    /// about 90 MB of audio a day, 1 GB is eleven days of margin; the failed-write path
+    /// (`SegmentStore.appendFrames`) is the backstop, not the plan.
     public var pauseFloorBytes: Int64
 
     public init(
         maxTotalBytes: Int64 = 2 * 1024 * 1024 * 1024,
         maxAgeMs: Int64 = 30 * 24 * 60 * 60 * 1000,
-        lowStorageFloorBytes: Int64 = 500 * 1024 * 1024,
-        pauseFloorBytes: Int64 = 200 * 1024 * 1024
+        lowStorageFloorBytes: Int64 = RetentionConfig.defaultLowStorageFloorBytes,
+        pauseFloorBytes: Int64 = RetentionConfig.defaultPauseFloorBytes
     ) {
         self.maxTotalBytes = maxTotalBytes
         self.maxAgeMs = maxAgeMs
         self.lowStorageFloorBytes = lowStorageFloorBytes
         self.pauseFloorBytes = pauseFloorBytes
     }
+
+    public static let defaultLowStorageFloorBytes: Int64 = 2 * 1024 * 1024 * 1024
+    public static let defaultPauseFloorBytes: Int64 = 1 * 1024 * 1024 * 1024
 }
 
 /// Retention policy over the segment store (plan 6.2): user-configurable cap, delete oldest

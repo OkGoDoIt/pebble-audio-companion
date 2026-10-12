@@ -270,8 +270,8 @@ final class AppSettings {
     /// choice past ~19 days of capture and took whole conversations with it. It is a real,
     /// user-set limit now: it evicts nothing unless someone asks it to, and the Storage screen
     /// states the rule. Device storage is still protected without deleting anything — retention's
-    /// free-space floors raise LOW_STORAGE at 500 MB free and pause capture on the watch at
-    /// 200 MB, both of which the user can see and undo.
+    /// free-space floors raise LOW_STORAGE at 2 GB free and pause capture on the watch at
+    /// 1 GB (`RetentionConfig`), both of which the user can see and undo.
     var retentionMaxBytes: Int64 {
         didSet {
             defaults.set(retentionMaxBytes, forKey: Keys.retentionMaxBytes)

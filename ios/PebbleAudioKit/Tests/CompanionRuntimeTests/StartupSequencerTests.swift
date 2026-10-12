@@ -94,9 +94,10 @@ import Testing
 
         #expect(config.maxAgeMs == 7 * 24 * 60 * 60 * 1000)
         #expect(config.maxTotalBytes == 512)
-        // Free-space floors keep their ported defaults; only the user-visible caps move.
-        #expect(config.lowStorageFloorBytes == 500 * 1024 * 1024)
-        #expect(config.pauseFloorBytes == 200 * 1024 * 1024)
+        // Free-space floors keep the kit's defaults; only the user-visible caps move. The floors
+        // are what pauses capture on a filling phone, now that nothing is deleted by default.
+        #expect(config.lowStorageFloorBytes == 2 * 1024 * 1024 * 1024)
+        #expect(config.pauseFloorBytes == 1 * 1024 * 1024 * 1024)
     }
 
     @Test func retentionActuallyDeletesSegmentsOlderThanTheSetting() async throws {
