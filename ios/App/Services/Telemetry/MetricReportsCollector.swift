@@ -122,14 +122,14 @@ extension MetricReportSummary {
         let perState = ours.map { entry in
             StateCost(
                 label: entry.state.label,
-                cpuSeconds: Self.cpuSeconds(in: entry.values) ?? 0,
+                cpuSeconds: Self.cpuSeconds(in: entry.values),
                 minutes: entry.state.duration.converted(to: .minutes).value)
         }
         // The full-day line: the interval entry spanning the most time. Chosen by duration rather
         // than `fullDayEntry` so an empty `intervalEntries` is a nil, not a trap.
         let fullDay = report.intervalEntries.max { $0.duration.converted(to: .seconds).value < $1.duration.converted(to: .seconds).value }
         let totalCpu = fullDay.flatMap { Self.cpuSeconds(in: $0.values) }
-            ?? perState.reduce(0) { $0 + $1.cpuSeconds }
+            ?? perState.reduce(0) { $0 + ($1.cpuSeconds ?? 0) }
         // Terminations come from the full-day line when there is one; otherwise every state's
         // own counts are summed (a state entry only ever counts what ended inside that state, so
         // the sum does not double-count).

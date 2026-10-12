@@ -102,6 +102,24 @@ struct MetricReportSummaryTests {
                 == "metrickit day=2026-09-17 cpu_s=402.8 per-state: capturing-bg=312.5/720 idle-fg=40.2/30 pipeline-bg=50.0/90 terminations=3 crash=1")
     }
 
+    @Test("a state the report split no CPU for prints `?`, never a figure")
+    func noCpuSplit() {
+        // What the phone's own reports look like (iOS 27.0.1): minutes per state, CPU only on
+        // the full-day line. Six days of "capturing-bg=0.0/1407" once read as a free day.
+        let summary = MetricReportSummary(
+            day: "2026-10-10",
+            totalCpuSeconds: 1224,
+            perState: [
+                .init(label: "capturing-bg", cpuSeconds: nil, minutes: 1406.8),
+                .init(label: "idle-bg", cpuSeconds: 0, minutes: 4.8),
+            ],
+            terminations: 0,
+            crashes: 0)
+        #expect(
+            summary.logLine
+                == "metrickit day=2026-10-10 cpu_s=1224.0 per-state: capturing-bg=?/1407 idle-bg=0.0/5 terminations=0 crash=0")
+    }
+
     @Test("no states of ours in the report reads `none`, not an empty tail")
     func noStates() {
         let summary = MetricReportSummary(day: "2026-09-17", totalCpuSeconds: 0, perState: [], terminations: 0, crashes: 0)

@@ -81,7 +81,11 @@ struct MetricReportArchive: Sendable {
 struct MetricReportSummary: Equatable, Sendable {
     struct StateCost: Equatable, Sendable {
         var label: String
-        var cpuSeconds: Double
+        /// CPU seconds MetricKit attributed to the state, or nil when the report carries no
+        /// `cpuTimeMetric` for it. On the phone (iOS 27.0.1) a state entry only ever carries the
+        /// hitch, hang and resume metrics; CPU comes on the full-day line alone. A nil prints as
+        /// `?`, never as `0.0` — six days of "capturing-bg=0.0/1407" read as a free day.
+        var cpuSeconds: Double?
         var minutes: Double
     }
 
@@ -102,14 +106,15 @@ struct MetricReportSummary: Equatable, Sendable {
 
     /// `metrickit day=2026-09-17 cpu_s=402.8 per-state: capturing-bg=312.5/720 idle-fg=40.3/30
     /// terminations=3 crash=1` — cpu-seconds per state over the minutes spent in it, so %/hour
-    /// arithmetic is one division away.
+    /// arithmetic is one division away; `capturing-bg=?/1407` when the report split no CPU.
     var logLine: String {
         var line = "metrickit day=\(day) cpu_s=\(Self.oneDecimal(totalCpuSeconds)) per-state:"
         if perState.isEmpty {
             line += " none"
         } else {
             for state in perState {
-                line += " \(state.label)=\(Self.oneDecimal(state.cpuSeconds))/\(Int(state.minutes.rounded()))"
+                let cpu = state.cpuSeconds.map(Self.oneDecimal) ?? "?"
+                line += " \(state.label)=\(cpu)/\(Int(state.minutes.rounded()))"
             }
         }
         line += " terminations=\(terminations) crash=\(crashes)"
