@@ -1,5 +1,6 @@
 import Foundation
 import AppDB
+import CompanionRuntime
 import StatusUI
 
 // The dependency seams for the Library / Search / Conversation / Notes / Tags / Ask screens.
@@ -253,6 +254,10 @@ struct ConversationDisplay: Equatable {
     var tags: [ConversationTag]
     var lifecycle: LifecycleDisplay
     var player: PlayerDisplay?
+    /// Where the audio behind `player` is. `.onPhone` plays at once; the other two put the
+    /// cold-audio card where the player would be — the audio is real and recorded, it just has
+    /// to be fetched (or cannot be, right now), and the card says which.
+    var audioAvailability: AudioAvailability = .onPhone
     var transcript: [TranscriptItem]
     /// "Transcribed with Soniox · yesterday 9:54 PM"
     var provenance: String?
@@ -382,6 +387,9 @@ protocol ConversationDataSource: AnyObject {
     func updates(conversationId: String) -> AsyncStream<Void>
     /// The playback engine for this conversation's stored audio; nil when there is none.
     func playback(id: String) async throws -> (any ConversationPlayback)?
+    /// Brings audio that is in iCloud back to the phone so `playback` can read it. Returns when
+    /// it is readable; throws with a reason the screen can show.
+    func fetchAudio(id: String) async throws
     func rename(id: String, to title: String) async throws
     func retranscribe(id: String) async throws
     func transcribeNow(id: String) async throws

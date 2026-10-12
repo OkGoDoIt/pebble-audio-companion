@@ -1,4 +1,5 @@
 import Receiver
+import StatusUI
 import SwiftUI
 import UserNotifications
 
@@ -209,9 +210,14 @@ struct SettingsScreen: View {
                 route: .settings(.transcription)
             )
             SettingsNavRow(
-                title: Copy.Settings.Root.storagePrivacy,
+                title: Copy.Settings.Root.storage,
                 value: storagePreview,
                 route: .settings(.storage)
+            )
+            SettingsNavRow(
+                title: Copy.Settings.Root.privacy,
+                value: privacyPreview,
+                route: .settings(.privacy)
             )
             SettingsNavRow(title: Copy.Settings.Root.aboutYou, route: .settings(.aboutyou))
             // Only when a firmware release feed is configured (always in a debug build). With
@@ -243,9 +249,17 @@ struct SettingsScreen: View {
         return "\(transcription) · \(sources.aiModelShortName(for: settings.aiModel))"
     }
 
-    /// e.g. "30 days · 383 recordings".
+    /// e.g. "2.1 GB · 383 recordings", and what is in iCloud once anything is.
     private var storagePreview: String {
-        "\(settings.retentionDays) days · \(sources.storage.recordingCount) recordings"
+        Copy.Settings.Root.storagePreview(
+            size: sources.storage.recordingsSize,
+            recordings: sources.storage.recordingCount,
+            inCloud: sources.storage.overview.map { $0.audioInCloudBytes > 0 ? Formatting.storageSize($0.audioInCloudBytes) : nil } ?? nil)
+    }
+
+    /// Where data goes, in a few words — the same fact the Privacy screen tells at length.
+    private var privacyPreview: String {
+        settings.cloudDestinations ?? Copy.Settings.Root.privacyLocal
     }
 
     // MARK: Destinations
@@ -256,6 +270,7 @@ struct SettingsScreen: View {
         case .settings(.watch): SettingsWatchScreen()
         case .settings(.transcription): SettingsTranscriptionScreen()
         case .settings(.storage): SettingsStorageScreen()
+        case .settings(.privacy): SettingsPrivacyScreen()
         case .settings(.aboutyou): SettingsAboutYouScreen()
         case .settings(.diagnostics): SettingsDiagnosticsScreen()
         default: EmptyView()  // non-settings routes never land on the settings stack

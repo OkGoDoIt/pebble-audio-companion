@@ -99,6 +99,8 @@ final class AppSettings {
                 onboardingComplete: onboardingComplete,
                 retentionDays: retentionDays,
                 retentionMaxBytes: retentionMaxBytes,
+                coldStorageEnabled: coldStorageEnabled,
+                coldStorageMinAgeDays: coldStorageMinAgeDays,
                 transcriptsConfigured: transcriptsConfigured,
                 backgroundCatchUp: backgroundCatchUp,
                 cloudUploadNetwork: cloudUploadNetwork,
@@ -279,6 +281,26 @@ final class AppSettings {
         }
     }
 
+    /// Whether fully transcribed audio older than `coldStorageMinAgeDays` leaves the phone for
+    /// the app's iCloud Drive container (`ColdAudioTier`). Off until chosen: audio leaving the
+    /// phone is a rule the person has to have seen. Turning it off moves nothing back on its
+    /// own — the Storage screen offers that as its own action — so a toggle tapped twice is
+    /// not two gigabytes of traffic.
+    var coldStorageEnabled: Bool {
+        didSet {
+            defaults.set(coldStorageEnabled, forKey: Keys.coldStorageEnabled)
+            mirrorToRuntime()
+        }
+    }
+
+    /// How old audio must be before it moves to iCloud, in days. Default two months.
+    var coldStorageMinAgeDays: Int {
+        didSet {
+            defaults.set(coldStorageMinAgeDays, forKey: Keys.coldStorageMinAgeDays)
+            mirrorToRuntime()
+        }
+    }
+
     /// The Q9 loss alert, OFF by default and opt-in. An unasked-for notification the moment a
     /// Bluetooth blip drops a few seconds is noise on a device you wear all day; the coverage
     /// strip already tells the story calmly, in place, whenever you look. Turning this on is
@@ -368,6 +390,8 @@ final class AppSettings {
     /// The "Storage limit" options, in bytes; `0` is "No limit" and the default. Sourced from the
     /// kit so the picker can only ever store a value retention understands.
     static let retentionLimitOptions = RuntimeSettingsDefaults.retentionMaxBytesOptions
+    /// The ages the iCloud rule offers, in days.
+    static let coldStorageAgeOptions = RuntimeSettingsDefaults.coldStorageMinAgeOptions
 
     /// Row value for a storage limit — "No limit" or e.g. "5 GB". The options are exact
     /// gibibytes, so they are named as round numbers rather than run through a measured-size
@@ -486,11 +510,22 @@ final class AppSettings {
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
+        coldStorageEnabled = defaults.bool(forKey: Keys.coldStorageEnabled)
+        let storedColdAge = defaults.integer(forKey: Keys.coldStorageMinAgeDays)
+        coldStorageMinAgeDays = AppSettings.coldStorageAgeOptions.contains(storedColdAge)
+            ? storedColdAge : RuntimeSettingsDefaults.coldStorageMinAgeDays
 
         #if DEBUG
         // Simulator-automation staging: relaunching with these args re-enters/skips the
         // onboarding gate without a reinstall. DEBUG builds only.
         let args = ProcessInfo.processInfo.arguments
+        // `-storage.seed` (see `StorageSeed`) fills eight months of recordings; the default
+        // "Keep audio · 30 days" would sweep most of them on the first pass. Read here, before
+        // the composition runs that pass.
+        if args.contains("-storage.seed") {
+            retentionDays = 365
+            defaults.set(365, forKey: Keys.retentionDays)
+        }
         if args.contains("-onboarding.reset") {
             onboardingComplete = false
             defaults.set(false, forKey: Keys.onboardingComplete)
@@ -563,6 +598,11 @@ final class AppSettings {
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
+        coldStorageEnabled = defaults.bool(forKey: Keys.coldStorageEnabled)
+        let storedColdAge = defaults.integer(forKey: Keys.coldStorageMinAgeDays)
+        if AppSettings.coldStorageAgeOptions.contains(storedColdAge) {
+            coldStorageMinAgeDays = storedColdAge
+        }
         // Onboarding LAST: it is the one key that changes what the user sees immediately, and a
         // migrated "yes" must never be undone by a half-applied reload.
         if defaults.bool(forKey: Keys.onboardingComplete) { onboardingComplete = true }
@@ -602,6 +642,8 @@ final class AppSettings {
         static let remoteAiProvider = "remote_ai_provider"
         static let systemSearchVisibility = "system_search_visibility"
         static let askSemanticRecall = "ask_semantic_recall"
+        static let coldStorageEnabled = "cold_storage_enabled"
+        static let coldStorageMinAgeDays = "cold_storage_min_age_days"
     }
 }
 

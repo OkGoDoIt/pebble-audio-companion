@@ -6,5 +6,24 @@
 	<array>
 		<string>group.dev.audiocompanion</string>
 	</array>
+	<!--
+	  iCloud Drive, for the cold audio tier (ColdAudioTier): frame logs older than the user's
+	  chosen age move into this container and are evicted locally once uploaded. The container
+	  has no NSUbiquitousContainers entry in Info.plist on purpose: the files are the app's
+	  working set, not documents, and must not appear in the Files app where a stray swipe
+	  would delete a recording's only audio.
+	-->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.dev.audiocompanion.app</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudDocuments</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.dev.audiocompanion.app</string>
+	</array>
 </dict>
 </plist>

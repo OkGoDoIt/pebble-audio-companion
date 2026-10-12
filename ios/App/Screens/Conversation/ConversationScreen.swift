@@ -23,6 +23,10 @@ struct ConversationScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model = ConversationViewModel()
     @State private var player = PlayerModel()
+    /// The cold-audio fetch in progress, and why the last one failed. Both live on the screen:
+    /// a fetch is a thing this screen asked for, and its outcome is shown where it was asked.
+    @State private var fetchingAudio = false
+    @State private var fetchError: String?
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
@@ -269,7 +273,19 @@ struct ConversationScreen: View {
     /// with a hairline once content is passing underneath.
     @ViewBuilder
     private func playerHeader(_ display: ConversationDisplay) -> some View {
-        if display.player != nil {
+        if display.player != nil, display.audioAvailability != .onPhone {
+            // The audio is in iCloud. Same place, same insets as the player it stands in for,
+            // so fetching it swaps one card for the other without the page moving.
+            CloudAudioCard(
+                availability: display.audioAvailability,
+                fetching: fetchingAudio,
+                error: fetchError
+            ) {
+                fetchAudio()
+            }
+            .padding(.horizontal, Tokens.screenMargin)
+            .padding(.vertical, 6)
+        } else if display.player != nil {
             PlayerCard(model: player)
                 .padding(.horizontal, Tokens.screenMargin)
                 .padding(.vertical, 6)
@@ -458,6 +474,23 @@ struct ConversationScreen: View {
                 }
                 .accessibilityLabel(Copy.A11y.more)
             }
+        }
+    }
+
+    /// Brings the audio back from iCloud, then reloads: the display's availability flips to
+    /// `.onPhone`, the player appears, and `load()` attaches the engine as it always does.
+    private func fetchAudio() {
+        guard !fetchingAudio else { return }
+        fetchingAudio = true
+        fetchError = nil
+        Task {
+            do {
+                try await AskLibraryDataSources.current.conversations.fetchAudio(id: conversationId)
+            } catch {
+                fetchError = Copy.Conversation.fetchFailed(describing: error)
+            }
+            fetchingAudio = false
+            await load()
         }
     }
 

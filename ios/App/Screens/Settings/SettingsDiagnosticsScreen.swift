@@ -115,6 +115,11 @@ struct SettingsDiagnosticsScreen: View {
                     SettingsRow(
                         title: Copy.Settings.Diagnostics.storageRecordings,
                         value: storage.recordings, showsChevron: false)
+                    if let inCloud = storage.inCloud {
+                        SettingsRow(
+                            title: Copy.Settings.Diagnostics.storageInCloud, value: inCloud,
+                            showsChevron: false)
+                    }
                     SettingsRow(
                         title: Copy.Settings.Diagnostics.storageTextAndIndex,
                         value: storage.textAndIndex, showsChevron: false)

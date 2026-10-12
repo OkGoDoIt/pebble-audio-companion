@@ -415,6 +415,8 @@ extension LiveWorld: ConversationDataSource {
         let duration = walked.mediaMs
         let hasWords = transcript.contains { if case .turn = $0 { return true } else { return false } }
         let aiAvailable = await composition.aiRouter.isAvailable()
+        let audioAvailability =
+            await composition.coldStorage.availability(segmentIds: memberIds)
         return ConversationDisplay(
             id: id,
             title: source.title ?? (source.isLive ? "Recording now" : "Conversation"),
@@ -429,6 +431,7 @@ extension LiveWorld: ConversationDataSource {
                         min(max($0 / Double(duration), 0), 1)
                     }
                 ) : nil,
+            audioAvailability: audioAvailability,
             transcript: transcript,
             provenance: Self.provenance(provider: provider, atMs: transcribedAtMs),
             followUps: followUps,
@@ -481,6 +484,16 @@ extension LiveWorld: ConversationDataSource {
                         readFrames: { files.readFrames($0) })
                 }
             ))
+    }
+
+    /// Every piece's audio back on the phone, then the waveform cache told: it is keyed on a
+    /// frame count that a fetch does not change, and an empty waveform built while the audio
+    /// was away would otherwise stand for the recording from then on.
+    func fetchAudio(id: String) async throws {
+        let cold = composition.coldStorage
+        let ids = await pieces(of: id).map(\.segmentId)
+        try await cold.fetch(segmentIds: ids)
+        for segmentId in ids { await composition.runtime.environment.live.audioRewritten(segmentId) }
     }
 
     /// The person's own title. One write that also marks the title as theirs

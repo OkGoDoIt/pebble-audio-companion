@@ -171,14 +171,22 @@ final class LiveStorageStatsSource: StorageStatsSource {
     /// Stored, not computed: a computed property has no observable state behind it, so SwiftUI
     /// never re-read it and the free-space line was frozen at whatever it said on first draw.
     private(set) var freeSpace = "—"
+    private(set) var overview: StorageOverview?
+    /// The sidecars the overview was built from, kept so the age picker's preview can be
+    /// recomputed synchronously as it moves.
+    @ObservationIgnored private var metas: [SegmentMeta] = []
+    /// The file walk behind the text/model/temporary rows, at most once a minute while visible.
+    @ObservationIgnored private var footprint: StorageFootprint?
+    @ObservationIgnored private var footprintMeasuredAtMs: Int64 = 0
+    static let footprintTtlMs: Int64 = 60_000
 
-    /// Whether the Storage screen is on screen. The BYTE sweep — a stat of every log file in the
-    /// spool — runs only while it is; the count is a length of an in-memory index and is kept
-    /// fresh regardless, because the main Settings screen shows it.
+    /// Whether the Storage screen is on screen. The sidecar read and the file walk run only
+    /// while it is; the count is a length of an in-memory index and is kept fresh regardless,
+    /// because the main Settings screen shows it.
     ///
-    /// This source exists from launch, and it used to run the full sweep on every library tick
-    /// whether or not anyone could see the number: measured 2026-09-11 at 1.3 CPU-s per 90 s,
-    /// backgrounded, on a charger, sizing every file for a screen that was not open. An
+    /// This source exists from launch, and it used to run a stat of every file on every library
+    /// tick whether or not anyone could see the number: measured 2026-09-11 at 1.3 CPU-s per
+    /// 90 s, backgrounded, on a charger, sizing every file for a screen that was not open. An
     /// off-screen source records that it is stale and does nothing; appearing refreshes once.
     @ObservationIgnored private var isVisible = false
     @ObservationIgnored private var staleWhileHidden = true
@@ -195,14 +203,22 @@ final class LiveStorageStatsSource: StorageStatsSource {
         refresh()
     }
 
-    /// The three moments the numbers move: a library write (a segment closed, a conversation
-    /// was deleted, recovery finished populating the store), returning to the app after
-    /// recording in the background, and a delete/export this screen just performed.
+    /// The moments the numbers move: a library write (a segment closed, a conversation was
+    /// deleted, recovery finished populating the store), a diagnostics publish (the cold tier
+    /// moved or evicted something), returning to the app after recording in the background,
+    /// and a delete/export this screen just performed.
     private func observe() {
         let library = composition.runtime.library
+        let runtime = composition.runtime
         Task { [weak self] in
             for await _ in library.observeLibrary() {
                 guard let self else { return }
+                refresh()
+            }
+        }
+        Task { [weak self] in
+            for await _ in runtime.diagnostics.stream() {
+                guard let self, isVisible else { continue }
                 refresh()
             }
         }
@@ -217,37 +233,73 @@ final class LiveStorageStatsSource: StorageStatsSource {
         }
     }
 
+    /// The sidecar arithmetic (an in-memory index, microseconds) runs on every call, so the
+    /// Settings root's "2.1 GB · 383 recordings" is right from launch; the file walk behind the
+    /// transcript/model/temporary rows runs only while this screen is up.
     func refresh() {
         let composition = self.composition
-        let sweepBytes = isVisible
-        if !sweepBytes { staleWhileHidden = true } else { staleWhileHidden = false }
+        let full = isVisible
+        if !full { staleWhileHidden = true } else { staleWhileHidden = false }
         Task { [weak self] in
             let store = composition.store
             let metas = await store.listSegments()
-            guard sweepBytes else {
-                guard let self else { return }
-                if recordingCount != metas.count { recordingCount = metas.count }
-                return
+            let cold = await composition.coldStorage.summary()
+            let nowMs = composition.clock.nowMs
+            var footprint = await MainActor.run { self?.footprint }
+            let measuredAt = await MainActor.run { self?.footprintMeasuredAtMs ?? 0 }
+            if full, footprint == nil || nowMs - measuredAt >= Self.footprintTtlMs {
+                let root = store.rootURL
+                footprint = await Task.detached(priority: .utility) {
+                    StorageFootprint.measure(
+                        appRoot: root,
+                        modelsDirectory: ParakeetModelLocation.defaultModelsDirectory,
+                        cachesDirectory: FileManager.default.urls(
+                            for: .cachesDirectory, in: .userDomainMask
+                        ).first,
+                        temporaryDirectory: FileManager.default.temporaryDirectory,
+                        volume: root)
+                }.value
+                await MainActor.run {
+                    self?.footprint = footprint
+                    self?.footprintMeasuredAtMs = nowMs
+                }
             }
-            var bytes: Int64 = 0
-            for meta in metas { bytes += await store.logSizeBytes(meta.segmentId) }
+            let overview = StoragePlanner.overview(metas: metas, footprint: footprint, cold: cold)
             guard let self else { return }
-            set(count: metas.count, bytes: bytes)
+            self.metas = metas
+            set(overview)
         }
     }
 
     /// Assigns only on a real change: `@Observable` invalidates on every set, and `refresh()`
-    /// now runs on every library tick — re-rendering the whole Settings tree for numbers that
+    /// runs on every library tick — re-rendering the whole Settings tree for numbers that
     /// did not move would be a lot of work to display the same string.
-    private func set(count: Int, bytes: Int64) {
+    private func set(_ overview: StorageOverview) {
+        let count = overview.recordingCount
+        let bytes = overview.audioOnPhoneBytes
         let size = Formatting.storageSize(bytes)
-        let free = ByteCountFormatter.string(
-            fromByteCount: VolumeFreeSpace().freeBytes(), countStyle: .file
-        )
+        let free = ByteCountFormatter.string(fromByteCount: overview.freeBytes, countStyle: .file)
         if recordingCount != count { recordingCount = count }
         if recordingsSize != size { recordingsSize = size }
         if recordingsBytes != bytes { recordingsBytes = bytes }
         if freeSpace != free { freeSpace = free }
+        if self.overview != overview { self.overview = overview }
+    }
+
+    func wouldMove(olderThanDays: Int) -> StoragePreview {
+        StoragePlanner.wouldMove(
+            metas: metas, olderThanDays: olderThanDays, nowMs: composition.clock.nowMs,
+            audioBytes: overview?.audioBytes ?? 0)
+    }
+
+    func bringEverythingBack() {
+        let composition = self.composition
+        Task { [weak self] in
+            await composition.coldStorage.beginRestoreAll()
+            composition.runtime.notifyConfigChanged(reviveFailures: false)
+            await composition.runtime.environment.diagnostics.refresh()
+            self?.refresh()
+        }
     }
 
     /// Real WAV copies into `Documents/PebbleAudioExports`, visible in Files.
@@ -1343,7 +1395,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
                 pauseRequested: diagnostics.pauseRequested,
                 lowStorage: diagnostics.lowStorage,
                 pauseFloorBytes: RetentionConfig.defaultPauseFloorBytes,
-                writeFailure: diagnostics.storageWriteFailure)
+                writeFailure: diagnostics.storageWriteFailure,
+                cold: diagnostics.coldStorage)
             if storage != described { storage = described }
         }
         // Built from the values already in hand. NEVER through `runtime.supportReport()`: that

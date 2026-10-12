@@ -758,6 +758,14 @@ enum Copy {
             static let recordingConnected = "Recording · connected"
             static let transcriptionAI = "Transcription & AI"
             static let storagePrivacy = "Storage & Privacy"
+            static let storage = "Storage"
+            static let privacy = "Privacy"
+            /// e.g. "2.1 GB · 383 recordings" / "2.1 GB · 1.3 GB in iCloud".
+            static func storagePreview(size: String, recordings: Int, inCloud: String?) -> String {
+                if let inCloud { return "\(size) · \(inCloud) in iCloud" }
+                return "\(size) · \(recordings) recordings"
+            }
+            static let privacyLocal = "Everything on this phone"
             static let aboutYou = "About You"
             static let diagnostics = "Diagnostics"
             /// Q9 alert, opt-in (default off).
@@ -906,9 +914,82 @@ enum Copy {
         }
 
         enum Storage {
-            static let title = "Storage & Privacy"
+            static let title = "Storage"
             static let recordings = "Recordings"
             static let freeSpace = "Free space"
+
+            // ── The overview ───────────────────────────────────────────────────────────
+            /// e.g. "4.6 GB on this phone".
+            static func onThisPhone(_ size: String) -> String { "\(size) on this phone" }
+            /// e.g. "14.4 GB free of 512 GB".
+            static func freeOfCapacity(free: String, capacity: String) -> String {
+                "\(free) free of \(capacity)"
+            }
+            static let measuring = "Measuring…"
+            static let legendAudio = "Recordings"
+            static let legendText = "Transcripts & index"
+            static let legendModel = "Speech model & cache"
+            static let legendTemporary = "Temporary files"
+            static let legendCloud = "In iCloud"
+            /// Beside the iCloud legend row: e.g. "241 recordings".
+            static func legendCloudNote(_ count: Int) -> String {
+                count == 1 ? "1 recording" : "\(count.formatted()) recordings"
+            }
+            /// Beside the temporary-files legend row once it is worth saying.
+            static let temporaryCleaned = "cleaned at next launch"
+
+            // ── The iCloud rule ────────────────────────────────────────────────────────
+            //
+            // Nothing in this block uses the word "delete", because nothing here deletes:
+            // audio MOVES, and the transcript stays. The one number the rule turns on — how
+            // much would move — is shown before the switch is touched, so the switch is never
+            // a surprise.
+            static let recordingsSection = "Recordings"
+            static let cloudToggle = "Keep older audio in iCloud"
+            static let cloudAge = "Move audio older than"
+            /// "2 weeks" · "1 month" · "2 months" · "3 months" · "6 months" · "1 year".
+            static func ageLabel(_ days: Int) -> String {
+                switch days {
+                case 14: return "2 weeks"
+                case 30: return "1 month"
+                case 365: return "1 year"
+                case let d where d % 30 == 0: return "\(d / 30) months"
+                default: return "\(days) days"
+                }
+            }
+            static let barOnPhone = "Phone"
+            static let barCloud = "iCloud"
+            /// The preview while the rule is off: e.g. "1.3 GB (62%) would move to iCloud."
+            static func wouldMove(size: String, percent: Int) -> String {
+                "\(size) (\(percent)%) would move to iCloud."
+            }
+            static let wouldMoveNothing = "Nothing is older than this yet."
+            /// While on: e.g. "1.3 GB in iCloud · 0.2 GB uploading".
+            static func inCloud(size: String, uploading: String?) -> String {
+                guard let uploading else { return "\(size) in iCloud" }
+                return "\(size) in iCloud · \(uploading) uploading"
+            }
+            static let inCloudNothingYet = "Audio moves as it passes the age."
+            static let cloudUnavailable =
+                "iCloud Drive isn’t available to Pebble Audio on this phone. Turn it on in "
+                + "iOS Settings › your name › iCloud › Saved to iCloud."
+            static func cloudError(_ message: String) -> String { "iCloud reported a problem: \(message)" }
+            static let cloudFooter =
+                "Fully transcribed audio older than this moves to your iCloud Drive and is fetched "
+                + "when you play it. Transcripts, summaries and notes stay on this phone. Nothing is "
+                + "deleted."
+            /// e.g. "Bring 1.3 GB Back to This Phone".
+            static func bringBack(_ size: String) -> String { "Bring \(size) Back to This Phone" }
+            static func bringingBack(done: Int, total: Int) -> String {
+                "Bringing back \(done) of \(total)…"
+            }
+            /// Under the toggle once it is off while audio is still in iCloud.
+            static func stillInCloud(_ size: String) -> String {
+                "\(size) is still in iCloud and plays on demand."
+            }
+
+            // ── Deleting ───────────────────────────────────────────────────────────────
+            static let deletingSection = "Deleting"
             static let keepAudio = "Keep audio"
             /// Keep-audio options: 7 · 14 · 30 · 90 · 180 · 365 days (6.7).
             static func keepDays(_ days: Int) -> String { "\(days) days" }
@@ -937,8 +1018,12 @@ enum Copy {
             /// in — "recovered audio last" was a fact about `RetentionManager`, not one anybody
             /// can act on.
             static let limitFooter =
-                "Recordings are removed once they pass Keep audio. A storage limit removes the "
-                + "oldest first."
+                "Recordings are deleted once they pass Keep audio — from iCloud too. A storage "
+                + "limit deletes the oldest first."
+        }
+
+        enum Privacy {
+            static let title = "Privacy"
         }
 
         enum AboutYou {
@@ -989,6 +1074,7 @@ enum Copy {
             static func storageRecordingsValue(size: String, files: Int) -> String {
                 "\(size) · \(files.formatted()) files"
             }
+            static let storageInCloud = "In iCloud"
             static let storageTextAndIndex = "Transcripts & index"
             static let storageModel = "Speech model & cache"
             static let storageTemporary = "Temporary files"

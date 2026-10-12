@@ -694,6 +694,9 @@ extension MockWorld: ConversationDataSource {
     /// simulated scrub rather than pretending a decoder is running.
     func playback(id: String) async throws -> (any ConversationPlayback)? { nil }
 
+    /// The mock world's audio is wherever the artboard says; a fetch is instant.
+    func fetchAudio(id: String) async throws {}
+
     func rename(id: String, to title: String) async throws {
         guard let index = index(of: id) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespaces)

@@ -40,6 +40,7 @@ final class AppComposition {
     /// Synchronous, actor-free view of the spool (the kit's sync reader seams need one).
     let files: SegmentFileReader
     let retention: RetentionManager
+    let coldStorage: ColdAudioTier
     let transcripts: FileTranscriptStore
 
     // --- stores -----------------------------------------------------------------------------
@@ -277,10 +278,30 @@ final class AppComposition {
             log: { AppRuntimeLog.shared.record($0) }
         )
         self.store = store
-        let files = SegmentFileReader(root: containerRoot)
+        #if DEBUG
+            // Simulator staging: `-storage.seed` fills an empty spool with a season of synthetic
+            // recordings so the Storage screen can be looked at with real proportions.
+            StorageSeed.seedIfRequested(root: containerRoot, nowMs: nowMs())
+        #endif
+        // The iCloud Drive cold tier. The locator is what the store and the file reader resolve
+        // moved audio through; the tier itself is built below, once the settings box exists.
+        let ubiquity = FileManagerUbiquity()
+        let coldLocator = ColdAudioLocator(files: ubiquity, nowMs: nowMs)
+        let files = SegmentFileReader(root: containerRoot, coldAudio: coldLocator)
         self.files = files
         let transcripts = FileTranscriptStore(root: containerRoot, nowMs: nowMs)
         self.transcripts = transcripts
+
+        let coldStorage = ColdAudioTier(
+            store: store,
+            files: ubiquity,
+            locator: coldLocator,
+            policy: { settingsBox.coldStoragePolicy },
+            nowMs: nowMs,
+            log: AppRuntimeLog.runtimeLog
+        )
+        self.coldStorage = coldStorage
+        Task { await store.setColdAudioLocator(coldLocator) }
 
         let retention = RetentionManager(
             store: store,
@@ -873,7 +894,8 @@ final class AppComposition {
             clock: clock,
             enrichment: {
                 (await enrichment.awaitingEnrichmentCount(), await enrichment.isEnriching)
-            }
+            },
+            coldStorage: { await coldStorage.summary() }
         )
 
         // The receiver fires coverage triggers (segment opened, segment closed, pause applied)
@@ -968,6 +990,8 @@ final class AppComposition {
             // Deleting a conversation that ends mid-segment silences that range of the audio in
             // place; the waveform cache is keyed on the frame count, which does not change.
             live: live,
+            // A range delete on audio that is in iCloud fetches it first.
+            coldStorage: coldStorage,
             // Eight `log.failure` sites — a delete that leaves the transcript, the AI outputs or
             // the Spotlight entry behind reported success and recorded nothing anywhere.
             log: AppRuntimeLog.runtimeLog
@@ -1131,7 +1155,8 @@ final class AppComposition {
                 snapshots: snapshots,
                 foreground: foreground,
                 log: AppRuntimeLog.runtimeLog,
-                audioContent: audioContent
+                audioContent: audioContent,
+                coldStorage: coldStorage
             ),
             wake: wake
         )

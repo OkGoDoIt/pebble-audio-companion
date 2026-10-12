@@ -78,6 +78,117 @@ final class MockWatchStatusSource: WatchStatusSource {
 
 // MARK: - Storage
 
+/// Everything the Storage screen draws, from the store's in-memory index and the runtime's
+/// cold-tier summary. Built by `StoragePlanner` so the arithmetic has a test and so the live
+/// source and the mock cannot disagree about what a number means.
+struct StorageOverview: Equatable {
+    var recordingCount: Int
+    /// Audio bytes on the phone: never moved, or moved and still uploading.
+    var audioOnPhoneBytes: Int64
+    /// Audio bytes evicted to iCloud.
+    var audioInCloudBytes: Int64
+    var audioInCloudCount: Int
+    /// Moved and not yet confirmed uploaded (still on the phone, and counted there).
+    var uploadingBytes: Int64
+    var uploadingCount: Int
+    /// Transcripts, AI outputs, the database, sidecars, the flight recorder.
+    var textBytes: Int64
+    /// Downloaded weights plus the compiled cache.
+    var modelBytes: Int64
+    var temporaryBytes: Int64
+    var freeBytes: Int64
+    var capacityBytes: Int64
+    /// iCloud Drive is reachable for this app right now.
+    var cloudAvailable: Bool
+    var restoring: ColdAudioTier.Summary.Restore?
+    var cloudError: String?
+
+    /// Everything of ours that is on the phone.
+    var onPhoneBytes: Int64 { audioOnPhoneBytes + textBytes + modelBytes + temporaryBytes }
+    /// Every recording's audio, wherever it is.
+    var audioBytes: Int64 { audioOnPhoneBytes + audioInCloudBytes }
+}
+
+/// A phone's capacity is a round number ("512 GB", "1 TB"), and reads as one.
+enum StorageCapacity {
+    static func label(_ bytes: Int64) -> String {
+        let gb = Double(bytes) / Double(1 << 30)
+        if gb >= 1_000 { return "\((gb / 1_024 * 10).rounded() / 10) TB" }
+        return gb >= 64 ? "\(Int(gb.rounded())) GB" : Formatting.storageSize(bytes)
+    }
+}
+
+/// What a rule would move: the preview beside the age picker.
+struct StoragePreview: Equatable {
+    var bytes: Int64
+    var count: Int
+    /// Of all audio (phone and iCloud together), 0…100.
+    var percent: Int
+}
+
+/// The Storage screen's arithmetic, pure over the sidecars.
+enum StoragePlanner {
+    static func overview(
+        metas: [SegmentMeta], footprint: StorageFootprint?, cold: ColdAudioTier.Summary?
+    ) -> StorageOverview {
+        var onPhone: Int64 = 0
+        var inCloud: Int64 = 0
+        var inCloudCount = 0
+        var uploading: Int64 = 0
+        var uploadingCount = 0
+        var count = 0
+        for meta in metas where !meta.isOpen {
+            count += 1
+            if let coldStorage = meta.coldStorage {
+                if coldStorage.isEvicted {
+                    inCloud += coldStorage.bytes
+                    inCloudCount += 1
+                } else {
+                    uploading += coldStorage.bytes
+                    uploadingCount += 1
+                    onPhone += coldStorage.bytes
+                }
+            } else {
+                onPhone += meta.logBytes
+            }
+        }
+        let text = footprint.map {
+            $0.transcriptBytes + $0.databaseBytes + $0.sidecarBytes + $0.diagnosticsBytes + $0.otherBytes
+        } ?? 0
+        return StorageOverview(
+            recordingCount: count,
+            audioOnPhoneBytes: onPhone,
+            audioInCloudBytes: inCloud,
+            audioInCloudCount: inCloudCount,
+            uploadingBytes: uploading,
+            uploadingCount: uploadingCount,
+            textBytes: text,
+            modelBytes: footprint.map { $0.modelBytes + $0.cacheBytes } ?? 0,
+            temporaryBytes: footprint?.temporaryBytes ?? 0,
+            freeBytes: footprint?.freeBytes ?? 0,
+            capacityBytes: footprint?.capacityBytes ?? 0,
+            cloudAvailable: cold?.available ?? false,
+            restoring: cold?.restoring,
+            cloudError: cold?.lastError)
+    }
+
+    /// What `olderThanDays` would move right now, out of everything (so the share is of all
+    /// audio and does not jump as audio moves).
+    static func wouldMove(
+        metas: [SegmentMeta], olderThanDays: Int, nowMs: Int64, audioBytes: Int64
+    ) -> StoragePreview {
+        let minAgeMs = Int64(max(1, olderThanDays)) * 86_400_000
+        var bytes: Int64 = 0
+        var count = 0
+        for meta in metas where ColdAudioTier.isEligible(meta, minAgeMs: minAgeMs, now: nowMs) {
+            bytes += meta.logBytes
+            count += 1
+        }
+        let percent = audioBytes > 0 ? Int((Double(bytes) / Double(audioBytes) * 100).rounded()) : 0
+        return StoragePreview(bytes: bytes, count: count, percent: min(max(percent, 0), 100))
+    }
+}
+
 @MainActor
 protocol StorageStatsSource: AnyObject {
     var recordingCount: Int { get }
@@ -86,6 +197,13 @@ protocol StorageStatsSource: AnyObject {
     /// much of the limit is used without re-deriving it from a display string.
     var recordingsBytes: Int64 { get }
     var freeSpace: String { get }
+    /// The overview, once the sidecars have been read; nil until then.
+    var overview: StorageOverview? { get }
+    /// What the age picker's current value would move. Synchronous over the cached sidecars,
+    /// so the preview follows the picker without a round trip.
+    func wouldMove(olderThanDays: Int) -> StoragePreview
+    /// Starts bringing every recording in iCloud back to the phone.
+    func bringEverythingBack()
     /// The byte sweep runs only while the Storage screen is visible; see `LiveStorageStatsSource`.
     func setVisible(_ visible: Bool)
     func deleteAllRecordings()
@@ -97,8 +215,25 @@ protocol StorageStatsSource: AnyObject {
 @Observable
 final class MockStorageStatsSource: StorageStatsSource {
     var recordingCount = 383
-    var recordingsSize = "1.2 GB"
-    var recordingsBytes: Int64 = 1_288_490_188
+    var recordingsSize = "2.1 GB"
+    var recordingsBytes: Int64 = 2_254_857_830
+
+    /// The artboard case: the phone on 2026-10-12, with a season of audio already in iCloud.
+    var overview: StorageOverview? = StorageOverview(
+        recordingCount: 383,
+        audioOnPhoneBytes: 805_306_368,
+        audioInCloudBytes: 1_449_551_462,
+        audioInCloudCount: 241,
+        uploadingBytes: 0,
+        uploadingCount: 0,
+        textBytes: 347_078_656,
+        modelBytes: 2_533_359_616,
+        temporaryBytes: 0,
+        freeBytes: 20_500_000_000,
+        capacityBytes: 512_000_000_000,
+        cloudAvailable: true,
+        restoring: nil,
+        cloudError: nil)
 
     /// Real free space — an honest stat surface even in the mock stage.
     var freeSpace: String {
@@ -111,12 +246,30 @@ final class MockStorageStatsSource: StorageStatsSource {
         return ByteCountFormatter.string(fromByteCount: capacity, countStyle: .file)
     }
 
+    /// Roughly: the share of the mock library older than the age, on a 240-day history.
+    func wouldMove(olderThanDays: Int) -> StoragePreview {
+        guard let overview else { return StoragePreview(bytes: 0, count: 0, percent: 0) }
+        let share = max(0, min(1, 1 - Double(olderThanDays) / 240))
+        let bytes = Int64(Double(overview.audioOnPhoneBytes) * share)
+        return StoragePreview(
+            bytes: bytes, count: Int(Double(overview.recordingCount) * share),
+            percent: Int((Double(bytes) / Double(max(overview.audioBytes, 1)) * 100).rounded()))
+    }
+
+    func bringEverythingBack() {
+        overview?.restoring = .init(done: 12, total: 241)
+    }
+
     func setVisible(_ visible: Bool) {}
 
     func deleteAllRecordings() {
         recordingCount = 0
         recordingsSize = "0 KB"
         recordingsBytes = 0
+        overview?.recordingCount = 0
+        overview?.audioOnPhoneBytes = 0
+        overview?.audioInCloudBytes = 0
+        overview?.audioInCloudCount = 0
     }
 
     func exportAllAudio() async -> Int {
@@ -663,6 +816,8 @@ struct DiagnosticStorage: Equatable {
     var temporary: String
     /// "14.1 GB of 512 GB".
     var free: String
+    /// "1.3 GB · 241 recordings" once anything is in iCloud; nil otherwise.
+    var inCloud: String?
     /// Present while the pause floor is active (`RuntimeDiagnostics.pauseRequested`): the value
     /// of a "Recording paused" row.
     var pausedLine: String?
@@ -682,10 +837,15 @@ struct DiagnosticStorage: Equatable {
         pauseRequested: Bool,
         lowStorage: Bool,
         pauseFloorBytes: Int64,
-        writeFailure: StoreWriteFailure?
+        writeFailure: StoreWriteFailure?,
+        cold: ColdAudioTier.Summary? = nil
     ) -> DiagnosticStorage {
         let size = Formatting.storageSize
         let floor = size(pauseFloorBytes)
+        let inCloud: String? = (cold?.inCloudCount ?? 0) > 0
+            ? "\(size(cold!.inCloudBytes)) · \(cold!.inCloudCount.formatted()) recordings"
+                + (cold!.uploadingCount > 0 ? " · \(cold!.uploadingCount) uploading" : "")
+            : nil
         return DiagnosticStorage(
             recordings: Copy.Settings.Diagnostics.storageRecordingsValue(
                 size: size(footprint.audioBytes), files: footprint.audioFiles),
@@ -695,7 +855,8 @@ struct DiagnosticStorage: Equatable {
             model: size(footprint.modelBytes + footprint.cacheBytes),
             temporary: size(footprint.temporaryBytes),
             free: Copy.Settings.Diagnostics.storageFreeValue(
-                free: size(footprint.freeBytes), capacity: size(footprint.capacityBytes)),
+                free: size(footprint.freeBytes), capacity: StorageCapacity.label(footprint.capacityBytes)),
+            inCloud: inCloud,
             pausedLine: pauseRequested
                 ? Copy.Settings.Diagnostics.storagePausedValue(floor: floor) : nil,
             lowLine: lowStorage && !pauseRequested
@@ -717,6 +878,7 @@ struct DiagnosticStorage: Equatable {
             "Storage: recordings \(recordings) · transcripts & index \(textAndIndex) · "
                 + "model & cache \(model) · temporary \(temporary) · free \(free)"
         ]
+        if let inCloud { lines.append("In iCloud: \(inCloud)") }
         if let pausedLine { lines.append("Recording paused: \(pausedLine)") }
         if let lowLine { lines.append("Storage low: \(lowLine)") }
         if let writeFailure { lines.append("\(writeFailure.title): \(writeFailure.detail)") }
@@ -971,6 +1133,7 @@ final class MockDiagnosticsSource: DiagnosticsSource {
         model: "2.4 GB",
         temporary: "6.2 GB",
         free: Copy.Settings.Diagnostics.storageFreeValue(free: "14.4 GB", capacity: "512 GB"),
+        inCloud: "1.3 GB · 241 recordings",
         pausedLine: nil,
         lowLine: nil,
         writeFailure: nil)

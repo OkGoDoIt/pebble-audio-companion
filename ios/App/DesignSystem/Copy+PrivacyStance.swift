@@ -36,17 +36,23 @@ extension Copy.Privacy {
         var cloudTranscriptionDestination: String?
         /// `AppSettings.remoteAiDestination` — nil in AI Local only.
         var remoteAiDestination: String?
+        /// The iCloud rule's age in days when it is on, nil when off. Audio in iCloud Drive is
+        /// a place data goes, so the stance names it — in the person's own account, not a
+        /// service of this app's.
+        var coldStorageAgeDays: Int?
 
         init(
             transcriptionMode: TranscriptionMode,
             aiMode: AiProcessingMode,
             cloudTranscriptionDestination: String?,
-            remoteAiDestination: String?
+            remoteAiDestination: String?,
+            coldStorageAgeDays: Int? = nil
         ) {
             self.transcriptionMode = transcriptionMode
             self.aiMode = aiMode
             self.cloudTranscriptionDestination = cloudTranscriptionDestination
             self.remoteAiDestination = remoteAiDestination
+            self.coldStorageAgeDays = coldStorageAgeDays
         }
     }
 
@@ -126,6 +132,11 @@ extension Copy.Privacy {
         }
         if let ai, let line = aiQualifier(inputs.aiMode, destination: ai) {
             qualifiers.append(line)
+        }
+        if let age = inputs.coldStorageAgeDays {
+            qualifiers.append(
+                "Audio older than \(Copy.Settings.Storage.ageLabel(age)) is kept in your own "
+                    + "iCloud Drive and fetched when you play it. Transcripts stay on this iPhone.")
         }
 
         return Stance(
@@ -267,7 +278,8 @@ extension AppSettings {
                 transcriptionMode: transcriptionMode,
                 aiMode: aiMode,
                 cloudTranscriptionDestination: cloudTranscriptionDestination,
-                remoteAiDestination: remoteAiDestination
+                remoteAiDestination: remoteAiDestination,
+                coldStorageAgeDays: coldStorageEnabled ? coldStorageMinAgeDays : nil
             )
         )
     }
@@ -286,8 +298,8 @@ extension Copy.Settings.Storage {
     /// delete of every recording on the phone.
     static let deleteAllTitle = "Delete all recordings?"
     static let deleteAllMessage =
-        "Every recording, transcript, note and follow-up on this iPhone is deleted. This cannot "
-        + "be undone. Recording itself is not turned off."
+        "Every recording, transcript, note and follow-up on this iPhone is deleted — and any "
+        + "audio in iCloud with it. This cannot be undone. Recording itself is not turned off."
     static let deleteAllConfirm = "Delete All Recordings"
 
     // ─── "Siri & Spotlight can see" ───────────────────────────────────────────

@@ -9,18 +9,20 @@ import Testing
     /// The phone on 2026-10-12, in round numbers.
     private var phone: StorageFootprint {
         var f = StorageFootprint()
-        f.audioBytes = 2_100_000_000
+        // `Formatting.storageSize` is binary (1 GB = 2^30), so the fixture is too.
+        let mb: Int64 = 1 << 20
+        f.audioBytes = 2_200 * mb  // 2.1 GB (the formatter truncates)
         f.audioFiles = 3_799
-        f.sidecarBytes = 12_000_000
-        f.transcriptBytes = 300_000_000
-        f.databaseBytes = 26_000_000
-        f.diagnosticsBytes = 2_000_000
-        f.otherBytes = 100_000
-        f.modelBytes = 1_170_000_000
-        f.cacheBytes = 1_190_000_000
-        f.temporaryBytes = 6_190_000_000
-        f.freeBytes = 14_400_000_000
-        f.capacityBytes = 512_000_000_000
+        f.sidecarBytes = 12 * mb
+        f.transcriptBytes = 300 * mb
+        f.databaseBytes = 26 * mb
+        f.diagnosticsBytes = 2 * mb
+        f.otherBytes = 0
+        f.modelBytes = 1_170 * mb
+        f.cacheBytes = 1_190 * mb
+        f.temporaryBytes = 6_350 * mb  // 6.2 GB
+        f.freeBytes = 14_746 * mb
+        f.capacityBytes = 512 * 1_024 * mb
         return f
     }
 
@@ -46,13 +48,13 @@ import Testing
         let low = DiagnosticStorage.describe(
             phone, pauseRequested: false, lowStorage: true,
             pauseFloorBytes: RetentionConfig.defaultPauseFloorBytes, writeFailure: nil)
-        #expect(low.lowLine?.contains("1 GB") == true)
+        #expect(low.lowLine?.contains("1.0 GB") == true)
         #expect(low.pausedLine == nil)
 
         let paused = DiagnosticStorage.describe(
             phone, pauseRequested: true, lowStorage: true,
             pauseFloorBytes: RetentionConfig.defaultPauseFloorBytes, writeFailure: nil)
-        #expect(paused.pausedLine?.contains("1 GB") == true)
+        #expect(paused.pausedLine?.contains("1.0 GB") == true)
         #expect(paused.lowLine == nil, "paused already says it; a second row is noise")
     }
 

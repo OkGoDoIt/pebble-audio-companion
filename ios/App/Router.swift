@@ -87,7 +87,7 @@ enum Route: Equatable, Hashable, Identifiable {
     case settings(SettingsPage?)
 
     enum SettingsPage: String, Equatable {
-        case watch, transcription, storage, aboutyou, diagnostics
+        case watch, transcription, storage, privacy, aboutyou, diagnostics
     }
 
     static let scheme = "companion"
