@@ -91,6 +91,45 @@ struct SettingsDiagnosticsScreen: View {
                 )
             }
 
+            // What the app's files add up to, bucketed — because the one number iOS shows for
+            // the app is not the audio, and on 2026-10-12 the difference was 9 GB of model
+            // cache and compiler leftovers on a phone that was 97% full. The two faults
+            // (a refused write, the pause floor) lead the card when present; the sizes are
+            // always there once measured, and the card is absent until then rather than
+            // showing zeros.
+            if let storage = diagnostics.storage {
+                SettingsSectionHeader(title: Copy.Settings.Diagnostics.storageSection)
+                ListCard {
+                    if let fault = storage.writeFailure {
+                        StorageFaultRow(fault: fault)
+                    }
+                    if let paused = storage.pausedLine {
+                        SettingsRow(
+                            title: Copy.Settings.Diagnostics.storagePaused, value: paused,
+                            valueColor: Tokens.label, showsChevron: false)
+                    } else if let low = storage.lowLine {
+                        SettingsRow(
+                            title: Copy.Settings.Diagnostics.storageLow, value: low,
+                            showsChevron: false)
+                    }
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.storageRecordings,
+                        value: storage.recordings, showsChevron: false)
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.storageTextAndIndex,
+                        value: storage.textAndIndex, showsChevron: false)
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.storageModel, value: storage.model,
+                        showsChevron: false)
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.storageTemporary,
+                        value: storage.temporary, showsChevron: false)
+                    SettingsRow(
+                        title: Copy.Settings.Diagnostics.storageFree, value: storage.free,
+                        showsChevron: false)
+                }
+            }
+
             // Absent while nothing is failing — like the watch-link and failed-transcription
             // sections, this appears because there is something to say.
             if !diagnostics.pipeline.failing.isEmpty {
@@ -307,6 +346,27 @@ private struct FailedTranscriptionRow: View {
                     .minimumScaleFactor(0.8)
             }
             Text(item.reason)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A write the store refused: what happened, then what it means for the audio (nothing was
+/// marked as saved, so none of it is lost). Same two-line shape as the failed-transcription row.
+private struct StorageFaultRow: View {
+    let fault: DiagnosticStorage.Fault
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(fault.title)
+                .font(AppFont.callout)
+                .foregroundStyle(Tokens.label)
+            Text(fault.detail)
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.secondaryBody)
                 .fixedSize(horizontal: false, vertical: true)

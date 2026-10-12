@@ -977,6 +977,45 @@ enum Copy {
             static let watchReports = "Watch reports"
             static let transcriptionQueue = "Transcription queue"
 
+            // ── Storage ────────────────────────────────────────────────────────────────
+            //
+            // What this app's files add up to, bucketed the way the question gets asked. On
+            // 2026-10-12 iOS blamed the app for 11.7 GB of a 512 GB phone that was 97% full;
+            // the audio was 2.1 GB of it, and 6.2 GB was a system compiler's leftovers in
+            // tmp/. "Recordings: 2.1 GB" beside "Free space: 14 GB" would have hidden that.
+            static let storageSection = "Storage on this phone"
+            static let storageRecordings = "Recordings"
+            /// e.g. "2.1 GB · 3,799 files".
+            static func storageRecordingsValue(size: String, files: Int) -> String {
+                "\(size) · \(files.formatted()) files"
+            }
+            static let storageTextAndIndex = "Transcripts & index"
+            static let storageModel = "Speech model & cache"
+            static let storageTemporary = "Temporary files"
+            static let storageFree = "Free space"
+            /// e.g. "14.1 GB of 512 GB".
+            static func storageFreeValue(free: String, capacity: String) -> String {
+                "\(free) of \(capacity)"
+            }
+            static let storageMeasuring = "measuring…"
+            /// The floor at which the watch is asked to pause, as a row: nothing is deleted on
+            /// the user's behalf, so this is the one protective step and it has to be named.
+            static let storagePaused = "Recording paused"
+            static func storagePausedValue(floor: String) -> String { "under \(floor) free" }
+            static let storageLow = "Storage low"
+            static func storageLowValue(floor: String) -> String {
+                "recording pauses under \(floor) free"
+            }
+            /// A write the store could not complete. The first line is what happened; the
+            /// second is what it means for the audio, because "couldn't save" on its own reads
+            /// as "lost", and it is not: nothing was marked as saved, so the watch kept it.
+            static let storageWriteFailed = "Couldn’t save a recording"
+            static func storageWriteFailedDetail(when: String, phoneFull: Bool) -> String {
+                let cause = phoneFull ? "Phone storage was full" : "The phone refused a write"
+                return "\(cause) at \(when). Nothing was marked as saved, so the watch keeps "
+                    + "that audio and sends it again once there is room."
+            }
+
             // ── Processing (the pass itself) ───────────────────────────────────────────
             //
             // Before these, a step of the pass that threw on every pass was visible nowhere

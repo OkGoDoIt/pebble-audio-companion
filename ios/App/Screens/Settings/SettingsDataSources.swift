@@ -1,8 +1,11 @@
 import AppDB
+import CompanionRuntime
 import Foundation
 import Intelligence
 import Observation
 import Receiver
+import SegmentStore
+import StatusUI
 import SwiftUI
 import Transcription
 
@@ -644,6 +647,83 @@ struct DiagnosticSegment: Identifiable {
     let detail: String
 }
 
+/// The Storage card: what this app's files add up to, already worded, plus the two things
+/// that can be wrong with storage — a write the store refused, and the pause floor being hit.
+///
+/// Worded here rather than in the screen so the live source, the mock and the support report
+/// say exactly the same thing, and so the arithmetic (which buckets go in which row) has a test.
+struct DiagnosticStorage: Equatable {
+    /// "2.1 GB · 3,799 files".
+    var recordings: String
+    /// Transcripts, AI outputs, the database, sidecars, the flight recorder.
+    var textAndIndex: String
+    /// Downloaded weights plus the compiled cache.
+    var model: String
+    /// `tmp/`.
+    var temporary: String
+    /// "14.1 GB of 512 GB".
+    var free: String
+    /// Present while the pause floor is active (`RuntimeDiagnostics.pauseRequested`): the value
+    /// of a "Recording paused" row.
+    var pausedLine: String?
+    /// Present while the low-storage flag is raised but capture is not yet paused.
+    var lowLine: String?
+    /// Present until a write succeeds after one failed.
+    var writeFailure: Fault?
+
+    struct Fault: Equatable {
+        var title: String
+        var detail: String
+    }
+
+    /// The rows, from the kit's measurement and the runtime's flags.
+    static func describe(
+        _ footprint: StorageFootprint,
+        pauseRequested: Bool,
+        lowStorage: Bool,
+        pauseFloorBytes: Int64,
+        writeFailure: StoreWriteFailure?
+    ) -> DiagnosticStorage {
+        let size = Formatting.storageSize
+        let floor = size(pauseFloorBytes)
+        return DiagnosticStorage(
+            recordings: Copy.Settings.Diagnostics.storageRecordingsValue(
+                size: size(footprint.audioBytes), files: footprint.audioFiles),
+            textAndIndex: size(
+                footprint.transcriptBytes + footprint.databaseBytes + footprint.sidecarBytes
+                    + footprint.diagnosticsBytes + footprint.otherBytes),
+            model: size(footprint.modelBytes + footprint.cacheBytes),
+            temporary: size(footprint.temporaryBytes),
+            free: Copy.Settings.Diagnostics.storageFreeValue(
+                free: size(footprint.freeBytes), capacity: size(footprint.capacityBytes)),
+            pausedLine: pauseRequested
+                ? Copy.Settings.Diagnostics.storagePausedValue(floor: floor) : nil,
+            lowLine: lowStorage && !pauseRequested
+                ? Copy.Settings.Diagnostics.storageLowValue(floor: floor) : nil,
+            writeFailure: writeFailure.map { failure in
+                let when = Date(timeIntervalSince1970: Double(failure.atMs) / 1000)
+                return Fault(
+                    title: Copy.Settings.Diagnostics.storageWriteFailed,
+                    detail: Copy.Settings.Diagnostics.storageWriteFailedDetail(
+                        when: "\(TimeFmt.dayLabel(for: when)) \(TimeFmt.time(when))",
+                        phoneFull: failure.isStorageFull))
+            }
+        )
+    }
+
+    /// The support-report block, newline-terminated.
+    var reportLines: String {
+        var lines = [
+            "Storage: recordings \(recordings) · transcripts & index \(textAndIndex) · "
+                + "model & cache \(model) · temporary \(temporary) · free \(free)"
+        ]
+        if let pausedLine { lines.append("Recording paused: \(pausedLine)") }
+        if let lowLine { lines.append("Storage low: \(lowLine)") }
+        if let writeFailure { lines.append("\(writeFailure.title): \(writeFailure.detail)") }
+        return lines.joined(separator: "\n") + "\n"
+    }
+}
+
 /// The failure block of the Support Report, shared by the live and mock sources — the report is
 /// what gets sent when something is wrong, so the reasons have to travel with it.
 enum SupportReportText {
@@ -832,6 +912,9 @@ protocol DiagnosticsSource: AnyObject {
     var enrichmentWaiting: Int { get }
     var enrichmentRunning: Bool { get }
     var recentSegments: [DiagnosticSegment] { get }
+    /// What this app's files add up to, and whether storage is in trouble. Nil until measured:
+    /// the measurement walks every file, so a live source does it only while the screen is up.
+    var storage: DiagnosticStorage? { get }
     /// Raw technical lines — counters and gap metadata only, never audio or transcript text.
     var detailedLogLines: [String] { get }
     var supportReportText: String { get }
@@ -880,6 +963,17 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var pipeline = DiagnosticPipeline(summary: Copy.Settings.Diagnostics.pipelineWorking("2 s"))
     var powerAlert: String?
     var buildInfo = "Sep 9, 2026 at 3:24 PM · 84ca738 · 12 min ago"
+    /// The artboard case is the phone on 2026-10-12: audio a fifth of what iOS blamed on the
+    /// app, and a `tmp/` folder bigger than the recordings.
+    var storage: DiagnosticStorage? = DiagnosticStorage(
+        recordings: Copy.Settings.Diagnostics.storageRecordingsValue(size: "2.1 GB", files: 3_799),
+        textAndIndex: "331 MB",
+        model: "2.4 GB",
+        temporary: "6.2 GB",
+        free: Copy.Settings.Diagnostics.storageFreeValue(free: "14.4 GB", capacity: "512 GB"),
+        pausedLine: nil,
+        lowLine: nil,
+        writeFailure: nil)
 
     func setVisible(_ visible: Bool) {}
 

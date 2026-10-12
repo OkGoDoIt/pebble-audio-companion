@@ -1197,6 +1197,14 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
 
     private(set) var supportReportText = ""
     private(set) var powerAlert: String?
+    /// The Storage card. The measurement behind it walks every file the app owns (about 6,000
+    /// on the phone), so it is taken at most once a minute and only while this screen is up;
+    /// the flags beside it (pause floor, refused write) come from the runtime's snapshot and
+    /// are current on every refresh.
+    private(set) var storage: DiagnosticStorage?
+    @ObservationIgnored private var footprint: StorageFootprint?
+    @ObservationIgnored private var footprintMeasuredAtMs: Int64 = 0
+    static let footprintTtlMs: Int64 = 60_000
     /// Stamped into the binary by the "Generate Build Info" script phase, so it is a constant for
     /// the life of the process apart from the "ago" half, which is recomputed on every refresh.
     private(set) var buildInfo = BuildFormatting.describe(
@@ -1312,6 +1320,32 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
             nowMs: composition.clock.nowMs)
         askRecallRecords = Self.recallRows(AskRecallLedgerHolder.shared.records())
         askRecallSemanticAvailable = composition.askRetriever.hasSemanticRecall
+        // The file walk, off the main actor and at most once a minute; the flags every time.
+        if footprint == nil
+            || composition.clock.nowMs - footprintMeasuredAtMs >= Self.footprintTtlMs
+        {
+            let root = composition.store.rootURL
+            footprint = await Task.detached(priority: .utility) {
+                StorageFootprint.measure(
+                    appRoot: root,
+                    modelsDirectory: ParakeetModelLocation.defaultModelsDirectory,
+                    cachesDirectory: FileManager.default.urls(
+                        for: .cachesDirectory, in: .userDomainMask
+                    ).first,
+                    temporaryDirectory: FileManager.default.temporaryDirectory,
+                    volume: root)
+            }.value
+            footprintMeasuredAtMs = composition.clock.nowMs
+        }
+        if let footprint {
+            let described = DiagnosticStorage.describe(
+                footprint,
+                pauseRequested: diagnostics.pauseRequested,
+                lowStorage: diagnostics.lowStorage,
+                pauseFloorBytes: RetentionConfig.defaultPauseFloorBytes,
+                writeFailure: diagnostics.storageWriteFailure)
+            if storage != described { storage = described }
+        }
         // Built from the values already in hand. NEVER through `runtime.supportReport()`: that
         // refreshes diagnostics, which publishes, which would bring us straight back here.
         let report = SupportReport(
@@ -1322,7 +1356,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         )
         supportReportText = Self.report(
             report, segments: recentSegments, failures: failedItems, link: watchLink,
-            watchSend: watchSend, pipeline: pipeline
+            watchSend: watchSend, pipeline: pipeline, storage: storage
         )
     }
 
@@ -1552,7 +1586,8 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         failures: [DiagnosticFailure],
         link: DiagnosticLinkFault?,
         watchSend: WatchSendHealth,
-        pipeline: DiagnosticPipeline
+        pipeline: DiagnosticPipeline,
+        storage: DiagnosticStorage?
     ) -> String {
         // The refusal, if there is one, sits directly under the receiver state it explains —
         // the sentence the user was shown, then the raw code, which is the one thing a reader
@@ -1576,7 +1611,7 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         running: \(report.diagnostics.enrichmentRunning)
         Processing: \(pipeline.summary)
         \(SupportReportText.pipeline(pipeline))Low storage: \(report.diagnostics.lowStorage)
-        Recent segments:
+        \(storage?.reportLines ?? "")Recent segments:
         \(segments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)
         """
