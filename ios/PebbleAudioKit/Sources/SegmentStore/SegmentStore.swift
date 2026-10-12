@@ -31,6 +31,37 @@ public enum SegmentStoreError: Error, Equatable {
     case unknownSegment(segmentId: String)
     /// The replacement payload is empty or longer than a frame record can carry.
     case invalidSilenceFrame(byteCount: Int)
+    /// A frame-log append, sidecar write or flush failed because the volume is full (ENOSPC /
+    /// EDQUOT). Nothing from the failed write is stored or claimed: the receiver fails the
+    /// connection on it, the watch keeps the audio, and the sidecar catches up on the next write
+    /// that succeeds.
+    case storageFull(segmentId: String)
+    /// A frame-log append, sidecar write or flush failed for any other reason (I/O error, a
+    /// handle the OS closed). Same consequences as `storageFull`.
+    case writeFailed(segmentId: String, reason: String)
+}
+
+/// The last write the store could not complete, kept so Diagnostics can say so. The connection
+/// that hit it was failed and nothing from it was acknowledged (see `appendFrames`); this is the
+/// record of it, cleared by the next frame-log append that succeeds (a sidecar write going
+/// through says nothing about room for audio).
+public struct StoreWriteFailure: Equatable, Sendable {
+    public var atMs: Int64
+    public var segmentId: String
+    /// "frame log append", "sidecar write" or "flush".
+    public var operation: String
+    public var reason: String
+    public var isStorageFull: Bool
+
+    public init(
+        atMs: Int64, segmentId: String, operation: String, reason: String, isStorageFull: Bool
+    ) {
+        self.atMs = atMs
+        self.segmentId = segmentId
+        self.operation = operation
+        self.reason = reason
+        self.isStorageFull = isStorageFull
+    }
 }
 
 public struct SegmentStoreConfig: Sendable {
@@ -467,7 +498,21 @@ public actor SegmentStore: SegmentSink {
             writer.bytes(frame.payload)
         }
         let bytes = writer.toData()
-        try segment.handle.write(contentsOf: bytes)
+        do {
+            try writeLog(segment.handle, bytes)
+        } catch {
+            // A failed append can leave a TORN record at the end of the log: the kernel writes
+            // what fits, then refuses the rest. Cut the file back to the last byte the counters
+            // cover, so the log stays parseable and the next append — or a reattach's
+            // `seekToEnd` — lands where the sidecar says it does. Without this, every frame
+            // appended after the tear sat behind a record `parseRecords` cannot read (it stops
+            // at the first bad one): stored, invisible, and still claimed by the next checkpoint.
+            // The counters are untouched, so nothing from this batch is claimed either.
+            try? segment.handle.truncate(atOffset: UInt64(segment.logBytes))
+            throw noteWriteFailure(
+                error, segmentId: segment.meta.segmentId, operation: "frame log append")
+        }
+        lastWriteFailure = nil
         // Deliberately NOT fsynced here. This ran on every STREAM_DATA batch — about seven times a
         // second while the watch is streaming — and an fsync is a real flash write that blocks the
         // caller. It was the single most expensive thing on the receive path, and it was buying a
@@ -644,7 +689,19 @@ public actor SegmentStore: SegmentSink {
         try segment.handle.close()
         segment.meta.closeReason = reason
         segment.meta.closedAtMs = nowMs()
-        try writeMetaAtomically(segment.meta)
+        do {
+            try writeMetaAtomically(segment.meta)
+        } catch {
+            // The sidecar could not be written — a full disk, typically. The in-memory index must
+            // still learn the close, with the LIVE counters: it is what a RESUME reattach and
+            // `storedExtent` read, and a stale "open" entry carrying the last flushed counters
+            // would set a dedupe floor below what the log really holds, so the watch's re-sent
+            // tail would be appended a second time. The sidecar catches up on the next write
+            // that succeeds (a reattach rewrites it); a relaunch reconciles it from the log.
+            _ = ensureIndex()
+            metaIndex?[segment.meta.segmentId] = segment.meta
+            throw error
+        }
     }
 
     /// Rotation (plan 6.2): close at 15 min or 16 MB; the stream continues in a new segment.
@@ -665,13 +722,24 @@ public actor SegmentStore: SegmentSink {
     // --- meta persistence ---------------------------------------------------------------------
 
     private func writeMetaAtomically(_ meta: SegmentMeta) throws {
-        try fm.createDirectory(at: segmentsDir, withIntermediateDirectories: true)
         let final = metaURL(meta.segmentId)
         let tmp = segmentsDir.appendingPathComponent("\(meta.segmentId)\(Self.metaSuffix).tmp")
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(meta).write(to: tmp)
-        try atomicMove(from: tmp, to: final)
+        do {
+            try faults.beforeMetaWrite?(meta.segmentId)
+            try fm.createDirectory(at: segmentsDir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(meta).write(to: tmp)
+            try atomicMove(from: tmp, to: final)
+        } catch {
+            // A half-written temp is garbage either way; the final file is untouched.
+            try? fm.removeItem(at: tmp)
+            throw noteWriteFailure(error, segmentId: meta.segmentId, operation: "sidecar write")
+        }
+        // Deliberately NOT clearing `lastWriteFailure` here: a sidecar is a few hundred bytes and
+        // can squeeze onto a volume that just refused a frame batch (the close after a refused
+        // append writes one), and that would erase the record of the refusal while the disk is
+        // still full. Only a successful frame-log append clears it.
         // Keep the in-memory index coherent. No-op until the index is built (recover() rebuilds it
         // at the end, so reconcile-writes during recovery don't each trigger a disk scan).
         if metaIndex != nil { metaIndex![meta.segmentId] = meta }
@@ -918,10 +986,96 @@ public actor SegmentStore: SegmentSink {
 
     /// Forces appended frames to durable storage. Called by the receiver just before it sends a
     /// CHECKPOINT — see `appendFrames` for why that is the right place and the only place.
-    public func flush() throws {
+    ///
+    /// Declared `async` on purpose, though nothing in it suspends. `SegmentSink` gives every
+    /// conformer a default `flush() async throws {}` (fakes are durable by construction), and a
+    /// direct `try await store.flush()` on the concrete actor — the test harnesses' `LedgerSink`
+    /// does exactly that — resolved to THAT no-op rather than to a synchronous method here: in an
+    /// async context Swift prefers the async overload. The receiver, which goes through the
+    /// protocol witness, was never affected; the tests that thought they were fsyncing were.
+    public func flush() async throws {
         guard dirtyBytes > 0, let segment = current else { return }
-        try segment.handle.synchronize()
+        do {
+            try faults.beforeFlush?()
+            try segment.handle.synchronize()
+        } catch {
+            throw noteWriteFailure(error, segmentId: segment.meta.segmentId, operation: "flush")
+        }
         dirtyBytes = 0
+    }
+
+    // --- write failures -------------------------------------------------------------------------
+
+    /// The last write that failed, or nil once a frame-log append has succeeded since. See
+    /// `StoreWriteFailure`.
+    public private(set) var lastWriteFailure: StoreWriteFailure?
+
+    /// Test seam: stand-ins for the file system failing under the store. `logWrite` replaces
+    /// every frame-log append (a test can write part of the bytes and then throw, which is what
+    /// ENOSPC looks like); `beforeMetaWrite` runs before every sidecar write; `beforeFlush`
+    /// before every fsync. Production never sets any of them.
+    package struct Faults: Sendable {
+        package var logWrite: (@Sendable (FileHandle, Data) throws -> Void)?
+        package var beforeMetaWrite: (@Sendable (String) throws -> Void)?
+        package var beforeFlush: (@Sendable () throws -> Void)?
+
+        package init(
+            logWrite: (@Sendable (FileHandle, Data) throws -> Void)? = nil,
+            beforeMetaWrite: (@Sendable (String) throws -> Void)? = nil,
+            beforeFlush: (@Sendable () throws -> Void)? = nil
+        ) {
+            self.logWrite = logWrite
+            self.beforeMetaWrite = beforeMetaWrite
+            self.beforeFlush = beforeFlush
+        }
+    }
+
+    private var faults = Faults()
+
+    package func injectFaults(_ faults: Faults) { self.faults = faults }
+
+    /// Bytes appended since the last successful flush. Test seam.
+    package var unflushedBytes: Int { dirtyBytes }
+
+    private func writeLog(_ handle: FileHandle, _ bytes: Data) throws {
+        if let logWrite = faults.logWrite {
+            try logWrite(handle, bytes)
+        } else {
+            try handle.write(contentsOf: bytes)
+        }
+    }
+
+    /// Records the failure and classifies it for the caller. The log line is the only place the
+    /// underlying error is spelled out in full.
+    private func noteWriteFailure(
+        _ error: Error, segmentId: String, operation: String
+    ) -> SegmentStoreError {
+        let full = Self.isStorageFull(error)
+        lastWriteFailure = StoreWriteFailure(
+            atMs: nowMs(), segmentId: segmentId, operation: operation, reason: "\(error)",
+            isStorageFull: full)
+        log(
+            "audio-companion: \(operation) failed for \(segmentId)"
+                + (full ? " — phone storage is full" : "") + ": \(error)")
+        return full
+            ? .storageFull(segmentId: segmentId)
+            : .writeFailed(segmentId: segmentId, reason: "\(operation): \(error)")
+    }
+
+    /// ENOSPC / EDQUOT, whether it arrives as the POSIX error itself or wrapped in a Cocoa
+    /// "out of space" error with the POSIX one underneath.
+    static func isStorageFull(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain {
+            return nsError.code == Int(ENOSPC) || nsError.code == Int(EDQUOT)
+        }
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileWriteOutOfSpaceError {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return isStorageFull(underlying)
+        }
+        return false
     }
 
     public func recover() throws {

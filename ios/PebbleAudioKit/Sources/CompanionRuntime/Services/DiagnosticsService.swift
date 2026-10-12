@@ -27,6 +27,10 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
     /// AI are deferred until it returns to the foreground. Surfaced (not hidden) so status stays
     /// honest — the KMP flag was computed and never shown.
     public var transcriptionDeferredInBackground: Bool
+    /// The last write the segment store could not complete (a full disk, typically), until a
+    /// write succeeds again. Nil is the calm case. The connection that hit it was failed and
+    /// nothing from it was acknowledged; this is how the Diagnostics screen gets to say so.
+    public var storageWriteFailure: StoreWriteFailure?
     public var lastRefreshedAtMs: Int64
 
     public init(
@@ -40,6 +44,7 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         pauseRequested: Bool = false,
         freeStorageHintKb: UInt32 = 0,
         transcriptionDeferredInBackground: Bool = false,
+        storageWriteFailure: StoreWriteFailure? = nil,
         lastRefreshedAtMs: Int64 = 0
     ) {
         self.segmentCount = segmentCount
@@ -52,6 +57,7 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         self.pauseRequested = pauseRequested
         self.freeStorageHintKb = freeStorageHintKb
         self.transcriptionDeferredInBackground = transcriptionDeferredInBackground
+        self.storageWriteFailure = storageWriteFailure
         self.lastRefreshedAtMs = lastRefreshedAtMs
     }
 }
@@ -128,6 +134,7 @@ public final class DiagnosticsService: Sendable {
     public func refresh() async -> RuntimeDiagnostics {
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
+        let writeFailure = await store.lastWriteFailure
         let allTasks = await tasks()
         let ai = await enrichment()
         let value = RuntimeDiagnostics(
@@ -143,6 +150,7 @@ public final class DiagnosticsService: Sendable {
             pauseRequested: retention.pauseRequested,
             freeStorageHintKb: retention.freeStorageHintKb(),
             transcriptionDeferredInBackground: !isForeground(),
+            storageWriteFailure: writeFailure,
             lastRefreshedAtMs: clock.nowMs
         )
         counters.withLock { $0.refreshes += 1 }

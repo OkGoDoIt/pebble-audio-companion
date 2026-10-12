@@ -1063,7 +1063,22 @@ public actor AudioReceiverSession {
     private func noteConnectionAbort(_ label: String, _ error: Error) {
         let reason = "\(label): \(error)"
         log("aborting the connection — \(reason)")
-        if abortReason == nil { abortReason = reason }
+        if abortReason == nil {
+            abortReason = reason
+            abortWasStorageFailure = Self.isStorageFailure(error)
+        }
+    }
+
+    /// True when the abort was the STORE refusing a write (a full disk), as opposed to the link.
+    /// Read once by `recoverFromFailedHandshake`, which backs off differently for it.
+    private var abortWasStorageFailure = false
+
+    static func isStorageFailure(_ error: Error) -> Bool {
+        guard let storeError = error as? SegmentStoreError else { return false }
+        switch storeError {
+        case .storageFull, .writeFailed: return true
+        default: return false
+        }
     }
 
     enum SessionError: Error, CustomStringConvertible {
@@ -1097,13 +1112,28 @@ public actor AudioReceiverSession {
     /// that genuinely cannot be retried does not spin the radio.
     private func recoverFromFailedHandshake(_ error: Error) async {
         handshakeFailures += 1
+        let storageFailure = abortWasStorageFailure
+        abortWasStorageFailure = false
         setState(
-            .connectionFailed(kind: .watchUnreachable, detail: "handshake failed: \(error)")
+            .connectionFailed(
+                kind: .watchUnreachable,
+                detail: storageFailure
+                    ? "recording could not be stored on this phone: \(error)"
+                    : "handshake failed: \(error)")
         )
-        let delay = min(
-            Self.handshakeRetryBaseMs << UInt64(min(handshakeFailures - 1, 4)),
-            Self.handshakeRetryMaxMs
-        )
+        // A store that refused a write is not a link that blinked. Every rebuild re-sends the
+        // watch's whole un-checkpointed spool over BLE straight into the same full disk, so the
+        // short first retries of the ladder buy nothing and cost both batteries: go straight to
+        // the ceiling. The audio is safe meanwhile — none of it was checkpointed, the watch holds
+        // it and records anything it has to drop — and the retention floors
+        // (`RetentionConfig.pauseFloorBytes`) will have asked the watch to pause before this
+        // path is ever the one doing the work.
+        let delay = storageFailure
+            ? Self.handshakeRetryMaxMs
+            : min(
+                Self.handshakeRetryBaseMs << UInt64(min(handshakeFailures - 1, 4)),
+                Self.handshakeRetryMaxMs
+            )
         log("handshake failed (\(handshakeFailures)); rebuilding the link in \(delay) ms: \(error)")
         do {
             try await clock.sleep(ms: delay)
