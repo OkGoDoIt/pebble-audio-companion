@@ -15,9 +15,12 @@ import WireProtocol
 
 public struct SegmentFileReader: Sendable {
     public let root: URL
+    /// Where audio that left the phone is (`SegmentMeta.coldStorage`); nil means nowhere else.
+    public var coldAudio: (any ColdAudioLocating)?
 
-    public init(root: URL) {
+    public init(root: URL, coldAudio: (any ColdAudioLocating)? = nil) {
         self.root = root
+        self.coldAudio = coldAudio
     }
 
     private var segmentsDir: URL { root.appendingPathComponent("segments", isDirectory: true) }
@@ -65,7 +68,15 @@ public struct SegmentFileReader: Sendable {
     /// Frames in stream order. Gap refills append after later frames, so the on-disk log is not
     /// strictly ordered — every consumer wants stream order.
     public func readFrames(_ segmentId: String) -> [FrameRecord] {
-        guard let data = try? Data(contentsOf: logURL(segmentId)) else { return [] }
+        if let data = try? Data(contentsOf: logURL(segmentId)) {
+            return SegmentFrameLog.parse([UInt8](data)).records.sorted { $0.sequence < $1.sequence }
+        }
+        // Same fallback as `SegmentStore.readFrames`: the cold copy while it is downloaded,
+        // otherwise nothing — never a block on the network from a synchronous reader.
+        guard let coldAudio, readMeta(segmentId)?.coldStorage != nil,
+            let url = coldAudio.coldLogURL(segmentId: segmentId), coldAudio.isLocallyAvailable(url),
+            let data = try? Data(contentsOf: url)
+        else { return [] }
         return SegmentFrameLog.parse([UInt8](data)).records.sorted { $0.sequence < $1.sequence }
     }
 }

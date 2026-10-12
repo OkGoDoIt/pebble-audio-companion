@@ -42,6 +42,9 @@ public struct CompanionRuntimeEnvironment: Sendable {
     /// What recorded audio holds (conversation or not). Optional so a runtime built without it
     /// behaves exactly as before: nothing is classified and nothing is masked.
     public var audioContent: AudioContentService?
+    /// The iCloud Drive cold tier. Optional so a runtime built without it behaves exactly as
+    /// before: nothing leaves the phone.
+    public var coldStorage: ColdAudioTier?
 
     public init(
         database: AppDatabase,
@@ -62,7 +65,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
         snapshots: CoverageSnapshotService,
         foreground: RuntimeForegroundState = RuntimeForegroundState(),
         log: RuntimeLog = .silent,
-        audioContent: AudioContentService? = nil
+        audioContent: AudioContentService? = nil,
+        coldStorage: ColdAudioTier? = nil
     ) {
         self.database = database
         self.store = store
@@ -83,6 +87,7 @@ public struct CompanionRuntimeEnvironment: Sendable {
         self.foreground = foreground
         self.log = log
         self.audioContent = audioContent
+        self.coldStorage = coldStorage
     }
 }
 
@@ -713,6 +718,7 @@ public actor CompanionRuntime {
             // launch — a settings write wakes the loop, and the changed policy is itself the
             // trigger.
             enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
+            coldStorageIfDue: { await env.coldStorage?.sweepIfDue() ?? false },
             classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
             // The backlog of older segments is read only on a charger; today's any time.
             judgeAudio: {

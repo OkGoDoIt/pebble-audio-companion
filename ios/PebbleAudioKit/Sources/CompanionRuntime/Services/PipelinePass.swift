@@ -16,6 +16,10 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     /// Age/size retention, paced by `RetentionService` — before `regroup` so the deletions are
     /// visible in the same pass that makes them.
     case retention
+    /// Audio leaving for (or coming back from) the iCloud Drive cold tier, paced by
+    /// `ColdAudioTier` — after retention, so a sweep never moves what retention is about to
+    /// delete. See `ColdAudioTier`.
+    case coldStorage
     /// Label what newly transcribed audio holds (conversation, or none) — before `regroup`,
     /// whose speech evidence and the AI stages behind it read the result. See
     /// `AudioContentService`.
@@ -58,6 +62,9 @@ public struct PipelineSteps: Sendable {
     /// it every time and `RetentionService` decides whether anything actually runs. Returns true
     /// when it deleted something.
     public var enforceRetentionIfDue: @Sendable () async -> Bool
+    /// The cold tier's sweep, self-paced inside `ColdAudioTier`. Returns true when it moved,
+    /// evicted or restored something.
+    public var coldStorageIfDue: @Sendable () async -> Bool = { false }
     /// Classifies segments whose transcripts changed. Returns true when it wrote anything, so
     /// a backfill comes straight back for the rest.
     public var classifyAudio: @Sendable () async throws -> Bool
@@ -123,6 +130,7 @@ public struct PipelineSteps: Sendable {
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
         drainQueue: @escaping @Sendable () async throws -> Bool = { false },
         enforceRetentionIfDue: @escaping @Sendable () async -> Bool = { false },
+        coldStorageIfDue: @escaping @Sendable () async -> Bool = { false },
         classifyAudio: @escaping @Sendable () async throws -> Bool = { false },
         judgeAudio: @escaping @Sendable () async throws -> Bool = { false },
         regroup: @escaping @Sendable () async throws -> Bool = { true },
@@ -152,6 +160,7 @@ public struct PipelineSteps: Sendable {
         self.enqueueClosedSegments = enqueueClosedSegments
         self.drainQueue = drainQueue
         self.enforceRetentionIfDue = enforceRetentionIfDue
+        self.coldStorageIfDue = coldStorageIfDue
         self.classifyAudio = classifyAudio
         self.judgeAudio = judgeAudio
         self.regroup = regroup
@@ -395,6 +404,14 @@ public struct PipelinePass: Sendable {
             // Deleted audio takes its recaps with it; the weeks and months written from them
             // are owed a look.
             memory.noteBriefsOwed(atMs: clock.nowMs)
+            await steps.onDiagnosticsDirty()
+        }
+
+        // 5a. The cold tier: audio old enough and transcribed leaves for iCloud, confirmed
+        //     uploads are evicted, a restore in progress advances. Self-paced inside the tier;
+        //     after retention so nothing is moved that was about to be deleted.
+        if try await stage(.coldStorage, fallback: false, steps.coldStorageIfDue) {
+            processed = true
             await steps.onDiagnosticsDirty()
         }
 

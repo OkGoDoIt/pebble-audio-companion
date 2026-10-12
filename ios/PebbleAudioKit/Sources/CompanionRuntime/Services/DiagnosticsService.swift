@@ -31,6 +31,8 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
     /// write succeeds again. Nil is the calm case. The connection that hit it was failed and
     /// nothing from it was acknowledged; this is how the Diagnostics screen gets to say so.
     public var storageWriteFailure: StoreWriteFailure?
+    /// What the iCloud Drive cold tier holds and is doing. Nil when the runtime has none.
+    public var coldStorage: ColdAudioTier.Summary?
     public var lastRefreshedAtMs: Int64
 
     public init(
@@ -45,6 +47,7 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         freeStorageHintKb: UInt32 = 0,
         transcriptionDeferredInBackground: Bool = false,
         storageWriteFailure: StoreWriteFailure? = nil,
+        coldStorage: ColdAudioTier.Summary? = nil,
         lastRefreshedAtMs: Int64 = 0
     ) {
         self.segmentCount = segmentCount
@@ -58,6 +61,7 @@ public struct RuntimeDiagnostics: Equatable, Sendable {
         self.freeStorageHintKb = freeStorageHintKb
         self.transcriptionDeferredInBackground = transcriptionDeferredInBackground
         self.storageWriteFailure = storageWriteFailure
+        self.coldStorage = coldStorage
         self.lastRefreshedAtMs = lastRefreshedAtMs
     }
 }
@@ -91,6 +95,8 @@ public final class DiagnosticsService: Sendable {
     /// Conversations still owed an AI pass, and whether one is running. Injected so this
     /// service keeps its "no database" shape (the App wires it to `ConversationQueries`).
     private let enrichment: @Sendable () async -> (waiting: Int, running: Bool)
+    /// The cold tier's summary, when the runtime has one.
+    private let coldStorage: @Sendable () async -> ColdAudioTier.Summary?
 
     /// Observable published value (`.value` for a sync read, `.stream()` to follow changes).
     ///
@@ -120,7 +126,8 @@ public final class DiagnosticsService: Sendable {
         clock: RuntimeClock,
         enrichment: @escaping @Sendable () async -> (waiting: Int, running: Bool) = {
             (0, false)
-        }
+        },
+        coldStorage: @escaping @Sendable () async -> ColdAudioTier.Summary? = { nil }
     ) {
         self.store = store
         self.retention = retention
@@ -128,6 +135,7 @@ public final class DiagnosticsService: Sendable {
         self.isForeground = isForeground
         self.clock = clock
         self.enrichment = enrichment
+        self.coldStorage = coldStorage
     }
 
     @discardableResult
@@ -137,6 +145,7 @@ public final class DiagnosticsService: Sendable {
         let writeFailure = await store.lastWriteFailure
         let allTasks = await tasks()
         let ai = await enrichment()
+        let cold = await coldStorage()
         let value = RuntimeDiagnostics(
             segmentCount: segments.count,
             openSegmentId: openId,
@@ -151,6 +160,7 @@ public final class DiagnosticsService: Sendable {
             freeStorageHintKb: retention.freeStorageHintKb(),
             transcriptionDeferredInBackground: !isForeground(),
             storageWriteFailure: writeFailure,
+            coldStorage: cold,
             lastRefreshedAtMs: clock.nowMs
         )
         counters.withLock { $0.refreshes += 1 }

@@ -64,6 +64,11 @@ public struct SegmentMeta: Equatable, Sendable {
     ///    the frame log, and holes in the sequence space are recorded as explicit
     ///    `sequence_skip` loss because a lost sidecar cannot prove they were quiet.
     public var recoveredAtMs: Int64?
+    /// Set when this segment's frame log was moved into the app's iCloud Drive container by
+    /// `ColdAudioTier` (CompanionRuntime). The sidecar, the transcript and everything derived
+    /// stay on the phone; only the audio bytes travel, and `SegmentStore.readFrames` reads them
+    /// from the container while they are downloaded. Nil for audio that lives here.
+    public var coldStorage: ColdStorageMeta?
 
     public init(
         segmentId: String,
@@ -91,7 +96,8 @@ public struct SegmentMeta: Equatable, Sendable {
         provenance: ProvenanceMeta? = nil,
         dedupeFloorSequence: UInt32? = nil,
         recordedTimeZone: String? = nil,
-        recoveredAtMs: Int64? = nil
+        recoveredAtMs: Int64? = nil,
+        coldStorage: ColdStorageMeta? = nil
     ) {
         self.segmentId = segmentId
         self.streamId = streamId
@@ -119,6 +125,7 @@ public struct SegmentMeta: Equatable, Sendable {
         self.dedupeFloorSequence = dedupeFloorSequence
         self.recordedTimeZone = recordedTimeZone
         self.recoveredAtMs = recoveredAtMs
+        self.coldStorage = coldStorage
     }
 
     public var isOpen: Bool { closeReason == nil }
@@ -161,7 +168,7 @@ extension SegmentMeta: Codable {
         case receivedAtMs, firstSequence, lastSequence, firstSampleIndex
         case lastSampleIndexExclusive, frameCount, logBytes, gaps, closeReason, closedAtMs
         case transcriptionState, provenance, dedupeFloorSequence, recordedTimeZone
-        case recoveredAtMs
+        case recoveredAtMs, coldStorage
     }
 
     public init(from decoder: Decoder) throws {
@@ -193,6 +200,7 @@ extension SegmentMeta: Codable {
         dedupeFloorSequence = try c.decodeIfPresent(UInt32.self, forKey: .dedupeFloorSequence)
         recordedTimeZone = try c.decodeIfPresent(String.self, forKey: .recordedTimeZone)
         recoveredAtMs = try c.decodeIfPresent(Int64.self, forKey: .recoveredAtMs)
+        coldStorage = try c.decodeIfPresent(ColdStorageMeta.self, forKey: .coldStorage)
         startTimeMs = Self.repairedStartTimeMs(
             storedStartTimeMs: startTimeMs,
             receivedAtMs: receivedAtMs,
@@ -267,7 +275,34 @@ extension SegmentMeta: Codable {
         try c.encodeIfPresent(dedupeFloorSequence, forKey: .dedupeFloorSequence)
         try c.encodeIfPresent(recordedTimeZone, forKey: .recordedTimeZone)
         try c.encodeIfPresent(recoveredAtMs, forKey: .recoveredAtMs)
+        try c.encodeIfPresent(coldStorage, forKey: .coldStorage)
     }
+}
+
+/// Where a closed segment's audio went when it left the phone: the app's iCloud Drive container.
+/// Written by `ColdAudioTier` BEFORE the file moves, so a crash between the two leaves a mark
+/// with a local log (the next sweep finishes the move) rather than a moved log with no mark
+/// (which recovery would read as audio that was lost).
+public struct ColdStorageMeta: Equatable, Codable, Sendable {
+    /// Phone wall clock when the move was started.
+    public var movedAtMs: Int64
+    /// The log's size at the move — what leaving the phone frees.
+    public var bytes: Int64
+    /// `uploading` from the move until the upload was confirmed and the local copy evicted;
+    /// `evicted` after that. A copy fetched for playback does not change the state: it is
+    /// evicted again once it has sat unused for a while.
+    public var state: String
+
+    public static let stateUploading = "uploading"
+    public static let stateEvicted = "evicted"
+
+    public init(movedAtMs: Int64, bytes: Int64, state: String = ColdStorageMeta.stateUploading) {
+        self.movedAtMs = movedAtMs
+        self.bytes = bytes
+        self.state = state
+    }
+
+    public var isEvicted: Bool { state == Self.stateEvicted }
 }
 
 public struct GapMeta: Equatable, Sendable {

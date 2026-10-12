@@ -39,6 +39,8 @@ public actor DeleteCascade {
     /// The stored-segment waveform cache, which a range delete has to be told about: it is
     /// keyed on a frame count that silencing does not change.
     private let live: LiveAudioService?
+    /// The iCloud cold tier, so a range delete on audio that is in iCloud fetches it first.
+    private let coldStorage: ColdAudioTier?
     private let log: RuntimeLog
 
     public init(
@@ -56,6 +58,7 @@ public actor DeleteCascade {
         boundaryOverrides: BoundaryOverrideStore? = nil,
         audioContent: AudioContentService? = nil,
         live: LiveAudioService? = nil,
+        coldStorage: ColdAudioTier? = nil,
         log: RuntimeLog = .silent
     ) {
         self.store = store
@@ -72,6 +75,7 @@ public actor DeleteCascade {
         self.boundaryOverrides = boundaryOverrides
         self.audioContent = audioContent
         self.live = live
+        self.coldStorage = coldStorage
         self.log = log
     }
 
@@ -357,7 +361,16 @@ public actor DeleteCascade {
             }
             let silence = try SpeexSilence.frame(
                 sampleRateHz: Int(meta.sampleRateHz), bitRateBps: Int(meta.bitRateBps))
-            try await store.silenceAudio(segmentId, mediaRangeMs: range, silenceFrame: silence)
+            do {
+                try await store.silenceAudio(segmentId, mediaRangeMs: range, silenceFrame: silence)
+            } catch SegmentStoreError.audioNotOnPhone {
+                // The audio is in iCloud and not downloaded. Fetch it, rewrite it, and let the
+                // tier evict it again later: the copy in iCloud is replaced by the rewritten
+                // one when it syncs, so the deleted range is gone from every device.
+                guard let coldStorage else { throw SegmentStoreError.audioNotOnPhone(segmentId: segmentId) }
+                try await coldStorage.fetch(segmentIds: [segmentId])
+                try await store.silenceAudio(segmentId, mediaRangeMs: range, silenceFrame: silence)
+            }
         } catch {
             log.failure("range delete", error)
             return false

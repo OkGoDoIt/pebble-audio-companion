@@ -31,6 +31,10 @@ public enum SegmentStoreError: Error, Equatable {
     case unknownSegment(segmentId: String)
     /// The replacement payload is empty or longer than a frame record can carry.
     case invalidSilenceFrame(byteCount: Int)
+    /// Asked to rewrite audio that is in iCloud and not downloaded. The caller fetches it
+    /// (`ColdAudioTier.fetch`) and tries again; a quiet no-op would leave audio behind a
+    /// delete that reported success.
+    case audioNotOnPhone(segmentId: String)
     /// A frame-log append, sidecar write or flush failed because the volume is full (ENOSPC /
     /// EDQUOT). Nothing from the failed write is stored or claimed: the receiver fails the
     /// connection on it, the watch keeps the audio, and the sidecar catches up on the next write
@@ -62,6 +66,19 @@ public struct StoreWriteFailure: Equatable, Sendable {
         self.reason = reason
         self.isStorageFull = isStorageFull
     }
+}
+
+/// Where a segment's audio is once the sidecar says it left the phone (`SegmentMeta.coldStorage`).
+/// Implemented by `ColdAudioLocator` in CompanionRuntime over the app's iCloud Drive container;
+/// the store only asks it questions.
+public protocol ColdAudioLocating: Sendable {
+    /// The cold copy's URL, or nil while the container is unreachable (no iCloud account, or
+    /// iCloud Drive off for this app).
+    func coldLogURL(segmentId: String) -> URL?
+    /// Whether the cold copy's bytes are on this phone right now and readable.
+    func isLocallyAvailable(_ url: URL) -> Bool
+    /// Deletes the cold copy — from iCloud, so from every device.
+    func removeColdCopy(at url: URL) throws
 }
 
 public struct SegmentStoreConfig: Sendable {
@@ -182,11 +199,11 @@ public actor SegmentStore: SegmentSink {
 
     // --- paths --------------------------------------------------------------------------------
 
-    private func logURL(_ segmentId: String) -> URL {
+    private nonisolated func logURL(_ segmentId: String) -> URL {
         segmentsDir.appendingPathComponent("\(segmentId)\(Self.logSuffix)", isDirectory: false)
     }
 
-    private func metaURL(_ segmentId: String) -> URL {
+    private nonisolated func metaURL(_ segmentId: String) -> URL {
         segmentsDir.appendingPathComponent("\(segmentId)\(Self.metaSuffix)", isDirectory: false)
     }
 
@@ -819,6 +836,8 @@ public actor SegmentStore: SegmentSink {
         return copy
     }
 
+    /// Bytes of the segment's log ON THIS PHONE. Zero once the audio has left for cold storage
+    /// (`ColdStorageMeta`), which is what the size cap and the Storage screen want.
     public func logSizeBytes(_ segmentId: String) -> Int64 {
         let attrs = try? fm.attributesOfItem(atPath: logURL(segmentId).path)
         return (attrs?[.size] as? NSNumber)?.int64Value ?? 0
@@ -826,19 +845,77 @@ public actor SegmentStore: SegmentSink {
 
     public func readFrames(_ segmentId: String) -> [FrameRecord] {
         let url = logURL(segmentId)
-        guard fm.fileExists(atPath: url.path), let data = try? Data(contentsOf: url) else {
-            return []
+        if fm.fileExists(atPath: url.path), let data = try? Data(contentsOf: url) {
+            // Gap refills append after later frames, so the log is not strictly ordered on
+            // disk; every consumer (playback, waveform, transcription decode, export) wants
+            // stream order.
+            return parseRecords([UInt8](data)).records.sorted { $0.sequence < $1.sequence }
         }
-        // Gap refills append after later frames, so the log is not strictly ordered on disk;
-        // every consumer (playback, waveform, transcription decode, export) wants stream order.
+        // The cold copy, when the sidecar says there is one and its bytes are on the phone.
+        // Not downloaded is simply empty: a reader that needs the audio fetches it first
+        // (`ColdAudioTier.fetch`), and nothing here blocks on the network.
+        guard let cold = coldLogURLIfAvailable(segmentId), let data = try? Data(contentsOf: cold)
+        else { return [] }
         return parseRecords([UInt8](data)).records.sorted { $0.sequence < $1.sequence }
     }
 
     public func deleteSegment(_ segmentId: String) throws {
         precondition(segmentId != openSegmentId, "refusing to delete the open segment \(segmentId)")
         try removeIfExists(logURL(segmentId))
+        // The copy in iCloud goes too — a delete that left it would keep the audio on every
+        // device the account syncs to. A container that cannot be reached right now (no
+        // account) leaves an orphan, which `ColdAudioTier`'s sweep removes once it can.
+        if readMeta(segmentId)?.coldStorage != nil, let coldAudio,
+            let url = coldAudio.coldLogURL(segmentId: segmentId)
+        {
+            do { try coldAudio.removeColdCopy(at: url) } catch {
+                log("audio-companion: could not remove the iCloud copy of \(segmentId): \(error)")
+            }
+        }
         try removeIfExists(metaURL(segmentId))
         metaIndex?[segmentId] = nil
+    }
+
+    // --- cold storage ---------------------------------------------------------------------------
+
+    private var coldAudio: (any ColdAudioLocating)?
+
+    /// Installs the resolver for audio that has left the phone. Nil (the default) means every
+    /// segment's audio is wherever its local log is.
+    public func setColdAudioLocator(_ locator: (any ColdAudioLocating)?) { coldAudio = locator }
+
+    /// Where this segment's log lives on the phone — whether or not it is there right now.
+    public nonisolated func localLogURL(_ segmentId: String) -> URL { logURL(segmentId) }
+
+    public func localLogExists(_ segmentId: String) -> Bool {
+        fm.fileExists(atPath: logURL(segmentId).path)
+    }
+
+    /// Records (or clears, with nil) where a CLOSED segment's audio went. The sidecar write is
+    /// the durable fact; the caller moves the file after it, never before.
+    public func setColdStorage(_ segmentId: String, _ cold: ColdStorageMeta?) throws {
+        guard segmentId != openSegmentId else {
+            throw SegmentStoreError.segmentIsOpen(segmentId: segmentId)
+        }
+        guard var meta = readMeta(segmentId) else {
+            throw SegmentStoreError.unknownSegment(segmentId: segmentId)
+        }
+        guard meta.closeReason != nil else {
+            throw SegmentStoreError.segmentIsOpen(segmentId: segmentId)
+        }
+        if meta.coldStorage == cold { return }
+        meta.coldStorage = cold
+        try writeMetaAtomically(meta)
+    }
+
+    /// The cold copy's URL when the sidecar says the audio went there and the bytes are on the
+    /// phone to read.
+    private func coldLogURLIfAvailable(_ segmentId: String) -> URL? {
+        guard let coldAudio, readMeta(segmentId)?.coldStorage != nil,
+            let url = coldAudio.coldLogURL(segmentId: segmentId),
+            coldAudio.isLocallyAvailable(url)
+        else { return nil }
+        return url
     }
 
     /// Replaces the audio of one stretch of a CLOSED segment with silence, in place: every frame
@@ -892,8 +969,21 @@ public actor SegmentStore: SegmentSink {
         guard meta.closeReason != nil else {
             throw SegmentStoreError.segmentIsOpen(segmentId: segmentId)
         }
-        let logFile = logURL(segmentId)
-        guard !mediaRangeMs.isEmpty, fm.fileExists(atPath: logFile.path) else { return 0 }
+        guard !mediaRangeMs.isEmpty else { return 0 }
+        // The log on the phone, or the cold copy while its bytes are here. Audio that is in
+        // iCloud and not downloaded cannot be rewritten in place: say so, so the caller fetches
+        // it and tries again, rather than answering a delete with a quiet no-op.
+        let logFile: URL
+        if fm.fileExists(atPath: logURL(segmentId).path) {
+            logFile = logURL(segmentId)
+        } else if meta.coldStorage != nil {
+            guard let cold = coldLogURLIfAvailable(segmentId) else {
+                throw SegmentStoreError.audioNotOnPhone(segmentId: segmentId)
+            }
+            logFile = cold
+        } else {
+            return 0
+        }
         let bytes = [UInt8](try Data(contentsOf: logFile))
         let parsed = parseRecords(bytes)
         let records = parsed.records

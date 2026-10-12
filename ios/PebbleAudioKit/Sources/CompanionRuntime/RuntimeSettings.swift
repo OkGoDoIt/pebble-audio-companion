@@ -28,6 +28,13 @@ public protocol RuntimeSettings: Sendable {
     /// Total on-disk cap for stored audio, wired into `RetentionManager`. **`0` means no limit.**
     /// Defaulted so callers that only expose "Keep audio for N days" need not declare it.
     var retentionMaxBytes: Int64 { get }
+    /// Whether fully transcribed audio older than `coldStorageMinAgeDays` leaves the phone for
+    /// the app's iCloud Drive container (`ColdAudioTier`). Defaulted off: nothing leaves the
+    /// phone until the person turns it on and sees the rule.
+    var coldStorageEnabled: Bool { get }
+    /// How old audio must be before it is moved. Defaulted so callers that do not care need
+    /// not declare it.
+    var coldStorageMinAgeDays: Int { get }
     /// False until the user picks a transcription mode ("Later" in onboarding leaves it false).
     var transcriptsConfigured: Bool { get }
     /// When expensive catch-up (local transcription, AI) may run while the app is not on screen.
@@ -46,6 +53,15 @@ public protocol RuntimeSettings: Sendable {
 
 extension RuntimeSettings {
     public var retentionMaxBytes: Int64 { RuntimeSettingsDefaults.retentionMaxBytes }
+    public var coldStorageEnabled: Bool { RuntimeSettingsDefaults.coldStorageEnabled }
+    public var coldStorageMinAgeDays: Int { RuntimeSettingsDefaults.coldStorageMinAgeDays }
+
+    /// The cold-storage rule this settings state implies.
+    public var coldStoragePolicy: ColdStoragePolicy {
+        ColdStoragePolicy(
+            enabled: coldStorageEnabled,
+            minAgeMs: Int64(max(1, coldStorageMinAgeDays)) * 24 * 60 * 60 * 1000)
+    }
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
     public var remoteAiProvider: RemoteAiProvider { .default }
@@ -153,6 +169,15 @@ public enum RuntimeSettingsDefaults {
     ]
 
     public static let retentionDays = 30
+
+    /// Off until chosen: audio leaving the phone is a rule the person has to have seen.
+    public static let coldStorageEnabled = false
+    /// Two months. Old enough that the audio has been transcribed, read and forgotten; young
+    /// enough that the phone never holds more than a season of recordings.
+    public static let coldStorageMinAgeDays = 60
+    /// The ages the Storage screen offers, in days. Lives here so the kit and the app cannot
+    /// drift on what the picker may store.
+    public static let coldStorageMinAgeOptions = [14, 30, 60, 90, 180, 365]
 }
 
 /// The two retention knobs the runtime derives from settings; `RetentionService` turns these into
@@ -201,6 +226,8 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     public var onboardingComplete: Bool { value.onboardingComplete }
     public var retentionDays: Int { value.retentionDays }
     public var retentionMaxBytes: Int64 { value.retentionMaxBytes }
+    public var coldStorageEnabled: Bool { value.coldStorageEnabled }
+    public var coldStorageMinAgeDays: Int { value.coldStorageMinAgeDays }
     public var transcriptsConfigured: Bool { value.transcriptsConfigured }
     // These two forwards are not optional, even though the protocol extension supplies a default
     // for both: WITHOUT them the box silently answers with the default and ignores the snapshot
@@ -227,6 +254,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var onboardingComplete: Bool
     public var retentionDays: Int
     public var retentionMaxBytes: Int64
+    public var coldStorageEnabled: Bool
+    public var coldStorageMinAgeDays: Int
     public var transcriptsConfigured: Bool
     public var backgroundCatchUp: BackgroundCatchUp
     public var cloudUploadNetwork: CloudUploadNetwork
@@ -244,6 +273,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         onboardingComplete: Bool = false,
         retentionDays: Int = RuntimeSettingsDefaults.retentionDays,
         retentionMaxBytes: Int64 = RuntimeSettingsDefaults.retentionMaxBytes,
+        coldStorageEnabled: Bool = RuntimeSettingsDefaults.coldStorageEnabled,
+        coldStorageMinAgeDays: Int = RuntimeSettingsDefaults.coldStorageMinAgeDays,
         transcriptsConfigured: Bool = false,
         backgroundCatchUp: BackgroundCatchUp = .whileCharging,
         cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default,
@@ -260,6 +291,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.onboardingComplete = onboardingComplete
         self.retentionDays = retentionDays
         self.retentionMaxBytes = retentionMaxBytes
+        self.coldStorageEnabled = coldStorageEnabled
+        self.coldStorageMinAgeDays = coldStorageMinAgeDays
         self.transcriptsConfigured = transcriptsConfigured
         self.backgroundCatchUp = backgroundCatchUp
         self.cloudUploadNetwork = cloudUploadNetwork
