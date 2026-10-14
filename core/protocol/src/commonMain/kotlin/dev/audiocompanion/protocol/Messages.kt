@@ -188,6 +188,31 @@ data class EnableRequest(
         .toByteArray()
 }
 
+/**
+ * What the phone's own audio system says about playback, as opposed to its media service: a
+ * player can publish "playing" while paused. Answers [PhoneMediaQuery].
+ */
+data class PhoneMediaState(
+    val requestToken: Int,
+    val flags: Int,
+) : ControlInMessage {
+    val checked: Boolean get() = flags and FLAG_CHECKED != 0
+    val otherAudioPlaying: Boolean get() = flags and FLAG_OTHER_AUDIO != 0
+    val primaryAudioPlaying: Boolean get() = flags and FLAG_PRIMARY_AUDIO != 0
+
+    override fun encode(): ByteArray = WireWriter(3)
+        .u8(MessageId.PHONE_MEDIA_STATE)
+        .u8(requestToken)
+        .u8(flags)
+        .toByteArray()
+
+    companion object {
+        const val FLAG_CHECKED: Int = 1 shl 0
+        const val FLAG_OTHER_AUDIO: Int = 1 shl 1
+        const val FLAG_PRIMARY_AUDIO: Int = 1 shl 2
+    }
+}
+
 data class ReceiverHealth(
     val requestToken: Int,
     val batteryPct: Int,
@@ -256,6 +281,13 @@ data class StateChanged(
     override fun encode(): ByteArray = WireWriter(2)
         .u8(MessageId.STATE_CHANGED)
         .u8(serviceStateRaw)
+        .toByteArray()
+}
+
+/** The watch asks whether the phone is actually playing audio; answer with [PhoneMediaState]. */
+data object PhoneMediaQuery : ControlOutMessage {
+    override fun encode(): ByteArray = WireWriter(1)
+        .u8(MessageId.PHONE_MEDIA_QUERY)
         .toByteArray()
 }
 

@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "Watch asks the receiver whether the phone is actually playing audio",
+  "expect": "parse",
+  "fields": {},
+  "name": "phone_media_query",
+  "size": 1
+}

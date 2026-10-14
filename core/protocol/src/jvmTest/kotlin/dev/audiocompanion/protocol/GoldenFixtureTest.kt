@@ -160,6 +160,11 @@ class GoldenFixtureTest {
         is EnableRequest -> mapOf(
             "request_token" to message.requestToken.toString(),
         )
+        is PhoneMediaState -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "flags" to message.flags.toString(),
+        )
+        is PhoneMediaQuery -> emptyMap()
         is ReceiverHealth -> mapOf(
             "request_token" to message.requestToken.toString(),
             "battery_pct" to message.batteryPct.toString(),

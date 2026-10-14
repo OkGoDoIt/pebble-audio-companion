@@ -14,6 +14,7 @@ import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
 import dev.audiocompanion.protocol.PauseReason
 import dev.audiocompanion.protocol.PauseRequest
+import dev.audiocompanion.protocol.PhoneMediaQuery
 import dev.audiocompanion.protocol.ProtocolConstants
 import dev.audiocompanion.protocol.ReceiverHealth
 import dev.audiocompanion.protocol.ResumeRequest
@@ -479,6 +480,9 @@ class AudioReceiverSession(
                 }
             }
             is ErrorMessage -> _lastProtocolError.value = message
+            // Not answered here: this shared session has no view of the phone's audio. The watch
+            // then judges playback by the media service alone. The native iOS app answers it.
+            is PhoneMediaQuery -> Unit
         }
     }
 

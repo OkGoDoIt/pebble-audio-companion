@@ -323,6 +323,33 @@ public struct EnableRequest: ControlInMessage, Equatable {
     }
 }
 
+/// What the phone's own audio system says about playback, as opposed to its media service (AMS):
+/// a player can publish "playing" while paused. Answers `PhoneMediaQuery`.
+public struct PhoneMediaState: ControlInMessage, Equatable {
+    /// The phone could check; when clear the other bits mean nothing.
+    public static let flagChecked: UInt8 = 1 << 0
+    /// Another app is playing audio (`AVAudioSession.isOtherAudioPlaying`).
+    public static let flagOtherAudio: UInt8 = 1 << 1
+    /// ... and it is non-mixable primary audio (`secondaryAudioShouldBeSilencedHint`).
+    public static let flagPrimaryAudio: UInt8 = 1 << 2
+
+    public let requestToken: Int
+    public let flags: UInt8
+
+    public init(requestToken: Int, flags: UInt8) {
+        self.requestToken = requestToken
+        self.flags = flags
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 3)
+        w.u8(MessageId.phoneMediaState)
+        w.u8(requestToken)
+        w.u8(Int(flags))
+        return w.toBytes()
+    }
+}
+
 public struct ReceiverHealth: ControlInMessage, Equatable {
     public let requestToken: Int
     public let batteryPct: Int
@@ -352,6 +379,17 @@ public struct ReceiverHealth: ControlInMessage, Equatable {
 // ---------------------------------------------------------------------------------------------
 // Control: watch -> phone (Section 4.2)
 // ---------------------------------------------------------------------------------------------
+
+/// The watch asks whether the phone is actually playing audio; answer with `PhoneMediaState`.
+public struct PhoneMediaQuery: ControlOutMessage, Equatable {
+    public init() {}
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 1)
+        w.u8(MessageId.phoneMediaQuery)
+        return w.toBytes()
+    }
+}
 
 public struct AuthResult: ControlOutMessage, Equatable {
     public let requestToken: Int

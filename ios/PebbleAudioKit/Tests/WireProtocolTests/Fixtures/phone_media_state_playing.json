@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "Receiver reports another app on the phone is playing non-mixable audio",
+  "expect": "parse",
+  "fields": {
+    "flags": 7,
+    "request_token": 46
+  },
+  "name": "phone_media_state_playing",
+  "size": 3
+}

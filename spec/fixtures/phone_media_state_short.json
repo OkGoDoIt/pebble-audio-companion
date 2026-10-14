@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "PHONE_MEDIA_STATE without its flags byte",
+  "expect": "reject",
+  "fields": {},
+  "name": "phone_media_state_short",
+  "size": 2
+}

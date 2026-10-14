@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "Receiver checked: nothing else on the phone is playing audio",
+  "expect": "parse",
+  "fields": {
+    "flags": 1,
+    "request_token": 47
+  },
+  "name": "phone_media_state_idle",
+  "size": 3
+}

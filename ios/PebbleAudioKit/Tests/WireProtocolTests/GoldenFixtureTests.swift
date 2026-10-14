@@ -181,6 +181,13 @@ import Testing
             return [
                 "request_token": String(m.requestToken),
             ]
+        case let m as PhoneMediaState:
+            return [
+                "request_token": String(m.requestToken),
+                "flags": String(m.flags),
+            ]
+        case is PhoneMediaQuery:
+            return [:]
         case let m as ReceiverHealth:
             return [
                 "request_token": String(m.requestToken),

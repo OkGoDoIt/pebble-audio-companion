@@ -57,6 +57,7 @@ public enum MessageId {
     public static let resumeRequest: Int = 0x05
     public static let receiverHealth: Int = 0x06
     public static let enableRequest: Int = 0x07
+    public static let phoneMediaState: Int = 0x08
 
     // Watch -> phone control notifications (0x41-0x7F).
     public static let authResult: Int = 0x41
@@ -64,6 +65,7 @@ public enum MessageId {
     public static let ack: Int = 0x43
     public static let stateChanged: Int = 0x44
     public static let error: Int = 0x45
+    public static let phoneMediaQuery: Int = 0x46
 
     // Watch -> phone data notifications (0x80-0x9F).
     public static let streamStart: Int = 0x80

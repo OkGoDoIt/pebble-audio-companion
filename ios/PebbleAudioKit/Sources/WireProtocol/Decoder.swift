@@ -107,6 +107,11 @@ public enum AudioCompanionProtocol {
                 _ = r.u8()
                 return EnableRequest(requestToken: r.u8())
             }
+        case MessageId.phoneMediaState:
+            return sized(bytes, 3) { r in
+                _ = r.u8()
+                return PhoneMediaState(requestToken: r.u8(), flags: UInt8(r.u8()))
+            }
         case MessageId.receiverHealth:
             return sized(bytes, 8) { r in
                 _ = r.u8()
@@ -148,6 +153,11 @@ public enum AudioCompanionProtocol {
             return sized(bytes, 2) { r in
                 _ = r.u8()
                 return StateChanged(serviceStateRaw: UInt8(r.u8()))
+            }
+        case MessageId.phoneMediaQuery:
+            return sized(bytes, 1) { r in
+                _ = r.u8()
+                return PhoneMediaQuery()
             }
         case MessageId.error:
             return sized(bytes, 6) { r in

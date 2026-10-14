@@ -73,6 +73,10 @@ object AudioCompanionProtocol {
                 r.u8()
                 EnableRequest(requestToken = r.u8())
             }
+            MessageId.PHONE_MEDIA_STATE -> sized(bytes, 3) { r ->
+                r.u8()
+                PhoneMediaState(requestToken = r.u8(), flags = r.u8())
+            }
             MessageId.RECEIVER_HEALTH -> sized(bytes, 8) { r ->
                 r.u8()
                 ReceiverHealth(
@@ -105,6 +109,10 @@ object AudioCompanionProtocol {
             MessageId.STATE_CHANGED -> sized(bytes, 2) { r ->
                 r.u8()
                 StateChanged(serviceStateRaw = r.u8())
+            }
+            MessageId.PHONE_MEDIA_QUERY -> sized(bytes, 1) { r ->
+                r.u8()
+                PhoneMediaQuery
             }
             MessageId.ERROR -> sized(bytes, 6) { r ->
                 r.u8()

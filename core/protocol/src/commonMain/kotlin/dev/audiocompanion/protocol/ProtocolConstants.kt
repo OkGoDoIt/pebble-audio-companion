@@ -61,6 +61,7 @@ object MessageId {
     const val RESUME_REQUEST: Int = 0x05
     const val RECEIVER_HEALTH: Int = 0x06
     const val ENABLE_REQUEST: Int = 0x07
+    const val PHONE_MEDIA_STATE: Int = 0x08
 
     // Watch -> phone control notifications (0x41-0x7F).
     const val AUTH_RESULT: Int = 0x41
@@ -68,6 +69,7 @@ object MessageId {
     const val ACK: Int = 0x43
     const val STATE_CHANGED: Int = 0x44
     const val ERROR: Int = 0x45
+    const val PHONE_MEDIA_QUERY: Int = 0x46
 
     // Watch -> phone data notifications (0x80-0x9F).
     const val STREAM_START: Int = 0x80

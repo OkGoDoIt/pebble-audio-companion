@@ -28,6 +28,7 @@ MSG_PAUSE_REQUEST = 0x04
 MSG_RESUME_REQUEST = 0x05
 MSG_RECEIVER_HEALTH = 0x06
 MSG_ENABLE_REQUEST = 0x07
+MSG_PHONE_MEDIA_STATE = 0x08
 
 # Control message ids (watch -> phone)
 MSG_AUTH_RESULT = 0x41
@@ -35,6 +36,7 @@ MSG_REVOKED = 0x42
 MSG_ACK = 0x43
 MSG_STATE_CHANGED = 0x44
 MSG_ERROR = 0x45
+MSG_PHONE_MEDIA_QUERY = 0x46
 
 # Data message ids (watch -> phone)
 MSG_STREAM_START = 0x80
@@ -80,6 +82,16 @@ def receiver_health(token, battery_pct, app_state, queue_depth) -> bytes:
 
 def enable_request(token) -> bytes:
     return struct.pack("<BB", MSG_ENABLE_REQUEST, token)
+
+
+def phone_media_state(token, flags) -> bytes:
+    # flags: bit0 the phone could check, bit1 another app is playing audio, bit2 it is
+    # non-mixable primary audio.
+    return struct.pack("<BBB", MSG_PHONE_MEDIA_STATE, token, flags)
+
+
+def phone_media_query() -> bytes:
+    return struct.pack("<B", MSG_PHONE_MEDIA_QUERY)
 
 
 def auth_result(token, status, granted) -> bytes:
@@ -452,6 +464,30 @@ def build_fixtures():
         "Receiver asks the watch to prompt the user to enable Background Audio",
     )
     add(
+        "phone_media_state_playing",
+        phone_media_state(0x2E, 0x07),
+        "control_in",
+        "parse",
+        {"request_token": 0x2E, "flags": 0x07},
+        "Receiver reports another app on the phone is playing non-mixable audio",
+    )
+    add(
+        "phone_media_state_idle",
+        phone_media_state(0x2F, 0x01),
+        "control_in",
+        "parse",
+        {"request_token": 0x2F, "flags": 0x01},
+        "Receiver checked: nothing else on the phone is playing audio",
+    )
+    add(
+        "phone_media_state_short",
+        struct.pack("<BB", MSG_PHONE_MEDIA_STATE, 0x30),
+        "control_in",
+        "reject",
+        {},
+        "PHONE_MEDIA_STATE without its flags byte",
+    )
+    add(
         "control_unknown_id",
         struct.pack("<BB", 0x3F, 0x00),
         "control_in",
@@ -500,6 +536,14 @@ def build_fixtures():
         "parse",
         {"reason": 1},
         "User chose Forget Receiver on the watch",
+    )
+    add(
+        "phone_media_query",
+        phone_media_query(),
+        "control_out",
+        "parse",
+        {},
+        "Watch asks the receiver whether the phone is actually playing audio",
     )
     add(
         "ack_ok",
