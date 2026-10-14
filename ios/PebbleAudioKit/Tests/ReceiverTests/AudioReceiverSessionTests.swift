@@ -126,7 +126,8 @@ import WireProtocol
     private func startSession(
         infoBytes: [UInt8]? = nil,
         captureIntent: @escaping @Sendable () -> CaptureIntent = { .active },
-        consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil
+        consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil,
+        phoneMediaProbe: (@Sendable () -> UInt8)? = nil
     ) async -> Fixture {
         let scheduler = TestScheduler()
         let link = infoBytes.map { FakeAudioGattLink(scheduler: scheduler, infoBytes: $0) }
@@ -149,7 +150,8 @@ import WireProtocol
             ),
             clock: clock,
             captureIntent: captureIntent,
-            consumeEnableRequestPermission: consumeEnableRequestPermission
+            consumeEnableRequestPermission: consumeEnableRequestPermission,
+            phoneMediaProbe: phoneMediaProbe
         )
         let task = session.start()
         await clock.settle()
@@ -769,6 +771,29 @@ import WireProtocol
 
         #expect(fx.authRequests().count == 1)
         #expect(fx.session.state.value == .authorizing)
+    }
+
+    @Test func watchAskingWhetherThePhoneIsPlayingGetsTheAudioSessionsAnswer() async {
+        // BookPlayer publishes "playing" while paused, so the watch asks the phone's audio system.
+        let flags = PhoneMediaState.flagChecked | PhoneMediaState.flagOtherAudio
+        let fx = await startSession(phoneMediaProbe: { flags })
+        await authorize(fx)
+
+        fx.link.pushControl(PhoneMediaQuery())
+        await fx.settle()
+        let answers = fx.writes().compactMap { $0 as? PhoneMediaState }
+        #expect(answers.count == 1)
+        #expect(answers.first?.flags == flags)
+    }
+
+    @Test func withoutAProbeThePhoneMediaQueryGoesUnanswered() async {
+        // The watch then falls back to the media service alone.
+        let fx = await startSession()
+        await authorize(fx)
+
+        fx.link.pushControl(PhoneMediaQuery())
+        await fx.settle()
+        #expect(fx.writes().compactMap { $0 as? PhoneMediaState }.isEmpty)
     }
 
     @Test func watchPausingByPolicyAfterAuthorizationTriggersResume() async {

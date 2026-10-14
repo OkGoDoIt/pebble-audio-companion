@@ -203,6 +203,7 @@ public actor ReceiverService {
             clock: clock,
             captureIntent: { intent.value },
             consumeEnableRequestPermission: { armed.consume() },
+            phoneMediaProbe: { PhoneMediaProbe.read() },
             log: sessionLog
         )
     }

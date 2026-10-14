@@ -145,6 +145,15 @@ public actor AudioReceiverSession {
     /// may still want recording, but they must not surprise the user with a watch prompt.
     private let consumeEnableRequestPermission: @Sendable () -> Bool
 
+    /// Answers the watch's PHONE_MEDIA_QUERY: `PhoneMediaState` flags read from the phone's own
+    /// audio system. The watch needs it because the media service it reads (AMS) reports what a
+    /// player publishes, and BookPlayer publishes "playing at 1x" while paused, so the watch's
+    /// now-playing peek stayed up for hours. Nil leaves the query unanswered and the watch falls
+    /// back to AMS alone.
+    private let phoneMediaProbe: (@Sendable () -> UInt8)?
+    /// The last answer, so the log records changes rather than every query.
+    private var lastPhoneMediaFlags: UInt8?
+
     // --- published state (StateFlow ports; thread-safe, sync-readable, streamable) -------------
     nonisolated public let state = StateSubject<ReceiverSessionState>(.disconnected)
     nonisolated public let watchInfo = StateSubject<InfoSnapshot?>(nil)
@@ -165,6 +174,7 @@ public actor AudioReceiverSession {
         clock: ReceiverClock,
         captureIntent: @escaping @Sendable () -> CaptureIntent = { .active },
         consumeEnableRequestPermission: (@Sendable () -> Bool)? = nil,
+        phoneMediaProbe: (@Sendable () -> UInt8)? = nil,
         log: ReceiverLog = .silent
     ) {
         self.link = link
@@ -177,6 +187,7 @@ public actor AudioReceiverSession {
         self.captureIntent = captureIntent
         self.consumeEnableRequestPermission =
             consumeEnableRequestPermission ?? { captureIntent() != .off }
+        self.phoneMediaProbe = phoneMediaProbe
     }
 
     // --- one-in-flight control request bookkeeping ---------------------------------------------
@@ -1381,9 +1392,29 @@ public actor AudioReceiverSession {
             answerWatchProbeIfDue()
         case let error as ErrorMessage:
             lastProtocolError.value = error
+        case is PhoneMediaQuery:
+            answerPhoneMediaQuery()
         default:
             break
         }
+    }
+
+    /// Reads the phone's audio state now and sends it to the watch. Off the control handler's
+    /// path: the answer waits for the single in-flight request slot like any other request.
+    private func answerPhoneMediaQuery() {
+        guard authorized, let probe = phoneMediaProbe else { return }
+        let flags = probe()
+        if flags != lastPhoneMediaFlags {
+            lastPhoneMediaFlags = flags
+            let playing = flags & PhoneMediaState.flagOtherAudio != 0
+            log("phone audio for the watch: \(playing ? "another app is playing" : "nothing playing")"
+                + " (flags 0x\(String(flags, radix: 16)))")
+        }
+        auxTasks.append(Task {
+            _ = await self.sendControlAwaitAck { token in
+                PhoneMediaState(requestToken: token, flags: flags).encode()
+            }
+        })
     }
 
     /// A denial is a fact about right now, not a permanent one — so keep asking, slowly.
