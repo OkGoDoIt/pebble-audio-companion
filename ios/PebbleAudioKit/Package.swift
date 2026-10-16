@@ -15,9 +15,12 @@ let package = Package(
             targets: [
                 "WireProtocol", "SegmentStore", "Receiver", "StatusUI", "AppDB",
                 "Transcription", "Intelligence", "LiveAudio", "SearchKit", "Migration",
-                "CompanionRuntime", "AudioCodec", "Firmware",
+                "CompanionRuntime", "AudioCodec", "Firmware", "MuseLink",
             ]
         ),
+        // The Muse gadget protocol on its own, for the macOS developer tools in ios/Tools/MuseDev
+        // that pair and exercise a gadget without building the whole kit.
+        .library(name: "MuseLink", targets: ["MuseLink"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -90,6 +93,10 @@ let package = Package(
         // verification and the hand-off record. Depends on nothing else in the kit on purpose —
         // it is reachable from Settings alone and must not be able to disturb the capture path.
         .target(name: "Firmware", swiftSettings: swiftSettings),
+        // Meta's Muse gadget protocol (pairing, device API, Noise link, chat turns), ported from
+        // the Apache-2.0 Muse Gadget SDK so the phone can act as the watch's Muse gadget.
+        // Depends on nothing else in the kit: Foundation + CryptoKit only.
+        .target(name: "MuseLink", swiftSettings: swiftSettings),
         .target(name: "SegmentStore", dependencies: ["WireProtocol"], swiftSettings: swiftSettings),
         .target(name: "Receiver", dependencies: ["WireProtocol", "SegmentStore"], swiftSettings: swiftSettings),
         .target(name: "StatusUI", dependencies: ["Receiver", "SegmentStore"], swiftSettings: swiftSettings),
@@ -148,6 +155,10 @@ let package = Package(
         ),
         .testTarget(
             name: "FirmwareTests", dependencies: ["Firmware"],
+            resources: [.copy("Fixtures")], swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "MuseLinkTests", dependencies: ["MuseLink"],
             resources: [.copy("Fixtures")], swiftSettings: swiftSettings
         ),
         .testTarget(name: "SegmentStoreTests", dependencies: ["SegmentStore"], swiftSettings: swiftSettings),
