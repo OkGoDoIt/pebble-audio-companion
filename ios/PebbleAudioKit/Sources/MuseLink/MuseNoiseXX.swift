@@ -122,13 +122,14 @@ struct MuseNoiseSymmetricState: Sendable {
     private(set) var handshakeHash: Data
     private var cipher = MuseNoiseCipher()
 
-    init() {
-        // The protocol name fits in 32 bytes, so h is it zero-padded; then the empty prologue.
+    /// The gadget's prologue is empty; a non-empty one exists for the standard test vectors.
+    init(prologue: Data = Data()) {
+        // The protocol name fits in 32 bytes, so h is it zero-padded; then the prologue.
         var padded = MuseNoiseCrypto.protocolName
         padded.append(Data(count: 32 - padded.count))
         handshakeHash = padded
         chainingKey = padded
-        mixHash(Data())
+        mixHash(prologue)
     }
 
     mutating func mixHash(_ data: Data) {
@@ -163,7 +164,7 @@ struct MuseNoiseSymmetricState: Sendable {
 struct MuseNoiseXXInitiator: Sendable {
     static let minMessage2Length = 32 + (32 + 16) + 16
 
-    private var state = MuseNoiseSymmetricState()
+    private var state: MuseNoiseSymmetricState
     private let ephemeral: Curve25519.KeyAgreement.PrivateKey
     private let staticKey: Curve25519.KeyAgreement.PrivateKey
     private var remoteEphemeral: Data?
@@ -171,20 +172,21 @@ struct MuseNoiseXXInitiator: Sendable {
 
     init(
         ephemeral: Curve25519.KeyAgreement.PrivateKey = .init(),
-        staticKey: Curve25519.KeyAgreement.PrivateKey = .init()
+        staticKey: Curve25519.KeyAgreement.PrivateKey = .init(),
+        prologue: Data = Data()
     ) {
         self.ephemeral = ephemeral
         self.staticKey = staticKey
+        self.state = MuseNoiseSymmetricState(prologue: prologue)
     }
 
     var handshakeHash: Data { state.handshakeHash }
 
-    /// -> e
-    mutating func writeMessage1() throws(MuseNoiseError) -> Data {
+    /// -> e (+ payload; the gadget's is empty)
+    mutating func writeMessage1(payload: Data = Data()) throws(MuseNoiseError) -> Data {
         let publicKey = ephemeral.publicKey.rawRepresentation
         state.mixHash(publicKey)
-        _ = try state.encryptAndHash(Data())
-        return publicKey
+        return publicKey + (try state.encryptAndHash(payload))
     }
 
     /// <- e, ee, s, es (+ payload, returned)
@@ -203,12 +205,12 @@ struct MuseNoiseXXInitiator: Sendable {
         return try state.decryptAndHash(bytes.subdata(in: (32 + 48)..<bytes.count))
     }
 
-    /// -> s, se (empty payload)
-    mutating func writeMessage3() throws(MuseNoiseError) -> Data {
+    /// -> s, se (+ payload; the gadget's is empty — the bearer token authenticated it already)
+    mutating func writeMessage3(payload: Data = Data()) throws(MuseNoiseError) -> Data {
         guard let remoteEphemeral else { throw MuseNoiseError("message 3 before message 2") }
         let encryptedStatic = try state.encryptAndHash(staticKey.publicKey.rawRepresentation)
         state.mixKey(try MuseNoiseCrypto.dh(staticKey, remoteEphemeral))
-        let encryptedPayload = try state.encryptAndHash(Data())
+        let encryptedPayload = try state.encryptAndHash(payload)
         return encryptedStatic + encryptedPayload
     }
 

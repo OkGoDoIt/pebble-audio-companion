@@ -131,3 +131,41 @@ struct MuseTurnTests {
         #expect(MuseTurn.stripControls("a\u{1B}[31mb\tc\nd\u{85}") == "a[31mb\tc\nd")
     }
 }
+
+/// The initiator against cacophony's independent `Noise_XX_25519_AESGCM_SHA256` vector: fixed keys,
+/// a prologue and payloads. Messages alternate initiator, responder, initiator, then transport
+/// messages keep alternating starting with the responder.
+@Suite("Noise XX against the cacophony vector")
+struct MuseNoiseVectorTests {
+    private struct NoiseVector: Decodable {
+        struct Message: Decodable {
+            let payload: String
+            let ciphertext: String
+        }
+        let init_prologue: String
+        let init_static: String
+        let init_ephemeral: String
+        let handshake_hash: String
+        let messages: [Message]
+    }
+
+    @Test func initiatorMatchesTheVector() throws {
+        let url = try #require(Bundle.module.url(forResource: "Fixtures/noise_xx_25519_aesgcm_sha256", withExtension: "json"))
+        let vector = try JSONDecoder().decode(NoiseVector.self, from: Data(contentsOf: url))
+        let m = vector.messages
+        var initiator = MuseNoiseXXInitiator(
+            ephemeral: try .init(rawRepresentation: Data(hex: vector.init_ephemeral)),
+            staticKey: try .init(rawRepresentation: Data(hex: vector.init_static)),
+            prologue: Data(hex: vector.init_prologue))
+
+        #expect(try initiator.writeMessage1(payload: Data(hex: m[0].payload)).hex == m[0].ciphertext)
+        #expect(try initiator.readMessage2(Data(hex: m[1].ciphertext)).hex == m[1].payload)
+        #expect(try initiator.writeMessage3(payload: Data(hex: m[2].payload)).hex == m[2].ciphertext)
+        #expect(initiator.handshakeHash.hex == vector.handshake_hash)
+
+        var (send, receive) = initiator.split()
+        #expect(try receive.decrypt(ad: Data(), ciphertext: Data(hex: m[3].ciphertext)).hex == m[3].payload)
+        #expect(try send.encrypt(ad: Data(), plaintext: Data(hex: m[4].payload)).hex == m[4].ciphertext)
+        #expect(try receive.decrypt(ad: Data(), ciphertext: Data(hex: m[5].ciphertext)).hex == m[5].payload)
+    }
+}
