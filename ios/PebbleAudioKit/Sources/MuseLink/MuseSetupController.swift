@@ -86,6 +86,7 @@ public actor MuseSetupController {
     private let network: any MuseSetupNetwork
     private let verify: @Sendable (MuseGadgetCredentials) async throws(MuseProvisionFailure) -> Void
     private let onPaired: @Sendable (MuseGadgetCredentials) async -> Bool
+    private let trace: (@Sendable (String) -> Void)?
     private let log = Logger(subsystem: "dev.audiocompanion.muselink", category: "setup")
 
     private var pairing: MusePairingSession
@@ -108,6 +109,7 @@ public actor MuseSetupController {
     ///   - verify: checks the provisioned device token works (Meta's gadget fetches its VMs), and
     ///     throws `auth_failed` if not.
     ///   - onPaired: persists the credentials; returns false if it couldn't.
+    ///   - trace: receives every protocol step as a line of text (developer tools); never tokens.
     public init(
         identity: MuseGadgetIdentity,
         firmwareVersion: String,
@@ -116,8 +118,10 @@ public actor MuseSetupController {
         network: any MuseSetupNetwork,
         verify: @escaping @Sendable (MuseGadgetCredentials) async throws(MuseProvisionFailure) -> Void,
         onPaired: @escaping @Sendable (MuseGadgetCredentials) async -> Bool,
-        pairing: MusePairingSession? = nil
+        pairing: MusePairingSession? = nil,
+        trace: (@Sendable (String) -> Void)? = nil
     ) {
+        self.trace = trace
         self.identity = identity
         self.firmwareVersion = firmwareVersion
         self.transport = transport
@@ -169,7 +173,7 @@ public actor MuseSetupController {
                     handleMessage(message, decrypted: false)
                 }
             case .clientDisconnected:
-                log.info("setup client disconnected; clearing pairing session")
+                note("setup client disconnected; clearing pairing session")
                 assembler.reset()
                 plaintextBlocked = false
                 pairing.reset()
@@ -187,12 +191,12 @@ public actor MuseSetupController {
 
     func handleMessage(_ raw: Data, decrypted: Bool) {
         guard let command = MuseJSON.parse(raw), command.object != nil else {
-            log.warning("invalid command JSON (\(raw.count) bytes)")
+            note("invalid command JSON (\(raw.count) bytes)")
             sendStatus("error_invalid_command")
             return
         }
         let action = command["action"]?.string ?? ""
-        log.info("RX action: \(action.isEmpty ? "?" : action, privacy: .public)\(decrypted ? " (encrypted)" : "")")
+        note("RX action: \(action.isEmpty ? "?" : action)\(decrypted ? " (encrypted)" : "")")
 
         if !decrypted, action == "pairing_client_hello" {
             handleHello(command)
@@ -203,7 +207,7 @@ public actor MuseSetupController {
             // handshake on the same connection.
             sendJSON(deviceInfo())
         } else if !decrypted, plaintextBlocked {
-            log.warning("plaintext command ignored after pairing started: \(action, privacy: .public)")
+            note("plaintext command ignored after pairing started: \(action)")
         } else if !decrypted, Self.sensitiveActions.contains(action) {
             sendStatus("error_encryption_required")
         } else if decrypted, action == "pairing_client_finished" {
@@ -258,7 +262,7 @@ public actor MuseSetupController {
             disconnectSoon(Self.disconnectAfterError)
             return
         }
-        log.info("pairing confirmed (app consent)")
+        note("pairing confirmed (app consent)")
         sendStatus("pairing_confirmed", generation: generation)
     }
 
@@ -305,7 +309,7 @@ public actor MuseSetupController {
         do {
             try await verify(credentials)
         } catch {
-            log.warning("provisioning failed: \(error.status, privacy: .public)")
+            note("provisioning failed: \(error.status)")
             sendStatus(error.status, generation: generation)
             disconnectSoon(.milliseconds(500))
             return
@@ -317,7 +321,12 @@ public actor MuseSetupController {
         }
         completed = true
         sendStatus("auth_ok", generation: generation)
-        log.info("setup complete")
+        note("setup complete")
+    }
+
+    private func note(_ message: String) {
+        log.info("\(message, privacy: .public)")
+        trace?(message)
     }
 
     private func disconnectSoon(_ delay: Duration) {
@@ -330,26 +339,26 @@ public actor MuseSetupController {
     func sendStatus(_ status: String, generation: Int = 0) {
         if let envelope = pairing.encryptStatus(status, generation: generation) {
             enqueue(envelope.compactString())
-            log.info("TX status (encrypted #\(envelope["counter"]?.string ?? "?", privacy: .public)): \(status, privacy: .public)")
+            note("TX status (encrypted #\(envelope["counter"]?.string ?? "?")): \(status)")
             return
         }
         guard generation == 0, !plaintextBlocked, Self.plaintextStatuses.contains(status) else {
-            log.info("TX status suppressed: \(status, privacy: .public)")
+            note("TX status suppressed: \(status)")
             return
         }
         // Plaintext statuses go out unframed.
         outboxContinuation.yield([Data(status.utf8)])
-        log.info("TX status: \(status, privacy: .public)")
+        note("TX status: \(status)")
     }
 
     func sendJSON(_ message: MuseJSON) {
         enqueue(message.compactString())
-        log.info("TX \(message["type"]?.string ?? "?", privacy: .public)")
+        note("TX \(message["type"]?.string ?? "?")")
     }
 
     func sendEncryptedJSON(_ message: MuseJSON, generation: Int = 0) {
         guard let envelope = pairing.encrypt(message.compactString(), generation: generation) else {
-            log.info("TX \(message["type"]?.string ?? "?", privacy: .public) suppressed: no session")
+            note("TX \(message["type"]?.string ?? "?") suppressed: no session")
             return
         }
         enqueue(envelope.compactString())
@@ -359,7 +368,7 @@ public actor MuseSetupController {
         do {
             outboxContinuation.yield(try MuseBLEFraming.encode(Data(text.utf8), mtu: mtu))
         } catch {
-            log.error("TX dropped: message needs too many chunks")
+            note("TX dropped: message needs too many chunks")
         }
     }
 }

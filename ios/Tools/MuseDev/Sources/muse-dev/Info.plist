@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.audiocompanion.muse-dev</string>
+	<key>CFBundleName</key>
+	<string>muse-dev</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>muse-dev advertises this Mac as a Muse gadget so the Muse app can pair with it.</string>
+</dict>
+</plist>
