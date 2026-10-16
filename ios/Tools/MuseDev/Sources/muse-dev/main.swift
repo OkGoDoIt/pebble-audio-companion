@@ -127,13 +127,181 @@ func status() async throws {
     }
 }
 
+/// The watch-side commands registered with `--register`, for seeing whether and how Muse calls a
+/// gadget's commands. Here they only print; in the app they reach the watch.
+let watchCommands: MuseJSON = [
+    "watch.show": [
+        "description": "Show a short message on the user's Pebble smartwatch screen. Keep it under 200 characters.",
+        "required": [
+            "title": ["type": "string", "description": "A few words, shown in bold."],
+            "body": ["type": "string", "description": "The message text."],
+        ],
+        "optional": [:],
+    ],
+    "watch.vibrate": [
+        "description": "Vibrate the user's Pebble smartwatch to get their attention.",
+        "required": [:],
+        "optional": [
+            "pattern": ["type": "string", "description": "short, long or double. Default short."],
+        ],
+    ],
+]
+
+/// Thread-safe holder for the turn being followed, shared by the event reader and the poller.
+actor TurnBox {
+    var turn: MuseTurn
+    var firstStatusAt: ContinuousClock.Instant?
+    var firstTextAt: ContinuousClock.Instant?
+    var printed: [String: Int] = [:]
+
+    init(_ turn: MuseTurn) { self.turn = turn }
+
+    func apply(_ events: [MuseTurn.Event]) {
+        for event in events {
+            switch event {
+            case .status(let status):
+                if firstStatusAt == nil { firstStatusAt = .now }
+                say("status: \(status.activityCode ?? "-")\(status.activityText.map { " — \($0)" } ?? "")")
+            case .reply(let reply):
+                // Print only what's new since the last delta of this message.
+                let shown = printed[reply.messageID] ?? 0
+                if reply.streamed.count > shown {
+                    if firstTextAt == nil { firstTextAt = .now }
+                    let delta = String(reply.streamed.dropFirst(shown))
+                    print(delta, terminator: "")
+                    fflush(stdout)
+                    printed[reply.messageID] = reply.streamed.count
+                }
+                if reply.done {
+                    if firstTextAt == nil, !reply.text.isEmpty { firstTextAt = .now }
+                    print("")
+                    say("reply \(reply.messageID) done\(reply.bound ? "" : " (unbound)"): \(reply.text)")
+                }
+            case .taskFinished:
+                say("task finished")
+            }
+        }
+    }
+
+    func feed(_ event: MuseJSON) throws {
+        apply(try turn.feed(event))
+    }
+
+    func acknowledge(_ response: MuseJSON?) throws {
+        apply(try turn.acknowledge(response))
+    }
+
+    func isComplete() -> Bool { turn.isComplete() }
+}
+
+func turn(message: String, sessionID: String?, register: Bool, voicePath: String?, rawEvents: Bool) async throws {
+    let clock = ContinuousClock()
+    let started = clock.now
+    func elapsed() -> String { "\((clock.now - started).formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow)))" }
+
+    var credentials = try await freshCredentials()
+    var vms: [MuseVM]
+    do {
+        vms = try await api.fetchVMs(accessToken: credentials.accessToken, apiRoot: credentials.apiRoot)
+    } catch .http(401) {
+        say("device token rejected; rotating")
+        credentials = try await freshCredentials(force: true)
+        vms = try await api.fetchVMs(accessToken: credentials.accessToken, apiRoot: credentials.apiRoot)
+    }
+    guard let vm = vms.first(where: \.isDefault) ?? vms.first else { fail("No VM leased to this gadget.") }
+    say("VM \(vm.vmName.isEmpty ? vm.vmID : vm.vmName) (fetched in \(elapsed()))")
+
+    let device = MuseLinkSession.Device(
+        nodeID: credentials.identity.nodeID, displayName: "Pebble watch (muse-dev)", version: "0.1.0",
+        commands: watchCommands)
+    let session = try MuseLinkSession(
+        noiseHost: credentials.noiseHost, vmID: vm.linkVMID, vmAuthToken: vm.vmAuthToken,
+        device: register ? device : nil,
+        commandHandler: { command, params, _ in
+            say("Muse called \(command) \(params.compactString())")
+            return ["ok": true, "payload": ["shown": true]]
+        },
+        trace: { say("link: \($0)") })
+    try await session.connect()
+    say("connected in \(elapsed())")
+    if register {
+        try await session.waitUntilRegistered()
+        say("registered in \(elapsed())")
+    }
+
+    let events = try await session.subscribeChat(sessionID: sessionID)
+    let box = TurnBox(MuseTurn(sessionID: sessionID))
+    let reader = Task {
+        do {
+            for try await event in events {
+                if rawEvents { say("event: \(event.compactString())") }
+                try await box.feed(event)
+            }
+        } catch {
+            say("event stream ended: \(error)")
+        }
+    }
+
+    let ack: MuseLinkSession.ChatAck
+    if let voicePath {
+        let wav = try Data(contentsOf: URL(fileURLWithPath: voicePath))
+        ack = try await session.sendVoice(wav: wav, sessionID: sessionID, message: message)
+    } else {
+        ack = try await session.sendChat(message, sessionID: sessionID)
+    }
+    say("acknowledged in \(elapsed()): HTTP \(ack.status) \(ack.response?.compactString() ?? "")")
+    guard ack.ok else {
+        await session.close()
+        fail("Muse refused the message.")
+    }
+    try await box.acknowledge(ack.response)
+
+    let deadline = clock.now + .seconds(180)
+    while !(await box.isComplete()) && clock.now < deadline {
+        try await Task.sleep(for: .milliseconds(200))
+    }
+    reader.cancel()
+    let first = await box.firstStatusAt.map { "\(($0 - started).formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow)))" } ?? "—"
+    let text = await box.firstTextAt.map { "\(($0 - started).formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow)))" } ?? "—"
+    say("done in \(elapsed()); first status \(first), first text \(text)")
+    if !(await box.isComplete()) { say("(gave up waiting after 180 s)") }
+    await session.close()
+}
+
+func value(after flag: String) -> String? {
+    guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+    return arguments[index + 1]
+}
+
 do {
     switch arguments.first {
     case "pair": try await pair(force: arguments.contains("--force"))
     case "status": try await status()
     case "refresh": _ = try await freshCredentials(force: true)
+    case "turn":
+        let flagsWithValues: Set<String> = ["--session-id", "--voice"]
+        var words: [String] = []
+        var skip = false
+        for argument in arguments.dropFirst() {
+            if skip { skip = false; continue }
+            if flagsWithValues.contains(argument) { skip = true; continue }
+            if argument.hasPrefix("--") { continue }
+            words.append(argument)
+        }
+        let message = words.joined(separator: " ")
+        guard !message.isEmpty || value(after: "--voice") != nil else {
+            fail("usage: muse-dev turn \"message\" [--session-id ID] [--register] [--voice file.wav] [--raw]")
+        }
+        try await turn(
+            message: message, sessionID: value(after: "--session-id"), register: arguments.contains("--register"),
+            voicePath: value(after: "--voice"), rawEvents: arguments.contains("--raw"))
     default:
-        print("usage: muse-dev pair [--force] | status | refresh")
+        print("""
+            usage: muse-dev pair [--force]
+                   muse-dev status
+                   muse-dev refresh
+                   muse-dev turn "message" [--session-id ID] [--register] [--voice file.wav] [--raw]
+            """)
         exit(2)
     }
 } catch {
