@@ -126,6 +126,16 @@ public actor MuseLinkSession {
         guard let url = Self.url(noiseHost: noiseHost.isEmpty ? MuseDeviceAPI.defaultNoiseHost : noiseHost, vmID: vmID) else {
             throw Failure.protocolError("bad noise host or vm id")
         }
+        self.init(url: url, vmAuthToken: vmAuthToken, device: device, commandHandler: commandHandler,
+                  userAgent: userAgent, urlSession: urlSession, trace: trace)
+    }
+
+    /// Any socket URL — for tests against a local fake VM (`ws://127.0.0.1:…`).
+    init(
+        url: URL, vmAuthToken: String, device: Device?, commandHandler: CommandHandler?,
+        userAgent: String = MuseDeviceAPI.defaultUserAgent, urlSession: URLSession = .shared,
+        trace: (@Sendable (String) -> Void)? = nil
+    ) {
         self.url = url
         self.vmAuthToken = vmAuthToken
         self.device = device
