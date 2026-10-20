@@ -67,9 +67,9 @@ Every result that can be cut has `truncated` (boolean). When it is `true`, or wh
 ```
 
 Calling `next.tool` with `next.arguments` returns the following window or page. The ceiling is the
-*Length of an assistant answer* setting (`ToolMaxCharacters`, 60,000 characters of JSON by default, so the
-JSON in `content` plus `structuredContent` stays under Claude's ~150,000-character result limit and Claude
-Code's 25,000 tokens) and the *Items per assistant answer* setting (`ToolMaxResults`, 50). A day of
+*Length of an assistant answer* setting (`ToolMaxCharacters`, 40,000 characters of JSON by default, so the
+JSON in `content` plus `structuredContent` stays under Claude's ~150,000-character result limit, and under
+the 50,000 characters past which Claude Code moves a result into a file and its 25,000 tokens) and the *Items per assistant answer* setting (`ToolMaxResults`, 50). A day of
 transcripts is about 200,000 characters, so whole days never come back in one result. One very long text
 (a recap, a single turn) is cut with `…` at the end rather than dropped.
 

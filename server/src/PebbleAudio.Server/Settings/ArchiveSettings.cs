@@ -14,10 +14,11 @@ public sealed record ArchiveSettings
 
 	/// <summary>
 	/// The longest tool result, in characters of JSON. A result carries it twice (as text and as structured content),
-	/// so 60,000 keeps the whole under Claude's ~150,000-character result limit, and its text under Claude Code's
-	/// 25,000 tokens.
+	/// so 40,000 keeps the whole under Claude's ~150,000-character result limit, and under Claude Code's limits: it
+	/// moves a result over 50,000 characters out of the chat into a file, and stops at 25,000 tokens (timestamp-heavy
+	/// transcript JSON runs about 2.5 characters a token).
 	/// </summary>
-	public int ToolMaxCharacters { get; init; } = 60_000;
+	public int ToolMaxCharacters { get; init; } = 40_000;
 
 	/// <summary>How much of a transcript one read returns when the assistant does not ask for a length.</summary>
 	public int TranscriptReadCharacters { get; init; } = 30_000;
@@ -110,7 +111,7 @@ public sealed record SettingDefinition(
 		new(
 			nameof(ArchiveSettings.ToolMaxCharacters),
 			"Length of an assistant answer",
-			"Longer results are cut short and say how to read on. Claude takes about 150,000 characters.",
+			"Longer results are cut short and say how to read on. Claude Code moves results over 50,000 characters to a file.",
 			"characters",
 			2_000,
 			1_000_000,
