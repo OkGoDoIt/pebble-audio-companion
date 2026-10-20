@@ -212,8 +212,31 @@ lets the phone pull immediately after a push.
 - `POST /sync/wipe` `{ "confirm": "wipe" }`: deletes every row and file for the user on the
   server (the app's *Delete all* calls this after wiping locally).
 - `GET /sync/status` → counts per kind, `lastBatchAt`, `pendingRequests`, `serverTime`,
-  `aiReads` (the last 20 tool calls by assistants: when, which client, which tool, which ids), so
-  the app's status row and "what AI read" line are truthful.
+  `aiReads` (the last 20 tool calls by assistants: when, which client, which tool, which ids), and
+  `access`, so the app's status row, its "what AI read" line and the privacy screen are truthful:
+
+  ```json
+  "access": [
+    { "kind": "oauth", "id": "…", "name": "ChatGPT", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" },
+    { "kind": "oauth", "id": "…", "name": "Claude", "scopes": ["archive:read", "archive:write"], "connectedAt": "…", "lastUsedAt": null },
+    { "kind": "token", "id": "…", "name": "Codex on Mac", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" }
+  ]
+  ```
+
+  One entry per assistant that can read the archive right now: every OAuth client with a live
+  grant (named from its client metadata: ChatGPT, Claude, …) and every unrevoked personal token
+  (named by its owner in the admin area). Revoked or expired access is not listed. `scopes` tells
+  the phone whether that assistant can also write (create follow-ups and notes).
+- `DELETE /sync/access/{kind}/{id}` (device token): revokes one assistant's access from the
+  phone. `204`.
+- `PUT /sync/preferences` (device token) `{ "clips": false, "edits": false }`: what the person
+  allowed on the phone. Sent once after linking and whenever a choice changes; both default to
+  `false` until the phone says otherwise. With `clips: false` the server never queues a clip
+  request (the audio tool answers that the person has not allowed clips); with `edits: false` it
+  refuses the follow-up and note write tools (they answer that the person has not allowed
+  assistants to add to their archive). The phone also refuses such requests itself, so a stale
+  server preference can never move audio or write anything the person did not allow.
+  `GET /sync/preferences` returns the stored value.
 
 ## 6. What the server derives and never asks the phone for
 
