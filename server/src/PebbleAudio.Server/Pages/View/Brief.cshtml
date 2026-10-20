@@ -1,0 +1,73 @@
+@page "/b/{kind}/{key}"
+@model PebbleAudio.Server.Pages.View.BriefModel
+@using PebbleAudio.Server.Data
+@using PebbleAudio.Server.Pages.View
+@{
+	var v = Model.View!;
+	var week = v.Kind == BriefKind.Week;
+	var period = week ? "week" : "month";
+	ViewData["Title"] = v.Title;
+	ViewData["BarTitle"] = v.Title;
+	ViewData["BodyClass"] = "page-brief";
+	ViewData["ShowMonths"] = false;
+}
+@section Back {
+	<a class="vbar-back" href="/">@Icons.Back<span>Days</span></a>
+}
+<main class="dv bv">
+	<header class="dv-head">
+		<div class="dv-title-row">
+			<h1>@v.Title</h1>
+			<nav class="steps" aria-label="Other @(period)s">
+				<a class="step prev" href="@v.PreviousUrl" aria-label="The @period before">@Icons.Back</a>
+				<a class="step next" href="@v.NextUrl" aria-label="The @period after">@Icons.Forward</a>
+			</nav>
+		</div>
+		<p class="dv-sub">@v.RangeText</p>
+	</header>
+
+	<div class="dv-layout">
+		<div class="dv-side">
+			<section class="card brief" aria-labelledby="brief-h">
+				<h2 class="card-head" id="brief-h">The @period in brief</h2>
+				@if (!v.InScope)
+				{
+					<p class="state-head">Your phone doesn't share this @period</p>
+					@if (v.ScopeLine is not null)
+					{
+						<p class="brief-none">@v.ScopeLine</p>
+					}
+				}
+				else if (!v.Found)
+				{
+					<p class="state-head">No brief for this @period yet</p>
+				}
+				else
+				{
+					@if (v.Headline is not null)
+					{
+						<p class="brief-headline">@v.Headline</p>
+					}
+					@if (v.Text is not null)
+					{
+						<div class="brief-text"><p>@v.Text</p></div>
+					}
+					else if (v.Line is not null)
+					{
+						<div class="brief-text"><p>@v.Line</p></div>
+					}
+				}
+			</section>
+		</div>
+		<section class="bv-days" aria-label="Days">
+			@if (v.Days.Count > 0)
+			{
+				<partial name="_DayRows" model="v.Days" view-data="ViewData" />
+			}
+			else if (v.InScope)
+			{
+				<p class="scope-line">Nothing recorded this @period.</p>
+			}
+		</section>
+	</div>
+</main>

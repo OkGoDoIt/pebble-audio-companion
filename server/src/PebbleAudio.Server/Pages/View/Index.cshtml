@@ -1,0 +1,26 @@
+@page "/"
+@model PebbleAudio.Server.Pages.View.IndexModel
+@{
+	var v = Model.View!;
+	ViewData["Title"] = "Recent days";
+	ViewData["BarTitle"] = "Recent days";
+	ViewData["BodyClass"] = "page-home";
+}
+<main class="home">
+	<h1>Recent days</h1>
+	@if (v.Days.Count == 0)
+	{
+		<section class="card state">
+			<p class="state-head">Nothing here yet</p>
+			<p>Days appear once your phone syncs with this server.</p>
+		</section>
+	}
+	else
+	{
+		<partial name="_DayRows" model="v.Days" />
+	}
+	@if (v.ScopeLine is not null)
+	{
+		<p class="scope-line">@v.ScopeLine</p>
+	}
+</main>

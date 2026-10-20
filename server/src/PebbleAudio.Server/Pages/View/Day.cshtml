@@ -1,0 +1,191 @@
+@page "/d/{dayKey}"
+@model PebbleAudio.Server.Pages.View.DayModel
+@using PebbleAudio.Server.Pages.View
+@{
+	var v = Model.View!;
+	ViewData["Title"] = $"{v.Weekday}, {v.DateText}";
+	ViewData["BarTitle"] = v.Weekday;
+	ViewData["BodyClass"] = "page-day";
+	string? Long(string? text) => text is { Length: > 280 } ? "long" : null;
+}
+@section Back {
+	<a class="vbar-back" href="/">@Icons.Back<span>Days</span></a>
+}
+@section Head {
+	<script type="module" src="~/js/view/day.js" asp-append-version="true"></script>
+}
+<main class="dv">
+	<header class="dv-head">
+		<div class="dv-title-row">
+			<h1>@v.Weekday</h1>
+			<nav class="steps" aria-label="Other days">
+				@if (v.Previous is { } previous)
+				{
+					<a class="step prev" href="@Model.DayUrl(previous)" aria-label="Earlier: @ViewText.Weekday(previous), @ViewText.LongDate(previous)">@Icons.Back</a>
+				}
+				else
+				{
+					<span class="step prev" aria-hidden="true">@Icons.Back</span>
+				}
+				@if (v.Next is { } next)
+				{
+					<a class="step next" href="@Model.DayUrl(next)" aria-label="Later: @ViewText.Weekday(next), @ViewText.LongDate(next)">@Icons.Forward</a>
+				}
+				else
+				{
+					<span class="step next" aria-hidden="true">@Icons.Forward</span>
+				}
+			</nav>
+		</div>
+		<p class="dv-sub">@v.DateText<span class="sep"> · </span>@v.Place time<span class="sep"> · </span><a href="@v.WeekUrl">This week</a></p>
+	</header>
+
+	@if (v.State != DayState.Found)
+	{
+		<section class="card state">
+			@if (v.State == DayState.OutsideScope)
+			{
+				<p class="state-head">Your phone doesn't share this day</p>
+				@if (v.ScopeLine is not null)
+				{
+					<p>@v.ScopeLine</p>
+				}
+			}
+			else
+			{
+				<p class="state-head">Nothing recorded on @v.Weekday</p>
+			}
+		</section>
+	}
+	else
+	{
+		<div class="dv-layout">
+			<div class="dv-side">
+				<section class="card brief" aria-labelledby="brief-h">
+					<h2 class="card-head" id="brief-h">The day in brief</h2>
+					@if (v.Headline is null && v.RecapText is null)
+					{
+						<p class="brief-none">No summary yet</p>
+					}
+					else
+					{
+						@if (v.Headline is not null)
+						{
+							<p class="brief-headline">@v.Headline</p>
+						}
+						@if (v.RecapText is not null)
+						{
+							<div class="brief-text @Long(v.RecapText)" data-brief>
+								<p>@v.RecapText</p>
+							</div>
+							@if (Long(v.RecapText) is not null)
+							{
+								<button type="button" class="text-btn brief-more" data-brief-more hidden>Show more</button>
+							}
+						}
+						else if (v.Line is not null)
+						{
+							<div class="brief-text"><p>@v.Line</p></div>
+						}
+					}
+					@if (v.FollowUpTotal > 0)
+					{
+						<p class="brief-foot">@ViewText.Count(v.FollowUpTotal, "follow-up", "follow-ups")@(v.FollowUpOpen == 0 ? (v.FollowUpTotal == 1 ? " · done" : " · all done") : v.FollowUpTotal == 1 ? " · open" : $" · {v.FollowUpOpen} open")</p>
+					}
+				</section>
+
+				@if (v.Strip is { } strip)
+				{
+					<section class="card coverage" aria-labelledby="cov-h">
+						<h2 class="card-head" id="cov-h">Recording</h2>
+						<div class="daystrip" role="img" aria-label="@strip.Label">
+							<div class="ds-band">
+								@foreach (var span in strip.Spans)
+								{
+									<span class="ds-span k-@span.Kind" style="left:@(span.Left.ToString(System.Globalization.CultureInfo.InvariantCulture))%;width:@(span.Width.ToString(System.Globalization.CultureInfo.InvariantCulture))%" title="@span.Title"></span>
+								}
+								@foreach (var block in strip.Blocks)
+								{
+									<span class="ds-block k-@block.Kind" style="left:@(block.Left.ToString(System.Globalization.CultureInfo.InvariantCulture))%;width:@(block.Width.ToString(System.Globalization.CultureInfo.InvariantCulture))%" title="@block.Title"></span>
+								}
+							</div>
+							<div class="ds-axis" aria-hidden="true">
+								@foreach (var tick in strip.Ticks)
+								{
+									<span style="left:@(tick.Left.ToString(System.Globalization.CultureInfo.InvariantCulture))%">@tick.Label</span>
+								}
+							</div>
+						</div>
+						@if (v.Totals.Count > 0)
+						{
+							<ul class="legend totals">
+								@foreach (var total in v.Totals)
+								{
+									<li class="k-@total.Kind"><i class="sw @total.Kind"></i>@total.Name <b>@total.Value</b></li>
+								}
+							</ul>
+						}
+					</section>
+				}
+			</div>
+
+			<section class="tl" aria-label="Conversations through the day">
+				@foreach (var item in v.Items)
+				{
+					if (item.Card is { } card)
+					{
+						<div class="tl-item conv">
+							<span class="tl-time">@card.Start</span>
+							<a class="ccard @(card.Compact ? "compact" : null)" href="@card.Url">
+								<p class="ctitle @(card.HasTitle ? null : "untitled")">@card.Title</p>
+								<p class="timeline-meta">@card.TimeText@if (card.MissingText is not null)
+									{<span class="sep"> · </span><span class="loss">@card.MissingText</span>}</p>
+								@if (!card.Compact && card.Summary is not null)
+								{
+									<p class="csum">@card.Summary</p>
+								}
+								@if (!card.Compact && (card.Tags.Count > 0 || card.People.Count > 0))
+								{
+									<ul class="pills">
+										@foreach (var tag in card.Tags)
+										{
+											<li class="pill topic">@tag</li>
+										}
+										@foreach (var person in card.People)
+										{
+											<li class="pill person">@Icons.Person @person</li>
+										}
+									</ul>
+								}
+								@if (card.FollowUps.Count > 0)
+								{
+									<ul class="fu">
+										@foreach (var f in card.FollowUps)
+										{
+											<li class="@(f.Done ? "done" : null)">@(f.Done ? Icons.Done : Icons.Circle)<span class="fu-text">@f.Text</span></li>
+										}
+									</ul>
+								}
+							</a>
+						</div>
+					}
+					else if (item.Stretch is { } stretch)
+					{
+						<div class="tl-item gap g-@stretch.Bar" style="--h:@(Math.Clamp(stretch.Minutes / 6, 24, 72))px">
+							<span class="bar" aria-hidden="true"></span>
+							<p class="gap-label">
+								<span class="name">@stretch.Name</span>@if (stretch.Rest is not null)
+								{<span> · @stretch.Rest</span>}@if (stretch.MissingText is not null)
+								{<span class="loss"> · @stretch.MissingText</span>}
+								@if (stretch.Detail is not null)
+								{
+									<span class="detail">@stretch.Detail</span>
+								}
+							</p>
+						</div>
+					}
+				}
+			</section>
+		</div>
+	}
+</main>

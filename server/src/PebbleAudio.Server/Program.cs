@@ -139,10 +139,12 @@ builder.Services.AddJobQueue()
 builder.Services.AddSync();
 builder.Services.AddOAuthServer();
 builder.Services.AddMcpEvents();
+builder.Services.AddViewer();
 
 builder.Services.AddRazorPages(options =>
 {
 	options.Conventions.AuthorizeFolder("/Admin");
+	options.Conventions.AuthorizeFolder("/View");
 	options.Conventions.AllowAnonymousToPage("/Admin/Login");
 	options.Conventions.AllowAnonymousToPage("/Admin/Setup");
 });
@@ -183,7 +185,7 @@ if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
 
 app.MapHealthChecks("/healthz");
 
-app.MapGet("/", () => Results.Redirect("/admin"));
+app.MapViewer();
 
 // The SDK serves the protected-resource metadata at /.well-known/oauth-protected-resource/mcp; some clients
 // look at the root path first, so it answers there too.
