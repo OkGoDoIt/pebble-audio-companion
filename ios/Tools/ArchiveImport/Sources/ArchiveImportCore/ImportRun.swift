@@ -10,16 +10,21 @@ public struct ImportOptions: Sendable {
     public var code: String?
     /// Nil: the sharing scope stored on the server when it has one, else everything.
     public var scope: ImportScope?
+    /// Nil: only what is dated before the phone's own archive on the server begins, and nothing
+    /// from before the archive was last deleted.
+    public var before: ImportBoundary?
     public var dryRun: Bool
     public var limit: Int?
 
     public init(
-        backup: URL, server: String?, code: String?, scope: ImportScope?, dryRun: Bool, limit: Int?
+        backup: URL, server: String?, code: String?, scope: ImportScope?,
+        before: ImportBoundary? = nil, dryRun: Bool, limit: Int?
     ) {
         self.backup = backup
         self.server = server
         self.code = code
         self.scope = scope
+        self.before = before
         self.dryRun = dryRun
         self.limit = limit
     }
@@ -64,6 +69,7 @@ public struct ImportRun {
         var client: ImportClient?
         var scope = options.scope ?? .all
         var scopeNote = ""
+        var holdings: ImportClient.Holdings?
         if !options.dryRun {
             let (linked, linkedClient, linkedNow) = try await link()
             endpoint = linked
@@ -85,17 +91,56 @@ public struct ImportRun {
                 scope = stored
                 scopeNote = " (the sharing scope set on the phone)"
             }
+            holdings = try await linkedClient.holdings(linked)
         }
+
+        // Only what the phone no longer has: what is dated before its own archive on the server
+        // begins (a conversation it has re-cut since would otherwise stay twice), and nothing from
+        // before the archive was deleted (that would bring back what the person deleted).
+        let boundary: Int64?
+        switch options.before {
+        case .before(let ms)?:
+            boundary = ms
+            Output.line("Before   \(Output.localTime(ms)) (--before)")
+        case .everything?:
+            boundary = nil
+            Output.line("Before   everything in the backup (--before all)")
+        case nil where options.dryRun:
+            boundary = nil
+        case nil:
+            guard let since = holdings?.phoneSinceMs else {
+                throw Stop.message(
+                    "No phone has sent conversations to this server yet. Link the phone and let it sync "
+                        + "first, so the import adds only what the phone no longer has; or choose with "
+                        + "--before <date>, or --before all to send everything.")
+            }
+            boundary = since
+            Output.line("Before   \(Output.localTime(since)), where the phone's own archive on the server begins")
+        }
+        let wipedAt = options.before == nil ? holdings?.wipedAtMs : nil
+        if let wipedAt {
+            Output.line("Deleted  the archive was deleted on \(Output.localTime(wipedAt)); nothing from before then is sent again")
+        }
+
         let cutoff = scope.cutoffMs(nowMs: nowMs())
         let dates = try await ScopeDates.load(library.database, zoneID: library.zoneID)
         var tally = Tally()
         var selected: [ArchiveOutboxRow] = []
         for row in rows {
-            if dates.contains(row.kind, id: row.entityId, cutoffMs: cutoff) {
-                selected.append(row)
-            } else {
+            if !dates.contains(row.kind, id: row.entityId, cutoffMs: cutoff) {
                 tally[row.kind].outOfScope += 1
+            } else if let wipedAt, !dates.contains(row.kind, id: row.entityId, cutoffMs: wipedAt) {
+                tally.deletedBefore += 1
+            } else if let boundary, !dates.isBefore(row.kind, id: row.entityId, boundaryMs: boundary) {
+                tally.phoneHas += 1
+            } else {
+                selected.append(row)
             }
+        }
+        // People go with what mentions them; alone they would only bring back names.
+        if !selected.contains(where: { $0.kind != .person }) {
+            tally.phoneHas += selected.count
+            selected = []
         }
         if let limit = options.limit, selected.count > limit {
             tally.overLimit = selected.count - limit
@@ -332,6 +377,10 @@ struct Tally {
     private var kinds: [ArchiveEntityKind: Kind] = [:]
     /// In scope, but past `--limit`.
     var overLimit = 0
+    /// Dated from where the phone's own archive begins: the phone sends it.
+    var phoneHas = 0
+    /// Dated before the archive was last deleted.
+    var deletedBefore = 0
     var firstFailure: (ArchiveEntityKind, String, String, Data)?
 
     subscript(kind: ArchiveEntityKind) -> Kind {
@@ -406,6 +455,14 @@ struct Tally {
         if outsideScope > 0 {
             Output.line("")
             Output.line("The server skipped \(outsideScope.formatted()) items outside the account's sharing scope.")
+        }
+        if phoneHas > 0 {
+            Output.line("")
+            Output.line("Left to the phone, which holds them: \(phoneHas.formatted()) items.")
+        }
+        if deletedBefore > 0 {
+            Output.line("")
+            Output.line("Not sent again, from before the archive was deleted: \(deletedBefore.formatted()) items.")
         }
         if overLimit > 0 {
             Output.line("")

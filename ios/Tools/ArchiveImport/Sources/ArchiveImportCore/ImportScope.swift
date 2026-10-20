@@ -62,6 +62,21 @@ public enum ImportScope: Equatable, Sendable {
     }
 }
 
+/// `--before`: send only what is dated before a moment, because the phone holds what comes after
+/// (by default the start of the phone's own archive on the server), or `all` to send everything.
+public enum ImportBoundary: Equatable, Sendable {
+    case before(ms: Int64)
+    case everything
+
+    /// `all`, a `YYYY-MM-DD` (the start of that app day in `timeZone`), or an RFC 3339 time.
+    public static func parse(_ text: String, timeZone: TimeZone = .current) -> ImportBoundary? {
+        let value = text.trimmingCharacters(in: .whitespaces)
+        if value == "all" { return .everything }
+        guard case .since(let ms)? = ImportScope.parse("since:\(value)", timeZone: timeZone) else { return nil }
+        return .before(ms: ms)
+    }
+}
+
 /// What each item is dated by, as §5 defines it: a conversation (and its transcript) by when it
 /// started, a note by its conversation, a follow-up by when it was said (else when it was
 /// written), a recap and a day's coverage by their day, a brief by its last day. People are not
@@ -73,15 +88,18 @@ public enum ImportScope: Equatable, Sendable {
 public struct ScopeDates: Sendable {
     public var conversationStartMs: [String: Int64]
     public var noteConversation: [String: String]
+    /// When each note was written, for one without a conversation.
+    public var noteCreatedMs: [String: Int64]
     public var followUpMs: [String: Int64]
     public var zoneID: String
 
     public init(
         conversationStartMs: [String: Int64], noteConversation: [String: String],
-        followUpMs: [String: Int64], zoneID: String
+        noteCreatedMs: [String: Int64] = [:], followUpMs: [String: Int64], zoneID: String
     ) {
         self.conversationStartMs = conversationStartMs
         self.noteConversation = noteConversation
+        self.noteCreatedMs = noteCreatedMs
         self.followUpMs = followUpMs
         self.zoneID = zoneID
     }
@@ -93,8 +111,10 @@ public struct ScopeDates: Sendable {
                 starts[row["id"]] = row["startMs"]
             }
             var notes: [String: String] = [:]
-            for row in try Row.fetchAll(d, sql: "SELECT id, conversationId FROM notes") {
+            var notesCreated: [String: Int64] = [:]
+            for row in try Row.fetchAll(d, sql: "SELECT id, conversationId, createdAtMs FROM notes") {
                 notes[row["id"]] = row["conversationId"]
+                notesCreated[row["id"]] = row["createdAtMs"]
             }
             var followUps: [String: Int64] = [:]
             for row in try Row.fetchAll(
@@ -103,8 +123,8 @@ public struct ScopeDates: Sendable {
                 followUps[row["id"]] = row["at"]
             }
             return ScopeDates(
-                conversationStartMs: starts, noteConversation: notes, followUpMs: followUps,
-                zoneID: zoneID)
+                conversationStartMs: starts, noteConversation: notes, noteCreatedMs: notesCreated,
+                followUpMs: followUps, zoneID: zoneID)
         }
     }
 
@@ -112,21 +132,47 @@ public struct ScopeDates: Sendable {
     /// cannot be found here (a transcript of a conversation that is gone) is left to the builder.
     public func contains(_ kind: ArchiveEntityKind, id: String, cutoffMs: Int64?) -> Bool {
         guard let cutoffMs else { return true }
-        let cutoffDay = LogicalDay.dateKey(forMs: cutoffMs, timeZoneID: zoneID)
+        switch dating(kind, id: id) {
+        case .instant(let ms): return ms >= cutoffMs
+        case .day(let day): return day >= LogicalDay.dateKey(forMs: cutoffMs, timeZoneID: zoneID)
+        case .undated: return true
+        }
+    }
+
+    /// Whether `(kind, id)` is dated before `boundaryMs`, where the phone's own archive begins: what
+    /// the phone no longer holds. A day-keyed item is before it when its day is before the day the
+    /// boundary falls in. Something undated here (a person) counts as before.
+    public func isBefore(_ kind: ArchiveEntityKind, id: String, boundaryMs: Int64) -> Bool {
+        switch dating(kind, id: id) {
+        case .instant(let ms): return ms < boundaryMs
+        case .day(let day): return day < LogicalDay.dateKey(forMs: boundaryMs, timeZoneID: zoneID)
+        case .undated: return true
+        }
+    }
+
+    enum Dating: Equatable {
+        case instant(Int64)
+        case day(String)
+        /// A person, or something whose date cannot be found here (left to the builder).
+        case undated
+    }
+
+    func dating(_ kind: ArchiveEntityKind, id: String) -> Dating {
+        func at(_ ms: Int64?) -> Dating { ms.map { .instant($0) } ?? .undated }
         switch kind {
         case .conversation, .transcript:
-            return conversationStartMs[id].map { $0 >= cutoffMs } ?? true
+            return at(conversationStartMs[id])
         case .note:
-            guard let conversation = noteConversation[id] else { return true }
-            return conversationStartMs[conversation].map { $0 >= cutoffMs } ?? true
+            if let conversation = noteConversation[id] { return at(conversationStartMs[conversation]) }
+            return at(noteCreatedMs[id])
         case .followUp:
-            return followUpMs[id].map { $0 >= cutoffMs } ?? true
+            return at(followUpMs[id])
         case .recap, .coverage:
-            return id >= cutoffDay
+            return .day(id)
         case .brief:
-            return Self.lastDay(ofPeriod: id).map { $0 >= cutoffDay } ?? true
+            return Self.lastDay(ofPeriod: id).map { .day($0) } ?? .undated
         case .person:
-            return true
+            return .undated
         }
     }
 

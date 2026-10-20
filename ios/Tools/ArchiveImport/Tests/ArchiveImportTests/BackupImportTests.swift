@@ -223,7 +223,27 @@ struct SyntheticBackup {
     #expect(dates.contains(.person, id: "anyone", cutoffMs: cutoff))
     #expect(dates.contains(.conversation, id: "old", cutoffMs: nil))
 
+    // What the phone no longer has: what is dated before its own archive on the server begins.
+    #expect(dates.isBefore(.conversation, id: "old", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.conversation, id: "new", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.note, id: "note-new", boundaryMs: cutoff))
+    #expect(dates.isBefore(.followUp, id: "fu-old", boundaryMs: cutoff))
+    #expect(dates.isBefore(.recap, id: "2026-10-09", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.recap, id: "2026-10-10", boundaryMs: cutoff))
+    #expect(dates.isBefore(.brief, id: "week:2026-10-03", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.brief, id: "week:2026-10-04", boundaryMs: cutoff))
+    #expect(dates.isBefore(.person, id: "anyone", boundaryMs: cutoff))
+    // A note without a conversation is dated by when it was written.
+    let loose = ScopeDates(
+        conversationStartMs: [:], noteConversation: [:], noteCreatedMs: ["note-loose": cutoff - 1],
+        followUpMs: [:], zoneID: zone)
+    #expect(!loose.contains(.note, id: "note-loose", cutoffMs: cutoff))
+    #expect(loose.isBefore(.note, id: "note-loose", boundaryMs: cutoff))
+
     let hcm = try #require(TimeZone(identifier: zone))
+    #expect(ImportBoundary.parse("all") == .everything)
+    #expect(ImportBoundary.parse("2026-10-10", timeZone: hcm) == .before(ms: cutoff))
+    #expect(ImportBoundary.parse("soon") == nil)
     #expect(ImportScope.parse("since:2026-10-10", timeZone: hcm) == .since(ms: cutoff))
     #expect(ImportScope.parse("since:2026-10-10T00:00:00Z") == .since(ms: 1_791_590_400_000))
     #expect(ImportScope.parse("last:90") == .lastDays(90))
