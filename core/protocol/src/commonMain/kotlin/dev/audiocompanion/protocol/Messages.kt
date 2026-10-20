@@ -39,7 +39,19 @@ data class InfoSnapshot(
      * [sendBackpressureEvents], never this.
      */
     val sendBackpressureEventsRaw: UInt = 0u,
+    /** Info v2: why the watch last restarted. Null on a v1 snapshot. */
+    val restart: WatchRestart? = null,
 ) : AudioCompanionMessage {
+    /** Info v2 bytes 20-31: the watch's last restart and its fault-loop guard. */
+    data class WatchRestart(
+        val reasonRaw: Int,
+        val faultBoots: Int,
+        val errorReboots: Int,
+        val stoodDown: Boolean,
+        val faultPc: UInt,
+        val faultLr: UInt,
+    )
+
     val serviceState: ServiceState? get() = ServiceState.fromRaw(serviceStateRaw)
     val receiverAuthorized: Boolean get() = flags and ProtocolConstants.INFO_FLAG_RECEIVER_AUTHORIZED != 0
     val enabled: Boolean get() = flags and ProtocolConstants.INFO_FLAG_ENABLED != 0
@@ -58,18 +70,28 @@ data class InfoSnapshot(
     val sendBackpressureEvents: UInt?
         get() = if (reportsSendBackpressure) sendBackpressureEventsRaw else null
 
-    override fun encode(): ByteArray = WireWriter(ProtocolConstants.INFO_SNAPSHOT_BYTES)
-        .u8(infoVersion)
-        .u8(protocolMin)
-        .u8(protocolMax)
-        .u8(serviceStateRaw)
-        .u8(codecBitmap)
-        .u8(flags)
-        .u16(reserved0)
-        .u32(watchCapabilities)
-        .u32(fwVersionPacked)
-        .u32(sendBackpressureEventsRaw)
-        .toByteArray()
+    override fun encode(): ByteArray {
+        val w = WireWriter(ProtocolConstants.INFO_SNAPSHOT_V2_BYTES)
+            .u8(infoVersion)
+            .u8(protocolMin)
+            .u8(protocolMax)
+            .u8(serviceStateRaw)
+            .u8(codecBitmap)
+            .u8(flags)
+            .u16(reserved0)
+            .u32(watchCapabilities)
+            .u32(fwVersionPacked)
+            .u32(sendBackpressureEventsRaw)
+        if (infoVersion >= 2 && restart != null) {
+            w.u8(restart.reasonRaw)
+                .u8(restart.faultBoots)
+                .u8(restart.errorReboots)
+                .u8(if (restart.stoodDown) 1 else 0)
+                .u32(restart.faultPc)
+                .u32(restart.faultLr)
+        }
+        return w.toByteArray()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

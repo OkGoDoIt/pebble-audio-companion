@@ -25,18 +25,42 @@ object AudioCompanionProtocol {
             return DecodeResult.Malformed("info snapshot too short: ${bytes.size}")
         }
         val r = WireReader(bytes)
+        val infoVersion = r.u8()
+        val protocolMin = r.u8()
+        val protocolMax = r.u8()
+        val serviceStateRaw = r.u8()
+        val codecBitmap = r.u8()
+        val flags = r.u8()
+        val reserved0 = r.u16()
+        val watchCapabilities = r.u32()
+        val fwVersionPacked = r.u32()
+        val sendBackpressureEventsRaw = r.u32()
+        // A v2 snapshot cut short reads as v1: the first 20 bytes are unchanged.
+        val restart = if (infoVersion >= 2 && bytes.size >= ProtocolConstants.INFO_SNAPSHOT_V2_BYTES) {
+            InfoSnapshot.WatchRestart(
+                reasonRaw = r.u8(),
+                faultBoots = r.u8(),
+                errorReboots = r.u8(),
+                stoodDown = r.u8() != 0,
+                faultPc = r.u32(),
+                faultLr = r.u32(),
+            )
+        } else {
+            null
+        }
         return DecodeResult.Decoded(
             InfoSnapshot(
-                infoVersion = r.u8(),
-                protocolMin = r.u8(),
-                protocolMax = r.u8(),
-                serviceStateRaw = r.u8(),
-                codecBitmap = r.u8(),
-                flags = r.u8(),
-                reserved0 = r.u16(),
-                watchCapabilities = r.u32(),
-                fwVersionPacked = r.u32(),
-                sendBackpressureEventsRaw = r.u32(),
+                infoVersion = infoVersion,
+                protocolMin = protocolMin,
+                protocolMax = protocolMax,
+                serviceStateRaw = serviceStateRaw,
+                codecBitmap = codecBitmap,
+                flags = flags,
+                reserved0 = reserved0,
+                watchCapabilities = watchCapabilities,
+                fwVersionPacked = fwVersionPacked,
+                sendBackpressureEventsRaw = sendBackpressureEventsRaw,
+                restart = restart,
             )
         )
     }

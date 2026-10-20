@@ -18,6 +18,8 @@ object ProtocolConstants {
 
     const val RECEIVER_ID_BYTES: Int = 32
     const val INFO_SNAPSHOT_BYTES: Int = 20
+    /** Info v2 appends the watch's last restart (12 bytes). */
+    const val INFO_SNAPSHOT_V2_BYTES: Int = 32
 
     // GATT identifiers (Section 1). Base UUID is third-party-owned, deliberately not Pebble's.
     const val BASE_UUID: String = "7C2B0000-9E4D-4FC2-A2B3-1D6E8A1C9F50"
