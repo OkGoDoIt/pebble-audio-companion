@@ -28,7 +28,13 @@ Optional fields are sent as an explicit `null`, never left out. An error answer 
    ten wrong codes from one address in ten minutes the server answers `429` until the window
    turns (right codes are not counted).
 
-`DELETE /link` (device token) unlinks: the server keeps the data, revokes the token, `204`.
+`DELETE /link` (device token) unlinks and deletes: the server deletes everything it holds for
+the account (as `POST /sync/wipe` does), ends every assistant's access (every OAuth connection
+and every personal token), then revokes this device token, all in one transaction, `204`. The
+person asked for this (2026-10-21): unlinking must clear the server, never leave a copy behind.
+The phone says so in its confirmation before calling it. `DELETE /link?keepData=true` exists
+only for the admin area's "Unlink this phone" when another phone stays linked; the app never
+sends it.
 The admin area can rename and unlink a phone too.
 
 ## 2. Entities
@@ -318,6 +324,30 @@ the clip is not ready.
   server preference can never move audio or write anything the person did not allow.
   `GET /sync/preferences` returns the stored value. `PUT` answers with it too; a key left out
   keeps its stored value. Preferences are per account and survive a wipe.
+
+  The same body carries the **sharing scope**, which decides which conversations the server may
+  hold at all:
+
+  ```json
+  { "clips": false, "edits": false, "scope": { "kind": "all" } }
+  { "scope": { "kind": "since", "since": "2026-10-21T00:00:00Z" } }
+  { "scope": { "kind": "lastDays", "days": 90 } }
+  ```
+
+  - `all` (the default): everything the phone sends, kept even after the phone's own retention
+    ages it out.
+  - `since`: "from today on"; the phone sends nothing that started before `since`, and the server
+    drops any item dated before it.
+  - `lastDays`: a rolling window relative to now, every day. The phone sends nothing older than
+    `days` days; the server removes everything older than that once a day (a job at 03:30 in the
+    account's time zone) and immediately when the window shrinks, and no tool ever returns
+    anything outside it even between runs (every query filters by the window). Removed means
+    deleted: conversations, their transcripts and notes, recaps for those days, briefs whose
+    period ends before the window, follow-ups whose source time is before it, and clip files.
+  - "Dated" means a conversation's `startedAt`, a recap's day, a brief's `endDay`, a follow-up's
+    `sourceAt` (else `createdAt`), a note's conversation. Widening the window does not bring
+    anything back by itself; the phone re-sends what now falls inside it (it watches for a
+    widened scope and marks those items pending).
 
 ## 6. What the server derives and never asks the phone for
 
