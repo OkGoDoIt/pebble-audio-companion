@@ -152,3 +152,21 @@ public enum TokenAccess
 	Read,
 	ReadWrite,
 }
+
+/// <summary>
+/// How an OAuth app identified itself.
+/// </summary>
+public enum OAuthClientKind
+{
+	/// <summary>Dynamic client registration (RFC 7591); the client id is <c>dcr_…</c>.</summary>
+	Registered,
+
+	/// <summary>The client id is the https URL of a client metadata document (CIMD).</summary>
+	MetadataDocument,
+}
+
+public enum OAuthTokenKind
+{
+	Access,
+	Refresh,
+}

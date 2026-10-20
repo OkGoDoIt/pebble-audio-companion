@@ -23,9 +23,24 @@ public sealed record ArchiveSettings
 	/// <summary>How many times a background job runs before it is set aside.</summary>
 	public int JobMaxAttempts { get; init; } = 5;
 
+	/// <summary>How long an OAuth access token lasts; the app renews it with its refresh token.</summary>
+	public int OAuthAccessTokenMinutes { get; init; } = 60;
+
+	/// <summary>How long an OAuth refresh token lasts. Every renewal starts the period again.</summary>
+	public int OAuthRefreshTokenDays { get; init; } = 60;
+
+	/// <summary>How long an MCP Events subscription lasts: the default, and the longest an assistant may ask for.</summary>
+	public int EventSubscriptionHours { get; init; } = 72;
+
 	public TimeSpan ClipMaxDuration => TimeSpan.FromMinutes(ClipMaxMinutes);
 
 	public TimeSpan RequestTtl => TimeSpan.FromHours(RequestTtlHours);
+
+	public TimeSpan OAuthAccessTokenLifetime => TimeSpan.FromMinutes(OAuthAccessTokenMinutes);
+
+	public TimeSpan OAuthRefreshTokenLifetime => TimeSpan.FromDays(OAuthRefreshTokenDays);
+
+	public TimeSpan EventSubscriptionLifetime => TimeSpan.FromHours(EventSubscriptionHours);
 }
 
 /// <summary>
@@ -98,5 +113,32 @@ public sealed record SettingDefinition(
 			50,
 			s => s.JobMaxAttempts,
 			(s, v) => s with { JobMaxAttempts = v }),
+		new(
+			nameof(ArchiveSettings.OAuthAccessTokenMinutes),
+			"Connected app access",
+			"How long a connected app's access lasts before it renews it on its own.",
+			"minutes",
+			5,
+			1440,
+			s => s.OAuthAccessTokenMinutes,
+			(s, v) => s with { OAuthAccessTokenMinutes = v }),
+		new(
+			nameof(ArchiveSettings.OAuthRefreshTokenDays),
+			"Connected app sign-in",
+			"An app that goes unused this long has to sign in again.",
+			"days",
+			1,
+			365,
+			s => s.OAuthRefreshTokenDays,
+			(s, v) => s with { OAuthRefreshTokenDays = v }),
+		new(
+			nameof(ArchiveSettings.EventSubscriptionHours),
+			"Event subscriptions",
+			"The longest an assistant's event subscription lasts before it has to renew it.",
+			"hours",
+			1,
+			720,
+			s => s.EventSubscriptionHours,
+			(s, v) => s with { EventSubscriptionHours = v }),
 	];
 }

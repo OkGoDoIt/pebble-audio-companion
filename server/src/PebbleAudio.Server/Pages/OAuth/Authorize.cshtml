@@ -1,0 +1,58 @@
+@page
+@model PebbleAudio.Server.Pages.OAuth.AuthorizeModel
+@{
+	ViewData["Title"] = Model.Problem is null ? $"Connect {Model.AppName}" : "Can't connect";
+	ViewData["HideNav"] = true;
+}
+<section class="auth">
+	@if (Model.Problem is { } problem)
+	{
+		<div class="card auth-card">
+			<h1>This app can't connect</h1>
+			<p class="lede">@problem</p>
+		</div>
+	}
+	else
+	{
+		@* No action: the form posts back to this URL with its query, and the request is checked again. *@
+		<form method="post" class="card auth-card consent">
+			<header class="consent-header">
+				<h1>Connect @Model.AppName?</h1>
+				<p class="lede">It's asking for access to your Pebble Audio archive.</p>
+			</header>
+			<div class="consent-abilities">
+				<h2 class="consent-label">@Model.AppName will be able to</h2>
+				<ul class="consent-list">
+					@foreach (var ability in Model.Abilities)
+					{
+						<li>@ability</li>
+					}
+				</ul>
+			</div>
+			<dl class="facts">
+				<div>
+					<dt>From</dt>
+					<dd>
+						@if (Model.VerifiedHost is { } host)
+						{
+							@host
+						}
+						else
+						{
+							<span class="muted">Not verified</span>
+						}
+					</dd>
+				</div>
+				<div>
+					<dt>Returns you to</dt>
+					<dd>@(Model.ReturnsToThisDevice ? "An app on this device" : Model.ReturnHost)</dd>
+				</div>
+			</dl>
+			@* Deny comes first, so pressing Enter declines. *@
+			<div class="consent-actions">
+				<button type="submit" name="decision" value="deny" class="button">Deny</button>
+				<button type="submit" name="decision" value="allow" class="button button-primary">Allow</button>
+			</div>
+		</form>
+	}
+</section>

@@ -6,7 +6,7 @@
 <section class="auth">
 	<form class="card auth-card" data-passkey="sign-in" data-return-url="@Model.ReturnUrl">
 		<h1>Sign in</h1>
-		<p class="lede">Use your passkey to open the admin area.</p>
+		<p class="lede">@(Model.ForConnection ? "Use your passkey to connect an app to your archive." : "Use your passkey to open the admin area.")</p>
 		<button type="submit" class="button button-primary button-wide">Sign in with passkey</button>
 		<p class="status" data-status role="status"></p>
 	</form>
