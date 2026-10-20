@@ -51,8 +51,11 @@ Built:
   OAuth grants join the phone's access list by registering an `IConnectedAssistantSource`.
 - CI and deploy workflows, mirroring Situ.
 
-Not built yet: the archive tools, the import from a Desktop backup, and the conversation viewer (event payloads
-already link to its `/d/{day}` and `/c/{id}` pages).
+The import from a Desktop backup is a Mac tool beside the app, [`ios/Tools/ArchiveImport`](../ios/Tools/ArchiveImport):
+it links like a phone and sends the phone's own payloads.
+
+Not built yet: the archive tools and the conversation viewer (event payloads already link to its `/d/{day}` and
+`/c/{id}` pages).
 
 ## Layout
 
