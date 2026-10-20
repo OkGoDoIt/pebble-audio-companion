@@ -551,7 +551,7 @@ struct SiriPathTests {
         #expect(recorder.box.asked.first?.0 == "What did I agree with Sam yesterday?")
         #expect(recorder.box.asked.first?.1 == .yesterday)
         #expect(outcome.full == "You agreed to send Sam the lease by Friday. He checks the date.")
-        #expect(outcome.supporting == "From 6 conversations yesterday.")
+        #expect(outcome.supporting == "From 6 conversations yesterday")
         let card = outcome.card
         #expect(card.isAnswer)
         #expect(card.periodLabel == "Yesterday")
@@ -593,11 +593,23 @@ struct SiriPathTests {
         outcome = await answerer(hasContent: false) { _, _ in Self.entry() }
             .answer(question: "q", period: .today)
         #expect(outcome.full == Copy.Siri.nothingRecorded)
+        // The heading says it all; the card adds no line repeating it.
+        #expect(outcome.supporting == Copy.Siri.nothingRecordedHeading)
+        #expect(outcome.card.body == nil)
         // No AI set up: Ask's own failure sentence, and a way to ask in the app.
         outcome = await answerer { _, _ in throw AiError.providerUnavailable(providerId: "none") }
             .answer(question: "q", period: .today)
         #expect(outcome.full == Copy.Siri.couldNotAnswer(AiFailureKind.notConfigured.reason))
+        #expect(outcome.card.body == AiFailureKind.notConfigured.reason)
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "today", query: "q"))
+        // No card heading ends in a period, the answer's included.
+        for heading in [
+            Copy.Siri.notReadyHeading, Copy.Siri.offHeading, Copy.Siri.nothingRecordedHeading,
+            Copy.Siri.tookTooLongHeading, Copy.Siri.noAnswerHeading,
+            Copy.Siri.supporting(read: 3, period: .today),
+        ] {
+            #expect(!heading.hasSuffix("."))
+        }
     }
 
     @Test func siriIsNotKeptWaitingPastTheDeadline() async {
@@ -611,7 +623,7 @@ struct SiriPathTests {
         #expect(outcome.full == Copy.Siri.tookTooLong)
         // The heading above the card is not the card's own line said twice.
         #expect(outcome.supporting == Copy.Siri.tookTooLongHeading)
-        #expect(outcome.card.body == Copy.Siri.tookTooLong)
+        #expect(outcome.card.body == "Ask in Pebble Audio for the full answer.")
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "last7", query: "a long one"))
     }
 

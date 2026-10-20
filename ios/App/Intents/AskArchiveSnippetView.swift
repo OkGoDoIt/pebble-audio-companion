@@ -18,12 +18,14 @@ struct AskArchiveSnippetView: View {
         VStack(alignment: .leading, spacing: 12) {
             periodPill
 
-            Text(card.body)
-                .font(AppFont.subBody)
-                .foregroundStyle(card.isAnswer ? Tokens.label : Tokens.secondaryBody)
-                .lineSpacing(4)
-                .lineLimit(10)
-                .fixedSize(horizontal: false, vertical: true)
+            if let body = card.body {
+                Text(body)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(card.isAnswer ? Tokens.label : Tokens.secondaryBody)
+                    .lineSpacing(4)
+                    .lineLimit(10)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let note = card.partialNote {
                 Text(note)
@@ -138,7 +140,8 @@ struct AskArchiveSnippetView: View {
         }()
 
         static let sampleNotice = AskArchiveAnswerer.notice(
-            Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading, period: .last7Days,
+            spoken: Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading,
+            line: Copy.Siri.tookTooLongLine, period: .last7Days,
             action: AskArchiveCard.Action(
                 label: Copy.Siri.askInApp, link: Route.ask(scope: "last7", query: "x").url))
 

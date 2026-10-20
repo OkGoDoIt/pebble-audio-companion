@@ -34,11 +34,16 @@ extension Copy {
 
         // ── Ask My Archive ───────────────────────────────────────────────────
 
-        // Headings Siri shows above a card that has no answer on it. The card carries the reason.
+        // A card with no answer on it: a heading (shown above the card) plus at most one line on
+        // it, each said once. The spoken dialog below each is the whole of it, for AirPods.
         static let notReadyHeading = "Still starting up"
+        static let notReadyLine = "Try again in a moment."
         static let offHeading = "Kept in Pebble Audio"
+        static let offLine = "Siri & Spotlight can see is set to Off."
         static let nothingRecordedHeading = "Nothing recorded yet"
         static let tookTooLongHeading = "Taking longer than Siri waits"
+        static let tookTooLongLine = "Ask in Pebble Audio for the full answer."
+        /// Its line is the AI failure's own sentence, when there is one worth saying.
         static let noAnswerHeading = "No answer this time"
 
         /// A Siri request that raced the app's own start-up.
@@ -74,13 +79,14 @@ extension Copy {
             }
         }
 
-        /// The line Siri shows above the card: what the answer was drawn from.
+        /// The heading Siri shows above the card: what the answer was drawn from. No closing
+        /// period, like every other card heading; the answer itself is what is read aloud.
         static func supporting(read: Int?, period: AskArchivePeriod) -> String {
             let when = periodPhrase(period)
             switch read {
-            case .none: return "From your conversations \(when)."
-            case .some(1): return "From 1 conversation \(when)."
-            case .some(let n): return "From \(n) conversations \(when)."
+            case .none: return "From your conversations \(when)"
+            case .some(1): return "From 1 conversation \(when)"
+            case .some(let n): return "From \(n) conversations \(when)"
             }
         }
 

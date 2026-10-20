@@ -112,8 +112,9 @@ struct AskArchiveIntent: AppIntent {
 struct AskArchiveCard: Equatable, Sendable {
     /// "Yesterday" — the period read, in the words of Ask's scope pill.
     var periodLabel: String
-    /// The answer, citation markers taken out; or the notice when there is no answer.
-    var body: String
+    /// The answer, citation markers taken out; or, with no answer, the one line under the
+    /// heading (nil when the heading says it all).
+    var body: String?
     var isAnswer: Bool
     /// Ask's own partial-coverage line, under an answer built from part of the period only. A
     /// complete answer says nothing, exactly as on the Ask screen.
@@ -190,20 +191,20 @@ struct AskArchiveAnswerer: Sendable {
 
         guard await isReady() else {
             return Self.notice(
-                Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading, period: period,
-                action: nil)
+                spoken: Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading,
+                line: Copy.Siri.notReadyLine, period: period, action: nil)
         }
         // The person's "Siri & Spotlight can see" choice. Off means Siri hears nothing from
         // the archive — not even an answer built from it.
         guard visibility().donates else {
             return Self.notice(
-                Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading, period: period,
-                action: askInApp)
+                spoken: Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading,
+                line: Copy.Siri.offLine, period: period, action: askInApp)
         }
         guard await hasContent() else {
             return Self.notice(
-                Copy.Siri.nothingRecorded, heading: Copy.Siri.nothingRecordedHeading,
-                period: period, action: nil)
+                spoken: Copy.Siri.nothingRecorded, heading: Copy.Siri.nothingRecordedHeading,
+                line: nil, period: period, action: nil)
         }
 
         let entry: AskEntry
@@ -214,16 +215,17 @@ struct AskArchiveAnswerer: Sendable {
                     deadline, { try await ask(trimmed, period.askScope) })
             else {
                 return Self.notice(
-                    Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading, period: period,
-                    action: askInApp)
+                    spoken: Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading,
+                    line: Copy.Siri.tookTooLongLine, period: period, action: askInApp)
             }
             entry = answered
         } catch {
             let failure = AiFailure.classify(error)
             // `.unknown` adds nothing the sentence does not already say, as on the Ask screen.
-            let line = Copy.Siri.couldNotAnswer(failure.kind == .unknown ? nil : failure.reason)
+            let reason = failure.kind == .unknown ? nil : failure.reason
             return Self.notice(
-                line, heading: Copy.Siri.noAnswerHeading, period: period, action: askInApp)
+                spoken: Copy.Siri.couldNotAnswer(reason), heading: Copy.Siri.noAnswerHeading,
+                line: reason, period: period, action: askInApp)
         }
 
         // One row per cited CONVERSATION, in the order the answer first cites it. Two
@@ -276,14 +278,14 @@ struct AskArchiveAnswerer: Sendable {
         )
     }
 
-    /// No answer: a heading above the card, the reason on it (and spoken in full), and one way
-    /// on. The heading is short so the card's line is not said twice on screen.
+    /// No answer: a heading above the card and at most one line on it, each said once, and one
+    /// way on. `spoken` is the whole of it, for when there is no screen.
     static func notice(
-        _ line: String, heading: String, period: AskArchivePeriod,
+        spoken: String, heading: String, line: String?, period: AskArchivePeriod,
         action: AskArchiveCard.Action?
     ) -> AskArchiveOutcome {
         AskArchiveOutcome(
-            full: line,
+            full: spoken,
             supporting: heading,
             card: AskArchiveCard(
                 periodLabel: Copy.Siri.periodLabel(period), body: line, isAnswer: false,
