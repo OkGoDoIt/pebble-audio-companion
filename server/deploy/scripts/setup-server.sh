@@ -11,6 +11,8 @@ port="5090"
 deploy_user="${app}-deploy"
 deploy_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deploy_pubkey="${1:-}"
+# Npgsql's default is 100, the shared Postgres's whole max_connections.
+pool_size=15
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root." >&2
@@ -55,7 +57,7 @@ if [[ ! -f "$env_file" ]]; then
   cat > "$env_file" <<EOF
 ASPNETCORE_ENVIRONMENT=Production
 ASPNETCORE_URLS=http://127.0.0.1:${port}
-ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=${app};Username=${app};Password=${db_password}
+ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=${app};Username=${app};Password=${db_password};Maximum Pool Size=${pool_size}
 PebbleAudio__PublicOrigin=https://${host}
 PebbleAudio__ClipsPath=/var/lib/${app}/clips
 DataProtection__KeysPath=/var/lib/${app}/data-protection-keys
@@ -65,6 +67,10 @@ EOF
   echo "   wrote ${env_file}"
 else
   echo "   ${env_file} exists, left as is"
+fi
+if ! grep -q '^ConnectionStrings__DefaultConnection=.*Maximum Pool Size=' "$env_file"; then
+  sed -i -E "s/^(ConnectionStrings__DefaultConnection=\"?[^\"]*[^\";])(;?)(\"?)\$/\1;Maximum Pool Size=${pool_size}\3/" "$env_file"
+  echo "   capped the connection pool at ${pool_size} (restart ${app} to apply)"
 fi
 db_password="$(sed -n 's/^ConnectionStrings__DefaultConnection=.*Password=\([^;]*\).*/\1/p' "$env_file")"
 
