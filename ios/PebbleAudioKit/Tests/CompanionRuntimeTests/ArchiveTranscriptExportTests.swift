@@ -1,0 +1,167 @@
+import AppDB
+import Foundation
+import SegmentStore
+import Testing
+import Transcription
+
+@testable import CompanionRuntime
+
+// The archive sync's export (`ArchiveExport`), pinned against one synthetic conversation in the shape of the
+// phone's own files: `conv-seg-1791883701900-efc75fe3-42-m572910`, four and a half minutes that
+// start partway through one recording and end partway through the next, with eleven stretches of
+// spool-overflow loss inside them. The fixture is two sidecars in the phone's own format
+// and the two transcripts with their word timings stripped (the export reads turns only).
+//
+// The expected times were computed from the raw sidecars independently of this code (sample
+// indexes, unioned gap records, the stored-frame clock), and they agree with what the phone's own
+// grouper stored for the conversation: its first word at 09:38:06.011 UTC and its last at
+// 09:42:44.991.
+
+@Suite("archive export")
+struct ArchiveTranscriptExportTests {
+    static let conversationId = "conv-seg-1791883701900-efc75fe3-42-m572910"
+    static let first = "seg-1791883701900-efc75fe3-42"
+    static let second = "seg-1791884606258-efc75fe3-43"
+    static let startMs: Int64 = 1_791_884_286_011
+    static let endMs: Int64 = 1_791_884_564_991
+
+    static func fixture(_ name: String) throws -> Data {
+        let url = try #require(
+            Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "ArchiveFixtures"))
+        return try Data(contentsOf: url)
+    }
+
+    static func pieces(masked: [ArchiveExport.MaskedRange] = []) throws -> [ArchiveExport.Piece] {
+        func meta(_ id: String) throws -> SegmentMeta {
+            try JSONDecoder().decode(SegmentMeta.self, from: fixture("\(id).meta.json"))
+        }
+        func transcript(_ id: String) throws -> SegmentTranscript {
+            try JSONDecoder().decode(SegmentTranscript.self, from: fixture("\(id).transcript.json"))
+        }
+        return [
+            ArchiveExport.Piece(
+                member: ConversationMember(segmentId: first, startMediaMs: 572_910),
+                meta: try meta(first), transcript: try transcript(first), masked: masked),
+            ArchiveExport.Piece(
+                member: ConversationMember(segmentId: second, endMediaMs: 723_270),
+                meta: try meta(second), transcript: try transcript(second)),
+        ]
+    }
+
+    static var window: Range<Int64> { startMs..<endMs }
+
+    @Test func theConversationIsPlacedOnTheWallClockWithItsLossAndNoInventedQuiet() throws {
+        let pieces = try Self.pieces()
+        // The two pieces meet where the first recording ends and the second begins.
+        #expect(ArchiveExport.wallExtent(pieces[0]) == 1_791_884_284_511..<1_791_884_515_121)
+        #expect(ArchiveExport.wallExtent(pieces[1]).lowerBound == 1_791_884_515_121)
+
+        let gaps = ArchiveExport.gaps(pieces, window: Self.window)
+        // Eleven stretches of the watch's spool overflowing, 12.36 s in all, and nothing quiet:
+        // the silence the second recording's watch skipped comes after the last word.
+        #expect(gaps.count == 11)
+        #expect(gaps.allSatisfy { $0.kind == .lost && $0.origin == "watch" })
+        #expect(gaps.reduce(0) { $0 + $1.durationMs } == 12_360)
+        #expect(gaps.first.map { $0.startMs..<$0.endMs } == 1_791_884_289_721..<1_791_884_291_081)
+        #expect(gaps.allSatisfy { Self.window.contains($0.startMs) && $0.endMs <= Self.endMs })
+        // What is left of the window is stored audio.
+        #expect(ArchiveExport.recordedMs(pieces, window: Self.window) == (Self.endMs - Self.startMs) - 12_360)
+    }
+
+    @Test func theTranscriptIsCutMaskedNamedAndInTimeOrder() throws {
+        // A stretch of the first recording judged to be music: one turn is said inside it.
+        let music = ArchiveExport.MaskedRange(range: 637_000..<664_000, descriptor: "music")
+        let pieces = try Self.pieces(masked: [music])
+        let gaps = ArchiveExport.gaps(pieces, window: Self.window)
+        let export = ArchiveExport.transcript(
+            conversationId: Self.conversationId, pieces: pieces, gaps: gaps,
+            speakerNames: ["1": "Roger"], sourceHash: "h")
+
+        let turns = export.items.compactMap { item -> (Int64, Int64, String?, String?, String)? in
+            guard case .turn(let at, let end, let speaker, let name, let text, _) = item else { return nil }
+            return (at, end, speaker, name, text)
+        }
+        // Twelve turns start in the first piece and two in the second; the one under the music
+        // is withheld; nothing from before the cut at 572.91 s or after 723.27 s is here.
+        #expect(turns.count == 13)
+        #expect(!export.text.contains("Checking the plan"))
+        let firstTurn = try #require(turns.first)
+        #expect(firstTurn.0 == Self.startMs && firstTurn.1 == 1_791_884_289_431)
+        #expect(firstTurn.2 == "1" && firstTurn.3 == "Roger")
+        let lastTurn = try #require(turns.last)
+        #expect(lastTurn.0 == 1_791_884_564_811 && lastTurn.1 == Self.endMs)
+        #expect(lastTurn.2 == "2" && lastTurn.3 == nil && lastTurn.4 == "Yeah.")
+        // The second recording's first word, after the join: its own clock, its own anchor.
+        #expect(turns.contains { $0.0 == 1_791_884_563_491 && $0.4 == "I set a timer for 1 hour." })
+
+        // The masked stretch, on the wall clock, named.
+        let masked = export.items.filter { $0.kindName == "masked" }
+        #expect(masked == [.masked(atMs: 1_791_884_360_201, endMs: 1_791_884_387_201, descriptor: "music")])
+        // Every loss is an item of its own, and the items are in time order.
+        #expect(export.items.filter { $0.kindName == "lost" }.count == 11)
+        #expect(export.items.map(\.atMs) == export.items.map(\.atMs).sorted())
+
+        // The plain form: one line per turn, the name where there is one, the label otherwise.
+        let lines = export.text.split(separator: "\n").map(String.init)
+        #expect(lines.count == 13)
+        #expect(lines.first == "Roger: Yeah, it's about twenty pages, but it's mostly charts and that stuff.")
+        #expect(lines.last == "Speaker 2: Yeah.")
+        #expect(export.charCount == export.text.count)
+        #expect(export.provider == "soniox" && export.model == "stt-async-v5")
+    }
+
+    @Test func theJSONIsTheContractsShape() throws {
+        let pieces = try Self.pieces()
+        let export = ArchiveExport.transcript(
+            conversationId: Self.conversationId, pieces: pieces,
+            gaps: ArchiveExport.gaps(pieces, window: Self.window), speakerNames: [:], sourceHash: "abc")
+        let data = try ArchivePayloadBuilder.encode(export)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(json.keys) == [
+            "conversationId", "sourceHash", "provider", "model", "language", "charCount", "text", "items",
+        ])
+        #expect(json["language"] is NSNull)
+        let items = try #require(json["items"] as? [[String: Any]])
+        let turn = try #require(items.first { $0["kind"] as? String == "turn" })
+        #expect(turn["at"] as? String == "2026-10-13T09:38:06.011Z")
+        #expect(Set(turn.keys) == ["kind", "at", "endAt", "speaker", "name", "text", "confidence"])
+        #expect(turn["name"] is NSNull)
+        let lost = try #require(items.first { $0["kind"] as? String == "lost" })
+        #expect(Set(lost.keys) == ["kind", "at", "endAt", "origin"])
+        // Same input, same bytes: the hash that skips an unchanged payload means what it says.
+        #expect(try ArchivePayloadBuilder.encode(export) == data)
+    }
+
+    /// A clip request across the join: the end of the first recording and the start of the
+    /// second, frame-aligned outward, and trimmed to the maximum asked for.
+    @Test func aClipSpanResolvesToMediaRangesAcrossBothPieces() throws {
+        let pieces = try Self.pieces()
+        let ranges = ArchiveClipPlan.resolve(
+            pieces: pieces, startMs: 1_791_884_500_000, endMs: 1_791_884_570_000)
+        #expect(ranges == [
+            ArchiveClipPlan.Range(
+                segmentId: Self.first, mediaRange: 776_780..<791_920,
+                wallRange: 1_791_884_499_981..<1_791_884_515_121),
+            ArchiveClipPlan.Range(
+                segmentId: Self.second, mediaRange: 0..<54_120,
+                wallRange: 1_791_884_515_121..<1_791_884_570_001),
+        ])
+
+        // A cap shorter than the span keeps its start.
+        let capped = ArchiveClipPlan.resolve(
+            pieces: pieces, startMs: 1_791_884_500_000, endMs: 1_791_884_570_000, maxMs: 20_000)
+        #expect(capped.map(\.segmentId) == [Self.first, Self.second])
+        #expect(capped.reduce(0) { $0 + $1.mediaRange.count } <= 20_020)
+
+        // A span the conversation does not hold, and one wholly inside a loss, hold no audio.
+        #expect(ArchiveClipPlan.resolve(pieces: pieces, startMs: 1_791_000_000_000, endMs: 1_791_000_060_000).isEmpty)
+        #expect(ArchiveClipPlan.resolve(pieces: pieces, startMs: 1_791_884_289_800, endMs: 1_791_884_291_000).isEmpty)
+
+        // The frames of a range are the stored frames at its media offsets: 20 ms each.
+        let records = (0..<100).map { FrameRecord(sequence: UInt32($0), sampleIndex: UInt64($0) * 320, payload: [UInt8($0)]) }
+        let slice = ArchiveClipPlan.frames(
+            ArchiveClipPlan.Range(segmentId: Self.first, mediaRange: 200..<400, wallRange: 0..<1),
+            from: records, frameDurationMs: 20)
+        #expect(slice == (10..<20).map { Data([UInt8($0)]) })
+    }
+}

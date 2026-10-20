@@ -191,6 +191,9 @@ let package = Package(
                 "CompanionRuntime", "AppDB", "SegmentStore", "Receiver", "Transcription",
                 "Intelligence", "LiveAudio", "SearchKit", "StatusUI", "WireProtocol",
             ],
+            // One real conversation from a backup (two sidecars and their transcripts, word
+            // timings stripped) for the archive sync's export (`ArchiveTranscriptExportTests`).
+            resources: [.copy("ArchiveFixtures")],
             swiftSettings: swiftSettings
         ),
     ]

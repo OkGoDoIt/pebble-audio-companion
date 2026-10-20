@@ -306,6 +306,28 @@ public final class FileTranscriptStore: Sendable {
         return decoded.segments ?? []
     }
 
+    /// The transcript without its per-word timings — everything a reader of TURNS needs (the
+    /// archive sync's export), at a fraction of the decode: the word array is most of the file
+    /// and is skipped, not decoded and thrown away.
+    public func loadWithoutWords(_ segmentId: String) -> SegmentTranscript? {
+        struct TurnsOnly: Decodable {
+            var segmentId: String
+            var text: String
+            var modeUsed: TranscriptionMode
+            var providerId: String
+            var modelUsed: String?
+            var createdAtMs: Int64
+            var segments: [TranscriptSegment]?
+        }
+        guard let data = try? Data(contentsOf: transcriptURL(segmentId)),
+            let decoded = try? JSONDecoder().decode(TurnsOnly.self, from: data)
+        else { return nil }
+        return SegmentTranscript(
+            segmentId: decoded.segmentId, text: decoded.text, modeUsed: decoded.modeUsed,
+            providerId: decoded.providerId, modelUsed: decoded.modelUsed,
+            createdAtMs: decoded.createdAtMs, segments: decoded.segments ?? [])
+    }
+
     public func list() -> [SegmentTranscript] {
         let entries =
             (try? FileManager.default.contentsOfDirectory(
