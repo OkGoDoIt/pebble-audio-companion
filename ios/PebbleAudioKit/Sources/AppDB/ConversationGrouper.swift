@@ -146,7 +146,7 @@ public enum ConversationGrouper {
 
     static func wallMs(ofSample sampleIndex: UInt64, in meta: SegmentMeta) -> Int64 {
         let rate = meta.sampleRateHz > 0 ? UInt64(meta.sampleRateHz) : 16_000
-        return Int64(meta.startTimeMs) + Int64(sampleIndex * 1000 / rate)
+        return meta.sampleClockAnchorMs + Int64(sampleIndex * 1000 / rate)
     }
 
     // --- split predicates ---------------------------------------------------------------------

@@ -812,6 +812,15 @@ public struct AppDatabase: Sendable {
             }
             try ArchiveOutbox.installSchema(db)
         }
+        // A watch whose clock had not been set dated its recordings to 2010;
+        // `SegmentMeta.sampleClockAnchorMs` now places them at their arrival, and everything
+        // derived from the recordings follows on the next regroup. A day recap is keyed by its
+        // day and written once, so the ones for those 2009/2010 days would stay, describing
+        // audio that belongs to another day. Nothing real is that old.
+        migrator.registerMigration("recaps-unset-watch-clock-v1") { db in
+            guard try db.tableExists("recaps") else { return }
+            try db.execute(sql: "DELETE FROM recaps WHERE dateKey < '2020-01-01'")
+        }
         try migrator.migrate(writer)
     }
 }

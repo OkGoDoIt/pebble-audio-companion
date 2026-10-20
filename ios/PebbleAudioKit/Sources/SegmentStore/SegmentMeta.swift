@@ -146,8 +146,32 @@ public struct SegmentMeta: Equatable, Sendable {
     public var startWallMs: Int64 {
         guard let first = firstSampleIndex, sampleRateHz > 0 else { return receivedAtMs }
         let offsetMs = Int64(first * 1000 / UInt64(sampleRateHz))
-        let (anchored, overflowed) = Int64(bitPattern: startTimeMs).addingReportingOverflow(offsetMs)
+        let (anchored, overflowed) = sampleClockAnchorMs.addingReportingOverflow(offsetMs)
         return overflowed ? receivedAtMs : min(anchored, receivedAtMs)
+    }
+
+    /// Earlier than anything this app could have recorded (2020-01-01 UTC).
+    public static let earliestPlausibleWallMs: Int64 = 1_577_836_800_000
+
+    /// The wall clock of sample index 0, as every sample → wall mapping must read it
+    /// (`startWallMs`, `ConversationGrouper.wallMs(ofSample:in:)`): `startTimeMs`, unless the
+    /// watch's clock was not set when the stream began.
+    ///
+    /// A watch that has just been reset counts from its own epoch, 2010-01-01, until a phone
+    /// sets its time, and the stream's birth clock is captured once and resent verbatim on every
+    /// RESUME — so a stream begun in that window dates every recording in it to 2010. On the
+    /// 2026-09-18 backup that was 38 recordings, a day recap keyed 2009-12-31 and another keyed
+    /// 2010-01-01, sent on to the archive server. Audio cannot be that much older than its
+    /// arrival (the watch's spool holds about a minute), so such a recording is placed at its
+    /// arrival instead: its first sample at `receivedAtMs`, everything after it by the sample
+    /// count, as the migration importer re-anchors (`LegacyImporter.clampedStartTimeMs`).
+    /// Repaired on read, like `repairedStartTimeMs`: the sidecar keeps what the watch sent.
+    public var sampleClockAnchorMs: Int64 {
+        let stored = Int64(bitPattern: startTimeMs)
+        guard stored < Self.earliestPlausibleWallMs, receivedAtMs >= Self.earliestPlausibleWallMs,
+            let first = firstSampleIndex, sampleRateHz > 0
+        else { return stored }
+        return receivedAtMs - Int64(first * 1000 / UInt64(sampleRateHz))
     }
 
     /// True for audio restored from `quarantine/` by the migration importer.
