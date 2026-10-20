@@ -225,7 +225,10 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var write = await CallToolAsync(api, readOnly.Access, TestWriteTools.Name);
 		Assert.True(write.GetProperty("isError").GetBoolean());
 		Assert.Contains(McpScopeFilters.WriteNeeded, write.GetRawText());
-		Assert.Contains("insufficient_scope", write.GetProperty("_meta").GetProperty("mcp/www_authenticate").GetString());
+		var stepUp = write.GetProperty("_meta").GetProperty("mcp/www_authenticate").GetString();
+		Assert.Contains("error=\"insufficient_scope\"", stepUp);
+		Assert.Contains("error_description=\"", stepUp);
+		Assert.Contains($"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\"", stepUp);
 
 		// The same code again: refused, and what the first exchange started is ended.
 		await AssertTokenErrorAsync(await TokenAsync(api, exchange), HttpStatusCode.BadRequest, "invalid_grant");

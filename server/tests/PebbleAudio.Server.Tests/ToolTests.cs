@@ -39,6 +39,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
 			Assert.Equal((true, false, false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
 			Assert.NotNull(tool.OutputSchema);
+			Assert.Equal("""[{"type":"oauth2","scopes":["archive:read"]}]""", tool.Meta?["securitySchemes"]?.ToJsonString());
 			foreach (var key in new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" })
 			{
 				var text = tool.Meta?[key]?.GetValue<string>();
@@ -473,6 +474,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			// Adding is additive; changing a follow-up replaces what it said, so hosts ask before it.
 			Assert.Equal((false, name == "update_follow_up", false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
 			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
+			Assert.Equal("""[{"type":"oauth2","scopes":["archive:read","archive:write"]}]""", tool.Meta?["securitySchemes"]?.ToJsonString());
 			Assert.All(
 				new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" },
 				key => Assert.InRange(tool.Meta?[key]?.GetValue<string>().Length ?? 0, 1, 64));

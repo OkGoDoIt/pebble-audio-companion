@@ -38,6 +38,7 @@ public static class OAuthEndpoints
 		services.AddHttpClient(ClientMetadataFetcher.HttpClientName)
 			.ConfigurePrimaryHttpMessageHandler(PublicHttp.CreateHandler);
 		services.AddOptions<McpServerOptions>().Configure<OAuthUrls>(McpScopeFilters.Add);
+		services.PostConfigure<McpServerOptions>(McpScopeFilters.DeclareSchemes);
 		return services;
 	}
 

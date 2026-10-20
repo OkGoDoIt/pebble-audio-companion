@@ -13,7 +13,8 @@
   and serves that metadata document. `Program.cs` also serves it at the root path.
 - **Scopes on tools** (`McpScopeFilters`): `/mcp` needs `archive:read`. A tool not marked read-only also needs
   `archive:write`; a read-only connection does not see it in `tools/list`, and calling it answers with an error plus
-  `_meta["mcp/www_authenticate"]` (`error="insufficient_scope"`).
+  `_meta["mcp/www_authenticate"]` (`error="insufficient_scope"` with an `error_description`). Every tool declares its
+  scopes in `_meta["securitySchemes"]` (`oauth2`), which ChatGPT needs before it offers to reconnect.
 
 ## The OAuth 2.1 authorization server
 
