@@ -101,6 +101,20 @@ public sealed class OAuthConnections(ArchiveDbContext db, TimeProvider time) : I
 		];
 	}
 
+	/// <summary>
+	/// Disconnects every app: every grant goes (and with it its tokens and event subscriptions), and so does any
+	/// authorization code not yet exchanged, so a sign-in in flight cannot reconnect afterwards.
+	/// </summary>
+	/// <returns>How many live connections there were.</returns>
+	public async Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken)
+	{
+		var now = time.GetUtcNow();
+		var live = await db.OAuthGrants.CountAsync(g => g.UserId == userId && g.ExpiresAt > now, cancellationToken);
+		await db.OAuthAuthorizationCodes.Where(c => c.UserId == userId).ExecuteDeleteAsync(cancellationToken);
+		await db.OAuthGrants.Where(g => g.UserId == userId).ExecuteDeleteAsync(cancellationToken);
+		return live;
+	}
+
 	/// <summary>Disconnects every connection the user has to one app (its <c>access</c> id is the app's id).</summary>
 	public async Task<bool> RevokeAsync(Guid userId, string id, CancellationToken cancellationToken)
 	{

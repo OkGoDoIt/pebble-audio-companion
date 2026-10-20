@@ -93,5 +93,21 @@ public sealed class ApiTokenService(ArchiveDbContext db, TimeProvider time)
 		return changed > 0;
 	}
 
+	/// <summary>
+	/// Revokes every live token of the user at once, and ends the event subscriptions made through them.
+	/// </summary>
+	/// <returns>How many tokens were live.</returns>
+	public async Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken)
+	{
+		var now = time.GetUtcNow();
+		var changed = await db.ApiTokens
+			.Where(t => t.UserId == userId && t.RevokedAt == null)
+			.ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, now), cancellationToken);
+		await db.EventSubscriptions
+			.Where(s => s.UserId == userId && s.ApiTokenId != null)
+			.ExecuteDeleteAsync(cancellationToken);
+		return changed;
+	}
+
 	public static byte[] Hash(string secret) => SHA256.HashData(Encoding.UTF8.GetBytes(secret));
 }

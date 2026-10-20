@@ -15,6 +15,24 @@
 	<p class="notice notice-success" role="status">Settings saved.</p>
 }
 
+<section class="card" aria-labelledby="sharing-heading">
+	<h2 id="sharing-heading">Sharing</h2>
+	<dl class="facts">
+		<div>
+			<dt>Conversations</dt>
+			<dd>@Model.SharingText</dd>
+		</div>
+		@if (Model.Sharing is { } sharing)
+		{
+			<div>
+				<dt>Time zone</dt>
+				<dd>@sharing.TimeZoneId</dd>
+			</div>
+		}
+	</dl>
+	<p class="muted">Set in Pebble Audio on the phone.</p>
+</section>
+
 <form method="post" class="card settings">
 	@foreach (var setting in SettingDefinition.All)
 	{

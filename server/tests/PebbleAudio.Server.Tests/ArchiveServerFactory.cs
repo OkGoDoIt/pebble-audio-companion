@@ -66,6 +66,10 @@ public sealed class ArchiveServerFactory : WebApplicationFactory<Program>, IAsyn
 				d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(JobWorker));
 			services.Remove(worker);
 
+			// The nightly sharing-scope deletion is queued by the tests themselves, at the times they choose.
+			services.Remove(services.Single(d =>
+				d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(Sync.ScopeSweepScheduler)));
+
 			services.AddJobHandler<FlakyJobHandler>(FlakyJobHandler.Type);
 			services.AddJobHandler<FailingJobHandler>(FailingJobHandler.Type);
 

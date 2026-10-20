@@ -17,6 +17,7 @@ This README is the engineer handoff: layout, local run, migrations, and deploy.
 | --- | --- |
 | [`docs/build-plan.md`](docs/build-plan.md) | Names, paths, packages, and the module layout this code follows |
 | [`docs/sync-protocol.md`](docs/sync-protocol.md) | The phone ↔ server wire contract |
+| [`docs/tool-results.md`](docs/tool-results.md) | The exact result of every MCP tool, which the widgets and the viewer are built against |
 | `docs/research-verified-2026-10-20.md` | Verified facts about the MCP C# SDK, OAuth clients, and the stack |
 | [`src/PebbleAudio.Server/Auth/README.md`](src/PebbleAudio.Server/Auth/README.md) | Admin sign-in, bearer tokens, and the OAuth 2.1 authorization server |
 
@@ -29,7 +30,15 @@ Built:
   devices and link codes, phone requests and clips, the job queue, API tokens, the AI-read log, and settings.
   Full-text search is two generated `tsvector` columns with GIN indexes (conversation title, tags, and
   summary; transcript text).
-- The MCP server on the official SDK, stateless, at `/mcp`, with one tool: `get_status`.
+- The MCP server on the official SDK, stateless, at `/mcp` (`Mcp/`, results shaped as
+  [`docs/tool-results.md`](docs/tool-results.md)): `get_status`, `list_days`, `get_day`, `get_brief`,
+  `list_conversations`, `get_conversation`, `search` and `fetch` (ChatGPT's shapes, Postgres full-text with
+  `ts_headline` snippets), `list_follow_ups`, `get_people`, `get_tags`, `get_audio` (through
+  `PhoneRequestService`), and the write tools `create_follow_up`, `update_follow_up`, and `create_note` (the
+  `archive:write` scope and the phone's `edits` permission). Resources `conversation://{id}` and `day://{date}`,
+  two prompts, and `instructions` that teach the method of the plugin's `SKILL.md`. Every result is capped by the
+  settings and says how to continue; every call is in the AI-read log. All reads go through `ArchiveReader`, which
+  applies the sharing scope.
 - Bearer tokens (`pat_…`) for `/mcp`, created and revoked in the admin area; an unauthenticated request gets
   a 401 with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - The OAuth 2.1 authorization server (`Auth/`, see its README) for ChatGPT, Claude, and Claude Code: metadata,
@@ -49,10 +58,17 @@ Built:
   Other modules reach the phone through `PhoneRequestService` (`RequestClipAsync`, `CreateFollowUpAsync`,
   `UpdateFollowUpAsync`, `CreateNoteAsync`), which honors those preferences and answers with typed outcomes.
   OAuth grants join the phone's access list by registering an `IConnectedAssistantSource`.
+- The sharing scope (`Sync/SharingScope.cs`, `Sync/ScopeSweep.cs`): stored with the preferences, applied to every
+  tool query and every batch (items outside are ignored as `outsideScope`), and enforced by a deletion at 03:30
+  in the account's time zone (the zone of its latest conversation) and at once when the phone narrows it.
+  `DELETE /link` deletes the account's archive and ends every assistant's access with the device's;
+  `?keepData=true` only revokes the device.
+- Batches announce a recap whose text changed and a follow-up the phone added (recent ones only) through
+  `IEventPublisher`.
 - CI and deploy workflows, mirroring Situ.
 
-Not built yet: the archive tools, the import from a Desktop backup, and the conversation viewer (event payloads
-already link to its `/d/{day}` and `/c/{id}` pages).
+Not built yet: the import from a Desktop backup, the MCP Apps widgets, and the conversation viewer (tool results
+and event payloads already link to its `/c/{id}?t=…`, `/d/{day}`, and `/b/week|month/…` pages).
 
 ## Layout
 

@@ -207,8 +207,10 @@ Response `200`:
 { "serverTime": "…", "accepted": [ { "kind": "…", "id": "…", "version": 1 } ], "ignored": [ { "kind": "…", "id": "…", "version": 1, "reason": "stale" } ], "rejected": [ { "kind": "…", "id": "…", "reason": "payload: pieces missing" } ], "pendingRequests": 2 }
 ```
 
-`ignored` reasons are `stale` (older than what the server holds) and `duplicate` (the same
-version; a replay). The phone treats both as held. `rejected` items are the phone's bug to fix;
+`ignored` reasons are `stale` (older than what the server holds), `duplicate` (the same
+version; a replay), and `outsideScope` (dated before the sharing scope, §5: not stored and not
+recorded, so the same version is taken when the phone sends it again after the scope widens).
+The phone treats all three as held. `rejected` items are the phone's bug to fix;
 the rest of the batch still applies. A reason names the field (`payload: pieces missing`,
 `payload: gaps[2].kind 'x' is not known`, `kind: 'gadget' is not known`); `server: could not
 store it` means the database refused that one item, and the rest still applied. Nothing about a
@@ -345,9 +347,16 @@ the clip is not ready.
     deleted: conversations, their transcripts and notes, recaps for those days, briefs whose
     period ends before the window, follow-ups whose source time is before it, and clip files.
   - "Dated" means a conversation's `startedAt`, a recap's day, a brief's `endDay`, a follow-up's
-    `sourceAt` (else `createdAt`), a note's conversation. Widening the window does not bring
-    anything back by itself; the phone re-sends what now falls inside it (it watches for a
-    widened scope and marks those items pending).
+    `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`). A day is inside
+    when it is on or after the logical day the window's start falls on. Widening the window does
+    not bring anything back by itself; the phone re-sends what now falls inside it (it watches
+    for a widened scope and marks those items pending). The server forgets the versions of what it
+    removed, so those resends are taken as new.
+  - `GET` and `PUT` answer with the scope as stored, in the same shape:
+    `{ "clips": true, "edits": false, "scope": { "kind": "lastDays", "days": 90 } }` (`since` only
+    for `since`, `days` only for `lastDays`). `400` for an unknown `kind`, a `since` scope without
+    a time, or `days` outside 1 to 36,500. The account's time zone is the one of the latest
+    conversation the phone sent (UTC before the first).
 
 ## 6. What the server derives and never asks the phone for
 

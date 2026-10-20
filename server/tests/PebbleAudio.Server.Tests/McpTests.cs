@@ -100,7 +100,10 @@ public sealed class McpTests(ArchiveServerFactory factory)
 			Assert.Equal("2026-10-14", structured.GetProperty("firstDay").GetString());
 			Assert.True(DateTimeOffset.UtcNow - structured.GetProperty("serverTime").GetDateTimeOffset() < TimeSpan.FromMinutes(1));
 
-			var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text;
+			// content: the speakable summary, then the same JSON as the structured content.
+			Assert.Equal(2, result.Content.Count);
+			Assert.Equal(structured.GetProperty("summary").GetString(), Assert.IsType<TextContentBlock>(result.Content[0]).Text);
+			var text = Assert.IsType<TextContentBlock>(result.Content[1]).Text;
 			Assert.True(JsonNode.DeepEquals(JsonNode.Parse(text), JsonNode.Parse(structured.GetRawText())));
 		}
 

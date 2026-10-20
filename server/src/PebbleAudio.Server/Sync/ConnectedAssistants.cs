@@ -30,6 +30,12 @@ public interface IConnectedAssistants
 
 	/// <summary>Revokes one assistant's access at once. False when there is no such live access.</summary>
 	Task<bool> RevokeAsync(Guid userId, string kind, string id, CancellationToken cancellationToken);
+
+	/// <summary>
+	/// Ends every assistant's access to the user's archive, from every source, on the caller's database context (so
+	/// inside its transaction, if one is open). Returns how many were live.
+	/// </summary>
+	Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -45,6 +51,9 @@ public interface IConnectedAssistantSource
 	Task<IReadOnlyList<AccessEntry>> ListAsync(Guid userId, CancellationToken cancellationToken);
 
 	Task<bool> RevokeAsync(Guid userId, string id, CancellationToken cancellationToken);
+
+	/// <summary>Ends all of this kind of access for the user, including anything not yet live. Returns how many were live.</summary>
+	Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken);
 }
 
 /// <summary>Asks every registered source and lists what they say, most recently used first.</summary>
@@ -73,6 +82,17 @@ public sealed class ConnectedAssistants(IEnumerable<IConnectedAssistantSource> s
 
 		return false;
 	}
+
+	public async Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken)
+	{
+		var revoked = 0;
+		foreach (var source in sources)
+		{
+			revoked += await source.RevokeAllAsync(userId, cancellationToken);
+		}
+
+		return revoked;
+	}
 }
 
 /// <summary>The personal access tokens (<c>pat_…</c>) made in the admin area, named by the person.</summary>
@@ -97,4 +117,7 @@ public sealed class TokenAssistantSource(ApiTokenService tokens) : IConnectedAss
 		Guid.TryParse(id, CultureInfo.InvariantCulture, out var tokenId)
 			? tokens.RevokeAsync(userId, tokenId, cancellationToken)
 			: Task.FromResult(false);
+
+	public Task<int> RevokeAllAsync(Guid userId, CancellationToken cancellationToken) =>
+		tokens.RevokeAllAsync(userId, cancellationToken);
 }

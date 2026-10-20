@@ -89,6 +89,15 @@ public static class WireNames
 		ContentOrigin.Assistant => "assistant",
 	};
 
+	public static string ToWire(this SharingScopeKind kind) => kind switch
+	{
+		SharingScopeKind.All => "all",
+		SharingScopeKind.Since => "since",
+		SharingScopeKind.LastDays => "lastDays",
+	};
+
+	public static bool TryParse(string? value, out SharingScopeKind kind) => TryParse(value, ToWire, out kind);
+
 	public static bool TryParse(string? value, out SyncKind kind) => TryParse(value, ToWire, out kind);
 
 	public static bool TryParse(string? value, out SyncOp op) => TryParse(value, ToWire, out op);

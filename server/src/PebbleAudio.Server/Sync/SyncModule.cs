@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using PebbleAudio.Server.Auth;
@@ -37,6 +38,11 @@ public static class SyncModule
 		services.AddScoped<IConnectedAssistants, ConnectedAssistants>();
 		services.AddScoped<IConnectedAssistantSource, TokenAssistantSource>();
 		services.AddJobHandler<ClipTranscodeJob>(ClipTranscodeJob.Type);
+		services.AddScoped<SharingScopes>();
+		services.AddScoped<ScopeSweep>();
+		services.AddScoped<ScopeSweepSchedule>();
+		services.AddJobHandler<ScopeSweepJob>(ScopeSweepJob.Type);
+		services.AddHostedService<ScopeSweepScheduler>();
 		return services;
 	}
 
@@ -94,10 +100,27 @@ public static class SyncModule
 			statusCode: StatusCodes.Status201Created);
 	}
 
-	private static async Task<IResult> UnlinkAsync(ClaimsPrincipal user, PhoneLinkService links, CancellationToken cancellationToken)
+	/// <summary>
+	/// Unlinks and deletes the server's copy, ending every assistant's access. <c>?keepData=true</c> only revokes this
+	/// phone's token, for the admin area's unlink of one phone while another stays linked.
+	/// </summary>
+	private static async Task<IResult> UnlinkAsync(
+		ClaimsPrincipal user,
+		bool? keepData,
+		PhoneLinkService links,
+		ArchiveWipe wipe,
+		CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
-		await links.UnlinkAsync(userId, deviceId, cancellationToken);
+		if (keepData == true)
+		{
+			await links.UnlinkAsync(userId, deviceId, cancellationToken);
+		}
+		else
+		{
+			await wipe.UnlinkAsync(userId, deviceId, cancellationToken);
+		}
+
 		return Results.NoContent();
 	}
 
@@ -289,22 +312,58 @@ public static class SyncModule
 		return await assistants.RevokeAsync(userId, kind, id, cancellationToken) ? Results.NoContent() : Results.NotFound();
 	}
 
-	private static async Task<IResult> GetPreferencesAsync(ClaimsPrincipal user, PhoneRequestService requests, CancellationToken cancellationToken)
+	private static async Task<IResult> GetPreferencesAsync(
+		ClaimsPrincipal user,
+		PhoneRequestService requests,
+		SharingScopes scopes,
+		CancellationToken cancellationToken)
 	{
 		var (userId, _) = Caller(user);
 		var preferences = await requests.GetPreferencesAsync(userId, cancellationToken);
-		return Results.Json(new PreferencesWire(preferences.Clips, preferences.Edits), SyncJson.Options);
+		return Results.Json(PreferencesWire.From(preferences, await scopes.GetAsync(userId, cancellationToken)), SyncJson.Options);
 	}
 
+	/// <summary>
+	/// Stores what the phone allowed. A changed sharing scope takes effect at once: what now falls outside it is
+	/// deleted before the answer goes back.
+	/// </summary>
 	private static async Task<IResult> PutPreferencesAsync(
 		ClaimsPrincipal user,
 		PreferencesUpdate body,
 		PhoneRequestService requests,
+		SharingScopes scopes,
+		ScopeSweep sweep,
 		CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
+		SharingScopeKind? kind = null;
+		if (body.Scope is { } scope)
+		{
+			if (!WireNames.TryParse(scope.Kind, out SharingScopeKind parsed))
+			{
+				return Error(StatusCodes.Status400BadRequest, "scope.kind must be all, since, or lastDays.");
+			}
+
+			if (parsed == SharingScopeKind.Since && scope.Since is null)
+			{
+				return Error(StatusCodes.Status400BadRequest, "scope.since is an RFC 3339 time for kind since.");
+			}
+
+			if (parsed == SharingScopeKind.LastDays && scope.Days is not (>= 1 and <= SharingScopes.MaxDays))
+			{
+				return Error(StatusCodes.Status400BadRequest, $"scope.days is a whole number from 1 to {SharingScopes.MaxDays} for kind lastDays.");
+			}
+
+			kind = parsed;
+		}
+
 		var preferences = await requests.SetPreferencesAsync(userId, deviceId, body.Clips, body.Edits, cancellationToken);
-		return Results.Json(new PreferencesWire(preferences.Clips, preferences.Edits), SyncJson.Options);
+		if (kind is { } scopeKind && await scopes.SetAsync(userId, deviceId, scopeKind, body.Scope!.Since, body.Scope.Days, cancellationToken))
+		{
+			await sweep.RunAsync(userId, cancellationToken);
+		}
+
+		return Results.Json(PreferencesWire.From(preferences, await scopes.GetAsync(userId, cancellationToken)), SyncJson.Options);
 	}
 
 	// Clips
@@ -435,7 +494,19 @@ public static class SyncModule
 
 	internal sealed record AiReadWire(DateTimeOffset At, string Client, string Tool, IReadOnlyList<string> Ids);
 
-	internal sealed record PreferencesWire(bool Clips, bool Edits);
+	internal sealed record PreferencesWire(bool Clips, bool Edits, ScopeWire Scope)
+	{
+		public static PreferencesWire From(SyncPreferences preferences, AccountScope scope) =>
+			new(preferences.Clips, preferences.Edits, new ScopeWire(scope.Kind.ToWire(), scope.Since, scope.Days));
+	}
 
-	internal sealed record PreferencesUpdate(bool? Clips, bool? Edits);
+	/// <summary>The sharing scope as §5 writes it: <c>since</c> only for that kind, <c>days</c> only for <c>lastDays</c>.</summary>
+	internal sealed record ScopeWire(
+		string Kind,
+		[property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? Since,
+		[property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Days);
+
+	internal sealed record PreferencesUpdate(bool? Clips, bool? Edits, ScopeUpdate? Scope);
+
+	internal sealed record ScopeUpdate(string? Kind, DateTimeOffset? Since, int? Days);
 }

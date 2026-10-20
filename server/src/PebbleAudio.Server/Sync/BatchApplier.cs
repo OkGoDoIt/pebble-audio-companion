@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PebbleAudio.Server.Data;
+using PebbleAudio.Server.Events;
+using PebbleAudio.Server.Settings;
 
 namespace PebbleAudio.Server.Sync;
 
@@ -16,11 +18,16 @@ namespace PebbleAudio.Server.Sync;
 /// read, so one that arrives first is simply there when its conversation comes.</para>
 /// <para>Batches for one user are applied one at a time (a transaction-scoped advisory lock), so a retried batch
 /// racing its original cannot leave an older version on top.</para>
+/// <para>An upsert dated before the sharing scope is not stored (ignored as <c>outsideScope</c>). A recap whose text
+/// changed and a follow-up the phone added are announced to subscribed assistants (MCP Events).</para>
 /// </remarks>
 public sealed class BatchApplier(
 	ArchiveDbContext db,
 	ClipStorage storage,
 	PhoneRequestService requests,
+	SharingScopes scopes,
+	IEventPublisher events,
+	SettingsService settings,
 	TimeProvider time,
 	ILogger<BatchApplier> logger)
 {
@@ -31,10 +38,13 @@ public sealed class BatchApplier(
 		var ignored = new List<BatchIgnored>();
 		var rejected = new List<BatchRejected>();
 		var removedFiles = new List<string>();
+		var storedConversation = false;
+		var recentHours = (await settings.GetAsync(cancellationToken)).EventRecentHours;
 
 		await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
 		{
 			await SyncLocks.LockUserAsync(db, userId, cancellationToken);
+			var scope = await scopes.GetAsync(userId, cancellationToken);
 
 			foreach (var element in items.EnumerateArray())
 			{
@@ -67,16 +77,25 @@ public sealed class BatchApplier(
 					}
 
 					record = parsed.Value;
+
+					// Outside what the person shares: not stored, and not entered in the ledger, so the phone can send
+					// the same version again once the scope widens.
+					if (await IsOutsideAsync(userId, record, scope, cancellationToken))
+					{
+						ignored.Add(new BatchIgnored(kind, item.Id, item.Version, OutsideScope));
+						continue;
+					}
 				}
 
 				var files = new List<string>();
 				await transaction.CreateSavepointAsync("item", cancellationToken);
 				try
 				{
+					Upserted? upserted = null;
 					switch (item.Op)
 					{
 						case SyncOp.Upsert:
-							await UpsertAsync(userId, item, record!, now, cancellationToken);
+							upserted = await UpsertAsync(userId, item, record!, now, cancellationToken);
 							break;
 						case SyncOp.Delete:
 							await DeleteAsync(userId, item.Kind, item.Id, files, cancellationToken);
@@ -106,6 +125,13 @@ public sealed class BatchApplier(
 					}
 
 					await db.SaveChangesAsync(cancellationToken);
+					if (upserted is { } done)
+					{
+						// Inside the item's savepoint, so an event is queued exactly when its change is kept.
+						await AnnounceAsync(done, now, recentHours, cancellationToken);
+						storedConversation |= done.Record is Conversation;
+					}
+
 					await transaction.ReleaseSavepointAsync("item", cancellationToken);
 					accepted.Add(new BatchItemRef(kind, item.Id, item.Version));
 					removedFiles.AddRange(files);
@@ -126,6 +152,11 @@ public sealed class BatchApplier(
 			await db.Devices
 				.Where(d => d.Id == deviceId)
 				.ExecuteUpdateAsync(s => s.SetProperty(d => d.LastBatchAt, now), cancellationToken);
+			if (storedConversation)
+			{
+				await scopes.FollowLatestTimeZoneAsync(userId, cancellationToken);
+			}
+
 			await transaction.CommitAsync(cancellationToken);
 		}
 
@@ -139,7 +170,7 @@ public sealed class BatchApplier(
 		return new BatchResponse(now, accepted, ignored, rejected, pending);
 	}
 
-	private async Task UpsertAsync(Guid userId, Envelope item, SyncedRecord record, DateTimeOffset now, CancellationToken cancellationToken)
+	private async Task<Upserted> UpsertAsync(Guid userId, Envelope item, SyncedRecord record, DateTimeOffset now, CancellationToken cancellationToken)
 	{
 		record.UserId = userId;
 		record.Version = item.Version;
@@ -147,6 +178,14 @@ public sealed class BatchApplier(
 		record.ReceivedAt = now;
 		// Sent again, so the phone holds it again.
 		record.ExpiredOnPhoneAt = null;
+
+		var previousRecap = record is Recap recap
+			? await db.Recaps
+				.AsNoTracking()
+				.Where(r => r.UserId == userId && r.DayKey == recap.DayKey)
+				.Select(r => new RecapText(r.Headline, r.LineSummary, r.ShortText, r.Text))
+				.SingleOrDefaultAsync(cancellationToken)
+			: null;
 
 		var exists = record switch
 		{
@@ -171,7 +210,81 @@ public sealed class BatchApplier(
 		{
 			db.Add(record);
 		}
+
+		return new Upserted(record, exists, previousRecap);
 	}
+
+	/// <summary>
+	/// Tells subscribed assistants about a day's recap whose text is new or changed, and a follow-up the phone has
+	/// just added. A recap for an older day, or a follow-up created before the <c>EventRecentHours</c> setting, is
+	/// history the phone is catching up on, not news, and wakes no one.
+	/// </summary>
+	private async Task AnnounceAsync(Upserted upserted, DateTimeOffset now, int recentHours, CancellationToken cancellationToken)
+	{
+		var since = now - TimeSpan.FromHours(recentHours);
+		switch (upserted.Record)
+		{
+			case Recap recap when upserted.PreviousRecap != new RecapText(recap.Headline, recap.LineSummary, recap.ShortText, recap.Text) &&
+				recap.DayKey >= LogicalDays.Of(since, LogicalDays.Zone(recap.TimeZone)):
+				await events.DayRecapReadyAsync(recap, cancellationToken);
+				break;
+			case FollowUp followUp when !upserted.Existed && followUp.CreatedAt >= since:
+				await events.FollowUpCreatedAsync(followUp, cancellationToken);
+				break;
+		}
+	}
+
+	/// <summary>
+	/// True when an upsert is dated before the sharing scope (sync-protocol.md §5): a conversation by its start, a
+	/// transcript and a note by their conversation (a transcript without one by its first item, a note by when it was
+	/// written), a recap and coverage by day, a brief by its last day, a follow-up by its source time or creation.
+	/// </summary>
+	private async Task<bool> IsOutsideAsync(Guid userId, SyncedRecord record, AccountScope scope, CancellationToken cancellationToken)
+	{
+		if (scope.From is null)
+		{
+			return false;
+		}
+
+		switch (record)
+		{
+			case Conversation c:
+				return !scope.Holds(c.StartedAt);
+			case Transcript t:
+				var started = await ConversationStartAsync(userId, t.ConversationId, cancellationToken);
+				return started is { } at ? !scope.Holds(at) : t.Items.Count > 0 && !scope.Holds(t.Items.Min(i => i.At));
+			case Note n:
+				var noteStarted = n.ConversationId is { } conversationId ? await ConversationStartAsync(userId, conversationId, cancellationToken) : null;
+				return !scope.Holds(noteStarted ?? n.CreatedAt);
+			case Recap r:
+				return !scope.HoldsDay(r.DayKey);
+			case CoverageDay c:
+				return !scope.HoldsDay(c.DayKey);
+			case Brief b:
+				return !scope.HoldsDay(b.EndDay);
+			case FollowUp f:
+				return !scope.Holds(f.SourceAt ?? f.CreatedAt);
+			default:
+				return false;
+		}
+	}
+
+	private Task<DateTimeOffset?> ConversationStartAsync(Guid userId, string conversationId, CancellationToken cancellationToken) =>
+		db.Conversations
+			.AsNoTracking()
+			.Where(c => c.UserId == userId && c.Id == conversationId)
+			.Select(c => (DateTimeOffset?)c.StartedAt)
+			.SingleOrDefaultAsync(cancellationToken);
+
+	/// <summary>What ignoring an item outside the sharing scope is called in the batch answer.</summary>
+	public const string OutsideScope = "outsideScope";
+
+	private sealed record RecapText(string? Headline, string? LineSummary, string? ShortText, string? Text);
+
+	/// <param name="Record">The row as stored.</param>
+	/// <param name="Existed">Whether it replaced an earlier version.</param>
+	/// <param name="PreviousRecap">For a recap, the text it replaced.</param>
+	private sealed record Upserted(SyncedRecord Record, bool Existed, RecapText? PreviousRecap);
 
 	/// <summary>
 	/// The person deleted it on the phone: the server deletes it and everything it derived from it.
@@ -219,37 +332,8 @@ public sealed class BatchApplier(
 	/// A conversation goes with its transcript, its notes, its clips and their requests, and its place in the
 	/// AI-read log. Follow-ups said in it keep their text and lose the link back.
 	/// </summary>
-	private async Task DeleteConversationAsync(Guid userId, string id, List<string> files, CancellationToken cancellationToken)
-	{
-		await db.Conversations.Where(c => c.UserId == userId && c.Id == id).ExecuteDeleteAsync(cancellationToken);
-		await db.Transcripts.Where(t => t.UserId == userId && t.ConversationId == id).ExecuteDeleteAsync(cancellationToken);
-		await db.Notes.Where(n => n.UserId == userId && n.ConversationId == id).ExecuteDeleteAsync(cancellationToken);
-		await db.FollowUps
-			.Where(f => f.UserId == userId && f.SourceConversationId == id)
-			.ExecuteUpdateAsync(
-				s => s
-					.SetProperty(f => f.SourceConversationId, (string?)null)
-					.SetProperty(f => f.SourceAt, (DateTimeOffset?)null)
-					.SetProperty(f => f.SourceEndAt, (DateTimeOffset?)null)
-					.SetProperty(f => f.SourceApproximate, false),
-				cancellationToken);
-
-		var clips = await db.Clips
-			.Where(c => c.UserId == userId && c.ConversationId == id)
-			.Select(c => new { c.RequestId, c.Path })
-			.ToListAsync(cancellationToken);
-		if (clips.Count > 0)
-		{
-			var requestIds = clips.Select(c => c.RequestId).ToList();
-			// Clips go with their requests (cascade).
-			await db.Requests.Where(r => r.UserId == userId && requestIds.Contains(r.Id)).ExecuteDeleteAsync(cancellationToken);
-			files.AddRange(clips.Select(c => c.Path).OfType<string>());
-		}
-
-		await db.Database.ExecuteSqlAsync(
-			$"""UPDATE "AiReads" SET "EntityIds" = array_remove("EntityIds", {id}) WHERE "UserId" = {userId} AND {id} = ANY("EntityIds")""",
-			cancellationToken);
-	}
+	private Task DeleteConversationAsync(Guid userId, string id, List<string> files, CancellationToken cancellationToken) =>
+		ArchiveDeletes.ConversationsAsync(db, userId, [id], files, cancellationToken);
 
 	/// <summary>
 	/// The phone's retention aged it out: the server keeps it and notes that the phone no longer has it.
