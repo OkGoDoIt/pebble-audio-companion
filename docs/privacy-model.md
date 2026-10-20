@@ -22,7 +22,8 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D5a | Audio clips on request | a short clip, only when an assistant asks | the person's server, then the asking assistant | a choice inside D5 | off |
 | D5b | Assistants may add | nothing leaves; follow-ups and notes come in | the phone | a choice inside D5 | off |
 | D6 | Assistants reading your server | whatever they read through the server: text, and clips if D5a | each connected assistant by name (ChatGPT, Claude, Codex on Mac, Muse, …), from the server's `access` list | connecting the assistant in that assistant | none connected |
-| D7 | Muse | the questions you ask Muse, as text (typed in the app today; spoken on the watch once push-to-talk ships, transcribed per D1 first, so only text goes) and Muse's replies coming back | Meta | pairing Muse | off |
+| D7 | Muse | the questions you ask Muse: typed ones as text, spoken ones (push-to-talk on the watch) as a short recording of what the watch microphone heard while the button was held; Muse's answers come back as text | Meta | pairing Muse | off |
+| D7b | Muse acting on your watch | only the outcome: done, declined, timed out, or the option chosen | Meta | a switch per action in Settings › Muse (timer, alarm, choice picker) | on once paired (no personal data leaves) |
 | D7a | Muse may look things up in your recordings (planned) | transcript excerpts, including other people's words, only while Muse is answering a question you asked | Meta | a choice inside D7 | off |
 
 Invariants that stay commitments, whatever is on: the official Pebble app never receives audio;
@@ -53,11 +54,18 @@ muse.ai/privacy; nothing has run on a device yet):
 - **Meta's default:** training on interactions is on by default ("Help improve our AI models",
   Muse app › Settings › Data controls; Meta says the switch also applies to past interactions; no
   retention period is stated).
-- **Planned, not built:** spoken questions from the watch (text only goes to Meta; the question is
-  also in the normal recording when recording is on, since it is the same microphone); watch
-  commands Muse may call only while a question is open (show, vibrate, timer, alarm, draw an
-  image from a URL Muse chose, which the phone fetches), registered only for the length of that
-  question, with ok/error results; D7a lookups.
+- **Spoken questions (push-to-talk, decided by Roger 2026-10-21, being built):** each question
+  goes to Meta as a WAV voice note, the way Meta's own gadget firmware sends it; Muse transcribes
+  it and echoes what it heard (the watch shows it as "You said"); answers come back as text. The
+  note can include other voices near the watch while the button is held. When recording is on,
+  the question is also in the normal recording (same microphone). Push-to-talk works while
+  recording is off: while Muse is paired the app keeps the watch linked with capture paused, and
+  the microphone is used only while the button is held (confirm in the Muse build's tests).
+- **Muse acting on the watch (D7b):** while a question you asked is open, Muse may set a timer or
+  a one-off alarm, or show a choice picker; only the outcome goes back. Each action has a switch
+  under "What Muse can do on your watch", on by default once paired.
+- **Planned, not built:** drawing an image from a URL Muse chose (the phone would fetch it), and
+  D7a lookups.
 
 ## 2. Inputs
 
@@ -78,8 +86,9 @@ struct ServerState: Equatable {
 }
 struct Assistant: Equatable { var name: String; var canWrite: Bool; var lastUsedAt: Date? }
 struct MuseState: Equatable {
+    var spokenQuestions: Bool               // = MuseGadgetService.asksFromWatch; D7 then names spoken questions
+    var watchActions: Set<MuseWatchAction>  // D7b, the actions switched on (timer, alarm, choice)
     var lookupsAllowed: Bool                // D7a, false until that feature ships and is switched on
-    var spokenQuestions: Bool               // true once push-to-talk ships: D7 then says "typed in the app or spoken on the watch"
 }
 ```
 
@@ -92,6 +101,13 @@ sentence.
 1. **Stance card**, headline plus one line:
    - nothing active except D4: "Everything stays on this phone", green dot.
    - exactly one destination: name it ("Audio goes to Soniox", "Text syncs to pebbleaudio.okgodoit.com", "Your questions to Muse go to Meta").
+
+   **The D7 sentence, word for word** (used by the Muse screen and the Privacy screen):
+   "The questions you ask Muse go to Meta: typed ones as text, spoken ones as a short recording.
+   Its answers come back as text. Nothing goes while you aren't asking." Training line, unchanged:
+   "Meta may use your questions to improve its AI. You can turn that off in the Muse app." Before
+   push-to-talk ships (spokenQuestions false), the first sentence is "The questions you ask Muse
+   go to Meta as text." 
    - more than one: "Your data goes to N places you chose", neutral dot, and the line "Each is listed below. Nothing else leaves this phone."
 2. **Where it goes**, one row per active destination, in the order of the table, each row: who
    receives it, what goes (Audio, Text, Clips when asked, Your questions), and a chevron to the
