@@ -725,9 +725,29 @@ public actor EnrichmentService {
     /// Invalidates the cached grouping (after a delete, retention sweep, or import).
     /// The conversations whose boundaries may still move, as the latest grouping saw them
     /// (`GroupedConversation.isProvisional` is a property of a grouping pass and is not stored).
-    /// Empty before the first regroup of a launch. Read by the archive sync's payloads.
-    public func provisionalConversationIds() -> Set<String> {
-        Set((cachedGrouping ?? []).filter(\.isProvisional).map(\.id))
+    /// Read by the archive sync's payloads.
+    ///
+    /// With no grouping in memory — before the first regroup of a launch, after
+    /// `invalidateGrouping`, and for the whole of a backgrounded session on battery, where
+    /// regroup does not run — this used to answer "none", and a provisional conversation built
+    /// then went to the server as settled; the outbox's flip check compares against what the
+    /// grouping recorded, not what was sent, so nothing corrected it until the conversation
+    /// really settled. The grouping that last marked each conversation for the sync recorded
+    /// its flag in the outbox (`hint`, `p1` = provisional), and that survives a relaunch, so
+    /// that is the answer then. Regrouping here instead would read every transcript on the
+    /// first pass of a launch, from a sync pass that may be running in the background.
+    public func provisionalConversationIds() async -> Set<String> {
+        if let cachedGrouping {
+            return Set(cachedGrouping.filter(\.isProvisional).map(\.id))
+        }
+        let marked = try? await database.reader.read { db -> [String] in
+            guard try db.tableExists("sync_outbox") else { return [] }
+            return try String.fetchAll(
+                db,
+                sql: "SELECT entityId FROM sync_outbox WHERE kind = 'conversation' AND hint = 'p1'"
+            )
+        }
+        return Set(marked ?? [])
     }
 
     public func invalidateGrouping() {
