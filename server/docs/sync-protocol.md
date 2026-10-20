@@ -359,7 +359,8 @@ with its request and its file, and asking for that span again asks the phone aga
   - `GET` and `PUT` answer with the scope as stored, in the same shape:
     `{ "clips": true, "edits": false, "scope": { "kind": "lastDays", "days": 90 } }` (`since` only
     for `since`, `days` only for `lastDays`). `400` for an unknown `kind`, a `since` scope without
-    a time, or `days` outside 1 to 36,500. The account's time zone is the one of the latest
+    a time or with one more than an hour after the server's clock, or `days` outside 1 to 36,500.
+    The account's time zone is the one of the latest
     conversation the phone sent (UTC before the first).
 
 ## 6. What the server derives and never asks the phone for

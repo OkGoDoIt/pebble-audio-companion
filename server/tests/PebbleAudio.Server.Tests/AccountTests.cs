@@ -67,6 +67,10 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal("""{"kind":"lastDays","days":30}""", (await phone.GetJsonAsync("/sync/preferences")).GetProperty("scope").GetRawText());
 		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "lastDays", ["days"] = 0 } }))).StatusCode);
 		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "forever" } }))).StatusCode);
+		// A start in the future would delete everything and hold back every batch until then.
+		var later = Wire.T(DateTimeOffset.UtcNow.AddDays(2));
+		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "since", ["since"] = later } }))).StatusCode);
+		Assert.Equal(6, (await ArchiveFixture.CallAsync(mcp, "get_status")).GetProperty("counts").GetProperty("conversations").GetInt32());
 
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{

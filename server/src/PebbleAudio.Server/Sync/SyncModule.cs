@@ -335,6 +335,7 @@ public static class SyncModule
 		SharingScopes scopes,
 		ScopeSweep sweep,
 		ClipRetention clips,
+		TimeProvider time,
 		CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
@@ -349,6 +350,13 @@ public static class SyncModule
 			if (parsed == SharingScopeKind.Since && scope.Since is null)
 			{
 				return Error(StatusCodes.Status400BadRequest, "scope.since is an RFC 3339 time for kind since.");
+			}
+
+			// A later start would delete everything now and drop every batch item until then, which the phone counts
+			// as held. Only a phone bug or a wrong clock sends one; an hour covers clock drift.
+			if (parsed == SharingScopeKind.Since && scope.Since > time.GetUtcNow() + SharingScopes.SinceClockSkew)
+			{
+				return Error(StatusCodes.Status400BadRequest, "scope.since is in the future; send a time up to now.");
 			}
 
 			if (parsed == SharingScopeKind.LastDays && scope.Days is not (>= 1 and <= SharingScopes.MaxDays))
