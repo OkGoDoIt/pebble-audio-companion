@@ -34,8 +34,30 @@ struct CompanionAppShortcuts: AppShortcutsProvider {
             shortTitle: "Ask",
             systemImageName: "sparkle.magnifyingglass"
         )
+        // Answered by Siri rather than opening Ask. The question itself cannot be part of a
+        // phrase (only entities and enums can), so Siri asks for it; the period can.
+        AppShortcut(
+            intent: AskArchiveIntent(),
+            phrases: [
+                "Ask my archive in \(.applicationName)",
+                "Ask my conversations in \(.applicationName)",
+                "Ask \(.applicationName) about \(\.$period)",
+            ],
+            shortTitle: "Ask My Archive",
+            systemImageName: "text.bubble"
+        )
+        AppShortcut(
+            intent: OpenFollowUpsIntent(),
+            phrases: [
+                "Open follow-ups in \(.applicationName)",
+                "Open my follow-ups in \(.applicationName)",
+                "Show my follow-ups in \(.applicationName)",
+            ],
+            shortTitle: "Follow-ups",
+            systemImageName: "checklist"
+        )
         // The iOS 27 additions. `#available` is the one condition the builder accepts, and
-        // the three above stay exactly as they were, so iOS 26 sees the same list it did.
+        // the entries above work the same on iOS 26.
         if #available(iOS 27, *) {
             AppShortcut(
                 intent: SearchInAppIntent(),

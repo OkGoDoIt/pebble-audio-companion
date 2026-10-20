@@ -25,10 +25,17 @@ public struct SpotlightDonation: Equatable, Sendable {
     /// Full text content (transcript/body) for on-device Spotlight matching.
     public var textContent: String?
     public var keywords: [String]
+    /// The people in it: the names given to its speakers. Conversations only. The index carries
+    /// them as participants, so "the call with Sam" finds a conversation whose transcript only
+    /// ever says "Speaker 2".
+    public var people: [String]
     /// Deep link the app opens when the result is tapped (plan 6.8 routes).
     public var deepLinkURL: String
     public var contentCreationDateMs: Int64
     public var startDateMs: Int64?
+    /// When a conversation ended. Without it the entity built from a donation had ended the
+    /// moment it began: zero minutes long, modified at its start.
+    public var endDateMs: Int64?
 
     public init(
         entityId: String,
@@ -37,10 +44,13 @@ public struct SpotlightDonation: Equatable, Sendable {
         contentDescription: String? = nil,
         textContent: String? = nil,
         keywords: [String] = [],
+        people: [String] = [],
         deepLinkURL: String,
         contentCreationDateMs: Int64,
-        startDateMs: Int64? = nil
+        startDateMs: Int64? = nil,
+        endDateMs: Int64? = nil
     ) {
+        self.endDateMs = endDateMs
         self.uniqueIdentifier = Self.uniqueIdentifier(kind: kind, entityId: entityId)
         self.entityId = entityId
         self.kind = kind
@@ -48,6 +58,7 @@ public struct SpotlightDonation: Equatable, Sendable {
         self.contentDescription = contentDescription
         self.textContent = textContent
         self.keywords = keywords
+        self.people = people
         self.deepLinkURL = deepLinkURL
         self.contentCreationDateMs = contentCreationDateMs
         self.startDateMs = startDateMs
@@ -168,25 +179,88 @@ public final class SpotlightDonator: Sendable {
         title: String?,
         summary: String? = nil,
         tags: [String] = [],
+        people: [String] = [],
         fullTranscript: String? = nil,
         startDateMs: Int64? = nil,
+        endDateMs: Int64? = nil,
         createdAtMs: Int64,
-        excluded: Bool = false
+        excluded: Bool = false,
+        systemIndex: Bool = true
     ) async throws {
-        guard index.isAvailable else { return }
-        let item = IndexItem(
-            id: conversationId,
-            kind: .conversation,
-            // Never a raw id as a user-visible title; the neutral label matches segmentTitle().
-            title: title?.nilIfBlank ?? "Conversation",
-            summary: summary,
-            tags: tags,
-            fullText: fullTranscript,
-            startDateMs: startDateMs,
-            contentCreationDateMs: createdAtMs,
-            excluded: excluded
-        )
-        try await donate(item, sourceConversationId: nil)
+        try await donateConversations([
+            ConversationDonation(
+                conversationId: conversationId, title: title, summary: summary, tags: tags,
+                people: people, fullTranscript: fullTranscript, startDateMs: startDateMs,
+                endDateMs: endDateMs, createdAtMs: createdAtMs, excluded: excluded,
+                systemIndex: systemIndex)
+        ])
+    }
+
+    /// One conversation's part of a batched donation.
+    public struct ConversationDonation: Equatable, Sendable {
+        public var conversationId: String
+        public var title: String?
+        public var summary: String?
+        public var tags: [String]
+        public var people: [String]
+        public var fullTranscript: String?
+        public var startDateMs: Int64?
+        public var endDateMs: Int64?
+        public var createdAtMs: Int64
+        public var excluded: Bool
+        /// False keeps the conversation out of the SYSTEM index for now while the app's own
+        /// search still gets it. A live conversation is still growing: Spotlight and Siri get it
+        /// once it has closed, not a new partial copy at every provisional refresh.
+        public var systemIndex: Bool
+
+        public init(
+            conversationId: String, title: String?, summary: String? = nil, tags: [String] = [],
+            people: [String] = [], fullTranscript: String? = nil, startDateMs: Int64? = nil,
+            endDateMs: Int64? = nil, createdAtMs: Int64, excluded: Bool = false,
+            systemIndex: Bool = true
+        ) {
+            self.conversationId = conversationId
+            self.title = title
+            self.summary = summary
+            self.tags = tags
+            self.people = people
+            self.fullTranscript = fullTranscript
+            self.startDateMs = startDateMs
+            self.endDateMs = endDateMs
+            self.createdAtMs = createdAtMs
+            self.excluded = excluded
+            self.systemIndex = systemIndex
+        }
+    }
+
+    /// Many conversations in one write to each backend (one FTS transaction, one system-index
+    /// pass) instead of a round trip per conversation.
+    public func donateConversations(_ batch: [ConversationDonation]) async throws {
+        guard index.isAvailable, !batch.isEmpty else { return }
+        let items = batch.map { input in
+            IndexItem(
+                id: input.conversationId,
+                kind: .conversation,
+                // Never a raw id as a user-visible title; the neutral label matches segmentTitle().
+                title: input.title?.nilIfBlank ?? "Conversation",
+                summary: input.summary,
+                tags: input.tags,
+                fullText: input.fullTranscript,
+                startDateMs: input.startDateMs,
+                contentCreationDateMs: input.createdAtMs,
+                excluded: input.excluded
+            )
+        }
+        let people = Dictionary(
+            batch.map { ($0.conversationId, $0.people) }, uniquingKeysWith: { _, last in last })
+        let ends = Dictionary(
+            batch.map { ($0.conversationId, $0.endDateMs) }, uniquingKeysWith: { _, last in last })
+        let heldBack = Set(batch.filter { !$0.systemIndex }.map(\.conversationId))
+        try await donate(
+            items,
+            people: { people[$0.id] ?? [] },
+            endDateMs: { ends[$0.id] ?? nil },
+            systemIndex: { !heldBack.contains($0.id) })
     }
 
     /// Recaps regenerate during the day under the same dateKey; both writes land on the same
@@ -201,13 +275,29 @@ public final class SpotlightDonator: Sendable {
         let item = IndexItem(
             id: "day-\(dateKey)",
             kind: .recap,
-            title: dateKey,
+            title: Self.recapTitle(dateKey: dateKey),
             summary: String(text.prefix(500)),
             fullText: text,
             contentCreationDateMs: createdAtMs,
             excluded: excluded
         )
         try await donate(item, sourceConversationId: nil)
+    }
+
+    /// "Recap · Tuesday, October 20, 2026". The title used to be the bare key, so a recap in
+    /// Spotlight's results read "2026-10-20". The date is written out in full, year included,
+    /// because the index keeps it for as long as the recap exists.
+    public static func recapTitle(dateKey: String) -> String {
+        let parts = dateKey.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3,
+            let utc = TimeZone(identifier: "UTC"),
+            let day = DateComponents(
+                calendar: Calendar(identifier: .gregorian), timeZone: utc,
+                year: parts[0], month: parts[1], day: parts[2], hour: 12
+            ).date
+        else { return "Recap · \(dateKey)" }
+        let written = day.formatted(Date.FormatStyle(date: .complete, time: .omitted, timeZone: utc))
+        return "Recap · \(written)"
     }
 
     public func donateFollowUp(
@@ -262,31 +352,49 @@ public final class SpotlightDonator: Sendable {
     }
 
     private func donate(_ item: IndexItem, sourceConversationId: String?) async throws {
-        try index.upsert([item])
-        if item.excluded {
-            try await spotlight.remove(
-                uniqueIdentifiers: [
-                    SpotlightDonation.uniqueIdentifier(kind: item.kind, entityId: item.id)
-                ]
-            )
-        } else {
-            try await spotlight.donate([
-                SpotlightDonation(
-                    entityId: item.id,
+        try await donate(
+            [item], people: { _ in [] }, endDateMs: { _ in nil }, systemIndex: { _ in true },
+            sourceConversationId: { _ in sourceConversationId })
+    }
+
+    /// FTS first, always and in full; then the system index, where an excluded item becomes a
+    /// removal and an item held back (`systemIndex` false) is left as the index already has it.
+    private func donate(
+        _ items: [IndexItem],
+        people: (IndexItem) -> [String],
+        endDateMs: (IndexItem) -> Int64?,
+        systemIndex: (IndexItem) -> Bool,
+        sourceConversationId: (IndexItem) -> String? = { _ in nil }
+    ) async throws {
+        guard !items.isEmpty else { return }
+        try index.upsert(items)
+        let removals = items.filter(\.excluded).map {
+            SpotlightDonation.uniqueIdentifier(kind: $0.kind, entityId: $0.id)
+        }
+        if !removals.isEmpty {
+            try await spotlight.remove(uniqueIdentifiers: removals)
+        }
+        let donations = items.filter { !$0.excluded && systemIndex($0) }.map { item in
+            SpotlightDonation(
+                entityId: item.id,
+                kind: item.kind,
+                title: item.title,
+                contentDescription: item.summary,
+                textContent: item.fullText,
+                keywords: item.tags,
+                people: people(item),
+                deepLinkURL: Self.deepLink(
                     kind: item.kind,
-                    title: item.title,
-                    contentDescription: item.summary,
-                    textContent: item.fullText,
-                    keywords: item.tags,
-                    deepLinkURL: Self.deepLink(
-                        kind: item.kind,
-                        entityId: item.id,
-                        sourceConversationId: sourceConversationId
-                    ),
-                    contentCreationDateMs: item.contentCreationDateMs,
-                    startDateMs: item.startDateMs
-                )
-            ])
+                    entityId: item.id,
+                    sourceConversationId: sourceConversationId(item)
+                ),
+                contentCreationDateMs: item.contentCreationDateMs,
+                startDateMs: item.startDateMs,
+                endDateMs: endDateMs(item)
+            )
+        }
+        if !donations.isEmpty {
+            try await spotlight.donate(donations)
         }
     }
 }
@@ -328,9 +436,34 @@ extension String {
 
         private let index: CSSearchableIndex
         private let configuration = OSAllocatedUnfairLock(initialState: Configuration())
+        /// What the index already holds (`SpotlightIndexGate`), loaded on first use so building
+        /// the indexer at launch reads nothing from disk.
+        private let gateStore: any SpotlightIndexGateStore
+        private var loadedGate: SpotlightIndexGate?
+        private let log: @Sendable (String) -> Void
 
-        public init(index: CSSearchableIndex = .default()) {
+        /// Items per `indexSearchableItems` call. A rebuild hands over the whole library at once;
+        /// Core Spotlight takes it in pieces, and a failure costs one piece rather than all.
+        public static let batchSize = 50
+
+        public init(
+            index: CSSearchableIndex = .default(),
+            gateStore: any SpotlightIndexGateStore = EphemeralSpotlightIndexGateStore(),
+            log: @escaping @Sendable (String) -> Void = { _ in }
+        ) {
             self.index = index
+            self.gateStore = gateStore
+            self.log = log
+        }
+
+        private var gate: SpotlightIndexGate {
+            get {
+                if let loadedGate { return loadedGate }
+                let loaded = gateStore.load()
+                loadedGate = loaded
+                return loaded
+            }
+            set { loadedGate = newValue }
         }
 
         /// Installs the visibility rule and the optional entity hooks. Synchronous and
@@ -361,41 +494,92 @@ extension String {
             let (visibility, associate) = configuration.withLock { ($0.visibility(), $0.associate) }
             let gated = SpotlightVisibilityGate.apply(visibility, to: donations)
 
+            // What the index already holds comes out here, so a donation of unchanged content
+            // costs a lookup and nothing reaches Core Spotlight at all.
+            var gate = self.gate
+            let plan = gate.plan(gated)
+            let skipped = donations.count - plan.index.count - plan.remove.count
+            guard !plan.isEmpty else { return }
+            defer {
+                self.gate = gate
+                gateStore.save(gate)
+            }
+
             // `.off` turns each donation into a removal: an earlier pass under a more
             // permissive setting may have left the document there, and "off" has to mean the
-            // system index holds nothing of ours, not merely that we stopped adding to it.
-            if !gated.remove.isEmpty {
-                try await index.deleteSearchableItems(withIdentifiers: gated.remove)
+            // system index holds nothing of ours, not merely that we stopped adding to it. The
+            // gate drops removals of documents it knows are already gone.
+            if !plan.remove.isEmpty {
+                try await index.deleteSearchableItems(withIdentifiers: plan.remove)
+                gate.didRemove(plan.remove)
             }
-            guard !gated.index.isEmpty else { return }
 
-            let items = gated.index.map { donation -> CSSearchableItem in
-                let attributes = CSSearchableItemAttributeSet(contentType: .text)
-                attributes.title = donation.title
-                attributes.contentDescription = donation.contentDescription
-                attributes.textContent = donation.textContent
-                attributes.keywords = donation.keywords.isEmpty ? nil : donation.keywords
-                attributes.contentCreationDate = Date(
-                    timeIntervalSince1970: Double(donation.contentCreationDateMs) / 1000.0
-                )
-                if let startMs = donation.startDateMs {
-                    attributes.startDate = Date(timeIntervalSince1970: Double(startMs) / 1000.0)
+            var start = 0
+            while start < plan.index.count {
+                let chunk = Array(plan.index[start..<min(start + Self.batchSize, plan.index.count)])
+                start += chunk.count
+                let items = chunk.map { Self.item(for: $0, associate: associate) }
+                do {
+                    try await index.indexSearchableItems(items)
+                } catch {
+                    // Whether any of these landed is unknown; the next donation sends them again.
+                    gate.didFail(chunk.map(\.uniqueIdentifier))
+                    throw error
                 }
-                attributes.contentURL = URL(string: donation.deepLinkURL)
-                let item = CSSearchableItem(
-                    uniqueIdentifier: donation.uniqueIdentifier,
-                    domainIdentifier: Self.domainIdentifier,
-                    attributeSet: attributes
-                )
-                associate?(item, donation)
-                return item
+                gate.didIndex(chunk)
             }
-            try await index.indexSearchableItems(items)
+            if plan.index.count + plan.remove.count > 1 || skipped > 0 {
+                log(
+                    "spotlight  indexed=\(plan.index.count) removed=\(plan.remove.count) "
+                        + "unchanged=\(max(0, skipped))")
+            }
         }
 
+        /// One index document. People go in twice: as participants, which is what they are, and
+        /// among the keywords, which is what a typed name is matched against.
+        private static func item(
+            for donation: SpotlightDonation, associate: AssociationHook?
+        ) -> CSSearchableItem {
+            let attributes = CSSearchableItemAttributeSet(contentType: .text)
+            attributes.title = donation.title
+            attributes.contentDescription = donation.contentDescription
+            attributes.textContent = donation.textContent
+            var keywords = donation.keywords
+            for person in donation.people where !keywords.contains(person) {
+                keywords.append(person)
+            }
+            attributes.keywords = keywords.isEmpty ? nil : keywords
+            attributes.participants = donation.people.isEmpty ? nil : donation.people
+            attributes.contentCreationDate = Date(
+                timeIntervalSince1970: Double(donation.contentCreationDateMs) / 1000.0
+            )
+            if let startMs = donation.startDateMs {
+                attributes.startDate = Date(timeIntervalSince1970: Double(startMs) / 1000.0)
+            }
+            if let endMs = donation.endDateMs {
+                attributes.endDate = Date(timeIntervalSince1970: Double(endMs) / 1000.0)
+            }
+            attributes.contentURL = URL(string: donation.deepLinkURL)
+            let item = CSSearchableItem(
+                uniqueIdentifier: donation.uniqueIdentifier,
+                domainIdentifier: Self.domainIdentifier,
+                attributeSet: attributes
+            )
+            associate?(item, donation)
+            return item
+        }
+
+        /// Never gated: a removal is a delete the person asked for, or retention ageing content
+        /// out, and it must reach the index whatever the gate believes.
         public func remove(uniqueIdentifiers: [String]) async throws {
-            guard CSSearchableIndex.isIndexingAvailable() else { return }
+            guard CSSearchableIndex.isIndexingAvailable(), !uniqueIdentifiers.isEmpty else {
+                return
+            }
             try await index.deleteSearchableItems(withIdentifiers: uniqueIdentifiers)
+            var gate = self.gate
+            gate.didRemove(uniqueIdentifiers)
+            self.gate = gate
+            gateStore.save(gate)
         }
 
         public func removeAll() async throws {
@@ -403,6 +587,10 @@ extension String {
             try await index.deleteSearchableItems(
                 withDomainIdentifiers: [Self.domainIdentifier]
             )
+            var gate = self.gate
+            gate.didRemoveAll()
+            self.gate = gate
+            gateStore.save(gate)
             // The entity associations live on the items just deleted; this covers anything the
             // entity layer may have indexed under its own type (a system-driven reindex, say)
             // so a flip to "off" leaves nothing of ours behind under either name.
