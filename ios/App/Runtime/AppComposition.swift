@@ -339,7 +339,19 @@ final class AppComposition {
 
         let index = TranscriptIndex(database: database)
         self.index = index
-        let donator = SpotlightDonator(index: index, spotlight: CoreSpotlightIndexer())
+        // The system index remembers what it already holds, so re-donating unchanged content
+        // writes nothing. Kept in the app's OWN Application Support, not the App Group: the
+        // side-by-side build shares the group but has a Spotlight index of its own.
+        let gateStore: any SpotlightIndexGateStore =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            .map {
+                FileSpotlightIndexGateStore(
+                    url: $0.appendingPathComponent("spotlight-index-gate.json"))
+            } ?? EphemeralSpotlightIndexGateStore()
+        let donator = SpotlightDonator(
+            index: index,
+            spotlight: CoreSpotlightIndexer(
+                gateStore: gateStore, log: { AppRuntimeLog.shared.record($0) }))
         self.donator = donator
         // Ask's index lookup is a QUESTION, not a search-box query: `.any` so its content words
         // recall on their own instead of every word having to appear in one transcript, and

@@ -409,37 +409,95 @@ public actor EnrichmentService {
 
     /// Donates the changed conversations into the persistent index + Spotlight. Separate from
     /// `enrichPass` so the pipeline's ORDER is observable (enrich, then donate).
+    ///
+    /// Batched: one FTS transaction and one system-index pass per `donationBatchSize`
+    /// conversations, rather than a round trip each. A rebuild donates the whole library through
+    /// here, so the batch is also what bounds how many transcripts are held in memory at once.
+    ///
+    /// A LIVE or still-provisional conversation goes to the app's own index (in-app search finds
+    /// what is being said now) but not yet to the system index: Spotlight and Siri get it once it
+    /// has closed and settled, which the final title pass donates, instead of a fresh partial
+    /// copy at every provisional refresh.
+    /// The system index's own change gate (`SpotlightIndexGate`) then makes a re-donation of
+    /// anything that has not changed cost nothing.
     public func donate(conversationIds: [String]) async {
         guard let donator, !conversationIds.isEmpty else { return }
         let conversations = Dictionary(
             uniqueKeysWithValues: (await grouping()).map { ($0.id, $0) }
         )
+        var batch: [SpotlightDonator.ConversationDonation] = []
         for id in conversationIds {
             guard let conversation = conversations[id] else { continue }
             do {
-                let annotation = try await annotations.load(id)
-                // A stand-in says the conversation holds none; there is nothing to find it by.
-                if annotation?.providerId == AudioContentPresentation.providerId { continue }
-                // The words of the conversation's PIECES. Whole members would make the talk
-                // at the other end of a shared segment findable under this conversation too —
-                // a search hit that opens a conversation in which the words are never said.
-                let transcript = conversation.members
-                    .compactMap { searchPieceTranscriptOf($0)?.text }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n")
-                try await donator.donateConversation(
-                    conversationId: id,
-                    title: annotation?.title,
-                    summary: annotation?.summary,
-                    tags: annotation?.tags ?? [],
-                    fullTranscript: transcript.isEmpty ? nil : transcript,
-                    startDateMs: conversation.startMs,
-                    createdAtMs: clock.nowMs
-                )
+                guard let input = try await donation(for: conversation) else { continue }
+                batch.append(input)
             } catch {
                 log.failure("conversation donation", error)
             }
+            if batch.count >= Self.donationBatchSize {
+                await send(batch, to: donator)
+                batch = []
+            }
         }
+        await send(batch, to: donator)
+    }
+
+    private func send(
+        _ batch: [SpotlightDonator.ConversationDonation], to donator: SpotlightDonator
+    ) async {
+        guard !batch.isEmpty else { return }
+        do { try await donator.donateConversations(batch) } catch {
+            log.failure("conversation donation", error)
+        }
+    }
+
+    /// What one conversation contributes to the index; nil when there is nothing to find it by.
+    private func donation(for conversation: GroupedConversation) async throws
+        -> SpotlightDonator.ConversationDonation?
+    {
+        let id = conversation.id
+        let annotation = try await annotations.load(id)
+        // A stand-in says the conversation holds none; there is nothing to find it by.
+        if annotation?.providerId == AudioContentPresentation.providerId { return nil }
+        // The words of the conversation's PIECES. Whole members would make the talk at the
+        // other end of a shared segment findable under this conversation too — a search hit
+        // that opens a conversation in which the words are never said.
+        let transcript = conversation.members
+            .compactMap { searchPieceTranscriptOf($0)?.text }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        // The tags the Library shows (the person's own edits included), falling back to the
+        // annotation's before the tag table has caught up.
+        let shownTags = ((try? await TagStore(db: database).tags(forConversation: id)) ?? [])
+            .map(\.name)
+        let named = ((try? await PeopleStore(db: database).assignments(forConversation: id)) ?? [])
+            .map(\.personName)
+        return SpotlightDonator.ConversationDonation(
+            conversationId: id,
+            title: annotation?.title,
+            summary: annotation?.summary,
+            tags: shownTags.isEmpty ? (annotation?.tags ?? []) : shownTags,
+            people: Self.distinctNames(named),
+            fullTranscript: transcript.isEmpty ? nil : transcript,
+            startDateMs: conversation.startMs,
+            createdAtMs: clock.nowMs,
+            systemIndex: !(conversation.isLive || conversation.isProvisional)
+        )
+    }
+
+    /// Conversations per donation write; see `donate(conversationIds:)`.
+    static let donationBatchSize = 25
+
+    /// Speaker names, each once, in the order the conversation assigns them.
+    static func distinctNames(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for name in names {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { continue }
+            out.append(trimmed)
+        }
+        return out
     }
 
     /// Rebuilds `conversations` / `conversation_segments` from durable state, and caches the

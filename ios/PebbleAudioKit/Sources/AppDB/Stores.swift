@@ -436,6 +436,20 @@ public struct TagStore: Sendable {
         }
     }
 
+    /// Every conversation carrying this tag: what a rename of it changes everywhere.
+    public func conversationIds(taggedWith tagId: String) async throws -> [String] {
+        try await db.reader.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT conversationId FROM conversation_tags
+                    WHERE tagId = ? AND source <> '\(TagSource.removed)'
+                    ORDER BY conversationId
+                    """,
+                arguments: [tagId])
+        }
+    }
+
     public func observeTags(
         forConversation conversationId: String
     ) -> AsyncValueObservation<[ConversationTag]> {
@@ -1495,6 +1509,20 @@ public struct PeopleStore: Sendable {
     {
         try await db.reader.read { db in
             try Self.fetchAssignments(db, conversationId: conversationId)
+        }
+    }
+
+    /// Every conversation with a speaker assigned to this person: what a rename or a delete of
+    /// the person changes, and so what has to be indexed again.
+    public func conversationIds(assignedTo personId: String) async throws -> [String] {
+        try await db.reader.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT conversationId FROM speaker_assignments
+                    WHERE personId = ? ORDER BY conversationId
+                    """,
+                arguments: [personId])
         }
     }
 
