@@ -68,9 +68,10 @@ status is 0 when nothing was rejected or failed the check.
 
 ## Versions and replays
 
-Every item is sent at one version: when the backup's database was last written (the newer
-modification time of `companion.sqlite` and its `-wal`). Running the same backup again sends the
-same versions, and the server answers them as already held. A newer backup supersedes an older one,
+Every item is sent at one version: the newest change the backup's database records (the latest of
+its created, updated, edited, and similar times, read before anything writes to the copy), never the
+files' modification dates, which a copy without timestamps moves later. Running the same backup
+again sends the same versions, and the server answers them as already held. A newer backup supersedes an older one,
 and the phone's own sync, whose versions are the times of each change, supersedes both. The device
 shows up on the admin page as "Backup import on <this Mac>". Each `--code` links a new one; it can be
 unlinked there once the import is done.

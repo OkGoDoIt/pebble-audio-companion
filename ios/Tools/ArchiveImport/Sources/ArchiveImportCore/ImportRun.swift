@@ -48,8 +48,12 @@ public struct ImportRun {
         let started = Date()
         let library = try await BackupLibrary.open(options.backup, nowMs: nowMs)
         defer { library.close() }
+        var filesNote = ""
+        if let written = library.fileWrittenMs, written - library.snapshotMs > 86_400_000 {
+            filesNote = " (its files are dated \(Output.localTime(written)); the versions follow its contents)"
+        }
         Output.line(
-            "Backup   \(options.backup.lastPathComponent), last written \(Output.localTime(library.snapshotMs))")
+            "Backup   \(options.backup.lastPathComponent), last change \(Output.localTime(library.snapshotMs))\(filesNote)")
 
         let rows = try await library.everything()
         let byKind = Dictionary(grouping: rows, by: \.kind).mapValues(\.count)

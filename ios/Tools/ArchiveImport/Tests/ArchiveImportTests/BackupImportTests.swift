@@ -173,6 +173,27 @@ struct SyntheticBackup {
     #expect(try backup.fingerprint() == before)
 }
 
+@Test func versionsComeFromTheBackupsContentsNotItsFileDates() async throws {
+    // A copy that reset the file dates five days later must not outrank what the phone sent since.
+    let backup = try SyntheticBackup()
+    defer { try? FileManager.default.removeItem(at: backup.root) }
+    let later = Date().addingTimeInterval(5 * 86_400)
+    for name in ["db/companion.sqlite", "db/companion.sqlite-wal"] {
+        let url = backup.root.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: url.path)
+        }
+    }
+
+    let library = try await BackupLibrary.open(backup.root)
+    defer { library.close() }
+    #expect(library.fileWrittenMs ?? 0 >= Int64(later.timeIntervalSince1970 * 1000) - 1_000)
+    // The newest thing the synthetic backup wrote is its note, unless the app's own setup stamped a row later.
+    #expect(library.snapshotMs >= SyntheticBackup.startMs + 110_000)
+    #expect(library.snapshotMs <= Int64(Date().timeIntervalSince1970 * 1000))
+    #expect(try await library.everything().allSatisfy { $0.version == library.snapshotMs })
+}
+
 @Test func theScopeDatesEachKindTheWayTheContractDoes() throws {
     let zone = "Asia/Jakarta"
     // 2026-10-10 05:00 in Jakarta, the start of that logical day.
