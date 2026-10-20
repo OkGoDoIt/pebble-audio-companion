@@ -420,6 +420,17 @@ public sealed class OAuthClientResolver(ArchiveDbContext db, ClientMetadataFetch
 	}
 
 	/// <summary>
+	/// True for a metadata-document client this server has never allowed and does not ship a copy of: resolving it
+	/// would fetch its URL. The consent page has the person sign in before that, so an anonymous request cannot have
+	/// the server fetch any public URL it names.
+	/// </summary>
+	public async Task<bool> IsUnseenDocumentAsync(string? clientId, CancellationToken cancellationToken) =>
+		clientId is { Length: > 0 } &&
+		ClientMetadataDocuments.IsMetadataUrl(clientId) &&
+		KnownClients.Find(clientId) is null &&
+		!await db.OAuthClients.AnyAsync(c => c.ClientId == clientId, cancellationToken);
+
+	/// <summary>
 	/// Returns the client's row id, creating the row for a metadata-document client on its first sign-in and keeping
 	/// its stored copy up to date after that.
 	/// </summary>

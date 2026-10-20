@@ -77,6 +77,13 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var returnUrl = QueryHelpers.ParseQuery(login.Query)["ReturnUrl"].ToString();
 		Assert.Equal(authorize, returnUrl);
 
+		// Signed out, the metadata document of an app this server has never seen is not fetched: sign-in comes first.
+		const string unseen = "https://unseen-app.example/oauth/client.json";
+		var unseenAnswer = await browser.GetAsync(AuthorizeUrl(unseen, "https://unseen-app.example/callback", challenge, "unseen"));
+		Assert.Equal(HttpStatusCode.Redirect, unseenAnswer.StatusCode);
+		Assert.Equal("/admin/login", new Uri(new Uri(Origin), unseenAnswer.Headers.Location!).AbsolutePath);
+		Assert.DoesNotContain(factory.Http.Received, r => r.Request.RequestUri!.ToString() == unseen);
+
 		await SignInAsync(browser, userId);
 		var code = await AllowAsync(browser, returnUrl, ClaudeRedirect, "claude-state-1", expect: ["Connect Claude?", "claude.ai", "Add and update follow-ups, and add notes"]);
 
