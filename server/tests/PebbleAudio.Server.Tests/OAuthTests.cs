@@ -224,6 +224,25 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		await AssertTokenErrorAsync(await TokenAsync(api, exchange), HttpStatusCode.BadRequest, "invalid_grant");
 		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(readOnly.Access))).StatusCode);
 
+		// A week on, the cleanup deletes a registration that never connected and keeps this one, which ChatGPT reuses.
+		var unused = await api.PostAsJsonAsync("/oauth/register", new { redirect_uris = new[] { ChatGptCallbackRedirect }, token_endpoint_auth_method = "none" });
+		string unusedId;
+		using (var registration = JsonDocument.Parse(await unused.Content.ReadAsStringAsync()))
+		{
+			unusedId = registration.RootElement.GetProperty("client_id").GetString()!;
+		}
+
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+			await db.OAuthClients.Where(c => c.ClientId == clientId || c.ClientId == unusedId)
+				.ExecuteUpdateAsync(s => s.SetProperty(c => c.CreatedAt, DateTimeOffset.UtcNow - OAuthServer.UnusedRegistrationLifetime - TimeSpan.FromDays(1)));
+			await scope.ServiceProvider.GetRequiredService<OAuthTokenService>().CleanUpAsync(CancellationToken.None);
+		}
+
+		Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync(AuthorizeUrl(clientId, ChatGptCallbackRedirect, challenge, "gpt-state-again", "archive:read"))).StatusCode);
+		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(unusedId, ChatGptCallbackRedirect, challenge, "gpt-state-unused"))).StatusCode);
+
 		// ChatGPT's metadata document (fetched live through the stub), with write access.
 		var (cimdVerifier, cimdChallenge) = Pkce();
 		var cimdAuthorize = AuthorizeUrl(ChatGptClientId, ChatGptRedirect, cimdChallenge, "gpt-state-2", "archive:read archive:write");
