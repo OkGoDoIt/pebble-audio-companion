@@ -11,6 +11,9 @@
 - **The 401 challenge on `/mcp`**: the MCP SDK's `AddMcp` handler answers unauthenticated requests (and unknown,
   expired, revoked, or wrong-audience tokens) with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`
   and serves that metadata document. `Program.cs` also serves it at the root path.
+- **CORS** (`BrowserClients`): `/mcp`, both metadata documents, and `/oauth/token`, `/oauth/register`, and
+  `/oauth/revoke` answer browser-run clients (the MCP Inspector) from any origin, without credentials, exposing
+  `WWW-Authenticate`. Nothing else, the admin area included, sends CORS headers.
 - **Scopes on tools** (`McpScopeFilters`): `/mcp` needs `archive:read`. A tool not marked read-only also needs
   `archive:write`; a read-only connection does not see it in `tools/list`, and calling it answers with an error plus
   `_meta["mcp/www_authenticate"]` (`error="insufficient_scope"` with an `error_description`). Every tool declares its

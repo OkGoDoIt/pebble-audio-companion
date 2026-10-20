@@ -339,6 +339,40 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			Assert.Equal(expectedChallenge, header.Parameter);
 		}
 
+		// A client running in a browser (the MCP Inspector) gets CORS on what it calls, with bearer tokens and never with
+		// credentials; the admin area gets none.
+		const string inspector = "https://inspector.example";
+		foreach (var (path, method) in new[]
+		{
+			("/mcp", "POST"), ("/.well-known/oauth-protected-resource/mcp", "GET"), ("/.well-known/oauth-protected-resource", "GET"),
+			("/.well-known/oauth-authorization-server", "GET"), ("/oauth/token", "POST"), ("/oauth/register", "POST"), ("/oauth/revoke", "POST"),
+		})
+		{
+			var preflight = new HttpRequestMessage(HttpMethod.Options, path);
+			preflight.Headers.Add("Origin", inspector);
+			preflight.Headers.Add("Access-Control-Request-Method", method);
+			preflight.Headers.Add("Access-Control-Request-Headers", "authorization,content-type,mcp-protocol-version");
+			var allowed = await api.SendAsync(preflight);
+			Assert.True(allowed.StatusCode == HttpStatusCode.NoContent, $"{path}: {(int)allowed.StatusCode}");
+			Assert.Equal("*", Assert.Single(allowed.Headers.GetValues("Access-Control-Allow-Origin")));
+			Assert.False(allowed.Headers.Contains("Access-Control-Allow-Credentials"), path);
+		}
+
+		var adminPreflight = new HttpRequestMessage(HttpMethod.Options, "/admin/tokens");
+		adminPreflight.Headers.Add("Origin", inspector);
+		adminPreflight.Headers.Add("Access-Control-Request-Method", "POST");
+		Assert.False((await api.SendAsync(adminPreflight)).Headers.Contains("Access-Control-Allow-Origin"));
+		var fromBrowser = McpTests.McpPost(null);
+		fromBrowser.Headers.Add("Origin", inspector);
+		var signInNeeded = await api.SendAsync(fromBrowser);
+		Assert.Equal(HttpStatusCode.Unauthorized, signInNeeded.StatusCode);
+		Assert.Contains("WWW-Authenticate", string.Join(",", signInNeeded.Headers.GetValues("Access-Control-Expose-Headers")));
+		var metadataRequest = new HttpRequestMessage(HttpMethod.Get, "/.well-known/oauth-protected-resource/mcp");
+		metadataRequest.Headers.Add("Origin", inspector);
+		var metadataAnswer = await api.SendAsync(metadataRequest);
+		Assert.Equal(HttpStatusCode.OK, metadataAnswer.StatusCode);
+		Assert.Equal("*", Assert.Single(metadataAnswer.Headers.GetValues("Access-Control-Allow-Origin")));
+
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{
 			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();

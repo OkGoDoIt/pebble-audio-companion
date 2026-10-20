@@ -5,6 +5,9 @@ using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 using PebbleAudio.Server.Data;
 using PebbleAudio.Server.Sync;
@@ -30,6 +33,7 @@ public static class OAuthEndpoints
 		services.AddSingleton<OAuthUrls>();
 		services.AddSingleton<ClientMetadataFetcher>();
 		services.AddSingleton<RegistrationLimiter>();
+		services.AddBrowserClientCors();
 		services.AddScoped<OAuthClientResolver>();
 		services.AddScoped<OAuthAuthorization>();
 		services.AddScoped<OAuthTokenService>();
@@ -45,9 +49,16 @@ public static class OAuthEndpoints
 	public static IEndpointRouteBuilder MapOAuthServer(this IEndpointRouteBuilder app)
 	{
 		app.MapGet("/.well-known/oauth-authorization-server", (OAuthUrls urls) =>
-			Results.Json(AuthorizationServerMetadata.For(urls), Json));
+			Results.Json(AuthorizationServerMetadata.For(urls), Json))
+			.RequireCors(BrowserClients.CorsPolicy);
 
-		var oauth = app.MapGroup("/oauth").DisableAntiforgery();
+		// The MCP authentication handler answers this path itself, before an endpoint runs. The endpoint is here so
+		// routing finds one with the CORS policy: a browser client's preflight and the answer get the CORS headers.
+		app.MapGet("/.well-known/oauth-protected-resource/mcp", (IOptionsMonitor<McpAuthenticationOptions> options) =>
+			Results.Json(options.Get(McpAuthenticationDefaults.AuthenticationScheme).ResourceMetadata, McpJsonUtilities.DefaultOptions))
+			.RequireCors(BrowserClients.CorsPolicy);
+
+		var oauth = app.MapGroup("/oauth").DisableAntiforgery().RequireCors(BrowserClients.CorsPolicy);
 		oauth.MapPost("/token", TokenAsync);
 		oauth.MapPost("/register", RegisterAsync).WithMetadata(new RequestSizeLimitAttribute(MaxRegistrationBytes));
 		oauth.MapPost("/revoke", RevokeAsync);
