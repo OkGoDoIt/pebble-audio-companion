@@ -6,8 +6,9 @@ namespace PebbleAudio.Server.Sync;
 
 /// <summary>
 /// Deletes everything that has fallen outside the account's sharing scope (sync-protocol.md §5): conversations with
-/// their transcripts, notes, and clip files; recaps and coverage for earlier days; briefs whose period ended
-/// earlier; follow-ups said (or, without a source, created) earlier; notes without a conversation created earlier.
+/// their transcripts, notes, and clip files; transcripts without a conversation whose first item is earlier; recaps
+/// and coverage for earlier days; briefs whose period ended earlier; follow-ups said (or, without a source, created)
+/// earlier; notes without a conversation created earlier.
 /// It runs nightly at 03:30 in the account's time zone and at once when the phone changes the scope.
 /// </summary>
 /// <remarks>
@@ -42,6 +43,19 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 				.ToListAsync(cancellationToken);
 			await ArchiveDeletes.ConversationsAsync(db, userId, conversations, files, cancellationToken);
 
+			// A transcript whose conversation is not here is dated by its first item, as a batch dates it.
+			var orphans = (await db.Transcripts
+					.Where(t => t.UserId == userId && !db.Conversations.Any(c => c.UserId == userId && c.Id == t.ConversationId))
+					.Select(t => new { t.ConversationId, First = t.Items.Min(i => (DateTimeOffset?)i.At) })
+					.ToListAsync(cancellationToken))
+				.Where(t => t.First < from)
+				.Select(t => t.ConversationId)
+				.ToList();
+			if (orphans.Count > 0)
+			{
+				await db.Transcripts.Where(t => t.UserId == userId && orphans.Contains(t.ConversationId)).ExecuteDeleteAsync(cancellationToken);
+			}
+
 			var recaps = await db.Recaps.Where(r => r.UserId == userId && r.DayKey < fromDay).Select(r => r.DayKey).ToListAsync(cancellationToken);
 			await db.Recaps.Where(r => r.UserId == userId && r.DayKey < fromDay).ExecuteDeleteAsync(cancellationToken);
 
@@ -60,7 +74,7 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 			await notes.ExecuteDeleteAsync(cancellationToken);
 
 			await ForgetAsync(userId, SyncKind.Conversation, conversations, cancellationToken);
-			await ForgetAsync(userId, SyncKind.Transcript, conversations, cancellationToken);
+			await ForgetAsync(userId, SyncKind.Transcript, [.. conversations, .. orphans], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Recap, [.. recaps.Select(Day)], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Coverage, [.. coverage.Select(Day)], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Brief, briefs, cancellationToken);

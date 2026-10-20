@@ -31,6 +31,8 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		[
 			ArchiveFixture.Item("conversation", "conv-old", ArchiveFixture.Conversation(old, ArchiveFixture.At(old, 9, 0), ArchiveFixture.At(old, 9, 30), "Measuring the old kitchen", "Sam measures the kitchen walls.", ["kitchen renovation"], [ArchiveFixture.Speaker("2", "person-sam", "Sam")], [], 30)),
 			ArchiveFixture.Item("transcript", "conv-old", ArchiveFixture.Transcript("conv-old", [ArchiveFixture.Turn(ArchiveFixture.At(old, 9, 1), "2", "Sam", "The wall is three meters forty.", 0.9)])),
+			// A transcript whose conversation never came: dated by its first item.
+			ArchiveFixture.Item("transcript", "conv-old-alone", ArchiveFixture.Transcript("conv-old-alone", [ArchiveFixture.Turn(ArchiveFixture.At(old, 11, 0), "2", "Sam", "The grout should be grey.", 0.9)])),
 			ArchiveFixture.Item("recap", ArchiveFixture.Key(old), ArchiveFixture.Recap(old, "Measurements", "Measuring the kitchen.", "A morning of measuring.", ["conv-old"])),
 			ArchiveFixture.Item("brief", $"week:{ArchiveFixture.Key(oldWeek)}", ArchiveFixture.Brief("week", $"week:{ArchiveFixture.Key(oldWeek)}", oldWeek, oldWeek.AddDays(6), "Measuring week", "Measurements.", "A week of measuring.")),
 			ArchiveFixture.Item("followUp", "fu-old", ArchiveFixture.FollowUp("Order the wall paint", "conv-old", ArchiveFixture.At(old, 9, 10), ArchiveFixture.At(old, 9, 40))),
@@ -71,7 +73,8 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
 			var u = phone.UserId;
 			Assert.False(await db.Conversations.AnyAsync(c => c.UserId == u && c.Id == "conv-old"));
-			Assert.False(await db.Transcripts.AnyAsync(t => t.UserId == u && t.ConversationId == "conv-old"));
+			Assert.False(await db.Transcripts.AnyAsync(t => t.UserId == u && (t.ConversationId == "conv-old" || t.ConversationId == "conv-old-alone")));
+			Assert.False(await db.SyncItems.AnyAsync(s => s.UserId == u && s.EntityId == "conv-old-alone"));
 			Assert.False(await db.Recaps.AnyAsync(r => r.UserId == u && r.DayKey == old));
 			Assert.False(await db.Briefs.AnyAsync(b => b.UserId == u && b.PeriodKey == $"week:{ArchiveFixture.Key(oldWeek)}"));
 			Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == u && (f.Id == "fu-old" || f.Id == "fu-old-loose" || f.Id == "fu-old-said")));

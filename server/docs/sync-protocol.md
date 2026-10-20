@@ -347,7 +347,8 @@ the clip is not ready.
     deleted: conversations, their transcripts and notes, recaps for those days, briefs whose
     period ends before the window, follow-ups whose source time is before it, and clip files.
   - "Dated" means a conversation's `startedAt`, a recap's day, a brief's `endDay`, a follow-up's
-    `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`). A day is inside
+    `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`), a transcript's
+    conversation (else its first item). A day is inside
     when it is on or after the logical day the window's start falls on. Widening the window does
     not bring anything back by itself; the phone re-sends what now falls inside it (it watches
     for a widened scope and marks those items pending). The server forgets the versions of what it
