@@ -393,7 +393,7 @@ public sealed class ConversationTools
 		var title = ArchiveReader.Blank(c.Title) ?? "An untitled conversation";
 		var when = $"{Speak.Day(c.DayKey, call.Today).Split(',')[0]} {Speak.Clock(start)}" +
 			(c.EndedAt is { } ended ? $" to {Speak.Clock(Days.Local(ended, zone))}" : c.State == ConversationState.Live ? ", still going" : "");
-		var minutes = Days.Minutes((c.EndedAt ?? call.Now) - c.StartedAt);
+		var minutes = Days.Minutes(ArchiveReader.End(c, call.Now) - c.StartedAt);
 		var lost = ArchiveReader.GapMinutes(c, GapKind.Lost);
 		var parts = new List<string> { Speak.Clause(title), when, Speak.Duration(minutes) };
 		if (lost > 0)
