@@ -43,6 +43,12 @@ public sealed record ArchiveSettings
 	/// <summary>The bit rate clips are served at (AAC, 16 kHz mono). The watch records Speex at 9.8 kbps.</summary>
 	public int ClipAudioKbps { get; init; } = 32;
 
+	/// <summary>
+	/// How long clip audio stays on the server once it is ready (or failed). After that the file and its request go,
+	/// and a new request asks the phone again.
+	/// </summary>
+	public int ClipKeepDays { get; init; } = 7;
+
 	/// <summary>How long an OAuth access token lasts; the app renews it with its refresh token.</summary>
 	public int OAuthAccessTokenMinutes { get; init; } = 60;
 
@@ -57,6 +63,8 @@ public sealed record ArchiveSettings
 	public TimeSpan RequestTtl => TimeSpan.FromHours(RequestTtlHours);
 
 	public TimeSpan ClipLinkLifetime => TimeSpan.FromMinutes(ClipLinkMinutes);
+
+	public TimeSpan ClipKeepTime => TimeSpan.FromDays(ClipKeepDays);
 
 	public TimeSpan OAuthAccessTokenLifetime => TimeSpan.FromMinutes(OAuthAccessTokenMinutes);
 
@@ -153,6 +161,15 @@ public sealed record SettingDefinition(
 			128,
 			s => s.ClipAudioKbps,
 			(s, v) => s with { ClipAudioKbps = v }),
+		new(
+			nameof(ArchiveSettings.ClipKeepDays),
+			"How long clips are kept",
+			"Clip audio on the server is deleted this long after it is ready.",
+			"days",
+			1,
+			365,
+			s => s.ClipKeepDays,
+			(s, v) => s with { ClipKeepDays = v }),
 		new(
 			nameof(ArchiveSettings.JobMaxAttempts),
 			"Attempts for background work",

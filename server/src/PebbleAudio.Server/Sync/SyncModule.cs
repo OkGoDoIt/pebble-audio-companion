@@ -38,6 +38,7 @@ public static class SyncModule
 		services.AddScoped<IConnectedAssistants, ConnectedAssistants>();
 		services.AddScoped<IConnectedAssistantSource, TokenAssistantSource>();
 		services.AddJobHandler<ClipTranscodeJob>(ClipTranscodeJob.Type);
+		services.AddScoped<ClipRetention>();
 		services.AddScoped<SharingScopes>();
 		services.AddScoped<ScopeSweep>();
 		services.AddScoped<ScopeSweepSchedule>();
@@ -333,6 +334,7 @@ public static class SyncModule
 		PhoneRequestService requests,
 		SharingScopes scopes,
 		ScopeSweep sweep,
+		ClipRetention clips,
 		CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
@@ -358,6 +360,12 @@ public static class SyncModule
 		}
 
 		var preferences = await requests.SetPreferencesAsync(userId, deviceId, body.Clips, body.Edits, cancellationToken);
+		if (body.Clips == false)
+		{
+			// No audio for assistants any more: what the server has goes too, and links already given stop working.
+			await clips.RemoveAllAsync(userId, cancellationToken);
+		}
+
 		if (kind is { } scopeKind && await scopes.SetAsync(userId, deviceId, scopeKind, body.Scope!.Since, body.Scope.Days, cancellationToken))
 		{
 			await sweep.RunAsync(userId, cancellationToken);

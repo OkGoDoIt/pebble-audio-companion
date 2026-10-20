@@ -167,7 +167,9 @@ public sealed class ScopeSweepSchedule(ArchiveDbContext db, IJobQueue queue)
 	}
 }
 
-/// <summary>Looks for due nightly deletions every ten minutes.</summary>
+/// <summary>
+/// Looks for due nightly deletions every ten minutes, and removes clips past the "How long clips are kept" setting.
+/// </summary>
 public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvider time, ILogger<ScopeSweepScheduler> logger) : BackgroundService
 {
 	public static readonly TimeSpan Interval = TimeSpan.FromMinutes(10);
@@ -181,6 +183,7 @@ public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvide
 			{
 				await using var scope = scopes.CreateAsyncScope();
 				await scope.ServiceProvider.GetRequiredService<ScopeSweepSchedule>().QueueDueAsync(time.GetUtcNow(), stoppingToken);
+				await scope.ServiceProvider.GetRequiredService<ClipRetention>().RemoveExpiredAsync(time.GetUtcNow(), stoppingToken);
 			}
 			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 			{
@@ -188,7 +191,7 @@ public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvide
 			}
 			catch (Exception ex)
 			{
-				logger.LogError(ex, "Could not queue the nightly sharing-scope deletions.");
+				logger.LogError(ex, "Could not queue the nightly sharing-scope deletions or remove old clips.");
 			}
 		}
 		while (await WaitAsync(timer, stoppingToken));

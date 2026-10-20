@@ -276,7 +276,9 @@ has expired: it answers that the audio is gone.
 Ready clips are served at `GET /clips/{clipId}.m4a?exp=…&sig=…` (no token: the signature is
 the authorization), `audio/mp4`, with byte ranges for seeking. A link lasts the *How long a clip
 link works* setting (an hour by default). `403` for a wrong or expired signature, `404` while
-the clip is not ready.
+the clip is not ready or once it is gone. A clip is kept for the *How long clips are kept*
+setting (7 days by default) after it is ready, failed, or answered `unavailable`; then it goes
+with its request and its file, and asking for that span again asks the phone again.
 
 ## 5. Account-level endpoints (device token)
 
@@ -320,7 +322,8 @@ the clip is not ready.
 - `PUT /sync/preferences` (device token) `{ "clips": false, "edits": false }`: what the person
   allowed on the phone. Sent once after linking and whenever a choice changes; both default to
   `false` until the phone says otherwise. With `clips: false` the server never queues a clip
-  request (the audio tool answers that the person has not allowed clips); with `edits: false` it
+  request (the audio tool answers that the person has not allowed clips), and a `PUT` with
+  `clips: false` deletes every clip it holds for the account, files and requests included; with `edits: false` it
   refuses the follow-up and note write tools (they answer that the person has not allowed
   assistants to add to their archive). The phone also refuses such requests itself, so a stale
   server preference can never move audio or write anything the person did not allow.
