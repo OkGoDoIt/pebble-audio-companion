@@ -47,17 +47,12 @@ struct SettingsServerScreen: View {
         .navigationDestination(isPresented: $flow.showConnectOnly) { AssistantsConnectScreen(inSetup: false) }
         .navigationDestination(isPresented: $flow.showScope) { AssistantsScopeScreen() }
         .navigationDestination(item: $flow.detailAccessId) { id in AssistantDetailScreen(accessId: id) }
-        .confirmationDialog(
-            Copy.AssistantAccess.unlinkTitle, isPresented: $confirmUnlink, titleVisibility: .visible
-        ) {
-            Button(Copy.AssistantAccess.unlinkConfirm, role: .destructive) { unlink() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(
-                Copy.AssistantAccess.unlinkMessage(
-                    count: serverConversationCount, host: source.host ?? AssistantsDemo.host,
-                    assistants: source.assistants.map(\.name)))
-        }
+        .assistantConfirm(
+            isPresented: $confirmUnlink, title: Copy.AssistantAccess.unlinkTitle,
+            message: Copy.AssistantAccess.unlinkMessage(
+                count: serverConversationCount, host: source.host ?? AssistantsDemo.host,
+                assistants: source.assistants.map(\.name)),
+            confirmTitle: Copy.AssistantAccess.unlinkConfirm, onConfirm: unlink)
     }
 
     // MARK: Before linking (02), and linked but not yet chosen

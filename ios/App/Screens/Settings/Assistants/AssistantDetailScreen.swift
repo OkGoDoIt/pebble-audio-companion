@@ -45,15 +45,12 @@ struct AssistantDetailScreen: View {
                     text: disconnectFailed
                         ? Copy.AssistantAccess.disconnectFailed : Copy.AssistantAccess.disconnectFooter(access.name),
                     color: disconnectFailed ? Tokens.attention : Tokens.tertiary)
-                .confirmationDialog(
-                    Copy.AssistantAccess.disconnectTitle(access.name), isPresented: $confirmDisconnect,
-                    titleVisibility: .visible
-                ) {
-                    Button(Copy.AssistantAccess.disconnect(access.name), role: .destructive) {
-                        disconnect(access)
-                    }
-                    Button("Cancel", role: .cancel) {}
-                }
+                .assistantConfirm(
+                    isPresented: $confirmDisconnect,
+                    title: Copy.AssistantAccess.disconnectTitle(access.name),
+                    message: Copy.AssistantAccess.disconnectFooter(access.name),
+                    confirmTitle: Copy.AssistantAccess.disconnect(access.name),
+                    onConfirm: { disconnect(access) })
             }
         }
         .navigationTitle(access?.name ?? Copy.AssistantAccess.title)

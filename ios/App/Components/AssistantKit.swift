@@ -394,6 +394,94 @@ struct ChipFlow: Layout {
     }
 }
 
+// MARK: - Confirming something that cannot be undone
+
+/// The round-3 confirmation (07b, 07c, 07d): a short sheet floating at the foot of the screen
+/// with the question, what it does, the destructive action in red on a neutral pill, and Cancel.
+/// A system sheet at its own height, so it is iOS's glass and corner; a confirmation dialog would
+/// be a popover anchored at the top of the screen, too narrow for a sentence naming a server.
+struct AssistantConfirmSheet: ViewModifier {
+    @Binding var isPresented: Bool
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let onConfirm: () -> Void
+    var onCancel: () -> Void = {}
+
+    @State private var height: CGFloat = 260
+    @State private var confirmed = false
+
+    func body(content: Content) -> some View {
+        content.sheet(
+            isPresented: $isPresented,
+            onDismiss: {
+                // Cancel, a swipe down, or a tap outside: what was asked stays as it was.
+                if !confirmed { onCancel() }
+                confirmed = false
+            }
+        ) {
+            VStack(spacing: 0) {
+                Text(title)
+                    .font(AppFont.headline)
+                    .foregroundStyle(Tokens.label)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                Text(message)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+                VStack(spacing: 8) {
+                    pill(confirmTitle, color: Tokens.destructive) {
+                        confirmed = true
+                        isPresented = false
+                        onConfirm()
+                    }
+                    pill("Cancel", color: Tokens.label) {
+                        isPresented = false
+                    }
+                }
+                .padding(.top, 18)
+            }
+            .padding(.top, 22)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height = $0 }
+            .presentationDetents([.height(height)])
+            .presentationDragIndicator(.hidden)
+            .interactiveDismissDisabled(false)
+        }
+    }
+
+    private func pill(_ title: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(AppFont.headline)
+                .foregroundStyle(color)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .background(Tokens.pillFill, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+extension View {
+    func assistantConfirm(
+        isPresented: Binding<Bool>, title: String, message: String, confirmTitle: String,
+        onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void = {}
+    ) -> some View {
+        modifier(
+            AssistantConfirmSheet(
+                isPresented: isPresented, title: title, message: message, confirmTitle: confirmTitle,
+                onConfirm: onConfirm, onCancel: onCancel))
+    }
+}
+
 // MARK: - Text with another app's labels in bold
 
 extension AttributedString {

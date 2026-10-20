@@ -9,6 +9,7 @@ struct AssistantsScopeScreen: View {
 
     @State private var draft: ArchiveSharingScope = .all
     @State private var pending: ArchiveSharingScope?
+    @State private var confirming = false
     @State private var loaded = false
 
     var body: some View {
@@ -29,20 +30,13 @@ struct AssistantsScopeScreen: View {
         }
         .task { await source.loadCounts() }
         .onChange(of: draft) { _, next in consider(next) }
-        .confirmationDialog(
-            pending.map { Copy.AssistantAccess.removeTitle(removed($0)) } ?? "",
-            isPresented: Binding(get: { pending != nil }, set: { if !$0 { cancel() } }),
-            titleVisibility: .visible
-        ) {
-            if let pending {
-                Button(Copy.AssistantAccess.removeConfirm(removed(pending)), role: .destructive) {
-                    apply(pending)
-                }
-                Button("Cancel", role: .cancel) { cancel() }
-            }
-        } message: {
-            if let pending { Text(removeMessage(pending)) }
-        }
+        .assistantConfirm(
+            isPresented: $confirming,
+            title: pending.map { Copy.AssistantAccess.removeTitle(removed($0)) } ?? "",
+            message: pending.map(removeMessage) ?? "",
+            confirmTitle: pending.map { Copy.AssistantAccess.removeConfirm(removed($0)) } ?? "",
+            onConfirm: { if let pending { apply(pending) } },
+            onCancel: cancel)
     }
 
     private var current: ArchiveSharingScope { source.sync.preferences.scope }
@@ -62,6 +56,7 @@ struct AssistantsScopeScreen: View {
         guard next != current else { return }
         if ArchiveSharingScope.narrows(from: current, to: next, nowMs: source.nowMs), removed(next) > 0 {
             pending = next
+            confirming = true
         } else {
             apply(next)
         }
@@ -70,8 +65,8 @@ struct AssistantsScopeScreen: View {
     private func apply(_ scope: ArchiveSharingScope) {
         var preferences = source.sync.preferences
         preferences.scope = scope
+        // `pending` stays until the sheet is gone, so its words do not empty as it slides away.
         source.setPreferences(preferences)
-        pending = nil
     }
 
     private func cancel() {

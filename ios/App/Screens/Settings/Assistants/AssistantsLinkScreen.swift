@@ -97,10 +97,15 @@ struct AssistantsLinkScreen: View {
         // An old failure never outlives the attempt it was about (it named a host the fields no
         // longer show, sweep item 20).
         .onDisappear { source.clearLinkFailure() }
-        .onChange(of: server) { _, _ in clearFailureIfEdited() }
+        // Filling the fields from a link or a scan is not an edit.
+        .onChange(of: server) { _, newValue in
+            if newValue != source.flow.serverText { clearFailureIfEdited() }
+        }
         .onChange(of: code) { _, newValue in
             if newValue != source.linkFailure?.code { clearFailureIfEdited() }
-            scanned = false
+            if ArchiveLinkInvitation.normalizedCode(newValue) != ArchiveLinkInvitation.normalizedCode(source.flow.codeText) {
+                scanned = false
+            }
         }
         .navigationDestination(isPresented: $flow.showChoose) { AssistantsChooseScreen() }
     }
