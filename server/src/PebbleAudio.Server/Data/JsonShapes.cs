@@ -45,8 +45,12 @@ public sealed class ConversationGap
 
 	public GapKind Kind { get; set; }
 
-	/// <summary>Where a loss happened, for example <c>watch</c>.</summary>
+	/// <summary>Where a loss happened: <c>watch</c>, <c>link</c> (it never reached the phone), or <c>unknown</c>.</summary>
 	public string? Origin { get; set; }
+
+	/// <summary>Why a quiet stretch has no audio, when the phone says: <c>watchPause</c> for the watch's own
+	/// power-save pause.</summary>
+	public string? Reason { get; set; }
 }
 
 /// <summary>

@@ -29,6 +29,8 @@ public sealed class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
 
 	public DbSet<SyncItem> SyncItems => Set<SyncItem>();
 
+	public DbSet<SyncPreferences> SyncPreferences => Set<SyncPreferences>();
+
 	public DbSet<Device> Devices => Set<Device>();
 
 	public DbSet<LinkCode> LinkCodes => Set<LinkCode>();
@@ -113,6 +115,8 @@ public sealed class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
 			entity.HasIndex(s => new { s.UserId, s.AppliedAt });
 		});
 
+		builder.Entity<SyncPreferences>(entity => entity.HasKey(p => p.UserId));
+
 		builder.Entity<Device>(entity =>
 		{
 			entity.HasIndex(d => d.TokenHash).IsUnique();
@@ -176,6 +180,7 @@ public sealed class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
 		ConfigureOwner<Person>(builder);
 		ConfigureOwner<CoverageDay>(builder);
 		ConfigureOwner<SyncItem>(builder);
+		ConfigureOwner<SyncPreferences>(builder);
 		ConfigureOwner<Device>(builder);
 		ConfigureOwner<LinkCode>(builder);
 		ConfigureOwner<PhoneRequest>(builder);
