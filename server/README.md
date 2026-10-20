@@ -33,12 +33,19 @@ Built:
 - Bearer tokens (`pat_…`) for `/mcp`, created and revoked in the admin area; an unauthenticated request gets
   a 401 with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - The admin area at `/admin`, passkey-only, one user: status, tokens, passkeys, and settings.
-- The Postgres-backed job queue (`Jobs/`) with one `noop` handler.
+- The Postgres-backed job queue (`Jobs/`) with a `noop` handler and `clip.transcode`.
 - Typed settings with defaults, editable at `/admin/settings` (`Settings/`).
+- The sync half (`Sync/`, the whole of [`docs/sync-protocol.md`](docs/sync-protocol.md)): linking a phone at
+  `/admin/phones` (one-time code and QR code), device tokens (`pad_…`, their own scheme, `/link` and `/sync/*`
+  only), `PUT /sync/batch`, the request channel and clip uploads, the ffmpeg transcode to m4a, signed clip
+  links at `/clips/{id}.m4a`, wipe, status with the assistants that have access, and the phone's preferences.
+  Other modules reach the phone through `PhoneRequestService` (`RequestClipAsync`, `CreateFollowUpAsync`,
+  `UpdateFollowUpAsync`, `CreateNoteAsync`), which honors those preferences and answers with typed outcomes.
+  OAuth grants join the phone's access list by registering an `IConnectedAssistantSource`.
 - CI and deploy workflows, mirroring Situ.
 
-Not built yet: the sync endpoints (`Sync/`), the OAuth authorization server (`Auth/`), the archive tools,
-MCP Events, clips, the import from a Desktop backup, and the conversation viewer.
+Not built yet: the OAuth authorization server (`Auth/`), the archive tools, MCP Events, the import from a
+Desktop backup, and the conversation viewer.
 
 ## Layout
 
@@ -55,6 +62,7 @@ server/
 │   ├── Mcp/                       server instructions, tools, the AI-read log
 │   ├── Pages/Admin/               Razor Pages for the admin area
 │   ├── Settings/                  ArchiveSettings and SettingsService
+│   ├── Sync/                      linking, device tokens, batches, requests, clips, wipe, status
 │   ├── wwwroot/                   site.css, passkeys.js, admin.js (plain ES modules, no bundler)
 │   └── Program.cs
 └── tests/PebbleAudio.Server.Tests/
@@ -111,6 +119,7 @@ Revoking a token takes effect on the next request.
 | `ConnectionStrings__DefaultConnection` | local Postgres | `/etc/pebbleaudio/pebbleaudio.env` |
 | `PebbleAudio__PublicOrigin` | `http://localhost:5090` | `https://pebbleaudio.okgodoit.com`; the MCP resource, the metadata URL, and every absolute link derive from it, never from the request's host |
 | `PebbleAudio__ClipsPath` | `App_Data/clips` | `/var/lib/pebbleaudio/clips` |
+| `PebbleAudio__FfmpegPath` | unset (`ffmpeg` on the PATH) | unset; `setup-server.sh` installs Ubuntu's ffmpeg |
 | `DataProtection__KeysPath` | `App_Data/data-protection-keys` | `/var/lib/pebbleaudio/data-protection-keys`; required outside Development |
 | `PebbleAudio__SetupCode` | unset | optional fixed setup code |
 | `ASPNETCORE_URLS` | `http://localhost:5090` (launch profile) | `http://127.0.0.1:5090` |

@@ -7,18 +7,29 @@ both halves are built against; change it here first, then both sides.
 Base URL: `https://pebbleaudio.okgodoit.com`. JSON everywhere except clip bodies. All wall-clock
 times are RFC 3339 strings in UTC (`2026-10-14T13:05:09.754Z`); media offsets and durations
 are integer milliseconds. Every request from the phone carries `Authorization: Bearer <device
-token>`. Tokens are opaque, prefixed `pad_`, stored hashed on the server.
+token>`. Tokens are opaque, prefixed `pad_`, stored hashed on the server. A device token opens
+`/link` and `/sync/*` only; the `pat_` tokens assistants use open `/mcp` only, and neither works
+on the other's endpoints.
+
+Optional fields are sent as an explicit `null`, never left out. An error answer carries
+`{ "error": "…" }`, which the phone logs and never shows.
 
 ## 1. Linking a phone
 
-1. The person opens the admin area on the server (passkey login) and taps *Link a phone*. The
-   server shows a one-time code (8 characters, valid 10 minutes) and a QR code of
-   `pebbleaudio://link?code=…&origin=https://pebbleaudio.okgodoit.com`.
-2. The app calls `POST /link` with `{ "code": "…", "deviceName": "Roger's iPhone", "appVersion": "…", "appBuild": "…" }`.
+1. The person opens the admin area on the server (passkey login), *Phones*, and taps *Link a
+   phone*. The server shows a one-time code (8 characters from `A–Z` and `2–9` without `I`, `L`,
+   `O`, valid 10 minutes, shown as `K7QM-3XWD`) and a QR code of
+   `pebbleaudio://link?code=K7QM3XWD&origin=https%3A%2F%2Fpebbleaudio.okgodoit.com`. Showing a
+   new code ends the previous unused one.
+2. The app calls `POST /link` (no token) with `{ "code": "…", "deviceName": "Roger's iPhone", "appVersion": "…", "appBuild": "…" }`.
+   Case, spaces and dashes in the code do not matter.
 3. Response `201 { "deviceId": "…", "deviceToken": "pad_…", "userId": "…", "serverTime": "…" }`.
-   The app stores the token in the Keychain. `409` if the code is used or expired.
+   The app stores the token in the Keychain. `409` if the code is wrong, used or expired. After
+   ten wrong codes from one address in ten minutes the server answers `429` until the window
+   turns (right codes are not counted).
 
-`DELETE /link` (device token) unlinks: the server keeps the data, revokes the token.
+`DELETE /link` (device token) unlinks: the server keeps the data, revokes the token, `204`.
+The admin area can rename and unlink a phone too.
 
 ## 2. Entities
 
@@ -29,7 +40,8 @@ version it has seen; a batch item with a lower or equal version is accepted and 
 
 Ops: `upsert` (payload present), `delete` (the person deleted it in the app; the server deletes
 it and everything derived from it), `expire` (the app's retention aged it out; the server keeps
-it and marks `expiredOnPhone`). A whole-account wipe is a separate endpoint (§4).
+it and marks `expiredOnPhone`; a later upsert of it clears the mark). A whole-account wipe is
+a separate endpoint (§5).
 
 | kind | id | payload |
 | --- | --- | --- |
@@ -83,6 +95,19 @@ distinct from `lost` (genuinely missing). `recordedMs` is stored audio inside th
 A conversation whose `contentKind` is `noConversation` (music, TV, announcements) is synced too,
 so days add up, but is flagged.
 
+What the phone actually sends, and the server accepts:
+
+- A piece that is a whole segment has `startMediaMs: 0` and `endMediaMs: null`; `startMediaMs`
+  is never null.
+- A `lost` gap's `origin` is `watch` (the watch never recorded it), `link` (recorded, but it
+  never reached the phone), or `unknown` (a hole between pieces that no record explains). A
+  `quiet` gap has no `origin`.
+- A `quiet` gap may carry `"reason": "watchPause"`: the watch's own power-save pause, as opposed
+  to its silence suppression. The server stores the reason.
+- Required: `startedAt`, `timeZone`, `dayKey`, `state`, `contentKind`, `pieces` (it may be
+  empty), each piece's `segmentId`, `startMediaMs` and `startedAt`, and each gap's times and
+  `kind`. Anything else missing takes its empty value.
+
 ### 2.2 `transcript`
 
 One per conversation, already cut to the conversation's pieces, with wall-clock times, loop
@@ -111,6 +136,9 @@ reads. Items are in time order and include the honest markers.
 transcript's version increases whenever any piece's transcript changes (re-transcription,
 speaker naming, a boundary move). Size: a two-hour conversation is under 1 MB.
 
+The phone sends `language: null` today (it does not know the language yet). `conversationId`
+must equal the item's `id`. A `lost` item carries the same origins as a lost gap.
+
 ### 2.3 `recap`
 
 ```json
@@ -129,7 +157,8 @@ speaker naming, a boundary move). Size: a two-hour conversation is under 1 MB.
 { "text": "…", "quote": "…", "why": "…", "dueAt": null, "priority": 1, "done": false, "completedAt": null, "archivedAt": null, "snoozedUntil": null, "origin": "ai", "sourceConversationId": "conv-…", "sourceAt": "…", "sourceEndAt": "…", "sourceApproximate": false, "createdAt": "…", "editedAt": null }
 ```
 
-`origin` is `ai`, `user` or `assistant` (created through an MCP write tool, see §3).
+`origin` is `ai`, `user` or `assistant` (created through an MCP write tool, see §4).
+`priority` is `0` (low), `1` (normal) or `2` (high).
 
 ### 2.6 `note`
 
@@ -162,7 +191,9 @@ speaker naming, a boundary move). Size: a two-hour conversation is under 1 MB.
 
 Limits: 200 items or 8 MB per batch, whichever first. The phone writes each batch to a file and
 uploads it with a background `URLSession` upload task (background tasks need file bodies), so
-the body is the file. Items are applied in order inside one database transaction per batch.
+the body is the file. Items are applied in order inside one database transaction per batch;
+batches for one account are applied one at a time. The body's `deviceId` and `sentAt` are
+informational: the token says which phone sent it.
 
 Response `200`:
 
@@ -170,14 +201,24 @@ Response `200`:
 { "serverTime": "…", "accepted": [ { "kind": "…", "id": "…", "version": 1 } ], "ignored": [ { "kind": "…", "id": "…", "version": 1, "reason": "stale" } ], "rejected": [ { "kind": "…", "id": "…", "reason": "payload: pieces missing" } ], "pendingRequests": 2 }
 ```
 
-`rejected` items are the phone's bug to fix; the rest of the batch still applies. `401` means
-the token is gone (unlinked); the app stops syncing and tells the person. `413` means the batch
-is over the limit; the app halves it.
+`ignored` reasons are `stale` (older than what the server holds) and `duplicate` (the same
+version; a replay). The phone treats both as held. `rejected` items are the phone's bug to fix;
+the rest of the batch still applies. A reason names the field (`payload: pieces missing`,
+`payload: gaps[2].kind 'x' is not known`, `kind: 'gadget' is not known`); `server: could not
+store it` means the database refused that one item, and the rest still applied. Nothing about a
+rejected item is recorded, so the same version can be sent again once fixed. `400` means the
+body is not JSON or has no `items` array. `401` means the token is gone (unlinked); the app
+stops syncing and tells the person. `413` means the batch is over the limit
+(`{ "error", "maxItems": 200, "maxBytes": 8388608 }`); the app halves it.
 
 Ordering rule: a `transcript` may arrive before its `conversation`; the server stores it and
-links it when the conversation arrives. A `delete` for a conversation also deletes its
-transcript, notes and server-side derived rows; follow-ups whose source was that conversation
-keep their text but lose the source link.
+links it when the conversation arrives (the two share the id and are joined when read). A
+`delete` for a conversation also deletes its transcript, notes and server-side derived rows (its
+clips and their files, their requests, and its id in the AI-read log); follow-ups whose source
+was that conversation keep their text but lose the source link (`sourceConversationId`,
+`sourceAt` and `sourceEndAt` become null). The phone sends the transcript's own `delete` too.
+The server keeps each entity's version after a delete, so a late copy of an older upsert stays
+ignored.
 
 ## 4. Requests from the server to the phone
 
@@ -186,34 +227,97 @@ pass otherwise).
 
 `GET /sync/requests` → `200 { "requests": [ { "id": "…", "kind": "clip", "createdAt": "…", "expiresAt": "…", "payload": { … } } ] }`
 
+At most 100, oldest first. A request is offered on every pull until the phone answers it or it
+expires, so the phone must treat one it has already handled (or is still uploading) as such.
+Payload keys come back in Postgres `jsonb` order, not the order they were written.
+
 | kind | payload | the phone does |
 | --- | --- | --- |
 | `clip` | `{ "conversationId": "conv-…", "startAt": "…", "endAt": "…", "maxMs": 1200000 }` | resolves wall → media across the conversation's pieces, remuxes the span to Ogg Speex (no decoding), and uploads it |
 | `followUp.create` | a §2.5 payload with `origin: "assistant"` and a server-assigned `id` | inserts it into the local store (which then syncs it back as an `upsert`, closing the loop) |
-| `followUp.update` | `{ "id": "…", "done": true, "completedAt": "…" }` or edits to `text`, `dueAt`, `snoozedUntil`, `archivedAt` | applies the change |
+| `followUp.update` | `{ "id": "…", "done": true, "completedAt": "…" }` or edits to `text`, `dueAt`, `snoozedUntil`, `archivedAt`; a key left out is left alone, `null` clears it | applies the change |
 | `note.create` | a §2.6 payload with `origin: "assistant"` and a server-assigned `id` | inserts it |
 
 Results:
 
 - Clips: `PUT /sync/clips/{requestId}` with `Content-Type: audio/ogg`, the Ogg Speex file as the
   body, and headers `X-Clip-Start-At`, `X-Clip-End-At` (the span actually covered, which may be
-  shorter than asked when audio was lost) and `X-Clip-Gaps` (JSON array of lost spans inside it).
-  `201` when stored. The server queues a transcode job and then serves the clip.
-- Everything else: `POST /sync/requests/{requestId}/result` with
-  `{ "status": "done" | "failed" | "unavailable", "detail": "…" }`. `unavailable` means the phone
-  no longer has the audio (aged out, deleted); the server records that honestly.
+  shorter than asked when audio was lost) and `X-Clip-Gaps` (JSON array of lost spans inside it,
+  `[{ "startedAt": "…", "endedAt": "…" }]`). `201 { "clipId": "…" }` when stored, and again for
+  a retried upload of a clip the server already has. `415` if it is not `audio/ogg`, `400` if the
+  body is not Ogg or a header cannot be read, `404` for an unknown request. The server queues a
+  transcode job (ffmpeg to AAC in m4a, 16 kHz mono) and then serves the clip.
+- Everything else, and a clip the phone cannot make: `POST /sync/requests/{requestId}/result`
+  with `{ "status": "done" | "failed" | "unavailable", "detail": "…" }`, `204`. `unavailable`
+  means the phone no longer has the audio (aged out, deleted); the server records that honestly
+  and answers the same span with it for the request time to live instead of asking again. The first answer stands;
+  a late answer still replaces "expired". `400` for another status, `404` for an unknown
+  request.
 
-A request expires after 24 hours; the server answers tools with "requested, waiting for the
-phone" until then, then "the phone did not deliver". `pendingRequests` in every batch response
-lets the phone pull immediately after a push.
+A follow-up or note an assistant creates is stored on the server at once (origin `assistant`,
+version 0) so tools can read it back; the phone's own upsert of it replaces that row. If the
+phone answers `failed` or `unavailable` to a `*.create`, or never answers, the unconfirmed row
+is removed again.
+
+A request expires after the *How long requests wait for the phone* setting (24 hours by
+default); the server answers tools with "requested, waiting for the phone" until then, then
+"the phone did not deliver". `pendingRequests` in every batch response lets the phone pull
+immediately after a push. The server never queues a clip request for a conversation the phone
+has expired: it answers that the audio is gone.
+
+Ready clips are served at `GET /clips/{clipId}.m4a?exp=…&sig=…` (no token: the signature is
+the authorization), `audio/mp4`, with byte ranges for seeking. A link lasts the *How long a clip
+link works* setting (an hour by default). `403` for a wrong or expired signature, `404` while
+the clip is not ready.
 
 ## 5. Account-level endpoints (device token)
 
 - `POST /sync/wipe` `{ "confirm": "wipe" }`: deletes every row and file for the user on the
-  server (the app's *Delete all* calls this after wiping locally).
+  server (the app's *Delete all* calls this after wiping locally): every entity, the version
+  ledger (so what the phone sends next is taken as new), requests, clips and their jobs, and the
+  AI-read log. It keeps what lets the phone go on syncing: the linked phones, their preferences,
+  and the assistants' access. `200 { "serverTime": "…" }`; `400` without the confirmation.
 - `GET /sync/status` → counts per kind, `lastBatchAt`, `pendingRequests`, `serverTime`,
-  `aiReads` (the last 20 tool calls by assistants: when, which client, which tool, which ids), so
-  the app's status row and "what AI read" line are truthful.
+  `aiReads` (the last 20 tool calls by assistants: when, which client, which tool, which ids), and
+  `access`, so the app's status row, its "what AI read" line and the privacy screen are truthful:
+
+  ```json
+  {
+    "serverTime": "…",
+    "lastBatchAt": "…",
+    "pendingRequests": 0,
+    "counts": { "conversation": 812, "transcript": 809, "recap": 40, "brief": 6, "followUp": 120, "note": 9, "person": 14, "coverage": 41 },
+    "aiReads": [ { "at": "…", "client": "Claude", "tool": "search", "ids": ["conv-…"] } ],
+    "access": [ … ]
+  }
+  ```
+
+  `lastBatchAt` is this phone's last batch (null before its first). The phone also accepts
+  `when` for `at` and `entityIds` for `ids`; the server sends `at` and `ids`.
+
+  ```json
+  "access": [
+    { "kind": "oauth", "id": "…", "name": "ChatGPT", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" },
+    { "kind": "oauth", "id": "…", "name": "Claude", "scopes": ["archive:read", "archive:write"], "connectedAt": "…", "lastUsedAt": null },
+    { "kind": "token", "id": "…", "name": "Codex on Mac", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" }
+  ]
+  ```
+
+  One entry per assistant that can read the archive right now: every OAuth client with a live
+  grant (named from its client metadata: ChatGPT, Claude, …) and every unrevoked personal token
+  (named by its owner in the admin area). Revoked or expired access is not listed. `scopes` tells
+  the phone whether that assistant can also write (create follow-ups and notes).
+- `DELETE /sync/access/{kind}/{id}` (device token): revokes one assistant's access from the
+  phone. `204`; `404` when there is no such live access.
+- `PUT /sync/preferences` (device token) `{ "clips": false, "edits": false }`: what the person
+  allowed on the phone. Sent once after linking and whenever a choice changes; both default to
+  `false` until the phone says otherwise. With `clips: false` the server never queues a clip
+  request (the audio tool answers that the person has not allowed clips); with `edits: false` it
+  refuses the follow-up and note write tools (they answer that the person has not allowed
+  assistants to add to their archive). The phone also refuses such requests itself, so a stale
+  server preference can never move audio or write anything the person did not allow.
+  `GET /sync/preferences` returns the stored value. `PUT` answers with it too; a key left out
+  keeps its stored value. Preferences are per account and survive a wipe.
 
 ## 6. What the server derives and never asks the phone for
 
@@ -223,5 +327,6 @@ subscriptions. Deleting a conversation on the phone removes all of these for it.
 
 ## 7. Versioning
 
-`X-Sync-Protocol: 1` on every request; the server answers `426` with `{ "minimum": n }` when the
-app is too old. Additive payload fields never bump the version; a changed meaning does.
+`X-Sync-Protocol: 1` on every request to `/link` and `/sync/*`; the server answers `426` with
+`{ "minimum": n }` when the header is missing or older than it speaks. Additive payload fields
+never bump the version; a changed meaning does.

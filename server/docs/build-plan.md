@@ -20,7 +20,7 @@ the concrete shape this code takes.
 | Kestrel | `http://127.0.0.1:5090` behind nginx (Situ is on 5080) |
 | Database | PostgreSQL 16, database `pebbleaudio`, role `pebbleaudio`, local scram auth |
 | Runtime | .NET 10 LTS, framework-dependent `linux-x64` publish against the droplet's `aspnetcore-runtime-10.0` |
-| Packages | `ModelContextProtocol.AspNetCore` 2.2.0 and `ModelContextProtocol.Extensions.Apps` 2.2.0 (Apache-2.0), `Npgsql.EntityFrameworkCore.PostgreSQL` 10.x, `Microsoft.AspNetCore.Identity.EntityFrameworkCore` 10.x (passkeys), `Microsoft.EntityFrameworkCore.Tools`, `Microsoft.Extensions.Hosting.Systemd`. Nothing else without a reason written in the commit. |
+| Packages | `ModelContextProtocol.AspNetCore` 2.2.0 and `ModelContextProtocol.Extensions.Apps` 2.2.0 (Apache-2.0), `Npgsql.EntityFrameworkCore.PostgreSQL` 10.x, `Microsoft.AspNetCore.Identity.EntityFrameworkCore` 10.x (passkeys), `Microsoft.EntityFrameworkCore.Tools`, `Microsoft.Extensions.Hosting.Systemd`, `QRCoder` 1.8.0 (MIT, the link QR code). Nothing else without a reason written in the commit. |
 | Indentation | tabs (Situ's `.editorconfig`, copied to `server/.editorconfig`) |
 | Tone of user-facing copy | a touch friendly, never jokey; Oxford comma; American spelling |
 
@@ -29,11 +29,11 @@ the concrete shape this code takes.
 | Module | Owns | Notes |
 | --- | --- | --- |
 | `Data/` | `ArchiveDbContext`, entities, EF Core migrations, the `tsvector` generated column and GIN index, the task-queue table | `timestamptz` everywhere; integer ms for durations; JSONB only for `pieces`, `gaps`, `items`, `spans`, `citations` |
-| `Sync/` | `/link`, `/sync/batch`, `/sync/requests`, `/sync/clips/{id}`, `/sync/wipe`, `/sync/status`; device tokens | Minimal APIs; one transaction per batch; versions per `sync-protocol.md` |
+| `Sync/` | `/link`, `/sync/batch`, `/sync/requests`, `/sync/clips/{id}`, `/sync/wipe`, `/sync/status`, `/sync/access`, `/sync/preferences`; device tokens; the clip work below | Minimal APIs; one transaction per batch; versions per `sync-protocol.md`; registered by `AddSync()`/`MapSync()` |
 | `Mcp/` | the MCP server on the official SDK, stateless 2026-07-28; tools, resources, prompts, `instructions`; `search`/`fetch`; the write tools; `ui://` widget resources | Tool results: `structuredContent` plus the same text in `content`; caps with truncation reporting; `readOnlyHint`/`openWorldHint` on reads; every result carries a viewer link |
 | `Auth/` | Identity with passkeys (one user, more later), the OAuth 2.1 authorization server (metadata, authorize, token, register, CIMD), bearer tokens for CLI agents and Muse, the 401 challenge on `/mcp` | Opaque tokens hashed at rest; refresh rotation; `resource` into `aud` |
 | `Events/` | MCP Events (`events/list|subscribe|unsubscribe`), subscription store, Standard Webhooks delivery from the queue | `day_recap.ready`, `followup.created` |
-| `Clips/` | clip requests, ffmpeg transcode job, signed short-lived links | ffmpeg is a system binary; jobs run on the queue |
+| `Clips/` | lives in `Sync/` (`PhoneRequests.cs`, `ClipTranscodeJob.cs`, `ClipLinks.cs`): clip requests, ffmpeg transcode job, signed short-lived links | ffmpeg is a system binary; jobs run on the queue |
 | `Jobs/` | the Postgres-backed task queue (`FOR UPDATE SKIP LOCKED`) and `BackgroundService` workers | retries with backoff; dead-letter after N |
 | `Import/` | seeds from a Desktop backup directory (DB + transcript JSON + sidecars); ports the piece cut and wall-clock mapping exactly | same code path as sync, fed from files |
 | `Pages/Admin/` | Razor Pages: passkey login, devices and link codes, tokens, OAuth clients, event subscriptions, requests, sync status, AI-read log, settings | nothing that needs SSH |
