@@ -119,10 +119,14 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 		Assert.InRange(refreshBefore - DateTimeOffset.UtcNow, TimeSpan.FromMinutes(55), TimeSpan.FromMinutes(61));
 		Assert.Equal(1, verifications);
 
-		// Renewing is the same subscription and needs no second challenge.
-		var renewed = await McpRpc.ResultAsync(await api.SendAsync(Subscribe(token, EventCatalog.DayRecapReady, ttlMs: 3_600_000)));
+		// Renewing is the same subscription and needs no second challenge. Asking for no expiry gets the longest the
+		// setting allows (72 hours by default), so it still has to be renewed.
+		var renewed = await McpRpc.ResultAsync(await api.SendAsync(Subscribe(token, EventCatalog.DayRecapReady, noExpiry: true)));
 		Assert.Equal(subscriptionId, renewed.GetProperty("id").GetString());
 		Assert.Equal(1, verifications);
+		var longest = DateTimeOffset.Parse(renewed.GetProperty("refreshBefore").GetString()!, CultureInfo.InvariantCulture);
+		Assert.InRange(longest - DateTimeOffset.UtcNow, TimeSpan.FromHours(71), TimeSpan.FromHours(72));
+		Assert.NotNull((await SubscriptionAsync(subscriptionId))!.ExpiresAt);
 
 		// A recap arrives: one signed delivery from the queue, with the event and the subscription in the headers.
 		await PublishRecapAsync(userId, version: 1);
@@ -193,7 +197,7 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 		}
 	}
 
-	private static HttpRequestMessage Subscribe(string token, string name, string secret = Secret, long? ttlMs = null)
+	private static HttpRequestMessage Subscribe(string token, string name, string secret = Secret, long? ttlMs = null, bool noExpiry = false)
 	{
 		var parameters = new Dictionary<string, object?>
 		{
@@ -202,7 +206,7 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 			["cursor"] = null,
 			["delivery"] = new { mode = "webhook", url = Receiver, secret },
 		};
-		if (ttlMs is not null)
+		if (ttlMs is not null || noExpiry)
 		{
 			parameters["ttlMs"] = ttlMs;
 		}
