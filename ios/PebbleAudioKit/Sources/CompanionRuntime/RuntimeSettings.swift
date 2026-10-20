@@ -338,22 +338,36 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
 }
 
 /// The archive sync's preferences (`ArchiveSyncService`): the server this phone is linked to
-/// and its id there, and the switch. The device token is in the Keychain
-/// (`KeychainStore.Key.archiveDeviceToken`).
+/// and its id there, the switch, and what the person allowed. The device token is in the
+/// Keychain (`KeychainStore.Key.archiveDeviceToken`).
 public struct ArchiveSyncSettings: Equatable, Sendable {
     /// The server's origin (`https://pebbleaudio.okgodoit.com`); nil when not linked.
     public var origin: String?
     /// This phone's id on that server.
     public var deviceId: String?
-    /// Whether to sync now. Linking turns it on; turning it off keeps the link and the changes
-    /// waiting, and sends them when it is turned back on.
+    /// Whether to sync now. Nothing syncs until the person taps Start Syncing after linking;
+    /// turning it off keeps the link and the changes waiting, and sends them when it is turned
+    /// back on.
     public var enabled: Bool
+    /// Clips, edits, and the sharing scope (`PUT /sync/preferences`). Enforced on the phone too.
+    public var preferences: ArchivePreferences
+    /// The person finished choosing what syncs at least once since linking. A link without it
+    /// sends nothing and is not yet a place the text goes.
+    public var setupComplete: Bool
 
-    public init(origin: String? = nil, deviceId: String? = nil, enabled: Bool = true) {
+    public init(
+        origin: String? = nil, deviceId: String? = nil, enabled: Bool = true,
+        preferences: ArchivePreferences = ArchivePreferences(), setupComplete: Bool = true
+    ) {
         self.origin = origin
         self.deviceId = deviceId
         self.enabled = enabled
+        self.preferences = preferences
+        self.setupComplete = setupComplete
     }
 
     public var isLinked: Bool { origin != nil && deviceId != nil }
+
+    /// Linked, set up, and switched on: the only state in which text is sent.
+    public var isSyncing: Bool { isLinked && setupComplete && enabled }
 }

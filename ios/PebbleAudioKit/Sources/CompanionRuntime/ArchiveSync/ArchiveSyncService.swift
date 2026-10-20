@@ -59,10 +59,26 @@ public struct ArchiveSyncStatus: Equatable, Sendable {
     public var lastError: String?
     public var appTooOld = false
     public var wipePending = false
+    /// The server's last `GET /sync/status` answer (kept across launches), and when it came.
     public var server: ArchiveServerStatus?
     public var serverStatusAtMs: Int64?
+    /// The last fetch failed: `server` is as of `serverStatusAtMs`, not now.
+    public var serverUnreachable = false
 
     public init() {}
+}
+
+/// How "Unlink and Delete from Server" ended.
+public enum ArchiveUnlinkOutcome: Equatable, Sendable {
+    /// The server deleted everything and ended every assistant's access; the link is gone here.
+    case deleted
+    /// The server had already stopped accepting this phone, so the phone could not ask it to
+    /// delete anything. The link is gone here; the server's copy may still be there.
+    case alreadyUnlinked
+    /// Nothing changed: the server could not be reached.
+    case unreachable
+    /// Nothing changed: the server answered with this status.
+    case refused(Int)
 }
 
 /// Set whenever a write touches the outbox, so a pass knows whether looking is worth it.
@@ -144,6 +160,14 @@ public actor ArchiveSyncService {
         var inFlightSinceMs: Int64?
         /// Clip request ids being uploaded, and since when.
         var clipsInFlight: [String: Int64] = [:]
+        /// The preferences the server last confirmed. Sent again until it has the current ones.
+        var preferencesSent: ArchivePreferences?
+        /// The scope the outbox was last aligned to. Widening it re-marks what the new one
+        /// adds: the server forgot what it removed, and never stored what it ignored.
+        var alignedScope: ArchiveSharingScope?
+        /// `GET /sync/status` as last answered, shown while the server cannot be reached.
+        var serverCache: ArchiveServerStatus?
+        var serverCacheAtMs: Int64?
     }
 
     public nonisolated let status = StateSubject(ArchiveSyncStatus())
@@ -309,9 +333,12 @@ public actor ArchiveSyncService {
         }
     }
 
-    /// The app has stored the new link: start recording changes from the whole library.
+    /// The app has stored the new link: start recording changes from the whole library. Nothing
+    /// is sent until the person has chosen what syncs (`ArchiveSyncSettings.setupComplete`); the
+    /// scope they choose then filters what this marked.
     public func didLink() async {
         state = PersistedState()
+        state.alignedScope = deps.settings().preferences.scope
         save()
         do {
             try await deps.outbox.setActive(false)
@@ -326,24 +353,102 @@ public actor ArchiveSyncService {
         await pass(.linked)
     }
 
-    /// `DELETE /link`, best effort (the server keeps the data and revokes the token), then
-    /// stop recording. The app clears the settings and the Keychain.
-    public func unlink() async {
+    /// `DELETE /link`: the server deletes everything it holds, ends every assistant's access,
+    /// and revokes this phone (`sync-protocol.md` §1). Only once it has answered does the phone
+    /// stop recording and forget the link — a link dropped on a failed call would leave the
+    /// server's copy behind with nothing on the phone left to delete it. The app clears the
+    /// settings and the Keychain when this returns `.deleted` or `.alreadyUnlinked`.
+    public func unlink() async -> ArchiveUnlinkOutcome {
+        let outcome: ArchiveUnlinkOutcome
         if let endpoint = endpoint() {
-            _ = try? await deps.http.send(endpoint.request("DELETE", "/link"))
+            do {
+                let response = try await deps.http.send(endpoint.request("DELETE", "/link", json: false))
+                switch response.status {
+                case 200..<300: outcome = .deleted
+                case 401: outcome = .alreadyUnlinked
+                default:
+                    deps.log.write("archive sync: unlink answered \(response.status)")
+                    return .refused(response.status)
+                }
+            } catch {
+                deps.log.write("archive sync: unlink could not reach the server")
+                return .unreachable
+            }
+        } else {
+            // No token to ask with: nothing on the server can be reached from here.
+            outcome = .alreadyUnlinked
         }
         try? await deps.outbox.setActive(false)
         state = PersistedState()
         save()
         status.value = ArchiveSyncStatus()
+        deps.log.write("archive sync: unlinked (\(outcome == .deleted ? "server deleted" : "token was gone"))")
+        return outcome
     }
 
-    /// The switch, or the link, changed in Settings.
+    /// `DELETE /sync/access/{kind}/{id}`: ends one assistant's access. True when it is gone
+    /// (including when the server no longer had it).
+    public func revokeAccess(kind: String, id: String) async -> Bool {
+        guard let endpoint = endpoint() else { return false }
+        let path = "/sync/access/\(Self.pathSegment(kind))/\(Self.pathSegment(id))"
+        guard let response = try? await deps.http.send(endpoint.request("DELETE", path, json: false))
+        else { return false }
+        if response.status == 401 {
+            state.revokedDeviceId = endpoint.deviceId
+            save()
+            await publish(refreshCounts: false)
+            return false
+        }
+        guard (200..<300).contains(response.status) || response.status == 404 else { return false }
+        if var cache = state.serverCache {
+            cache.access.removeAll { $0.kind == kind && $0.id == id }
+            state.serverCache = cache
+            save()
+        }
+        await publish(refreshCounts: false)
+        return true
+    }
+
+    static func pathSegment(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/"])) ?? text
+    }
+
+    /// The switch, the preferences, or the link changed in Settings.
     public func settingsChanged() async {
         let settings = deps.settings()
         await alignRecording()
+        await alignScope(settings)
         await publish(refreshCounts: false)
-        if settings.isLinked, settings.enabled { await pass(.settings) }
+        // A pass even while paused: what the person allows (and a narrower scope, which the
+        // server applies by deleting) must reach the server whether or not text is syncing.
+        if settings.isLinked { await pass(.settings) }
+    }
+
+    /// A widened scope re-marks what it adds (§5): the server forgot the versions of what it
+    /// removed and never recorded what it ignored as outside the scope, so those items are new
+    /// to it again. A narrower one needs nothing here: the server deletes, and the phone stops
+    /// sending what falls outside (`ArchiveScopeGate`).
+    private func alignScope(_ settings: ArchiveSyncSettings) async {
+        guard settings.isLinked else { return }
+        let current = settings.preferences.scope
+        let previous = state.alignedScope
+        guard previous != current else { return }
+        state.alignedScope = current
+        save()
+        let now = deps.clock.nowMs
+        guard let previous,
+            let range = ArchiveSharingScope.widening(from: previous, to: current, nowMs: now)
+        else { return }
+        do {
+            let zone = try await ArchiveScopeGate.accountZone(deps.outbox.db)
+            let marked = try await deps.outbox.markForResend(
+                fromMs: range.fromMs, toMs: range.toMs,
+                fromDay: range.fromMs.map { LogicalDay.dateKey(forMs: $0, timeZoneID: zone) },
+                toDay: LogicalDay.dateKey(forMs: range.toMs, timeZoneID: zone))
+            deps.log.write("archive sync: scope widened; \(marked) items to send again")
+        } catch {
+            deps.log.failure("archive sync scope", error)
+        }
     }
 
     // MARK: - Delete all
@@ -390,9 +495,17 @@ public actor ArchiveSyncService {
     private func passOnce(_ trigger: ArchiveSyncTrigger) async {
         // The settings first: an unlinked phone or an off switch costs no Keychain read.
         let settings = deps.settings()
-        guard settings.isLinked, settings.enabled, !state.appTooOld,
-            state.revokedDeviceId != settings.deviceId, let endpoint = endpoint()
+        guard settings.isLinked, !state.appTooOld, state.revokedDeviceId != settings.deviceId
         else { return }
+        // What the person allows reaches the server even while sync is paused: turning clips
+        // off, or narrowing the scope (which the server applies by deleting), must not wait for
+        // the switch. Compared in memory first, so a paused pass with nothing new costs nothing.
+        if settings.setupComplete, settings.preferences != state.preferencesSent,
+            let endpoint = endpoint()
+        {
+            await sendPreferences(settings.preferences, endpoint)
+        }
+        guard settings.isSyncing, let endpoint = endpoint() else { return }
         let now = deps.clock.nowMs
         let asked = trigger == .userAsked || trigger == .linked || trigger == .settings
         if let next = state.nextAttemptAtMs, now < next, !asked { return }
@@ -451,6 +564,11 @@ public actor ArchiveSyncService {
     private func buildBatch(_ endpoint: ArchiveEndpoint) async throws -> Batch? {
         let rows = try await deps.outbox.pending(limit: state.maxItems)
         guard !rows.isEmpty else { return nil }
+        // The phone's own half of the sharing scope: nothing dated before it is sent, whatever
+        // the server would do with it. Deletes and expiries carry no text and still go.
+        let gate = try await ArchiveScopeGate.make(
+            deps.settings().preferences.scope, nowMs: deps.clock.nowMs,
+            database: deps.outbox.db)
         var items: [Data] = []
         var sent: [ArchiveSentItem] = []
         var bytes = 512
@@ -459,6 +577,12 @@ public actor ArchiveSyncService {
             var item: ArchiveBatchItem
             switch row.op {
             case .upsert:
+                if !gate.holdsEverything,
+                    try await !gate.contains(row.kind, id: row.entityId, in: deps.outbox.db)
+                {
+                    try await deps.outbox.markOutsideScope(key)
+                    continue
+                }
                 let built: ArchiveBuilt
                 do { built = try await deps.builder.build(row) } catch {
                     try await deps.outbox.reject(
@@ -594,7 +718,10 @@ public actor ArchiveSyncService {
                 return
             }
             do {
-                let cleared = try await deps.outbox.acknowledge(response.held)
+                let cleared = try await deps.outbox.acknowledge(response.stored)
+                // Ignored as outside the scope: not stored and not recorded there, so not
+                // remembered as sent here — a widened scope or a later change sends it as new.
+                for key in response.outsideScope { try await deps.outbox.markOutsideScope(key) }
                 var parked = 0
                 for rejected in response.rejected {
                     guard let kind = ArchiveEntityKind(rawValue: rejected.kind) else { continue }
@@ -727,15 +854,47 @@ public actor ArchiveSyncService {
         _ = try? await deps.http.send(request)
     }
 
+    // MARK: - Preferences
+
+    /// `PUT /sync/preferences` with clips, edits, and the scope. Remembered once the server has
+    /// answered with it, so it is sent again on every pass until it has.
+    private func sendPreferences(_ preferences: ArchivePreferences, _ endpoint: ArchiveEndpoint) async {
+        var request = endpoint.request("PUT", "/sync/preferences")
+        request.httpBody = try? ArchiveJSON.encoder().encode(preferences)
+        do {
+            let response = try await deps.http.send(request)
+            switch response.status {
+            case 200..<300:
+                state.preferencesSent = preferences
+                save()
+                deps.log.write("archive sync: preferences sent")
+            case 401:
+                state.revokedDeviceId = endpoint.deviceId
+                save()
+                await publish(refreshCounts: false)
+            default:
+                deps.log.write("archive sync: preferences answered \(response.status)")
+            }
+        } catch {
+            deps.log.write("archive sync: preferences could not reach the server")
+        }
+    }
+
     // MARK: - Status
 
-    /// `GET /sync/status`, for the Settings screen while it is on screen.
+    /// `GET /sync/status`, for a screen that is on screen (the AI Assistants screens poll it
+    /// only while visible). Publishes only when what a screen would show changed: a refresh
+    /// that finds the same answer changes nothing and publishes nothing.
     public func refreshServerStatus() async {
-        await publish(refreshCounts: true)
         guard let endpoint = endpoint() else { return }
-        guard
-            let response = try? await deps.http.send(endpoint.request("GET", "/sync/status", json: false))
-        else { return }
+        let now = deps.clock.nowMs
+        let response: ArchiveHTTPResponse
+        do {
+            response = try await deps.http.send(endpoint.request("GET", "/sync/status", json: false))
+        } catch {
+            await noteServerUnreachable()
+            return
+        }
         if response.status == 401 {
             state.revokedDeviceId = endpoint.deviceId
             save()
@@ -744,14 +903,29 @@ public actor ArchiveSyncService {
         }
         guard response.status == 200,
             let server = try? JSONDecoder().decode(ArchiveServerStatus.self, from: response.body)
-        else { return }
-        // The same answer is not news: stamping a fresh fetch time on it made every refresh a
-        // change, so each one woke every observer of the status for nothing.
-        guard server != self.status.value.server else { return }
-        var status = self.status.value
-        status.server = server
-        status.serverStatusAtMs = deps.clock.nowMs
-        self.status.value = status
+        else {
+            await noteServerUnreachable()
+            return
+        }
+        let changed = server != state.serverCache || status.value.serverUnreachable
+        state.serverCacheAtMs = now
+        if changed {
+            state.serverCache = server
+            save()
+            var next = status.value
+            next.server = server
+            next.serverStatusAtMs = now
+            next.serverUnreachable = false
+            status.value = next
+        }
+    }
+
+    private func noteServerUnreachable() async {
+        guard !status.value.serverUnreachable else { return }
+        var next = status.value
+        next.serverUnreachable = true
+        next.serverStatusAtMs = state.serverCacheAtMs
+        status.value = next
     }
 
     /// The person tapped "Sync now".
@@ -775,12 +949,16 @@ public actor ArchiveSyncService {
         next.lastError = state.lastError
         next.appTooOld = state.appTooOld
         next.wipePending = state.wipePending
+        // The last answer (kept across launches, and edited by a revoke from this phone), with
+        // its time, until the next fetch.
+        next.server = state.serverCache
+        if next.serverStatusAtMs == nil { next.serverStatusAtMs = state.serverCacheAtMs }
         if refreshCounts, let counts = try? await deps.outbox.counts() {
             next.pending = counts.pending
             next.parked = counts.parked
             if counts.parked > 0, next.lastError == nil { next.lastError = counts.lastParkedError }
         }
-        status.value = next
+        status.value = next  // `StateSubject` publishes only a value that differs
     }
 
     private func save() {

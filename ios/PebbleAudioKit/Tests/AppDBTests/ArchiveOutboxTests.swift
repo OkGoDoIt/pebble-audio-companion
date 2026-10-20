@@ -215,4 +215,60 @@ struct ArchiveOutboxTests {
         #expect(try await outbox.row(kind: .person, id: person.id)?.op == .delete)
         #expect(try await outbox.row(kind: .transcript, id: "conv-seg-1")?.pending == true)
     }
+
+    /// Widening the sharing scope (`sync-protocol.md` §5): the server removed what fell outside
+    /// and forgot its versions, so what the wider scope adds is sent again as new — with what
+    /// was sent before forgotten, or the builder would read it as unchanged and send nothing.
+    @Test func aWidenedScopeSendsAgainWhatItAddsAndNothingElse() async throws {
+        let (db, outbox) = try await linked()
+        let day: Int64 = 86_400_000
+        let oldStart = testEpochMs - 100 * day
+        try await apply(db, [
+            conversation("conv-seg-old", segment: "seg-old", startMs: oldStart, endMs: oldStart + 60_000),
+            conversation("conv-seg-new", segment: "seg-new"),
+        ])
+        let followUps = FollowUpStore(db: db)
+        let item = try await followUps.add(text: "Ask Sam about the cabinet quote")
+        for row in try await outbox.pending(limit: 50) {
+            let key = ArchiveItemKey(kind: row.kind, entityId: row.entityId, version: row.version)
+            try await outbox.markInFlight([ArchiveSentItem(key: key, hash: "sent", pieceKey: "k")])
+            try await outbox.acknowledge([key])
+        }
+        #expect(try await outbox.counts().pending == 0)
+
+        let cutoff = testEpochMs - 30 * day
+        let zone = "Asia/Jakarta"
+        let marked = try await outbox.markForResend(
+            fromMs: nil, toMs: cutoff, fromDay: nil,
+            toDay: LogicalDay.dateKey(forMs: cutoff, timeZoneID: zone))
+        #expect(marked >= 2)
+        for kind in [ArchiveEntityKind.conversation, .transcript] {
+            let old = try #require(try await outbox.row(kind: kind, id: "conv-seg-old"))
+            #expect(old.pending && old.sentHash == nil && old.sentKey == nil)
+            let new = try #require(try await outbox.row(kind: kind, id: "conv-seg-new"))
+            #expect(!new.pending && new.sentHash == "sent")
+        }
+        // The day the old conversation covers is sent again too; today's is not.
+        let oldDay = LogicalDay.dateKey(forMs: oldStart, timeZoneID: zone)
+        #expect(try await outbox.row(kind: .coverage, id: oldDay)?.pending == true)
+        // A follow-up written today is not in the stretch the scope added.
+        #expect(try await outbox.row(kind: .followUp, id: item.id)?.pending == false)
+    }
+
+    @Test func anItemOutsideTheScopeIsClearedWithNothingRememberedAsSent() async throws {
+        let (db, outbox) = try await linked()
+        let item = try await FollowUpStore(db: db).add(text: "Book the dentist for Leo")
+        let row = try #require(try await outbox.row(kind: .followUp, id: item.id))
+        let key = ArchiveItemKey(kind: .followUp, entityId: item.id, version: row.version)
+        try await outbox.markInFlight([ArchiveSentItem(key: key, hash: "h", pieceKey: nil)])
+        try await outbox.markOutsideScope(key)
+        let cleared = try #require(try await outbox.row(kind: .followUp, id: item.id))
+        #expect(!cleared.pending && cleared.sentHash == nil)
+        // A newer change is not cleared by the older version's answer.
+        try await FollowUpStore(db: db).setText(id: item.id, "Book the dentist for Leo, Friday")
+        try await outbox.markOutsideScope(key)
+        #expect(try await outbox.row(kind: .followUp, id: item.id)?.pending == true)
+        #expect(ArchiveOutbox.lastDay(ofPeriod: "week:2026-10-11") == "2026-10-17")
+        #expect(ArchiveOutbox.lastDay(ofPeriod: "month:2026-02") == "2026-02-28")
+    }
 }

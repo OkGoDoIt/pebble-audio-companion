@@ -562,6 +562,33 @@ public struct ArchiveBatchResponse: Decodable, Equatable, Sendable {
                 }
             }
     }
+
+    /// What the server now STORES: accepted, and ignored as `stale` or `duplicate`. An item
+    /// ignored as `outsideScope` is not stored and its version not recorded, so it must not be
+    /// remembered as sent (`outsideScope`).
+    public var stored: [ArchiveItemKey] {
+        accepted.compactMap { item in
+            ArchiveEntityKind(rawValue: item.kind).map {
+                ArchiveItemKey(kind: $0, entityId: item.id, version: item.version)
+            }
+        }
+            + ignored.filter { $0.reason != Self.outsideScopeReason }.compactMap { item in
+                ArchiveEntityKind(rawValue: item.kind).map {
+                    ArchiveItemKey(kind: $0, entityId: item.id, version: item.version)
+                }
+            }
+    }
+
+    /// Items the server ignored because they are dated before the sharing scope (§5).
+    public var outsideScope: [ArchiveItemKey] {
+        ignored.filter { $0.reason == Self.outsideScopeReason }.compactMap { item in
+            ArchiveEntityKind(rawValue: item.kind).map {
+                ArchiveItemKey(kind: $0, entityId: item.id, version: item.version)
+            }
+        }
+    }
+
+    public static let outsideScopeReason = "outsideScope"
 }
 
 // MARK: - §1 linking, §4 requests, §5 status
@@ -658,10 +685,11 @@ public struct ArchiveRequestResult: Encodable, Equatable, Sendable {
     }
 }
 
-/// `GET /sync/status`, read leniently: only what the status row and the "what AI read" line
-/// show is required, and a field the server adds later is ignored.
-public struct ArchiveServerStatus: Decodable, Equatable, Sendable {
-    public struct AiRead: Decodable, Equatable, Sendable {
+/// `GET /sync/status`, read leniently: what the AI Assistants and Privacy screens show is read,
+/// and a field the server adds later is ignored. Encoded back in the same wire shape, so the
+/// last answer can be kept on the phone and shown (with its time) while the server is away.
+public struct ArchiveServerStatus: Codable, Equatable, Sendable {
+    public struct AiRead: Codable, Equatable, Sendable {
         public var atMs: Int64?
         public var client: String
         public var tool: String
@@ -686,18 +714,84 @@ public struct ArchiveServerStatus: Decodable, Equatable, Sendable {
             ids = try c.decodeIfPresent([String].self, forKey: .ids)
                 ?? c.decodeIfPresent([String].self, forKey: .entityIds) ?? []
         }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(ArchiveTime.nullable(atMs), forKey: .at)
+            try c.encode(client, forKey: .client)
+            try c.encode(tool, forKey: .tool)
+            try c.encode(ids, forKey: .ids)
+        }
+    }
+
+    /// One assistant that can read the archive right now (§5 `access`): an OAuth client with a
+    /// live grant, or an unrevoked personal token.
+    public struct Access: Codable, Equatable, Sendable, Identifiable {
+        public var kind: String
+        public var id: String
+        public var name: String
+        public var scopes: [String]
+        public var connectedAtMs: Int64?
+        public var lastUsedAtMs: Int64?
+
+        public static let writeScope = "archive:write"
+
+        /// The server lets it create follow-ups and notes (the phone still checks edits).
+        public var canWrite: Bool { scopes.contains(Self.writeScope) }
+
+        enum CodingKeys: String, CodingKey { case kind, id, name, scopes, connectedAt, lastUsedAt }
+
+        public init(
+            kind: String, id: String, name: String, scopes: [String], connectedAtMs: Int64?,
+            lastUsedAtMs: Int64?
+        ) {
+            self.kind = kind
+            self.id = id
+            self.name = name
+            self.scopes = scopes
+            self.connectedAtMs = connectedAtMs
+            self.lastUsedAtMs = lastUsedAtMs
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "oauth"
+            id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            scopes = try c.decodeIfPresent([String].self, forKey: .scopes) ?? []
+            connectedAtMs = ArchiveTime.ms(try c.decodeIfPresent(String.self, forKey: .connectedAt))
+            lastUsedAtMs = ArchiveTime.ms(try c.decodeIfPresent(String.self, forKey: .lastUsedAt))
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(kind, forKey: .kind)
+            try c.encode(id, forKey: .id)
+            try c.encode(name, forKey: .name)
+            try c.encode(scopes, forKey: .scopes)
+            try c.encode(ArchiveTime.nullable(connectedAtMs), forKey: .connectedAt)
+            try c.encode(ArchiveTime.nullable(lastUsedAtMs), forKey: .lastUsedAt)
+        }
     }
 
     public var lastBatchAtMs: Int64?
     public var pendingRequests: Int
     public var aiReads: [AiRead]
+    public var access: [Access]
+    /// What the server holds, per kind (`conversation`, `transcript`, …).
+    public var counts: [String: Int]
 
-    enum CodingKeys: String, CodingKey { case lastBatchAt, pendingRequests, aiReads }
+    enum CodingKeys: String, CodingKey { case lastBatchAt, pendingRequests, aiReads, access, counts }
 
-    public init(lastBatchAtMs: Int64?, pendingRequests: Int, aiReads: [AiRead]) {
+    public init(
+        lastBatchAtMs: Int64?, pendingRequests: Int, aiReads: [AiRead], access: [Access] = [],
+        counts: [String: Int] = [:]
+    ) {
         self.lastBatchAtMs = lastBatchAtMs
         self.pendingRequests = pendingRequests
         self.aiReads = aiReads
+        self.access = access
+        self.counts = counts
     }
 
     public init(from decoder: Decoder) throws {
@@ -705,5 +799,17 @@ public struct ArchiveServerStatus: Decodable, Equatable, Sendable {
         lastBatchAtMs = ArchiveTime.ms(try c.decodeIfPresent(String.self, forKey: .lastBatchAt))
         pendingRequests = try c.decodeIfPresent(Int.self, forKey: .pendingRequests) ?? 0
         aiReads = try c.decodeIfPresent([AiRead].self, forKey: .aiReads) ?? []
+        // One unreadable entry must not hide every other assistant.
+        access = (try? c.decodeIfPresent([Access].self, forKey: .access)) ?? []
+        counts = (try? c.decodeIfPresent([String: Int].self, forKey: .counts)) ?? [:]
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ArchiveTime.nullable(lastBatchAtMs), forKey: .lastBatchAt)
+        try c.encode(pendingRequests, forKey: .pendingRequests)
+        try c.encode(aiReads, forKey: .aiReads)
+        try c.encode(access, forKey: .access)
+        try c.encode(counts, forKey: .counts)
     }
 }
