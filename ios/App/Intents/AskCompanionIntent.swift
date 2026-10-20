@@ -39,11 +39,12 @@ enum AskScopeAppEnum: String, AppEnum {
     }
 }
 
-/// "Ask Pebble Audio what I said about the roadmap."
+/// "Open Ask in Pebble Audio." Since 2026-10-21 "Ask Pebble Audio …" is answered by Siri
+/// (`AskArchiveIntent`); this is the one that opens the Ask screen.
 struct AskCompanionIntent: AppIntent {
-    static let title: LocalizedStringResource = "Ask About My Recordings"
+    static let title: LocalizedStringResource = "Open Ask"
     static let description = IntentDescription(
-        "Opens Ask with your question, scoped the way you asked for it."
+        "Opens Ask in Pebble Audio with your question, scoped the way you asked for it."
     )
     /// Ask has to be visible: the scope pill and the citations are the honesty of the feature,
     /// so this intent opens the app rather than answering silently.

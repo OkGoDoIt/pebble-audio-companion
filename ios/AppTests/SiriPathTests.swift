@@ -627,6 +627,51 @@ struct SiriPathTests {
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "last7", query: "a long one"))
     }
 
+    /// Past Siri's wait the question carries on in the app, on the Ask screen.
+    @Test func pastTheDeadlineTheQuestionCarriesOnInTheApp() async {
+        final class Opened: @unchecked Sendable { var urls: [URL] = [] }
+        let opened = Opened()
+        var slow = answerer(deadline: .milliseconds(100)) { _, _ in
+            try await Task.sleep(for: .seconds(30))
+            return Self.entry()
+        }
+        slow.continueInApp = { url in
+            opened.urls.append(url)
+            return true
+        }
+        let outcome = await slow.answer(question: "a long one", period: .last7Days)
+        #expect(opened.urls.compactMap(Route.parse) == [.ask(scope: "last7", query: "a long one")])
+        #expect(outcome.supporting == Copy.Siri.continuingHeading)
+        #expect(outcome.full == Copy.Siri.continuingInApp)
+        #expect(outcome.card.action == nil)
+    }
+
+    /// "Ask Pebble Audio …" is Siri's answer, opening the Ask screen is worded as an open, and
+    /// no two shortcuts share a phrase (Siri would pick one of them at random).
+    @Test func askPebbleAudioIsAnsweredBySiriAndNoPhraseIsUsedTwice() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("App/Intents/AppShortcuts.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        var phrases: [String: [String]] = [:]
+        for block in source.components(separatedBy: "AppShortcut(").dropFirst() {
+            guard let intent = block.firstMatch(of: /intent:\s*(\w+)\(/)?.output.1 else {
+                continue
+            }
+            let list = block.components(separatedBy: "shortTitle:").first ?? ""
+            phrases[String(intent), default: []] +=
+                list.matches(of: /"([^"]*)"/).map { String($0.output.1) }
+        }
+        let all = phrases.values.flatMap { $0 }.map { $0.lowercased() }
+        #expect(all.count >= 20)
+        #expect(Set(all).count == all.count)
+        let ask = #"Ask \(.applicationName)"#
+        #expect(phrases["AskArchiveIntent"]?.contains(ask) == true)
+        let openAsk = phrases["AskCompanionIntent"] ?? []
+        #expect(!openAsk.isEmpty)
+        #expect(openAsk.allSatisfy { $0.hasPrefix("Open Ask") || $0.hasPrefix("Show Ask") })
+    }
+
     @Test func theCardsButtonsOpenOnlyRoutesTheAppKnows() async throws {
         #expect(OpenAppLinkIntent.isDiscoverable == false)
         let intent = OpenAppLinkIntent(link: URL(string: "https://example.com")!)

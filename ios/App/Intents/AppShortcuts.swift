@@ -25,26 +25,30 @@ struct CompanionAppShortcuts: AppShortcutsProvider {
             shortTitle: "Resume Capture",
             systemImageName: "record.circle"
         )
-        AppShortcut(
-            intent: AskCompanionIntent(),
-            phrases: [
-                "Ask \(.applicationName)",
-                "Search my recordings in \(.applicationName)",
-            ],
-            shortTitle: "Ask",
-            systemImageName: "sparkle.magnifyingglass"
-        )
-        // Answered by Siri rather than opening Ask. The question itself cannot be part of a
-        // phrase (only entities and enums can), so Siri asks for it; the period can.
+        // "Ask Pebble Audio …" is answered by Siri (Roger, 2026-10-21): a spoken answer and a
+        // card, and the app opens only on a tap or when the answer runs past Siri's wait. The
+        // question itself cannot be part of a phrase (only entities and enums can), so Siri asks
+        // for it; the period can.
         AppShortcut(
             intent: AskArchiveIntent(),
             phrases: [
+                "Ask \(.applicationName)",
+                "Ask \(.applicationName) about \(\.$period)",
                 "Ask my archive in \(.applicationName)",
                 "Ask my conversations in \(.applicationName)",
-                "Ask \(.applicationName) about \(\.$period)",
             ],
             shortTitle: "Ask My Archive",
             systemImageName: "text.bubble"
+        )
+        // Opening the Ask screen itself stays one phrase away, worded as an open.
+        AppShortcut(
+            intent: AskCompanionIntent(),
+            phrases: [
+                "Open Ask in \(.applicationName)",
+                "Show Ask in \(.applicationName)",
+            ],
+            shortTitle: "Open Ask",
+            systemImageName: "sparkle.magnifyingglass"
         )
         AppShortcut(
             intent: OpenFollowUpsIntent(),
@@ -65,6 +69,8 @@ struct CompanionAppShortcuts: AppShortcutsProvider {
                     "Search \(.applicationName)",
                     "Find a recording in \(.applicationName)",
                     "Search for a conversation in \(.applicationName)",
+                    // Moved here from Open Ask, which it never described: it opened Ask.
+                    "Search my recordings in \(.applicationName)",
                 ],
                 shortTitle: "Search",
                 systemImageName: "magnifyingglass"

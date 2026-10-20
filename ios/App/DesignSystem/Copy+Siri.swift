@@ -45,6 +45,11 @@ extension Copy {
         static let tookTooLongLine = "Ask in Pebble Audio for the full answer."
         /// Its line is the AI failure's own sentence, when there is one worth saying.
         static let noAnswerHeading = "No answer this time"
+        /// Past Siri's wait, the question carries on in the app.
+        static let continuePrompt =
+            "That is taking longer than Siri can wait. Continue in Pebble Audio?"
+        static let continuingHeading = "Opening in Pebble Audio"
+        static let continuingInApp = "Opening Ask in Pebble Audio for the full answer."
 
         /// A Siri request that raced the app's own start-up.
         static let notReady = "Pebble Audio is still starting up. Try again in a moment."

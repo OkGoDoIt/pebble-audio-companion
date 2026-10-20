@@ -4,12 +4,14 @@ import Foundation
 import Intelligence
 import os
 import SearchKit
+import UIKit
 
 // "Ask Pebble Audio what I agreed with Sam yesterday." Siri's own answer, from the app's own
 // data, with no assistant plugin in between (decided by Roger 2026-10-20).
 //
-// `AskCompanionIntent` opens the Ask screen; this one ANSWERS, out loud and on a card, without
-// bringing the app forward. It is the same Ask: the question goes through the Ask data source
+// `AskCompanionIntent` ("Open Ask") opens the Ask screen; this one ("Ask Pebble Audio …")
+// ANSWERS, out loud and on a card, and brings the app forward only on a tap or when the answer
+// runs past Siri's wait. It is the same Ask: the question goes through the Ask data source
 // the screen uses (`AskLibraryDataSources.current.ask`), so it reads the same range the same
 // way, with the AI the person chose, and is saved to Ask's Recent like any other question. The
 // honesty Ask gets from its scope pill and its citations is kept on the card: the period and how
@@ -70,7 +72,10 @@ struct AskArchiveIntent: AppIntent {
     static let description = IntentDescription(
         "Answers a question from your recorded conversations and shows which ones the answer came from."
     )
-    static let supportedModes: IntentModes = .background
+    /// Answered in the background; may continue into the foreground, and only does when the
+    /// answer runs past Siri's wait (`continueInApp(_:)`). A stored literal: the metadata
+    /// processor reads it off the type.
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     @Parameter(title: "Question", requestValueDialog: "What would you like to know?")
     var question: String
@@ -93,7 +98,8 @@ struct AskArchiveIntent: AppIntent {
     func perform() async throws
         -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView
     {
-        let answerer = await AskArchiveAnswerer.live()
+        var answerer = await AskArchiveAnswerer.live()
+        answerer.continueInApp = { url in await self.continueInApp(url) }
         let outcome = await answerer.answer(question: question, period: period)
         return .result(
             value: outcome.full,
@@ -102,6 +108,23 @@ struct AskArchiveIntent: AppIntent {
                 supporting: LocalizedStringResource(stringLiteral: outcome.supporting)),
             view: AskArchiveSnippetView(card: outcome.card)
         )
+    }
+
+    /// Continues this intent in the foreground, then opens `url` there — the app's own
+    /// `companion://` route, through the same `onOpenURL` every other link takes.
+    private func continueInApp(_ url: URL) async -> Bool {
+        guard systemContext.currentMode.canContinueInForeground else { return false }
+        do {
+            try await continueInForeground(
+                IntentDialog(stringLiteral: Copy.Siri.continuePrompt), alwaysConfirm: false)
+        } catch {
+            return false
+        }
+        return await Self.open(url)
+    }
+
+    @MainActor private static func open(_ url: URL) async -> Bool {
+        await UIApplication.shared.open(url)
     }
 }
 
@@ -164,6 +187,9 @@ struct AskArchiveAnswerer: Sendable {
     /// indefinitely for an intent, and an answer that never arrives is worse than one that says
     /// where to find it.
     var deadline: Duration = AskArchiveAnswerer.defaultDeadline
+    /// Brings the app forward on `url` once Siri has stopped waiting. False when the system
+    /// cannot (or the person declines); the default, for anything that is not a live intent.
+    var continueInApp: @MainActor @Sendable (URL) async -> Bool = { _ in false }
 
     static let defaultDeadline: Duration = .seconds(25)
 
@@ -214,6 +240,15 @@ struct AskArchiveAnswerer: Sendable {
                 let answered = try await Self.withDeadline(
                     deadline, { try await ask(trimmed, period.askScope) })
             else {
+                // Past Siri's wait the question carries on in the app, on the Ask screen, where
+                // it is asked again and answered with its sources. Where the system cannot bring
+                // the app forward (a locked phone, a Shortcut run in the background, the person
+                // declining), the card offers the same as a button instead.
+                if await continueInApp(askInApp.link) {
+                    return Self.notice(
+                        spoken: Copy.Siri.continuingInApp, heading: Copy.Siri.continuingHeading,
+                        line: nil, period: period, action: nil)
+                }
                 return Self.notice(
                     spoken: Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading,
                     line: Copy.Siri.tookTooLongLine, period: period, action: askInApp)
