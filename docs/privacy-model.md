@@ -185,7 +185,9 @@ leaving it at Ask first never does.
 prompt, or the iOS prompt after "Open Pebble Audio on your iPhone…"), Muse's call stays open
 and gets no reply; when the person answers, the call goes on with the read or ends with the
 answer below. Only if no answer comes before a time limit a little under Muse's own limit for
-a call does it end as "not answered". Every ending tells Muse plainly what happened, so it
+a call does it end as "not answered" (Muse gives each data call 180 s, its `timeout_ms`; a held
+call ends at 170 s, `MuseTools.holdLimitSeconds`; the question's answer deadline is 240 s, so a
+held call never closes the question first). Every ending tells Muse plainly what happened, so it
 neither retries what was refused nor gives up on what is only pending:
 - Don't Allow on the watch, or the source is Off: denied. "The person does not allow Muse to
   read their <source>. Do not ask for it again." (An Off source is also never registered.)
