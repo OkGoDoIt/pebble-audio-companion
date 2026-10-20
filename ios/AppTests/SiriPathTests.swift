@@ -113,6 +113,14 @@ struct SiriPathTests {
         #expect(EntityMapping.dayName(dateKey: "not-a-day", timeZoneID: "UTC") == "not-a-day")
     }
 
+    @Test func aRecapInSpotlightIsNamedByItsDayNotItsKey() {
+        let title = SpotlightDonator.recapTitle(dateKey: "2026-10-20")
+        #expect(title.hasPrefix("Recap · "))
+        #expect(title.contains("2026"))
+        #expect(!title.contains("2026-10-20"))
+        #expect(SpotlightDonator.recapTitle(dateKey: "junk") == "Recap · junk")
+    }
+
     @Test func peopleAreTrimmedAndCountedOnce() {
         #expect(EntityMapping.people([" Sam ", "sam", "Dana", "", "  "]) == ["Sam", "Dana"])
     }

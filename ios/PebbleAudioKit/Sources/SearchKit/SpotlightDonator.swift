@@ -275,13 +275,29 @@ public final class SpotlightDonator: Sendable {
         let item = IndexItem(
             id: "day-\(dateKey)",
             kind: .recap,
-            title: dateKey,
+            title: Self.recapTitle(dateKey: dateKey),
             summary: String(text.prefix(500)),
             fullText: text,
             contentCreationDateMs: createdAtMs,
             excluded: excluded
         )
         try await donate(item, sourceConversationId: nil)
+    }
+
+    /// "Recap · Tuesday, October 20, 2026". The title used to be the bare key, so a recap in
+    /// Spotlight's results read "2026-10-20". The date is written out in full, year included,
+    /// because the index keeps it for as long as the recap exists.
+    public static func recapTitle(dateKey: String) -> String {
+        let parts = dateKey.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3,
+            let utc = TimeZone(identifier: "UTC"),
+            let day = DateComponents(
+                calendar: Calendar(identifier: .gregorian), timeZone: utc,
+                year: parts[0], month: parts[1], day: parts[2], hour: 12
+            ).date
+        else { return "Recap · \(dateKey)" }
+        let written = day.formatted(Date.FormatStyle(date: .complete, time: .omitted, timeZone: utc))
+        return "Recap · \(written)"
     }
 
     public func donateFollowUp(
