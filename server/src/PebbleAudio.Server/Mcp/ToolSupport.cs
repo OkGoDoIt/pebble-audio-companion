@@ -262,6 +262,9 @@ public static class Speak
 	/// <summary>A clause that ends a sentence: trailing punctuation removed so the caller adds its own.</summary>
 	public static string Clause(string text) => text.Trim().TrimEnd('.', '!', ';', ':', ' ');
 
+	/// <summary>Text that starts a sentence, with its first letter in upper case: "Under a minute of it was lost."</summary>
+	public static string Sentence(string text) => text.Length == 0 ? text : char.ToUpper(text[0], English) + text[1..];
+
 	/// <summary>How long ago, for "last synced 3 minutes ago".</summary>
 	public static string Ago(TimeSpan span) => span.TotalMinutes switch
 	{

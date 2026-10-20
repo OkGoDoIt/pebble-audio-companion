@@ -92,7 +92,7 @@ public sealed class AudioTools
 		{
 			case ClipOutcome.Ready when clip.Link is { } link:
 				result = new AudioResult(
-					$"The clip is ready: {Speak.Clause(named)}{span}." + (lost.Count > 0 ? $" {Speak.Duration(lost.Sum(l => l.Minutes))} of it was lost." : ""),
+					$"The clip is ready: {Speak.Clause(named)}{span}." + (lost.Count > 0 ? $" {Speak.Sentence(Speak.Duration(lost.Sum(l => l.Minutes)))} of it was lost." : ""),
 					"ready",
 					null,
 					id,
