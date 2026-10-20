@@ -159,9 +159,9 @@ pa-player { display: block; }
 .pl-action {
   justify-self: start; display: inline-flex; align-items: center; gap: 8px; margin-top: 8px;
   min-height: var(--target); padding: 0 18px; border: 0; border-radius: var(--radius-option);
-  background: var(--tint); color: var(--on-tint); font: 600 var(--fs-card-head)/1 var(--font); cursor: pointer;
+  background: var(--action); color: var(--on-tint); font: 600 var(--fs-card-head)/1 var(--font); cursor: pointer;
 }
-.pl-action:hover { background: var(--tint-pressed); }
+.pl-action:hover { background: var(--action-pressed); }
 .pl-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .pl-action[hidden] { display: none; }
 .pl-state.busy .pl-state-head::after {
@@ -171,6 +171,7 @@ pa-player { display: block; }
 }
 @keyframes pl-spin { to { transform: rotate(360deg); } }
 .pl.no-audio .pl-bar, .pl.no-audio .pl-axis { display: none; }
+.pl.no-audio.empty .pl-scrub { display: none; }
 
 /* Docked at the bottom of a phone: the same player, smaller. */
 pa-player[docked] .pl { gap: 6px; }

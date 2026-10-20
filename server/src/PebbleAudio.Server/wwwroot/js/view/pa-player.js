@@ -227,6 +227,8 @@ class PaPlayer extends HTMLElement {
     const W = Math.max(120, Math.round(this.$.scrub.clientWidth));
     if (W === this._W) return this.paint(true);
     this._W = W;
+    // With nothing to draw and nothing to play, the scrubber is not shown at all.
+    this.$.root.classList.toggle('empty', !m.turns.length && !m.gaps.length);
     const docked = this.hasAttribute('docked');
     const H = docked ? 32 : 56;
     const a = this.a, b = this.b, span = b - a;

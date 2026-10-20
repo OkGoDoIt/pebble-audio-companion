@@ -5,6 +5,8 @@
    second speaker's teal each have both. The viewer links this file; each widget includes it inline.
 
    Differences from the app, on purpose:
+   - --action (a filled button with words on it) in dark is the light tint: white on the app's dark tint
+     #7D7DE8 is 3.5:1, under AA for 15 px text; on #5B5BD6 it is 5.4:1. Icon-only buttons keep the tint.
    - --paused-stripe in dark is tint at 0.30, not the app's 0.55: at 0.55 the paused stripes were the
      loudest mark on a near-black day strip, louder than missing audio (design/REVIEW.md).
    - The strip's voices: tint, the app's teal, and timeline-first's rose for a third named voice; an unnamed
@@ -36,6 +38,8 @@
   --tint-border: rgba(91, 91, 214, 0.40);
   --tint-on-fill: #5B5BD6;
   --tint-line: rgba(91, 91, 214, 0.40);  /* Tokens.timelineTalk */
+  --action: #5B5BD6;
+  --action-pressed: #4A4AC4;
   --captured: #B9B9EE;
 
   --speaker-other: #1F7F7F;  /* app #2E9E9E is 3.3:1; same hue, darker */
@@ -101,6 +105,8 @@
     --tint-border: rgba(125, 125, 232, 0.55);
     --tint-on-fill: #9F9FF0;
     --tint-line: rgba(125, 125, 232, 0.75);
+    --action: #5B5BD6;
+    --action-pressed: #4A4AC4;
     --captured: #55558A;
     --speaker-other: #40C8C8;
     --speaker-other-shape: #40C8C8;
@@ -155,6 +161,8 @@
   --tint-border: rgba(125, 125, 232, 0.55);
   --tint-on-fill: #9F9FF0;
   --tint-line: rgba(125, 125, 232, 0.75);
+  --action: #5B5BD6;
+  --action-pressed: #4A4AC4;
   --captured: #55558A;
   --speaker-other: #40C8C8;
   --speaker-other-shape: #40C8C8;

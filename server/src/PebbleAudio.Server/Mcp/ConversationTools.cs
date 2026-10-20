@@ -226,6 +226,10 @@ public sealed class ConversationTools
 		OutputSchemaType = typeof(GetConversationResult))]
 	[McpMeta("openai/toolInvocation/invoking", "Reading the conversation…")]
 	[McpMeta("openai/toolInvocation/invoked", "Read the conversation")]
+	[ModelContextProtocol.Extensions.Apps.McpAppUi(ResourceUri = Widgets.ConversationCard)]
+	[McpMeta(Widgets.OutputTemplateKey, Widgets.ConversationCard)]
+	// The clip player reads the turns of the span it plays.
+	[McpMeta("openai/widgetAccessible", true)]
 	[Description(
 		"One conversation: title, times, the app's overview, tags, people, quiet and lost gaps, follow-ups said in it, " +
 		"notes, and with include=transcript or both its speaker turns in time order, each with t (seconds from the " +

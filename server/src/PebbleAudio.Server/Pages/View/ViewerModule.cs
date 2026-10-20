@@ -12,7 +12,7 @@ namespace PebbleAudio.Server;
 /// <summary>
 /// The conversation viewer (<c>/</c>, <c>/c/{id}</c>, <c>/d/{day}</c>, <c>/b/week/{day}</c>, <c>/b/month/{month}</c>, Razor
 /// Pages in <c>Pages/View</c>), its clip endpoints, the Apple app-site association that opens those links in the
-/// iPhone app.
+/// iPhone app, and the MCP Apps widgets that show the same things inside an assistant.
 /// </summary>
 public static class ViewerModule
 {
@@ -30,6 +30,7 @@ public static class ViewerModule
 	public static IServiceCollection AddViewer(this IServiceCollection services)
 	{
 		services.AddScoped<ViewerReader>();
+		services.AddMcpServer().WithWidgets();
 		return services;
 	}
 
@@ -57,6 +58,13 @@ public static class ViewerModule
 		app.MapPost("/c/{conversationId}/clip", RequestClipAsync).AllowAnonymous();
 		app.MapGet("/c/{conversationId}/clip", ClipAroundAsync).AllowAnonymous();
 		app.MapGet("/c/{conversationId}/clip/{requestId:guid}", ClipAsync).AllowAnonymous();
+
+		if (app.ServiceProvider.GetRequiredService<IWebHostEnvironment>().IsDevelopment())
+		{
+			// The composed widget documents, for looking at them in a browser beside a stand-in host.
+			app.MapGet("/dev/widgets/{name}.html", (string name, WidgetLibrary widgets) =>
+				Widgets.All.Any(w => w.File == name) ? Results.Content(widgets.Html(name), "text/html; charset=utf-8") : Results.NotFound());
+		}
 
 		return app;
 	}

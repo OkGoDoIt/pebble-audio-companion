@@ -29,6 +29,8 @@ public sealed class AudioTools
 		OutputSchemaType = typeof(AudioResult))]
 	[McpMeta("openai/toolInvocation/invoking", "Getting the audio…")]
 	[McpMeta("openai/toolInvocation/invoked", "Got the audio")]
+	[ModelContextProtocol.Extensions.Apps.McpAppUi(ResourceUri = Widgets.ClipPlayer)]
+	[McpMeta(Widgets.OutputTemplateKey, Widgets.ClipPlayer)]
 	[Description(
 		"A short-lived link to play a stretch of a conversation, only when the person asks to hear it. If the server " +
 		"does not have it yet, it asks the phone and answers requested: the phone uploads it on its next sync (usually " +

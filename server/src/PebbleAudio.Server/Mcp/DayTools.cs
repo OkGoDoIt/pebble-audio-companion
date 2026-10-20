@@ -25,6 +25,8 @@ public sealed class DayTools
 		OutputSchemaType = typeof(ListDaysResult))]
 	[McpMeta("openai/toolInvocation/invoking", "Looking over your days…")]
 	[McpMeta("openai/toolInvocation/invoked", "Looked over your days")]
+	[ModelContextProtocol.Extensions.Apps.McpAppUi(ResourceUri = Widgets.DayTimeline)]
+	[McpMeta(Widgets.OutputTemplateKey, Widgets.DayTimeline)]
 	[Description(
 		"A span of days at a glance, newest first: each day's recap headline and one-line summary, how many " +
 		"conversations, minutes recorded, quiet minutes (silence skipped on purpose), and lost minutes (audio genuinely " +
@@ -93,6 +95,8 @@ public sealed class DayTools
 		OutputSchemaType = typeof(GetDayResult))]
 	[McpMeta("openai/toolInvocation/invoking", "Reading your day…")]
 	[McpMeta("openai/toolInvocation/invoked", "Read your day")]
+	[ModelContextProtocol.Extensions.Apps.McpAppUi(ResourceUri = Widgets.DayTimeline)]
+	[McpMeta(Widgets.OutputTemplateKey, Widgets.DayTimeline)]
 	[Description(
 		"One day: the app's recap of it, how it was covered (recorded, quiet, missing, paused, off), every " +
 		"conversation in time order (title, times, overview, tags, people, quiet and lost minutes), and the follow-ups " +
