@@ -212,8 +212,13 @@ extension Copy.Privacy {
     /// Five sentences, each one checked against the code before it was written here.
     ///
     /// 1. Verified: the only package dependency is GRDB (a local SQLite wrapper); there is no
-    ///    analytics, crash-reporting or attribution SDK; the entitlements file contains App
-    ///    Groups and nothing else — no CloudKit, no push, no iCloud container; and there is no
+    ///    analytics, crash-reporting or attribution SDK; the entitlements file holds App Groups
+    ///    and, since the 2026-10-13 cold tier, the iCloud Drive container
+    ///    `iCloud.dev.audiocompanion.app` (CloudDocuments only — no CloudKit, no push). That
+    ///    container is in the person's own iCloud account, not a server of this app's; only the
+    ///    cold tier touches it (`ColdAudioTier`, and the store reading through
+    ///    `ColdAudioLocator`), audio moves into it only while "Keep older audio in iCloud" is
+    ///    on, and the stance names it then (`StanceInputs.coldStorageAgeDays`). There is no
     ///    first-party endpoint anywhere in the tree. `DiagnosticsService` records in its own
     ///    header that report content "is never included".
     /// 2. Verified: the complete outbound host list from source is the two transcription
@@ -279,7 +284,9 @@ extension AppSettings {
                 aiMode: aiMode,
                 cloudTranscriptionDestination: cloudTranscriptionDestination,
                 remoteAiDestination: remoteAiDestination,
-                coldStorageAgeDays: coldStorageEnabled ? coldStorageMinAgeDays : nil
+                // The age that takes effect, not the raw choice: under a short "Keep audio" the
+                // two differ, and nil (nothing can move) leaves the iCloud line out entirely.
+                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
             )
         )
     }

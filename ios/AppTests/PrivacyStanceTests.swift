@@ -282,6 +282,34 @@ struct PrivacyStanceTests {
         #expect(settings.privacyStance.headline == "Audio goes to OpenAI")
     }
 
+    // MARK: - The iCloud line
+
+    /// The stance names the age audio REALLY moves at. Under the default Keep audio (30 days)
+    /// a chosen "2 months" never happens; printing it would be a promise about where audio is
+    /// that the pipeline does not keep.
+    @Test func theICloudLineNamesTheAgeThatTakesEffect() {
+        let settings = makeSettings()
+        settings.coldStorageEnabled = true
+        settings.coldStorageMinAgeDays = 60
+        settings.retentionDays = 30
+        #expect(settings.effectiveColdStorageMinAgeDays == 14)
+        #expect(settings.coldStorageAgeChoices == [14])
+        #expect(settings.privacyStance.qualifiers.contains { $0.contains("older than 2 weeks") })
+        #expect(!settings.privacyStance.qualifiers.contains { $0.contains("2 months") })
+        // The runtime mirror derives the same age, so the screen and the sweep agree.
+        #expect(settings.runtimeSettings.coldStoragePolicy.minAgeMs == 14 * 86_400_000)
+
+        settings.retentionDays = 365
+        #expect(settings.coldStorageMinAgeDays == 60, "the choice was kept, not overwritten")
+        #expect(settings.privacyStance.qualifiers.contains { $0.contains("older than 2 months") })
+
+        // Too short for any age: nothing can move, so the stance does not say audio is in iCloud.
+        settings.retentionDays = 7
+        #expect(settings.effectiveColdStorageMinAgeDays == nil)
+        #expect(!settings.privacyStance.qualifiers.contains { $0.contains("iCloud") })
+        #expect(!settings.runtimeSettings.coldStoragePolicy.enabled)
+    }
+
     // MARK: - The fixed half
 
     /// The standing commitments are shown in every configuration, and none of them may quietly

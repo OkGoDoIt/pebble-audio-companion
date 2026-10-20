@@ -293,12 +293,27 @@ final class AppSettings {
         }
     }
 
-    /// How old audio must be before it moves to iCloud, in days. Default two months.
+    /// How old audio must be before it moves to iCloud, in days. Default two months. This is the
+    /// CHOICE; what takes effect is `effectiveColdStorageMinAgeDays`.
     var coldStorageMinAgeDays: Int {
         didSet {
             defaults.set(coldStorageMinAgeDays, forKey: Keys.coldStorageMinAgeDays)
             mirrorToRuntime()
         }
+    }
+
+    /// The age audio really moves at: the choice when it is younger than "Keep audio", else the
+    /// oldest offered age that is, nil when none is. The runtime's `coldStoragePolicy` derives
+    /// the same value from the mirror, so the screen and the sweep cannot disagree. Read from
+    /// the observed properties, so a view re-derives it when either setting changes.
+    var effectiveColdStorageMinAgeDays: Int? {
+        RuntimeSettingsDefaults.effectiveColdStorageMinAgeDays(
+            chosen: coldStorageMinAgeDays, retentionDays: retentionDays)
+    }
+
+    /// The ages the "Move audio older than" picker may offer under the current Keep audio.
+    var coldStorageAgeChoices: [Int] {
+        AppSettings.coldStorageAgeOptions.filter { $0 < retentionDays }
     }
 
     /// The Q9 loss alert, OFF by default and opt-in. An unasked-for notification the moment a

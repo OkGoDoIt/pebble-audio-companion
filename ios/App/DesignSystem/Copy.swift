@@ -940,10 +940,11 @@ enum Copy {
 
             // ── The iCloud rule ────────────────────────────────────────────────────────
             //
-            // Nothing in this block uses the word "delete", because nothing here deletes:
-            // audio MOVES, and the transcript stays. The one number the rule turns on — how
-            // much would move — is shown before the switch is touched, so the switch is never
-            // a surprise.
+            // Nothing here deletes: audio MOVES, and the transcript stays. Where the word
+            // "deletes" appears it names the OTHER rule, Keep audio — which deletes from iCloud
+            // too, and therefore bounds how late audio can move. The one number the rule turns
+            // on — how much would move — is shown before the switch is touched, so the switch is
+            // never a surprise.
             static let recordingsSection = "Recordings"
             static let cloudToggle = "Keep older audio in iCloud"
             static let cloudAge = "Move audio older than"
@@ -976,8 +977,30 @@ enum Copy {
             static func cloudError(_ message: String) -> String { "iCloud reported a problem: \(message)" }
             static let cloudFooter =
                 "Fully transcribed audio older than this moves to your iCloud Drive and is fetched "
-                + "when you play it. Transcripts, summaries and notes stay on this phone. Nothing is "
-                + "deleted."
+                + "when you play it. Transcripts, summaries and notes stay on this phone. Moving "
+                + "deletes nothing. Keep audio still deletes, from iCloud too, so audio has to move "
+                + "before that age."
+            /// The age picker's footer. `limited` when Keep audio hides some of the ages.
+            static func cloudAgeFooter(keepDays: Int, limited: Bool) -> String {
+                guard limited else { return cloudFooter }
+                return cloudFooter + " Keep audio is \(keepDays) days, so only younger ages are "
+                    + "offered; keep audio longer for the others."
+            }
+            /// Under the age row when the chosen age is at or past Keep audio, e.g. "Moves at
+            /// 2 weeks: Keep audio deletes recordings after 30 days, before they reach 2 months.
+            /// Keep audio longer to move it later."
+            static func cloudAgeShortened(effectiveDays: Int, chosenDays: Int, keepDays: Int) -> String {
+                "Moves at \(ageLabel(effectiveDays)): Keep audio deletes recordings after "
+                    + "\(keepDays) days, before they reach \(ageLabel(chosenDays)). Keep audio longer "
+                    + "to move it later."
+            }
+            /// Under the switch when Keep audio is too short for any age, e.g. "Keep audio deletes
+            /// recordings after 14 days, before any is old enough to move. Keep audio for 30 days
+            /// or more to use iCloud."
+            static func cloudBlockedByKeepAudio(keepDays: Int, minimumKeepDays: Int) -> String {
+                "Keep audio deletes recordings after \(keepDays) days, before any is old enough "
+                    + "to move. Keep audio for \(minimumKeepDays) days or more to use iCloud."
+            }
             /// e.g. "Bring 1.3 GB Back to This Phone".
             static func bringBack(_ size: String) -> String { "Bring \(size) Back to This Phone" }
             static func bringingBack(done: Int, total: Int) -> String {
@@ -993,6 +1016,11 @@ enum Copy {
             static let keepAudio = "Keep audio"
             /// Keep-audio options: 7 · 14 · 30 · 90 · 180 · 365 days (6.7).
             static func keepDays(_ days: Int) -> String { "\(days) days" }
+            /// The Keep audio picker's footer while the iCloud rule is on: the two rules are
+            /// linked, and changing this one can move audio sooner.
+            static let keepAudioCloudFooter =
+                "Recordings older than this are deleted, from iCloud too. Audio moves to iCloud "
+                + "before then, so a shorter Keep audio can make it move sooner."
             static let autoExport = "Auto-export WAV files"
             static let autoExportSub = "Plain audio copies in the export folder"
             static let exportAll = "Export All Audio"

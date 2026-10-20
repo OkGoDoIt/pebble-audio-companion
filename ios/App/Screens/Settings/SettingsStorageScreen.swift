@@ -48,7 +48,9 @@ struct SettingsStorageScreen: View {
                         options: AppSettings.retentionOptions.map {
                             .init(value: $0, label: Copy.Settings.Storage.keepDays($0))
                         },
-                        selection: $settings.retentionDays
+                        selection: $settings.retentionDays,
+                        footer: settings.coldStorageEnabled
+                            ? Copy.Settings.Storage.keepAudioCloudFooter : nil
                     )
                 }
                 SettingsPushRow(
@@ -179,6 +181,12 @@ struct SettingsStorageScreen: View {
         }
     }
 
+    /// The shortest Keep audio under which some offered move age can take effect (30 days).
+    private static let minimumKeepDaysForCloud: Int = {
+        let youngestAge = AppSettings.coldStorageAgeOptions.min() ?? 0
+        return AppSettings.retentionOptions.first { $0 > youngestAge } ?? youngestAge + 1
+    }()
+
     /// Below this, temporary files are the ordinary few megabytes of scratch and not a story.
     private static let temporaryWorthNaming: Int64 = 50 * 1024 * 1024
 
@@ -200,20 +208,29 @@ struct SettingsStorageScreen: View {
     /// The rule, its age, and the split it makes of the recordings — drawn before the switch is
     /// on, so the switch is never a surprise. The split bar is the same component as the
     /// overview's, over a different whole: all the audio there is.
+    ///
+    /// Everything here shows the EFFECTIVE age (`effectiveColdStorageMinAgeDays`): "Keep audio"
+    /// deletes recordings first, so a move age at or past it is a rule that never fires. Under
+    /// the defaults (move at 2 months, keep 30 days) the card used to show "2 months" and a
+    /// switch that, turned on, moved nothing, ever. Now it shows what will happen and says why.
     private var cloudCard: some View {
         @Bindable var settings = settings
         let overview = storage.overview
         let available = overview?.cloudAvailable ?? false
-        let preview = storage.wouldMove(olderThanDays: settings.coldStorageMinAgeDays)
+        let effectiveAge = settings.effectiveColdStorageMinAgeDays
+        let preview = effectiveAge.map { storage.wouldMove(olderThanDays: $0) }
+            ?? StoragePreview(bytes: 0, count: 0, percent: 0)
         return ListCard {
             HStack(spacing: 12) {
                 Text(Copy.Settings.Storage.cloudToggle)
                     .font(AppFont.callout)
-                    .foregroundStyle(available ? Tokens.label : Tokens.meta)
+                    .foregroundStyle(available && effectiveAge != nil ? Tokens.label : Tokens.meta)
                 Spacer(minLength: 10)
                 Toggle(Copy.Settings.Storage.cloudToggle, isOn: $settings.coldStorageEnabled)
                     .labelsHidden()
-                    .disabled(!available)
+                    // A rule that could move nothing is not offered — but one already on stays
+                    // switchable, so it can be turned off.
+                    .disabled(!available || (effectiveAge == nil && !settings.coldStorageEnabled))
             }
             // Why the switch is off and cannot be turned on, directly under it.
             if !available {
@@ -221,21 +238,47 @@ struct SettingsStorageScreen: View {
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.secondaryBody)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if effectiveAge == nil {
+                Text(
+                    Copy.Settings.Storage.cloudBlockedByKeepAudio(
+                        keepDays: settings.retentionDays,
+                        minimumKeepDays: Self.minimumKeepDaysForCloud))
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            SettingsPushRow(
-                title: Copy.Settings.Storage.cloudAge,
-                value: Copy.Settings.Storage.ageLabel(settings.coldStorageMinAgeDays)
-            ) {
-                ChoiceScreen(
+            if let effectiveAge {
+                SettingsPushRow(
                     title: Copy.Settings.Storage.cloudAge,
-                    options: AppSettings.coldStorageAgeOptions.map {
-                        .init(value: $0, label: Copy.Settings.Storage.ageLabel($0))
-                    },
-                    selection: $settings.coldStorageMinAgeDays,
-                    footer: Copy.Settings.Storage.cloudFooter
-                )
+                    value: Copy.Settings.Storage.ageLabel(effectiveAge)
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Settings.Storage.cloudAge,
+                        options: settings.coldStorageAgeChoices.map {
+                            .init(value: $0, label: Copy.Settings.Storage.ageLabel($0))
+                        },
+                        // Checks the age in force; a pick is stored as the new choice.
+                        selection: Binding(
+                            get: { settings.effectiveColdStorageMinAgeDays ?? settings.coldStorageMinAgeDays },
+                            set: { settings.coldStorageMinAgeDays = $0 }),
+                        footer: Copy.Settings.Storage.cloudAgeFooter(
+                            keepDays: settings.retentionDays,
+                            limited: settings.coldStorageAgeChoices.count
+                                < AppSettings.coldStorageAgeOptions.count)
+                    )
+                }
+                // The choice was older than Keep audio allows: say what happens instead, and why.
+                if effectiveAge != settings.coldStorageMinAgeDays {
+                    Text(
+                        Copy.Settings.Storage.cloudAgeShortened(
+                            effectiveDays: effectiveAge, chosenDays: settings.coldStorageMinAgeDays,
+                            keepDays: settings.retentionDays))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if let overview {
+            if let overview, effectiveAge != nil || overview.audioInCloudBytes > 0 {
                 splitRow(overview, preview: preview)
             }
             if let error = overview?.cloudError, available {
