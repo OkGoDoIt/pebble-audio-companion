@@ -1393,6 +1393,22 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.Property<bool>("Edits")
                         .HasColumnType("boolean");
 
+                    b.Property<int?>("ScopeDays")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ScopeKind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("ScopeSince")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ScopeSweptFor")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TimeZone")
+                        .HasColumnType("text");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 

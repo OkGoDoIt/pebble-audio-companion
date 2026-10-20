@@ -84,6 +84,21 @@ public enum BriefKind
 }
 
 /// <summary>
+/// Which conversations the server may hold, as the phone set it (sync-protocol.md §5, the sharing scope).
+/// </summary>
+public enum SharingScopeKind
+{
+	/// <summary>Everything the phone sends, kept after the phone's own retention ages it out.</summary>
+	All,
+
+	/// <summary>Nothing dated before a fixed time ("from today on").</summary>
+	Since,
+
+	/// <summary>A rolling window of the last N days, enforced every day.</summary>
+	LastDays,
+}
+
+/// <summary>
 /// Who wrote a follow-up or note: the app's AI, the person, or an assistant through an MCP write tool.
 /// </summary>
 public enum ContentOrigin

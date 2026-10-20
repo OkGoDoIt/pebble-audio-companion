@@ -8,11 +8,25 @@ public sealed record ArchiveSettings
 {
 	public static ArchiveSettings Defaults { get; } = new();
 
-	/// <summary>The most items (conversations, turns, follow-ups) one tool result lists.</summary>
+	/// <summary>The most items (days, conversations, search results, follow-ups, people, tags) one tool result lists.
+	/// Transcript turns are limited by length instead.</summary>
 	public int ToolMaxResults { get; init; } = 50;
 
-	/// <summary>The longest tool result, in characters. Claude Code allows about 25,000 tokens.</summary>
-	public int ToolMaxCharacters { get; init; } = 80_000;
+	/// <summary>
+	/// The longest tool result, in characters of JSON. A result carries it twice (as text and as structured content),
+	/// so 60,000 keeps the whole under Claude's ~150,000-character result limit, and its text under Claude Code's
+	/// 25,000 tokens.
+	/// </summary>
+	public int ToolMaxCharacters { get; init; } = 60_000;
+
+	/// <summary>How much of a transcript one read returns when the assistant does not ask for a length.</summary>
+	public int TranscriptReadCharacters { get; init; } = 30_000;
+
+	/// <summary>
+	/// Only news is announced to subscribed assistants: a recap for a day this recent, a follow-up created this
+	/// recently. Older ones arrive when a phone catches up on its history, and wake no one.
+	/// </summary>
+	public int EventRecentHours { get; init; } = 48;
 
 	/// <summary>The longest audio clip the phone is asked for.</summary>
 	public int ClipMaxMinutes { get; init; } = 20;
@@ -79,7 +93,7 @@ public sealed record SettingDefinition(
 		new(
 			nameof(ArchiveSettings.ToolMaxResults),
 			"Items per assistant answer",
-			"The most conversations, turns, or follow-ups one tool result lists.",
+			"The most days, conversations, search results, or follow-ups one tool result lists.",
 			"items",
 			1,
 			1000,
@@ -88,12 +102,21 @@ public sealed record SettingDefinition(
 		new(
 			nameof(ArchiveSettings.ToolMaxCharacters),
 			"Length of an assistant answer",
-			"Longer results are cut short and say so.",
+			"Longer results are cut short and say how to read on. Claude takes about 150,000 characters.",
 			"characters",
 			2_000,
 			1_000_000,
 			s => s.ToolMaxCharacters,
 			(s, v) => s with { ToolMaxCharacters = v }),
+		new(
+			nameof(ArchiveSettings.TranscriptReadCharacters),
+			"Transcript read",
+			"How much of a transcript one read returns unless the assistant asks for more.",
+			"characters",
+			1_000,
+			1_000_000,
+			s => s.TranscriptReadCharacters,
+			(s, v) => s with { TranscriptReadCharacters = v }),
 		new(
 			nameof(ArchiveSettings.ClipMaxMinutes),
 			"Longest audio clip",
@@ -166,5 +189,14 @@ public sealed record SettingDefinition(
 			720,
 			s => s.EventSubscriptionHours,
 			(s, v) => s with { EventSubscriptionHours = v }),
+		new(
+			nameof(ArchiveSettings.EventRecentHours),
+			"News for event subscriptions",
+			"Recaps and follow-ups older than this are not announced, as when a phone sends its history.",
+			"hours",
+			1,
+			720,
+			s => s.EventRecentHours,
+			(s, v) => s with { EventRecentHours = v }),
 	];
 }
