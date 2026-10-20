@@ -10,6 +10,9 @@ public struct KeychainStore: Sendable {
         case receiverId = "receiver_id_v1"
         case openAiApiKey = "openai_api_key"
         case sonioxApiKey = "soniox_api_key"
+        /// This phone's token on the Pebble Audio server it is linked to (`pad_…`), from
+        /// `POST /link`. Removed on unlink.
+        case archiveDeviceToken = "pebble_audio_device_token"
     }
 
     public let service: String

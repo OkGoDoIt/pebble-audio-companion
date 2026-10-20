@@ -105,6 +105,12 @@ public struct PipelineSteps: Sendable {
     /// transfer itself is done by the system daemon rather than by us — see the background branch
     /// of `run()`.
     public var submitPendingUploads: @Sendable () async -> Void = {}
+    /// The archive sync's change gate (`ArchiveSyncService.pipelinePassFinished`): called at the
+    /// end of every pass with whether the pass changed anything the server holds — a
+    /// transcription, the grouping, a title, follow-ups, a recap or a brief, a deletion. Not a
+    /// `PipelineStage`: like the snapshot, it is a side effect at the end of the pass, and it
+    /// does nothing at all when the answer is no and the outbox has not moved.
+    public var syncArchive: @Sendable (_ changed: Bool) async -> Void = { _ in }
     /// Whether expensive catch-up (local STT, AI) may run while backgrounded, and why not when it
     /// may not. See `BackgroundWorkPolicy`.
     public var backgroundWorkDecision: @Sendable () -> BackgroundWorkDecision = {
@@ -148,6 +154,7 @@ public struct PipelineSteps: Sendable {
         onDiagnosticsDirty: @escaping @Sendable () async -> Void = {},
         refreshCoverageSnapshot: @escaping @Sendable () async -> Void = {},
         submitPendingUploads: @escaping @Sendable () async -> Void = {},
+        syncArchive: @escaping @Sendable (_ changed: Bool) async -> Void = { _ in },
         backgroundWorkDecision: @escaping @Sendable () -> BackgroundWorkDecision = {
             .hold(reason: .onBattery)
         },
@@ -178,6 +185,7 @@ public struct PipelineSteps: Sendable {
         self.onDiagnosticsDirty = onDiagnosticsDirty
         self.refreshCoverageSnapshot = refreshCoverageSnapshot
         self.submitPendingUploads = submitPendingUploads
+        self.syncArchive = syncArchive
         self.backgroundWorkDecision = backgroundWorkDecision
         self.isThermallyThrottled = isThermallyThrottled
     }
@@ -372,6 +380,9 @@ public struct PipelinePass: Sendable {
             // handed to anything. Opening the app in the morning then meant watching the whole
             // backlog upload and transcribe at once, which is exactly the wait this avoids.
             await steps.submitPendingUploads()
+            // ...and what the outbox gained while deferred (a transcription the background
+            // session finished, a request applied) to the archive sync's own background session.
+            await steps.syncArchive(false)
             // A deferring pass is still a completed pass: the loop is turning, and the watchdog
             // must not mistake a backgrounded app for a wedged one.
             health?.passCompleted()
@@ -379,6 +390,8 @@ public struct PipelinePass: Sendable {
         }
 
         var processed = false
+        /// Whether this pass changed something the archive server holds (see `syncArchive`).
+        var archiveChanged = false
 
         // 2. Segments parked while no provider was usable become eligible the moment one is.
         if try await stage(.reconsiderDisabled, fallback: false, steps.reconsiderDisabled) {
@@ -391,6 +404,7 @@ public struct PipelinePass: Sendable {
         // 4. Drain, under the processing mutex owned by TranscriptionService.
         if try await stage(.drainQueue, fallback: false, heavy: true, steps.drainQueue) {
             processed = true
+            archiveChanged = true
             await steps.onDiagnosticsDirty()
         }
 
@@ -401,6 +415,7 @@ public struct PipelinePass: Sendable {
         //    transcript and follow-ups are already gone.
         if try await stage(.retention, fallback: false, steps.enforceRetentionIfDue) {
             processed = true
+            archiveChanged = true
             // Deleted audio takes its recaps with it; the weeks and months written from them
             // are owed a look.
             memory.noteBriefsOwed(atMs: clock.nowMs)
@@ -420,6 +435,7 @@ public struct PipelinePass: Sendable {
         //     this pass read verdicts about the same transcripts they are about to use.
         if try await stage(.classifyAudio, fallback: false, steps.classifyAudio) {
             processed = true
+            archiveChanged = true
         }
 
         // 6. Rebuild the conversation grouping — BEFORE the AI layer and never behind it.
@@ -431,6 +447,7 @@ public struct PipelinePass: Sendable {
         //    A thrown regroup reports "changed", so a grouping that could not be rebuilt never
         //    silences the stages behind it.
         let groupingChanged = try await stage(.regroup, fallback: true, steps.regroup)
+        if groupingChanged { archiveChanged = true }
 
         // 7-10 run only when there is something new for them to see. In the FOREGROUND that is
         //      always: the person is looking, and the live title and Today card are expected to
@@ -470,6 +487,7 @@ public struct PipelinePass: Sendable {
         if aiStagesDue {
             memory.aiStagesLeftWork = !enriched.isEmpty || followUpsWrote || judged
         }
+        if !enriched.isEmpty || followUpsWrote || judged { archiveChanged = true }
 
         // 10. Daily recap (its own debounce decides whether anything actually runs). A summary of
         //     the day that nobody reads while the app is closed: backgrounded, it is reconsidered
@@ -487,7 +505,10 @@ public struct PipelinePass: Sendable {
         let recapWrote = try await stage(
             .recap, fallback: false, heavy: true, when: recapDue, steps.refreshRecap)
         if recapDue, !foreground { memory.lastBackgroundRecapAtMs = clock.nowMs }
-        if recapWrote { memory.noteBriefsOwed(atMs: clock.nowMs) }
+        if recapWrote {
+            memory.noteBriefsOwed(atMs: clock.nowMs)
+            archiveChanged = true
+        }
 
         // 10b. History's headlines and briefs, from the recaps just written. Change-gated in
         //      BOTH states: the stage does nothing at all unless a recap changed or it said it
@@ -505,7 +526,10 @@ public struct PipelinePass: Sendable {
             if let failure = outcome.failure { throw failure }
             return outcome
         }
-        if (briefs?.calls ?? 0) > 0 { processed = true }
+        if (briefs?.calls ?? 0) > 0 {
+            processed = true
+            archiveChanged = true
+        }
 
         // 11. Live preview of the OPEN segment — after the durable closed-segment work, in the
         //     same loop, so a possibly single-instance native model is never used concurrently.
@@ -535,6 +559,10 @@ public struct PipelinePass: Sendable {
             guard !processed else { return }
             await steps.releaseModelIfIdle()
         }
+
+        // 14b. The archive sync, behind the same change gate as everything above: a pass that
+        //      changed nothing the server holds costs it one in-memory read.
+        await steps.syncArchive(archiveChanged)
 
         // 15. Hand the widget what this pass just produced — a new transcript line, a title
         //     enrichment finally wrote, a follow-up that appeared. The widget has no other way

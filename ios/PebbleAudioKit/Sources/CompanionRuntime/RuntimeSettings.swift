@@ -49,6 +49,10 @@ public protocol RuntimeSettings: Sendable {
     /// How much of each recording the OS search index may see. Defaulted so callers that do not
     /// care need not declare it. See `SystemSearchVisibility`.
     var systemSearchVisibility: SystemSearchVisibility { get }
+    /// Which Pebble Audio server this phone is linked to, and whether it syncs to it now.
+    /// Defaulted (not linked) so callers that do not care need not declare it. The device token
+    /// is in the Keychain, never here.
+    var archiveSync: ArchiveSyncSettings { get }
 }
 
 extension RuntimeSettings {
@@ -76,6 +80,7 @@ extension RuntimeSettings {
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
     public var remoteAiProvider: RemoteAiProvider { .default }
     public var systemSearchVisibility: SystemSearchVisibility { .default }
+    public var archiveSync: ArchiveSyncSettings { ArchiveSyncSettings() }
 
     // --- Derived semantics (Part 4.6) ---------------------------------------------------------
 
@@ -267,6 +272,7 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     public var cloudUploadNetwork: CloudUploadNetwork { value.cloudUploadNetwork }
     public var remoteAiProvider: RemoteAiProvider { value.remoteAiProvider }
     public var systemSearchVisibility: SystemSearchVisibility { value.systemSearchVisibility }
+    public var archiveSync: ArchiveSyncSettings { value.archiveSync }
 }
 
 /// Plain value mirror of the truth table.
@@ -288,6 +294,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var cloudUploadNetwork: CloudUploadNetwork
     public var remoteAiProvider: RemoteAiProvider
     public var systemSearchVisibility: SystemSearchVisibility
+    public var archiveSync: ArchiveSyncSettings
 
     public init(
         captureIntent: CaptureIntent = .off,
@@ -306,7 +313,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         backgroundCatchUp: BackgroundCatchUp = .whileCharging,
         cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default,
         remoteAiProvider: RemoteAiProvider = .default,
-        systemSearchVisibility: SystemSearchVisibility = .default
+        systemSearchVisibility: SystemSearchVisibility = .default,
+        archiveSync: ArchiveSyncSettings = ArchiveSyncSettings()
     ) {
         self.captureIntent = captureIntent
         self.transcriptionMode = transcriptionMode
@@ -325,5 +333,27 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.cloudUploadNetwork = cloudUploadNetwork
         self.remoteAiProvider = remoteAiProvider
         self.systemSearchVisibility = systemSearchVisibility
+        self.archiveSync = archiveSync
     }
+}
+
+/// The archive sync's preferences (`ArchiveSyncService`): the server this phone is linked to
+/// and its id there, and the switch. The device token is in the Keychain
+/// (`KeychainStore.Key.archiveDeviceToken`).
+public struct ArchiveSyncSettings: Equatable, Sendable {
+    /// The server's origin (`https://pebbleaudio.okgodoit.com`); nil when not linked.
+    public var origin: String?
+    /// This phone's id on that server.
+    public var deviceId: String?
+    /// Whether to sync now. Linking turns it on; turning it off keeps the link and the changes
+    /// waiting, and sends them when it is turned back on.
+    public var enabled: Bool
+
+    public init(origin: String? = nil, deviceId: String? = nil, enabled: Bool = true) {
+        self.origin = origin
+        self.deviceId = deviceId
+        self.enabled = enabled
+    }
+
+    public var isLinked: Bool { origin != nil && deviceId != nil }
 }

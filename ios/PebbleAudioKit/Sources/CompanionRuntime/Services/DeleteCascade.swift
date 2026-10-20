@@ -84,9 +84,18 @@ public actor DeleteCascade {
     /// membership + every index row, including `day-<key>`.
     ///
     /// No-op for the open segment: deleting audio out from under the receiver is never right.
+    ///
+    /// `reason` is for the archive sync, which keeps what retention ages out and deletes what a
+    /// person deletes: `.expired` marks what the segment's deletion takes with it as expired
+    /// BEFORE anything is deleted, so the deletes below reach the server as an expiry.
     @discardableResult
-    public func deleteSegment(_ segmentId: String) async -> Bool {
+    public func deleteSegment(_ segmentId: String, reason: DeleteReason = .user) async -> Bool {
         if await store.openSegmentId == segmentId { return false }
+        if reason == .expired {
+            do { try await ArchiveOutbox(db: annotations.db).markExpiring(segmentId: segmentId) } catch {
+                log.failure("archive expiry", error)
+            }
+        }
         let conversationIds = await enrichment.conversationIds(containing: segmentId)
         guard await destroySegment(segmentId) else { return false }
 
@@ -125,6 +134,11 @@ public actor DeleteCascade {
     /// still exists and is not in the list.
     @discardableResult
     public func deleteConversation(_ conversationId: String) async -> [String] {
+        // The person's delete reaches the server as a delete — of the conversation, its
+        // transcript, its notes and the follow-ups said in it — whatever retention had said.
+        do { try await ArchiveOutbox(db: annotations.db).markUserDelete(conversationId: conversationId) } catch {
+            log.failure("archive delete", error)
+        }
         let pieces = await enrichment.pieces(ofConversation: conversationId)
         let openSegmentId = await store.openSegmentId
         // Conversations that share a segment with this one: what search holds for them was
@@ -511,6 +525,15 @@ public actor DeleteCascade {
             log.failure("index removal", error)
         }
     }
+}
+
+/// Why a segment is being deleted, for the archive sync (`sync-protocol.md` §2): a person's
+/// delete is deleted on the server, retention's is kept there as expired, and "Delete all" is
+/// one wipe of its own.
+public enum DeleteReason: Sendable, Equatable {
+    case user
+    case expired
+    case wipe
 }
 
 // MARK: - The 5 s undo window

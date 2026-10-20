@@ -45,6 +45,9 @@ public struct CompanionRuntimeEnvironment: Sendable {
     /// The iCloud Drive cold tier. Optional so a runtime built without it behaves exactly as
     /// before: nothing leaves the phone.
     public var coldStorage: ColdAudioTier?
+    /// The Pebble Audio archive sync. Optional so a runtime built without it behaves exactly as
+    /// before: nothing is synced, and it does nothing at all until a server is linked.
+    public var archiveSync: ArchiveSyncService?
 
     public init(
         database: AppDatabase,
@@ -66,7 +69,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
         foreground: RuntimeForegroundState = RuntimeForegroundState(),
         log: RuntimeLog = .silent,
         audioContent: AudioContentService? = nil,
-        coldStorage: ColdAudioTier? = nil
+        coldStorage: ColdAudioTier? = nil,
+        archiveSync: ArchiveSyncService? = nil
     ) {
         self.database = database
         self.store = store
@@ -88,6 +92,7 @@ public struct CompanionRuntimeEnvironment: Sendable {
         self.log = log
         self.audioContent = audioContent
         self.coldStorage = coldStorage
+        self.archiveSync = archiveSync
     }
 }
 
@@ -127,7 +132,8 @@ public actor CompanionRuntime {
             nowMs: { [clock = environment.clock] in clock.nowMs }, log: environment.log)
         self.retention = RetentionService(
             enforce: { limit in try await environment.retention.enforce(limit: limit) },
-            cascadeDeleted: { _ = await environment.cascade.deleteSegment($0) },
+            // Retention: what it deletes is EXPIRED on the server (kept there), not deleted.
+            cascadeDeleted: { _ = await environment.cascade.deleteSegment($0, reason: .expired) },
             policy: { environment.settings.retentionConfig },
             clock: environment.clock,
             log: environment.log
@@ -306,6 +312,10 @@ public actor CompanionRuntime {
         startLoop()
         startSupervisor()
         await refreshSnapshot(.manual)
+        if let archiveSync = environment.archiveSync {
+            await archiveSync.start()
+            await archiveSync.setForeground(foreground.value)
+        }
     }
 
     private func startLoop() {
@@ -379,6 +389,13 @@ public actor CompanionRuntime {
         guard foreground.value != value else { return }
         foreground.value = value
         await environment.live.setForeground(value)
+        if let archiveSync = environment.archiveSync {
+            await archiveSync.setForeground(value)
+            // Background entry hands what changed while the app was open to the background
+            // session, the way finished segments are handed to the transcription uploader.
+            // Not awaited: a pass may wait on the server's answer.
+            if !value { Task { await archiveSync.pass(.backgroundEntry) } }
+        }
         if !value {
             // Background entry, app still alive: let the model go once the segment in flight is
             // done (the drain stops at the next task boundary), and hand cloud-primary pending
@@ -486,6 +503,9 @@ public actor CompanionRuntime {
         await environment.transcription.submitPendingToUploader()
         await environment.diagnostics.refresh()
         await refreshSnapshot(.manual)
+        // The archive sync's fallback window: what changed while the app was suspended, and the
+        // server's requests. Nothing at all when no server is linked or nothing is pending.
+        await environment.archiveSync?.pass(.backgroundTask)
     }
 
     /// Bounded, cancellable catch-up burst for a BGProcessing window, where the app is legitimately
@@ -583,6 +603,12 @@ public actor CompanionRuntime {
         wake.signal()
     }
 
+    /// `handleEventsForBackgroundURLSession` for the archive sync's session: re-attach it so
+    /// the answers that finished while the app was not running are delivered and applied.
+    public func handleArchiveSyncEvents() async {
+        await environment.archiveSync?.reconnect()
+    }
+
     public func reprocessSegment(_ segmentId: String) async {
         do { try await environment.transcription.reprocessSegment(segmentId) } catch {
             log.failure("reprocess", error)
@@ -621,15 +647,19 @@ public actor CompanionRuntime {
     /// Returns how many segments were destroyed.
     @discardableResult
     public func deleteAllRecordings() async -> Int {
+        // The server's copy goes by its own endpoint (`POST /sync/wipe`) once this is done;
+        // none of the deletes below is recorded for it one by one.
+        await environment.archiveSync?.willWipeLocally()
         await environment.receiver.closeOpenSegment()
         var deleted = 0
         for meta in await environment.store.listSegments()
-        where await environment.cascade.deleteSegment(meta.segmentId) {
+        where await environment.cascade.deleteSegment(meta.segmentId, reason: .wipe) {
             deleted += 1
         }
         do { try await environment.transcription.deleteAllTranscriptionData() } catch {
             log.failure("delete all transcription data", error)
         }
+        await environment.archiveSync?.didWipeLocally()
         await environment.receiver.resumeAfterBulkDelete()
         await environment.diagnostics.refresh()
         await refreshSnapshot(.manual)
@@ -758,6 +788,9 @@ public actor CompanionRuntime {
                 )
             },
             submitPendingUploads: { await env.transcription.submitPendingToUploader() },
+            syncArchive: { changed in
+                await env.archiveSync?.pipelinePassFinished(changed: changed)
+            },
             backgroundWorkDecision: {
                 BackgroundWorkPolicy.decide(
                     env.settings.backgroundCatchUp, foreground.devicePower
