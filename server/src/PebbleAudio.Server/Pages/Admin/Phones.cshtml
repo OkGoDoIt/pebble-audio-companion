@@ -1,0 +1,85 @@
+@page
+@using PebbleAudio.Server.Sync
+@model PebbleAudio.Server.Pages.Admin.PhonesModel
+@{
+	ViewData["Title"] = "Phones";
+	ViewData["Section"] = "phones";
+}
+<header class="page-header">
+	<h1>Phones</h1>
+	<p class="lede">A linked phone syncs its conversations here.</p>
+</header>
+
+@if (Model.Invitation is { } invitation)
+{
+	<section class="card card-accent link-card" aria-labelledby="link-heading">
+		<h2 id="link-heading">Scan with your iPhone's Camera</h2>
+		<a class="qr" href="@invitation.Url" aria-label="Open in Pebble Audio">@Html.Raw(invitation.QrSvg)</a>
+		<dl class="facts">
+			<div>
+				<dt>Server</dt>
+				<dd><code>@Model.ServerAddress</code></dd>
+			</div>
+			<div>
+				<dt>Code</dt>
+				<dd><code class="link-code" id="link-code">@invitation.Code</code></dd>
+			</div>
+		</dl>
+		<p class="muted">Or enter both in Pebble Audio. The code works once and expires @Display.Time(invitation.ExpiresAt, "relative").</p>
+	</section>
+}
+else
+{
+	<section class="card" aria-labelledby="link-heading">
+		<h2 id="link-heading">Link a phone</h2>
+		<form method="post" asp-page-handler="Link" class="actions">
+			<button type="submit" class="button button-primary">Show a code</button>
+		</form>
+	</section>
+}
+
+<section class="card" aria-labelledby="phones-heading">
+	<h2 id="phones-heading">Linked phones</h2>
+	@if (Model.Phones.Count == 0)
+	{
+		<p class="muted">No phones yet.</p>
+	}
+	else
+	{
+		<ul class="rows">
+			@foreach (var phone in Model.Phones)
+			{
+				<li class="row">
+					<div class="row-main">
+						<strong class="row-title">@phone.Name</strong>
+						<span class="row-meta">
+							@if (phone.AppVersion is { } version)
+							{
+								<span>Version @version@(phone.AppBuild is { } build ? $" ({build})" : "")</span>
+							}
+							<span>Linked @Display.Time(phone.LinkedAt, "date")</span>
+							@if (phone.LastBatchAt is { } synced)
+							{
+								<span>Synced @Display.Time(synced, "relative")</span>
+							}
+							else
+							{
+								<span>Not synced yet</span>
+							}
+						</span>
+						<details class="rename">
+							<summary class="button button-quiet">Rename</summary>
+							<form method="post" asp-page-handler="Rename" asp-route-id="@phone.Id" class="rename-form">
+								<input name="name" value="@phone.Name" maxlength="@PhoneLinkService.NameLength" aria-label="Name" autocomplete="off" required>
+								<button type="submit" class="button">Save</button>
+							</form>
+						</details>
+					</div>
+					<form method="post" asp-page-handler="Unlink" asp-route-id="@phone.Id">
+						<button type="submit" class="button button-danger">Unlink</button>
+					</form>
+				</li>
+			}
+		</ul>
+	}
+</section>

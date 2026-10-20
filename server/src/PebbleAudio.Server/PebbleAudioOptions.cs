@@ -15,9 +15,14 @@ public sealed class PebbleAudioOptions
 	public string PublicOrigin { get; set; } = "";
 
 	/// <summary>
-	/// Where clip audio is stored. Used by the clips module.
+	/// Where clip audio is stored, absolute or relative to the content root; <c>App_Data/clips</c> when unset.
 	/// </summary>
 	public string? ClipsPath { get; set; }
+
+	/// <summary>
+	/// The ffmpeg binary that transcodes clips; <c>ffmpeg</c> on the PATH when unset.
+	/// </summary>
+	public string? FfmpegPath { get; set; }
 
 	/// <summary>
 	/// An optional fixed setup code for the first admin passkey, accepted alongside the one printed in the log.
