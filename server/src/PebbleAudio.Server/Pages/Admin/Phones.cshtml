@@ -79,10 +79,13 @@ else
 					{
 						@* The last phone: unlinking it clears the server, as unlinking on the phone does. *@
 						<details class="unlink">
-							<summary class="button button-danger"><span class="when-closed">Unlink</span><span class="when-open">Cancel</span></summary>
+							<summary class="button button-danger">Unlink</summary>
 							<form method="post" asp-page-handler="Unlink" asp-route-id="@phone.Id" class="unlink-form">
 								<p>This is the only linked phone. Unlinking it deletes everything on this server and disconnects every assistant.</p>
-								<button type="submit" class="button button-danger">Unlink and delete</button>
+								<div class="unlink-actions">
+									<button type="button" class="button" data-close-details>Cancel</button>
+									<button type="submit" class="button button-danger">Unlink and delete</button>
+								</div>
 							</form>
 						</details>
 					}
