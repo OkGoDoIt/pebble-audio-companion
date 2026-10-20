@@ -92,7 +92,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Equal($"{ArchiveFixture.Key(fx.Day)}T10:05:00+07:00", kitchen.GetProperty("startedAt").GetString());
 		Assert.Equal(36.0, kitchen.GetProperty("minutes").GetDouble());
 		Assert.Equal((1.0, 2.3), (kitchen.GetProperty("lostMinutes").GetDouble(), kitchen.GetProperty("quietMinutes").GetDouble()));
-		Assert.Equal(["Roger", "Sam"], kitchen.GetProperty("people").EnumerateArray().Select(p => p.GetProperty("name").GetString()));
+		Assert.Equal(["Alex", "Sam"], kitchen.GetProperty("people").EnumerateArray().Select(p => p.GetProperty("name").GetString()));
 		Assert.True(kitchen.GetProperty("hasTranscript").GetBoolean());
 		Assert.Equal(("noConversation", "music"), (cards[3].GetProperty("kind").GetString(), cards[3].GetProperty("descriptor").GetString()));
 		Assert.False(cards[1].GetProperty("people")[1].TryGetProperty("name", out _), "An unmatched speaker has no name.");
@@ -182,7 +182,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		// get_people keeps the two Sams apart; get_tags counts conversations.
 		var people = (await ArchiveFixture.CallAsync(mcp, "get_people")).GetProperty("people").EnumerateArray().ToList();
 		Assert.Equal(2, people.Count(p => p.GetProperty("name").GetString() == "Sam"));
-		Assert.Equal(("Roger", 5), (people[0].GetProperty("name").GetString(), people[0].GetProperty("conversationCount").GetInt32()));
+		Assert.Equal(("Alex", 5), (people[0].GetProperty("name").GetString(), people[0].GetProperty("conversationCount").GetInt32()));
 		var tags = (await ArchiveFixture.CallAsync(mcp, "get_tags")).GetProperty("tags").EnumerateArray().ToList();
 		Assert.Equal(("product launch", 2), (tags[0].GetProperty("tag").GetString(), tags[0].GetProperty("conversationCount").GetInt32()));
 
@@ -280,11 +280,11 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		// A long talk: 400 turns of about 120 characters, and a dozen short ones on other days.
 		var start = fx.At(9, 0);
 		var turns = Enumerable.Range(0, 400)
-			.Select(i => ArchiveFixture.Turn(start.AddSeconds(i * 15), i % 2 == 0 ? "1" : "2", i % 2 == 0 ? "Roger" : "Priya", $"Turn {i}: the launch checklist still needs the press kit, the demo video, the pricing page, and the FAQ.", 0.9))
+			.Select(i => ArchiveFixture.Turn(start.AddSeconds(i * 15), i % 2 == 0 ? "1" : "2", i % 2 == 0 ? "Alex" : "Priya", $"Turn {i}: the launch checklist still needs the press kit, the demo video, the pricing page, and the FAQ.", 0.9))
 			.ToArray();
 		var batch = new List<System.Text.Json.Nodes.JsonObject>
 		{
-			ArchiveFixture.Item("conversation", "conv-long", ArchiveFixture.Conversation(fx.Day, start, start.AddMinutes(100), "Launch review with Priya", "A long review of everything left for the launch.", ["product launch"], [ArchiveFixture.Speaker("1", null, "Roger"), ArchiveFixture.Speaker("2", null, "Priya")], [], 100)),
+			ArchiveFixture.Item("conversation", "conv-long", ArchiveFixture.Conversation(fx.Day, start, start.AddMinutes(100), "Launch review with Priya", "A long review of everything left for the launch.", ["product launch"], [ArchiveFixture.Speaker("1", null, "Alex"), ArchiveFixture.Speaker("2", null, "Priya")], [], 100)),
 			ArchiveFixture.Item("transcript", "conv-long", ArchiveFixture.Transcript("conv-long", turns)),
 		};
 		for (var i = 1; i <= 12; i++)

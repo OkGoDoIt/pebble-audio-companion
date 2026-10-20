@@ -52,7 +52,7 @@ internal sealed class ArchiveFixture
 		var after = d.AddDays(1);
 		return
 		[
-			Item("person", "person-roger", Person("Roger")),
+			Item("person", "person-alex", Person("Alex")),
 			Item("person", "person-sam", Person("Sam")),
 			Item("person", "person-sam-k", Person("Sam")),
 			Item("person", "person-priya", Person("Priya")),
@@ -62,17 +62,17 @@ internal sealed class ArchiveFixture
 				d, At(10, 5), At(10, 41), "Kitchen tiles with Sam",
 				"Sam and you compare three tile samples for the kitchen renovation and settle on the matte grey ones; Sam needs the samples back before ordering, and the contractor starts on the 28th.",
 				["kitchen renovation", "home"],
-				[Speaker("1", "person-roger", "Roger"), Speaker("2", "person-sam", "Sam")],
+				[Speaker("1", "person-alex", "Alex"), Speaker("2", "person-sam", "Sam")],
 				[Gap(At(10, 9), At(10, 10), "lost", origin: "watch"), Gap(At(10, 14), At(10, 16), "quiet"), Gap(At(10, 20), At(10, 20, 20), "quiet")],
 				recordedMinutes: 33)),
 			Item("transcript", "conv-kitchen", Transcript("conv-kitchen",
 			[
 				Turn(At(10, 5, 12), "2", "Sam", "The matte tiles hide water spots better than the glossy ones.", 0.93),
-				Turn(At(10, 6, 30), "1", "Roger", "Then matte grey it is, as long as the grout matches.", 0.91),
+				Turn(At(10, 6, 30), "1", "Alex", "Then matte grey it is, as long as the grout matches.", 0.91),
 				Marker(At(10, 9), At(10, 10), "lost", origin: "watch"),
 				Turn(At(10, 11, 2), "2", "Sam", "The contractor starts on the twenty-eighth, so I need the samples back first.", 0.88),
 				Marker(At(10, 14), At(10, 16), "quiet"),
-				Turn(At(10, 26, 0), "1", "Roger", "I'll send you the samples tonight.", 0.95),
+				Turn(At(10, 26, 0), "1", "Alex", "I'll send you the samples tonight.", 0.95),
 				Turn(At(10, 30, 0), "2", "Sam", "mumble budget something", 0.42),
 				Marker(At(10, 33), At(10, 34), "masked", descriptor: "music"),
 			])),
@@ -81,12 +81,12 @@ internal sealed class ArchiveFixture
 				d, At(11, 30), At(11, 36), "Booking a dentist appointment",
 				"You book a cleaning at the dentist for Thursday at 3 PM.",
 				["health"],
-				[Speaker("1", "person-roger", "Roger"), Speaker("2", null, null)],
+				[Speaker("1", "person-alex", "Alex"), Speaker("2", null, null)],
 				[],
 				recordedMinutes: 6)),
 			Item("transcript", "conv-dentist", Transcript("conv-dentist",
 			[
-				Turn(At(11, 30, 10), "1", "Roger", "I'd like a cleaning appointment, please.", 0.94),
+				Turn(At(11, 30, 10), "1", "Alex", "I'd like a cleaning appointment, please.", 0.94),
 				Turn(At(11, 31, 0), "2", null, "Thursday at three works. We'll text you a reminder.", 0.9),
 			])),
 
@@ -94,14 +94,14 @@ internal sealed class ArchiveFixture
 				d, At(14, 0), At(14, 50), "Product launch plan with Priya and Leo",
 				"Priya, Leo, and you agree the product launch moves to the 5th; the press kit is due Friday and Leo owns the demo video.",
 				["product launch", "work"],
-				[Speaker("1", "person-roger", "Roger"), Speaker("2", "person-priya", "Priya"), Speaker("3", "person-leo", "Leo")],
+				[Speaker("1", "person-alex", "Alex"), Speaker("2", "person-priya", "Priya"), Speaker("3", "person-leo", "Leo")],
 				[Gap(At(14, 20), At(14, 22), "quiet", reason: "watchPause")],
 				recordedMinutes: 48)),
 			Item("transcript", "conv-launch", Transcript("conv-launch",
 			[
 				Turn(At(14, 1, 0), "2", "Priya", "Let's move the product launch to the fifth.", 0.92),
 				Turn(At(14, 12, 0), "3", "Leo", "I'll own the demo video.", 0.9),
-				Turn(At(14, 13, 0), "1", "Roger", "And the press kit is due Friday.", 0.93),
+				Turn(At(14, 13, 0), "1", "Alex", "And the press kit is due Friday.", 0.93),
 			])),
 
 			Item("conversation", "conv-music", Conversation(
@@ -111,7 +111,7 @@ internal sealed class ArchiveFixture
 				before, At(before, 18, 0), At(before, 18, 30), "Badminton on Saturday",
 				"Sam from the club asks you to join the Saturday badminton game.",
 				["sports"],
-				[Speaker("1", "person-roger", "Roger"), Speaker("2", "person-sam-k", "Sam")],
+				[Speaker("1", "person-alex", "Alex"), Speaker("2", "person-sam-k", "Sam")],
 				[],
 				recordedMinutes: 30)),
 
@@ -119,7 +119,7 @@ internal sealed class ArchiveFixture
 				after, At(after, 9, 30), At(after, 10, 0), "Launch date check-in with Priya",
 				"Priya confirms the product launch date and asks for the press kit draft.",
 				["product launch", "work"],
-				[Speaker("1", "person-roger", "Roger"), Speaker("2", "person-priya", "Priya")],
+				[Speaker("1", "person-alex", "Alex"), Speaker("2", "person-priya", "Priya")],
 				[],
 				recordedMinutes: 30)),
 
