@@ -135,7 +135,13 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			: new NeighborView(ArchiveReader.Blank(title) ?? ViewText.NotSummarized, archive.Links.Conversation(nid), ViewText.Clock(Days.Local(at, LogicalDays.Zone(tz))));
 
 		var lostSeconds = GapSeconds(c, GapKind.Lost);
-		var named = speakers.Where(s => s.Named).Select(s => s.Name).Distinct().ToList();
+		// People in the order the phone lists them (as the app does), then anyone only the transcript names.
+		var listed = c.People.Select(p => p.Label).ToList();
+		var named = speakers.Where(s => s.Named)
+			.OrderBy(s => listed.IndexOf(s.Label) is var i && i >= 0 ? i : int.MaxValue)
+			.Select(s => s.Name)
+			.Distinct()
+			.ToList();
 		var title = ArchiveReader.Blank(c.Title);
 		var firstWords = ViewText.FirstWords(items.FirstOrDefault(i => i.Kind == TranscriptItemKind.Turn)?.Text);
 		var span = ClipSpan(duration, moment ?? 0, (int)call.Settings.ClipMaxDuration.TotalSeconds);
