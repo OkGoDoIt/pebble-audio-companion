@@ -480,6 +480,7 @@ public actor EnrichmentService {
             people: Self.distinctNames(named),
             fullTranscript: transcript.isEmpty ? nil : transcript,
             startDateMs: conversation.startMs,
+            endDateMs: conversation.endMs,
             // The conversation's own start, not the clock: a creation date of "now" made every
             // re-donation a different document to the change gate, and told Spotlight that a
             // week-old conversation was new. The foreground pass already donated it this way.

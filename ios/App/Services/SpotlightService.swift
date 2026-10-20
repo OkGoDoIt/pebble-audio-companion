@@ -94,6 +94,7 @@ final class SpotlightService {
                     tags: row.tags,
                     fullTranscript: await transcript(row.id),
                     startDateMs: row.startMs,
+                    endDateMs: row.endMs,
                     createdAtMs: row.startMs
                 )
 

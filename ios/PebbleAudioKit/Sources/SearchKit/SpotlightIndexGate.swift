@@ -130,6 +130,7 @@ public struct SpotlightIndexGate: Equatable, Sendable {
         hash.add(donation.deepLinkURL)
         hash.add(UInt64(bitPattern: donation.contentCreationDateMs))
         hash.add(donation.startDateMs.map { UInt64(bitPattern: $0) })
+        hash.add(donation.endDateMs.map { UInt64(bitPattern: $0) })
         // Never one of the two markers.
         return hash.value <= unknown ? hash.value + 2 : hash.value
     }

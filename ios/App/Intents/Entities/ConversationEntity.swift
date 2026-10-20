@@ -139,7 +139,7 @@ struct ConversationEntity: IndexedEntity {
                 title: donation.title,
                 summary: donation.contentDescription,
                 startMs: startMs,
-                endMs: startMs,
+                endMs: max(startMs, donation.endDateMs ?? startMs),
                 timeZoneID: TimeZone.current.identifier,
                 dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: TimeZone.current.identifier),
                 tags: donation.keywords,

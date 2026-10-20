@@ -33,6 +33,9 @@ public struct SpotlightDonation: Equatable, Sendable {
     public var deepLinkURL: String
     public var contentCreationDateMs: Int64
     public var startDateMs: Int64?
+    /// When a conversation ended. Without it the entity built from a donation had ended the
+    /// moment it began: zero minutes long, modified at its start.
+    public var endDateMs: Int64?
 
     public init(
         entityId: String,
@@ -44,8 +47,10 @@ public struct SpotlightDonation: Equatable, Sendable {
         people: [String] = [],
         deepLinkURL: String,
         contentCreationDateMs: Int64,
-        startDateMs: Int64? = nil
+        startDateMs: Int64? = nil,
+        endDateMs: Int64? = nil
     ) {
+        self.endDateMs = endDateMs
         self.uniqueIdentifier = Self.uniqueIdentifier(kind: kind, entityId: entityId)
         self.entityId = entityId
         self.kind = kind
@@ -177,6 +182,7 @@ public final class SpotlightDonator: Sendable {
         people: [String] = [],
         fullTranscript: String? = nil,
         startDateMs: Int64? = nil,
+        endDateMs: Int64? = nil,
         createdAtMs: Int64,
         excluded: Bool = false,
         systemIndex: Bool = true
@@ -185,7 +191,8 @@ public final class SpotlightDonator: Sendable {
             ConversationDonation(
                 conversationId: conversationId, title: title, summary: summary, tags: tags,
                 people: people, fullTranscript: fullTranscript, startDateMs: startDateMs,
-                createdAtMs: createdAtMs, excluded: excluded, systemIndex: systemIndex)
+                endDateMs: endDateMs, createdAtMs: createdAtMs, excluded: excluded,
+                systemIndex: systemIndex)
         ])
     }
 
@@ -198,6 +205,7 @@ public final class SpotlightDonator: Sendable {
         public var people: [String]
         public var fullTranscript: String?
         public var startDateMs: Int64?
+        public var endDateMs: Int64?
         public var createdAtMs: Int64
         public var excluded: Bool
         /// False keeps the conversation out of the SYSTEM index for now while the app's own
@@ -208,7 +216,8 @@ public final class SpotlightDonator: Sendable {
         public init(
             conversationId: String, title: String?, summary: String? = nil, tags: [String] = [],
             people: [String] = [], fullTranscript: String? = nil, startDateMs: Int64? = nil,
-            createdAtMs: Int64, excluded: Bool = false, systemIndex: Bool = true
+            endDateMs: Int64? = nil, createdAtMs: Int64, excluded: Bool = false,
+            systemIndex: Bool = true
         ) {
             self.conversationId = conversationId
             self.title = title
@@ -217,6 +226,7 @@ public final class SpotlightDonator: Sendable {
             self.people = people
             self.fullTranscript = fullTranscript
             self.startDateMs = startDateMs
+            self.endDateMs = endDateMs
             self.createdAtMs = createdAtMs
             self.excluded = excluded
             self.systemIndex = systemIndex
@@ -243,10 +253,13 @@ public final class SpotlightDonator: Sendable {
         }
         let people = Dictionary(
             batch.map { ($0.conversationId, $0.people) }, uniquingKeysWith: { _, last in last })
+        let ends = Dictionary(
+            batch.map { ($0.conversationId, $0.endDateMs) }, uniquingKeysWith: { _, last in last })
         let heldBack = Set(batch.filter { !$0.systemIndex }.map(\.conversationId))
         try await donate(
             items,
             people: { people[$0.id] ?? [] },
+            endDateMs: { ends[$0.id] ?? nil },
             systemIndex: { !heldBack.contains($0.id) })
     }
 
@@ -324,7 +337,7 @@ public final class SpotlightDonator: Sendable {
 
     private func donate(_ item: IndexItem, sourceConversationId: String?) async throws {
         try await donate(
-            [item], people: { _ in [] }, systemIndex: { _ in true },
+            [item], people: { _ in [] }, endDateMs: { _ in nil }, systemIndex: { _ in true },
             sourceConversationId: { _ in sourceConversationId })
     }
 
@@ -333,6 +346,7 @@ public final class SpotlightDonator: Sendable {
     private func donate(
         _ items: [IndexItem],
         people: (IndexItem) -> [String],
+        endDateMs: (IndexItem) -> Int64?,
         systemIndex: (IndexItem) -> Bool,
         sourceConversationId: (IndexItem) -> String? = { _ in nil }
     ) async throws {
@@ -359,7 +373,8 @@ public final class SpotlightDonator: Sendable {
                     sourceConversationId: sourceConversationId(item)
                 ),
                 contentCreationDateMs: item.contentCreationDateMs,
-                startDateMs: item.startDateMs
+                startDateMs: item.startDateMs,
+                endDateMs: endDateMs(item)
             )
         }
         if !donations.isEmpty {
@@ -524,6 +539,9 @@ extension String {
             )
             if let startMs = donation.startDateMs {
                 attributes.startDate = Date(timeIntervalSince1970: Double(startMs) / 1000.0)
+            }
+            if let endMs = donation.endDateMs {
+                attributes.endDate = Date(timeIntervalSince1970: Double(endMs) / 1000.0)
             }
             attributes.contentURL = URL(string: donation.deepLinkURL)
             let item = CSSearchableItem(

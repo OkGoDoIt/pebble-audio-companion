@@ -128,13 +128,17 @@ struct SiriPathTests {
         #expect(attributes.keywords == ["home", "Sam", "Dana"])
     }
 
-    @Test func anEntityBuiltFromADonationKeepsItsPeople() {
+    @Test func anEntityBuiltFromADonationKeepsItsPeopleAndItsLength() {
         guard #available(iOS 27, *) else { return }
         let donation = SpotlightDonation(
             entityId: "conv-2", kind: .conversation, title: "Standup", people: ["Ana"],
             deepLinkURL: "companion://conversation/conv-2", contentCreationDateMs: 1_000,
-            startDateMs: 1_000)
-        #expect(ConversationEntity(donation: donation, visibility: .summaries)?.people == ["Ana"])
+            startDateMs: 1_000, endDateMs: 1_000 + 25 * 60_000)
+        let entity = ConversationEntity(donation: donation, visibility: .summaries)
+        #expect(entity?.people == ["Ana"])
+        // It used to end the moment it began: zero minutes, modified at its start.
+        #expect(entity?.durationMinutes == 25)
+        #expect(entity?.modificationDate == Date(timeIntervalSince1970: 1 + 25 * 60))
     }
 
     // MARK: - Visibility
