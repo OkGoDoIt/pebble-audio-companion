@@ -1,0 +1,626 @@
+import AudioCodec
+import Foundation
+import MuseLink
+import Receiver
+import WireProtocol
+
+/// The audio companion link as push-to-talk needs it. `ReceiverService` is the real one.
+public protocol MuseAssistantLink: Sendable {
+    func sendControlRequest(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> AudioReceiverSession.MuseSetupReply
+    func setAssistantHandler(_ handler: (@Sendable (AudioReceiverSession.AssistantInbound) -> Void)?) async
+    func setQuietLink(_ wanted: Bool) async
+}
+
+extension ReceiverService: MuseAssistantLink {}
+
+/// Questions asked on the watch, answered by Muse (protocol Sections 4.4 and 4.5).
+///
+/// The watch holds the button and streams the question's Speex frames as they are spoken. At the
+/// press this opens a link to Muse, so it is ready by the release; at the release the frames are
+/// decoded, brought to a level a recognizer can hear, and sent as one voice note. What Muse heard,
+/// what it is doing and its answer go back to the watch as they arrive. While it answers, Muse
+/// may set a timer or an alarm on the watch, or put a choice to the wearer.
+public actor MusePushToTalk {
+    /// The last question, for the Muse screen: what Muse heard, and what was done to the audio.
+    public struct QuestionReport: Equatable, Sendable {
+        public let askedAt: Date
+        public let seconds: Double
+        /// Frames the watch counted that never arrived (shown as silence in the note).
+        public let missingFrames: Int
+        public let level: VoiceNoteLevel.Report?
+        public var heard: String?
+        public var answered: Bool
+        public var problem: AssistantError?
+    }
+
+    public nonisolated let lastQuestion = StateSubject<QuestionReport?>(nil)
+
+    /// What Muse is told with every question. Not the person's words: how to answer them.
+    static let instructions =
+        "Asked on a Pebble watch. Your reply is read as plain text on the watch's small screen: "
+        + "answer in a few short sentences, without tables, images or links."
+    /// The longest Muse may take over an answer.
+    static let answerTimeout: Duration = .seconds(90)
+    /// A link to Muse stays open this long after an answer, for a follow-up.
+    static let followUpWindow: Duration = .seconds(60)
+    /// Fewer frames than this (0.2 s) is not a question.
+    static let minimumFrames = 10
+    /// The watch keeps 1536 bytes of an answer; past that it shows an ellipsis.
+    static let watchAnswerBytes = 1_536
+
+    private let link: any MuseAssistantLink
+    private let connector: any MuseVoiceConnector
+    private let preferences: MusePreferencesStore
+    private let keepAwake: @Sendable () -> Void
+    private let log: @Sendable (String) -> Void
+
+    private final class Turn {
+        /// Unique for the life of the process; the watch's turn numbers wrap at 255.
+        let serial: Int
+        let id: Int
+        let trigger: PttTrigger?
+        let startedAt = Date()
+        var frames: [Int: Data] = [:]
+        var frameCount: Int?
+        var opening: Task<any MuseVoiceConversation, Error>?
+        var finished = false
+        var sentAnswer = ""
+        var answerText = ""
+        var heard: String?
+        var sentHeard = false
+
+        init(serial: Int, id: Int, trigger: PttTrigger?) {
+            self.serial = serial
+            self.id = id
+            self.trigger = trigger
+        }
+    }
+
+    private var turn: Turn?
+    private var turnSerial = 0
+    private var conversation: (any MuseVoiceConversation)?
+    private var idleClose: Task<Void, Never>?
+    private var started = false
+    private var consumer: Task<Void, Never>?
+    private var pairedFollower: Task<Void, Never>?
+
+    private enum Outgoing {
+        case update(turn: Int, kind: AssistantUpdateKind, detail: UInt8, text: [UInt8])
+    }
+
+    private var outbox: [Outgoing] = []
+    private var sending = false
+
+    private var nextActionID = 0
+    private var actionWaiters: [Int: CheckedContinuation<WatchActionResult?, Never>] = [:]
+
+    public init(
+        link: any MuseAssistantLink,
+        connector: any MuseVoiceConnector,
+        preferences: MusePreferencesStore,
+        keepAwake: @escaping @Sendable () -> Void = {},
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        self.link = link
+        self.connector = connector
+        self.preferences = preferences
+        self.keepAwake = keepAwake
+        self.log = log
+    }
+
+    /// Starts listening for questions. `paired` follows whether Muse is set up: while it is, the
+    /// link to the watch stays up even with recording off, so a question can always reach here.
+    public func start(paired: StateSubject<String?>) async {
+        guard !started else { return }
+        started = true
+        // One consumer, in arrival order: a question's audio must not overtake its START.
+        let (stream, continuation) = AsyncStream.makeStream(of: AudioReceiverSession.AssistantInbound.self)
+        await link.setAssistantHandler { continuation.yield($0) }
+        consumer = Task { [weak self] in
+            for await inbound in stream { await self?.handle(inbound) }
+        }
+        let names = paired.stream()
+        pairedFollower = Task { [weak self] in
+            for await name in names {
+                await self?.link.setQuietLink(name != nil)
+            }
+        }
+        await link.setQuietLink(paired.value != nil)
+    }
+
+    // MARK: - From the watch
+
+    func handle(_ inbound: AudioReceiverSession.AssistantInbound) async {
+        switch inbound {
+        case .pttEvent(let event):
+            keepAwake()
+            switch event.event {
+            case .start?: begin(event)
+            case .end?: await end(event)
+            case .cancel?: cancel(event)
+            case nil: break
+            }
+        case .pttAudio(let audio):
+            keepAwake()
+            guard let turn, turn.id == audio.turn, !turn.finished else { return }
+            for (offset, frame) in audio.frames.enumerated() {
+                turn.frames[audio.firstFrame + offset] = Data(frame)
+            }
+        case .watchActionResult(let result):
+            actionWaiters.removeValue(forKey: result.actionId)?.resume(returning: result)
+        }
+    }
+
+    private func begin(_ event: PttEvent) {
+        log("question \(event.turn): listening (\(event.detail == PttTrigger.quickLaunch.rawValue ? "Quick Launch" : "in the app"))")
+        turn?.finished = true
+        turnSerial += 1
+        let current = Turn(serial: turnSerial, id: event.turn, trigger: PttTrigger(rawValue: event.detail))
+        turn = current
+        guard connector.isPaired else {
+            current.finished = true
+            send(turn: current.id, .error, detail: AssistantError.notSetUp.rawValue)
+            report(current, seconds: 0, missing: 0, level: nil, problem: .notSetUp)
+            return
+        }
+        // Ready by the release: tokens, a VM and a link take a second or two.
+        current.opening = Task { try await self.readyConversation() }
+    }
+
+    private func cancel(_ event: PttEvent) {
+        guard let current = turn, current.id == event.turn else { return }
+        log("question \(event.turn): cancelled on the watch (\(event.detail))")
+        current.finished = true
+        turn = nil
+        // A link opened for it stays for the next question, then closes.
+        scheduleIdleClose()
+    }
+
+    private func end(_ event: PttEvent) async {
+        guard let current = turn, current.id == event.turn, !current.finished else { return }
+        current.frameCount = event.frameCount
+        await answer(current)
+    }
+
+    // MARK: - Asking Muse
+
+    private func answer(_ current: Turn) async {
+        let frameCount = current.frameCount ?? 0
+        let (pcm, missing) = Self.decode(current.frames, frameCount: frameCount)
+        let present = frameCount - missing
+        current.frames = [:]
+        guard present >= Self.minimumFrames else {
+            log("question \(current.id): \(present) frame(s), nothing to ask")
+            fail(current, .didNotCatch, seconds: Double(frameCount) / 50, missing: missing, level: nil)
+            return
+        }
+        let settings: VoiceNoteLevel.Settings
+        switch preferences.current.value.voiceLevel {
+        case .automatic: settings = VoiceNoteLevel.Settings()
+        case .fixed(let gain): settings = VoiceNoteLevel.Settings(fixedGainDB: Double(gain))
+        }
+        let (prepared, level) = VoiceNoteLevel.prepare(pcm, settings: settings)
+        let wav = PcmWav.encodeMono16(pcm: Self.littleEndian(prepared), sampleRateHz: 16_000)
+        log(
+            "question \(current.id): \(String(format: "%.1f", level.durationSeconds)) s, "
+                + "\(missing) missing, speech \(level.speechLevelDBFS.map { String(format: "%.0f", $0) } ?? "-") dBFS, "
+                + "boosted \(String(format: "%.0f", level.gainDB)) dB, limited \(level.limitedSamples)")
+
+        let conversation: any MuseVoiceConversation
+        do {
+            conversation = try await (current.opening ?? Task { try await self.readyConversation() }).value
+        } catch {
+            fail(current, Self.assistantError(error), seconds: level.durationSeconds, missing: missing, level: level)
+            return
+        }
+        guard turn === current, !current.finished else { return }
+
+        let keepAwake = self.keepAwake
+        let awake = Task {
+            while !Task.isCancelled {
+                keepAwake()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        defer { awake.cancel() }
+
+        let done: Bool
+        let serial = current.serial
+        do {
+            done = try await conversation.ask(
+                wav: wav, instructions: Self.instructions, timeout: Self.answerTimeout
+            ) { [weak self] event in
+                await self?.relay(event, serial: serial)
+            }
+        } catch {
+            log("question \(current.id): \(error)")
+            self.conversation = nil
+            await conversation.close()
+            fail(current, Self.assistantError(error), seconds: level.durationSeconds, missing: missing, level: level)
+            return
+        }
+        guard turn === current else { return }
+        // Whatever the stream held back as unfinished Markdown goes now.
+        sendAnswer(current, rendered: WatchAnswerText.render(current.answerText, final: true))
+        current.finished = true
+        if current.answerText.isEmpty {
+            let error: AssistantError = (current.heard ?? "").isEmpty ? .didNotCatch : .noAnswer
+            log("question \(current.id): no answer (\(done ? "Muse finished" : "timed out"))")
+            send(turn: current.id, .error, detail: error.rawValue)
+            report(current, seconds: level.durationSeconds, missing: missing, level: level, problem: error)
+        } else {
+            log("question \(current.id): answered (\(current.answerText.utf8.count) bytes)\(done ? "" : ", cut off by the deadline")")
+            send(turn: current.id, .done)
+            report(current, seconds: level.durationSeconds, missing: missing, level: level, problem: nil)
+        }
+        scheduleIdleClose()
+    }
+
+    private func relay(_ event: MuseQuestionEvent, serial: Int) {
+        guard let current = turn, current.serial == serial, !current.finished else { return }
+        switch event {
+        case .heard(let text):
+            current.heard = text
+            guard !current.sentHeard else { return }
+            current.sentHeard = true
+            send(turn: current.id, .heard, text: Self.cut(text, bytes: ProtocolConstants.assistantTextMaxBytes))
+        case .status(let text):
+            send(turn: current.id, .status, text: Self.cut(text, bytes: 63))
+        case .answer(let text):
+            current.answerText = text
+            sendAnswer(current, rendered: WatchAnswerText.render(text, final: false))
+        }
+    }
+
+    /// Sends what `rendered` adds to what the watch already has. The watch only appends; a
+    /// rendering that rewrote what was sent (Muse replacing its streamed text) adds nothing.
+    private func sendAnswer(_ current: Turn, rendered: String) {
+        guard rendered.hasPrefix(current.sentAnswer), rendered.utf8.count > current.sentAnswer.utf8.count else { return }
+        guard current.sentAnswer.utf8.count < Self.watchAnswerBytes + 64 else { return }
+        let delta = String(rendered.dropFirst(current.sentAnswer.count))
+        current.sentAnswer = rendered
+        for piece in AssistantUpdate.chunks(of: delta) {
+            enqueue(.update(turn: current.id, kind: .answer, detail: 0, text: piece))
+        }
+    }
+
+    private func fail(_ current: Turn, _ error: AssistantError, seconds: Double, missing: Int, level: VoiceNoteLevel.Report?) {
+        guard turn === current else { return }
+        current.finished = true
+        send(turn: current.id, .error, detail: error.rawValue)
+        report(current, seconds: seconds, missing: missing, level: level, problem: error)
+        scheduleIdleClose()
+    }
+
+    private func report(_ current: Turn, seconds: Double, missing: Int, level: VoiceNoteLevel.Report?, problem: AssistantError?) {
+        lastQuestion.value = QuestionReport(
+            askedAt: current.startedAt, seconds: seconds, missingFrames: missing, level: level,
+            heard: current.heard, answered: problem == nil, problem: problem)
+    }
+
+    /// The open link, or a new one.
+    private func readyConversation() async throws -> any MuseVoiceConversation {
+        idleClose?.cancel()
+        if let conversation, await conversation.isOpen { return conversation }
+        conversation = nil
+        let prefs = preferences.current.value
+        let chatID: String? = prefs.chatPlace == .watchChat ? preferences.watchChatID() : nil
+        let opened = try await connector.open(
+            chatID: chatID, commands: Self.commands(for: prefs.watchActions)
+        ) { [weak self] command, params, _ in
+            guard let self else { return ["ok": false, "error": "The watch is not available."] }
+            return await self.runCommand(command, params)
+        }
+        conversation = opened
+        return opened
+    }
+
+    private func scheduleIdleClose() {
+        idleClose?.cancel()
+        idleClose = Task { [weak self] in
+            try? await Task.sleep(for: Self.followUpWindow)
+            guard !Task.isCancelled else { return }
+            await self?.closeIdle()
+        }
+    }
+
+    private func closeIdle() async {
+        if let turn, !turn.finished { return }
+        let open = conversation
+        conversation = nil
+        await open?.close()
+    }
+
+    static func assistantError(_ error: Error) -> AssistantError {
+        switch error {
+        case let failure as MuseQuestionFailure:
+            switch failure {
+            case .notSetUp: return .notSetUp
+            case .unreachable: return .unreachable
+            case .refused(429): return .busy
+            case .refused(401), .refused(403): return .notSetUp
+            case .refused: return .unreachable
+            }
+        case is MuseLinkSession.Failure:
+            return .unreachable
+        default:
+            return .unreachable
+        }
+    }
+
+    // MARK: - To the watch
+
+    private func send(turn: Int, _ kind: AssistantUpdateKind, detail: UInt8 = 0, text: [UInt8] = []) {
+        enqueue(.update(turn: turn, kind: kind, detail: detail, text: text))
+    }
+
+    private func enqueue(_ item: Outgoing) {
+        outbox.append(item)
+        guard !sending else { return }
+        sending = true
+        Task { await self.drain() }
+    }
+
+    /// One update at a time on the watch's single request slot, in order. Answer pieces that
+    /// arrive close together go together, so a fast stream isn't a write per word.
+    private func drain() async {
+        while !outbox.isEmpty {
+            if case .update(_, .answer, _, _) = outbox[0] {
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            let item = coalesce()
+            guard case .update(let turnID, let kind, let detail, let text) = item else { continue }
+            let delivered = await deliver { token in
+                AssistantUpdate(requestToken: token, turn: turnID, kind: kind, detail: detail, text: text).encode()
+            }
+            if !delivered {
+                log("question \(turnID): the watch didn't take an update; dropping the rest")
+                outbox.removeAll { if case .update(turnID, _, _, _) = $0 { return true } else { return false } }
+            }
+        }
+        sending = false
+    }
+
+    /// The head of the outbox, joined with the answer pieces right behind it while they fit.
+    private func coalesce() -> Outgoing {
+        let head = outbox.removeFirst()
+        guard case .update(let turnID, .answer, _, var text) = head else { return head }
+        while case .update(turnID, .answer, _, let next)? = outbox.first,
+            text.count + next.count <= ProtocolConstants.assistantTextMaxBytes
+        {
+            text += next
+            outbox.removeFirst()
+        }
+        return .update(turn: turnID, kind: .answer, detail: 0, text: text)
+    }
+
+    /// Sends one request, asking again while the watch is busy.
+    private func deliver(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> Bool {
+        var unanswered = 0
+        for _ in 0..<40 {
+            switch await link.sendControlRequest(build) {
+            case .ok:
+                return true
+            case .busy:
+                try? await Task.sleep(for: .milliseconds(50))
+            case .notSent, .noAnswer:
+                unanswered += 1
+                if unanswered >= 3 { return false }
+                try? await Task.sleep(for: .milliseconds(200))
+            case .rejected, .badState, .other:
+                return false
+            }
+        }
+        return false
+    }
+
+    // MARK: - Watch actions
+
+    static let timerCommand = "watch.set_timer"
+    static let alarmCommand = "watch.set_alarm"
+    static let choiceCommand = "watch.choose"
+
+    /// The gadget's commands for the actions the person allows.
+    static func commands(for allowed: Set<MuseWatchActionKind>) -> MuseJSON {
+        func param(_ type: String, _ description: String) -> MuseJSON {
+            ["type": .string(type), "description": .string(description)]
+        }
+        var commands: [String: MuseJSON] = [:]
+        if allowed.contains(.timer) {
+            commands[timerCommand] = [
+                "description": "Start a countdown timer on the user's Pebble watch. When it ends, the watch buzzes and shows its label.",
+                "required": ["seconds": param("integer", "How long, in seconds, from 1 to 86400.")],
+                "optional": ["label": param("string", "A word or two shown when it ends, like \"Pasta\".")],
+                "timeout_ms": 15_000,
+            ]
+        }
+        if allowed.contains(.alarm) {
+            commands[alarmCommand] = [
+                "description": "Set a one-time alarm on the user's Pebble watch, at a time of day in the watch's local time. It rings once, at the next time that clock time comes round.",
+                "required": [
+                    "hour": param("integer", "Hour, 0 to 23."),
+                    "minute": param("integer", "Minute, 0 to 59."),
+                ],
+                "optional": ["label": param("string", "What it is for, like \"Flight\".")],
+                "timeout_ms": 15_000,
+            ]
+        }
+        if allowed.contains(.choice) {
+            commands[choiceCommand] = [
+                "description": "Ask the user to pick one of 2 to 6 short options on their Pebble watch, when you need their decision to go on. Returns the option they picked, or that they declined or did not answer.",
+                "required": [
+                    "question": param("string", "The question, at most 120 characters."),
+                    "options": param("string", "The options, one per line, each at most 48 characters."),
+                ],
+                "optional": ["timeout_seconds": param("integer", "How long to wait for an answer, 10 to 300 seconds; 60 if not given.")],
+                "timeout_ms": 330_000,
+            ]
+        }
+        return .object(commands)
+    }
+
+    /// Runs one of the gadget's commands on the watch.
+    func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
+        let allowed = preferences.current.value.watchActions
+        let request: WatchActionRequest
+        let kind: MuseWatchActionKind
+        switch command {
+        case Self.timerCommand:
+            kind = .timer
+            guard let seconds = params["seconds"]?.number.map({ Int($0.rounded()) }), (1...86_400).contains(seconds) else {
+                return ["ok": false, "error": "seconds must be between 1 and 86400"]
+            }
+            request = .timer(seconds: seconds, label: params["label"]?.string ?? "")
+        case Self.alarmCommand:
+            kind = .alarm
+            guard let hour = params["hour"]?.number.map({ Int($0) }), (0...23).contains(hour),
+                let minute = params["minute"]?.number.map({ Int($0) }), (0...59).contains(minute)
+            else { return ["ok": false, "error": "hour must be 0-23 and minute 0-59"] }
+            request = .alarm(hour: hour, minute: minute, label: params["label"]?.string ?? "")
+        case Self.choiceCommand:
+            kind = .choice
+            let options = Self.options(params["options"])
+            guard let question = params["question"]?.string, !question.isEmpty,
+                (ProtocolConstants.watchActionMinOptions...ProtocolConstants.watchActionMaxOptions).contains(options.count)
+            else { return ["ok": false, "error": "a question and 2 to 6 options are needed"] }
+            let timeout = params["timeout_seconds"]?.number.map { Int($0) } ?? 60
+            request = .choose(question: question, options: options, timeoutSeconds: min(max(timeout, 10), 300))
+        default:
+            return ["ok": false, "error": "unsupported command"]
+        }
+        guard allowed.contains(kind) else {
+            return ["ok": false, "error": "The user has turned this off for their watch."]
+        }
+
+        nextActionID = nextActionID % 255 + 1
+        let actionID = nextActionID
+        let messages: [WatchAction]
+        do {
+            messages = try request.messages(actionId: actionID) { 0 }
+        } catch {
+            return ["ok": false, "error": .string("\(error)")]
+        }
+        if case .choose = request, let current = turn {
+            // The watch is showing the choice now: keep its screen from deciding Muse went quiet.
+            send(turn: current.id, .status, text: Array("Waiting for your pick".utf8))
+        }
+        log("watch action \(actionID): \(kind.rawValue)")
+        for message in messages {
+            let delivered = await deliver { token in
+                WatchAction(requestToken: token, actionId: message.actionId, flags: message.flags, payload: message.payload).encode()
+            }
+            guard delivered else { return ["ok": false, "error": "The watch isn't reachable right now."] }
+        }
+        let wait: Duration
+        if case .choose(_, _, let timeout) = request { wait = .seconds(timeout + 15) } else { wait = .seconds(10) }
+        let result = await waitForResult(actionID, wait)
+        log("watch action \(actionID): \(result.map { "\($0.status.map { "\($0)" } ?? "\($0.statusRaw)")" } ?? "no answer")")
+        return Self.commandResult(request, result)
+    }
+
+    private func waitForResult(_ actionID: Int, _ wait: Duration) async -> WatchActionResult? {
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            await self?.resolveAction(actionID, nil)
+        }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { actionWaiters[actionID] = $0 }
+    }
+
+    private func resolveAction(_ actionID: Int, _ result: WatchActionResult?) {
+        actionWaiters.removeValue(forKey: actionID)?.resume(returning: result)
+    }
+
+    static func commandResult(_ request: WatchActionRequest, _ result: WatchActionResult?) -> MuseJSON {
+        guard let result else { return ["ok": false, "error": "The watch didn't answer."] }
+        switch result.status {
+        case .done?:
+            switch request {
+            case .timer(let seconds, _):
+                return ["ok": true, "payload": ["set": true, "seconds": .number(Double(seconds))]]
+            case .alarm(let hour, let minute, _):
+                return ["ok": true, "payload": ["set": true, "time": .string(String(format: "%02d:%02d", hour, minute))]]
+            case .choose(_, let options, _):
+                let index = result.value
+                guard options.indices.contains(index) else { return ["ok": false, "error": "The watch sent back an option that wasn't offered."] }
+                return ["ok": true, "payload": ["chosen": .string(options[index]), "index": .number(Double(index))]]
+            }
+        case .declined?:
+            return ["ok": true, "payload": ["answered": false, "declined": true]]
+        case .timedOut?:
+            return ["ok": true, "payload": ["answered": false, "declined": false]]
+        case .unsupported?:
+            return ["ok": false, "error": "The watch can't do this."]
+        case .failed?, nil:
+            return ["ok": false, "error": "The watch couldn't do this."]
+        }
+    }
+
+    /// Options as one per line (the registered form), or a JSON array if Muse sends one.
+    static func options(_ value: MuseJSON?) -> [String] {
+        let raw: [String]
+        if let array = value?.array {
+            raw = array.compactMap(\.string)
+        } else if let text = value?.string {
+            raw = text.contains("\n") ? text.components(separatedBy: "\n") : text.components(separatedBy: "|")
+        } else {
+            raw = []
+        }
+        return raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : $0 }
+            .filter { !$0.isEmpty }
+    }
+
+    // MARK: - Audio
+
+    /// The question's frames, decoded in order; a frame the watch counted but that never came is
+    /// 20 ms of silence. Returns the samples and how many frames were missing.
+    static func decode(_ frames: [Int: Data], frameCount: Int) -> ([Int16], Int) {
+        let frameSamples = 320
+        var pcm: [Int16] = []
+        pcm.reserveCapacity(frameCount * frameSamples)
+        var missing = 0
+        var run: [Data] = []
+        let decoder = SpeexFrameDecoder()
+        func flush() {
+            guard !run.isEmpty else { return }
+            if let decoded = try? decoder.decodeAll(frames: run) {
+                decoded.withUnsafeBytes { raw in
+                    pcm.append(contentsOf: raw.bindMemory(to: Int16.self).map { Int16(littleEndian: $0) })
+                }
+                let expected = run.count * frameSamples
+                let produced = decoded.count / 2
+                if produced < expected { pcm.append(contentsOf: repeatElement(0, count: expected - produced)) }
+            } else {
+                pcm.append(contentsOf: repeatElement(0, count: run.count * frameSamples))
+                missing += run.count
+            }
+            run = []
+        }
+        for index in 0..<max(0, frameCount) {
+            if let frame = frames[index] {
+                run.append(frame)
+            } else {
+                flush()
+                missing += 1
+                pcm.append(contentsOf: repeatElement(0, count: frameSamples))
+            }
+        }
+        flush()
+        return (pcm, missing)
+    }
+
+    static func littleEndian(_ samples: [Int16]) -> Data {
+        var data = Data(capacity: samples.count * 2)
+        for sample in samples {
+            withUnsafeBytes(of: sample.littleEndian) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    /// At most `bytes` of UTF-8, cut between characters.
+    static func cut(_ text: String, bytes: Int) -> [UInt8] {
+        AssistantUpdate.chunks(of: text, maxBytes: bytes).first ?? []
+    }
+}

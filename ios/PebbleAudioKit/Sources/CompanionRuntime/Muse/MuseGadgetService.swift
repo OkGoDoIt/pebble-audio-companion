@@ -369,3 +369,55 @@ public actor MuseGadgetService {
             trace: trace)
     }
 }
+
+// MARK: - Asking out loud
+
+extension MuseGadgetService: MuseVoiceConnector {
+    public nonisolated var isPaired: Bool { pairedName.value != nil }
+
+    /// A link for questions asked on the watch. With `commands`, the gadget registers them so
+    /// Muse can act on the watch; if Muse won't take the registration, the link opens without.
+    public func open(
+        chatID: String?, commands: MuseJSON, handler: @escaping MuseLinkSession.CommandHandler
+    ) async throws(MuseQuestionFailure) -> any MuseVoiceConversation {
+        guard let credentials = secrets.credentials() else { throw .notSetUp }
+        let secrets = self.secrets
+        let log = self.log
+        let ask = MuseAsk(api: api, sdkToken: secrets.sdkToken())
+        let identity = credentials.identity
+        let device = (commands.object?.isEmpty ?? true)
+            ? nil
+            : MuseLinkSession.Device(
+                nodeID: identity.nodeID, displayName: identity.bleName, version: Self.gadgetVersion,
+                commands: commands)
+        func attempt(_ device: MuseLinkSession.Device?) async throws -> MuseLinkSession {
+            try await ask.openSession(
+                credentials: secrets.credentials() ?? credentials, device: device,
+                commandHandler: device == nil ? nil : handler,
+                onCredentials: { _ = secrets.save(credentials: $0) },
+                trace: { log("Muse voice: \($0)") })
+        }
+        do {
+            let session: MuseLinkSession
+            do {
+                session = try await attempt(device)
+            } catch let failure as MuseLinkSession.Failure where device != nil {
+                log("Muse voice: registering the watch's actions failed (\(failure)); asking without them")
+                session = try await attempt(nil)
+            }
+            return LiveMuseVoiceConversation(session: session, chatID: chatID, trace: { log("Muse voice: \($0)") })
+        } catch let failure as MuseQuestionFailure {
+            throw failure
+        } catch MuseAsk.Failure.noVM {
+            throw .notSetUp
+        } catch let failure as MuseDeviceAPI.Failure {
+            log("Muse voice: device API failed: \(failure)")
+            if case .http(let status) = failure, [400, 401, 403].contains(status) { throw .notSetUp }
+            throw .unreachable
+        } catch {
+            log("Muse voice: could not reach Muse: \(error)")
+            throw .unreachable
+        }
+    }
+}
+

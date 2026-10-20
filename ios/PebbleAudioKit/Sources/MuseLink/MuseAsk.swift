@@ -40,14 +40,15 @@ public struct MuseAsk: Sendable {
     /// - Parameters:
     ///   - onCredentials: called whenever the tokens rotate; persist what it is given.
     ///   - trace: every step as a line of text (never tokens).
-    public func ask(
-        _ message: String,
+    /// The first steps of every question: fresh tokens, a leased VM, and a link open to it. With
+    /// `device`, the link is registered as that gadget so Muse can call its commands.
+    public func openSession(
         credentials: MuseGadgetCredentials,
-        sessionID: String? = nil,
-        timeout: Duration = .seconds(120),
+        device: MuseLinkSession.Device? = nil,
+        commandHandler: MuseLinkSession.CommandHandler? = nil,
         onCredentials: @escaping @Sendable (MuseGadgetCredentials) async -> Void,
         trace: (@Sendable (String) -> Void)? = nil
-    ) async throws -> Answer {
+    ) async throws -> MuseLinkSession {
         var current = try await freshCredentials(credentials)
         if current != credentials { await onCredentials(current) }
 
@@ -65,8 +66,28 @@ public struct MuseAsk: Sendable {
 
         let session = try MuseLinkSession(
             noiseHost: current.noiseHost, vmID: vm.linkVMID, vmAuthToken: vm.vmAuthToken,
-            device: nil, userAgent: userAgent, trace: trace)
+            device: device, commandHandler: commandHandler, userAgent: userAgent, trace: trace)
         try await session.connect()
+        if device != nil {
+            do {
+                try await session.waitUntilRegistered()
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+        return session
+    }
+
+    public func ask(
+        _ message: String,
+        credentials: MuseGadgetCredentials,
+        sessionID: String? = nil,
+        timeout: Duration = .seconds(120),
+        onCredentials: @escaping @Sendable (MuseGadgetCredentials) async -> Void,
+        trace: (@Sendable (String) -> Void)? = nil
+    ) async throws -> Answer {
+        let session = try await openSession(credentials: credentials, onCredentials: onCredentials, trace: trace)
         do {
             let answer = try await follow(message, session: session, sessionID: sessionID, timeout: timeout, trace: trace)
             await session.close()
