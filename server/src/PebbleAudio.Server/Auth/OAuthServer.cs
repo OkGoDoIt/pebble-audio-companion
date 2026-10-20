@@ -50,6 +50,26 @@ public sealed class OAuthUrls(IOptions<PebbleAudioOptions> options)
 	public string RegistrationEndpoint => $"{Issuer}/oauth/register";
 
 	public string RevocationEndpoint => $"{Issuer}/oauth/revoke";
+
+	/// <summary>
+	/// Whether two RFC 8707 resource URLs name the same resource: compared in canonical form (scheme and host in lower
+	/// case, no default port, no trailing slash), as clients may send <c>…/mcp/</c> or an upper-case host. Tokens are
+	/// still issued for the configured spelling.
+	/// </summary>
+	public static bool SameResource(string? a, string? b) =>
+		CanonicalResource(a) is { } left && left == CanonicalResource(b);
+
+	private static string? CanonicalResource(string? value)
+	{
+		if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Fragment.Length > 0)
+		{
+			return null;
+		}
+
+		var path = uri.AbsolutePath.Length > 1 && uri.AbsolutePath.EndsWith('/') ? uri.AbsolutePath[..^1] : uri.AbsolutePath;
+		var port = uri.IsDefaultPort ? "" : $":{uri.Port}";
+		return $"{uri.Scheme}://{uri.IdnHost}{port}{(path == "/" ? "" : path)}{uri.Query}";
+	}
 }
 
 /// <summary>

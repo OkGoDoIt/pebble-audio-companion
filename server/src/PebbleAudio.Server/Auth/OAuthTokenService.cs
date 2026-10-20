@@ -151,7 +151,7 @@ public sealed class OAuthTokenService(
 			return Error("invalid_grant", "code_verifier does not match the code_challenge");
 		}
 
-		if (resource is not null && !string.Equals(resource, stored.Resource, StringComparison.Ordinal))
+		if (resource is not null && !OAuthUrls.SameResource(resource, stored.Resource))
 		{
 			return Error("invalid_target", $"the only resource here is {urls.Resource}");
 		}
@@ -244,7 +244,7 @@ public sealed class OAuthTokenService(
 			return Error("invalid_grant", "the refresh token has expired");
 		}
 
-		if (resource is not null && !string.Equals(resource, grant.Resource, StringComparison.Ordinal))
+		if (resource is not null && !OAuthUrls.SameResource(resource, grant.Resource))
 		{
 			return Error("invalid_target", $"the only resource here is {urls.Resource}");
 		}

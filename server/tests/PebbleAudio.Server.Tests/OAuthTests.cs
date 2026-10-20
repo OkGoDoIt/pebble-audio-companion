@@ -306,9 +306,13 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var otherPath = await browser.GetAsync(AuthorizeUrl(ClaudeCodeClientId, "http://localhost:53682/elsewhere", challenge, "cc"));
 		Assert.Equal(HttpStatusCode.BadRequest, otherPath.StatusCode);
 
+		// The resource in another canonical spelling (a trailing slash, the host in capitals, the default port) is the
+		// same resource; the path is not case-insensitive.
+		var otherCase = await browser.GetAsync(AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc", resource: $"{Origin}/MCP"));
+		AssertErrorRedirect(otherCase, redirect, "invalid_target", "cc");
 		var code = await AllowAsync(
 			browser,
-			AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc-state", "archive:read"),
+			AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc-state", "archive:read", resource: "HTTP://LocalHost:80/mcp/"),
 			redirect,
 			"cc-state",
 			expect: ["Connect Claude Code?", "An app on this device"]);
@@ -319,6 +323,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			["redirect_uri"] = redirect,
 			["client_id"] = ClaudeCodeClientId,
 			["code_verifier"] = verifier,
+			["resource"] = $"{Origin}/mcp/",
 		}));
 		Assert.Equal(HttpStatusCode.OK, (await api.SendAsync(McpTests.McpPost(tokens.Access))).StatusCode);
 
