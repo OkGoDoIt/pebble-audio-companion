@@ -1820,15 +1820,33 @@ extension LiveWorld: TagEditorDataSource {
         _ = try await composition.tags.addTag(
             conversationId: conversationId, name: name, source: "user"
         )
+        await reindex([conversationId])
     }
 
     func removeTag(conversationId: String, tagId: String) async throws {
         try await composition.tags.removeTag(conversationId: conversationId, tagId: tagId)
+        await reindex([conversationId])
     }
 
     /// Q10: renaming a tag renames it EVERYWHERE (and merges into an existing name).
     func renameTag(tagId: String, to newName: String) async throws {
+        // Read before the rename: a merge deletes this tag id.
+        let carrying = (try? await composition.tags.conversationIds(taggedWith: tagId)) ?? []
         try await composition.tags.renameTag(tagId: tagId, to: newName)
+        await reindex(carrying)
+    }
+
+    /// Tags and speaker names are part of what Siri and Spotlight find a conversation by, so
+    /// an edit is donated again — through enrichment, the donation that carries the transcript.
+    /// Not awaited: the edit is done when the row is written, and the sheet should not wait on
+    /// an index. A re-donation that changes nothing in the index costs nothing
+    /// (`SpotlightIndexGate`).
+    fileprivate func reindex(_ conversationIds: [String]) async {
+        guard !conversationIds.isEmpty else { return }
+        let enrichment = composition.runtime.enrichment
+        Task.detached(priority: .utility) {
+            await enrichment.donate(conversationIds: conversationIds)
+        }
     }
 }
 
@@ -1854,6 +1872,7 @@ extension LiveWorld: PeopleDataSource {
         try await composition.people.assign(
             conversationId: conversationId, label: label, personId: person.id
         )
+        await reindex([conversationId])
     }
 
     func assignedPerson(conversationId: String, label: String) async throws -> Person? {
@@ -1865,15 +1884,21 @@ extension LiveWorld: PeopleDataSource {
     /// Q17: one row update in `people`, and every conversation assigned to them follows,
     /// because assignments reference the person by id and never copy the name.
     func renamePerson(id: String, to newName: String) async throws {
+        // Read before the rename: a rename onto an existing name merges and deletes this id.
+        let named = (try? await composition.people.conversationIds(assignedTo: id)) ?? []
         try await composition.people.renamePerson(id: id, to: newName)
+        await reindex(named)
     }
 
     func unassign(conversationId: String, label: String) async throws {
         try await composition.people.unassign(conversationId: conversationId, label: label)
+        await reindex([conversationId])
     }
 
     func deletePerson(id: String) async throws {
+        let named = (try? await composition.people.conversationIds(assignedTo: id)) ?? []
         try await composition.people.deletePerson(id: id)
+        await reindex(named)
     }
 }
 

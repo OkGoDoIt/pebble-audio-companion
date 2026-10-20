@@ -1,0 +1,8 @@
+# Renderer scratch (headless Chrome profiles)
+_tools/.tmp/
+*/_tools/.tmp/
+# Full-size renders are kept for the design of record (round3) only; earlier rounds keep their contact sheets
+assistant-first/png/
+privacy-ladder/png/
+settings-native/png/
+round2/png/

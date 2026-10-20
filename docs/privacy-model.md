@@ -23,8 +23,11 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D5b | Assistants may add | nothing leaves; follow-ups and notes come in | the phone | a choice inside D5 | off |
 | D6 | Assistants reading your server | whatever they read through the server: text, and clips if D5a | each connected assistant by name (ChatGPT, Claude, Codex on Mac, Muse, …), from the server's `access` list | connecting the assistant in that assistant | none connected |
 | D7 | Muse | the questions you ask Muse: typed ones as text, spoken ones (push-to-talk on the watch) as a short recording of what the watch microphone heard while the button was held; Muse's answers come back as text | Meta | pairing Muse | off |
-| D7b | Muse acting on your watch | only the outcome: done, declined, timed out, or the option chosen | Meta | a switch per action in Settings › Muse (timer, alarm, choice picker) | on once paired (no personal data leaves) |
-| D7a | Muse may look things up in your recordings (planned) | transcript excerpts, including other people's words, only while Muse is answering a question you asked | Meta | a choice inside D7 | off |
+| D7a | Muse reads your conversations | transcript excerpts for a time range or a search (including other people's words), a day or week recap, or the answer of this app's own Ask (then only that answer), only while Muse is answering a question you asked | Meta | "What Muse can see" in Settings › Muse: Ask first, Allowed, or Off | Ask first once paired |
+| D7b | Muse acting on your watch | only the outcome (done, declined, timed out, or the option chosen); "what's playing" also returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, choice picker, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
+| D7c | Muse reads your health | steps, distance, active minutes, calories, sleep, and heart rate from the watch's own activity data, for the range asked | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
+| D7d | Muse reads and adds to Calendar and Reminders | events or reminders in the range asked; an event or reminder you asked it to add (it never deletes) | Meta | "What Muse can see": Calendar and Reminders are separate sources, each Ask first, Allowed, or Off, each also needing iOS's own permission | Ask first once paired |
+| D7e | Muse reads and adds follow-ups | your open follow-ups; a follow-up you asked it to add | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
 
 Invariants that stay commitments, whatever is on: the official Pebble app never receives audio;
 nothing goes to this app's developer; diagnostic logs stay on the phone; nothing is used for
@@ -64,8 +67,16 @@ muse.ai/privacy; nothing has run on a device yet):
 - **Muse acting on the watch (D7b):** while a question you asked is open, Muse may set a timer or
   a one-off alarm, or show a choice picker; only the outcome goes back. Each action has a switch
   under "What Muse can do on your watch", on by default once paired.
-- **Planned, not built:** drawing an image from a URL Muse chose (the phone would fetch it), and
-  D7a lookups.
+- **Data tools (D7a, D7c-D7e; decided by Roger 2026-10-21, being built on `muse-link-app`):** each
+  source is Ask first (the default once paired), Allowed, or Off. Off means the gadget never
+  registers that tool, so Muse does not know it exists. Under Ask first, Muse's first call puts a
+  prompt on the watch (see section 4); Allow makes the source Allowed, Don't Allow makes it Off,
+  Not Now refuses only that call. Nothing is read or sent except while a question asked on the
+  watch is open. Health comes from the watch's own activity data, not from Apple Health.
+  Calendar and Reminders also need iOS's permission, which the app asks for on the Muse screen
+  when the person first sets either source to Ask first or Allowed, never in the middle of a
+  question (a background app cannot show that prompt).
+- **Planned, not built:** drawing an image from a URL Muse chose (the phone would fetch it).
 
 ## 2. Inputs
 
@@ -88,10 +99,14 @@ struct ServerState: Equatable {
 }
 struct Assistant: Equatable { var name: String; var canWrite: Bool; var lastUsedAt: Date? }
 struct MuseState: Equatable {
-    var spokenQuestions: Bool               // = MuseGadgetService.asksFromWatch; D7 then names spoken questions
-    var watchActions: Set<MuseWatchAction>  // D7b, the actions switched on (timer, alarm, choice)
-    var lookupsAllowed: Bool                // D7a, false until that feature ships and is switched on
+    var spokenQuestions: Bool                        // = MuseGadgetService.asksFromWatch; D7 then names spoken questions
+    var watchActions: Set<MuseWatchAction>           // D7b, the actions switched on
+    var dataSources: [MuseDataSource: MuseAccess]    // D7a, D7c-D7e; a missing key reads as .off
 }
+// Owned by the derivation (so main builds without the Muse branch); the Muse branch maps onto them.
+enum MuseWatchAction: CaseIterable { case timer, alarm, choice, music, quietTime, openApp, findWatch, recording }
+enum MuseDataSource: CaseIterable { case conversations, health, calendar, reminders, followUps }  // in this order everywhere
+enum MuseAccess { case ask, allowed, off }
 ```
 
 The stance is a pure function of `PrivacyInputs`, pinned by tests over every combination of the
@@ -110,6 +125,20 @@ sentence.
    "Meta may use your questions to improve its AI. You can turn that off in the Muse app." Before
    push-to-talk ships (spokenQuestions false), the first sentence is "The questions you ask Muse
    go to Meta as text." 
+
+   **What Muse can see (D7a, D7c-D7e), word for word**, after the D7 sentence. Lists follow the
+   `MuseDataSource` order with an Oxford comma; names are "your conversations", "your health
+   data", "your calendar", "your reminders", and "your follow-ups". Each line appears only when
+   its list is non-empty:
+   - Allowed: "When you ask, Muse can also read <allowed> to answer. What it reads goes to Meta."
+   - Ask first: "Muse asks on your watch before it reads <ask first>."
+   - Conversations Allowed or Ask first: "Your conversations can include what other people said."
+   - Calendar, Reminders, or Follow-ups Allowed or Ask first: "Muse can add <the ones that apply,
+     as "events", "reminders", "follow-ups"> you ask for. It never deletes them."
+   - Music on in D7b: "When you ask what's playing, the song's title and artist go to Meta."
+   The Meta row's chips: "Your questions", then one chip per Allowed source ("Conversations",
+   "Health", "Calendar", "Reminders", "Follow-ups"). Ask first and Off sources get no chip. Meta
+   stays one destination in the headline's N, whatever Muse can see.
    - more than one: "Your data goes to N places you chose", neutral dot, and the line "Each is listed below." Never "Nothing else leaves this phone": the bundled third-party speech engine carries its own network stack, so that blanket claim cannot be verified from source (the reason `Copy+PrivacyStance.swift` has always left it out). N counts every destination, including each assistant that can read the server.
    - sync paused but the server still holds text: the server is still a destination (`ServerState.paused == true`). Its row reads "Sync is paused" and the stance never says "Everything stays on this phone" while anything sits on the server or any assistant can read it.
 2. **Where it goes**, one row per destination the PHONE sends to (D1, D2, D3, D5, D7), in the
@@ -133,7 +162,15 @@ Every destination from D5 on is opt-in and off by default, and each is turned on
 setup, which always has three parts before anything moves: what it does (one line), exactly what
 leaves and who receives it (from this model, same sentences as the Privacy screen), and a primary
 button that says what it starts ("Link This Phone", "Pair with Muse"). Choices inside a feature
-(D5a, D5b, D7a) are separate switches, off until switched on. Turning a destination off says what
+(D5a, D5b) are separate switches, off until switched on. Muse's data sources (D7a, D7c-D7e) are
+Ask first once paired: nothing is read until the person allows it on the watch, the first time
+Muse asks. The watch prompt, word for word: "Let Muse read your <calendar | reminders |
+follow-ups | health data>? What it reads goes to Meta." For conversations: "Let Muse read your
+conversations? What it reads, including what others said, goes to Meta." Buttons: Allow, Not Now,
+Don't Allow. Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
+"Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
+conversations row's subtitle "Includes what other people said."), with the footer "Muse reads
+these only while answering a question you asked on your watch. What it reads goes to Meta." Turning a destination off says what
 stays where it went ("Your server keeps what it already has").
 
 ## 5. Copy rules

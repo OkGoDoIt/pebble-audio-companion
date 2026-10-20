@@ -1,0 +1,96 @@
+import Foundation
+
+// What Siri says and shows for Pebble Audio: the answers of the Get intents and Ask My Archive,
+// and the answer card. Static intent metadata (titles, descriptions, phrases, parameter names)
+// cannot live here; `appintentsmetadataprocessor` needs those as inline literals (see
+// `CaptureIntents.swift`). Everything decided at run time does.
+//
+// Siri reads these aloud, so each one has to make sense heard once, with no screen: it names the
+// app where the listener would otherwise not know who is talking, and never points at something
+// only visible on the card.
+
+extension Copy {
+    enum Siri {
+        /// The person's own setting, named, rather than an empty answer that looks like a fault.
+        static func offForSiri(_ what: String) -> String {
+            "Siri & Spotlight can see is set to Off, so \(what) stay in Pebble Audio."
+        }
+
+        static func conversationsFound(_ count: Int) -> String {
+            switch count {
+            case 0: return "No conversations in that period."
+            case 1: return "Found 1 conversation."
+            default: return "Found \(count) conversations."
+            }
+        }
+
+        static func followUpsFound(_ count: Int) -> String {
+            switch count {
+            case 0: return "No follow-ups."
+            case 1: return "1 follow-up."
+            default: return "\(count) follow-ups."
+            }
+        }
+
+        // ── Ask My Archive ───────────────────────────────────────────────────
+
+        // Headings Siri shows above a card that has no answer on it. The card carries the reason.
+        static let notReadyHeading = "Still starting up"
+        static let offHeading = "Kept in Pebble Audio"
+        static let nothingRecordedHeading = "Nothing recorded yet"
+        static let tookTooLongHeading = "Taking longer than Siri waits"
+        static let noAnswerHeading = "No answer this time"
+
+        /// A Siri request that raced the app's own start-up.
+        static let notReady = "Pebble Audio is still starting up. Try again in a moment."
+        static let nothingRecorded =
+            "Nothing is recorded yet, so there is nothing to answer from."
+        /// Ask is still working when Siri stops waiting. The card's button asks again in the app,
+        /// where the answer is shown with its sources.
+        static let tookTooLong =
+            "That is taking longer than Siri can wait. Ask in Pebble Audio for the full answer."
+        /// `reason` is the AI failure's own sentence (`Copy.AiFailure`), which already says
+        /// what to do about it; nil when there is nothing more useful to say than this.
+        static func couldNotAnswer(_ reason: String?) -> String {
+            guard let reason, !reason.isEmpty else { return "Pebble Audio couldn't answer that." }
+            return "Pebble Audio couldn't answer that. \(reason)"
+        }
+
+        /// The period as it reads inside a sentence.
+        static func periodPhrase(_ period: AskArchivePeriod) -> String {
+            switch period {
+            case .today: return "today"
+            case .yesterday: return "yesterday"
+            case .last7Days: return "in the last 7 days"
+            }
+        }
+
+        /// The period as the card's label shows it — the same words as Ask's scope pill.
+        static func periodLabel(_ period: AskArchivePeriod) -> String {
+            switch period {
+            case .today: return Copy.Ask.scopeToday
+            case .yesterday: return Copy.Ask.scopeYesterday
+            case .last7Days: return Copy.Ask.scopeLast7Days
+            }
+        }
+
+        /// The line Siri shows above the card: what the answer was drawn from.
+        static func supporting(read: Int?, period: AskArchivePeriod) -> String {
+            let when = periodPhrase(period)
+            switch read {
+            case .none: return "From your conversations \(when)."
+            case .some(1): return "From 1 conversation \(when)."
+            case .some(let n): return "From \(n) conversations \(when)."
+            }
+        }
+
+        /// Said after a partial answer, the spoken twin of Ask's `partialCoverage` footnote.
+        static func partiallyRead(read: Int, inScope: Int, period: AskArchivePeriod) -> String {
+            "Pebble Audio read \(read) of the \(inScope) conversations \(periodPhrase(period))."
+        }
+
+        static func moreSources(_ count: Int) -> String { "and \(count) more" }
+        static let openInAsk = "Open in Ask"
+        static let askInApp = "Ask in Pebble Audio"
+    }
+}

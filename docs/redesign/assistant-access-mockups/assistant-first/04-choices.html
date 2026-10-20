@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Choose what assistants can do</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .linked { display: flex; align-items: center; gap: 10px; font: var(--f-sub-body); color: var(--secondary-body); padding: 0 4px; min-height: 28px; }
+  .linked b { font-weight: 600; color: var(--label); }
+  .opt .row { align-items: flex-start; padding: 13px 0; }
+  .opt .row .tile { margin-top: 1px; }
+  .opt .row .toggle, .opt .row .always { margin-top: 4px; }
+  .always { font: var(--f-sub-body); color: var(--meta); }
+  .actions { flex: 0 0 auto; padding: 0 16px 30px; }
+</style></head>
+<body><div class="phone">
+  <div class="statusbar"></div>
+  <div class="navbar"><button class="glass-btn" aria-label="Back"><i data-i="chevL"></i></button><span class="spacer"></span><button class="glass-btn" aria-label="Close"><i data-i="x"></i></button></div>
+  <div class="content no-tabbar" style="padding-bottom:12px">
+    <div class="steps" aria-label="Step 2 of 3">
+      <div class="step done"><div class="bar"></div><span class="lbl"><i data-i="check" style="width:12px;height:12px"></i>Link</span></div>
+      <div class="step now"><div class="bar"></div><span class="lbl">Choose</span></div>
+      <div class="step"><div class="bar"></div><span class="lbl">Connect</span></div>
+    </div>
+    <h1 class="screen-title" style="margin-top:6px">Choose what assistants can do</h1>
+    <div class="linked"><span class="check-badge"><i data-i="check"></i></span><span>Linked to <b>pebbleaudio.okgodoit.com</b></span></div>
+
+    <div class="list-card opt">
+      <div class="row"><span class="tile"><i data-i="doc"></i></span><div class="grow"><span class="t strong">Read your conversations</span><span class="s">Titles, summaries, transcripts, notes, follow-ups, and recaps.</span></div><span class="always">Always</span></div>
+      <div class="row"><span class="tile"><i data-i="calendar"></i></span><div class="grow"><span class="t strong">Include past conversations</span><span class="s">312 conversations since June 2.</span></div><span class="toggle on" role="switch" aria-checked="true"></span></div>
+    </div>
+    <p class="footer">Deleting a conversation here deletes it from your server too. When Keep audio removes a recording, its text stays there.</p>
+
+    <div class="section-header">Also let assistants</div>
+    <div class="list-card opt">
+      <div class="row"><span class="tile"><i data-i="clip"></i></span><div class="grow"><span class="t strong">Ask for audio clips</span><span class="s">Only the clip asked for, sent the next time this phone is running.</span></div><span class="toggle" role="switch" aria-checked="false"></span></div>
+      <div class="row"><span class="tile"><i data-i="checklist"></i></span><div class="grow"><span class="t strong">Add follow-ups and notes</span><span class="s">They appear here with the assistant's name.</span></div><span class="toggle" role="switch" aria-checked="false"></span></div>
+    </div>
+  </div>
+  <div class="actions"><button class="btn filled">Continue</button></div>
+</div>
+<script src="chrome.js"></script>
+</body></html>

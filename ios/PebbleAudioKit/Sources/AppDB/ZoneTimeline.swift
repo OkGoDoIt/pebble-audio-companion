@@ -4,7 +4,7 @@ import SegmentStore
 /// Which time zone was in effect at any moment of the library, and therefore which logical day
 /// (5 AM → 5 AM, `LogicalDay`) that moment belongs to.
 ///
-/// Built from the segments' own `recordedTimeZone` stamps (every segment opened since 9baad3e
+/// Built from the segments' own `recordedTimeZone` stamps (every segment opened since 64aff4f
 /// carries one). The rule, and why:
 ///
 /// - **The zone at a moment is the zone of the latest segment that STARTED at or before it**:

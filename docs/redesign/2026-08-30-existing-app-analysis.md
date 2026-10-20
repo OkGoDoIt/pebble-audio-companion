@@ -290,9 +290,9 @@ the rebuild (Q5).
 - **D7 — iOS search index is in-memory only**; empty every launch until enrichment re-donates,
   and `includeFullTranscript` is permanently `false` — index search never sees transcript text.
   (Digest donation, the other half of this finding, was fixed mid-analysis by session 99,
-  `7106e60`.)
+  `c6e08e6`.)
 - **D8 — ~~`AiScreen` takes `dailyDigests` and never renders it~~** — fixed mid-analysis by
-  session 99 (`7106e60`): the dead parameter was removed.
+  session 99 (`c6e08e6`): the dead parameter was removed.
 - **D9 — Vendored Cactus surface unused**: `cactusVad`, `cactusDiarize`, RAG index, embeddings —
   the app hand-rolls VAD and pays cloud for diarization while shipping native equivalents.
 - **D10 — Android parity holes**: no background upload coordinator, no `setForeground(false)`
@@ -368,6 +368,6 @@ the rebuild (Q5).
 
 *Companion artifact: designed HTML version of this report with the full simulator screenshot
 walkthrough. Progress log entry: session 100 in
-`UPSTREAM_THIRD_PARTY_BACKGROUND_AUDIO_IMPLEMENTATION_PLAN.md`. Note: session 99 (`7106e60`,
+`UPSTREAM_THIRD_PARTY_BACKGROUND_AUDIO_IMPLEMENTATION_PLAN.md`. Note: session 99 (`c6e08e6`,
 digest donation + AiScreen dead-param removal) landed in a parallel session while this analysis
 was running; D7/D8 above are annotated accordingly.*

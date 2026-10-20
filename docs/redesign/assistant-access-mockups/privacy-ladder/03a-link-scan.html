@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390, initial-scale=1"><link rel="stylesheet" href="tokens.css"><script src="chrome.js"></script><title>Link · scan</title>
+<style>.screen .navbar .title{color:#fff}.screen .navbar .back{background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.2)}</style></head><body>
+<main class="screen camera-top" data-nav="Link Your Server" data-back="close" data-tabs="none" data-ink="light">
+  <div class="viewfinder" aria-label="Camera">
+    <div class="paper"><svg class="qr" id="qr" viewBox="0 0 29 29" shape-rendering="crispEdges"></svg></div>
+    <div class="frame" aria-hidden="true"><span class="a"></span><span class="b"></span><span class="c"></span><span class="d"></span></div>
+    <div class="hint">Point at the code on your server</div>
+  </div>
+  <div class="sheet">
+    <span class="grab" aria-hidden="true"></span>
+    <section class="card" style="padding:12px 8px 10px"><div class="flow mini" data-server="off"></div></section>
+    <div class="lede" style="padding-top:2px">
+      <h2 style="font-size:20px">Scan the code on your server</h2>
+      <p>On your server’s admin page, open Link a phone. The Camera app can scan it too.</p>
+    </div>
+    <button class="btn-bordered">Enter a Code Instead</button>
+  </div>
+</main>
+<script>
+(function(){var n=29,s='',seed=7;function r(){seed=(seed*16807)%2147483647;return seed/2147483647}
+function fin(x,y){s+='<rect x="'+x+'" y="'+y+'" width="7" height="7"/><rect x="'+(x+1)+'" y="'+(y+1)+'" width="5" height="5" fill="#e9e9ec"/><rect x="'+(x+2)+'" y="'+(y+2)+'" width="3" height="3"/>'}
+for(var y=0;y<n;y++)for(var x=0;x<n;x++){var f=(x<8&&y<8)||(x>20&&y<8)||(x<8&&y>20);if(!f&&r()>.52)s+='<rect x="'+x+'" y="'+y+'" width="1" height="1"/>'}
+fin(0,0);fin(22,0);fin(0,22);document.getElementById('qr').innerHTML='<g fill="#16161a">'+s+'</g>'})();
+</script>
+</body></html>

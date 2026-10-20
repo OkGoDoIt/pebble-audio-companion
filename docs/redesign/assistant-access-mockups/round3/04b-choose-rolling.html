@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Choose what syncs</title>
+<link rel="stylesheet" href="tokens.css"><style>.content{gap:10px}.option{padding:10px 16px}.goes.solo{background:var(--surface);margin-top:2px}</style>
+</head>
+<body><div class="phone"><div class="statusbar"></div>
+<div class="navbar"><button class="glass-btn" aria-label="Back"><i data-i="chevL"></i></button></div>
+<div class="content no-tabbar">
+  <div class="steps" role="img" aria-label="Step 2 of 3, Choose"><div class="step done"><div class="bar"></div><span class="lbl"><i data-i="check"></i>Link</span></div><div class="step now"><div class="bar"></div><span class="lbl">Choose</span></div><div class="step "><div class="bar"></div><span class="lbl">Connect</span></div></div>
+  <h1 class="screen-title">Choose what syncs</h1>
+  <div class="opts" role="radiogroup" aria-label="Conversations"><div class="option" role="radio" aria-checked="false"><div class="grow"><span class="t">All conversations</span><span class="s body">All 412, back to March 4, and every new one.</span></div><span class="radio"></span></div><div class="option" role="radio" aria-checked="false"><div class="grow"><span class="t">From October 21 on</span><span class="s body">Today's 3 conversations, and every new one.</span></div><span class="radio"></span></div><div class="option sel" role="radio" aria-checked="true"><div class="grow"><span class="t">Only the last 90 days</span><div class="seg" role="radiogroup" aria-label="Days"><span class="" role="radio" aria-checked="false">7</span><span class="" role="radio" aria-checked="false">30</span><span class="on" role="radio" aria-checked="true">90</span><span class="" role="radio" aria-checked="false">180</span><span class="" role="radio" aria-checked="false">365</span></div><span class="s body">168 conversations, back to July 23.</span><span class="s">Always the last 90 days. Older conversations are removed from your server each day.</span></div><span class="radio on"></span></div></div>
+  <div class="section-header">Assistants may also</div><div class="list-card"><div class="row top"><div class="grow"><span class="t">Ask for audio clips</span><span class="s">Only the moment they ask about.</span></div><span class="toggle" role="switch" aria-checked="false" aria-label="Ask for audio clips"></span></div><div class="row top"><div class="grow"><span class="t">Add follow-ups and notes</span><span class="s">Marked with the assistant's name.</span></div><span class="toggle" role="switch" aria-checked="false" aria-label="Add follow-ups and notes"></span></div></div>
+  <div class="goes solo"><span class="h">What goes to pebbleaudio.okgodoit.com</span><p>The text of 168 conversations now, then always the last 90 days. No audio goes to your server.</p></div>
+  <button class="btn filled">Start Syncing</button>
+</div></div>
+<script src="chrome.js"></script>
+</body></html>

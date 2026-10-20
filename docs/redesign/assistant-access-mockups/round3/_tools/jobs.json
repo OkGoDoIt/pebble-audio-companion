@@ -1,0 +1,338 @@
+[
+{
+"name": "01-settings",
+"url": "01-settings.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "02-intro",
+"url": "02-intro.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "03a-link",
+"url": "03a-link.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "03b-link-expired",
+"url": "03b-link-expired.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "04a-choose",
+"url": "04a-choose.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "04b-choose-rolling",
+"url": "04b-choose-rolling.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "05a-connect-chatgpt",
+"url": "05a-connect-chatgpt.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "05b-connect-claude",
+"url": "05b-connect-claude.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "05c-connect-mac",
+"url": "05c-connect-mac.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "05d-connect-another",
+"url": "05d-connect-another.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "06a-server-iphone",
+"url": "06a-server-iphone.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07a-linked",
+"url": "07a-linked.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07b-scope-shorter",
+"url": "07b-scope-shorter.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07c-unlink-confirm",
+"url": "07c-unlink-confirm.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "08-assistant-detail",
+"url": "08-assistant-detail.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "09a-privacy-local",
+"url": "09a-privacy-local.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "09b-privacy-server",
+"url": "09b-privacy-server.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "09c-privacy-assistants",
+"url": "09c-privacy-assistants.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "09d-privacy-full",
+"url": "09d-privacy-full.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "02-intro-dark",
+"url": "02-intro.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"dark": true
+},
+{
+"name": "09d-privacy-full-dark",
+"url": "09d-privacy-full.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"dark": true
+},
+{
+"name": "06b-server-mac",
+"url": "06b-server-mac.html",
+"w": 1280,
+"h": 800,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "04b-choose-rolling-full",
+"url": "04b-choose-rolling.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "07a-linked-full",
+"url": "07a-linked.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "08-assistant-detail-full",
+"url": "08-assistant-detail.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09a-privacy-local-full",
+"url": "09a-privacy-local.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09b-privacy-server-full",
+"url": "09b-privacy-server.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09c-privacy-assistants-full",
+"url": "09c-privacy-assistants.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09d-privacy-full-full",
+"url": "09d-privacy-full.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09d-privacy-full-dark-full",
+"url": "09d-privacy-full.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true,
+"dark": true
+},
+{
+"name": "05e-connect-cursor",
+"url": "05e-connect-cursor.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "06c-server-mac-cursor",
+"url": "06c-server-mac-cursor.html",
+"w": 1280,
+"h": 800,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07d-scope-from-date",
+"url": "07d-scope-from-date.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07e-linked-paused",
+"url": "07e-linked-paused.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "07e-linked-paused-full",
+"url": "07e-linked-paused.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "04a-choose-full",
+"url": "04a-choose.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "06a-server-iphone-full",
+"url": "06a-server-iphone.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "09e-privacy-paused",
+"url": "09e-privacy-paused.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500
+},
+{
+"name": "09e-privacy-paused-full",
+"url": "09e-privacy-paused.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"full": true
+},
+{
+"name": "05c-connect-mac-dark",
+"url": "05c-connect-mac.html",
+"w": 390,
+"h": 844,
+"dpr": 2,
+"wait": 500,
+"dark": true
+}
+]

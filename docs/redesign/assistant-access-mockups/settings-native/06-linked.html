@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>AI Assistants, linked</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .list > .row.asst { gap: 12px; }
+  .row .name { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--label); }
+  .status .t-card-head { font-size: 16px; line-height: 21px; }
+  .list > .row.tall { align-items: flex-start; }
+  .list > .row.tall .switch { margin-top: 2px; }
+  .scroll { padding-bottom: 120px; }
+</style></head>
+<body><div class="screen">
+  <div class="statusbar"></div>
+  <div class="navbar"><div class="lead"><button class="back"><i data-i="back"></i>Settings</button></div><div class="title">AI Assistants</div><div class="trail"></div></div>
+  <div class="scroll">
+    <div class="list">
+      <div class="row status" style="align-items:flex-start;gap:10px"><span class="dot good" style="margin-top:7px"></span><div class="grow"><div class="t-card-head">Syncing to pebbleaudio.okgodoit.com</div><div class="sub" style="font-size:14px;line-height:19px;color:var(--secondary-body)">Last synced 2 minutes ago</div></div></div>
+      <div class="row"><span class="title grow">Sync</span><span class="switch on" role="switch" aria-checked="true"></span></div>
+    </div>
+
+    <div class="section-header">Who can read</div>
+    <div class="list">
+      <div class="row asst inset-icon"><span class="tile sm gray"><i data-i="chat"></i></span><div class="grow"><div class="name">ChatGPT</div><div class="sub">Read 3 conversations · 9:40 AM</div></div><i data-i="chev" class="chev"></i></div>
+      <div class="row asst inset-icon"><span class="tile sm gray"><i data-i="chat"></i></span><div class="grow"><div class="name">Claude</div><div class="sub">Read 1 conversation · Yesterday</div></div><i data-i="chev" class="chev"></i></div>
+      <div class="row asst inset-icon"><span class="tile sm gray"><i data-i="laptop"></i></span><div class="grow"><div class="name">Codex on Mac</div><div class="sub">Nothing read yet</div></div><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="tinttext grow">Connect an Assistant</span></div>
+    </div>
+
+    <div class="section-header">Assistants can</div>
+    <div class="list">
+      <div class="row"><span class="title grow">Read</span><span class="value">All conversations</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">Ask for audio clips</span><span class="switch" role="switch" aria-checked="false"></span></div>
+      <div class="row"><span class="title grow">Add follow-ups and notes</span><span class="switch" role="switch" aria-checked="false"></span></div>
+    </div>
+    <div class="footer">Audio stays on this phone. Deleting a conversation here deletes it on your server. When Keep audio clears a recording, its text stays there.</div>
+
+    <div class="list"><div class="row"><span class="destructive grow">Unlink This Phone</span></div></div>
+    <div class="footer">Your server keeps what it already has. You can link again with a new code.</div>
+  </div>
+  <nav class="tabbar" data-on="settings"></nav>
+  <div class="home-indicator"></div>
+</div><script src="chrome.js"></script></body></html>

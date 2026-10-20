@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Settings, off</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .watch .name { font: 600 16px/21px var(--font); letter-spacing: -0.31px; }
+  .watch .line { font: 400 13px/18px var(--font); color: var(--good-text); margin-top: 2px; }
+  .new { box-shadow: 0 0 0 2px var(--tint-border); }
+</style></head>
+<body><div class="screen">
+  <div class="statusbar"></div>
+  <div class="scroll" style="padding-top:2px">
+    <h1 class="t-tab-title" style="margin:0 0 0">Settings</h1>
+    <div class="list">
+      <div class="row watch" style="align-items:flex-start;gap:12px">
+        <span class="tile"><i data-i="watch"></i></span>
+        <div class="grow"><div class="name">Pebble Time 2</div><div class="line">Recording · connected</div></div>
+        <i data-i="chev" class="chev" style="margin-top:4px"></i>
+      </div>
+      <div class="row"><span class="title grow">Record from your Pebble</span><span class="switch on"></span></div>
+      <div class="row"><span class="tinttext grow">Pause Recording…</span></div>
+      <div class="row"><div class="grow"><div class="title">Alert me about missed audio</div><div class="sub">Only long gaps, at most one an hour.</div></div><span class="switch"></span></div>
+    </div>
+    <div class="list">
+      <div class="row"><span class="title grow">Transcription &amp; AI</span><span class="value">Local only</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">Storage</span><span class="value">2.1 GB · 383 recordings</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">Privacy</span><span class="value">Everything on this phone</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">About You</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">AI Assistants</span><span class="value">Off</span><i data-i="chev" class="chev"></i></div>
+      <div class="row"><span class="title grow">Diagnostics</span><i data-i="chev" class="chev"></i></div>
+    </div>
+    <div class="footer">Recordings and transcripts stay on this phone.</div>
+  </div>
+  <nav class="tabbar" data-on="settings"></nav>
+  <div class="home-indicator"></div>
+</div><script src="chrome.js"></script></body></html>

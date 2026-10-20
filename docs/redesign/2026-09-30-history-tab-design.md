@@ -8,7 +8,7 @@
 
 Replaces the Library tab (a day-sectioned list of conversations) with a time-first **History**
 tab at three zoom levels: Day (a timeline of the day), Week (a row per day), Month (a row per
-week). Status: **design agreed after round 10, nothing implemented.** Mockups are in `history-mockups/`.
+week). Status: **design agreed after round 10, nothing implemented.** The mockups were in `history-mockups/` (removed from the repository on 2026-10-21 because they were built from real recordings; a private copy is kept outside it).
 
 ## Why the Library fails on real data
 
@@ -127,12 +127,13 @@ one day boundary at every zoom level.
 
 ## Mockups
 
-`history-mockups/direction-{a,b,c,d}` — round 1, four directions.
-`history-mockups/round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
+These folders were in `history-mockups/` (removed from the repository on 2026-10-21 because they were built from real recordings; a private copy is kept outside it):
+`direction-{a,b,c,d}` — round 1, four directions.
+`round2-merged` — the merged set. `round2-day-alternatives` — the day drawn
 content-sized and as calendar blocks.
-`history-mockups/round10-background-audio` — the current day (70 pt minimum hour, merged edge
+`round10-background-audio` — the current day (70 pt minimum hour, merged edge
 labels, centred gap labels, background-audio gaps). Rounds 6–9 are the steps that led to it. `round5-week-followup-state`
 — the current week (its two day phones are superseded by round 6).
-`history-mockups/round4-white-blocks-followups` — the current month; day and week superseded.
-`history-mockups/round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
+`round4-white-blocks-followups` — the current month; day and week superseded.
+`round3-day-week-month` — the previous round (tinted blocks). `round3-today-and-week-text-tags`
 — today's day view with the live block, and the week with text tags.

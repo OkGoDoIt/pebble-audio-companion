@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Privacy, assistants reading</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .commit .row .c { font: 400 13px/19px var(--font); color: var(--secondary-body); }
+  .scroll { padding-bottom: 120px; }
+  .row .v { font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--meta); margin-top: 2px; }
+  .row .v.names { color: var(--label); font-weight: 600; }
+</style></head>
+<body><div class="screen">
+  <div class="statusbar"></div>
+  <div class="navbar"><div class="lead"><button class="back"><i data-i="back"></i>Settings</button></div><div class="title">Privacy</div><div class="trail"></div></div>
+  <div class="scroll">
+    <div class="card stance">
+      <div class="head"><span class="dot neutral"></span><span class="t-card-head">ChatGPT and Claude can read your text</span></div>
+      <p>Transcription and AI both run on this iPhone, and no recording leaves it. The text of your conversations is copied to pebbleaudio.okgodoit.com, where ChatGPT and Claude can read it.</p>
+    </div>
+    <div class="list">
+      <div class="row"><div class="grow"><div class="title">Siri &amp; Spotlight can see</div><div class="v">Titles and summaries</div></div><i data-i="chev" class="chev"></i></div>
+      <div class="row"><div class="grow"><div class="title">AI assistants can read</div><div class="v names">ChatGPT, Claude</div></div><i data-i="chev" class="chev"></i></div>
+    </div>
+    <div class="footer">The search index is kept on this iPhone by iOS, never on a server.</div>
+    <div class="footer">Deleting a conversation here deletes it on your server too. What ChatGPT and Claude keep from what they read is up to them.</div>
+    <div class="section-header">Privacy</div>
+    <div class="list commit"><div class="row"><span class="c">Nothing you record, transcribe, or write is sent to this app’s developer, and none of it is used for training, advertising, or profiling. Your server holds a copy of the text because you linked it.</span></div><div class="row"><span class="c">Your recordings and transcripts are never sold or shared. They go only where this screen says they go.</span></div><div class="row"><span class="c">Diagnostic logs stay on this phone. They hold no audio and no transcript text, and are only ever shared if you send them yourself from Diagnostics.</span></div><div class="row"><span class="c">Recordings, transcripts, and notes are stored in this app on your iPhone, and are included in the iPhone’s usual backups.</span></div><div class="row"><span class="c">Spotlight’s index of your recordings is kept on this iPhone by iOS. What goes into it (nothing, titles and summaries, or everything) is your choice on this screen.</span></div></div>
+  </div>
+  <nav class="tabbar" data-on="settings"></nav>
+  <div class="home-indicator"></div>
+</div><script src="chrome.js"></script></body></html>

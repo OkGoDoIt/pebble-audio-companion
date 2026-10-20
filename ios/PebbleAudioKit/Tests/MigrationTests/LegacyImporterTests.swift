@@ -164,7 +164,7 @@ import Transcription
     }
 
     @Test func clampReanchorsFutureAnchoredStart() {
-        // The real pre-1e5db02 breakage: fresh startTimeMs (≈ receipt) with stream-relative
+        // The real pre-b18a79e breakage: fresh startTimeMs (≈ receipt) with stream-relative
         // sample indexes pushes the anchored start into the future.
         let firstSample: UInt64 = 26_557_440  // ≈ 27.7 min at 16 kHz
         let offset = Int64(firstSample * 1000 / 16_000)

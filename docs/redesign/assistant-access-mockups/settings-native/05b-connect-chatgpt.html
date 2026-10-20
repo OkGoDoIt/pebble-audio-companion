@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Connect assistants, ChatGPT</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .asst { background: var(--surface); border-radius: var(--card-r); }
+  .asst .top { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 60px; }
+  .asst .name { font: 600 16px/21px var(--font); letter-spacing: -0.31px; color: var(--label); }
+  .asst .sub { font: 400 13px/18px var(--font); color: var(--meta); margin-top: 1px; }
+  .asst .more { padding: 2px 16px 16px 64px; }
+  .asst .more .t-footnote { color: var(--meta); }
+  .asst .wait { display: flex; align-items: center; gap: 8px; font: 400 13px/18px var(--font); color: var(--meta); margin-top: 14px; }
+  .chev.down { transform: rotate(90deg); }
+  .chev.up { transform: rotate(-90deg); }
+  .btn-bordered svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+</style></head>
+<body><div class="presenting"><div class="statusbar" style="color:#fff"></div><div class="behind"></div>
+<div class="sheet">
+  <div class="grabber"></div>
+  <div class="navbar"><div class="lead"><button class="back"><i data-i="back"></i>Back</button></div><div class="title"></div><div class="trail"></div></div>
+  <div class="body">
+    <div class="step-head">
+      <h1>Connect Your Assistants</h1>
+      <p>You connect each one in the assistant itself. It shows up here once it can read.</p>
+    </div>
+    <div class="asst"><div class="top"><span class="tile gray"><i data-i="chat"></i></span><div class="grow" style="flex:1"><div class="name">Claude</div><div class="sub">Can read your conversations</div></div><span class="connected" style="color:var(--good-text)"><i data-i="check"></i>Connected</span></div></div>
+    <div class="asst">
+      <div class="top"><span class="tile gray"><i data-i="chat"></i></span><div class="grow" style="flex:1"><div class="name">ChatGPT</div><div class="sub">ChatGPT app or chatgpt.com</div></div><i data-i="chev" class="chev up"></i></div>
+      <div class="more" style="padding-left:16px">
+        <ol class="steps">
+          <li><span>In ChatGPT, open <b>Plugins</b> and tap <b>Add</b>.</span></li>
+          <li><span>Choose to add a custom server, and paste this address:</span></li>
+        </ol>
+        <div class="copyline" style="margin:8px 0 10px 32px"><span class="url">pebbleaudio.okgodoit.com</span><button class="cp">Copy</button></div>
+        <ol class="steps" start="3" style="counter-reset:s 2"><li><span>Sign in with your passkey when ChatGPT asks.</span></li></ol>
+        <div class="wait"><span class="spinner"></span>Waiting for ChatGPT</div>
+      </div>
+    </div>
+<div class="asst"><div class="top"><span class="tile gray"><i data-i="laptop"></i></span><div class="grow" style="flex:1"><div class="name">Codex, Claude Code, or Cursor</div><div class="sub">On a Mac</div></div><i data-i="chev" class="chev down"></i></div></div>
+  </div>
+  <div class="dock"><button class="btn-primary">Done</button></div>
+</div></div>
+<script src="chrome.js"></script></body></html>

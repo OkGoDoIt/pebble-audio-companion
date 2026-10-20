@@ -21,7 +21,7 @@ import WireProtocol
 // (2,703 min) — `PowerSave` is deliberately a calm but genuine gap, and the same reason inside a
 // segment's frames was already drawn as missing (9.6 h of the 10.9 h missing before).
 //
-// Power save has since become a pause (ee0b1f6), and the day strip and gap status now share one
+// Power save has since become a pause (02df7f7), and the day strip and gap status now share one
 // classifier (`GapClassifier`). Over the 2026-09-30 backup the unification changed nothing here,
 // to the millisecond: recorded 772,341,820 ms and missing 5,827,720 ms (12,872 / 97 min) before
 // and after — no receiver skip in that backup lies wholly inside a single silence record.

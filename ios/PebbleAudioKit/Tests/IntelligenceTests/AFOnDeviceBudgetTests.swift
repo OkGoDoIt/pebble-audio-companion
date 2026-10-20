@@ -10,7 +10,7 @@ import Testing
 //
 //   • 12,000 input chars + grounding + the Extended summary prompt, 256 output tokens
 //     → exceededContextWindowSize, "Content contains 4179 tokens, which exceeds the maximum
-//       allowed context size of 4096". That is the shipped build (f4bc3e6), and the message the
+//       allowed context size of 4096". That is the shipped build (0ea7871), and the message the
 //       user saw — "On-device AI generation failed" — is what this became.
 //   • 12,000 input chars with grounding OFF → still fails, at 4,090 tokens, four seconds in,
 //     partway through generating. The window covers input AND output.

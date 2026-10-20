@@ -359,7 +359,7 @@ private let bothPolicies: [(name: String, policy: SegmenterPolicy)] = [
     /// KNOWN ISSUE (reported 2026-09-30): the vocabulary term is a marginal likelihood, which
     /// grows FASTER than linearly with the length of a unit whose blocks resemble each other, so
     /// on homogeneous talk it outbids the length price. With `wordWeight` 0.25 (the value
-    /// committed at 2ecb75f) three hours of talk over a small repeated vocabulary is not divided
+    /// committed at eb28c62) three hours of talk over a small repeated vocabulary is not divided
     /// at all, and eight hours is divided once — at the 4-hour hard limit. The shipped policy
     /// has the weight at 0, so nothing ships with this; it bites whoever turns it back on.
     @Test(arguments: [180, 480])

@@ -2,6 +2,7 @@ import AppDB
 import CoreSpotlight
 import Foundation
 import Receiver
+import SearchKit
 import SwiftUI
 import WidgetKit
 
@@ -38,7 +39,7 @@ final class NativeSurfaceCoordinator {
     /// tells the session what to WANT — the session observes the link rather than dialling it,
     /// so without the reconnect inside `startCapture` the watch is never contacted and the
     /// toggle appears to do nothing. This is the same defect fixed for Today's Start button in
-    /// `aa2a934`; the intent path now shares that fix instead of re-implementing it.
+    /// `ae5758a`; the intent path now shares that fix instead of re-implementing it.
     private static func liveApply(_ intent: CaptureIntent) async {
         await AppComposition.shared?.runtime.applyExternalCaptureIntent(intent, source: .intent)
     }
@@ -72,13 +73,16 @@ final class NativeSurfaceCoordinator {
     }
 
     /// Called by the runtime wiring once the shared database is open, so Spotlight donation
-    /// reuses that connection instead of opening a second pool on the same file.
+    /// reuses that connection, and the composition's donator (visibility setting, entity
+    /// association and change gate included), instead of building its own.
     func attachDatabase(
         _ database: AppDatabase,
-        transcript: @escaping @Sendable (String) async -> String? = { _ in nil }
+        donator: SpotlightDonator,
+        donateConversations: @escaping @Sendable ([String]) async -> Void
     ) {
         guard spotlight == nil else { return }
-        spotlight = SpotlightService(database: database, transcript: transcript)
+        spotlight = SpotlightService(
+            database: database, donator: donator, donateConversations: donateConversations)
     }
 
     /// Forgets the incremental donation watermark, so the next pass rebuilds from scratch

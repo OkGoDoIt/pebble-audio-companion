@@ -1,0 +1,306 @@
+/* Pebble Audio — assistant access mockups ("assistant-first").
+   Every value below is lifted from ios/App/DesignSystem/Tokens.swift (light anchors and the dark
+   derivations) and AppFont's Dynamic Type .large anchors. Nothing new is invented here except the
+   assistant marks, which are neutral stand-ins for the real brand marks. */
+
+:root {
+  --tint: #5B5BD6;
+  --tint-pressed: #4A4AC4;
+  --tint-fill-10: rgba(91, 91, 214, 0.10);
+  --tint-fill-12: rgba(91, 91, 214, 0.12);
+  --tint-fill-18: rgba(91, 91, 214, 0.18);
+  --tint-border: rgba(91, 91, 214, 0.40);
+  --tint-soft: #C9C9F0;
+  --on-tint: #FFFFFF;
+
+  --good: #34C759;
+  --good-fill: rgba(52, 199, 89, 0.12);
+  --attention: #FF9F0A;
+  --attention-ink: #B25E00;          /* attention text on white: #FF9F0A fails AA as body text */
+  --attention-fill: rgba(255, 159, 10, 0.10);
+  --destructive: #FF3B30;
+  --destructive-ink: #D70015;
+  --neutral-dot: #8A8A8E;
+
+  --label: #1C1C1E;
+  --secondary-body: #3C3C43;
+  --tertiary: #6E6E73;
+  --meta: #8A8A8E;
+  --meta-ink: #6E6E73;               /* meta text where it must pass AA on the ground */
+  --faint: #B0B0B6;
+  --chevron: #C7C7CC;
+  --hairline: rgba(60, 60, 67, 0.18);
+  --card-border: rgba(60, 60, 67, 0.22);
+  --bar-hairline: rgba(60, 60, 67, 0.29);
+  --field-fill: #E3E3E8;
+  --track: #ECECF1;
+  --gray-chip: #EFEFF4;
+  --pill-fill: #E9E9EE;
+  --toggle-off: #E9E9EA;
+  --ground: #F2F2F7;
+  --surface: #FFFFFF;
+  --bar-bg: rgba(249, 249, 249, 0.82);
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-edge: rgba(0, 0, 0, 0.06);
+  --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --mark-edge: transparent;
+
+  --screen-margin: 16px;
+  --block-gap: 12px;
+  --card-radius: 12px;
+  --option-radius: 14px;
+  --button-radius: 14px;
+  --sheet-radius: 16px;
+
+  /* AppFont, .large anchors */
+  --f-tab-title: 700 34px/41px var(--font);
+  --f-screen-title: 700 28px/34px var(--font);
+  --f-detail-title: 700 24px/30px var(--font);
+  --f-section-title: 700 20px/25px var(--font);
+  --f-headline: 600 17px/22px var(--font);
+  --f-body: 400 17px/22px var(--font);
+  --f-row-title: 600 16px/21px var(--font);
+  --f-callout: 400 16px/21px var(--font);
+  --f-card-head: 600 15px/20px var(--font);
+  --f-sub-body: 400 15px/21px var(--font);
+  --f-caption: 400 14px/19px var(--font);
+  --f-section-header: 600 13px/18px var(--font);
+  --f-footnote: 400 13px/18px var(--font);
+  --f-micro: 400 11px/13px var(--font);
+  --font: -apple-system, "SF Pro Text", system-ui, "Helvetica Neue", sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tint: #7D7DE8; --tint-pressed: #6B6BDA;
+    --tint-fill-10: rgba(125, 125, 232, 0.24); --tint-fill-12: rgba(125, 125, 232, 0.26);
+    --tint-fill-18: rgba(125, 125, 232, 0.34); --tint-border: rgba(125, 125, 232, 0.55);
+    --tint-soft: #4A4A85;
+    --good: #30D158; --good-fill: rgba(48, 209, 88, 0.22);
+    --attention: #FFB340; --attention-ink: #FFB340; --attention-fill: rgba(255, 179, 64, 0.14);
+    --destructive: #FF453A; --destructive-ink: #FF6961; --neutral-dot: #98989D;
+    --label: #F2F2F7; --secondary-body: #D1D1D6; --tertiary: #AEAEB2; --meta: #98989D;
+    --meta-ink: #98989D; --faint: #7C7C80; --chevron: #48484A;
+    --hairline: rgba(84, 84, 88, 0.40); --card-border: rgba(84, 84, 88, 0.48);
+    --bar-hairline: rgba(84, 84, 88, 0.55);
+    --field-fill: #2C2C2E; --track: #2C2C2E; --gray-chip: #2C2C2E; --pill-fill: #2C2C2E;
+    --toggle-off: #39393D; --ground: #000000; --surface: #1C1C1E;
+    --bar-bg: rgba(22, 22, 22, 0.82); --glass: rgba(44, 44, 46, 0.72);
+    --glass-edge: rgba(255, 255, 255, 0.08);
+    --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.5);
+    --mark-edge: rgba(255, 255, 255, 0.22);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --tint: #7D7DE8; --tint-pressed: #6B6BDA;
+  --tint-fill-10: rgba(125, 125, 232, 0.24); --tint-fill-12: rgba(125, 125, 232, 0.26);
+  --tint-fill-18: rgba(125, 125, 232, 0.34); --tint-border: rgba(125, 125, 232, 0.55);
+  --tint-soft: #4A4A85;
+  --good: #30D158; --good-fill: rgba(48, 209, 88, 0.22);
+  --attention: #FFB340; --attention-ink: #FFB340; --attention-fill: rgba(255, 179, 64, 0.14);
+  --destructive: #FF453A; --destructive-ink: #FF6961; --neutral-dot: #98989D;
+  --label: #F2F2F7; --secondary-body: #D1D1D6; --tertiary: #AEAEB2; --meta: #98989D;
+  --meta-ink: #98989D; --faint: #7C7C80; --chevron: #48484A;
+  --hairline: rgba(84, 84, 88, 0.40); --card-border: rgba(84, 84, 88, 0.48);
+  --bar-hairline: rgba(84, 84, 88, 0.55);
+  --field-fill: #2C2C2E; --track: #2C2C2E; --gray-chip: #2C2C2E; --pill-fill: #2C2C2E;
+  --toggle-off: #39393D; --ground: #000000; --surface: #1C1C1E;
+  --bar-bg: rgba(22, 22, 22, 0.82); --glass: rgba(44, 44, 46, 0.72);
+  --glass-edge: rgba(255, 255, 255, 0.08);
+  --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.5);
+  --mark-edge: rgba(255, 255, 255, 0.22);
+  color-scheme: dark;
+}
+
+/* ── Page / phone ─────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); }
+body { font: var(--f-body); color: var(--label); -webkit-font-smoothing: antialiased; }
+.phone {
+  position: relative; width: 390px; height: 844px; overflow: hidden;
+  background: var(--ground); display: flex; flex-direction: column;
+}
+.phone.sheet-ground { background: var(--ground); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* Status bar (54 pt) */
+.statusbar {
+  flex: 0 0 54px; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 30px 0 40px; font: 600 17px/22px var(--font); color: var(--label);
+}
+.statusbar .icons { display: flex; gap: 6px; align-items: center; }
+.statusbar svg { display: block; }
+
+/* Nav bar (pushed screens): iOS 26 glass circle back button, inline title */
+.navbar {
+  flex: 0 0 52px; display: flex; align-items: center; padding: 0 16px; gap: 8px; position: relative;
+}
+.glass-btn {
+  width: 44px; height: 44px; border-radius: 22px; background: var(--glass);
+  box-shadow: var(--shadow-float); border: 0.5px solid var(--glass-edge);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--label);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); flex: 0 0 auto;
+}
+.glass-btn svg { width: 20px; height: 20px; }
+.glass-pill {
+  height: 44px; border-radius: 22px; padding: 0 16px; background: var(--glass);
+  box-shadow: var(--shadow-float); border: 0.5px solid var(--glass-edge);
+  display: inline-flex; align-items: center; gap: 6px; font: 500 15px/20px var(--font); color: var(--label);
+}
+.navbar .nav-title {
+  position: absolute; left: 70px; right: 70px; text-align: center; font: var(--f-headline);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.navbar .spacer { flex: 1 1 auto; }
+
+/* Scrolling content */
+.content {
+  flex: 1 1 auto; overflow: hidden; padding: 4px var(--screen-margin) 120px;
+  display: flex; flex-direction: column; gap: var(--block-gap);
+}
+.content.no-tabbar { padding-bottom: 24px; }
+.tab-title { font: var(--f-tab-title); letter-spacing: 0.37px; padding-top: 2px; margin: 0; }
+.screen-title { font: var(--f-screen-title); letter-spacing: 0.36px; margin: 0; }
+.detail-title { font: var(--f-detail-title); margin: 0; }
+.lede { font: var(--f-sub-body); color: var(--secondary-body); margin: 0; }
+
+/* Cards */
+.card {
+  background: var(--surface); border-radius: var(--card-radius); padding: 14px 16px;
+}
+.list-card { background: var(--surface); border-radius: var(--card-radius); padding: 0 16px; }
+.list-card > .row + .row, .list-card > .row + .rowgroup, .list-card > .rowgroup + .row,
+.list-card > .rowgroup + .rowgroup { border-top: 0.5px solid var(--hairline); }
+.row {
+  min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 11px 0;
+  font: var(--f-callout);
+}
+.row.tall { min-height: 60px; }
+.row .grow { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row .t { font: var(--f-callout); color: var(--label); }
+.row .t.strong { font: var(--f-row-title); }
+.row .s { font: var(--f-footnote); color: var(--meta-ink); }
+.row .v { font: var(--f-sub-body); color: var(--meta-ink); white-space: nowrap; }
+.row .chev { flex: 0 0 auto; color: var(--chevron); width: 8px; height: 14px; }
+.row.tint .t { color: var(--tint); }
+.row.destructive { justify-content: center; }
+.row.destructive .t { color: var(--destructive); }
+
+.section-header {
+  font: var(--f-section-header); letter-spacing: 0.4px; text-transform: uppercase;
+  color: var(--meta-ink); padding: 8px 4px 0; margin-bottom: -4px;
+}
+.footer { font: var(--f-footnote); color: var(--meta-ink); padding: 0 4px; margin: -4px 0 0; }
+
+/* Status dot (lifecycle size) */
+.dot { width: 10px; height: 10px; border-radius: 5px; flex: 0 0 auto; display: inline-block; }
+.dot.good { background: var(--good); }
+.dot.neutral { background: var(--neutral-dot); }
+.dot.attention { background: var(--attention); }
+.dot.tint { background: var(--tint); }
+.state-head { display: flex; align-items: center; gap: 8px; font: var(--f-card-head); }
+.state-line { font: var(--f-sub-body); color: var(--secondary-body); margin: 6px 0 0; }
+
+/* Toggle (51×31, good tint like the app's .tint(Tokens.good)) */
+.toggle {
+  flex: 0 0 auto; width: 51px; height: 31px; border-radius: 16px; background: var(--toggle-off);
+  position: relative;
+}
+.toggle::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 14px;
+  background: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+}
+.toggle.on { background: var(--good); }
+.toggle.on::after { left: 22px; }
+
+/* Buttons */
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 50px;
+  border-radius: var(--button-radius); font: var(--f-headline); width: 100%; padding: 0 16px;
+}
+.btn.filled { background: var(--tint); color: var(--on-tint); }
+.btn.bordered { background: var(--tint-fill-12); color: var(--tint); }
+.btn.plain { color: var(--tint); min-height: 44px; }
+.btn.small { min-height: 44px; font: 600 15px/20px var(--font); border-radius: 12px; width: auto; }
+.btn.disabled { opacity: 0.45; }
+.link { color: var(--tint); }
+
+/* Flow progress: three steps as a shape — done, current, to come */
+.steps { display: flex; gap: 6px; padding: 0 2px; }
+.steps .step { flex: 1 1 0; display: flex; flex-direction: column; gap: 6px; }
+.steps .bar { height: 4px; border-radius: 2px; background: var(--track); }
+.steps .step.done .bar, .steps .step.now .bar { background: var(--tint); }
+.steps .lbl { font: 500 12px/16px var(--font); color: var(--meta-ink); display: flex; gap: 4px; align-items: center; }
+.steps .step.now .lbl { color: var(--label); font-weight: 600; }
+.steps .step.done .lbl { color: var(--tint); }
+
+/* Tab bar (iOS 26 floating glass) */
+.tabbar {
+  position: absolute; left: 14px; right: 14px; bottom: 22px; height: 62px; border-radius: 31px;
+  background: var(--glass); box-shadow: var(--shadow-float); border: 0.5px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  display: flex; align-items: center; padding: 0 6px;
+}
+.tabbar .tab {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 2px; height: 54px;
+  justify-content: center; color: var(--label); font: 500 10px/12px var(--font); border-radius: 27px;
+}
+.tabbar .tab svg { width: 24px; height: 24px; }
+.tabbar .tab.on { color: var(--tint); background: var(--tint-fill-10); }
+.home-ind { position: absolute; bottom: 8px; left: 50%; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: var(--label); opacity: 0.9; }
+
+/* Assistant marks — neutral stand-ins drawn here, not the vendors' artwork.
+   Fixed colors in both appearances: a mark is an identity, not UI. */
+.mark {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px; color: #fff; overflow: hidden;
+}
+.mark svg { width: 62%; height: 62%; display: block; }
+.mark.chatgpt { background: #0D0D0D; box-shadow: inset 0 0 0 1px var(--mark-edge); }
+.mark.claude { background: #D97757; }
+.mark.codex { background: #2B2B33; box-shadow: inset 0 0 0 1px var(--mark-edge); }
+.mark.gemini { background: #FFFFFF; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.14); }
+.mark.pa { background: var(--tint); }
+.mark.sm { width: 22px; height: 22px; border-radius: 6px; }
+.mark.lg { width: 52px; height: 52px; border-radius: 13px; }
+.mark.xl { width: 60px; height: 60px; border-radius: 15px; }
+.marks-stack { display: inline-flex; }
+.marks-stack .mark { box-shadow: 0 0 0 2px var(--surface), inset 0 0 0 1px var(--mark-edge); }
+.marks-stack .mark + .mark { margin-left: -6px; }
+
+/* Icon tile (like WatchIconTile) */
+.tile {
+  flex: 0 0 auto; width: 36px; height: 36px; border-radius: 9px; background: var(--tint-fill-12);
+  color: var(--tint); display: inline-flex; align-items: center; justify-content: center;
+}
+.tile svg { width: 20px; height: 20px; }
+.tile.good { background: var(--good-fill); color: var(--good); }
+.tile.gray { background: var(--gray-chip); color: var(--tertiary); }
+
+/* Fields */
+.field-label { font: var(--f-footnote); color: var(--meta-ink); margin: 0 0 4px; }
+.field {
+  background: var(--field-fill); border-radius: 10px; padding: 0 12px; min-height: 44px;
+  display: flex; align-items: center; font: var(--f-callout); color: var(--label);
+}
+.code-boxes { display: flex; gap: 6px; align-items: center; }
+.code-boxes .box {
+  flex: 1 1 0; height: 48px; border-radius: 10px; background: var(--field-fill);
+  display: flex; align-items: center; justify-content: center;
+  font: 600 22px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--label);
+}
+.code-boxes .gap { flex: 0 0 6px; height: 2px; background: var(--faint); border-radius: 1px; }
+.code-boxes .box.cursor { box-shadow: inset 0 0 0 2px var(--tint); }
+.code-boxes.error .box { box-shadow: inset 0 0 0 1.5px var(--attention); color: var(--tertiary); }
+
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--hairline);
+  border-top-color: var(--meta); flex: 0 0 auto;
+}
+.check-badge {
+  width: 22px; height: 22px; border-radius: 11px; background: var(--good); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+.check-badge svg { width: 13px; height: 13px; }

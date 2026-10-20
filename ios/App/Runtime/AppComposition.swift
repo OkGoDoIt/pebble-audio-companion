@@ -339,7 +339,19 @@ final class AppComposition {
 
         let index = TranscriptIndex(database: database)
         self.index = index
-        let donator = SpotlightDonator(index: index, spotlight: CoreSpotlightIndexer())
+        // The system index remembers what it already holds, so re-donating unchanged content
+        // writes nothing. Kept in the app's OWN Application Support, not the App Group: the
+        // side-by-side build shares the group but has a Spotlight index of its own.
+        let gateStore: any SpotlightIndexGateStore =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            .map {
+                FileSpotlightIndexGateStore(
+                    url: $0.appendingPathComponent("spotlight-index-gate.json"))
+            } ?? EphemeralSpotlightIndexGateStore()
+        let donator = SpotlightDonator(
+            index: index,
+            spotlight: CoreSpotlightIndexer(
+                gateStore: gateStore, log: { AppRuntimeLog.shared.record($0) }))
         self.donator = donator
         // Ask's index lookup is a QUESTION, not a search-box query: `.any` so its content words
         // recall on their own instead of every word having to appear in one transcript, and
@@ -1251,21 +1263,13 @@ final class AppComposition {
 
     private func install(nativeSurfaces: NativeSurfaceCoordinator) {
         // Spotlight donation reuses this database connection rather than opening a second pool,
-        // and reads each conversation's transcript so the index keeps the words that were
-        // actually said — the pass replaces the document, so donating without them erases them.
-        let queries = ConversationQueries(db: database)
-        let transcripts = self.transcripts
-        nativeSurfaces.attachDatabase(database) { conversationId in
-            guard let detail = try? await queries.detail(id: conversationId) else { return nil }
-            // Collapsed before it is indexed: 1 649 copies of one sentence in a single
-            // recording would otherwise dominate bm25 for every word in it, so searching
-            // "clothes" would return that one silent afternoon ahead of anything real.
-            //
-            // And only the conversation's own pieces of its segments: indexing whole members
-            // put the end of the previous conversation and the start of the next under this
-            // one's title, so a search for a phrase opened the conversation beside the one it
-            // was said in.
-            return ConversationText.joined(detail.pieces) { transcripts.load($0) }
+        // and the one donator, so the foreground pass honours "Siri & Spotlight can see" like
+        // everything else. Its conversations go through the pipeline's own donation, which
+        // indexes the conversation's pieces with loops collapsed — the pass replaces the
+        // document, so a thinner donation here would erase what the pipeline wrote.
+        let enrichment = runtime.enrichment
+        nativeSurfaces.attachDatabase(database, donator: donator) { conversationIds in
+            await enrichment.donate(conversationIds: conversationIds)
         }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces
@@ -1633,7 +1637,7 @@ final class AppComposition {
         // its own private serial queue ("com.apple.BGTaskScheduler (<identifier>)"), and the
         // `MainActor.assumeIsolated` below is a hard assertion: `dispatch_assert_queue` fails,
         // SIGTRAP, and the process dies before `run(backgroundTask:)` runs a single line. That
-        // was EVERY BGTask launch since the SwiftUI composition root (58c86ef): the crash reports
+        // was EVERY BGTask launch since the SwiftUI composition root (25b0872): the crash reports
         // named the queue, and the flight recorder saw only the relaunch. A crash there is not a
         // missed maintenance window — it kills the receiver mid-stream (15:49 on 2026-09-09: ten
         // minutes of audio) and it is what "relaunched every ~30 minutes overnight" actually was.

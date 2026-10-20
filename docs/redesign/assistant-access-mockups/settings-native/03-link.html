@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Link your server</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .finder { position: relative; height: 206px; border-radius: var(--card-r); background: var(--camera); overflow: hidden; flex: none; }
+  .finder .grain { position: absolute; inset: 0; background: radial-gradient(120% 90% at 30% 20%, #3a3a40 0%, #1c1c1e 55%, #111 100%); opacity: .9; }
+  .finder .frame { position: absolute; left: 50%; top: 50%; width: 138px; height: 138px; margin: -76px 0 0 -69px; }
+  .finder .frame i { position: absolute; width: 28px; height: 28px; border: 3.5px solid #fff; }
+  .finder .frame .a { left: 0; top: 0; border-right: 0; border-bottom: 0; border-radius: 10px 0 0 0; }
+  .finder .frame .b { right: 0; top: 0; border-left: 0; border-bottom: 0; border-radius: 0 10px 0 0; }
+  .finder .frame .c { left: 0; bottom: 0; border-right: 0; border-top: 0; border-radius: 0 0 0 10px; }
+  .finder .frame .d { right: 0; bottom: 0; border-left: 0; border-top: 0; border-radius: 0 0 10px 0; }
+  .finder .cap { position: absolute; left: 0; right: 0; bottom: 12px; text-align: center; font: 500 13px/18px var(--font); color: rgba(255,255,255,.88); }
+  .err-msg { margin-top: 10px; font: 400 13px/18px var(--font); color: var(--secondary-body); }
+  .err-msg .h { font: 600 13px/18px var(--font); color: var(--attention-text); }
+  .step-head { padding-bottom: 2px; }
+</style></head>
+<body><div class="presenting"><div class="statusbar" style="color:#fff"></div><div class="behind"></div>
+<div class="sheet">
+  <div class="grabber"></div>
+  <div class="navbar"><div class="lead"><button class="back"><i data-i="back"></i>Back</button></div><div class="title"></div><div class="trail"><button class="navtext">Cancel</button></div></div>
+  <div class="body">
+    <div class="step-head">
+      <h1>Link Your Server</h1>
+      <p>On your server, open Link a phone and hold this phone up to its code.</p>
+    </div>
+    <div class="finder" role="img" aria-label="Camera, looking for a code"><div class="grain"></div><div class="frame"><i class="a"></i><i class="b"></i><i class="c"></i><i class="d"></i></div><div class="cap">Looking for a code</div></div>
+    <div class="section-header">Or enter it</div>
+    <div class="card">
+      <div class="field-label">Server</div>
+      <div class="field"><span class="ph">Server address</span></div>
+      <div class="field-label" style="margin-top:12px">Code</div>
+      <div class="code" aria-label="Code, 8 characters"><div class="c cursor"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="sep"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div></div>
+      
+    </div>
+  </div>
+  <div class="dock"><button class="btn-primary" disabled>Link This Phone</button></div>
+</div></div>
+<script src="chrome.js"></script></body></html>

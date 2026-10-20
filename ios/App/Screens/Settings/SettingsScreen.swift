@@ -175,7 +175,7 @@ struct SettingsScreen: View {
     ///
     /// The policy — what on/off/pause each mean, what they write, what they clear — lives in
     /// `CaptureController`; this only supplies the transport. `applyCaptureIntent` is the
-    /// runtime follow-through every capture surface makes (`aa2a934`, `8ecace0`): the write
+    /// runtime follow-through every capture surface makes (`ae5758a`, `d4ec3a5`): the write
     /// alone is a preference, and a switch that wrote one used to lie in both directions — ON
     /// left the watch uncontacted while every surface said "Recording", OFF left the receiver
     /// running on someone who had just switched recording off.

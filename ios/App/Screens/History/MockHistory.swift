@@ -2,8 +2,9 @@ import AppDB
 import Foundation
 import Transcription
 
-// The History demo world (`-demo-data`, previews, the gallery). It reproduces the approved
-// mockups exactly, so the screen can be compared against them screenshot for screenshot:
+// The History demo world (`-demo-data`, previews, the gallery). It follows the layouts of the
+// approved mockups, round by round, with synthetic content (the mockups themselves were removed
+// from the repository because they were built from real recordings):
 //
 // - Tuesday September 22, "an ordinary day" — round10-background-audio (left)
 // - Thursday September 17, "a travel day" — round10-background-audio (right)

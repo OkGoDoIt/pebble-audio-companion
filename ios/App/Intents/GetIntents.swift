@@ -34,17 +34,29 @@ struct GetConversationsIntent: AppIntent {
     /// Enough for a day or a week in one answer; a Shortcut that wants more can loop by tag.
     static let limit = 100
 
-    func perform() async throws -> some IntentResult & ReturnsValue<[ConversationEntity]> {
+    /// Each entity carries its summary, tags, people and day, and its transcript only when
+    /// "Siri & Spotlight can see" is set to Everything — which is what a Shortcut piping this
+    /// into Use Model hands the model. Under Off it hands over nothing at all, and says why.
+    func perform() async throws
+        -> some IntentResult & ReturnsValue<[ConversationEntity]> & ProvidesDialog
+    {
         let source = await EntityDataSources.current
         let visibility = await source.visibility()
+        guard visibility.donates else {
+            return .result(
+                value: [],
+                dialog: IntentDialog(stringLiteral: Copy.Siri.offForSiri("conversations")))
+        }
         let trimmedTag = tag?.trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshots = await source.conversations(
             scope: scope.entityScope,
             tag: trimmedTag?.isEmpty == false ? trimmedTag : nil,
             limit: Self.limit
         )
+        let entities = snapshots.map { ConversationEntity(snapshot: $0, visibility: visibility) }
         return .result(
-            value: snapshots.map { ConversationEntity(snapshot: $0, visibility: visibility) })
+            value: entities,
+            dialog: IntentDialog(stringLiteral: Copy.Siri.conversationsFound(entities.count)))
     }
 }
 
@@ -70,9 +82,7 @@ struct GetTodaysRecapIntent: AppIntent {
     static func answer(recap: RecapEntitySnapshot?, visibility: SystemSearchVisibility) -> Answer {
         guard visibility.donates else {
             // The setting is the person's own; the answer says which one, not "no recap".
-            return Answer(
-                value: "",
-                spoken: "Siri & Spotlight can see is set to Off, so recaps stay in the app.")
+            return Answer(value: "", spoken: Copy.Siri.offForSiri("recaps"))
         }
         guard let text = recap?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
             !text.isEmpty
@@ -117,9 +127,16 @@ struct GetFollowUpsIntent: AppIntent {
 
     static let limit = 100
 
-    func perform() async throws -> some IntentResult & ReturnsValue<[FollowUpEntity]> {
+    func perform() async throws
+        -> some IntentResult & ReturnsValue<[FollowUpEntity]> & ProvidesDialog
+    {
         let source = await EntityDataSources.current
         let visibility = await source.visibility()
+        guard visibility.donates else {
+            return .result(
+                value: [],
+                dialog: IntentDialog(stringLiteral: Copy.Siri.offForSiri("follow-ups")))
+        }
         var entities: [FollowUpEntity] = []
         for snapshot in await source.followUps(
             scope: scope.entityScope, includeDone: includeDone, limit: Self.limit)
@@ -127,7 +144,9 @@ struct GetFollowUpsIntent: AppIntent {
             entities.append(
                 await FollowUpEntityQuery.entity(snapshot, visibility: visibility, source: source))
         }
-        return .result(value: entities)
+        return .result(
+            value: entities,
+            dialog: IntentDialog(stringLiteral: Copy.Siri.followUpsFound(entities.count)))
     }
 }
 

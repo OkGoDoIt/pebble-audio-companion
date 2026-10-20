@@ -343,7 +343,7 @@ searchable, still playable, still overrulable.
 
 ### 7.6 On the phone
 
-Version 2 with the judge stage (main@236f975) went on the phone at 15:36 on 2026-09-30.
+Version 2 with the judge stage (main@a6e2a34) went on the phone at 15:36 on 2026-09-30.
 **Version 3 is built but not installed**: the phone was unplugged during the install (CoreDevice
 4016). Until it is, the phone's judge stage acts on "loop" at 0.8, the rule round 2 rejected;
 its stored answers are re-applied by version 3 without asking again, but an AI title written

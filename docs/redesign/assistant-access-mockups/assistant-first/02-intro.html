@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Assistants intro</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .marks { display: flex; justify-content: center; gap: 10px; }
+  .grabber { position: absolute; top: 60px; left: 50%; width: 36px; height: 5px; margin-left: -18px; border-radius: 3px; background: var(--chevron); }
+  .hero { text-align: center; display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
+  .hero h1 { font: var(--f-screen-title); margin: 0; }
+  .example { background: var(--surface); border-radius: var(--option-radius); padding: 12px 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .q-bubble { align-self: flex-end; max-width: 82%; background: var(--gray-chip); border-radius: 18px 18px 6px 18px; padding: 8px 12px; font: var(--f-caption); color: var(--label); }
+  .answer { display: flex; gap: 10px; align-items: flex-start; }
+  .answer p { margin: 0; font: var(--f-caption); color: var(--label); }
+  .moment { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 6px 10px 6px 6px; border-radius: 10px; background: var(--tint-fill-10); color: var(--tint); font: 500 13px/18px var(--font); min-height: 36px; }
+  .moment .mark { width: 22px; height: 22px; border-radius: 6px; }
+  .moment .when { color: var(--tint); opacity: 0.8; font-weight: 400; }
+  .moment svg.ext { width: 14px; height: 14px; margin-left: auto; }
+  .shared .row { align-items: flex-start; padding: 12px 0; }
+  .shared .row .tile { margin-top: 1px; }
+  .actions { flex: 0 0 auto; padding: 0 16px 30px; display: flex; flex-direction: column; gap: 4px; }
+  .optional { text-align: center; font: var(--f-footnote); color: var(--meta-ink); margin: 0 0 8px; }
+</style></head>
+<body><div class="phone">
+  <div class="statusbar"></div>
+  <div class="grabber" aria-hidden="true"></div>
+  <div class="content no-tabbar" style="gap:14px;padding-top:20px;padding-bottom:12px">
+    <div class="marks">
+      <span class="mark lg" data-m="chatgpt"></span>
+      <span class="mark lg" data-m="claude"></span>
+      <span class="mark lg" data-m="gemini"></span>
+      <span class="mark lg" data-m="codex"></span>
+    </div>
+    <div class="hero">
+      <h1>Ask your assistants about your day</h1>
+      <p class="lede">ChatGPT, Claude, and others can answer from your conversations.</p>
+    </div>
+    <div class="example" aria-label="Example">
+      <div class="q-bubble">What did I agree to with Priya?</div>
+      <div class="answer">
+        <span class="mark sm" data-m="chatgpt"></span>
+        <div>
+          <p>You'll send her the revised launch checklist by Thursday, and she'll book the venue.</p>
+          <div class="moment"><span class="mark" data-m="pa"></span><span>Launch plan with Priya <span class="when">· Yesterday</span></span><i data-i="external" class="ext"></i></div>
+        </div>
+      </div>
+    </div>
+    <div class="list-card shared">
+      <div class="row"><span class="tile"><i data-i="doc"></i></span><div class="grow"><span class="t strong">Text goes to your server</span><span class="s">Your Pebble Audio server gets titles, summaries, transcripts, notes, follow-ups, and recaps.</span></div></div>
+      <div class="row"><span class="tile good"><i data-i="lockPhone"></i></span><div class="grow"><span class="t strong">Audio stays on this phone</span><span class="s">Unless you let assistants ask for a short clip.</span></div></div>
+      <div class="row"><span class="tile"><i data-i="personCheck"></i></span><div class="grow"><span class="t strong">You choose who reads it</span><span class="s">See what each one read. Disconnect any time.</span></div></div>
+    </div>
+  </div>
+  <div class="actions">
+    <p class="optional">Off until you set it up.</p>
+    <button class="btn filled">Link Your Server</button>
+    <button class="btn plain">Not Now</button>
+  </div>
+</div>
+<script src="chrome.js"></script>
+</body></html>

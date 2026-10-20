@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings Native Mockups</title>
+<style>
+  :root { --bg: #E9E9EE; --ink: #1C1C1E; --sub: #55555A; --tint: #5B5BD6; --card: #fff; --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #111113; --ink: #F2F2F7; --sub: #AEAEB2; --tint: #7D7DE8; --card: #1C1C1E; color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #111113; --ink: #F2F2F7; --sub: #AEAEB2; --tint: #7D7DE8; --card: #1C1C1E; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  header { max-width: 1180px; margin: 0 auto; padding: 40px 16px 8px; }
+  h1 { font: 700 30px/36px var(--font); margin: 0; letter-spacing: .2px; }
+  .slug { font: 600 13px/18px var(--font); color: var(--tint); text-transform: uppercase; letter-spacing: .5px; }
+  .statement { font: 400 17px/26px var(--font); max-width: 760px; margin: 14px 0 0; }
+  ul.dec { max-width: 860px; margin: 18px 0 0; padding-left: 20px; font: 400 15px/22px var(--font); color: var(--sub); }
+  ul.dec li { margin: 4px 0; }
+  ul.dec b { color: var(--ink); font-weight: 600; }
+  section { max-width: 1180px; margin: 0 auto; padding: 28px 16px 8px; }
+  h2 { font: 700 20px/25px var(--font); margin: 0 0 4px; }
+  h2 small { font: 400 15px/20px var(--font); color: var(--sub); margin-left: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 14px; }
+  figure { margin: 0; width: 251px; }
+  .phone { width: 251px; height: 527px; border-radius: 38px; background: #0b0b0c; padding: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  .phone .scr { width: 235px; height: 511px; border-radius: 31px; overflow: hidden; position: relative; }
+  .phone iframe { width: 390px; height: 844px; border: 0; transform: scale(0.6026); transform-origin: 0 0; position: absolute; left: 0; top: 0; pointer-events: none; }
+  figcaption { font: 600 14px/19px var(--font); margin-top: 10px; }
+  figcaption span { display: block; font-weight: 400; color: var(--sub); font-size: 13px; line-height: 18px; margin-top: 2px; }
+  a.open { color: var(--tint); text-decoration: none; font-weight: 400; font-size: 13px; display: inline-block; padding: 14px 8px; margin: -14px 0; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; color: var(--sub); font: 400 13px/18px var(--font); }
+  @media (max-width: 560px) { .row { justify-content: center; } h1 { font-size: 26px; line-height: 32px; } }
+</style></head>
+<body>
+<header>
+  <div class="slug">Direction · settings-native</div>
+  <h1>AI Assistants, as a native Settings flow</h1>
+  <p class="statement">Assistant access is an optional iOS setting, not a feature to sell. It lives as one row, AI Assistants · Off, beside Privacy. Setup is a modal sheet in the spirit of Health’s Sharing: an introduction that says what goes (text) and what stays (audio), then one step per screen. Link your server by camera or code. Choose what assistants may do, with clips and follow-ups off and the history scope explicit. Connect each assistant inside that assistant and watch its name appear here. The linked page answers, in order: is it working, who reads, what they may do, and the way out. Privacy keeps its stance card and gains one row, AI assistants can read, that names the readers.</p>
+  <ul class="dec">
+    <li><b>The row is named for the goal, not the machinery.</b> “AI Assistants” replaces “Pebble Audio server” on the Settings root; the server appears only where the person must act on it (linking, the status line).</li>
+    <li><b>Nothing syncs until the choices step is confirmed.</b> Cancel at any step leaves the phone as it was; that is why the sheet keeps Cancel after linking.</li>
+    <li><b>One added choice: which conversations.</b> “All conversations” (with the count the phone already knows) or “From today on”. Consent to history deserves its own answer.</li>
+    <li><b>Connection happens in the assistant.</b> The phone shows each assistant’s own path, offers Open in Claude and a Copy for the address, and turns a row into a green Connected as soon as the server reports it. No codes or keys are shown on the phone; the Mac tools get theirs on the server.</li>
+    <li><b>Privacy names readers, by position.</b> The stance headline says who can read (“ChatGPT and Claude can read your text”), and the new row repeats it as a value you can tap. The deletion note says plainly that what an assistant already read is up to that assistant.</li>
+    <li><b>No new motif.</b> Stance card, grouped lists, OptionCard, switches, and tiles are the app’s own; every color is an existing token.</li>
+    <li><b>Contrast fix.</b> Footnotes and row values use Tokens.tertiary (#6E6E73, 4.6:1 on the ground) instead of Tokens.meta (#8A8A8E, 3.1:1), which fails AA at 13 pt.</li>
+  </ul>
+</header>
+<main id="g"></main>
+<footer>All content is invented. Phone screens are 390 × 844 pt, drawn from ios/App/DesignSystem/Tokens.swift and the Settings components. Open any screen on its own for the full-size page; PNGs are in shots/, the contact sheet is sheet.png.</footer>
+<script>
+const groups = [
+  ['1 · Where it lives when off', 'One row on Settings; one calm line behind it', [
+    ['01-settings.html', 'Settings', 'AI Assistants · Off sits with Privacy.'],
+    ['01b-assistants-off.html', 'AI Assistants, off', 'A state and one line. Set Up opens the sheet.'],
+    ['07a-privacy-local.html', 'Privacy entry point', 'AI assistants can read · Off, under the stance.']]],
+  ['2 · Introduction', 'What goes, what stays, that it is optional', [
+    ['02-intro.html', 'Use with AI Assistants', 'Four facts, one action.'],
+    ['02-intro.html?theme=dark', 'Dark', '']]],
+  ['3 · Linking', 'Scan or type; what an expired code looks like', [
+    ['03-link.html', 'Link Your Server', 'Camera first, the code below it.'],
+    ['03b-link-expired.html', 'Code expired', 'The camera keeps looking for the new one.']]],
+  ['4 · Choices', 'Off by default, history scope explicit', [
+    ['04-choices.html', 'What Assistants Can Do', 'Confirms the link at the top.']]],
+  ['5 · Connect your assistants', 'Done inside each assistant; names appear here', [
+    ['05-connect.html', 'Claude', 'Open in Claude, or the manual path.'],
+    ['05b-connect-chatgpt.html', 'ChatGPT, Claude connected', 'Steps, a Copy, and a live wait line.']]],
+  ['6 · Linked, in Settings', 'Working? Who reads? What may they do? The way out.', [
+    ['06-linked.html', 'AI Assistants', 'Status, Sync, readers by name.'],
+    ['06-linked.html#bottom', 'Scrolled', 'Choices, the facts, Unlink.'],
+    ['06b-assistant.html', 'ChatGPT', 'What it read; Disconnect.']]],
+  ['7 · Privacy', 'Three states, same structure', [
+    ['07a-privacy-local.html', 'Nothing leaves', 'Green dot, the existing stance.'],
+    ['07b-privacy-server.html', 'Text on your server', 'No assistant yet.'],
+    ['07c-privacy-assistants.html', 'ChatGPT and Claude read', 'Named in the headline and the row.'],
+    ['07c-privacy-assistants.html?theme=dark', 'Dark', '']]],
+];
+const g = document.getElementById('g');
+for (const [h, sub, items] of groups) {
+  const s = document.createElement('section');
+  s.innerHTML = `<h2>${h}<small>${sub}</small></h2><div class="row">${items.map(([src, t, c]) => `
+    <figure><div class="phone"><div class="scr"><iframe src="${src}" title="${t}" loading="lazy" tabindex="-1"></iframe></div></div>
+    <figcaption>${t} <a class="open" href="${src.replace('#bottom','')}">Open</a><span>${c}</span></figcaption></figure>`).join('')}</div>`;
+  g.appendChild(s);
+}
+document.querySelectorAll('iframe').forEach((f) => f.addEventListener('load', () => {
+  try { if (f.getAttribute('src').endsWith('#bottom')) { const sc = f.contentDocument.querySelector('.scroll'); sc.scrollTop = 9999; } } catch (e) {}
+}));
+</script>
+</body></html>

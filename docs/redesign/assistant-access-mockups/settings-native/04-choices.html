@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Assistant choices</title><link rel="stylesheet" href="tokens.css">
+<style>
+  .linked { display: flex; align-items: center; justify-content: center; gap: 7px; font: 400 13px/18px var(--font); color: var(--secondary-body); margin-top: -2px; }
+  .linked b { font-weight: 600; color: var(--label); }
+  .opts { display: flex; flex-direction: column; gap: 8px; }
+  .list > .row.tall { align-items: flex-start; padding-top: 12px; padding-bottom: 12px; }
+  .list > .row.tall .switch { margin-top: 2px; }
+</style></head>
+<body><div class="presenting"><div class="statusbar" style="color:#fff"></div><div class="behind"></div>
+<div class="sheet">
+  <div class="grabber"></div>
+  <div class="navbar"><div class="lead"></div><div class="title"></div><div class="trail"><button class="navtext">Cancel</button></div></div>
+  <div class="body">
+    <div class="linked"><span class="dot good"></span><span>Linked to <b>pebbleaudio.okgodoit.com</b></span></div>
+    <div class="step-head" style="padding-top:2px">
+      <h1>What Assistants Can Do</h1>
+      <p>They can read the text. The rest is up to you.</p>
+    </div>
+    <div class="section-header">Share</div>
+    <div class="opts" role="radiogroup">
+      <div class="option sel" role="radio" aria-checked="true"><div class="grow" style="flex:1"><div class="t-headline">All conversations</div><div class="t-caption">214 conversations, back to August 12</div></div><span class="radio on"></span></div>
+      <div class="option" role="radio" aria-checked="false"><div class="grow" style="flex:1"><div class="t-headline">From today on</div><div class="t-caption">Earlier conversations stay on this phone</div></div><span class="radio"></span></div>
+    </div>
+    <div class="section-header">Assistants can also</div>
+    <div class="list">
+      <div class="row tall"><div class="grow"><div class="title">Ask for audio clips</div><div class="sub">A short clip of the moment they ask about, sent the next time Pebble Audio is running.</div></div><span class="switch" role="switch" aria-checked="false"></span></div>
+      <div class="row tall"><div class="grow"><div class="title">Add follow-ups and notes</div><div class="sub">They appear here with the assistant’s name on them.</div></div><span class="switch" role="switch" aria-checked="false"></span></div>
+    </div>
+  </div>
+  <div class="dock"><button class="btn-primary">Continue</button></div>
+</div></div>
+<script src="chrome.js"></script></body></html>

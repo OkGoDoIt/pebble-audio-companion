@@ -435,7 +435,7 @@ private struct SplitMix64: RandomNumberGenerator {
         #expect(reasons == ["watch dictation used the mic"])
     }
 
-    /// The day strip has drawn the watch's power-save pause as PAUSED since ee0b1f6; gap status
+    /// The day strip has drawn the watch's power-save pause as PAUSED since 02df7f7; gap status
     /// still counted it as loss, so the same stretch was paused on the strip and "missing" beside
     /// the recording. There is one classifier now, and it says pause.
     @Test func powerSavePauseIsNotCountedAsMissing() {
