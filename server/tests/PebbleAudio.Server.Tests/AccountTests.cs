@@ -35,6 +35,8 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 			ArchiveFixture.Item("brief", $"week:{ArchiveFixture.Key(oldWeek)}", ArchiveFixture.Brief("week", $"week:{ArchiveFixture.Key(oldWeek)}", oldWeek, oldWeek.AddDays(6), "Measuring week", "Measurements.", "A week of measuring.")),
 			ArchiveFixture.Item("followUp", "fu-old", ArchiveFixture.FollowUp("Order the wall paint", "conv-old", ArchiveFixture.At(old, 9, 10), ArchiveFixture.At(old, 9, 40))),
 			ArchiveFixture.Item("followUp", "fu-old-loose", ArchiveFixture.FollowUp("Call the plumber", null, null, ArchiveFixture.At(old, 12, 0))),
+			// Said in the old conversation, written down only recently: dated by when it was said.
+			ArchiveFixture.Item("followUp", "fu-old-said", ArchiveFixture.FollowUp("Return the tile samples", "conv-old", ArchiveFixture.At(old, 9, 20), ArchiveFixture.At(fx.Today.AddDays(-1), 12, 0))),
 			ArchiveFixture.Item("note", "note-old", ArchiveFixture.Note("conv-old", "Sizes", "Three meters forty.", ArchiveFixture.At(old, 9, 1), ArchiveFixture.At(old, 10, 0))),
 			ArchiveFixture.Item("coverage", ArchiveFixture.Key(old), fx.Coverage(old)),
 		];
@@ -72,7 +74,7 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 			Assert.False(await db.Transcripts.AnyAsync(t => t.UserId == u && t.ConversationId == "conv-old"));
 			Assert.False(await db.Recaps.AnyAsync(r => r.UserId == u && r.DayKey == old));
 			Assert.False(await db.Briefs.AnyAsync(b => b.UserId == u && b.PeriodKey == $"week:{ArchiveFixture.Key(oldWeek)}"));
-			Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == u && (f.Id == "fu-old" || f.Id == "fu-old-loose")));
+			Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == u && (f.Id == "fu-old" || f.Id == "fu-old-loose" || f.Id == "fu-old-said")));
 			Assert.False(await db.Notes.AnyAsync(n => n.UserId == u && n.Id == "note-old"));
 			Assert.False(await db.CoverageDays.AnyAsync(c => c.UserId == u && c.DayKey == old));
 			Assert.False(await db.Clips.AnyAsync(c => c.UserId == u));

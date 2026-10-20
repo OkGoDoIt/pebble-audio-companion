@@ -30,6 +30,12 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 		{
 			await SyncLocks.LockUserAsync(db, userId, cancellationToken);
 
+			// Follow-ups first: deleting a conversation clears the source time of the follow-ups said in it, and they
+			// are dated by that time.
+			var followUps = db.FollowUps.Where(f => f.UserId == userId && (f.SourceAt ?? f.CreatedAt) < from);
+			var followUpIds = await followUps.Select(f => f.Id).ToListAsync(cancellationToken);
+			await followUps.ExecuteDeleteAsync(cancellationToken);
+
 			var conversations = await db.Conversations
 				.Where(c => c.UserId == userId && c.StartedAt < from)
 				.Select(c => c.Id)
@@ -44,10 +50,6 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 
 			var briefs = await db.Briefs.Where(b => b.UserId == userId && b.EndDay < fromDay).Select(b => b.PeriodKey).ToListAsync(cancellationToken);
 			await db.Briefs.Where(b => b.UserId == userId && b.EndDay < fromDay).ExecuteDeleteAsync(cancellationToken);
-
-			var followUps = db.FollowUps.Where(f => f.UserId == userId && (f.SourceAt ?? f.CreatedAt) < from);
-			var followUpIds = await followUps.Select(f => f.Id).ToListAsync(cancellationToken);
-			await followUps.ExecuteDeleteAsync(cancellationToken);
 
 			// Notes on a conversation went with it above; one with none here is dated by when it was written.
 			var notes = db.Notes.Where(n =>
