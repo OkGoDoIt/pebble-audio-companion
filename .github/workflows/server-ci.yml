@@ -1,0 +1,72 @@
+name: Server CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-*.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-*.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: server
+
+jobs:
+  build-test:
+    name: Build and test
+    # Pinned: ubuntu-latest moves to 26.04 during Oct-Nov 2026.
+    runs-on: ubuntu-24.04
+
+    # The tests run against a real Postgres (generated tsvector columns, SKIP LOCKED).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PEBBLEAUDIO_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore PebbleAudio.Server.slnx
+
+      - name: Build
+        run: dotnet build PebbleAudio.Server.slnx --configuration Release --no-restore
+
+      - name: Check the migrations match the model
+        run: |
+          dotnet tool restore
+          dotnet ef migrations has-pending-model-changes \
+            --project src/PebbleAudio.Server/PebbleAudio.Server.csproj \
+            --startup-project src/PebbleAudio.Server/PebbleAudio.Server.csproj \
+            --configuration Release \
+            --no-build
+
+      - name: Test
+        run: dotnet test PebbleAudio.Server.slnx --configuration Release --no-build --logger trx --results-directory TestResults

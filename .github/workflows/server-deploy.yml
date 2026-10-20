@@ -1,0 +1,150 @@
+name: Server Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pebbleaudio-production
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: 10.0.x
+  ARTIFACT_NAME: pebbleaudio-production
+
+defaults:
+  run:
+    working-directory: server
+
+jobs:
+  deploy:
+    name: Deploy to pebbleaudio.okgodoit.com
+    # Pinned: ubuntu-latest moves to 26.04 during Oct-Nov 2026.
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      url: https://pebbleaudio.okgodoit.com
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PEBBLEAUDIO_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore PebbleAudio.Server.slnx
+
+      - name: Build
+        run: dotnet build PebbleAudio.Server.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test PebbleAudio.Server.slnx --configuration Release --no-build
+
+      - name: Restore .NET tools
+        run: dotnet tool restore
+
+      - name: Publish app
+        run: |
+          dotnet publish src/PebbleAudio.Server/PebbleAudio.Server.csproj \
+            --configuration Release \
+            --runtime linux-x64 \
+            --self-contained false \
+            --output artifacts/app
+
+      - name: Build EF migration bundle
+        env:
+          ConnectionStrings__DefaultConnection: Host=127.0.0.1;Port=5432;Database=pebbleaudio;Username=pebbleaudio;Password=placeholder
+        run: |
+          dotnet ef migrations bundle \
+            --project src/PebbleAudio.Server/PebbleAudio.Server.csproj \
+            --startup-project src/PebbleAudio.Server/PebbleAudio.Server.csproj \
+            --configuration Release \
+            --target-runtime linux-x64 \
+            --output artifacts/efbundle-real
+
+      # Keep in step with server/deploy/scripts/publish-local.sh, which builds the same artifact by hand.
+      - name: Package deployment artifact
+        run: |
+          mkdir -p artifacts/package
+          mkdir -p artifacts/package/nginx
+          cp -R artifacts/app artifacts/package/app
+          cp artifacts/efbundle-real artifacts/package/efbundle-real
+          cp deploy/nginx/pebbleaudio.conf artifacts/package/nginx/pebbleaudio.conf
+          cat > artifacts/package/efbundle <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          nginx_config="${script_dir}/nginx/pebbleaudio.conf"
+
+          if [[ -f "$nginx_config" ]]; then
+            install -m 644 "$nginx_config" /etc/nginx/sites-available/pebbleaudio
+            nginx -t
+            systemctl reload nginx
+          fi
+
+          chmod +x "${script_dir}/efbundle-real"
+          exec "${script_dir}/efbundle-real" "$@"
+          EOF
+          chmod +x artifacts/package/efbundle artifacts/package/efbundle-real
+          printf '%s\n' "${GITHUB_SHA}" > artifacts/package/REVISION
+          tar -C artifacts/package -czf "${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz" .
+
+      - name: Configure SSH
+        env:
+          PEBBLEAUDIO_DEPLOY_SSH_KEY: ${{ secrets.PEBBLEAUDIO_DEPLOY_SSH_KEY }}
+          PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
+          PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$PEBBLEAUDIO_DEPLOY_SSH_KEY" > ~/.ssh/pebbleaudio_deploy_key
+          chmod 600 ~/.ssh/pebbleaudio_deploy_key
+          ssh-keyscan -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" "$PEBBLEAUDIO_DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload artifact
+        env:
+          PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
+          PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
+          PEBBLEAUDIO_DEPLOY_USER: ${{ secrets.PEBBLEAUDIO_DEPLOY_USER }}
+        run: |
+          scp -i ~/.ssh/pebbleaudio_deploy_key -P "${PEBBLEAUDIO_DEPLOY_PORT:-22}" \
+            "${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz" \
+            "${PEBBLEAUDIO_DEPLOY_USER}@${PEBBLEAUDIO_DEPLOY_HOST}:/tmp/${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz"
+
+      - name: Deploy artifact
+        env:
+          PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
+          PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
+          PEBBLEAUDIO_DEPLOY_USER: ${{ secrets.PEBBLEAUDIO_DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/pebbleaudio_deploy_key -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" \
+            "${PEBBLEAUDIO_DEPLOY_USER}@${PEBBLEAUDIO_DEPLOY_HOST}" \
+            "sudo /opt/pebbleaudio/deploy-pebbleaudio.sh '${GITHUB_SHA}' '/tmp/${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz'"
