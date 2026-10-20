@@ -5,10 +5,11 @@ using PebbleAudio.Server.Jobs;
 namespace PebbleAudio.Server.Events;
 
 /// <summary>
-/// Delivers one event to one subscription. A 2xx is delivered. 410 means the receiver dropped the subscription, so
-/// it is deleted here too; 413 means the event is too large for it; neither is retried. Anything else (an error
-/// status, a timeout, no connection) fails the attempt, and the queue retries it with exponential backoff (30 s,
-/// doubling) up to the "Attempts for background work" setting, with a fresh timestamp and signature each time.
+/// Delivers one event to one subscription. A 2xx is delivered. 410 means the receiver will not take this event (it is
+/// stale, or it already has it: our timeout can fire after it accepted one), and 413 that it is too large; neither is
+/// retried, and the subscription stays (MCP Events: 410 ends the delivery, never the subscription). Anything else
+/// (an error status, a timeout, no connection) fails the attempt, and the queue retries it with exponential backoff
+/// (30 s, doubling) up to the "Attempts for background work" setting, with a fresh timestamp and signature each time.
 /// </summary>
 public sealed class EventDeliveryJob(
 	ArchiveDbContext db,
@@ -74,11 +75,11 @@ public sealed class EventDeliveryJob(
 				await db.SaveChangesAsync(cancellationToken);
 				return;
 			case StatusCodes.Status410Gone:
-				db.EventSubscriptions.Remove(subscription);
-				await db.SaveChangesAsync(cancellationToken);
+				await RecordErrorAsync(subscription, "The assistant declined an event as already handled or out of date.", now, cancellationToken);
 				logger.LogInformation(
-					"The callback for subscription {SubscriptionId} answered 410 Gone; the subscription was removed.",
-					subscription.Id);
+					"The callback for subscription {SubscriptionId} declined event {EventId} with 410 Gone; it is not sent again.",
+					subscription.Id,
+					delivery.EventId);
 				return;
 			case StatusCodes.Status413PayloadTooLarge:
 				await RecordErrorAsync(subscription, "The callback refused an event as too large.", now, cancellationToken);

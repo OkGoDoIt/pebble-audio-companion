@@ -12,7 +12,7 @@ namespace PebbleAudio.Server.Tests;
 
 /// <summary>
 /// MCP Events as ChatGPT drives them: discover, list, subscribe with a signed challenge, signed deliveries from the
-/// job queue, retries, and a 410 that ends the subscription.
+/// job queue, retries, and a 410 that ends one delivery and leaves the subscription.
 /// </summary>
 [Collection(ServerCollection.Name)]
 public sealed class EventsTests(ArchiveServerFactory factory)
@@ -51,7 +51,7 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 	}
 
 	[Fact]
-	public async Task ChatGPT_subscribes_after_a_signed_challenge_gets_signed_events_and_a_410_ends_the_subscription()
+	public async Task ChatGPT_subscribes_after_a_signed_challenge_gets_signed_events_and_a_410_drops_only_that_event()
 	{
 		var userId = await factory.CreateUserAsync();
 		var runner = factory.Services.GetRequiredService<JobRunner>();
@@ -154,18 +154,23 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 		Assert.Equal(1, retrying.Attempts);
 		Assert.Equal("The callback answered 503.", (await SubscriptionAsync(subscriptionId))!.LastError);
 
-		// The retry gets 410 Gone: the subscription is deleted, and the event is not tried again.
+		// The retry gets 410 Gone (the receiver had it after all, or no longer wants it): that event is not tried
+		// again, and the subscription stays for the next one.
 		answer = HttpStatusCode.Gone;
 		await MakeDueAsync(retrying.Id);
 		Assert.True(await runner.RunNextAsync(CancellationToken.None));
 		Assert.Equal(JobState.Succeeded, (await JobByIdAsync(retrying.Id)).State);
-		Assert.Null(await SubscriptionAsync(subscriptionId));
 		Assert.Equal(3, deliveries.Count);
 		Assert.Equal(Header(deliveries[1].Request, StandardWebhooks.IdHeader), Header(deliveries[2].Request, StandardWebhooks.IdHeader));
 		Assert.False(await runner.RunNextAsync(CancellationToken.None));
+		Assert.StartsWith("The assistant declined", (await SubscriptionAsync(subscriptionId))!.LastError);
+		answer = HttpStatusCode.OK;
+		await PublishRecapAsync(userId, version: 3);
+		Assert.True(await runner.RunNextAsync(CancellationToken.None));
+		Assert.Equal(4, deliveries.Count);
+		Assert.Null((await SubscriptionAsync(subscriptionId))!.LastError);
 
 		// A follow-up an assistant wrote is never announced; unsubscribing removes the subscription by its identity.
-		answer = HttpStatusCode.OK;
 		await McpRpc.ResultAsync(await api.SendAsync(Subscribe(token, EventCatalog.FollowUpCreated)));
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{
@@ -181,7 +186,11 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 			new { name = EventCatalog.FollowUpCreated, arguments = new { }, delivery = new { mode = "webhook", url = Receiver } },
 			perRequestMetadata: true)));
 		Assert.Equal("complete", unsubscribed.GetProperty("resultType").GetString());
-		Assert.False(await AnySubscriptionAsync(userId));
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			var left = await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().EventSubscriptions.Where(s => s.UserId == userId).Select(s => s.Id).ToListAsync();
+			Assert.Equal([subscriptionId], left);
+		}
 	}
 
 	private static HttpRequestMessage Subscribe(string token, string name, string secret = Secret, long? ttlMs = null)
