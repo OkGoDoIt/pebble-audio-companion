@@ -207,7 +207,9 @@ Read tools are annotated `readOnlyHint: true, destructiveHint: false, idempotent
 Write tools are `readOnlyHint: false, openWorldHint: false`, with `destructiveHint: false` for the additive
 `create_follow_up` and `create_note` and `true` for `update_follow_up` (it replaces and archives), need the `archive:write`
 scope, and are hidden from `tools/list` for a read-only connection. Every tool has a `title` and the ChatGPT
-status strings `openai/toolInvocation/invoking` and `…/invoked` (64 characters at most) in its `_meta`.
+status strings `openai/toolInvocation/invoking` and `…/invoked` (64 characters at most) in its `_meta`. Each
+`outputSchema` requires only the fields that are never null, since a null field is left out; every result in the
+test suite is checked against it.
 
 ### `get_status`
 

@@ -170,13 +170,27 @@ internal sealed class ArchiveFixture
 		return await McpClient.CreateAsync(transport);
 	}
 
-	/// <summary>Calls a tool and returns its structured content, checking the shape every result shares.</summary>
+	/// <summary>
+	/// Calls a tool and returns its structured content, checking the shape every result shares and that it matches the
+	/// output schema the tool declares in <c>tools/list</c> (OpenAI: structured content must match it).
+	/// </summary>
 	public static async Task<JsonElement> CallAsync(McpClient mcp, string tool, Dictionary<string, object?>? arguments = null)
 	{
 		var result = await mcp.CallToolAsync(tool, arguments ?? []);
 		Assert.True(result.IsError != true, $"{tool} answered with an error: {Text(result)}");
 		var structured = result.StructuredContent!.Value;
 		Assert.Equal("summary", structured.EnumerateObject().First().Name);
+		if (!Schemas.TryGetValue(mcp, out var schemas))
+		{
+			schemas = (await mcp.ListToolsAsync())
+				.Where(t => t.ProtocolTool.OutputSchema is not null)
+				.ToDictionary(t => t.Name, t => t.ProtocolTool.OutputSchema!.Value.Clone());
+			Schemas.AddOrUpdate(mcp, schemas);
+		}
+
+		var problems = new List<string>();
+		SchemaCheck.Validate(schemas[tool], structured, tool, problems);
+		Assert.True(problems.Count == 0, $"{tool}'s structured content does not match its output schema: {string.Join("; ", problems.Take(5))}");
 		Assert.Equal(2, result.Content.Count);
 		Assert.Equal(structured.GetProperty("summary").GetString(), Assert.IsType<TextContentBlock>(result.Content[0]).Text);
 		Assert.True(
@@ -184,6 +198,8 @@ internal sealed class ArchiveFixture
 			$"{tool}'s text content is not its structured content.");
 		return structured.Clone();
 	}
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<McpClient, Dictionary<string, JsonElement>> Schemas = new();
 
 	public static string Text(CallToolResult result) =>
 		string.Join("\n", result.Content.OfType<TextContentBlock>().Select(t => t.Text));
@@ -377,5 +393,76 @@ internal sealed class ArchiveFixture
 		["provider"] = null,
 		["templateId"] = "meeting-notes",
 		["title"] = title,
+	};
+}
+
+/// <summary>
+/// The part of JSON Schema the SDK's output schemas use: <c>type</c> (one or a list), <c>required</c>,
+/// <c>properties</c>, and <c>items</c>.
+/// </summary>
+internal static class SchemaCheck
+{
+	public static void Validate(JsonElement schema, JsonElement value, string path, List<string> problems)
+	{
+		if (schema.ValueKind != JsonValueKind.Object)
+		{
+			return;
+		}
+
+		if (schema.TryGetProperty("type", out var type))
+		{
+			var types = type.ValueKind == JsonValueKind.Array ? [.. type.EnumerateArray().Select(t => t.GetString())] : new[] { type.GetString() };
+			if (!types.Any(t => Is(t, value)))
+			{
+				problems.Add($"{path} is {value.ValueKind}, not {string.Join(" or ", types)}");
+				return;
+			}
+		}
+
+		if (value.ValueKind == JsonValueKind.Object)
+		{
+			if (schema.TryGetProperty("required", out var required))
+			{
+				foreach (var name in required.EnumerateArray().Select(r => r.GetString()!))
+				{
+					if (!value.TryGetProperty(name, out _))
+					{
+						problems.Add($"{path}.{name} is required and missing");
+					}
+				}
+			}
+
+			if (schema.TryGetProperty("properties", out var properties))
+			{
+				foreach (var property in properties.EnumerateObject())
+				{
+					if (value.TryGetProperty(property.Name, out var child))
+					{
+						Validate(property.Value, child, $"{path}.{property.Name}", problems);
+					}
+				}
+			}
+		}
+
+		if (value.ValueKind == JsonValueKind.Array && schema.TryGetProperty("items", out var items))
+		{
+			var index = 0;
+			foreach (var item in value.EnumerateArray())
+			{
+				Validate(items, item, $"{path}[{index++}]", problems);
+			}
+		}
+	}
+
+	private static bool Is(string? type, JsonElement value) => type switch
+	{
+		"object" => value.ValueKind == JsonValueKind.Object,
+		"array" => value.ValueKind == JsonValueKind.Array,
+		"string" => value.ValueKind == JsonValueKind.String,
+		"number" => value.ValueKind == JsonValueKind.Number,
+		"integer" => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
+		"boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
+		"null" => value.ValueKind == JsonValueKind.Null,
+		_ => true,
 	};
 }
