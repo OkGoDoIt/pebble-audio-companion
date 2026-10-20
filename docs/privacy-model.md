@@ -22,19 +22,42 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D5a | Audio clips on request | a short clip, only when an assistant asks | the person's server, then the asking assistant | a choice inside D5 | off |
 | D5b | Assistants may add | nothing leaves; follow-ups and notes come in | the phone | a choice inside D5 | off |
 | D6 | Assistants reading your server | whatever they read through the server: text, and clips if D5a | each connected assistant by name (ChatGPT, Claude, Codex on Mac, Muse, …), from the server's `access` list | connecting the assistant in that assistant | none connected |
-| D7 | Muse on your watch | the questions you ask Muse (typed in the app or spoken on the watch, sent as text) | Meta | pairing Muse | off |
-| D7a | Muse may look things up in your recordings | excerpts Muse asks for while answering | Meta | a choice inside D7 | off |
+| D7 | Muse | the questions you ask Muse, as text (typed in the app today; spoken on the watch once push-to-talk ships, transcribed per D1 first, so only text goes) and Muse's replies coming back | Meta | pairing Muse | off |
+| D7a | Muse may look things up in your recordings (planned) | transcript excerpts, including other people's words, only while Muse is answering a question you asked | Meta | a choice inside D7 | off |
 
 Invariants that stay commitments, whatever is on: the official Pebble app never receives audio;
 nothing goes to this app's developer; diagnostic logs stay on the phone; nothing is used for
 advertising or profiling by this app.
 
-**Muse facts to confirm (owner: the Muse session):** what exactly goes to Meta in each Muse
-feature, now and planned (typed questions; spoken questions as text or WAV; the transcript of a
-spoken question; any watch command results; `recordings.search` excerpts), where the gadget
-tokens live, what Meta does with interactions by default (training on by default per the Muse
-memo, switchable under Data controls), and whether anything reaches Meta when Muse is paired but
-not being asked. Fill in D7 and D7a from that.
+**Muse facts** (confirmed 2026-10-21 by the Muse session against branch `muse-link-app` and
+muse.ai/privacy; nothing has run on a device yet):
+- **Pairing, once.** After the wearer presses Yes on the watch, it advertises as `MuseGadget` plus
+  six hex digits for up to five minutes (visible to anyone nearby while open). The Muse app
+  connects and the watch relays setup bytes to this app. Meta receives the device name, a random
+  node id generated once (not tied to watch or phone hardware), a fixed version string, and the
+  developer SDK token. The app receives device tokens and the Muse account username; it then makes
+  one HTTPS call to api.muse.ai to check the tokens. No recording data is involved, and the
+  official Pebble app receives nothing.
+- **Typed questions** (Settings › Muse › Try it): the question text goes to Meta and the answer
+  comes back over an encrypted WebSocket. Meta also sees the phone's IP address and the client's
+  user agent. The app keeps no copy of questions or answers; Diagnostics records connection steps,
+  never question or answer text, never tokens. Whether questions appear in the Muse app's chat
+  history is unverified; the model says only "go to Meta".
+- **Paired but idle: nothing reaches Meta.** No background connection, no registration, no token
+  refresh; tokens rotate only when a question is asked. Meta knows the device exists (it is listed
+  in the person's Muse devices).
+- **Secrets** live in this phone's Keychain (`dev.audiocompanion.muse`, after first unlock, not
+  iCloud-synced, included in encrypted backups). Forget Muse deletes the tokens and username and
+  keeps the node id. Delete All Recordings does not unpair Muse (pairing is a connection, not
+  recorded data), matching how it treats provider keys.
+- **Meta's default:** training on interactions is on by default ("Help improve our AI models",
+  Muse app › Settings › Data controls; Meta says the switch also applies to past interactions; no
+  retention period is stated).
+- **Planned, not built:** spoken questions from the watch (text only goes to Meta; the question is
+  also in the normal recording when recording is on, since it is the same microphone); watch
+  commands Muse may call only while a question is open (show, vibrate, timer, alarm, draw an
+  image from a URL Muse chose, which the phone fetches), registered only for the length of that
+  question, with ok/error results; D7a lookups.
 
 ## 2. Inputs
 
@@ -54,7 +77,10 @@ struct ServerState: Equatable {
     var assistants: [Assistant]             // D6, from GET /sync/status `access`, cached with its fetch time
 }
 struct Assistant: Equatable { var name: String; var canWrite: Bool; var lastUsedAt: Date? }
-struct MuseState: Equatable { var lookupsAllowed: Bool }   // D7a; more fields from the Muse session
+struct MuseState: Equatable {
+    var lookupsAllowed: Bool                // D7a, false until that feature ships and is switched on
+    var spokenQuestions: Bool               // true once push-to-talk ships: D7 then says "typed in the app or spoken on the watch"
+}
 ```
 
 The stance is a pure function of `PrivacyInputs`, pinned by tests over every combination of the
@@ -77,7 +103,8 @@ sentence.
 4. **Siri & Spotlight can see**, unchanged.
 5. **Commitments**, derived: the "no server of its own" line changes when D5 is on; a line about
    what each vendor may keep is added for D1, D2, D6 and D7 ("What ChatGPT, Claude, and Meta keep
-   is governed by them, not by this app.").
+   is governed by them, not by this app."); with D7 on, one more line: "Meta may use your
+   questions to improve its AI. You can turn that off in the Muse app."
 
 ## 4. Turning things on
 
@@ -90,6 +117,8 @@ stays where it went ("Your server keeps what it already has").
 
 ## 5. Copy rules
 
-Heading plus at most one line per state; name receivers by name; say "text", "audio", "a clip",
+These rules cover every screen a person reads in normal use. Diagnostics is the one developer
+surface where a mechanism word may appear (a developer setting such as pasting a Muse SDK token
+lives there, not on the Muse screen). Heading plus at most one line per state; name receivers by name; say "text", "audio", "a clip",
 "your questions", never mechanisms (no MCP, OAuth, token, gadget, batch); no reassurance nobody
 asked for; Oxford comma; American spelling.
