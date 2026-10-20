@@ -1,12 +1,19 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using PebbleAudio.Server.Auth;
+using PebbleAudio.Server.Data;
 using PebbleAudio.Server.Settings;
+using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Pages.Admin;
 
-public sealed class SettingsModel(SettingsService settings) : PageModel
+public sealed class SettingsModel(SettingsService settings, SharingScopes scopes) : PageModel
 {
 	public ArchiveSettings Current { get; private set; } = ArchiveSettings.Defaults;
+
+	/// <summary>What the phone shares with the server; the phone owns it, so the page only shows it.</summary>
+	public AccountScope? Sharing { get; private set; }
 
 	[BindProperty]
 	public Dictionary<string, int> Values { get; set; } = [];
@@ -14,10 +21,30 @@ public sealed class SettingsModel(SettingsService settings) : PageModel
 	[BindProperty(SupportsGet = true)]
 	public bool Saved { get; set; }
 
+	/// <summary>The sharing scope in words: <c>All conversations</c>, <c>From October 21, 2026</c>, <c>The last 90 days</c>.</summary>
+	public string SharingText => Sharing switch
+	{
+		null => "All conversations",
+		{ Kind: SharingScopeKind.All } => "All conversations",
+		{ Kind: SharingScopeKind.Since, Since: { } since } =>
+			$"From {TimeZoneInfo.ConvertTime(since, Sharing.TimeZone).ToString("MMMM d, yyyy", CultureInfo.GetCultureInfo("en-US"))}",
+		{ Kind: SharingScopeKind.LastDays, Days: { } days } => days == 1 ? "The last day" : $"The last {days:N0} days",
+		_ => "All conversations",
+	};
+
 	public async Task OnGetAsync(CancellationToken cancellationToken)
 	{
 		Current = await settings.GetAsync(cancellationToken);
 		Values = [];
+		await LoadSharingAsync(cancellationToken);
+	}
+
+	private async Task LoadSharingAsync(CancellationToken cancellationToken)
+	{
+		if (User.UserId() is { } userId)
+		{
+			Sharing = await scopes.GetAsync(userId, cancellationToken);
+		}
 	}
 
 	public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
@@ -36,6 +63,7 @@ public sealed class SettingsModel(SettingsService settings) : PageModel
 		if (!ModelState.IsValid)
 		{
 			Current = await settings.GetAsync(cancellationToken);
+			await LoadSharingAsync(cancellationToken);
 			return Page();
 		}
 

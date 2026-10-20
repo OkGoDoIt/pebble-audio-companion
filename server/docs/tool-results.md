@@ -28,11 +28,11 @@ Conventions inside `structuredContent`:
 
 | Rule | Example |
 | --- | --- |
-| `summary` is the first key, one sentence, second person, no markup | `"On Tuesday, October 14 you had 4 conversations over 2 h 10 min; the day: kitchen tiles and the launch plan."` |
+| `summary` is the first key, one sentence, second person, no markup | `"On Wednesday, October 14 you had 3 conversations over 2 hours 10 minutes of recording: Tiles, teeth, and the launch."` |
 | Every instant is RFC 3339 **in the local offset** of the conversation (or, for days and follow-ups without a conversation, the account's time zone), whole seconds | `"2026-10-14T10:05:00+07:00"` |
 | `timeZone` is the IANA zone those offsets come from | `"Asia/Jakarta"` |
 | Days are the app's logical days: `yyyy-MM-dd`, rolling over at 5 AM local, not midnight | `"2026-10-14"` |
-| Durations are minutes, a number with one decimal | `"minutes": 36.5` |
+| Durations are minutes, a number rounded to one decimal | `"minutes": 36`, `"quietMinutes": 2.3` |
 | `t` is whole seconds from the conversation's start (wall clock, gaps included): the number a moment link carries | `"t": 812` |
 | `url` is an absolute, token-free link to the viewer (below) | |
 | A field whose value is null is left out; a list is always present, possibly empty; a boolean is always present | |
@@ -250,7 +250,7 @@ Newest first. Days the archive has nothing for are left out.
   "days": [
     {
       "day": "2026-10-14",
-      "weekday": "Tuesday",
+      "weekday": "Wednesday",
       "url": "https://pebbleaudio.okgodoit.com/d/2026-10-14",
       "headline": "Tiles, teeth, and the launch",
       "lineSummary": "Kitchen tiles with Sam, a dentist booking, and the launch plan with Priya and Leo.",
@@ -274,10 +274,10 @@ Argument: `date` (`yyyy-MM-dd`, `today`, or `yesterday`).
 
 ```json
 {
-  "summary": "On Tuesday, October 14 you had 4 conversations over 2 h 10 min: tiles, teeth, and the launch.",
+  "summary": "On Wednesday, October 14 you had 3 conversations over 2 hours 10 minutes of recording: Tiles, teeth, and the launch.",
   "found": true,
   "day": "2026-10-14",
-  "weekday": "Tuesday",
+  "weekday": "Wednesday",
   "url": "https://pebbleaudio.okgodoit.com/d/2026-10-14",
   "timeZone": "Asia/Jakarta",
   "recap": { "headline": "Tiles, teeth, and the launch", "lineSummary": "…", "text": "…" },
@@ -294,10 +294,10 @@ Argument: `date` (`yyyy-MM-dd`, `today`, or `yesterday`).
 `recap` and `coverage` are absent when the phone has not sent them. Coverage span `kind` is `recorded`, `quiet`,
 `missing`, `paused` (the person paused recording), or `off` (the watch was not recording). Conversations are in
 time order. A day with nothing is `found: false` with `candidates`, the nearest days that have recordings; so is
-an ambiguous `date` such as `tuesday` (the recent Tuesdays):
+an ambiguous `date` such as `wednesday` (the two most recent Wednesdays):
 
 ```json
-"candidates": [ { "day": "2026-10-14", "weekday": "Tuesday", "url": "…/d/2026-10-14", "headline": "Tiles, teeth, and the launch", "conversationCount": 4 } ]
+"candidates": [ { "day": "2026-10-14", "weekday": "Wednesday", "url": "…/d/2026-10-14", "headline": "Tiles, teeth, and the launch", "conversationCount": 3 } ]
 ```
 
 ### `get_brief`
@@ -358,7 +358,7 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 
 ```json
 {
-  "summary": "Kitchen tiles with Sam, Tuesday 10:05 to 10:41, 36 minutes, 1 minute of lost audio.",
+  "summary": "Kitchen tiles with Sam, Wednesday 10:05 AM to 10:41 AM, 36 minutes, 1 minute of lost audio.",
   "found": true,
   "…": "every conversation card field, with the whole overview",
   "gaps": [ { "…": "gap" } ],
@@ -380,8 +380,11 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 
 `include: "summary"` leaves out `transcript`; `include: "transcript"` leaves out `overview`, `followUps`, and
 `notes`. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
-window asked for, `shownCount` what fits. An unknown id is `found: false` with `candidates`, conversations whose
-title matches the id as words: `[ { "id", "title", "url", "day", "startedAt" } ]`.
+window asked for (items with `from_time` ≤ `at` ≤ `to_time`), `shownCount` what fits. A time without an offset
+is read on the conversation's wall clock. `gaps` lists every lost gap and the quiet gaps of a minute or more;
+shorter quiet stretches count in `quietMinutes` and appear as transcript items. An unknown id is `found: false`
+with `candidates`, conversations whose title matches the id as words:
+`[ { "id", "title", "url", "day", "startedAt" } ]`.
 
 ### `search`
 
@@ -404,7 +407,7 @@ follow-ups, and notes, best first. ChatGPT's canonical search shape is the `resu
       "at": "2026-10-14T10:10:12+07:00",
       "snippet": "…the matte **tiles** hide water spots, and the grout…"
     },
-    { "id": "recap:2026-10-14", "title": "Tuesday, October 14: Tiles, teeth, and the launch", "url": "…/d/2026-10-14", "kind": "recap", "day": "2026-10-14", "snippet": "…" }
+    { "id": "recap:2026-10-14", "title": "Wednesday, October 14: Tiles, teeth, and the launch", "url": "…/d/2026-10-14", "kind": "recap", "day": "2026-10-14", "snippet": "…" }
   ],
   "truncated": false
 }
@@ -428,10 +431,10 @@ Argument: `id` (any `id` from `search`, or a bare conversation id). ChatGPT's do
 
 ```json
 {
-  "summary": "Kitchen tiles with Sam, Tuesday 10:05 to 10:41.",
+  "summary": "Kitchen tiles with Sam, Wednesday 10:05 AM to 10:41 AM, 36 minutes, 1 minute of lost audio.",
   "id": "conv-kitchen",
   "title": "Kitchen tiles with Sam",
-  "text": "Kitchen tiles with Sam\nTuesday, October 14, 10:05–10:41 (Asia/Jakarta)\n\nSam and you compare…\n\n[10:05:12] Sam: The matte ones hide water spots.\n[10:09–10:10] (lost audio, watch)\n[10:14–10:16] (quiet)\n…",
+  "text": "Kitchen tiles with Sam\nWednesday, October 14, 2026, 10:05–10:41 (Asia/Jakarta)\nPeople: Roger, Sam\nTags: kitchen renovation, home\n\nSam and you compare…\n\nTranscript:\n[10:05:12] Sam: The matte ones hide water spots.\n[10:09–10:10] (lost audio, watch)\n[10:14–10:16] (quiet)\n…",
   "url": "https://pebbleaudio.okgodoit.com/c/conv-kitchen",
   "metadata": {
     "kind": "conversation",
@@ -457,18 +460,19 @@ an error result (ChatGPT's fetch has no "not found" shape).
 ### `list_follow_ups`
 
 Arguments: `status` (`open` (default), `done`, `snoozed`, `archived`, or `all`); optional `from`, `to` (days, by
-when it was said or created).
+when it was said or created); `cursor` (from `next`).
 
 ```json
 {
-  "summary": "You have 2 open follow-ups; the next is due Thursday: Send Sam the tile samples.",
+  "summary": "You have 2 open follow-ups; the next is due Friday, October 16: Send Sam the tile samples.",
   "status": "open",
   "followUps": [ { "…": "follow-up" } ],
   "truncated": false
 }
 ```
 
-Open ones come by due date (soonest first, undated after), then newest; the others newest first.
+Open ones come by due date (soonest first, undated after), then newest; the others newest first. A further page:
+`truncated: true` and `next.arguments.cursor`.
 
 ### `get_people`
 
@@ -482,7 +486,8 @@ No arguments.
 }
 ```
 
-Everyone the phone named, plus speaker names that never got a person, most conversations first. Two people with
+Everyone who speaks, by name, in a conversation the person shares (matched to a person or only named), most
+conversations first, at most *Items per assistant answer*. Two people with
 the same name are two entries with different `personId`.
 
 ### `get_tags`
@@ -531,7 +536,7 @@ default from its start for the *Longest audio clip* setting, 20 minutes).
 setting. When ready, the same link is also in the result's `_meta` for widgets (the model never sees `_meta`):
 
 ```json
-"_meta": { "pebbleaudio/audio": { "url": "https://…/clips/….m4a?exp=…&sig=…", "expiresAt": "2026-10-21T03:12:00Z", "mimeType": "audio/mp4", "conversationId": "conv-kitchen", "startedAt": "2026-10-14T03:10:00Z", "endedAt": "2026-10-14T03:15:00Z" } }
+"_meta": { "pebbleaudio/audio": { "url": "https://…/clips/….m4a?exp=…&sig=…", "expiresAt": "2026-10-21T03:12:00.000Z", "mimeType": "audio/mp4", "conversationId": "conv-kitchen", "startedAt": "2026-10-14T03:10:00.000Z", "endedAt": "2026-10-14T03:15:00.000Z" } }
 ```
 
 (`_meta` times are UTC.) A span outside the conversation is an error result.
