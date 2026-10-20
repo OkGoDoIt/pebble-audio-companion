@@ -18,7 +18,7 @@ struct SettingsServerScreen: View {
 
     var body: some View {
         @Bindable var flow = source.flow
-        AssistantScroll {
+        AssistantScroll(top: 8) {
             if source.sync.isLinked, source.sync.setupComplete {
                 linkedContent
             } else {

@@ -12,6 +12,9 @@ import SwiftUI
 struct AssistantScroll<Content: View>: View {
     var spacing: CGFloat = Tokens.blockGap
     var bottom: CGFloat = 24
+    /// 2 under the bar; 8 under the system large title, whose own bottom inset is 6 pt less than
+    /// the mockups' title margin and line box.
+    var top: CGFloat = 2
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -20,7 +23,7 @@ struct AssistantScroll<Content: View>: View {
                 content
             }
             .padding(.horizontal, Tokens.screenMargin)
-            .padding(.top, 2)
+            .padding(.top, top)
             .padding(.bottom, bottom)
             .frame(maxWidth: .infinity, alignment: .leading)
         }

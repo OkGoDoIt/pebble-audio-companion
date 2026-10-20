@@ -25,7 +25,7 @@ struct SettingsPrivacyScreen: View {
     var body: some View {
         @Bindable var settings = settings
         let presentation = self.presentation
-        AssistantScroll {
+        AssistantScroll(top: 8) {
             stanceCard(presentation)
 
             if presentation.hasFlow {
