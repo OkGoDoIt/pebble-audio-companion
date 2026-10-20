@@ -137,6 +137,31 @@ public enum AudioCompanionProtocol {
                 _ = r.u8()
                 return MuseSetupDisconnect(requestToken: r.u8(), delayMs: Int(r.u16()))
             }
+        case MessageId.assistantUpdate:
+            guard bytes.count >= 6 else { return .malformed(reason: "ASSISTANT_UPDATE too short") }
+            let turn = Int(bytes[2])
+            let kind = bytes[3]
+            let length = Int(bytes[5])
+            guard turn != 0, (1...5).contains(kind), length <= ProtocolConstants.assistantTextMaxBytes,
+                bytes.count >= 6 + length
+            else {
+                return .malformed(reason: "ASSISTANT_UPDATE turn \(turn) kind \(kind) length \(length) in \(bytes.count) bytes")
+            }
+            return .decoded(AssistantUpdate(
+                requestToken: Int(bytes[1]), turn: turn, kindRaw: kind, detail: bytes[4],
+                text: Array(bytes[6..<(6 + length)])))
+        case MessageId.watchAction:
+            guard bytes.count >= 5 else { return .malformed(reason: "WATCH_ACTION too short") }
+            let actionId = Int(bytes[2])
+            let length = Int(bytes[4])
+            guard actionId != 0, length >= 1, length <= ProtocolConstants.watchActionFragmentMaxBytes,
+                bytes.count >= 5 + length
+            else {
+                return .malformed(reason: "WATCH_ACTION id \(actionId) length \(length) in \(bytes.count) bytes")
+            }
+            return .decoded(WatchAction(
+                requestToken: Int(bytes[1]), actionId: actionId, flags: bytes[3],
+                payload: Array(bytes[5..<(5 + length)])))
         case MessageId.receiverHealth:
             return sized(bytes, 8) { r in
                 _ = r.u8()
@@ -191,6 +216,16 @@ public enum AudioCompanionProtocol {
                 return .malformed(reason: "MUSE_SETUP_RX length \(length) does not fit \(bytes.count) bytes")
             }
             return .decoded(MuseSetupRx(seq: Int(bytes[1]), flags: bytes[2], data: Array(bytes[4..<(4 + length)])))
+        case MessageId.pttEvent:
+            return sized(bytes, 8) { r in
+                _ = r.u8()
+                return PttEvent(turn: r.u8(), eventRaw: UInt8(r.u8()), detail: UInt8(r.u8()), frameCount: r.u16(), maxSeconds: r.u16())
+            }
+        case MessageId.watchActionResult:
+            return sized(bytes, 4) { r in
+                _ = r.u8()
+                return WatchActionResult(actionId: r.u8(), statusRaw: UInt8(r.u8()), value: r.u8())
+            }
         case MessageId.museSetupEvent:
             return sized(bytes, 7) { r in
                 _ = r.u8()
@@ -230,6 +265,8 @@ public enum AudioCompanionProtocol {
             }
         case MessageId.streamData:
             return decodeStreamData(bytes)
+        case MessageId.pttAudio:
+            return decodePttAudio(bytes)
         case MessageId.streamGap:
             return sized(bytes, 26) { r in
                 _ = r.u8()
@@ -287,6 +324,29 @@ public enum AudioCompanionProtocol {
                 name: name
             )
         )
+    }
+
+    private static func decodePttAudio(_ bytes: [UInt8]) -> DecodeResult {
+        guard bytes.count >= 5 else { return .malformed(reason: "PTT_AUDIO header too short: \(bytes.count) < 5") }
+        var r = WireReader(bytes)
+        _ = r.u8()
+        let turn = r.u8()
+        let firstFrame = r.u16()
+        let frameCount = r.u8()
+        guard turn != 0, (1...ProtocolConstants.maxFramesPerDataMsg).contains(frameCount) else {
+            return .malformed(reason: "PTT_AUDIO turn \(turn) frame_count \(frameCount)")
+        }
+        var frames: [[UInt8]] = []
+        frames.reserveCapacity(frameCount)
+        for i in 0..<frameCount {
+            guard r.remaining >= 2 else { return .malformed(reason: "PTT_AUDIO truncated at frame \(i) length") }
+            let length = r.u16()
+            guard length <= ProtocolConstants.maxEncodedFrameBytes, r.remaining >= length else {
+                return .malformed(reason: "PTT_AUDIO frame \(i) length \(length) does not fit")
+            }
+            frames.append(r.readBytes(length))
+        }
+        return .decoded(PttAudio(turn: turn, firstFrame: firstFrame, frames: frames))
     }
 
     private static func decodeStreamData(_ bytes: [UInt8]) -> DecodeResult {

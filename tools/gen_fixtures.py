@@ -33,6 +33,8 @@ MSG_MUSE_SETUP_OPEN = 0x09
 MSG_MUSE_SETUP_CLOSE = 0x0A
 MSG_MUSE_SETUP_TX = 0x0B
 MSG_MUSE_SETUP_DISCONNECT = 0x0C
+MSG_ASSISTANT_UPDATE = 0x0D
+MSG_WATCH_ACTION = 0x0E
 
 # Control message ids (watch -> phone)
 MSG_AUTH_RESULT = 0x41
@@ -43,12 +45,15 @@ MSG_ERROR = 0x45
 MSG_PHONE_MEDIA_QUERY = 0x46
 MSG_MUSE_SETUP_RX = 0x47
 MSG_MUSE_SETUP_EVENT = 0x48
+MSG_PTT_EVENT = 0x49
+MSG_WATCH_ACTION_RESULT = 0x4A
 
 # Data message ids (watch -> phone)
 MSG_STREAM_START = 0x80
 MSG_STREAM_DATA = 0x81
 MSG_STREAM_GAP = 0x82
 MSG_STREAM_STOP = 0x83
+MSG_PTT_AUDIO = 0x84
 
 RECEIVER_ID = bytes(range(32))  # deterministic test receiver id 00..1f
 
@@ -131,6 +136,60 @@ def muse_setup_rx(seq, flags, data: bytes) -> bytes:
 
 def muse_setup_event(event, detail, mtu, seconds_left) -> bytes:
     return struct.pack("<BBBHH", MSG_MUSE_SETUP_EVENT, event, detail, mtu, seconds_left)
+
+
+# Push-to-talk (Section 4.4) and watch actions (Section 4.5)
+
+
+def ptt_event(turn, event, detail, frame_count=0, max_seconds=0) -> bytes:
+    return struct.pack("<BBBBHH", MSG_PTT_EVENT, turn, event, detail, frame_count, max_seconds)
+
+
+def ptt_audio(turn, first_frame, frames) -> bytes:
+    out = struct.pack("<BBHB", MSG_PTT_AUDIO, turn, first_frame, len(frames))
+    for f in frames:
+        out += struct.pack("<H", len(f)) + f
+    return out
+
+
+def assistant_update(token, turn, kind, detail, text: bytes) -> bytes:
+    return struct.pack("<BBBBBB", MSG_ASSISTANT_UPDATE, token, turn, kind, detail, len(text)) + text
+
+
+def watch_action(token, action_id, flags, payload: bytes) -> bytes:
+    return struct.pack("<BBBBB", MSG_WATCH_ACTION, token, action_id, flags, len(payload)) + payload
+
+
+def watch_action_result(action_id, status, value) -> bytes:
+    return struct.pack("<BBBB", MSG_WATCH_ACTION_RESULT, action_id, status, value)
+
+
+def wa_str(text: str) -> bytes:
+    b = text.encode("utf-8")
+    return struct.pack("<B", len(b)) + b
+
+
+def wa_timer(seconds, label) -> bytes:
+    return struct.pack("<BI", 1, seconds) + wa_str(label)
+
+
+def wa_alarm(hour, minute, label) -> bytes:
+    return struct.pack("<BBB", 2, hour, minute) + wa_str(label)
+
+
+def wa_choose(timeout_s, question, options) -> bytes:
+    out = struct.pack("<BH", 3, timeout_s) + wa_str(question) + struct.pack("<B", len(options))
+    for o in options:
+        out += wa_str(o)
+    return out
+
+
+CHOOSE_PAYLOAD = wa_choose(
+    90,
+    "Which table should I book for Friday night? Both are at Odd Duck; the earlier one is by the window, the later one outside.",
+    ["7:00 PM, by the window", "8:30 PM, on the patio", "Either one is fine", "Neither, keep looking"],
+)
+assert len(CHOOSE_PAYLOAD) > 180 and len(CHOOSE_PAYLOAD) <= 512
 
 
 # What the Muse app writes first, and a plausible gadget reply (Muse community pairing v5).
@@ -535,6 +594,117 @@ def build_fixtures():
         "PHONE_MEDIA_STATE without its flags byte",
     )
 
+    # ---- Control (phone -> watch): push-to-talk answers and watch actions ----
+    heard = "What's the weather like in Austin this afternoon?".encode("utf-8")
+    add(
+        "assistant_update_heard",
+        assistant_update(0x41, 7, 1, 0, heard),
+        "control_in",
+        "parse",
+        {"request_token": 0x41, "turn": 7, "kind": 1, "detail": 0, "text_hex": heard.hex()},
+        "What Muse heard, shown as 'You said' on the watch",
+    )
+    answer = "It's 72°F and sunny in Austin, with a light breeze from the south.".encode("utf-8")
+    add(
+        "assistant_update_answer",
+        assistant_update(0x42, 7, 3, 0, answer),
+        "control_in",
+        "parse",
+        {"request_token": 0x42, "turn": 7, "kind": 3, "detail": 0, "text_hex": answer.hex()},
+        "A piece of the answer, appended on the watch (UTF-8, a multi-byte degree sign)",
+    )
+    add(
+        "assistant_update_done",
+        assistant_update(0x43, 7, 4, 0, b""),
+        "control_in",
+        "parse",
+        {"request_token": 0x43, "turn": 7, "kind": 4, "detail": 0, "text_hex": ""},
+        "The answer is complete",
+    )
+    add(
+        "assistant_update_error",
+        assistant_update(0x44, 8, 5, 1, b""),
+        "control_in",
+        "parse",
+        {"request_token": 0x44, "turn": 8, "kind": 5, "detail": 1, "text_hex": ""},
+        "The turn failed: the assistant isn't set up",
+    )
+    add(
+        "assistant_update_too_long",
+        assistant_update(0x45, 7, 3, 0, bytes(181)),
+        "control_in",
+        "reject",
+        {},
+        "ASSISTANT_UPDATE text of 181 bytes exceeds the 180-byte limit",
+    )
+    add(
+        "assistant_update_turn_zero",
+        assistant_update(0x46, 0, 3, 0, b"hi"),
+        "control_in",
+        "reject",
+        {},
+        "ASSISTANT_UPDATE for turn 0, which is never used",
+    )
+    add(
+        "assistant_update_truncated",
+        struct.pack("<BBBBBB", MSG_ASSISTANT_UPDATE, 0x47, 7, 3, 0, 40) + b"short",
+        "control_in",
+        "reject",
+        {},
+        "ASSISTANT_UPDATE length (40) overruns the 5 bytes present",
+    )
+    timer = wa_timer(600, "Pasta")
+    add(
+        "watch_action_timer",
+        watch_action(0x48, 3, 0, timer),
+        "control_in",
+        "parse",
+        {"request_token": 0x48, "action_id": 3, "flags": 0, "payload_hex": timer.hex()},
+        "A ten-minute timer labelled Pasta, in one write",
+    )
+    alarm = wa_alarm(6, 30, "Flight")
+    add(
+        "watch_action_alarm",
+        watch_action(0x49, 4, 0, alarm),
+        "control_in",
+        "parse",
+        {"request_token": 0x49, "action_id": 4, "flags": 0, "payload_hex": alarm.hex()},
+        "A one-off alarm at 6:30 labelled Flight",
+    )
+    first, rest = CHOOSE_PAYLOAD[:180], CHOOSE_PAYLOAD[180:]
+    add(
+        "watch_action_choose_first",
+        watch_action(0x4A, 5, 1, first),
+        "control_in",
+        "parse",
+        {"request_token": 0x4A, "action_id": 5, "flags": 1, "payload_hex": first.hex()},
+        "First write of a choice whose payload is longer than one write; MORE set",
+    )
+    add(
+        "watch_action_choose_last",
+        watch_action(0x4B, 5, 0, rest),
+        "control_in",
+        "parse",
+        {"request_token": 0x4B, "action_id": 5, "flags": 0, "payload_hex": rest.hex()},
+        "Last write of the same choice: same action id, MORE clear",
+    )
+    add(
+        "watch_action_id_zero",
+        watch_action(0x4C, 0, 0, timer),
+        "control_in",
+        "reject",
+        {},
+        "WATCH_ACTION with action id 0, which is never used",
+    )
+    add(
+        "watch_action_empty",
+        watch_action(0x4D, 6, 0, b""),
+        "control_in",
+        "reject",
+        {},
+        "WATCH_ACTION with no payload",
+    )
+
     # ---- Control (phone -> watch): Muse gadget setup relay ----
     add(
         "muse_setup_open",
@@ -691,6 +861,54 @@ def build_fixtures():
         "Watch asks the receiver whether the phone is actually playing audio",
     )
     add(
+        "ptt_event_start",
+        ptt_event(7, 1, 1, 0, 15),
+        "control_out",
+        "parse",
+        {"turn": 7, "event": 1, "detail": 1, "frame_count": 0, "max_seconds": 15},
+        "A Quick Launch hold confirmed a question; the watch records at most 15 s",
+    )
+    add(
+        "ptt_event_end",
+        ptt_event(7, 2, 1, 212, 0),
+        "control_out",
+        "parse",
+        {"turn": 7, "event": 2, "detail": 1, "frame_count": 212, "max_seconds": 0},
+        "Released after 212 frames (4.24 s)",
+    )
+    add(
+        "ptt_event_cancel_too_short",
+        ptt_event(9, 3, 1, 9, 0),
+        "control_out",
+        "parse",
+        {"turn": 9, "event": 3, "detail": 1, "frame_count": 9, "max_seconds": 0},
+        "Released right after the hold was confirmed: no question",
+    )
+    add(
+        "ptt_event_short",
+        ptt_event(7, 1, 1, 0, 15)[:-1],
+        "control_out",
+        "reject",
+        {},
+        "PTT_EVENT missing the last byte of max_seconds",
+    )
+    add(
+        "watch_action_result_chosen",
+        watch_action_result(5, 1, 1),
+        "control_out",
+        "parse",
+        {"action_id": 5, "status": 1, "value": 1},
+        "The wearer picked the second option",
+    )
+    add(
+        "watch_action_result_declined",
+        watch_action_result(5, 2, 0),
+        "control_out",
+        "parse",
+        {"action_id": 5, "status": 2, "value": 0},
+        "The wearer backed out of the choice",
+    )
+    add(
         "muse_setup_rx_get_device_info",
         muse_setup_rx(0, 0, MUSE_GET_DEVICE_INFO),
         "control_out",
@@ -844,6 +1062,22 @@ def build_fixtures():
         {"stream_id": 0x5EED0001, "first_sequence": 800, "first_sample_index": 256_000,
          "frame_count": 8, "frame_lengths": [22 + i for i in range(8)]},
         "Typical MTU-sized batch of 8 variable-length frames",
+    )
+    add(
+        "ptt_audio_2frames",
+        ptt_audio(7, 0, [frame_payload(0, 25), frame_payload(1, 27)]),
+        "data",
+        "parse",
+        {"turn": 7, "first_frame": 0, "frame_count": 2, "frame_lengths": [25, 27]},
+        "The first two frames of a question, from the press",
+    )
+    add(
+        "ptt_audio_truncated",
+        struct.pack("<BBHB", MSG_PTT_AUDIO, 7, 2, 3) + struct.pack("<H", 25) + frame_payload(2, 25),
+        "data",
+        "reject",
+        {},
+        "PTT_AUDIO announcing 3 frames but carrying 1",
     )
     add(
         "stream_data_32frames",

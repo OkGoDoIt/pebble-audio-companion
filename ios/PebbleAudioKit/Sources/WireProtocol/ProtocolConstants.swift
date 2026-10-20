@@ -44,6 +44,22 @@ public enum ProtocolConstants {
     // Info watch_capabilities bits (Section 3).
     /// The watch can host Muse's gadget setup service and relay it (Section 4.3).
     public static let capabilityMuseSetup: UInt32 = 1
+    /// Push-to-talk: PTT_EVENT/PTT_AUDIO from the watch, ASSISTANT_UPDATE to it (Section 4.4).
+    public static let capabilityPushToTalk: UInt32 = 1 << 1
+    /// Watch actions an assistant can ask for (Section 4.5).
+    public static let capabilityWatchActions: UInt32 = 1 << 2
+
+    // Push-to-talk and watch actions (Sections 4.4, 4.5).
+    public static let pttMaxSeconds: Int = 15
+    public static let assistantTextMaxBytes: Int = 180
+    public static let watchActionFragmentMaxBytes: Int = 180
+    public static let watchActionPayloadMaxBytes: Int = 512
+    public static let watchActionFlagMore: UInt8 = 1
+    public static let watchActionLabelMaxBytes: Int = 48
+    public static let watchActionQuestionMaxBytes: Int = 120
+    public static let watchActionOptionMaxBytes: Int = 48
+    public static let watchActionMinOptions: Int = 2
+    public static let watchActionMaxOptions: Int = 6
 
     // MUSE_SETUP_RX flags (Section 4.3).
     public static let museSetupRxFlagMore: UInt8 = 1
@@ -69,6 +85,8 @@ public enum MessageId {
     public static let museSetupClose: Int = 0x0A
     public static let museSetupTx: Int = 0x0B
     public static let museSetupDisconnect: Int = 0x0C
+    public static let assistantUpdate: Int = 0x0D
+    public static let watchAction: Int = 0x0E
 
     // Watch -> phone control notifications (0x41-0x7F).
     public static let authResult: Int = 0x41
@@ -79,10 +97,13 @@ public enum MessageId {
     public static let phoneMediaQuery: Int = 0x46
     public static let museSetupRx: Int = 0x47
     public static let museSetupEvent: Int = 0x48
+    public static let pttEvent: Int = 0x49
+    public static let watchActionResult: Int = 0x4A
 
     // Watch -> phone data notifications (0x80-0x9F).
     public static let streamStart: Int = 0x80
     public static let streamData: Int = 0x81
     public static let streamGap: Int = 0x82
     public static let streamStop: Int = 0x83
+    public static let pttAudio: Int = 0x84
 }

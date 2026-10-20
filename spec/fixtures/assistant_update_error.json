@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "The turn failed: the assistant isn't set up",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "kind": 5,
+    "request_token": 68,
+    "text_hex": "",
+    "turn": 8
+  },
+  "name": "assistant_update_error",
+  "size": 6
+}

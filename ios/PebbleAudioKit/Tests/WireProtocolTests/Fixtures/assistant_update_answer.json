@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "A piece of the answer, appended on the watch (UTF-8, a multi-byte degree sign)",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "kind": 3,
+    "request_token": 66,
+    "text_hex": "49742773203732c2b04620616e642073756e6e7920696e2041757374696e2c20776974682061206c6967687420627265657a652066726f6d2074686520736f7574682e",
+    "turn": 7
+  },
+  "name": "assistant_update_answer",
+  "size": 73
+}

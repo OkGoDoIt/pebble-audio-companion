@@ -126,6 +126,40 @@ object AudioCompanionProtocol {
                 r.u8()
                 MuseSetupDisconnect(requestToken = r.u8(), delayMs = r.u16())
             }
+            MessageId.ASSISTANT_UPDATE -> {
+                if (bytes.size < 6) return DecodeResult.Malformed("ASSISTANT_UPDATE too short: ${bytes.size}")
+                val turn = bytes[2].toInt() and 0xFF
+                val kind = bytes[3].toInt() and 0xFF
+                val length = bytes[5].toInt() and 0xFF
+                if (turn == 0 || kind !in 1..5 || length > ProtocolConstants.ASSISTANT_TEXT_MAX_BYTES || bytes.size < 6 + length) {
+                    return DecodeResult.Malformed("ASSISTANT_UPDATE turn $turn kind $kind length $length in ${bytes.size} bytes")
+                }
+                DecodeResult.Decoded(
+                    AssistantUpdate(
+                        requestToken = bytes[1].toInt() and 0xFF,
+                        turn = turn,
+                        kindRaw = kind,
+                        detail = bytes[4].toInt() and 0xFF,
+                        text = bytes.copyOfRange(6, 6 + length),
+                    ),
+                )
+            }
+            MessageId.WATCH_ACTION -> {
+                if (bytes.size < 5) return DecodeResult.Malformed("WATCH_ACTION too short: ${bytes.size}")
+                val actionId = bytes[2].toInt() and 0xFF
+                val length = bytes[4].toInt() and 0xFF
+                if (actionId == 0 || length < 1 || length > ProtocolConstants.WATCH_ACTION_FRAGMENT_MAX_BYTES || bytes.size < 5 + length) {
+                    return DecodeResult.Malformed("WATCH_ACTION id $actionId length $length in ${bytes.size} bytes")
+                }
+                DecodeResult.Decoded(
+                    WatchAction(
+                        requestToken = bytes[1].toInt() and 0xFF,
+                        actionId = actionId,
+                        flags = bytes[3].toInt() and 0xFF,
+                        payload = bytes.copyOfRange(5, 5 + length),
+                    ),
+                )
+            }
             MessageId.RECEIVER_HEALTH -> sized(bytes, 8) { r ->
                 r.u8()
                 ReceiverHealth(
@@ -177,6 +211,14 @@ object AudioCompanionProtocol {
                     ),
                 )
             }
+            MessageId.PTT_EVENT -> sized(bytes, 8) { r ->
+                r.u8()
+                PttEvent(turn = r.u8(), eventRaw = r.u8(), detail = r.u8(), frameCount = r.u16(), maxSeconds = r.u16())
+            }
+            MessageId.WATCH_ACTION_RESULT -> sized(bytes, 4) { r ->
+                r.u8()
+                WatchActionResult(actionId = r.u8(), statusRaw = r.u8(), value = r.u8())
+            }
             MessageId.MUSE_SETUP_EVENT -> sized(bytes, 7) { r ->
                 r.u8()
                 MuseSetupEvent(eventRaw = r.u8(), detail = r.u8(), mtu = r.u16(), secondsLeft = r.u16())
@@ -210,6 +252,7 @@ object AudioCompanionProtocol {
                 )
             }
             MessageId.STREAM_DATA -> decodeStreamData(bytes)
+            MessageId.PTT_AUDIO -> decodePttAudio(bytes)
             MessageId.STREAM_GAP -> sized(bytes, 26) { r ->
                 r.u8()
                 StreamGap(
@@ -260,6 +303,28 @@ object AudioCompanionProtocol {
                 name = name,
             )
         )
+    }
+
+    private fun decodePttAudio(bytes: ByteArray): DecodeResult {
+        if (bytes.size < 5) return DecodeResult.Malformed("PTT_AUDIO header too short: ${bytes.size} < 5")
+        val r = WireReader(bytes)
+        r.u8()
+        val turn = r.u8()
+        val firstFrame = r.u16()
+        val frameCount = r.u8()
+        if (turn == 0 || frameCount !in 1..ProtocolConstants.MAX_FRAMES_PER_DATA_MSG) {
+            return DecodeResult.Malformed("PTT_AUDIO turn $turn frame_count $frameCount")
+        }
+        val frames = ArrayList<ByteArray>(frameCount)
+        for (i in 0 until frameCount) {
+            if (r.remaining < 2) return DecodeResult.Malformed("PTT_AUDIO truncated at frame $i length")
+            val length = r.u16()
+            if (length > ProtocolConstants.MAX_ENCODED_FRAME_BYTES || r.remaining < length) {
+                return DecodeResult.Malformed("PTT_AUDIO frame $i length $length does not fit")
+            }
+            frames.add(r.bytes(length))
+        }
+        return DecodeResult.Decoded(PttAudio(turn = turn, firstFrame = firstFrame, frames = frames))
     }
 
     private fun decodeStreamData(bytes: ByteArray): DecodeResult {

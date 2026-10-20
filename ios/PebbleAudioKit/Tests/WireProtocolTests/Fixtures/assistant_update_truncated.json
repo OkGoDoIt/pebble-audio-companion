@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "ASSISTANT_UPDATE length (40) overruns the 5 bytes present",
+  "expect": "reject",
+  "fields": {},
+  "name": "assistant_update_truncated",
+  "size": 11
+}

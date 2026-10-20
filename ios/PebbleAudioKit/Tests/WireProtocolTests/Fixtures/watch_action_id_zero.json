@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "WATCH_ACTION with action id 0, which is never used",
+  "expect": "reject",
+  "fields": {},
+  "name": "watch_action_id_zero",
+  "size": 16
+}

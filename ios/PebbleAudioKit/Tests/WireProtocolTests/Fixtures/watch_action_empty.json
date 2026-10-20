@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "WATCH_ACTION with no payload",
+  "expect": "reject",
+  "fields": {},
+  "name": "watch_action_empty",
+  "size": 5
+}

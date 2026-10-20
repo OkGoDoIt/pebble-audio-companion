@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "Released right after the hold was confirmed: no question",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "event": 3,
+    "frame_count": 9,
+    "max_seconds": 0,
+    "turn": 9
+  },
+  "name": "ptt_event_cancel_too_short",
+  "size": 8
+}

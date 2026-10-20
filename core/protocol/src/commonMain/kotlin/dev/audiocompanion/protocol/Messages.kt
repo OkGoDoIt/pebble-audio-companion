@@ -629,3 +629,117 @@ data class StreamStop(
         .u32(countersCrcOrZero)
         .toByteArray()
 }
+
+// ---------------------------------------------------------------------------------------------
+// Push-to-talk (Section 4.4) and watch actions (Section 4.5). The Android app does not run
+// either; these keep the shared wire contract complete.
+// ---------------------------------------------------------------------------------------------
+
+/** A question begins (1), ends (2) or is called off (3) on the watch. */
+data class PttEvent(
+    val turn: Int,
+    val eventRaw: Int,
+    val detail: Int,
+    val frameCount: Int = 0,
+    val maxSeconds: Int = 0,
+) : ControlOutMessage {
+    override fun encode(): ByteArray = WireWriter(8)
+        .u8(MessageId.PTT_EVENT)
+        .u8(turn)
+        .u8(eventRaw)
+        .u8(detail)
+        .u16(frameCount)
+        .u16(maxSeconds)
+        .toByteArray()
+}
+
+/** The question's audio: Speex frames numbered from 0 at the press. */
+class PttAudio(
+    val turn: Int,
+    val firstFrame: Int,
+    val frames: List<ByteArray>,
+) : DataMessage {
+    override fun encode(): ByteArray {
+        val w = WireWriter(5 + frames.sumOf { 2 + it.size })
+            .u8(MessageId.PTT_AUDIO)
+            .u8(turn)
+            .u16(firstFrame)
+            .u8(frames.size)
+        for (frame in frames) w.u16(frame.size).bytes(frame)
+        return w.toByteArray()
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is PttAudio && other.turn == turn && other.firstFrame == firstFrame &&
+            other.frames.size == frames.size && other.frames.indices.all { other.frames[it].contentEquals(frames[it]) }
+
+    override fun hashCode(): Int = (turn * 31 + firstFrame) * 31 + frames.size
+
+    override fun toString(): String = "PttAudio(turn=$turn, firstFrame=$firstFrame, ${frames.size} frames)"
+}
+
+/** What the assistant heard (1), is doing (2), answered (3), done (4), or why it failed (5). */
+class AssistantUpdate(
+    val requestToken: Int,
+    val turn: Int,
+    val kindRaw: Int,
+    val detail: Int,
+    val text: ByteArray,
+) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(6 + text.size)
+        .u8(MessageId.ASSISTANT_UPDATE)
+        .u8(requestToken)
+        .u8(turn)
+        .u8(kindRaw)
+        .u8(detail)
+        .u8(text.size)
+        .bytes(text)
+        .toByteArray()
+
+    override fun equals(other: Any?): Boolean =
+        other is AssistantUpdate && other.requestToken == requestToken && other.turn == turn &&
+            other.kindRaw == kindRaw && other.detail == detail && other.text.contentEquals(text)
+
+    override fun hashCode(): Int = ((requestToken * 31 + turn) * 31 + kindRaw) * 31 + text.contentHashCode()
+
+    override fun toString(): String = "AssistantUpdate(turn=$turn, kind=$kindRaw, ${text.size} bytes)"
+}
+
+/** One write of a watch action; a long payload spans writes with the same actionId. */
+class WatchAction(
+    val requestToken: Int,
+    val actionId: Int,
+    val flags: Int,
+    val payload: ByteArray,
+) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(5 + payload.size)
+        .u8(MessageId.WATCH_ACTION)
+        .u8(requestToken)
+        .u8(actionId)
+        .u8(flags)
+        .u8(payload.size)
+        .bytes(payload)
+        .toByteArray()
+
+    override fun equals(other: Any?): Boolean =
+        other is WatchAction && other.requestToken == requestToken && other.actionId == actionId &&
+            other.flags == flags && other.payload.contentEquals(payload)
+
+    override fun hashCode(): Int = (requestToken * 31 + actionId) * 31 + payload.contentHashCode()
+
+    override fun toString(): String = "WatchAction(id=$actionId, flags=$flags, ${payload.size} bytes)"
+}
+
+/** How a watch action ended: 1 done, 2 declined, 3 timed out, 4 failed, 5 unsupported. */
+data class WatchActionResult(
+    val actionId: Int,
+    val statusRaw: Int,
+    val value: Int,
+) : ControlOutMessage {
+    override fun encode(): ByteArray = WireWriter(4)
+        .u8(MessageId.WATCH_ACTION_RESULT)
+        .u8(actionId)
+        .u8(statusRaw)
+        .u8(value)
+        .toByteArray()
+}

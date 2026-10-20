@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Last write of the same choice: same action id, MORE clear",
+  "expect": "parse",
+  "fields": {
+    "action_id": 5,
+    "flags": 0,
+    "payload_hex": "6f6e652069732066696e65154e6569746865722c206b656570206c6f6f6b696e67",
+    "request_token": 75
+  },
+  "name": "watch_action_choose_last",
+  "size": 38
+}

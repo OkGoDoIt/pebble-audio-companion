@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "ASSISTANT_UPDATE for turn 0, which is never used",
+  "expect": "reject",
+  "fields": {},
+  "name": "assistant_update_turn_zero",
+  "size": 8
+}

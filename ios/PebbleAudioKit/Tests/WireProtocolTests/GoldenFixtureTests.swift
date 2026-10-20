@@ -195,6 +195,42 @@ import Testing
                 "app_state": String(m.appStateRaw),
                 "queue_depth_frames": String(m.queueDepthFrames),
             ]
+        case let m as AssistantUpdate:
+            return [
+                "request_token": String(m.requestToken),
+                "turn": String(m.turn),
+                "kind": String(m.kindRaw),
+                "detail": String(m.detail),
+                "text_hex": hex(m.text),
+            ]
+        case let m as WatchAction:
+            return [
+                "request_token": String(m.requestToken),
+                "action_id": String(m.actionId),
+                "flags": String(m.flags),
+                "payload_hex": hex(m.payload),
+            ]
+        case let m as PttEvent:
+            return [
+                "turn": String(m.turn),
+                "event": String(m.eventRaw),
+                "detail": String(m.detail),
+                "frame_count": String(m.frameCount),
+                "max_seconds": String(m.maxSeconds),
+            ]
+        case let m as WatchActionResult:
+            return [
+                "action_id": String(m.actionId),
+                "status": String(m.statusRaw),
+                "value": String(m.value),
+            ]
+        case let m as PttAudio:
+            return [
+                "turn": String(m.turn),
+                "first_frame": String(m.firstFrame),
+                "frame_count": String(m.frames.count),
+                "frame_lengths": "[" + m.frames.map { String($0.count) }.joined(separator: ", ") + "]",
+            ]
         case let m as MuseSetupOpen:
             return [
                 "request_token": String(m.requestToken),

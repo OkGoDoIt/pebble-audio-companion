@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "Released after 212 frames (4.24 s)",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "event": 2,
+    "frame_count": 212,
+    "max_seconds": 0,
+    "turn": 7
+  },
+  "name": "ptt_event_end",
+  "size": 8
+}

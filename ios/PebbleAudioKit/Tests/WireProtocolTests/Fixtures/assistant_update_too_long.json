@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "ASSISTANT_UPDATE text of 181 bytes exceeds the 180-byte limit",
+  "expect": "reject",
+  "fields": {},
+  "name": "assistant_update_too_long",
+  "size": 187
+}

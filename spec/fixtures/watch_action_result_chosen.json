@@ -1,0 +1,12 @@
+{
+  "channel": "control_out",
+  "description": "The wearer picked the second option",
+  "expect": "parse",
+  "fields": {
+    "action_id": 5,
+    "status": 1,
+    "value": 1
+  },
+  "name": "watch_action_result_chosen",
+  "size": 4
+}

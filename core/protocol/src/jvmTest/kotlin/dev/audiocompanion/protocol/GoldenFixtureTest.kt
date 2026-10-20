@@ -171,6 +171,37 @@ class GoldenFixtureTest {
             "app_state" to message.appStateRaw.toString(),
             "queue_depth_frames" to message.queueDepthFrames.toString(),
         )
+        is AssistantUpdate -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "turn" to message.turn.toString(),
+            "kind" to message.kindRaw.toString(),
+            "detail" to message.detail.toString(),
+            "text_hex" to message.text.toHex(),
+        )
+        is WatchAction -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "action_id" to message.actionId.toString(),
+            "flags" to message.flags.toString(),
+            "payload_hex" to message.payload.toHex(),
+        )
+        is PttEvent -> mapOf(
+            "turn" to message.turn.toString(),
+            "event" to message.eventRaw.toString(),
+            "detail" to message.detail.toString(),
+            "frame_count" to message.frameCount.toString(),
+            "max_seconds" to message.maxSeconds.toString(),
+        )
+        is WatchActionResult -> mapOf(
+            "action_id" to message.actionId.toString(),
+            "status" to message.statusRaw.toString(),
+            "value" to message.value.toString(),
+        )
+        is PttAudio -> mapOf(
+            "turn" to message.turn.toString(),
+            "first_frame" to message.firstFrame.toString(),
+            "frame_count" to message.frames.size.toString(),
+            "frame_lengths" to message.frames.map { it.size.toString() }.toString(),
+        )
         is MuseSetupOpen -> mapOf(
             "request_token" to message.requestToken.toString(),
             "window_secs" to message.windowSeconds.toString(),

@@ -14,6 +14,9 @@ import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
 import dev.audiocompanion.protocol.MuseSetupEvent
 import dev.audiocompanion.protocol.MuseSetupRx
+import dev.audiocompanion.protocol.PttAudio
+import dev.audiocompanion.protocol.PttEvent
+import dev.audiocompanion.protocol.WatchActionResult
 import dev.audiocompanion.protocol.PauseReason
 import dev.audiocompanion.protocol.PauseRequest
 import dev.audiocompanion.protocol.PhoneMediaQuery
@@ -486,7 +489,7 @@ class AudioReceiverSession(
             // then judges playback by the media service alone. The native iOS app answers it.
             is PhoneMediaQuery -> Unit
             // Muse gadget pairing runs only in the iOS app; nothing here opens a window.
-            is MuseSetupRx, is MuseSetupEvent -> Unit
+            is MuseSetupRx, is MuseSetupEvent, is PttEvent, is WatchActionResult -> Unit
         }
     }
 
@@ -555,6 +558,8 @@ class AudioReceiverSession(
                 _state.value = ReceiverSessionState.Streaming(message.streamId)
             }
             is StreamData -> handleStreamData(message)
+            // Push-to-talk runs only in the iOS app.
+            is PttAudio -> Unit
             is StreamGap -> handleStreamGap(message)
             is StreamStop -> {
                 val ctx = stream ?: return

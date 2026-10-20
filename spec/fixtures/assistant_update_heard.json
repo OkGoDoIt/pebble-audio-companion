@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "What Muse heard, shown as 'You said' on the watch",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "kind": 1,
+    "request_token": 65,
+    "text_hex": "576861742773207468652077656174686572206c696b6520696e2041757374696e20746869732061667465726e6f6f6e3f",
+    "turn": 7
+  },
+  "name": "assistant_update_heard",
+  "size": 55
+}

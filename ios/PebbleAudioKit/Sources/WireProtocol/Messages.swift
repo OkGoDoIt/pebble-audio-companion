@@ -868,3 +868,323 @@ public struct StreamStop: DataMessage, Equatable {
         return w.toBytes()
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Push-to-talk (Section 4.4) and watch actions (Section 4.5)
+// ---------------------------------------------------------------------------------------------
+
+public enum PttEventKind: UInt8, Sendable {
+    case start = 1
+    case end = 2
+    case cancel = 3
+}
+
+public enum PttTrigger: UInt8, Sendable {
+    case quickLaunch = 1
+    case inApp = 2
+    case followUp = 3
+}
+
+public enum PttEndReason: UInt8, Sendable {
+    case released = 1
+    case maxLength = 2
+}
+
+public enum PttCancelReason: UInt8, Sendable {
+    case tooShort = 1
+    case cancelled = 2
+    case phoneUnavailable = 3
+    case micUnavailable = 4
+}
+
+/// A question begins, ends or is called off on the watch.
+public struct PttEvent: ControlOutMessage, Equatable {
+    public let turn: Int
+    public let eventRaw: UInt8
+    public let detail: UInt8
+    /// End/Cancel: frames captured in the turn.
+    public let frameCount: Int
+    /// Start: the longest question the watch records.
+    public let maxSeconds: Int
+
+    public init(turn: Int, eventRaw: UInt8, detail: UInt8, frameCount: Int = 0, maxSeconds: Int = 0) {
+        self.turn = turn
+        self.eventRaw = eventRaw
+        self.detail = detail
+        self.frameCount = frameCount
+        self.maxSeconds = maxSeconds
+    }
+
+    public var event: PttEventKind? { PttEventKind(rawValue: eventRaw) }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 8)
+        w.u8(MessageId.pttEvent)
+        w.u8(turn)
+        w.u8(Int(eventRaw))
+        w.u8(Int(detail))
+        w.u16(frameCount)
+        w.u16(maxSeconds)
+        return w.toBytes()
+    }
+}
+
+/// The question's audio, as it is captured: Speex frames numbered from 0 at the press.
+public struct PttAudio: DataMessage, Equatable {
+    public let turn: Int
+    public let firstFrame: Int
+    public let frames: [[UInt8]]
+
+    public init(turn: Int, firstFrame: Int, frames: [[UInt8]]) {
+        self.turn = turn
+        self.firstFrame = firstFrame
+        self.frames = frames
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 5 + frames.reduce(0) { $0 + 2 + $1.count })
+        w.u8(MessageId.pttAudio)
+        w.u8(turn)
+        w.u16(firstFrame)
+        w.u8(frames.count)
+        for frame in frames {
+            w.u16(frame.count)
+            w.bytes(frame)
+        }
+        return w.toBytes()
+    }
+}
+
+public enum AssistantUpdateKind: UInt8, Sendable {
+    case heard = 1
+    case status = 2
+    case answer = 3
+    case done = 4
+    case error = 5
+}
+
+public enum AssistantError: UInt8, Sendable {
+    case notSetUp = 1
+    case unreachable = 2
+    case noAnswer = 3
+    case didNotCatch = 4
+    case busy = 5
+}
+
+/// What the assistant heard, is doing, and answered, for the watch to show.
+public struct AssistantUpdate: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let turn: Int
+    public let kindRaw: UInt8
+    public let detail: UInt8
+    /// UTF-8, at most `ProtocolConstants.assistantTextMaxBytes`.
+    public let text: [UInt8]
+
+    public init(requestToken: Int, turn: Int, kindRaw: UInt8, detail: UInt8 = 0, text: [UInt8] = []) {
+        self.requestToken = requestToken
+        self.turn = turn
+        self.kindRaw = kindRaw
+        self.detail = detail
+        self.text = text
+    }
+
+    public init(requestToken: Int, turn: Int, kind: AssistantUpdateKind, detail: UInt8 = 0, text: [UInt8] = []) {
+        self.init(requestToken: requestToken, turn: turn, kindRaw: kind.rawValue, detail: detail, text: text)
+    }
+
+    public var kind: AssistantUpdateKind? { AssistantUpdateKind(rawValue: kindRaw) }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 6 + text.count)
+        w.u8(MessageId.assistantUpdate)
+        w.u8(requestToken)
+        w.u8(turn)
+        w.u8(Int(kindRaw))
+        w.u8(Int(detail))
+        w.u8(text.count)
+        w.bytes(text)
+        return w.toBytes()
+    }
+
+    /// `text` split into pieces of at most `maxBytes`, never inside a character.
+    public static func chunks(of text: String, maxBytes: Int = ProtocolConstants.assistantTextMaxBytes) -> [[UInt8]] {
+        var pieces: [[UInt8]] = []
+        var current: [UInt8] = []
+        for scalar in text.unicodeScalars {
+            let bytes = Array(String(scalar).utf8)
+            if current.count + bytes.count > maxBytes {
+                pieces.append(current)
+                current = []
+            }
+            current += bytes
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces
+    }
+}
+
+/// One write of a watch action; a long payload spans several with the same `actionId`.
+public struct WatchAction: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let actionId: Int
+    public let flags: UInt8
+    public let payload: [UInt8]
+
+    public init(requestToken: Int, actionId: Int, flags: UInt8, payload: [UInt8]) {
+        self.requestToken = requestToken
+        self.actionId = actionId
+        self.flags = flags
+        self.payload = payload
+    }
+
+    public var more: Bool { flags & ProtocolConstants.watchActionFlagMore != 0 }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 5 + payload.count)
+        w.u8(MessageId.watchAction)
+        w.u8(requestToken)
+        w.u8(actionId)
+        w.u8(Int(flags))
+        w.u8(payload.count)
+        w.bytes(payload)
+        return w.toBytes()
+    }
+}
+
+/// What a watch action asks the watch to do (the joined `WATCH_ACTION` payload).
+public enum WatchActionRequest: Equatable, Sendable {
+    case timer(seconds: Int, label: String)
+    case alarm(hour: Int, minute: Int, label: String)
+    case choose(question: String, options: [String], timeoutSeconds: Int)
+
+    public enum Kind: UInt8, Sendable {
+        case timer = 1
+        case alarm = 2
+        case choose = 3
+    }
+
+    public enum Invalid: Error, Equatable, Sendable {
+        case outOfRange(String)
+    }
+
+    /// The joined payload. Strings longer than their limit are cut on a character boundary.
+    public func payload() throws(Invalid) -> [UInt8] {
+        var w = WireWriter(initialCapacity: 64)
+        switch self {
+        case .timer(let seconds, let label):
+            guard (1...86_400).contains(seconds) else { throw .outOfRange("timer seconds \(seconds)") }
+            w.u8(Int(Kind.timer.rawValue))
+            w.u32(UInt32(seconds))
+            Self.string(&w, label, max: ProtocolConstants.watchActionLabelMaxBytes)
+        case .alarm(let hour, let minute, let label):
+            guard (0...23).contains(hour), (0...59).contains(minute) else {
+                throw .outOfRange("alarm \(hour):\(minute)")
+            }
+            w.u8(Int(Kind.alarm.rawValue))
+            w.u8(hour)
+            w.u8(minute)
+            Self.string(&w, label, max: ProtocolConstants.watchActionLabelMaxBytes)
+        case .choose(let question, let options, let timeoutSeconds):
+            guard (ProtocolConstants.watchActionMinOptions...ProtocolConstants.watchActionMaxOptions).contains(options.count) else {
+                throw .outOfRange("\(options.count) options")
+            }
+            w.u8(Int(Kind.choose.rawValue))
+            w.u16(min(max(timeoutSeconds, 10), 300))
+            Self.string(&w, question, max: ProtocolConstants.watchActionQuestionMaxBytes)
+            w.u8(options.count)
+            for option in options {
+                Self.string(&w, option, max: ProtocolConstants.watchActionOptionMaxBytes)
+            }
+        }
+        return w.toBytes()
+    }
+
+    /// The writes that carry it, each with a token from `token`.
+    public func messages(actionId: Int, token: () -> Int) throws(Invalid) -> [WatchAction] {
+        let bytes = try payload()
+        var messages: [WatchAction] = []
+        var offset = 0
+        while offset < bytes.count {
+            let end = min(offset + ProtocolConstants.watchActionFragmentMaxBytes, bytes.count)
+            let more: UInt8 = end < bytes.count ? ProtocolConstants.watchActionFlagMore : 0
+            messages.append(WatchAction(requestToken: token(), actionId: actionId, flags: more, payload: Array(bytes[offset..<end])))
+            offset = end
+        }
+        return messages
+    }
+
+    /// Parses a joined payload; nil when it doesn't follow Section 4.5.
+    public static func parse(_ bytes: [UInt8]) -> WatchActionRequest? {
+        var r = WireReader(bytes)
+        func string() -> String? {
+            guard r.remaining >= 1 else { return nil }
+            let length = r.u8()
+            guard r.remaining >= length else { return nil }
+            return String(decoding: r.readBytes(length), as: UTF8.self)
+        }
+        guard r.remaining >= 1, let kind = Kind(rawValue: UInt8(r.u8())) else { return nil }
+        switch kind {
+        case .timer:
+            guard r.remaining >= 4 else { return nil }
+            let seconds = Int(r.u32())
+            guard let label = string() else { return nil }
+            return .timer(seconds: seconds, label: label)
+        case .alarm:
+            guard r.remaining >= 2 else { return nil }
+            let hour = r.u8()
+            let minute = r.u8()
+            guard let label = string() else { return nil }
+            return .alarm(hour: hour, minute: minute, label: label)
+        case .choose:
+            guard r.remaining >= 2 else { return nil }
+            let timeout = r.u16()
+            guard let question = string(), r.remaining >= 1 else { return nil }
+            let count = r.u8()
+            var options: [String] = []
+            for _ in 0..<count {
+                guard let option = string() else { return nil }
+                options.append(option)
+            }
+            return .choose(question: question, options: options, timeoutSeconds: timeout)
+        }
+    }
+
+    private static func string(_ w: inout WireWriter, _ text: String, max: Int) {
+        let bytes = AssistantUpdate.chunks(of: text, maxBytes: max).first ?? []
+        w.u8(bytes.count)
+        w.bytes(bytes)
+    }
+}
+
+public enum WatchActionStatus: UInt8, Sendable {
+    case done = 1
+    case declined = 2
+    case timedOut = 3
+    case failed = 4
+    case unsupported = 5
+}
+
+/// How a watch action ended.
+public struct WatchActionResult: ControlOutMessage, Equatable {
+    public let actionId: Int
+    public let statusRaw: UInt8
+    /// Choose: the chosen option's index.
+    public let value: Int
+
+    public init(actionId: Int, statusRaw: UInt8, value: Int = 0) {
+        self.actionId = actionId
+        self.statusRaw = statusRaw
+        self.value = value
+    }
+
+    public var status: WatchActionStatus? { WatchActionStatus(rawValue: statusRaw) }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 4)
+        w.u8(MessageId.watchActionResult)
+        w.u8(actionId)
+        w.u8(Int(statusRaw))
+        w.u8(value)
+        return w.toBytes()
+    }
+}

@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "PTT_EVENT missing the last byte of max_seconds",
+  "expect": "reject",
+  "fields": {},
+  "name": "ptt_event_short",
+  "size": 7
+}

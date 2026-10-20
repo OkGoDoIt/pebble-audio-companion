@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "A one-off alarm at 6:30 labelled Flight",
+  "expect": "parse",
+  "fields": {
+    "action_id": 4,
+    "flags": 0,
+    "payload_hex": "02061e06466c69676874",
+    "request_token": 73
+  },
+  "name": "watch_action_alarm",
+  "size": 15
+}

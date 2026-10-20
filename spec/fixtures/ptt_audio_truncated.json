@@ -1,0 +1,8 @@
+{
+  "channel": "data",
+  "description": "PTT_AUDIO announcing 3 frames but carrying 1",
+  "expect": "reject",
+  "fields": {},
+  "name": "ptt_audio_truncated",
+  "size": 32
+}

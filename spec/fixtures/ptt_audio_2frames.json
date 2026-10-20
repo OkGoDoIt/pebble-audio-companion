@@ -1,0 +1,16 @@
+{
+  "channel": "data",
+  "description": "The first two frames of a question, from the press",
+  "expect": "parse",
+  "fields": {
+    "first_frame": 0,
+    "frame_count": 2,
+    "frame_lengths": [
+      25,
+      27
+    ],
+    "turn": 7
+  },
+  "name": "ptt_audio_2frames",
+  "size": 61
+}

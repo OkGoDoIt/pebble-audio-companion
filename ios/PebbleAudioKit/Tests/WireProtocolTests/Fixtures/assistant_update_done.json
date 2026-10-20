@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "The answer is complete",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "kind": 4,
+    "request_token": 67,
+    "text_hex": "",
+    "turn": 7
+  },
+  "name": "assistant_update_done",
+  "size": 6
+}

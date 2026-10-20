@@ -1,0 +1,12 @@
+{
+  "channel": "control_out",
+  "description": "The wearer backed out of the choice",
+  "expect": "parse",
+  "fields": {
+    "action_id": 5,
+    "status": 2,
+    "value": 0
+  },
+  "name": "watch_action_result_declined",
+  "size": 4
+}

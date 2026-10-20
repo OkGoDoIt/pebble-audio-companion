@@ -55,6 +55,15 @@ object ProtocolConstants {
     // Info watch_capabilities bits (Section 3).
     /** The watch can host Muse's gadget setup service and relay it (Section 4.3). */
     const val CAPABILITY_MUSE_SETUP: UInt = 1u
+    /** Push-to-talk (Section 4.4). */
+    const val CAPABILITY_PUSH_TO_TALK: UInt = 2u
+    /** Watch actions an assistant can ask for (Section 4.5). */
+    const val CAPABILITY_WATCH_ACTIONS: UInt = 4u
+
+    const val PTT_MAX_SECONDS: Int = 15
+    const val ASSISTANT_TEXT_MAX_BYTES: Int = 180
+    const val WATCH_ACTION_FRAGMENT_MAX_BYTES: Int = 180
+    const val WATCH_ACTION_FLAG_MORE: Int = 1
 
     // Muse gadget setup relay (Section 4.3).
     const val MUSE_SUFFIX_BYTES: Int = 6
@@ -78,6 +87,8 @@ object MessageId {
     const val MUSE_SETUP_CLOSE: Int = 0x0A
     const val MUSE_SETUP_TX: Int = 0x0B
     const val MUSE_SETUP_DISCONNECT: Int = 0x0C
+    const val ASSISTANT_UPDATE: Int = 0x0D
+    const val WATCH_ACTION: Int = 0x0E
 
     // Watch -> phone control notifications (0x41-0x7F).
     const val AUTH_RESULT: Int = 0x41
@@ -88,10 +99,13 @@ object MessageId {
     const val PHONE_MEDIA_QUERY: Int = 0x46
     const val MUSE_SETUP_RX: Int = 0x47
     const val MUSE_SETUP_EVENT: Int = 0x48
+    const val PTT_EVENT: Int = 0x49
+    const val WATCH_ACTION_RESULT: Int = 0x4A
 
     // Watch -> phone data notifications (0x80-0x9F).
     const val STREAM_START: Int = 0x80
     const val STREAM_DATA: Int = 0x81
     const val STREAM_GAP: Int = 0x82
     const val STREAM_STOP: Int = 0x83
+    const val PTT_AUDIO: Int = 0x84
 }

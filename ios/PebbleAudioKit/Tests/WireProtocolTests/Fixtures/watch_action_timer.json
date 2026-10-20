@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "A ten-minute timer labelled Pasta, in one write",
+  "expect": "parse",
+  "fields": {
+    "action_id": 3,
+    "flags": 0,
+    "payload_hex": "0158020000055061737461",
+    "request_token": 72
+  },
+  "name": "watch_action_timer",
+  "size": 16
+}

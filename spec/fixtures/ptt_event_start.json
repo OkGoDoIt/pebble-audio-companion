@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "A Quick Launch hold confirmed a question; the watch records at most 15 s",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "event": 1,
+    "frame_count": 0,
+    "max_seconds": 15,
+    "turn": 7
+  },
+  "name": "ptt_event_start",
+  "size": 8
+}
