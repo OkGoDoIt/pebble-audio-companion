@@ -388,7 +388,9 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 `notes`. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
 window asked for (items with `from_time` ≤ `at` ≤ `to_time`), `shownCount` what fits. A time without an offset
 is read on the conversation's wall clock. `gaps` lists every lost gap and the quiet gaps of a minute or more;
-shorter quiet stretches count in `quietMinutes` and appear as transcript items. An unknown id is `found: false`
+shorter quiet stretches count in `quietMinutes` and appear as transcript items. The lists above the transcript
+take at most half the answer when the transcript is asked for (all of it otherwise): past that, lost gaps stay
+first, then the longest quiet ones, then notes and follow-ups in order, and `summary` says how many it lists. An unknown id is `found: false`
 with `candidates`, conversations whose title matches the id as words:
 `[ { "id", "title", "url", "day", "startedAt" } ]`.
 

@@ -310,9 +310,33 @@ public sealed class ConversationTools
 				.OrderBy(i => i.At)
 				.ToList();
 		var budget = Math.Clamp(max_chars ?? call.Settings.TranscriptReadCharacters, 1_000, call.Settings.ToolMaxCharacters);
+		var (allGaps, allFollowUps, allNotes) = (gaps, followUps, notes);
+
+		string Said(int items, bool cut)
+		{
+			var listed = new List<string>();
+			if (gaps.Count < allGaps.Count)
+			{
+				listed.Add($"{gaps.Count} of {Speak.Count(allGaps.Count, "gap", "gaps")}");
+			}
+
+			if (notes?.Count < allNotes?.Count)
+			{
+				listed.Add($"{notes!.Count} of {Speak.Count(allNotes!.Count, "note", "notes")}");
+			}
+
+			if (followUps?.Count < allFollowUps?.Count)
+			{
+				listed.Add($"{followUps!.Count} of {Speak.Count(allFollowUps!.Count, "follow-up", "follow-ups")}");
+			}
+
+			return spoken +
+				(listed.Count > 0 ? $" Listing {Speak.List(listed)} to fit the answer." : "") +
+				(cut ? $" Showing {items} of {window.Count} transcript items; ask for the rest with from_time." : "");
+		}
 
 		GetConversationResult Build(IReadOnlyList<TranscriptItemOut> items, bool cut, DateTimeOffset? resumeAt) => new(
-			cut ? $"{spoken} Showing {items.Count} of {window.Count} transcript items; ask for the rest with from_time." : spoken,
+			Said(items.Count, cut),
 			true,
 			card.Id,
 			card.Title,
@@ -354,8 +378,30 @@ public sealed class ConversationTools
 				: null,
 			null);
 
+		// The lists above the transcript (hundreds of lost gaps, very long notes) take at most half the answer when a
+		// transcript is asked for, and all of it otherwise: lost gaps and the longest quiet ones stay first, then notes and
+		// follow-ups in order, and the summary says what was left out.
+		int HeaderLength() => ToolJson.Length(Build([], window.Count > 0, window.FirstOrDefault()?.At));
+		var headerRoom = (withTranscript ? call.Settings.ToolMaxCharacters / 2 : call.Settings.ToolMaxCharacters) - 64;
+		if (HeaderLength() > headerRoom)
+		{
+			var lost = GapKind.Lost.ToWire();
+			var ranked = allGaps.OrderBy(g => g.Kind == lost ? 0 : 1).ThenByDescending(g => g.Kind == lost ? 0 : g.Minutes).ToList();
+			List<GapOut> Gaps(int n) => [.. ranked.Take(n).OrderBy(g => g.StartedAt)];
+			gaps = Gaps(Most(ranked.Count, n => { gaps = Gaps(n); return HeaderLength() <= headerRoom; }));
+			if (allNotes is { } everyNote && HeaderLength() > headerRoom)
+			{
+				notes = [.. everyNote.Take(Most(everyNote.Count, n => { notes = [.. everyNote.Take(n)]; return HeaderLength() <= headerRoom; }))];
+			}
+
+			if (allFollowUps is { } everyFollowUp && HeaderLength() > headerRoom)
+			{
+				followUps = [.. everyFollowUp.Take(Most(everyFollowUp.Count, n => { followUps = [.. everyFollowUp.Take(n)]; return HeaderLength() <= headerRoom; }))];
+			}
+		}
+
 		// Items go in while they fit: in the asked length, and in what the rest of the answer leaves.
-		var room = call.Settings.ToolMaxCharacters - ToolJson.Length(Build([], window.Count > 0, window.FirstOrDefault()?.At)) - 64;
+		var room = call.Settings.ToolMaxCharacters - HeaderLength() - 64;
 		var allowance = Math.Min(budget, room);
 		var shown = new List<TranscriptItemOut>();
 		var used = 0;
@@ -383,6 +429,31 @@ public sealed class ConversationTools
 		var result = Build(shown, truncated, truncated ? window[shown.Count].At : null);
 		await archive.LogAsync(call, "get_conversation", [conversationId], cancellationToken);
 		return ToolResults.Of(result);
+	}
+
+	/// <summary>The most of <paramref name="count"/> items for which <paramref name="fits"/> holds (it only fails more as n grows).</summary>
+	private static int Most(int count, Func<int, bool> fits)
+	{
+		if (fits(count))
+		{
+			return count;
+		}
+
+		var (low, high) = (0, count - 1);
+		while (low < high)
+		{
+			var middle = (low + high + 1) / 2;
+			if (fits(middle))
+			{
+				low = middle;
+			}
+			else
+			{
+				high = middle - 1;
+			}
+		}
+
+		return low;
 	}
 
 	/// <summary><c>Kitchen tiles with Sam, Tuesday 10:05 AM to 10:41 AM, 36 minutes, 1 minute of lost audio.</c></summary>

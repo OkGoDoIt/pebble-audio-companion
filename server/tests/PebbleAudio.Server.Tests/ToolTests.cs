@@ -293,8 +293,29 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			batch.Add(ArchiveFixture.Item("conversation", $"conv-short-{i}", ArchiveFixture.Conversation(day, ArchiveFixture.At(day, 9, 0), ArchiveFixture.At(day, 9, 10), $"Launch standup {i}", "A short launch standup.", ["product launch"], [], [], 10)));
 		}
 
+		// A conversation the watch kept dropping out of: 600 lost seconds.
+		var gappyDay = fx.Day.AddDays(-14);
+		var gappyStart = ArchiveFixture.At(gappyDay, 9, 0);
+		var lostGaps = Enumerable.Range(0, 600).Select(i => ArchiveFixture.Gap(gappyStart.AddSeconds(i * 10), gappyStart.AddSeconds(i * 10 + 1), "lost", "watch")).ToArray();
+		batch.Add(ArchiveFixture.Item("conversation", "conv-gappy", ArchiveFixture.Conversation(gappyDay, gappyStart, gappyStart.AddMinutes(100), "Watch reconnects all morning", "The watch kept dropping out.", ["watch"], [], lostGaps, 90)));
+		batch.Add(ArchiveFixture.Item("transcript", "conv-gappy", ArchiveFixture.Transcript("conv-gappy", [.. Enumerable.Range(0, 50).Select(i => ArchiveFixture.Turn(gappyStart.AddSeconds(i * 10 + 2), "1", "Alex", $"Turn {i}: it dropped again.", 0.9))])));
+
 		Assert.Equal(0, (await phone.BatchAsync([.. batch])).GetProperty("rejected").GetArrayLength());
 		await using var mcp = await ArchiveFixture.ConnectAsync(factory, userId, TokenAccess.Read);
+
+		// Hundreds of gaps still answer inside the cap, lost ones listed first, and the summary says how many it lists;
+		// with the transcript the gaps take at most half, so turns still come back.
+		foreach (var include in new[] { "summary", "both" })
+		{
+			var gappy = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-gappy", ["include"] = include });
+			Assert.True(Length(gappy) <= ArchiveSettings.Defaults.ToolMaxCharacters, $"{include}: {Length(gappy)} characters");
+			Assert.InRange(gappy.GetProperty("gaps").GetArrayLength(), 1, 599);
+			Assert.Contains("of 600 gaps to fit the answer", gappy.GetProperty("summary").GetString());
+			if (include == "both")
+			{
+				Assert.True(gappy.GetProperty("transcript").GetProperty("shownCount").GetInt32() > 0);
+			}
+		}
 
 		// With the defaults the long transcript comes back cut to the transcript read, and says how to read on.
 		var first = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-long", ["include"] = "transcript" });
