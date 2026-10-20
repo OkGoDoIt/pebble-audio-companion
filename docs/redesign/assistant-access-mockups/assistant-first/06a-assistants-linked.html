@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Assistants, linked</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .who .row { min-height: 58px; }
+  .who .s b { font-weight: 400; color: var(--secondary-body); }
+  .tile.sm { width: 32px; height: 32px; border-radius: 8px; }
+  .tile.sm svg { width: 18px; height: 18px; }
+</style></head>
+<body><div class="phone">
+  <div class="statusbar"></div>
+  <div class="navbar"><button class="glass-btn" aria-label="Back to Settings"><i data-i="chevL"></i></button><span class="nav-title">Assistants</span></div>
+  <div class="content">
+    <div class="list-card">
+      <div class="row" style="display:block;padding:14px 0 12px">
+        <div class="state-head"><span class="dot good"></span>Sharing with your assistants</div>
+        <p class="state-line">Synced 2 min ago to pebbleaudio.okgodoit.com.</p>
+      </div>
+      <div class="row"><span class="t" style="flex:1">Share with your server</span><span class="toggle on" role="switch" aria-checked="true" aria-label="Share with your server"></span></div>
+    </div>
+
+    <div class="section-header">Who can read</div>
+    <div class="list-card who">
+      <div class="row"><span class="mark" data-m="chatgpt"></span><div class="grow"><span class="t strong">ChatGPT</span><span class="s">Read 4 conversations · 1 hr ago</span></div><i data-i="chevR"></i></div>
+      <div class="row"><span class="mark" data-m="claude"></span><div class="grow"><span class="t strong">Claude</span><span class="s">Read 2 conversations · Yesterday</span></div><i data-i="chevR"></i></div>
+      <div class="row"><span class="mark" data-m="codex"></span><div class="grow"><span class="t strong">Codex on Mac</span><span class="s">Read 1 conversation · Oct 18</span></div><i data-i="chevR"></i></div>
+      <div class="row tint"><span class="tile sm"><i data-i="plus"></i></span><span class="t" style="flex:1">Connect Another Assistant</span></div>
+    </div>
+
+    <div class="section-header">Assistants can</div>
+    <div class="list-card">
+      <div class="row"><div class="grow"><span class="t">Ask for audio clips</span></div><span class="toggle" role="switch" aria-checked="false"></span></div>
+      <div class="row"><div class="grow"><span class="t">Add follow-ups and notes</span></div><span class="toggle on" role="switch" aria-checked="true"></span></div>
+    </div>
+
+    <div class="list-card"><div class="row destructive"><span class="t">Unlink This Phone</span></div></div>
+    <p class="footer">Your server keeps what it already has, and connected assistants can still read it there.</p>
+  </div>
+  <div class="tabbar" data-on="settings"></div>
+</div>
+<script src="chrome.js"></script>
+</body></html>

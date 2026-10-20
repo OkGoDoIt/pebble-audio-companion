@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>Ask, off</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .recent-row { align-items: flex-start; }
+  .recent-row .q { font: var(--f-row-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recent-row .when { font: var(--f-footnote); color: var(--faint); white-space: nowrap; }
+  .recent-row .a { font: var(--f-footnote); color: var(--tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recent-row .chev { margin-top: 4px; }
+  .clear { font: var(--f-footnote); color: var(--tint); text-align: center; min-height: 44px; display: flex; align-items: center; justify-content: center; }
+  .elsewhere { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 4px; color: var(--tertiary); font: var(--f-footnote); }
+  .elsewhere .chev { color: var(--chevron); width: 7px; height: 12px; margin-left: auto; }
+  .composer { position: absolute; left: 16px; right: 16px; bottom: 96px; display: flex; gap: 10px; align-items: flex-end; }
+  .composer .fieldx { flex: 1 1 auto; min-height: 44px; border-radius: 22px; background: var(--surface); box-shadow: inset 0 0 0 0.5px var(--bar-hairline); padding: 11px 16px; font: var(--f-callout); color: var(--faint); }
+  .send { width: 44px; height: 44px; border-radius: 22px; background: var(--tint); color: #fff; opacity: 0.4; display: flex; align-items: center; justify-content: center; }
+  .send svg { width: 20px; height: 20px; transform: rotate(-90deg); }
+</style></head>
+<body><div class="phone">
+  <div class="statusbar"></div>
+  <div class="navbar"><span class="spacer"></span><span class="glass-pill">Last 7 days <i data-i="chevD" style="width:14px;height:14px"></i></span></div>
+  <div class="content">
+    <h1 class="tab-title">Ask</h1>
+    <div class="section-header">Recent</div>
+    <div class="list-card">
+      <div class="row recent-row"><div class="grow"><div style="display:flex;gap:8px;align-items:baseline"><span class="q" style="flex:1">When is Leo's dentist visit?</span><span class="when">2 hr ago</span></div><span class="a">Thursday at 3:30 PM with Dr. Ortiz, the cleaning…</span></div><i data-i="chevR"></i></div>
+      <div class="row recent-row"><div class="grow"><div style="display:flex;gap:8px;align-items:baseline"><span class="q" style="flex:1">What did Priya decide?</span><span class="when">Yesterday</span></div><span class="a"><span style="color:var(--meta)">1 follow-up</span> · The launch moves to November 12…</span></div><i data-i="chevR"></i></div>
+      <div class="row recent-row"><div class="grow"><div style="display:flex;gap:8px;align-items:baseline"><span class="q" style="flex:1">Which tile did Sam pick?</span><span class="when">Mon</span></div><span class="a">The matte green tile, with white grout…</span></div><i data-i="chevR"></i></div>
+      <div class="row recent-row"><div class="grow"><div style="display:flex;gap:8px;align-items:baseline"><span class="q" style="flex:1">Sum up the launch meetings</span><span class="when">Oct 17</span></div><span class="a">Three meetings. Priya owns the checklist…</span></div><i data-i="chevR"></i></div>
+    </div>
+    <div class="clear">Clear history</div>
+    <div class="elsewhere" role="button" aria-label="Ask from ChatGPT or Claude too">
+      <span class="marks-stack"><span class="mark sm" data-m="chatgpt"></span><span class="mark sm" data-m="claude"></span></span>
+      <span>Ask from ChatGPT or Claude too</span>
+      <i data-i="chevR"></i>
+    </div>
+  </div>
+  <div class="composer"><div class="fieldx">Ask</div><div class="send"><i data-i="arrowR"></i></div></div>
+  <div class="tabbar" data-on="ask"></div>
+</div>
+<script src="chrome.js"></script>
+</body></html>

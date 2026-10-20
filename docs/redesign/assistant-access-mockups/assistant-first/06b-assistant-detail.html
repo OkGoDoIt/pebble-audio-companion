@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=390">
+<title>ChatGPT</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .who-head { display: flex; align-items: center; gap: 14px; }
+  .who-head .name { font: var(--f-detail-title); }
+  .who-head .since { font: var(--f-footnote); color: var(--meta-ink); }
+  .act .row { min-height: 58px; }
+  .act .when { font: var(--f-footnote); color: var(--meta-ink); white-space: nowrap; align-self: flex-start; margin-top: 2px; }
+  .tile.sm { width: 32px; height: 32px; border-radius: 8px; }
+  .tile.sm svg { width: 18px; height: 18px; }
+  .day { font: var(--f-section-header); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta-ink); padding: 8px 4px 0; margin-bottom: -4px; }
+</style></head>
+<body><div class="phone">
+  <div class="statusbar"></div>
+  <div class="navbar"><button class="glass-btn" aria-label="Back to Assistants"><i data-i="chevL"></i></button></div>
+  <div class="content">
+    <div class="card who-head">
+      <span class="mark lg" data-m="chatgpt"></span>
+      <div style="display:flex;flex-direction:column;gap:2px"><span class="name">ChatGPT</span><span class="since">Connected Oct 12</span></div>
+    </div>
+
+    <div class="day">Today</div>
+    <div class="list-card act">
+      <div class="row"><span class="tile sm gray"><i data-i="doc"></i></span><div class="grow"><span class="t">Launch plan with Priya</span><span class="s">Read</span></div><span class="when">9:40 AM</span><i data-i="chevR"></i></div>
+      <div class="row"><span class="tile sm gray"><i data-i="doc"></i></span><div class="grow"><span class="t">Kitchen tile with Sam</span><span class="s">Read</span></div><span class="when">9:40 AM</span><i data-i="chevR"></i></div>
+      <div class="row"><span class="tile sm gray"><i data-i="calendar"></i></span><div class="grow"><span class="t">Monday's recap</span><span class="s">Read</span></div><span class="when">9:38 AM</span><i data-i="chevR"></i></div>
+    </div>
+    <div class="day">Yesterday</div>
+    <div class="list-card act">
+      <div class="row"><span class="tile sm"><i data-i="checklist"></i></span><div class="grow"><span class="t">Send Priya the launch checklist</span><span class="s">Added a follow-up</span></div><span class="when">4:12 PM</span><i data-i="chevR"></i></div>
+      <div class="row"><span class="tile sm gray"><i data-i="doc"></i></span><div class="grow"><span class="t">Leo's dentist appointment</span><span class="s">Read</span></div><span class="when">4:10 PM</span><i data-i="chevR"></i></div>
+    </div>
+
+    <div class="list-card" style="margin-top:4px"><div class="row destructive"><span class="t">Disconnect ChatGPT</span></div></div>
+    <p class="footer">ChatGPT stops reading from your server. What it already read is up to OpenAI's own policies.</p>
+  </div>
+  <div class="tabbar" data-on="settings"></div>
+</div>
+<script src="chrome.js"></script>
+</body></html>

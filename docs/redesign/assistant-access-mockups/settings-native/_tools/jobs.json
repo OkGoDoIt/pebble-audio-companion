@@ -1,0 +1,18 @@
+[
+ {"name":"01-settings","url":"01-settings.html","w":390,"h":844,"dpr":2},
+ {"name":"01b-assistants-off","url":"01b-assistants-off.html","w":390,"h":844,"dpr":2},
+ {"name":"02-intro","url":"02-intro.html","w":390,"h":844,"dpr":2},
+ {"name":"03-link","url":"03-link.html","w":390,"h":844,"dpr":2},
+ {"name":"03b-link-expired","url":"03b-link-expired.html","w":390,"h":844,"dpr":2},
+ {"name":"04-choices","url":"04-choices.html","w":390,"h":844,"dpr":2},
+ {"name":"05-connect","url":"05-connect.html","w":390,"h":844,"dpr":2},
+ {"name":"05b-connect-chatgpt","url":"05b-connect-chatgpt.html","w":390,"h":844,"dpr":2},
+ {"name":"06-linked","url":"06-linked.html","w":390,"h":844,"dpr":2},
+ {"name":"06-linked-scrolled","url":"06-linked.html","w":390,"h":844,"dpr":2,"js":"document.querySelector('.scroll').scrollTop=9999"},
+ {"name":"06b-assistant","url":"06b-assistant.html","w":390,"h":844,"dpr":2},
+ {"name":"07a-privacy-local","url":"07a-privacy-local.html","w":390,"h":844,"dpr":2},
+ {"name":"07b-privacy-server","url":"07b-privacy-server.html","w":390,"h":844,"dpr":2},
+ {"name":"07c-privacy-assistants","url":"07c-privacy-assistants.html","w":390,"h":844,"dpr":2},
+ {"name":"02-intro-dark","url":"02-intro.html?theme=dark","w":390,"h":844,"dpr":2,"dark":true},
+ {"name":"07c-privacy-assistants-dark","url":"07c-privacy-assistants.html?theme=dark","w":390,"h":844,"dpr":2,"dark":true}
+]
