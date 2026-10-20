@@ -104,11 +104,15 @@ public actor DeleteCascade {
         for conversationId in conversationIds where !survivors.contains(conversationId) {
             await forgetConversationRecords(conversationId)
         }
-        // A surviving conversation's index entry is now stale; the next enrichment pass
-        // re-donates it, and until then the row is removed rather than left lying about content.
-        for conversationId in conversationIds where survivors.contains(conversationId) {
+        // A surviving conversation's index entry still holds the deleted audio's words: drop it,
+        // then donate the conversation again from what it now is, as the conversation delete
+        // does for its neighbours. This used to wait for an AI re-title to re-donate it — with
+        // AI off that never came, and the conversation vanished from search for good.
+        let survivingIds = conversationIds.filter(survivors.contains)
+        for conversationId in survivingIds {
             await removeFromIndex(id: conversationId, kind: .conversation)
         }
+        await enrichment.donate(conversationIds: survivingIds)
         return true
     }
 
