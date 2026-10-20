@@ -1,0 +1,106 @@
+{
+ "createdAtMs": 1791965729585,
+ "modeUsed": "RemoteFirst",
+ "modelUsed": "stt-async-v5",
+ "providerId": "soniox",
+ "segmentId": "seg-1791883701900-efc75fe3-42",
+ "segments": [
+  {
+   "confidence": 0.8647,
+   "endMs": 577830,
+   "minConfidence": 0.2954,
+   "speaker": "1",
+   "startMs": 574410,
+   "text": "Yeah, it's about twenty pages, but it's mostly charts and that stuff."
+  },
+  {
+   "confidence": 0.5818,
+   "endMs": 583050,
+   "minConfidence": 0.2337,
+   "speaker": "1",
+   "startMs": 582450,
+   "text": "That's the whole draft."
+  },
+  {
+   "confidence": 0.9409,
+   "endMs": 604650,
+   "minConfidence": 0.5001,
+   "speaker": "1",
+   "startMs": 602670,
+   "text": "Basically, it's just what Priya sent over this morning."
+  },
+  {
+   "confidence": 0.6634,
+   "endMs": 640590,
+   "minConfidence": 0.1896,
+   "speaker": "1",
+   "startMs": 637350,
+   "text": "Checking the plan for tonight and then coming back to say what they wanted to change."
+  },
+  {
+   "confidence": 0.8718,
+   "endMs": 665670,
+   "minConfidence": 0.3241,
+   "speaker": "1",
+   "startMs": 664050,
+   "text": "I'm at my desk now, kind of"
+  },
+  {
+   "confidence": 0.6382,
+   "endMs": 668490,
+   "minConfidence": 0.1738,
+   "speaker": "1",
+   "startMs": 666810,
+   "text": ". I think the slides are going to be fine, full stop."
+  },
+  {
+   "confidence": 0.8054,
+   "endMs": 677130,
+   "minConfidence": 0.1534,
+   "speaker": "1",
+   "startMs": 675150,
+   "text": "I'm feeling kind of slow today, just really."
+  },
+  {
+   "confidence": 0.9661,
+   "endMs": 686250,
+   "minConfidence": 0.8098,
+   "speaker": "1",
+   "startMs": 685230,
+   "text": "I had a long meeting"
+  },
+  {
+   "confidence": 0.7363,
+   "endMs": 691110,
+   "minConfidence": 0.1461,
+   "speaker": "1",
+   "startMs": 687570,
+   "text": "this afternoon, and I still have the kitchen quote to read."
+  },
+  {
+   "confidence": 0.8261,
+   "endMs": 699810,
+   "minConfidence": 0.3885,
+   "speaker": "1",
+   "startMs": 698130,
+   "text": "Kind of tired after that, full stop."
+  },
+  {
+   "confidence": 0.763,
+   "endMs": 706410,
+   "minConfidence": 0.5311,
+   "speaker": "1",
+   "startMs": 706170,
+   "text": "Maybe"
+  },
+  {
+   "confidence": 0.7717,
+   "endMs": 713370,
+   "minConfidence": 0.1008,
+   "speaker": "1",
+   "startMs": 708690,
+   "text": "I should not put too much on the list if it's not something very light, full stop."
+  }
+ ],
+ "text": "Yeah, it's about twenty pages, but it's mostly charts and that stuff. That's the whole draft. Basically, it's just what Priya sent over this morning. Checking the plan for tonight and then coming back to say what they wanted to change. I'm at my desk now, kind of. I think the slides are going to be fine, full stop. I'm feeling kind of slow today, just really. I had a long meeting this afternoon, and I still have the kitchen quote to read. Kind of tired after that, full stop. Maybe I should not put too much on the list if it's not something very light, full stop."
+}

@@ -1,0 +1,42 @@
+{
+ "createdAtMs": 1791965705391,
+ "modeUsed": "RemoteFirst",
+ "modelUsed": "stt-async-v5",
+ "providerId": "soniox",
+ "segmentId": "seg-1791884606258-efc75fe3-43",
+ "segments": [
+  {
+   "confidence": 0.8683,
+   "endMs": 48750,
+   "minConfidence": 0.6165,
+   "speaker": "1",
+   "startMs": 47610,
+   "text": "I set a timer for 1 hour."
+  },
+  {
+   "confidence": 0.6921,
+   "endMs": 49110,
+   "minConfidence": 0.4051,
+   "speaker": "2",
+   "startMs": 48930,
+   "text": "Yeah."
+  },
+  {
+   "confidence": 0.673,
+   "endMs": 731910,
+   "minConfidence": 0.1443,
+   "speaker": "1",
+   "startMs": 724770,
+   "text": "I'm not getting much done this week, to be honest. The launch checklist keeps growing, almost a page a day. And then I'm moving"
+  },
+  {
+   "confidence": 0.6597,
+   "endMs": 735810,
+   "minConfidence": 0.2303,
+   "speaker": "1",
+   "startMs": 733530,
+   "text": "these notes all over the place on my desk, so I'm not finishing any of them."
+  }
+ ],
+ "text": "I set a timer for 1 hour. Yeah. I'm not getting much done this week, to be honest. The launch checklist keeps growing, almost a page a day. And then I'm moving these notes all over the place on my desk, so I'm not finishing any of them."
+}

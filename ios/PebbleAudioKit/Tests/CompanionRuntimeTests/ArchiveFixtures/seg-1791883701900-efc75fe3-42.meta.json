@@ -1,0 +1,1473 @@
+{
+  "bitRateBps" : 9800,
+  "channels" : 1,
+  "closeReason" : {
+    "kind" : "rotated"
+  },
+  "closedAtMs" : 1791884606255,
+  "codecIdRaw" : 1,
+  "dedupeFloorSequence" : 8443423,
+  "firstSampleIndex" : 2701895680,
+  "firstSequence" : 8443424,
+  "frameCount" : 39596,
+  "frameDurationMs" : 20,
+  "frameSamples" : 320,
+  "gaps" : [
+    {
+      "firstMissingSampleIndex" : 2702981760,
+      "firstMissingSequence" : 8446818,
+      "missingFrameCount" : 12,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75635
+    },
+    {
+      "firstMissingSampleIndex" : 2703011200,
+      "firstMissingSequence" : 8446910,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75659
+    },
+    {
+      "firstMissingSampleIndex" : 2703041920,
+      "firstMissingSequence" : 8447006,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75691
+    },
+    {
+      "firstMissingSampleIndex" : 2703070080,
+      "firstMissingSequence" : 8447094,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75739
+    },
+    {
+      "firstMissingSampleIndex" : 2703274880,
+      "firstMissingSequence" : 8447734,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75771
+    },
+    {
+      "firstMissingSampleIndex" : 2703310720,
+      "firstMissingSequence" : 8447846,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75795
+    },
+    {
+      "firstMissingSampleIndex" : 2703341440,
+      "firstMissingSequence" : 8447942,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75827
+    },
+    {
+      "firstMissingSampleIndex" : 2703379840,
+      "firstMissingSequence" : 8448062,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75843
+    },
+    {
+      "firstMissingSampleIndex" : 2703410560,
+      "firstMissingSequence" : 8448158,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75867
+    },
+    {
+      "firstMissingSampleIndex" : 2703477120,
+      "firstMissingSequence" : 8448366,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75891
+    },
+    {
+      "firstMissingSampleIndex" : 2703512960,
+      "firstMissingSequence" : 8448478,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75907
+    },
+    {
+      "firstMissingSampleIndex" : 2703548800,
+      "firstMissingSequence" : 8448590,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75915
+    },
+    {
+      "firstMissingSampleIndex" : 2703574400,
+      "firstMissingSequence" : 8448670,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75947
+    },
+    {
+      "firstMissingSampleIndex" : 2703712640,
+      "firstMissingSequence" : 8449102,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75963
+    },
+    {
+      "firstMissingSampleIndex" : 2703748480,
+      "firstMissingSequence" : 8449214,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 75971
+    },
+    {
+      "firstMissingSampleIndex" : 2703807360,
+      "firstMissingSequence" : 8449398,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76003
+    },
+    {
+      "firstMissingSampleIndex" : 2703827840,
+      "firstMissingSequence" : 8449462,
+      "missingFrameCount" : 72,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76075
+    },
+    {
+      "firstMissingSampleIndex" : 2703871360,
+      "firstMissingSequence" : 8449598,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76115
+    },
+    {
+      "firstMissingSampleIndex" : 2703909760,
+      "firstMissingSequence" : 8449718,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76139
+    },
+    {
+      "firstMissingSampleIndex" : 2704073600,
+      "firstMissingSequence" : 8450230,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76171
+    },
+    {
+      "firstMissingSampleIndex" : 2704112000,
+      "firstMissingSequence" : 8450350,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76187
+    },
+    {
+      "firstMissingSampleIndex" : 2704137600,
+      "firstMissingSequence" : 8450430,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76227
+    },
+    {
+      "firstMissingSampleIndex" : 2704168320,
+      "firstMissingSequence" : 8450526,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76275
+    },
+    {
+      "firstMissingSampleIndex" : 2704201600,
+      "firstMissingSequence" : 8450630,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76323
+    },
+    {
+      "firstMissingSampleIndex" : 2704245120,
+      "firstMissingSequence" : 8450766,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76339
+    },
+    {
+      "firstMissingSampleIndex" : 2704265600,
+      "firstMissingSequence" : 8450830,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76395
+    },
+    {
+      "firstMissingSampleIndex" : 2704314240,
+      "firstMissingSequence" : 8450982,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76403
+    },
+    {
+      "firstMissingSampleIndex" : 2704401280,
+      "firstMissingSequence" : 8451254,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76451
+    },
+    {
+      "firstMissingSampleIndex" : 2704434560,
+      "firstMissingSequence" : 8451358,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76499
+    },
+    {
+      "firstMissingSampleIndex" : 2704470400,
+      "firstMissingSequence" : 8451470,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76539
+    },
+    {
+      "firstMissingSampleIndex" : 2704513920,
+      "firstMissingSequence" : 8451606,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76547
+    },
+    {
+      "firstMissingSampleIndex" : 2704536960,
+      "firstMissingSequence" : 8451678,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76587
+    },
+    {
+      "firstMissingSampleIndex" : 2704575360,
+      "firstMissingSequence" : 8451798,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76611
+    },
+    {
+      "firstMissingSampleIndex" : 2704603520,
+      "firstMissingSequence" : 8451886,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76651
+    },
+    {
+      "firstMissingSampleIndex" : 2704639360,
+      "firstMissingSequence" : 8451998,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76683
+    },
+    {
+      "firstMissingSampleIndex" : 2704677760,
+      "firstMissingSequence" : 8452118,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76699
+    },
+    {
+      "firstMissingSampleIndex" : 2704708480,
+      "firstMissingSequence" : 8452214,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76723
+    },
+    {
+      "firstMissingSampleIndex" : 2704731520,
+      "firstMissingSequence" : 8452286,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76779
+    },
+    {
+      "firstMissingSampleIndex" : 2704777600,
+      "firstMissingSequence" : 8452430,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76795
+    },
+    {
+      "firstMissingSampleIndex" : 2704798080,
+      "firstMissingSequence" : 8452494,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76851
+    },
+    {
+      "firstMissingSampleIndex" : 2704826240,
+      "firstMissingSequence" : 8452582,
+      "missingFrameCount" : 72,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76923
+    },
+    {
+      "firstMissingSampleIndex" : 2704864640,
+      "firstMissingSequence" : 8452702,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 76979
+    },
+    {
+      "firstMissingSampleIndex" : 2704936320,
+      "firstMissingSequence" : 8452926,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77019
+    },
+    {
+      "firstMissingSampleIndex" : 2704969600,
+      "firstMissingSequence" : 8453030,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77059
+    },
+    {
+      "firstMissingSampleIndex" : 2705002880,
+      "firstMissingSequence" : 8453134,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77099
+    },
+    {
+      "firstMissingSampleIndex" : 2705036160,
+      "firstMissingSequence" : 8453238,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77139
+    },
+    {
+      "firstMissingSampleIndex" : 2705077120,
+      "firstMissingSequence" : 8453366,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77155
+    },
+    {
+      "firstMissingSampleIndex" : 2705247360,
+      "firstMissingSequence" : 8453898,
+      "missingFrameCount" : 4,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77159
+    },
+    {
+      "firstMissingSampleIndex" : 2705274240,
+      "firstMissingSequence" : 8453982,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77183
+    },
+    {
+      "firstMissingSampleIndex" : 2705302400,
+      "firstMissingSequence" : 8454070,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77223
+    },
+    {
+      "firstMissingSampleIndex" : 2705338240,
+      "firstMissingSequence" : 8454182,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77255
+    },
+    {
+      "firstMissingSampleIndex" : 2705376640,
+      "firstMissingSequence" : 8454302,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77271
+    },
+    {
+      "firstMissingSampleIndex" : 2705412480,
+      "firstMissingSequence" : 8454414,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77279
+    },
+    {
+      "firstMissingSampleIndex" : 2705443200,
+      "firstMissingSequence" : 8454510,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77295
+    },
+    {
+      "firstMissingSampleIndex" : 2705471360,
+      "firstMissingSequence" : 8454598,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77327
+    },
+    {
+      "firstMissingSampleIndex" : 2705507200,
+      "firstMissingSequence" : 8454710,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77351
+    },
+    {
+      "firstMissingSampleIndex" : 2705532800,
+      "firstMissingSequence" : 8454790,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77399
+    },
+    {
+      "firstMissingSampleIndex" : 2705568640,
+      "firstMissingSequence" : 8454902,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77439
+    },
+    {
+      "firstMissingSampleIndex" : 2705637760,
+      "firstMissingSequence" : 8455118,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77471
+    },
+    {
+      "firstMissingSampleIndex" : 2705678720,
+      "firstMissingSequence" : 8455246,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77479
+    },
+    {
+      "firstMissingSampleIndex" : 2705770880,
+      "firstMissingSequence" : 8455534,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77511
+    },
+    {
+      "firstMissingSampleIndex" : 2705809280,
+      "firstMissingSequence" : 8455654,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77527
+    },
+    {
+      "firstMissingSampleIndex" : 2705873280,
+      "firstMissingSequence" : 8455854,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77551
+    },
+    {
+      "firstMissingSampleIndex" : 2705911680,
+      "firstMissingSequence" : 8455974,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77559
+    },
+    {
+      "firstMissingSampleIndex" : 2705934720,
+      "firstMissingSequence" : 8456046,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77599
+    },
+    {
+      "firstMissingSampleIndex" : 2705973120,
+      "firstMissingSequence" : 8456166,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77623
+    },
+    {
+      "firstMissingSampleIndex" : 2706006400,
+      "firstMissingSequence" : 8456270,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77647
+    },
+    {
+      "firstMissingSampleIndex" : 2706042240,
+      "firstMissingSequence" : 8456382,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77663
+    },
+    {
+      "firstMissingSampleIndex" : 2706065280,
+      "firstMissingSequence" : 8456454,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77711
+    },
+    {
+      "firstMissingSampleIndex" : 2706111360,
+      "firstMissingSequence" : 8456598,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77719
+    },
+    {
+      "firstMissingSampleIndex" : 2706175360,
+      "firstMissingSequence" : 8456798,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77735
+    },
+    {
+      "firstMissingSampleIndex" : 2706193280,
+      "firstMissingSequence" : 8456854,
+      "missingFrameCount" : 64,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77799
+    },
+    {
+      "firstMissingSampleIndex" : 2706241920,
+      "firstMissingSequence" : 8457006,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77815
+    },
+    {
+      "firstMissingSampleIndex" : 2706259840,
+      "firstMissingSequence" : 8457062,
+      "missingFrameCount" : 64,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77879
+    },
+    {
+      "firstMissingSampleIndex" : 2706377600,
+      "firstMissingSequence" : 8457430,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77887
+    },
+    {
+      "firstMissingSampleIndex" : 2706710400,
+      "firstMissingSequence" : 8458470,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77895
+    },
+    {
+      "firstMissingSampleIndex" : 2706869120,
+      "firstMissingSequence" : 8458966,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77927
+    },
+    {
+      "firstMissingSampleIndex" : 2706971520,
+      "firstMissingSequence" : 8459286,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77951
+    },
+    {
+      "firstMissingSampleIndex" : 2707864960,
+      "firstMissingSequence" : 8462078,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 77991
+    },
+    {
+      "firstMissingSampleIndex" : 2707893120,
+      "firstMissingSequence" : 8462166,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78047
+    },
+    {
+      "firstMissingSampleIndex" : 2707934080,
+      "firstMissingSequence" : 8462294,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78079
+    },
+    {
+      "firstMissingSampleIndex" : 2707975040,
+      "firstMissingSequence" : 8462422,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78087
+    },
+    {
+      "firstMissingSampleIndex" : 2708008320,
+      "firstMissingSequence" : 8462526,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78095
+    },
+    {
+      "firstMissingSampleIndex" : 2708571520,
+      "firstMissingSequence" : 8464286,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78111
+    },
+    {
+      "firstMissingSampleIndex" : 2708589440,
+      "firstMissingSequence" : 8464342,
+      "missingFrameCount" : 64,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78175
+    },
+    {
+      "firstMissingSampleIndex" : 2708640640,
+      "firstMissingSequence" : 8464502,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78183
+    },
+    {
+      "firstMissingSampleIndex" : 2708663680,
+      "firstMissingSequence" : 8464574,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78223
+    },
+    {
+      "firstMissingSampleIndex" : 2708704640,
+      "firstMissingSequence" : 8464702,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78239
+    },
+    {
+      "firstMissingSampleIndex" : 2708740480,
+      "firstMissingSequence" : 8464814,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78247
+    },
+    {
+      "firstMissingSampleIndex" : 2708773760,
+      "firstMissingSequence" : 8464918,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78255
+    },
+    {
+      "firstMissingSampleIndex" : 2708796800,
+      "firstMissingSequence" : 8464990,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78295
+    },
+    {
+      "firstMissingSampleIndex" : 2708894080,
+      "firstMissingSequence" : 8465294,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78343
+    },
+    {
+      "firstMissingSampleIndex" : 2708937600,
+      "firstMissingSequence" : 8465430,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78359
+    },
+    {
+      "firstMissingSampleIndex" : 2708968320,
+      "firstMissingSequence" : 8465526,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78383
+    },
+    {
+      "firstMissingSampleIndex" : 2708993920,
+      "firstMissingSequence" : 8465606,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78431
+    },
+    {
+      "firstMissingSampleIndex" : 2709068160,
+      "firstMissingSequence" : 8465838,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78455
+    },
+    {
+      "firstMissingSampleIndex" : 2709091200,
+      "firstMissingSequence" : 8465910,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78511
+    },
+    {
+      "firstMissingSampleIndex" : 2709134720,
+      "firstMissingSequence" : 8466046,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78535
+    },
+    {
+      "firstMissingSampleIndex" : 2709165440,
+      "firstMissingSequence" : 8466142,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78567
+    },
+    {
+      "firstMissingSampleIndex" : 2709191040,
+      "firstMissingSequence" : 8466222,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78623
+    },
+    {
+      "firstMissingSampleIndex" : 2709226880,
+      "firstMissingSequence" : 8466334,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78671
+    },
+    {
+      "firstMissingSampleIndex" : 2709260160,
+      "firstMissingSequence" : 8466438,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78719
+    },
+    {
+      "firstMissingSampleIndex" : 2709303680,
+      "firstMissingSequence" : 8466574,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78735
+    },
+    {
+      "firstMissingSampleIndex" : 2709370240,
+      "firstMissingSequence" : 8466782,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78751
+    },
+    {
+      "firstMissingSampleIndex" : 2709393280,
+      "firstMissingSequence" : 8466854,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78799
+    },
+    {
+      "firstMissingSampleIndex" : 2709436800,
+      "firstMissingSequence" : 8466990,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78815
+    },
+    {
+      "firstMissingSampleIndex" : 2709495680,
+      "firstMissingSequence" : 8467174,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78855
+    },
+    {
+      "firstMissingSampleIndex" : 2709539200,
+      "firstMissingSequence" : 8467310,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78863
+    },
+    {
+      "firstMissingSampleIndex" : 2709569920,
+      "firstMissingSequence" : 8467406,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78879
+    },
+    {
+      "firstMissingSampleIndex" : 2709595520,
+      "firstMissingSequence" : 8467486,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78919
+    },
+    {
+      "firstMissingSampleIndex" : 2709628800,
+      "firstMissingSequence" : 8467590,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78959
+    },
+    {
+      "firstMissingSampleIndex" : 2709667200,
+      "firstMissingSequence" : 8467710,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 78983
+    },
+    {
+      "firstMissingSampleIndex" : 2709697920,
+      "firstMissingSequence" : 8467806,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79015
+    },
+    {
+      "firstMissingSampleIndex" : 2709731200,
+      "firstMissingSequence" : 8467910,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79047
+    },
+    {
+      "firstMissingSampleIndex" : 2709805440,
+      "firstMissingSequence" : 8468142,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79055
+    },
+    {
+      "firstMissingSampleIndex" : 2709831040,
+      "firstMissingSequence" : 8468222,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79087
+    },
+    {
+      "firstMissingSampleIndex" : 2709872000,
+      "firstMissingSequence" : 8468350,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79095
+    },
+    {
+      "firstMissingSampleIndex" : 2709897600,
+      "firstMissingSequence" : 8468430,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79127
+    },
+    {
+      "firstMissingSampleIndex" : 2709936000,
+      "firstMissingSequence" : 8468550,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79143
+    },
+    {
+      "firstMissingSampleIndex" : 2709961600,
+      "firstMissingSequence" : 8468630,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79183
+    },
+    {
+      "firstMissingSampleIndex" : 2709992320,
+      "firstMissingSequence" : 8468726,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79231
+    },
+    {
+      "firstMissingSampleIndex" : 2710035840,
+      "firstMissingSequence" : 8468862,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79247
+    },
+    {
+      "firstMissingSampleIndex" : 2710058880,
+      "firstMissingSequence" : 8468934,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79295
+    },
+    {
+      "firstMissingSampleIndex" : 2710138240,
+      "firstMissingSequence" : 8469182,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79303
+    },
+    {
+      "firstMissingSampleIndex" : 2710168960,
+      "firstMissingSequence" : 8469278,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79319
+    },
+    {
+      "firstMissingSampleIndex" : 2710197120,
+      "firstMissingSequence" : 8469366,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79351
+    },
+    {
+      "firstMissingSampleIndex" : 2710238080,
+      "firstMissingSequence" : 8469494,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79359
+    },
+    {
+      "firstMissingSampleIndex" : 2710263680,
+      "firstMissingSequence" : 8469574,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79391
+    },
+    {
+      "firstMissingSampleIndex" : 2710299520,
+      "firstMissingSequence" : 8469686,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79415
+    },
+    {
+      "firstMissingSampleIndex" : 2710335360,
+      "firstMissingSequence" : 8469798,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79431
+    },
+    {
+      "firstMissingSampleIndex" : 2710371200,
+      "firstMissingSequence" : 8469910,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79439
+    },
+    {
+      "firstMissingSampleIndex" : 2710404480,
+      "firstMissingSequence" : 8470014,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79447
+    },
+    {
+      "firstMissingSampleIndex" : 2710430080,
+      "firstMissingSequence" : 8470094,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79479
+    },
+    {
+      "firstMissingSampleIndex" : 2710499200,
+      "firstMissingSequence" : 8470310,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79503
+    },
+    {
+      "firstMissingSampleIndex" : 2710532480,
+      "firstMissingSequence" : 8470414,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79527
+    },
+    {
+      "firstMissingSampleIndex" : 2710570880,
+      "firstMissingSequence" : 8470534,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79535
+    },
+    {
+      "firstMissingSampleIndex" : 2710604160,
+      "firstMissingSequence" : 8470638,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79543
+    },
+    {
+      "firstMissingSampleIndex" : 2710627200,
+      "firstMissingSequence" : 8470710,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79583
+    },
+    {
+      "firstMissingSampleIndex" : 2710665600,
+      "firstMissingSequence" : 8470830,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79607
+    },
+    {
+      "firstMissingSampleIndex" : 2710691200,
+      "firstMissingSequence" : 8470910,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79655
+    },
+    {
+      "firstMissingSampleIndex" : 2710734720,
+      "firstMissingSequence" : 8471046,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79671
+    },
+    {
+      "firstMissingSampleIndex" : 2710762880,
+      "firstMissingSequence" : 8471134,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79703
+    },
+    {
+      "firstMissingSampleIndex" : 2710793600,
+      "firstMissingSequence" : 8471230,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79743
+    },
+    {
+      "firstMissingSampleIndex" : 2710834560,
+      "firstMissingSequence" : 8471358,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79759
+    },
+    {
+      "firstMissingSampleIndex" : 2710867840,
+      "firstMissingSequence" : 8471462,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79775
+    },
+    {
+      "firstMissingSampleIndex" : 2710896000,
+      "firstMissingSequence" : 8471550,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79807
+    },
+    {
+      "firstMissingSampleIndex" : 2710934400,
+      "firstMissingSequence" : 8471670,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79823
+    },
+    {
+      "firstMissingSampleIndex" : 2710957440,
+      "firstMissingSequence" : 8471742,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79871
+    },
+    {
+      "firstMissingSampleIndex" : 2710995840,
+      "firstMissingSequence" : 8471862,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79903
+    },
+    {
+      "firstMissingSampleIndex" : 2711034240,
+      "firstMissingSequence" : 8471982,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79919
+    },
+    {
+      "firstMissingSampleIndex" : 2711067520,
+      "firstMissingSequence" : 8472086,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79935
+    },
+    {
+      "firstMissingSampleIndex" : 2711228800,
+      "firstMissingSequence" : 8472590,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79967
+    },
+    {
+      "firstMissingSampleIndex" : 2711269760,
+      "firstMissingSequence" : 8472718,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79975
+    },
+    {
+      "firstMissingSampleIndex" : 2711297920,
+      "firstMissingSequence" : 8472806,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 79999
+    },
+    {
+      "firstMissingSampleIndex" : 2711333760,
+      "firstMissingSequence" : 8472918,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80015
+    },
+    {
+      "firstMissingSampleIndex" : 2711361920,
+      "firstMissingSequence" : 8473006,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80047
+    },
+    {
+      "firstMissingSampleIndex" : 2711395200,
+      "firstMissingSequence" : 8473110,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80079
+    },
+    {
+      "firstMissingSampleIndex" : 2711464320,
+      "firstMissingSequence" : 8473326,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80103
+    },
+    {
+      "firstMissingSampleIndex" : 2711492480,
+      "firstMissingSequence" : 8473414,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80143
+    },
+    {
+      "firstMissingSampleIndex" : 2711536000,
+      "firstMissingSequence" : 8473550,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80151
+    },
+    {
+      "firstMissingSampleIndex" : 2711561600,
+      "firstMissingSequence" : 8473630,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80183
+    },
+    {
+      "firstMissingSampleIndex" : 2711594880,
+      "firstMissingSequence" : 8473734,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80215
+    },
+    {
+      "firstMissingSampleIndex" : 2711630720,
+      "firstMissingSequence" : 8473846,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80239
+    },
+    {
+      "firstMissingSampleIndex" : 2711658880,
+      "firstMissingSequence" : 8473934,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80279
+    },
+    {
+      "firstMissingSampleIndex" : 2711702400,
+      "firstMissingSequence" : 8474070,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80287
+    },
+    {
+      "firstMissingSampleIndex" : 2711733120,
+      "firstMissingSequence" : 8474166,
+      "missingFrameCount" : 16,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80303
+    },
+    {
+      "firstMissingSampleIndex" : 2711763840,
+      "firstMissingSequence" : 8474262,
+      "missingFrameCount" : 24,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80327
+    },
+    {
+      "firstMissingSampleIndex" : 2711786880,
+      "firstMissingSequence" : 8474334,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80383
+    },
+    {
+      "firstMissingSampleIndex" : 2711827840,
+      "firstMissingSequence" : 8474462,
+      "missingFrameCount" : 32,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80415
+    },
+    {
+      "firstMissingSampleIndex" : 2711868800,
+      "firstMissingSequence" : 8474590,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80423
+    },
+    {
+      "firstMissingSampleIndex" : 2712681600,
+      "firstMissingSequence" : 8477130,
+      "missingFrameCount" : 68,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80491
+    },
+    {
+      "firstMissingSampleIndex" : 2712711040,
+      "firstMissingSequence" : 8477222,
+      "missingFrameCount" : 80,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80571
+    },
+    {
+      "firstMissingSampleIndex" : 2712752000,
+      "firstMissingSequence" : 8477350,
+      "missingFrameCount" : 56,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80627
+    },
+    {
+      "firstMissingSampleIndex" : 2712780160,
+      "firstMissingSequence" : 8477438,
+      "missingFrameCount" : 72,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80699
+    },
+    {
+      "firstMissingSampleIndex" : 2712813440,
+      "firstMissingSequence" : 8477542,
+      "missingFrameCount" : 72,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80771
+    },
+    {
+      "firstMissingSampleIndex" : 2712846720,
+      "firstMissingSequence" : 8477646,
+      "missingFrameCount" : 72,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80843
+    },
+    {
+      "firstMissingSampleIndex" : 2712882560,
+      "firstMissingSequence" : 8477758,
+      "missingFrameCount" : 64,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80907
+    },
+    {
+      "firstMissingSampleIndex" : 2712933760,
+      "firstMissingSequence" : 8477918,
+      "missingFrameCount" : 8,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80915
+    },
+    {
+      "firstMissingSampleIndex" : 2713256320,
+      "firstMissingSequence" : 8478926,
+      "missingFrameCount" : 40,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 80955
+    },
+    {
+      "firstMissingSampleIndex" : 2713287040,
+      "firstMissingSequence" : 8479022,
+      "missingFrameCount" : 48,
+      "origin" : "watch",
+      "reasonRaw" : 1,
+      "watchDropCounter" : 81003
+    }
+  ],
+  "lastSampleIndexExclusive" : 2716288000,
+  "lastSequence" : 8488399,
+  "logBytes" : 1544244,
+  "protocolVersion" : 1,
+  "provenance" : {
+    "fwVersionPacked" : 69730304,
+    "protocolVersion" : 1
+  },
+  "receivedAtMs" : 1791883701900,
+  "recordedTimeZone" : "Asia\/Jakarta",
+  "sampleRateHz" : 16000,
+  "segmentId" : "seg-1791883701900-efc75fe3-42",
+  "startMonotonicMs" : 6000,
+  "startTimeMs" : 1791714747121,
+  "streamId" : 4022820835,
+  "transcriptionState" : "Complete"
+}
