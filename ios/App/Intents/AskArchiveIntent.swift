@@ -181,7 +181,11 @@ struct AskArchiveAnswerer: Sendable {
     var isReady: @MainActor @Sendable () -> Bool
     var visibility: @Sendable () -> SystemSearchVisibility
     var hasContent: @MainActor @Sendable () async -> Bool
+    /// Ask over everything, transcripts included: only under "Everything".
     var ask: @MainActor @Sendable (String, AskScope) async throws -> AskEntry
+    /// Ask over titles, summaries, tags and recaps (`SummaryAskCorpus`): under "Titles and
+    /// summaries", where no transcript may reach Siri.
+    var askSummaries: @MainActor @Sendable (String, AskScope) async throws -> AskEntry
     var target: @MainActor @Sendable (AskCitation) async -> CitationTarget?
     /// How long Ask may take before Siri is told to ask in the app instead. Siri does not wait
     /// indefinitely for an intent, and an answer that never arrives is worse than one that says
@@ -203,6 +207,10 @@ struct AskArchiveAnswerer: Sendable {
                 try await AskLibraryDataSources.current.ask.ask(
                     question: question, thread: nil, scope: scope)
             },
+            askSummaries: { question, scope in
+                try await AskLibraryDataSources.current.ask.askFromSummaries(
+                    question: question, scope: scope)
+            },
             target: { await AskLibraryDataSources.current.ask.citationTarget(for: $0) }
         )
     }
@@ -220,9 +228,11 @@ struct AskArchiveAnswerer: Sendable {
                 spoken: Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading,
                 line: Copy.Siri.notReadyLine, period: period, action: nil)
         }
-        // The person's "Siri & Spotlight can see" choice. Off means Siri hears nothing from
-        // the archive — not even an answer built from it.
-        guard visibility().donates else {
+        // The person's "Siri & Spotlight can see" choice, read once for the whole answer. Off
+        // means Siri hears nothing from the archive — not even an answer built from it; Titles
+        // and summaries means the answer is built from those alone, never a transcript.
+        let visibility = self.visibility()
+        guard visibility.donates else {
             return Self.notice(
                 spoken: Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading,
                 line: Copy.Siri.offLine, period: period, action: askInApp)
@@ -233,9 +243,10 @@ struct AskArchiveAnswerer: Sendable {
                 line: nil, period: period, action: nil)
         }
 
+        let summariesOnly = !visibility.includesText
         let entry: AskEntry
         do {
-            let ask = self.ask
+            let ask = summariesOnly ? self.askSummaries : self.ask
             guard
                 let answered = try await Self.withDeadline(
                     deadline, { try await ask(trimmed, period.askScope) })
@@ -280,13 +291,20 @@ struct AskArchiveAnswerer: Sendable {
         if entry.isPartialCoverage, let read = entry.conversationsRead,
             let inScope = entry.conversationsInScope
         {
-            full += " " + Copy.Siri.partiallyRead(read: read, inScope: inScope, period: period)
-            partialNote = Copy.Ask.partialCoverage(read: read, inScope: inScope)
+            full +=
+                " "
+                + Copy.Siri.partiallyRead(
+                    read: read, inScope: inScope, period: period, summariesOnly: summariesOnly)
+            partialNote =
+                summariesOnly
+                ? Copy.Siri.partialSummaries(read: read, inScope: inScope)
+                : Copy.Ask.partialCoverage(read: read, inScope: inScope)
         }
         let shown = Array(sources.prefix(AskArchiveCard.sourceLimit))
         return AskArchiveOutcome(
             full: full,
-            supporting: Copy.Siri.supporting(read: entry.conversationsRead, period: period),
+            supporting: Copy.Siri.supporting(
+                read: entry.conversationsRead, period: period, summariesOnly: summariesOnly),
             card: AskArchiveCard(
                 periodLabel: Copy.Siri.periodLabel(period),
                 body: text,

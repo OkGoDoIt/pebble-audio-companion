@@ -916,6 +916,56 @@ extension LiveWorld: AskDataSource {
         )
     }
 
+    /// Siri's Ask under "Titles and summaries": the same planner, prompt, sweep and Recent as
+    /// `ask`, over a corpus of conversation titles, summaries and tags plus the day recaps
+    /// (`SummaryAskCorpus`) — never a transcript, which that setting keeps away from Siri.
+    func askFromSummaries(question: String, scope: AskScope) async throws -> AskEntry {
+        let kitScope = scope.kitScope
+        let nowMs = composition.clock.nowMs
+        let corpus = await SummaryAskCorpus.load(
+            queries: queries, recaps: composition.recapStore, scope: kitScope, nowMs: nowMs)
+        guard !corpus.isEmpty else {
+            return try await save(
+                question: question,
+                answer: "There is nothing recorded in that window to answer from.",
+                citations: [], scope: kitScope, coverage: nil, threadId: nil, nowMs: nowMs)
+        }
+        let budget = await askBudget(
+            mode: composition.settings.aiMode, modelId: composition.settings.aiModel)
+        let plan = AskCorpusPlanner.plan(
+            stretches: corpus.stretches, budget: budget, relevance: { _ in .none },
+            policy: .keywordFirst, conversationOf: { corpus.conversationOf($0) })
+        let header = corpus.header(nowMs: nowMs, scopeDescription: kitScope.promptDescription)
+        let retriever = composition.askRetriever
+        @Sendable func render(_ batch: [CitableExcerpt]) -> String {
+            retriever.formatForPrompt(
+                stretches: batch, whenLabel: { corpus.whenLabels[$0.segmentId] },
+                gapSummary: { _ in nil })
+        }
+        let answer: String
+        if plan.isSinglePass {
+            answer = try await run(
+                prompt: AiPromptTemplates.ask,
+                content: SummaryAskCorpus.content(
+                    header: header, coverageLine: plan.coverage.promptLine, question: question,
+                    rendered: render(plan.batches.first ?? [])))
+        } else {
+            answer = try await sweep(
+                plan: plan, question: question, header: header, threadContext: nil,
+                render: render)
+        }
+        return try await save(
+            question: question,
+            answer: answer,
+            citations: renderedAnswerCitations(answer, sources: plan.stretches)
+                .map(corpus.realCitation),
+            scope: kitScope,
+            coverage: plan.coverage,
+            threadId: nil,
+            nowMs: nowMs
+        )
+    }
+
     private func run(prompt: AiPromptTemplate, content: String) async throws -> String {
         try await composition.aiRouter.run(
             AiRunRequest(

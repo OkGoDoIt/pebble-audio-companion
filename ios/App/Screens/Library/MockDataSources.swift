@@ -907,6 +907,12 @@ extension MockWorld: AskDataSource {
         Array(AskThread.group(askEntries).prefix(5))
     }
 
+    /// The artboard world keeps no transcripts apart from its summaries, so the same canned
+    /// answers serve both corpora.
+    func askFromSummaries(question: String, scope: AskScope) async throws -> AskEntry {
+        try await ask(question: question, thread: nil, scope: scope)
+    }
+
     func ask(question: String, thread: AskThread?, scope: AskScope) async throws -> AskEntry {
         try? await Task.sleep(for: .seconds(1.2))
         let lowered = question.lowercased()

@@ -4,6 +4,7 @@ import Foundation
 import Intelligence
 import SearchKit
 import Testing
+import Transcription
 
 // The phone's own Siri / Spotlight / Shortcuts path: what the entities carry, what the
 // "Siri & Spotlight can see" setting lets out, the change gate in front of the system index,
@@ -492,7 +493,10 @@ struct SiriPathTests {
 
     private struct Recorder: @unchecked Sendable {
         final class Box: @unchecked Sendable {
+            /// Questions sent to the corpus WITH transcripts.
             var asked: [(String, AskScope)] = []
+            /// Questions sent to the titles-and-summaries corpus.
+            var summaryAsked: [(String, AskScope)] = []
         }
         let box = Box()
     }
@@ -512,6 +516,10 @@ struct SiriPathTests {
             hasContent: { hasContent },
             ask: { question, scope in
                 recorder.box.asked.append((question, scope))
+                return try await ask(question, scope)
+            },
+            askSummaries: { question, scope in
+                recorder.box.summaryAsked.append((question, scope))
                 return try await ask(question, scope)
             },
             target: { citation in
@@ -579,6 +587,7 @@ struct SiriPathTests {
         let outcome = await answerer(visibility: .off, recorder: recorder) { _, _ in Self.entry() }
             .answer(question: "anything", period: .today)
         #expect(recorder.box.asked.isEmpty)
+        #expect(recorder.box.summaryAsked.isEmpty)
         #expect(outcome.full == Copy.Siri.offForSiri("answers"))
         #expect(!outcome.card.isAnswer)
         #expect(outcome.card.action?.label == "Ask in Pebble Audio")
@@ -625,6 +634,99 @@ struct SiriPathTests {
         #expect(outcome.supporting == Copy.Siri.tookTooLongHeading)
         #expect(outcome.card.body == "Ask in Pebble Audio for the full answer.")
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "last7", query: "a long one"))
+    }
+
+    /// Under "Titles and summaries" the answer is built from titles, summaries, tags and recaps:
+    /// the corpus with transcripts is never asked, and the card says what was read.
+    @Test func underTitlesAndSummariesTheAnswerReadsSummariesOnly() async {
+        let recorder = Recorder()
+        let outcome = await answerer(visibility: .summaries, recorder: recorder) { _, _ in
+            Self.entry(read: 4, inScope: 9)
+        }
+        .answer(question: "what about the budget", period: .yesterday)
+        #expect(recorder.box.asked.isEmpty)
+        #expect(recorder.box.summaryAsked.count == 1)
+        #expect(outcome.supporting == "From summaries of 4 conversations yesterday")
+        #expect(outcome.card.partialNote == Copy.Siri.partialSummaries(read: 4, inScope: 9))
+        #expect(
+            outcome.full.hasSuffix(
+                "Pebble Audio read the summaries of 4 of the 9 conversations yesterday."))
+
+        // Everything reads transcripts, never the summaries corpus.
+        let everything = Recorder()
+        _ = await answerer(visibility: .full, recorder: everything) { _, _ in Self.entry() }
+            .answer(question: "q", period: .today)
+        #expect(everything.box.asked.count == 1)
+        #expect(everything.box.summaryAsked.isEmpty)
+    }
+
+    /// The model's whole input under "Titles and summaries", built from a real database with a
+    /// transcript on disk beside it: the title, the summary and the day's recap are in it, and
+    /// not one word of what was said.
+    @Test func underTitlesAndSummariesNoTranscriptTextReachesTheModelsInput() async throws {
+        let database = try AppDatabase.inMemory()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let startMs = nowMs - 2 * 3_600_000
+        try await database.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO conversations (id, startMs, endMs, timezone, state)
+                    VALUES ('c1', ?, ?, 'UTC', 'closed')
+                    """,
+                arguments: [startMs, startMs + 1_800_000])
+            try db.execute(
+                sql: "INSERT INTO annotations (conversationId, title, summary) VALUES (?, ?, ?)",
+                arguments: ["c1", "Lease call with Sam", "Agreed to send the lease by Friday."])
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_segments
+                        (conversationId, segmentId, ordinal, transcriptionState)
+                    VALUES ('c1', 'seg-c1', 0, 'Complete')
+                    """)
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("siri-summaries-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let transcripts = FileTranscriptStore(root: directory, nowMs: { nowMs })
+        _ = try transcripts.save(
+            "seg-c1",
+            result: RoutedTranscription(
+                text: "the door code is pineapple", modeUsed: .localOnly, providerId: "fake",
+                modelUsed: nil))
+        #expect(transcripts.load("seg-c1")?.text.contains("pineapple") == true)
+        let recaps = DailyRecapStore(db: database, nowMs: { nowMs })
+        _ = try await recaps.save(
+            DailyRecap(
+                dateKey: LogicalDay.dateKey(forMs: nowMs, timeZoneID: TimeZone.current.identifier),
+                text: "A day of lease talk.", segmentIds: ["seg-c1"]))
+
+        let corpus = await SummaryAskCorpus.load(
+            queries: ConversationQueries(db: database), recaps: recaps, scope: .lastSevenDays,
+            nowMs: nowMs)
+        let plan = AskCorpusPlanner.plan(
+            stretches: corpus.stretches, budget: AskBudget.forMode(.remoteFirst, modelId: nil),
+            relevance: { _ in .none }, policy: .keywordFirst,
+            conversationOf: { corpus.conversationOf($0) })
+        let rendered = AskRetriever().formatForPrompt(
+            stretches: plan.batches.first ?? [], whenLabel: { corpus.whenLabels[$0.segmentId] },
+            gapSummary: { _ in nil })
+        let input = SummaryAskCorpus.content(
+            header: corpus.header(nowMs: nowMs, scopeDescription: "the last 7 days"),
+            coverageLine: plan.coverage.promptLine, question: "What did I agree with Sam?",
+            rendered: rendered)
+
+        #expect(input.contains("Lease call with Sam"))
+        #expect(input.contains("Agreed to send the lease by Friday."))
+        #expect(input.contains("A day of lease talk."))
+        #expect(input.contains(SummaryAskCorpus.sourcesNote))
+        #expect(!input.contains("pineapple"))
+        #expect(!input.contains("door code"))
+        #expect(plan.coverage.conversationsRead == 1)
+        // A citation of the stretch opens the conversation's own recording, at its start.
+        let key = try #require(corpus.stretches.first?.segmentId)
+        let cited = corpus.realCitation(AskCitation(segmentId: key, number: 1))
+        #expect(cited.segmentId == "seg-c1")
+        #expect(cited.startMs == startMs)
     }
 
     /// Past Siri's wait the question carries on in the app, on the Ask screen.

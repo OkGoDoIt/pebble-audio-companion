@@ -86,18 +86,35 @@ extension Copy {
 
         /// The heading Siri shows above the card: what the answer was drawn from. No closing
         /// period, like every other card heading; the answer itself is what is read aloud.
-        static func supporting(read: Int?, period: AskArchivePeriod) -> String {
+        /// `summariesOnly` (Titles and summaries) says so, because that is all that was read.
+        static func supporting(
+            read: Int?, period: AskArchivePeriod, summariesOnly: Bool = false
+        ) -> String {
             let when = periodPhrase(period)
+            let of = summariesOnly ? "summaries of " : ""
             switch read {
-            case .none: return "From your conversations \(when)"
-            case .some(1): return "From 1 conversation \(when)"
-            case .some(let n): return "From \(n) conversations \(when)"
+            case .none:
+                return summariesOnly
+                    ? "From your conversation summaries \(when)"
+                    : "From your conversations \(when)"
+            case .some(1): return "From \(of)1 conversation \(when)"
+            case .some(let n): return "From \(of)\(n) conversations \(when)"
             }
         }
 
         /// Said after a partial answer, the spoken twin of Ask's `partialCoverage` footnote.
-        static func partiallyRead(read: Int, inScope: Int, period: AskArchivePeriod) -> String {
-            "Pebble Audio read \(read) of the \(inScope) conversations \(periodPhrase(period))."
+        static func partiallyRead(
+            read: Int, inScope: Int, period: AskArchivePeriod, summariesOnly: Bool = false
+        ) -> String {
+            let what = summariesOnly ? "the summaries of " : ""
+            return "Pebble Audio read \(what)\(read) of the \(inScope) conversations "
+                + "\(periodPhrase(period))."
+        }
+
+        /// Ask's `partialCoverage` line, for an answer read from summaries alone.
+        static func partialSummaries(read: Int, inScope: Int) -> String {
+            "Read the summaries of \(read) of \(inScope) conversations — anything not mentioned "
+                + "may not have been reached."
         }
 
         static func moreSources(_ count: Int) -> String { "and \(count) more" }
