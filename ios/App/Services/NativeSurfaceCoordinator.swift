@@ -38,7 +38,7 @@ final class NativeSurfaceCoordinator {
     /// tells the session what to WANT — the session observes the link rather than dialling it,
     /// so without the reconnect inside `startCapture` the watch is never contacted and the
     /// toggle appears to do nothing. This is the same defect fixed for Today's Start button in
-    /// `aa2a934`; the intent path now shares that fix instead of re-implementing it.
+    /// `ae5758a`; the intent path now shares that fix instead of re-implementing it.
     private static func liveApply(_ intent: CaptureIntent) async {
         await AppComposition.shared?.runtime.applyExternalCaptureIntent(intent, source: .intent)
     }

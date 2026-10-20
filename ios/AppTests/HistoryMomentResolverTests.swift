@@ -144,7 +144,7 @@ struct HistoryMomentScrubberTests {
     }
 
     /// `LiveWorld.citationTarget`'s member walk exactly as it stood before it was factored out
-    /// (f45e099), kept here as the oracle the shared hop must reproduce for whole segments.
+    /// (038f3d9), kept here as the oracle the shared hop must reproduce for whole segments.
     static func legacyOffset(
         citationStartMs: Int64?, citedId: String, members: [String],
         metas: [String: SegmentMeta]

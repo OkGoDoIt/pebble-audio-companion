@@ -191,7 +191,7 @@ private func dropInInbox(_ root: URL, id: String) throws -> URL {
     }
 }
 
-// The Core AI entry is `published: false` (1e74c22): the store refuses to download it and asks
+// The Core AI entry is `published: false` (6aedb35): the store refuses to download it and asks
 // for a Files-inbox import instead. Every install below therefore starts from an inbox archive —
 // the download path is covered by the Cactus entry and by `ParakeetModelStoreTests`.
 @Suite struct ParakeetModelStoreCoreAITests {

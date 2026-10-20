@@ -49,7 +49,7 @@ scare-mongering; keep functionality, cut ceremony.
 | Q5 | Finish the half-built features | Speaker naming (Q17), custom templates (v1: templates run from the Notes flow, custom prompts savable — Part 6.9), a real date-range picker for Ask scope (Part 6.6). Rules engine: NOT ported (stretch, design-for later) |
 | Q6 | Calm live preview | 1-line italic rolling snippet on the Live row; full text on the Live Conversation screen |
 | Q7 | Settings split into pushed screens | The 5 sub-screens in Part 2; API keys in Keychain with a change flow (never inline fields); retentionDays REAL (old app's was placebo); no placebo controls anywhere |
-| Q8 | Churn investigated first | Resolved: reattach fixed in the current pair (app 1dcc6d0/1e5db02, fw 23750e1f9/f91b6e0f3); conversations group segments in the UI (Part 3) |
+| Q8 | Churn investigated first | Resolved: reattach fixed in the current pair (app 7444eca/1e5db02, fw 23750e1f9/f91b6e0f3); conversations group segments in the UI (Part 3) |
 | Q9 | Loss alerts only, **opt-in** | One notification type: ≥30 s continuous loss or spool overflow; ≤1/hour; deep-links to Today. **Default OFF** behind a Settings toggle (`loss_alerts_enabled`) — revised 2026-08-31 on device feedback: an unrequested alert for every Bluetooth blip is noise, and the coverage strip already carries that story calmly. Permission is requested when the user turns the toggle ON, never off the back of a gap. No other notifications |
 | Q10 | Tags editable | AI proposes; add/remove/rename in the Tag Editor sheet; rename is global |
 | Q11 | Strip taps explain | Waveform/coverage taps show a popover naming the state ("quiet 2:10–2:14 PM", "missing 40 sec — Bluetooth"); navigation stays in lists |
@@ -338,7 +338,7 @@ their test suites are the behavioral spec; the protocol golden fixtures are the 
     arming, single in-flight control token, 5 s keepalive + 15 s liveness expectations, resync
     after 2 missed pings, checkpoint cadence 2 s audio / 500 ms wall, durability ordering:
     append→flush→bookkeep→checkpoint, StreamContext contiguity incl. RESUME base adoption,
-    supersede vs in-place-continue rules from commits 1dcc6d0/1e5db02).
+    supersede vs in-place-continue rules from commits 7444eca/1e5db02).
   - `SegmentStore` — byte-identical `.spxlog` + `meta.json` formats (incl. `dedupeFloorSequence`),
     recovery, rotation, reattach (relaxed identity, refill + gap-shrink, sorted reads), retention
     (REAL retentionDays wiring this time).
@@ -527,7 +527,7 @@ keepaliveMaxFailures 2; injected nowMs, desiredEnabled, consumeEnableRequestPerm
 - Checkpoint: due at ≥2 s audio or ≥500 ms wall; skip when nothing contiguous or unchanged;
   token unavailable ⇒ retry next append; payload carries contiguousNext−1, sample index,
   policy flags, free-storage hint; WRITE FAILURE NEVER TEARS DOWN THE STREAM.
-- Supersede vs in-place continue (commits 1dcc6d0/1e5db02): RESUME && same open streamId ⇒
+- Supersede vs in-place continue (commits 7444eca/1e5db02): RESUME && same open streamId ⇒
   stream=nil but DO NOT close the segment (sink continues in place); anything else ⇒
   closeOpenSegment(Superseded); then always sink.openSegment + fresh StreamContext.
 - onLinkDown: close Interrupted → persist ReceiverResumeState → clear auth/token/waiter/
@@ -877,7 +877,7 @@ defaults, `ai_mode`, `ai_model`, `retention_days`, `automatic_wav_export`,
   (denied-mismatch) until a watch-side Forget Receiver. Also migrate the surviving settings
   keys, move both API keys defaults→Keychain (deleting the defaults entries), use a NEW
   background-URLSession identifier, and clamp pre-fix `startTimeMs` values against
-  `receivedAtMs` (data recorded before commit 1e5db02 can carry stream-birth anchors hours
+  `receivedAtMs` (data recorded before commit b18a79e can carry stream-birth anchors hours
   out of place). Gate: import of a copy of the real 383-recording container; spot-check
   durations/text; connect to the watch WITHOUT re-consent.
 - **M9 Native surfaces**: coverage widget, App Intents + Control Center, Spotlight, loss

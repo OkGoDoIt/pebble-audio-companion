@@ -505,7 +505,7 @@ private let hour = minutesMs(60)
     /// stored against that segment — `boundary_overrides(s2, join)`. The same silence now cuts
     /// just after the last word before it (18 minutes into `s0`) and at the first word after it
     /// (18 minutes into `s3`), and the stored decision has to keep meaning what the person
-    /// meant: these are one conversation. (It did not, until 25f14fe: a silence that contains a
+    /// meant: these are one conversation. (It did not, until 1c35162: a silence that contains a
     /// joined segment's start is not cut at all — at either end.)
     @Test func aJoinMadeAtTheOldJoinStillDefeatsTheQuietSplitItWasMadeAgainst() {
         let segments = rotations(4)

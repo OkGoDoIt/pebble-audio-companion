@@ -134,7 +134,7 @@ import Testing
     /// An apostrophe is part of a word when it is INSIDE one ("don't"). After the last letter it
     /// is a closing quote or a plural possessive, and the word is the same word: `'harbour'` is
     /// "harbour", and a quoted stop word is still a stop word. (The tokeniser used to hash a
-    /// trailing apostrophe into the word — "harbour'", "the'"; fixed in 25f14fe.)
+    /// trailing apostrophe into the word — "harbour'", "the'"; fixed in 1c35162.)
     @Test func aClosingQuoteIsNotPartOfTheWord() {
         #expect(features("'harbour'").terms == [3_894_328_072])
         #expect(features("\u{2018}harbour\u{2019}").terms == [3_894_328_072])

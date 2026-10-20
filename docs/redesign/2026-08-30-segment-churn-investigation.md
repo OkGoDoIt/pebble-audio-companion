@@ -62,10 +62,10 @@ power save (30-min timescale), `StopReasonError` (dead code — never sent).
 ## Fixes for the current pair (small, high daily value)
 
 > **Status 2026-08-30 (later session): all five applied.** 1–2 in pebble-audio-companion
-> `1dcc6d0` (plus spool-rewind duplicate suppression in `appendFrames` and per-field
+> `7444eca` (plus spool-rewind duplicate suppression in `appendFrames` and per-field
 > continuation-failure logging wired to both factories); 3–4 in PebbleOS `23750e1f9` on
 > `audio-companion` (fix 4 also makes the offline-overflow baseline re-snapshot reachable);
-> 5 in PebbleOS `23750e1f9` (PROTOCOL.md) + pebble-audio-companion `8833582` (spec).
+> 5 in PebbleOS `23750e1f9` (PROTOCOL.md) + pebble-audio-companion `0918672` (spec).
 > Validated: app `:core:storage`/`:core:transport`/`:core:protocol` jvmTest +
 > `:app:testDebugUnitTest` + iOS-simulator compile green; firmware focused suite 6/6 with two
 > new tests (re-announce timestamp stability; real NimBLE unsubscribe→disconnect→CCCD-restore
@@ -79,7 +79,7 @@ power save (30-min timescale), `StopReasonError` (dead code — never sent).
 > rotation budget, mid-stream segments anchored at stream-birth wall clock, the live
 > waveform/live transcription replaying rewound duplicates, gap-refill frames being discarded
 > then checkpointed over (trimming the watch spool past unrecovered audio), and the liveness
-> watchdog missing from both protocol docs. All fixed in pebble-audio-companion `1e5db02` and
+> watchdog missing from both protocol docs. All fixed in pebble-audio-companion `b18a79e` and
 > PebbleOS `f91b6e0f3`, with ten new unit tests.
 
 1. App: drop `startTimeMs`/`startMonotonicMs` from `canContinue()` equality (keep streamId +

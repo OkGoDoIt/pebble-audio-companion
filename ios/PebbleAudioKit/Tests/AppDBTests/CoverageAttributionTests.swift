@@ -194,7 +194,7 @@ func randomCoverageDay(_ rng: inout SplitMixGenerator, dayStart: Int64) -> FuzzC
 
 // MARK: - The code as it was (verbatim), for the equivalence tests
 
-/// `CoverageComputer.compute` before `computeAttributed` (c4bf904).
+/// `CoverageComputer.compute` before `computeAttributed` (ac6f667).
 private func legacyCompute(
     dateKey: String,
     timeZoneID: String,

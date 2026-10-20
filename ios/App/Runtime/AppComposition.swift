@@ -1633,7 +1633,7 @@ final class AppComposition {
         // its own private serial queue ("com.apple.BGTaskScheduler (<identifier>)"), and the
         // `MainActor.assumeIsolated` below is a hard assertion: `dispatch_assert_queue` fails,
         // SIGTRAP, and the process dies before `run(backgroundTask:)` runs a single line. That
-        // was EVERY BGTask launch since the SwiftUI composition root (58c86ef): the crash reports
+        // was EVERY BGTask launch since the SwiftUI composition root (25b0872): the crash reports
         // named the queue, and the flight recorder saw only the relaunch. A crash there is not a
         // missed maintenance window — it kills the receiver mid-stream (15:49 on 2026-09-09: ten
         // minutes of audio) and it is what "relaunched every ~30 minutes overnight" actually was.

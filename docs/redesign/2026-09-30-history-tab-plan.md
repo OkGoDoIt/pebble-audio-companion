@@ -609,7 +609,7 @@ followUps → recap → liveLocal…
    `recordedTimeZone` (`Kit/SegmentStore/SegmentStore.swift:364-380`); 3 of 866 segments in the
    backup have one. Every consumer falls back to the phone's current zone, so past days are
    re-dated when the phone changes zone. This cannot be backfilled. Fixed separately the same
-   day (commit `9baad3e`, "segmentstore: stamp recordedTimeZone on every newly opened
+   day (commit `64aff4f`, "segmentstore: stamp recordedTimeZone on every newly opened
    segment"); recordings made before it stay unstamped and History tolerates that.
 2. **Retention deletes text, not just audio.** `RetentionService` runs the full delete cascade
    for every evicted segment, which removes its transcript, follow-ups and any recap that quoted
@@ -1474,7 +1474,7 @@ Output: a short note with each answer and a screen recording for Roger.
 | 8 | Follow-up wall-time columns, written at extraction; one-time fill; read-time placement | `FollowUpWorkerTests`, new `HistoryFollowUpAssignmentTests` |
 | 9 | `HistoryDataSource`, `MockHistory`, `LiveHistory` with the digest gate and `setVisible` | new `HistoryObservationGateTests`, `LiveMockConformanceTests` |
 
-Prerequisite from outside this plan, already landed: the time-zone stamp on new segments (`9baad3e`).
+Prerequisite from outside this plan, already landed: the time-zone stamp on new segments (`64aff4f`).
 
 ### Phase 2 — The screen, on data that already exists
 
@@ -1599,7 +1599,7 @@ they share the App Group). Steps 15 and 30 are the planned deploys.
 | `ViewThatFits` cost | Eight candidates per card, all built | Profile on the 24-hour day; computed line count as fallback |
 | Opening a 24-hour conversation at a moment | The conversation screen loads the whole transcript; a past hang was traced to transcript decoding | Time it against the backup in step 7; if slow, load a window around the moment first |
 | Retention empties the far end | Month is thin on default settings | Decision 1 in section 11 |
-| Time zones | Segments recorded before `9baad3e` are unstamped and dated in the phone's current zone | History tolerates unstamped data; new recordings are stamped |
+| Time zones | Segments recorded before `64aff4f` are unstamped and dated in the phone's current zone | History tolerates unstamped data; new recordings are stamped |
 | Segments overlap in wall time (spool backfill) | "Which segment holds this moment" can pick the wrong one | Latest start wins, frames break ties; resolver parity test with `citationTarget` |
 | Time inside a segment with no frames and no gap record | Drawn as recorded today; could show a card over a hole | Measure how common it is (step 6); for inexact-clock segments read frame ranges once and cache |
 | Two sessions adding migrations | The classification task adds its own tables | Agree names and order before either lands; both additive |

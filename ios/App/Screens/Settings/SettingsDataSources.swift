@@ -22,7 +22,7 @@ import Transcription
 /// watch uncontacted when the switch goes on (the app, the widget and Control Center all say
 /// "Recording" while nothing is captured) and leaves the receiver running when it goes off (the
 /// user switches recording off and is still recorded). Every other surface pairs the write with a
-/// runtime call — Today's Start/Stop, onboarding, Control Center (`aa2a934`, `8ecace0`) — and
+/// runtime call — Today's Start/Stop, onboarding, Control Center (`ae5758a`, `d4ec3a5`) — and
 /// this seam is that same call, reachable from Settings. There is no second sequence: the live
 /// implementation is `LiveTodayDataSource`, which routes into `CompanionRuntime`.
 @MainActor
