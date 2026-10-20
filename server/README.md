@@ -220,7 +220,10 @@ Production is `https://pebbleaudio.okgodoit.com` on the shared DigitalOcean drop
   manual run): build, test, publish (Release, linux-x64, framework-dependent), migration bundle, package,
   `scp` to the droplet, then `sudo /opt/pebbleaudio/deploy-pebbleaudio.sh <sha> <artifact>`. The deploy
   script backs up the database, runs the bundle, swaps the `current` symlink, restarts the service, waits for
-  `/healthz`, and rolls back if it never passes.
+  `/healthz`, and rolls back if it never passes. The deploy steps need the repository secrets
+  `PEBBLEAUDIO_DEPLOY_SSH_KEY` (the private half of the key whose public half `setup-server.sh <key.pub>` installs for
+  `pebbleaudio-deploy`), `PEBBLEAUDIO_DEPLOY_HOST`, `PEBBLEAUDIO_DEPLOY_USER` (`pebbleaudio-deploy`), and
+  optionally `PEBBLEAUDIO_DEPLOY_PORT`; until the key is set, the workflow builds and tests only.
 - **By hand**: `deploy/scripts/publish-local.sh` builds the same artifact on the Mac, runs the tests, and
   deploys it over SSH as root (`PEBBLEAUDIO_DEPLOY_TARGET`, default `root@pebbleaudio.okgodoit.com`).
 

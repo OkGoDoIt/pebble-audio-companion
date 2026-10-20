@@ -53,6 +53,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Check deploy configuration
+        id: deploy-config
+        env:
+          PEBBLEAUDIO_DEPLOY_SSH_KEY: ${{ secrets.PEBBLEAUDIO_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -n "$PEBBLEAUDIO_DEPLOY_SSH_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The deploy secrets are not set, so this run builds and tests only. See server/README.md."
+          fi
+
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
@@ -118,6 +130,7 @@ jobs:
           tar -C artifacts/package -czf "${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz" .
 
       - name: Configure SSH
+        if: steps.deploy-config.outputs.configured == 'true'
         env:
           PEBBLEAUDIO_DEPLOY_SSH_KEY: ${{ secrets.PEBBLEAUDIO_DEPLOY_SSH_KEY }}
           PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
@@ -130,6 +143,7 @@ jobs:
           ssh-keyscan -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" "$PEBBLEAUDIO_DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Upload artifact
+        if: steps.deploy-config.outputs.configured == 'true'
         env:
           PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
           PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
@@ -140,6 +154,7 @@ jobs:
             "${PEBBLEAUDIO_DEPLOY_USER}@${PEBBLEAUDIO_DEPLOY_HOST}:/tmp/${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz"
 
       - name: Deploy artifact
+        if: steps.deploy-config.outputs.configured == 'true'
         env:
           PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
           PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
