@@ -658,6 +658,80 @@ private struct MuseTokenScreen: View {
     }
 }
 
+/// Diagnostics · Voice level check: the next question from the watch is also sent at four
+/// levels, and what Muse heard at each is shown side by side. A tool for choosing the automatic
+/// target with real questions, not a setting.
+struct MuseLevelCheckScreen: View {
+    @State private var check: MusePushToTalk.LevelCheck?
+
+    var body: some View {
+        SettingsScroll {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(headline)
+                        .font(AppFont.headline)
+                        .foregroundStyle(Tokens.label)
+                    Text(Copy.Muse.levelCheckLine)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if check == nil || check?.phase == .done || check?.phase == .failed {
+                        Button(Copy.Muse.levelCheckStart) { MuseComposition.armLevelCheck() }
+                            .buttonStyle(.inCardFilled)
+                            .padding(.top, 2)
+                    } else if check?.phase == .waiting {
+                        Button(Copy.Muse.levelCheckCancel) { MuseComposition.cancelLevelCheck() }
+                            .buttonStyle(.smallBordered)
+                    } else {
+                        ProgressView(
+                            value: Double(check?.results.count ?? 0),
+                            total: Double(MusePushToTalk.levelCheckTargets.count))
+                            .tint(Tokens.tint)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let check, !check.results.isEmpty {
+                ListCard {
+                    ForEach(check.results, id: \.targetDBFS) { result in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(Copy.Muse.levelCheckResultTitle(
+                                target: Int(result.targetDBFS), gain: Int(result.gainDB.rounded()),
+                                automatic: result.targetDBFS == MusePushToTalk.automaticTargetDBFS))
+                                .font(AppFont.footnote.weight(.semibold))
+                                .foregroundStyle(Tokens.label)
+                            Text(result.heard.map(Copy.Muse.heard) ?? Copy.Muse.heardNothing)
+                                .font(AppFont.subBody)
+                                .foregroundStyle(result.heard == nil ? Tokens.meta : Tokens.secondaryBody)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if let speech = check.speechLevelDBFS {
+                    SettingsFooter(text: Copy.Muse.levelCheckSpeech(Int(speech.rounded())))
+                }
+            }
+        }
+        .navigationTitle(Copy.Muse.levelCheckTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard let checks = MuseComposition.levelCheck else { return }
+            for await value in checks.stream() { check = value }
+        }
+    }
+
+    private var headline: String {
+        switch check?.phase {
+        case .waiting?: return Copy.Muse.levelCheckWaiting
+        case .running?: return Copy.Muse.levelCheckRunning
+        case .done?: return Copy.Muse.levelCheckDone
+        case .failed?: return Copy.Muse.levelCheckFailed
+        case nil: return Copy.Muse.levelCheckIdle
+        }
+    }
+}
+
 /// The Muse row on the Settings root, saying "Paired" once it is.
 struct MuseSettingsRow: View {
     @State private var model = MuseScreenModel()

@@ -28,6 +28,17 @@ enum MuseComposition {
     /// What the last question from the watch was heard as, for the Muse screen.
     static var lastQuestion: StateSubject<MusePushToTalk.QuestionReport?>? { pushToTalk?.lastQuestion }
 
+    /// The voice level check (Diagnostics), and starting or cancelling one.
+    static var levelCheck: StateSubject<MusePushToTalk.LevelCheck?>? { pushToTalk?.levelCheck }
+    static func armLevelCheck() {
+        guard let pushToTalk else { return }
+        Task { await pushToTalk.armLevelCheck() }
+    }
+    static func cancelLevelCheck() {
+        guard let pushToTalk else { return }
+        Task { await pushToTalk.cancelLevelCheck() }
+    }
+
     /// Starts answering questions asked on the watch. Called once the composition is installed.
     static func startPushToTalk() {
         guard pushToTalk == nil, let composition = AppComposition.shared, let service else { return }

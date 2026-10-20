@@ -48,6 +48,29 @@ public actor MusePushToTalk {
 
     public nonisolated let lastQuestion = StateSubject<QuestionReport?>(nil)
 
+    /// A check of the voice level against Muse itself: the next question is also sent at each of
+    /// `levelCheckTargets`, to a chat of its own, and what Muse heard at each is kept side by
+    /// side. It is how the automatic target was chosen, and how a wearer can check it.
+    public struct LevelCheck: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable { case waiting, running, done, failed }
+        public struct Result: Equatable, Sendable {
+            public let targetDBFS: Double
+            public let gainDB: Double
+            public var heard: String?
+        }
+
+        public var phase: Phase
+        public var speechLevelDBFS: Double?
+        public var results: [Result]
+    }
+
+    public nonisolated let levelCheck = StateSubject<LevelCheck?>(nil)
+    public static let levelCheckTargets: [Double] = [-30, -26, -22, -18]
+    /// Where Automatic puts the loud end of a question's speech.
+    public static let automaticTargetDBFS = VoiceNoteLevel.Settings.automaticTargetDBFS
+    static let levelCheckInstructions =
+        "This is a test recording. Reply with exactly the words spoken in it, and nothing else."
+
     /// What Muse is told with every question. Not the person's words: how to answer them.
     static let instructions =
         "Asked on a Pebble watch. Your reply is read as plain text on the watch's small screen: "
@@ -141,6 +164,15 @@ public actor MusePushToTalk {
         await link.setQuietLink(paired.value != nil)
     }
 
+    /// The next question from the watch is also sent at every check level.
+    public func armLevelCheck() {
+        levelCheck.value = LevelCheck(phase: .waiting, speechLevelDBFS: nil, results: [])
+    }
+
+    public func cancelLevelCheck() {
+        if levelCheck.value?.phase != .running { levelCheck.value = nil }
+    }
+
     // MARK: - From the watch
 
     func handle(_ inbound: AudioReceiverSession.AssistantInbound) async {
@@ -213,6 +245,9 @@ public actor MusePushToTalk {
         case .fixed(let gain): settings = VoiceNoteLevel.Settings(fixedGainDB: Double(gain))
         }
         let (prepared, level) = VoiceNoteLevel.prepare(pcm, settings: settings)
+        let checkLevels = levelCheck.value?.phase == .waiting
+        if checkLevels { levelCheck.value?.phase = .running }
+        defer { if checkLevels { Task { await self.runLevelCheck(pcm) } } }
         let wav = PcmWav.encodeMono16(pcm: Self.littleEndian(prepared), sampleRateHz: 16_000)
         log(
             "question \(current.id): \(String(format: "%.1f", level.durationSeconds)) s, "
@@ -359,6 +394,44 @@ public actor MusePushToTalk {
         default:
             return .unreachable
         }
+    }
+
+    /// Sends `pcm` at each check level to a fresh chat and records what Muse heard.
+    private func runLevelCheck(_ pcm: [Int16]) async {
+        let conversation: any MuseVoiceConversation
+        do {
+            conversation = try await connector.open(
+                chatID: UUID().uuidString.lowercased(), commands: [:]
+            ) { _, _, _ in ["ok": false, "error": "unsupported command"] }
+        } catch {
+            log("level check: could not reach Muse: \(error)")
+            levelCheck.value?.phase = .failed
+            return
+        }
+        defer { Task { await conversation.close() } }
+        for target in Self.levelCheckTargets {
+            let (prepared, report) = VoiceNoteLevel.prepare(pcm, settings: VoiceNoteLevel.Settings(targetDBFS: target))
+            levelCheck.value?.speechLevelDBFS = report.speechLevelDBFS
+            let wav = PcmWav.encodeMono16(pcm: Self.littleEndian(prepared), sampleRateHz: 16_000)
+            let heard = HeardBox()
+            do {
+                _ = try await conversation.ask(
+                    wav: wav, instructions: Self.levelCheckInstructions, timeout: .seconds(45)
+                ) { event in
+                    switch event {
+                    case .heard(let text): await heard.setHeard(text)
+                    case .answer(let text): await heard.setAnswer(text)
+                    case .status: break
+                    }
+                }
+            } catch {
+                log("level check at \(Int(target)) dBFS: \(error)")
+            }
+            let text = await heard.best
+            log("level check at \(Int(target)) dBFS (+\(Int(report.gainDB.rounded())) dB): \(text == nil ? "nothing" : "\(text!.count) chars")")
+            levelCheck.value?.results.append(.init(targetDBFS: target, gainDB: report.gainDB, heard: text))
+        }
+        levelCheck.value?.phase = .done
     }
 
     // MARK: - To the watch
@@ -635,5 +708,19 @@ public actor MusePushToTalk {
     /// At most `bytes` of UTF-8, cut between characters.
     static func cut(_ text: String, bytes: Int) -> [UInt8] {
         AssistantUpdate.chunks(of: text, maxBytes: bytes).first ?? []
+    }
+}
+
+/// What Muse heard of one check recording: its own transcript, or failing that its reply.
+private actor HeardBox {
+    private var heard: String?
+    private var answer: String?
+
+    func setHeard(_ text: String) { heard = text }
+    func setAnswer(_ text: String) { answer = text }
+
+    var best: String? {
+        let text = (heard?.isEmpty == false ? heard : answer)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 }

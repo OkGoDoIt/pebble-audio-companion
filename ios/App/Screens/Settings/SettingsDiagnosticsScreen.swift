@@ -249,6 +249,10 @@ struct SettingsDiagnosticsScreen: View {
             // and it says plainly what it does NOT touch — near "Delete All Data", a button
             // called "Rebuild" needs to.
             ListCard {
+                SettingsPushRow(title: Copy.Muse.levelCheckRow) { MuseLevelCheckScreen() }
+            }
+
+            ListCard {
                 RebuildIndexRow(state: diagnostics.indexRebuild) {
                     await diagnostics.rebuildSearchIndex()
                 }

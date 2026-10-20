@@ -120,6 +120,26 @@ extension Copy {
             gain <= 0 ? "Your last question needed no boost." : "Your last question was raised \(gain) dB."
         }
 
+        // Diagnostics · Voice level check.
+        static let levelCheckRow = "Muse voice level check"
+        static let levelCheckTitle = "Voice level check"
+        static let levelCheckIdle = "Check the voice level"
+        static let levelCheckWaiting = "Ask Muse something from your watch"
+        static let levelCheckRunning = "Checking with Muse…"
+        static let levelCheckDone = "What Muse heard at each level"
+        static let levelCheckFailed = "Couldn't reach Muse"
+        static let levelCheckLine =
+            "Your next question from the watch is also sent at four levels, to a chat of its own, "
+            + "so you can see what Muse hears at each. Keep this screen open while it runs."
+        static let levelCheckStart = "Check Next Question"
+        static let levelCheckCancel = "Cancel"
+        static func levelCheckResultTitle(target: Int, gain: Int, automatic: Bool) -> String {
+            "\(target) dBFS · +\(gain) dB" + (automatic ? " · Automatic" : "")
+        }
+        static func levelCheckSpeech(_ level: Int) -> String {
+            "Your question's speech measured \(level) dBFS before any boost."
+        }
+
         // Asking by typing.
         static let askHeader = "Type a question"
         static let askPlaceholder = "Ask Muse something"
