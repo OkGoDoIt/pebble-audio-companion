@@ -40,24 +40,18 @@ ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=pebbleau
     --output artifacts/efbundle-real
 
 echo "== package"
-mkdir -p artifacts/package/nginx
+# The nginx site is not in the artifact: setup-server.sh installs it from the repo. `efbundle` is for a
+# droplet whose deploy script predates running efbundle-real as the service user itself.
+mkdir -p artifacts/package
 cp -R artifacts/app artifacts/package/app
 cp artifacts/efbundle-real artifacts/package/efbundle-real
-cp deploy/nginx/pebbleaudio.conf artifacts/package/nginx/pebbleaudio.conf
 cat > artifacts/package/efbundle <<'BUNDLE'
 #!/usr/bin/env bash
 set -euo pipefail
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-nginx_config="${script_dir}/nginx/pebbleaudio.conf"
-
-if [[ -f "$nginx_config" ]]; then
-  install -m 644 "$nginx_config" /etc/nginx/sites-available/pebbleaudio
-  nginx -t
-  systemctl reload nginx
+if [[ "$(id -u)" -eq 0 ]]; then
+  exec runuser -u pebbleaudio -- "${script_dir}/efbundle-real" "$@"
 fi
-
-chmod +x "${script_dir}/efbundle-real"
 exec "${script_dir}/efbundle-real" "$@"
 BUNDLE
 chmod +x artifacts/package/efbundle artifacts/package/efbundle-real

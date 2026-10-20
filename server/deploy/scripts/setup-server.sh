@@ -97,8 +97,29 @@ chmod 440 "/etc/sudoers.d/${deploy_user}"
 visudo -cf "/etc/sudoers.d/${deploy_user}" >/dev/null
 
 echo "== nginx"
+# The site is installed from this checkout only, never by a deploy: nginx opens the log paths a site names as
+# root, so a site file from an artifact would be root on the shared droplet.
 site="/etc/nginx/sites-available/${app}"
-if [[ ! -f "$site" ]]; then
+if [[ -f "/etc/letsencrypt/live/${host}/fullchain.pem" ]]; then
+  if cmp -s "${deploy_dir}/nginx/${app}.conf" "$site"; then
+    echo "   ${site} matches the repo"
+  else
+    previous="$(mktemp)"
+    [[ -f "$site" ]] && cp "$site" "$previous"
+    install -m 644 "${deploy_dir}/nginx/${app}.conf" "$site"
+    ln -sfn "$site" "/etc/nginx/sites-enabled/${app}"
+    if nginx -t; then
+      systemctl reload nginx
+      echo "   installed ${site} from the repo"
+    else
+      if [[ -s "$previous" ]]; then install -m 644 "$previous" "$site"; else rm -f "$site" "/etc/nginx/sites-enabled/${app}"; fi
+      rm -f "$previous"
+      echo "   the repo's site failed nginx -t; the previous one is back" >&2
+      exit 1
+    fi
+    rm -f "$previous"
+  fi
+elif [[ ! -f "$site" ]]; then
   # First install: HTTP only, so certbot can take over and add the TLS server block.
   cat > "$site" <<EOF
 server {
@@ -122,9 +143,9 @@ EOF
   ln -sfn "$site" "/etc/nginx/sites-enabled/${app}"
   nginx -t
   systemctl reload nginx
-  echo "   installed HTTP site; run: certbot --nginx -d ${host} --redirect --non-interactive --agree-tos"
+  echo "   installed HTTP site; run: certbot certonly --nginx -d ${host}, then this script again for the TLS site"
 else
-  echo "   ${site} exists; deploys replace it from the artifact's nginx/${app}.conf"
+  echo "   ${site} exists and there is no certificate yet; left as is"
 fi
 
 echo "done"

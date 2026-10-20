@@ -221,7 +221,10 @@ Production is `https://pebbleaudio.okgodoit.com` on the shared DigitalOcean drop
   manual run): build, test, publish (Release, linux-x64, framework-dependent), migration bundle, package,
   `scp` to the droplet, then `sudo /opt/pebbleaudio/deploy-pebbleaudio.sh <sha> <artifact>`. The deploy
   script backs up the database, runs the bundle, swaps the `current` symlink, restarts the service, waits for
-  `/healthz`, and rolls back if it never passes. The deploy steps need the repository secrets
+  `/healthz`, and rolls back if it never passes. Nothing from the artifact runs as root: it is unpacked and its
+  bundle run as `pebbleaudio`, and the nginx site is installed only by `setup-server.sh` from the repo, so a
+  change to `deploy/nginx/pebbleaudio.conf` (or to the deploy script, the units, or the timers) needs a run of
+  `setup-server.sh` on the droplet. The deploy steps need the repository secrets
   `PEBBLEAUDIO_DEPLOY_SSH_KEY` (the private half of the key whose public half `setup-server.sh <key.pub>` installs for
   `pebbleaudio-deploy`), `PEBBLEAUDIO_DEPLOY_HOST`, `PEBBLEAUDIO_DEPLOY_USER` (`pebbleaudio-deploy`),
   `PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS` (the droplet's host keys as `known_hosts` lines, checked against
