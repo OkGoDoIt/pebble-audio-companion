@@ -470,7 +470,8 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		foreach (var name in WriteToolNames)
 		{
 			var tool = Assert.Single(tools, t => t.Name == name).ProtocolTool;
-			Assert.Equal((false, false, false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
+			// Adding is additive; changing a follow-up replaces what it said, so hosts ask before it.
+			Assert.Equal((false, name == "update_follow_up", false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
 			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
 			Assert.All(
 				new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" },

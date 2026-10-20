@@ -129,7 +129,8 @@ public sealed class WriteTools
 		Name = "update_follow_up",
 		Title = "Change a follow-up",
 		ReadOnly = false,
-		Destructive = false,
+		// It replaces the text, due date, and snooze and can archive: not an additive change, so hosts ask first.
+		Destructive = true,
 		Idempotent = true,
 		OpenWorld = false,
 		UseStructuredContent = true,
