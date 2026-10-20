@@ -121,7 +121,9 @@ struct TranscriptWordSpan: Equatable {
 
 struct TranscriptTurn: Equatable, Identifiable {
     var id: String
-    /// Diarization label within the conversation (stable across renames).
+    /// What the speaker's name is filed under (stable across renames): the diarization label
+    /// AND the segment it labels, as `SpeakerKey.stored`, because a provider labels each
+    /// segment on its own. Empty when the provider gave no speaker.
     var speakerLabel: String
     var name: String
     var role: SpeakerRole

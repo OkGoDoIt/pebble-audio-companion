@@ -245,6 +245,45 @@ import Testing
         #expect(try await store.listPeople().isEmpty)
     }
 
+    /// A provider labels one segment at a time, so the same label in two segments of one
+    /// conversation is two speakers, and each is named on its own — while a row written before
+    /// names were scoped (the sheet's "Speaker 1", or the bare label) still names the label
+    /// wherever a segment has no name of its own.
+    @Test func speakerNamesAreFiledPerSegment() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = PeopleStore(db: db)
+        let sam = try await store.createPerson(name: "Sam")
+        let alex = try await store.createPerson(name: "Alex")
+        let first = SpeakerKey(segmentId: "seg-1788000000000-aa-1", label: "1")
+        let second = SpeakerKey(segmentId: "seg-1788000900000-aa-2", label: "1")
+        #expect(SpeakerKey(stored: first.stored) == first)
+        // A turn carries the rendered form; it files under the raw label the export reads.
+        #expect(SpeakerKey(segmentId: first.segmentId, label: "Speaker 1") == first)
+        #expect(first.stored == "seg-1788000000000-aa-1#1")
+        #expect(SpeakerKey(segmentId: "s", label: "Speaker A").label == "Speaker A")
+        #expect(SpeakerKey(stored: "1") == nil)
+        #expect(SpeakerKey(stored: "Speaker 1") == nil)
+
+        try await store.assign(conversationId: "c1", label: second.stored, personId: sam.id)
+        var rows = try await store.assignments(forConversation: "c1")
+        #expect(SpeakerAssignment.match(second, in: rows)?.personName == "Sam")
+        #expect(SpeakerAssignment.match(first, in: rows) == nil)
+
+        for legacy in ["1", "Speaker 1"] {
+            try await store.assign(conversationId: "c1", label: legacy, personId: alex.id)
+            rows = try await store.assignments(forConversation: "c1")
+            #expect(SpeakerAssignment.match(first, in: rows)?.personName == "Alex")
+            #expect(SpeakerAssignment.match(second, in: rows)?.personName == "Sam")
+            #expect(SpeakerAssignment.match(stored: first.stored, in: rows)?.label == legacy)
+            try await store.unassign(conversationId: "c1", label: legacy)
+        }
+        // The archive export's form: names keyed by stored label.
+        let names = ["1": "Alex", second.stored: "Sam"]
+        #expect(first.name(in: names) == "Alex")
+        #expect(second.name(in: names) == "Sam")
+        #expect(SpeakerKey(segmentId: "x", label: "2").name(in: ["Speaker 2": "Dana"]) == "Dana")
+    }
+
     /// Regenerating a note must rewrite the SAME row: the open screen, the Spotlight entry and
     /// every citation address it by id, so a new id silently orphans all three.
     @Test func replaceContentRewritesTheNoteInPlace() async throws {
