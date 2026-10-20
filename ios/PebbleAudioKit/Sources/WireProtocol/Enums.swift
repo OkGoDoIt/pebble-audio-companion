@@ -56,6 +56,8 @@ public enum AckStatus: UInt8, CaseIterable, Sendable {
     case ok = 0
     case rejected = 1
     case badState = 2
+    /// The watch's transport refused the request's payload; send it again (MUSE_SETUP_TX).
+    case busy = 3
 }
 
 public enum RevokeReason: UInt8, CaseIterable, Sendable {

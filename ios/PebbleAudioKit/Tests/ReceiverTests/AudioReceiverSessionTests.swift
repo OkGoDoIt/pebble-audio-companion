@@ -786,6 +786,34 @@ import WireProtocol
         #expect(answers.first?.flags == flags)
     }
 
+    @Test func museSetupTrafficReachesItsHandlerAndRequestsReportTheWatchsAck() async {
+        // Pairing Muse through the watch (Section 4.3) needs every relayed value in order, and
+        // needs to tell a busy watch (send again) from a refusal.
+        let fx = await startSession()
+        await authorize(fx)
+        let received = MuseInboundBox()
+        await fx.session.setMuseSetupHandler { received.append($0) }
+
+        let rx = MuseSetupRx(seq: 0, flags: 0, data: Array("{}".utf8))
+        let opened = MuseSetupEvent(eventRaw: MuseSetupEventKind.opened.rawValue, detail: 0, mtu: 0, secondsLeft: 300)
+        fx.link.pushControl(opened)
+        fx.link.pushControl(rx)
+        await fx.settle()
+        #expect(received.values == [.event(opened), .rx(rx)])
+
+        let session = fx.session
+        let reply = Task { await session.sendMuseSetup { MuseSetupTx(requestToken: $0, data: [1, 2, 3]).encode() } }
+        await fx.settle()
+        guard let tx = fx.writes().compactMap({ $0 as? MuseSetupTx }).last else {
+            Issue.record("no MUSE_SETUP_TX written")
+            return
+        }
+        #expect(tx.data == [1, 2, 3])
+        fx.link.pushControl(Ack(requestToken: tx.requestToken, statusRaw: AckStatus.busy.rawValue))
+        await fx.settle()
+        #expect(await reply.value == .busy)
+    }
+
     @Test func withoutAProbeThePhoneMediaQueryGoesUnanswered() async {
         // The watch then falls back to the media service alone.
         let fx = await startSession()
@@ -1712,4 +1740,11 @@ private final class ArmedFlag: @unchecked Sendable {
             return wasArmed
         }
     }
+}
+
+private final class MuseInboundBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [AudioReceiverSession.MuseSetupInbound] = []
+    func append(_ value: AudioReceiverSession.MuseSetupInbound) { lock.withLock { stored.append(value) } }
+    var values: [AudioReceiverSession.MuseSetupInbound] { lock.withLock { stored } }
 }

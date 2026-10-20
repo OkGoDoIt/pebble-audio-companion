@@ -80,7 +80,10 @@ enum class AuthStatus(val raw: Int) {
 enum class AckStatus(val raw: Int) {
     Ok(0),
     Rejected(1),
-    BadState(2);
+    BadState(2),
+
+    /** The watch's transport refused the request's payload; send it again (MUSE_SETUP_TX). */
+    Busy(3);
 
     companion object {
         fun fromRaw(raw: Int): AckStatus? = entries.firstOrNull { it.raw == raw }

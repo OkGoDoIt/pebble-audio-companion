@@ -193,7 +193,9 @@ public actor AudioReceiverSession {
     // --- one-in-flight control request bookkeeping ---------------------------------------------
     private var tokenCounter = 0
     private var inFlightToken: Int?
-    private var ackWaiter: OneShot<Bool>?
+    /// Completed with the ACK's status, or `abandonedAck` when the request lost its slot.
+    private var ackWaiter: OneShot<Int>?
+    private static let abandonedAck = -1
 
     /// When the current in-flight token was taken, so an unanswered request cannot hold the only
     /// slot forever.
@@ -225,7 +227,7 @@ public actor AudioReceiverSession {
                 return nil
             }
             inFlightToken = nil
-            ackWaiter?.complete(false)
+            ackWaiter?.complete(Self.abandonedAck)
             ackWaiter = nil
         }
         tokenCounter = (tokenCounter + 1) & 0xFF
@@ -272,39 +274,59 @@ public actor AudioReceiverSession {
         ackWaitMs: Int64 = AudioReceiverSession.requestAckWaitMs,
         build: @escaping @Sendable (Int) -> [UInt8]
     ) async -> Bool {
-        if requireAuthorized && !authorized { return false }
+        let outcome = await sendControlAwaitAckStatus(
+            requireAuthorized: requireAuthorized, ackWaitMs: ackWaitMs, build: build)
+        return outcome == .status(0)
+    }
+
+    private enum AckOutcome: Equatable {
+        /// Not sent: not authorized, no free slot in time, or the write failed.
+        case notSent
+        /// Sent, but no ACK came back in time (or the request lost its slot).
+        case noAnswer
+        case status(UInt8)
+    }
+
+    /// `sendControlAwaitAck`, keeping the ACK's status for the callers that act on it.
+    private func sendControlAwaitAckStatus(
+        requireAuthorized: Bool = true,
+        ackWaitMs: Int64 = AudioReceiverSession.requestAckWaitMs,
+        build: @escaping @Sendable (Int) -> [UInt8]
+    ) async -> AckOutcome {
+        if requireAuthorized && !authorized { return .notSent }
         // Token wait: poll every 50 ms up to the deadline (withTimeoutOrNull { poll } in KMP).
         // Inline (not raced in a task group) so a token can never be taken-and-lost on the
         // timeout boundary.
         let deadline = clock.nowMs + Self.requestTokenWaitMs
         var taken = takeToken()
         while taken == nil {
-            if clock.nowMs >= deadline { return false }
+            if clock.nowMs >= deadline { return .notSent }
             do {
                 try await clock.sleep(ms: 50)
             } catch {
-                return false
+                return .notSent
             }
             taken = takeToken()
         }
-        guard let token = taken else { return false }
+        guard let token = taken else { return .notSent }
 
-        let waiter = OneShot<Bool>()
+        let waiter = OneShot<Int>()
         ackWaiter = waiter
-        var acked = false
+        var outcome = AckOutcome.noAnswer
         do {
             try await link.writeControl(build(token))
             noteOutboundControl()
-            acked = await withReceiverTimeout(clock: clock, ms: ackWaitMs) {
+            let status = await withReceiverTimeout(clock: clock, ms: ackWaitMs) {
                 await waiter.value()
-            } ?? false
+            }
+            if let status, status >= 0 { outcome = .status(UInt8(status)) }
         } catch {
-            acked = false
+            outcome = .notSent
         }
         if ackWaiter === waiter { ackWaiter = nil }
         // Free the slot on timeout/failure so checkpoints are not blocked forever.
         if !waiter.isCompleted && inFlightToken == token { inFlightToken = nil }
-        return acked
+        return outcome
     }
 
     // --- per-connection state ------------------------------------------------------------------
@@ -1376,7 +1398,7 @@ public actor AudioReceiverSession {
         case let ack as Ack:
             if ack.requestToken == inFlightToken {
                 inFlightToken = nil
-                ackWaiter?.complete(ack.statusRaw == 0)
+                ackWaiter?.complete(Int(ack.statusRaw))
                 ackWaiter = nil
             }
         case let revoked as Revoked:
@@ -1394,8 +1416,59 @@ public actor AudioReceiverSession {
             lastProtocolError.value = error
         case is PhoneMediaQuery:
             answerPhoneMediaQuery()
+        case let rx as MuseSetupRx:
+            museSetupHandler?(.rx(rx))
+        case let event as MuseSetupEvent:
+            museSetupHandler?(.event(event))
         default:
             break
+        }
+    }
+
+    // --- Muse gadget setup relay (protocol Section 4.3) ------------------------------------------
+
+    /// What the watch relays from a Muse pairing window.
+    public enum MuseSetupInbound: Sendable, Equatable {
+        /// A value the Muse app wrote (or one piece of it; see `MuseSetupRx.more`).
+        case rx(MuseSetupRx)
+        case event(MuseSetupEvent)
+    }
+
+    /// How the watch answered a MUSE_SETUP_* request.
+    public enum MuseSetupReply: Sendable, Equatable {
+        case ok
+        /// The watch's transport refused the value; send it again shortly.
+        case busy
+        case rejected
+        case badState
+        /// Not sent: no authorized watch, the request slot stayed busy, or the write failed.
+        case notSent
+        /// Sent, but the watch never answered.
+        case noAnswer
+        case other(UInt8)
+    }
+
+    private var museSetupHandler: (@Sendable (MuseSetupInbound) -> Void)?
+
+    /// Receives every MUSE_SETUP_RX and MUSE_SETUP_EVENT, in arrival order, on the session's
+    /// executor: hand the value on and return.
+    public func setMuseSetupHandler(_ handler: (@Sendable (MuseSetupInbound) -> Void)?) {
+        museSetupHandler = handler
+    }
+
+    /// Sends one MUSE_SETUP_* request on the single in-flight slot and reports the watch's ACK.
+    public func sendMuseSetup(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> MuseSetupReply {
+        switch await sendControlAwaitAckStatus(build: build) {
+        case .notSent: return .notSent
+        case .noAnswer: return .noAnswer
+        case .status(let raw):
+            switch AckStatus(rawValue: raw) {
+            case .ok: return .ok
+            case .busy: return .busy
+            case .rejected: return .rejected
+            case .badState: return .badState
+            default: return .other(raw)
+            }
         }
     }
 
@@ -2007,7 +2080,7 @@ public actor AudioReceiverSession {
         inFlightToken = nil
         inFlightSinceMs = 0
         lastOutboundControlMs = 0
-        ackWaiter?.complete(false)
+        ackWaiter?.complete(Self.abandonedAck)
         ackWaiter = nil
         grantedProtoVersion.value = nil
         // Everything observed belonged to the connection that just ended. Carrying it across
