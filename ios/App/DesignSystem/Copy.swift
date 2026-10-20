@@ -433,6 +433,7 @@ enum Copy {
             return "If this slips, \(body)."
         }
         static let addedByYou = "You added this."
+        static let addedByAssistant = "An assistant added this."
         static func capturedOn(_ when: String) -> String { "Heard \(when)" }
         /// The model that proposed the item, on its provenance card.
         static func foundBy(_ model: String) -> String { "found by \(model)" }

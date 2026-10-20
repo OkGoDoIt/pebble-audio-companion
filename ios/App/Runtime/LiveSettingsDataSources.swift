@@ -35,8 +35,133 @@ enum LiveSettingsDataSources {
             apiKeys: LiveApiKeyChecker(composition: composition),
             aiModels: AiModels.all.map {
                 AiModelOption(id: $0.id, displayName: $0.displayName)
-            }
+            },
+            server: LiveArchiveServerSource(composition: composition)
         )
+    }
+}
+
+// MARK: - Pebble Audio server
+
+/// The archive sync, for its Settings screen. Linking talks to the server through the kit's
+/// service and stores the result through `AppSettings` (the token in the Keychain); the screen
+/// watches the service's published status only while it is on screen.
+@MainActor
+@Observable
+final class LiveArchiveServerSource: ArchiveServerSource {
+    @ObservationIgnored private let composition: AppComposition
+    @ObservationIgnored private var observation: Task<Void, Never>?
+    private(set) var status = ArchiveSyncStatus()
+    private(set) var isWorking = false
+    private(set) var linkError: String?
+    private(set) var pendingInvitation: ArchiveLinkInvitation?
+    private(set) var lastManualSyncAtMs: Int64?
+
+    init(composition: AppComposition) {
+        self.composition = composition
+        status = composition.archiveSync.status.value
+    }
+
+    private var sync: ArchiveSyncService { composition.archiveSync }
+
+    func startObserving() {
+        guard observation == nil else { return }
+        let sync = self.sync
+        observation = Task { [weak self] in
+            await sync.refreshServerStatus()
+            for await status in sync.status.stream() {
+                guard let self, !Task.isCancelled else { return }
+                self.status = status
+            }
+        }
+    }
+
+    func stopObserving() {
+        observation?.cancel()
+        observation = nil
+    }
+
+    func receive(_ invitation: ArchiveLinkInvitation) {
+        linkError = nil
+        pendingInvitation = invitation
+    }
+
+    func confirmInvitation() {
+        guard let invitation = pendingInvitation else { return }
+        pendingInvitation = nil
+        perform(code: invitation.code, origin: invitation.origin)
+    }
+
+    func dismissInvitation() { pendingInvitation = nil }
+
+    func link(code: String, server: String) {
+        let trimmed = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let origin = ArchiveEndpoint.acceptableOrigin(trimmed.isEmpty ? ArchiveSyncProtocol.defaultOrigin : trimmed)
+        else {
+            linkError = Copy.ArchiveServer.linkError(.badOrigin, host: trimmed)
+            return
+        }
+        perform(code: code, origin: origin)
+    }
+
+    private func perform(code: String, origin: URL) {
+        guard !isWorking else { return }
+        isWorking = true
+        linkError = nil
+        let sync = self.sync
+        let settings = composition.settings
+        let host = origin.host ?? origin.absoluteString
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let deviceName = UIDevice.current.name
+        Task { [weak self] in
+            do {
+                let linked = try await sync.link(
+                    code: code, origin: origin, deviceName: deviceName, appVersion: version,
+                    appBuild: build)
+                guard settings.linkArchiveServer(
+                    origin: origin.absoluteString, deviceId: linked.deviceId,
+                    token: linked.deviceToken)
+                else {
+                    self?.linkError = Copy.ArchiveServer.linkError(nil, host: host)
+                    self?.isWorking = false
+                    return
+                }
+                await sync.didLink()
+            } catch let error as ArchiveSyncService.LinkError {
+                self?.linkError = Copy.ArchiveServer.linkError(error, host: host)
+            } catch {
+                self?.linkError = Copy.ArchiveServer.linkError(.network("\(error)"), host: host)
+            }
+            self?.isWorking = false
+        }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        // The settings write is the switch; the service hears it through the runtime mirror.
+        composition.settings.archiveSync.enabled = enabled
+    }
+
+    func syncNow() {
+        let sync = self.sync
+        Task { [weak self] in
+            await sync.syncNow()
+            await sync.refreshServerStatus()
+            self?.lastManualSyncAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        }
+    }
+
+    func unlink() {
+        guard !isWorking else { return }
+        isWorking = true
+        let sync = self.sync
+        let settings = composition.settings
+        Task { [weak self] in
+            await sync.unlink()
+            settings.unlinkArchiveServer()
+            self?.isWorking = false
+        }
     }
 }
 

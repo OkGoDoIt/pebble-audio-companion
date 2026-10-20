@@ -111,6 +111,8 @@ final class AppComposition {
     /// service's own seam only knows whole segments.
     let audioExporter: AudioExportManager
     let runtime: CompanionRuntime
+    /// The Pebble Audio archive sync. Does nothing at all until a server is linked.
+    let archiveSync: ArchiveSyncService
     /// "Is startup recovery still running?", for the screens. See `StartupActivity`.
     let startup: StartupActivity
     /// The background `URLSession` transport, held so `handleEventsForBackgroundURLSession` can
@@ -1121,7 +1123,8 @@ final class AppComposition {
                 },
                 recoverQueue: { try await transcription.recoverOnStart() },
                 enforceRetention: { try await retention.enforce() },
-                cascadeDeleted: { _ = await cascade.deleteSegment($0) },
+                // Retention's deletions at startup: expired on the archive server, not deleted.
+                cascadeDeleted: { _ = await cascade.deleteSegment($0, reason: .expired) },
                 enqueueClosedSegments: { try await transcription.enqueueClosedSegments() },
                 // History places a follow-up by when it was said; rows extracted before that was
                 // stored get it here, once per launch, after the receiver is already up.
@@ -1134,6 +1137,52 @@ final class AppComposition {
             onStep: { startupActivity.record($0) },
             log: AppRuntimeLog.runtimeLog
         )
+
+        // The Pebble Audio archive sync (`server/docs/sync-protocol.md`): text to the server the
+        // person links, audio only as a clip an assistant asks for. Its payloads read what the
+        // app's own AI layer reads — the stored grouping, the transcripts without word timings,
+        // the music/TV mask — and it does nothing until a server is linked.
+        let archiveDirectory = containerRoot.appendingPathComponent("archive-sync", isDirectory: true)
+        let archiveBuilder = ArchivePayloadBuilder(
+            sources: ArchivePayloadBuilder.Sources(
+                database: database,
+                readMeta: { await store.readMeta($0) },
+                listSegments: { await store.listSegments() },
+                transcript: { transcripts.loadWithoutWords($0) },
+                transcriptVersion: { transcripts.version($0) },
+                mask: audioContentMask,
+                audioContent: audioContentStore,
+                provisionalIds: { await enrichment.provisionalConversationIds() },
+                nowMs: nowMs
+            )
+        )
+        let archiveSync = ArchiveSyncService(
+            ArchiveSyncService.Dependencies(
+                outbox: ArchiveOutbox(db: database),
+                builder: archiveBuilder,
+                requests: ArchiveRequestHandler(
+                    sources: ArchiveRequestHandler.Sources(
+                        builder: archiveBuilder,
+                        readFrames: { await store.readFrames($0) },
+                        // A clip of audio that has moved to iCloud brings it back first.
+                        fetchColdAudio: { try await coldStorage.fetch(segmentIds: $0) },
+                        temporaryDirectory: archiveDirectory.appendingPathComponent(
+                            "clips", isDirectory: true),
+                        nowMs: nowMs
+                    )
+                ),
+                http: URLSessionArchiveHTTP(),
+                uploads: URLSessionArchiveUploader.shared,
+                settings: { settingsBox.archiveSync },
+                token: { keychain.string(for: .archiveDeviceToken) },
+                directory: archiveDirectory,
+                clock: clock,
+                isForeground: { foreground.value },
+                isCharging: { foreground.devicePower.isPluggedIn },
+                log: AppRuntimeLog.runtimeLog
+            )
+        )
+        self.archiveSync = archiveSync
 
         let runtime = CompanionRuntime(
             environment: CompanionRuntimeEnvironment(
@@ -1156,7 +1205,8 @@ final class AppComposition {
                 foreground: foreground,
                 log: AppRuntimeLog.runtimeLog,
                 audioContent: audioContent,
-                coldStorage: coldStorage
+                coldStorage: coldStorage,
+                archiveSync: archiveSync
             ),
             wake: wake
         )
@@ -1236,7 +1286,17 @@ final class AppComposition {
         // them resets the AI retry budgets — the charger and thermal callbacks that also land
         // here must not, or every failed title would be retried dozens of times a day.
         let lastAiRecoveryKey = OSAllocatedUnfairLock(initialState: settingsMirror.aiRecoveryKey)
+        // The archive sync hears about its own settings (a link, an unlink, the switch) and
+        // nothing else: every other settings write would otherwise be a pass for nothing.
+        let archiveSync = self.archiveSync
+        let lastArchiveSettings = OSAllocatedUnfairLock(initialState: settingsMirror.archiveSync)
         settings.onRuntimeSettingsChanged = {
+            let archiveNow = settingsMirror.archiveSync
+            let archiveChanged = lastArchiveSettings.withLock { last -> Bool in
+                defer { last = archiveNow }
+                return last != archiveNow
+            }
+            if archiveChanged { Task { await archiveSync.settingsChanged() } }
             let now = settingsMirror.transcriptionRecoveryKey
             let changed = lastRecoveryKey.withLock { last -> Bool in
                 defer { last = now }
@@ -1415,6 +1475,15 @@ final class AppComposition {
     func handleBackgroundUrlSessionEvents(
         identifier: String, completionHandler: @escaping @Sendable () -> Void
     ) {
+        // The archive sync's own session: its finished batches and clips, re-attached so their
+        // answers are applied. The handler is called when the session's events drain.
+        if identifier == URLSessionArchiveUploader.sessionIdentifier {
+            URLSessionArchiveUploader.shared.addBackgroundEventsCompletion {
+                DispatchQueue.main.async(execute: completionHandler)
+            }
+            Task { [runtime] in await runtime.handleArchiveSyncEvents() }
+            return
+        }
         guard identifier == BackgroundUploadWiring.sessionIdentifier else {
             // Not our session — nothing here can drain it, so release the system immediately.
             completionHandler()

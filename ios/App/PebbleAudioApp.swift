@@ -1,3 +1,4 @@
+import CompanionRuntime
 import CoreSpotlight
 import SwiftUI
 
@@ -113,6 +114,13 @@ struct PebbleAudioApp: App {
                 .environment(settings)
                 .tint(Tokens.tint)
                 .onOpenURL { url in
+                    // The QR code on the Pebble Audio server's Link a phone page. Nothing is sent
+                    // anywhere until the person confirms the server it names.
+                    if let invitation = ArchiveLinkInvitation.parse(url) {
+                        SettingsDataSources.current.server.receive(invitation)
+                        router.navigate(to: .settings(.server))
+                        return
+                    }
                     if let route = Route.parse(url) { router.navigate(to: route) }
                 }
                 // Widget taps, the Q9 loss notification, Siri, and Spotlight results all end

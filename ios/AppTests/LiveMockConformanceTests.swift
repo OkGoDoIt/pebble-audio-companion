@@ -100,6 +100,9 @@ struct LiveMockConformanceTests {
         // still see that a decision was made about it.
         Pair(protocolName: "ConversationPlayback", live: "", mock: ""),
         Pair(protocolName: "HistoryDataSource", live: "LiveHistory", mock: "MockHistory"),
+        Pair(
+            protocolName: "ArchiveServerSource", live: "LiveArchiveServerSource",
+            mock: "MockArchiveServerSource"),
     ]
 
     // MARK: - Exemptions

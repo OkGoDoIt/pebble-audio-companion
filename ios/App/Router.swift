@@ -88,6 +88,8 @@ enum Route: Equatable, Hashable, Identifiable {
 
     enum SettingsPage: String, Equatable {
         case watch, transcription, storage, privacy, aboutyou, diagnostics
+        /// The Pebble Audio server (the archive sync).
+        case server
     }
 
     static let scheme = "companion"

@@ -30,6 +30,14 @@
 				<string>companion</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.audiocompanion.server-link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pebbleaudio</string>
+			</array>
+		</dict>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>

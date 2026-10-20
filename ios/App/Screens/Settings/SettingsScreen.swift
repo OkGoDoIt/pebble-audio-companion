@@ -220,6 +220,11 @@ struct SettingsScreen: View {
                 route: .settings(.privacy)
             )
             SettingsNavRow(title: Copy.Settings.Root.aboutYou, route: .settings(.aboutyou))
+            SettingsNavRow(
+                title: Copy.ArchiveServer.rowTitle,
+                value: serverPreview,
+                route: .settings(.server)
+            )
             // Only when a firmware release feed is configured (always in a debug build). With
             // no feed the screen could report nothing but a dead source, which would read as
             // the app being broken rather than as the feature not having started — so the door
@@ -257,6 +262,15 @@ struct SettingsScreen: View {
             inCloud: sources.storage.overview.map { $0.audioInCloudBytes > 0 ? Formatting.storageSize($0.audioInCloudBytes) : nil } ?? nil)
     }
 
+    /// "Not linked", "Paused", or the server's host.
+    private var serverPreview: String {
+        guard settings.archiveSync.isLinked, let origin = settings.archiveSync.origin else {
+            return Copy.ArchiveServer.notLinkedHeading
+        }
+        guard settings.archiveSync.enabled else { return Copy.ArchiveServer.pausedPreview }
+        return URL(string: origin)?.host ?? origin
+    }
+
     /// Where data goes, in a few words — the same fact the Privacy screen tells at length.
     private var privacyPreview: String {
         settings.cloudDestinations ?? Copy.Settings.Root.privacyLocal
@@ -273,6 +287,7 @@ struct SettingsScreen: View {
         case .settings(.privacy): SettingsPrivacyScreen()
         case .settings(.aboutyou): SettingsAboutYouScreen()
         case .settings(.diagnostics): SettingsDiagnosticsScreen()
+        case .settings(.server): SettingsServerScreen()
         default: EmptyView()  // non-settings routes never land on the settings stack
         }
     }

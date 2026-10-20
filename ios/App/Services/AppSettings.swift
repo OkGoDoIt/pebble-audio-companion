@@ -62,6 +62,11 @@ final class AppSettings {
     nonisolated static let suiteName = "group.dev.audiocompanion"
 
     @ObservationIgnored private let defaults: UserDefaults
+    /// This install's own preferences, NOT the App Group's. The archive sync's link lives here:
+    /// its token is in this app's Keychain and its outbox in this app's database, so the
+    /// side-by-side development build (same App Group) must not read the main app's link as
+    /// its own.
+    @ObservationIgnored private let localDefaults: UserDefaults
     /// Secrets live here, never in defaults. Exposed for the key-change screens.
     @ObservationIgnored let keychain: KeychainStore
 
@@ -105,7 +110,8 @@ final class AppSettings {
                 backgroundCatchUp: backgroundCatchUp,
                 cloudUploadNetwork: cloudUploadNetwork,
                 remoteAiProvider: remoteAiProvider,
-                systemSearchVisibility: systemSearchVisibility
+                systemSearchVisibility: systemSearchVisibility,
+                archiveSync: archiveSync
             )
         )
         onRuntimeSettingsChanged?()
@@ -225,6 +231,47 @@ final class AppSettings {
             defaults.set(systemSearchVisibility.rawValue, forKey: Keys.systemSearchVisibility)
             mirrorToRuntime()
         }
+    }
+
+    /// The Pebble Audio server this phone is linked to, its id there, and the sync switch.
+    /// Written by linking and unlinking (`linkArchiveServer` / `unlinkArchiveServer`, which also
+    /// own the token in the Keychain) and by the switch. One value, so a link is one mirror.
+    var archiveSync: ArchiveSyncSettings {
+        didSet {
+            guard archiveSync != oldValue else { return }
+            localDefaults.set(archiveSync.origin, forKey: Keys.archiveSyncOrigin)
+            localDefaults.set(archiveSync.deviceId, forKey: Keys.archiveSyncDeviceId)
+            localDefaults.set(archiveSync.enabled, forKey: Keys.archiveSyncEnabled)
+            mirrorToRuntime()
+        }
+    }
+
+    /// The linked server's host while text is syncing to it, for the privacy copy.
+    var archiveServerHost: String? {
+        guard archiveSync.isLinked, archiveSync.enabled, let origin = archiveSync.origin else {
+            return nil
+        }
+        return URL(string: origin)?.host ?? origin
+    }
+
+    /// The linked server's host whether or not sync is paused: "Delete all" wipes it either way.
+    var archiveLinkedHost: String? {
+        guard archiveSync.isLinked, let origin = archiveSync.origin else { return nil }
+        return URL(string: origin)?.host ?? origin
+    }
+
+    /// Stores a new link: the token in the Keychain first (a link with no token is unusable),
+    /// then the origin and device id. Returns false when the Keychain refused the token.
+    @discardableResult
+    func linkArchiveServer(origin: String, deviceId: String, token: String) -> Bool {
+        guard keychain.set(token, for: .archiveDeviceToken) else { return false }
+        archiveSync = ArchiveSyncSettings(origin: origin, deviceId: deviceId, enabled: true)
+        return true
+    }
+
+    func unlinkArchiveServer() {
+        keychain.remove(.archiveDeviceToken)
+        archiveSync = ArchiveSyncSettings()
     }
 
     /// Whether Ask may add Spotlight's semantic ranking to its keyword ranking when a question's
@@ -473,10 +520,17 @@ final class AppSettings {
 
     init(
         defaults: UserDefaults = UserDefaults(suiteName: AppSettings.suiteName) ?? .standard,
-        keychain: KeychainStore = KeychainStore()
+        keychain: KeychainStore = KeychainStore(),
+        localDefaults: UserDefaults = .standard
     ) {
         self.defaults = defaults
         self.keychain = keychain
+        self.localDefaults = localDefaults
+        archiveSync = ArchiveSyncSettings(
+            origin: localDefaults.string(forKey: Keys.archiveSyncOrigin),
+            deviceId: localDefaults.string(forKey: Keys.archiveSyncDeviceId),
+            // Absent key => on: linking is the choice, the switch only pauses it.
+            enabled: (localDefaults.object(forKey: Keys.archiveSyncEnabled) as? Bool) ?? true)
 
         captureIntent =
             defaults.string(forKey: Keys.captureIntent)
@@ -659,6 +713,9 @@ final class AppSettings {
         static let askSemanticRecall = "ask_semantic_recall"
         static let coldStorageEnabled = "cold_storage_enabled"
         static let coldStorageMinAgeDays = "cold_storage_min_age_days"
+        static let archiveSyncOrigin = "archive_sync_origin"
+        static let archiveSyncDeviceId = "archive_sync_device_id"
+        static let archiveSyncEnabled = "archive_sync_enabled"
     }
 }
 

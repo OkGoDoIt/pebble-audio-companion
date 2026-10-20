@@ -1229,6 +1229,83 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     }
 }
 
+// MARK: - Pebble Audio server (the archive sync)
+
+/// Settings · Pebble Audio server. What the screen shows (`status`, the kit's published value)
+/// and the few things a person does there. `startObserving`/`stopObserving` bracket the screen
+/// being on screen: the source does nothing at all while it is not.
+@MainActor
+protocol ArchiveServerSource: AnyObject {
+    var status: ArchiveSyncStatus { get }
+    /// A link or unlink in flight.
+    var isWorking: Bool { get }
+    /// Why the last link attempt failed, in words; nil when it did not.
+    var linkError: String? { get }
+    /// A `pebbleaudio://link` the app was opened with, waiting for the person to confirm.
+    var pendingInvitation: ArchiveLinkInvitation? { get }
+    /// When "Sync Now" last finished, for its inline result.
+    var lastManualSyncAtMs: Int64? { get }
+    func startObserving()
+    func stopObserving()
+    func receive(_ invitation: ArchiveLinkInvitation)
+    func confirmInvitation()
+    func dismissInvitation()
+    /// Manual entry: the server's address (a host or an origin) and the code it shows.
+    func link(code: String, server: String)
+    func setEnabled(_ enabled: Bool)
+    func syncNow()
+    func unlink()
+}
+
+/// Previews and `-demo-data`: a linked phone with a little waiting and one assistant read.
+@MainActor
+@Observable
+final class MockArchiveServerSource: ArchiveServerSource {
+    var status: ArchiveSyncStatus = {
+        var status = ArchiveSyncStatus()
+        status.link = .linked(host: "pebbleaudio.okgodoit.com")
+        status.enabled = true
+        status.lastBatchAtMs = Int64(Date().timeIntervalSince1970 * 1000) - 120_000
+        status.pending = 3
+        status.server = ArchiveServerStatus(
+            lastBatchAtMs: nil, pendingRequests: 0,
+            aiReads: [
+                .init(
+                    atMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, client: "ChatGPT",
+                    tool: "search", ids: ["conv-1", "conv-2", "conv-3"])
+            ])
+        return status
+    }()
+    var isWorking = false
+    var linkError: String?
+    var pendingInvitation: ArchiveLinkInvitation?
+    var lastManualSyncAtMs: Int64?
+
+    func startObserving() {}
+    func stopObserving() {}
+    func receive(_ invitation: ArchiveLinkInvitation) { pendingInvitation = invitation }
+    func confirmInvitation() {
+        guard let invitation = pendingInvitation else { return }
+        pendingInvitation = nil
+        status.link = .linked(host: invitation.host)
+    }
+    func dismissInvitation() { pendingInvitation = nil }
+    func link(code: String, server: String) {
+        guard !code.isEmpty, let origin = ArchiveEndpoint.acceptableOrigin(server) else {
+            linkError = Copy.ArchiveServer.linkError(.badOrigin, host: server)
+            return
+        }
+        linkError = nil
+        status.link = .linked(host: origin.host ?? server)
+    }
+    func setEnabled(_ enabled: Bool) { status.enabled = enabled }
+    func syncNow() {
+        status.pending = 0
+        lastManualSyncAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+    }
+    func unlink() { status = ArchiveSyncStatus() }
+}
+
 // MARK: - Holder
 
 /// Swap point for the real services; screens resolve through `current` (defaults to mocks).
@@ -1246,6 +1323,7 @@ final class SettingsDataSources {
     let processing: ProcessingModeSource
     let apiKeys: ApiKeyChecking
     let aiModels: [AiModelOption]
+    let server: ArchiveServerSource
 
     init(
         capture: CaptureControlling? = nil,
@@ -1257,7 +1335,8 @@ final class SettingsDataSources {
         cloudHealth: CloudHealthSource? = nil,
         processing: ProcessingModeSource? = nil,
         apiKeys: ApiKeyChecking? = nil,
-        aiModels: [AiModelOption]? = nil
+        aiModels: [AiModelOption]? = nil,
+        server: ArchiveServerSource? = nil
     ) {
         self.capture = capture ?? MockCaptureControl()
         self.watch = watch ?? MockWatchStatusSource()
@@ -1268,6 +1347,7 @@ final class SettingsDataSources {
         self.cloudHealth = cloudHealth ?? MockCloudHealthSource()
         self.processing = processing ?? MockProcessingModeSource()
         self.apiKeys = apiKeys ?? MockApiKeyChecker()
+        self.server = server ?? MockArchiveServerSource()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
             .init(id: "gpt-5.6-mini", displayName: "GPT-5.6 Mini"),

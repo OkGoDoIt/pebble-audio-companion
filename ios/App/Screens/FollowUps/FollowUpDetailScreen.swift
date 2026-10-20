@@ -163,9 +163,9 @@ struct FollowUpDetailScreen: View {
 
     @ViewBuilder
     private func provenance(_ item: FollowUpItem) -> some View {
-        if item.origin == .user {
+        if item.origin == .user || (item.origin == .assistant && (item.quote ?? "").isEmpty) {
             Card {
-                Text(Copy.FollowUps.addedByYou)
+                Text(item.origin == .user ? Copy.FollowUps.addedByYou : Copy.FollowUps.addedByAssistant)
                     .font(AppFont.subBody)
                     .foregroundStyle(Tokens.tertiary)
             }

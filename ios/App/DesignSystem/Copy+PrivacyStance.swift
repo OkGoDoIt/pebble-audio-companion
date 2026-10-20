@@ -40,19 +40,25 @@ extension Copy.Privacy {
         /// a place data goes, so the stance names it — in the person's own account, not a
         /// service of this app's.
         var coldStorageAgeDays: Int?
+        /// The Pebble Audio server text is syncing to (`AppSettings.archiveServerHost`), nil
+        /// when none is linked or sync is paused. The person's own server, but still a place
+        /// the text goes, so the stance names it.
+        var archiveServerHost: String?
 
         init(
             transcriptionMode: TranscriptionMode,
             aiMode: AiProcessingMode,
             cloudTranscriptionDestination: String?,
             remoteAiDestination: String?,
-            coldStorageAgeDays: Int? = nil
+            coldStorageAgeDays: Int? = nil,
+            archiveServerHost: String? = nil
         ) {
             self.transcriptionMode = transcriptionMode
             self.aiMode = aiMode
             self.cloudTranscriptionDestination = cloudTranscriptionDestination
             self.remoteAiDestination = remoteAiDestination
             self.coldStorageAgeDays = coldStorageAgeDays
+            self.archiveServerHost = archiveServerHost
         }
     }
 
@@ -89,6 +95,11 @@ extension Copy.Privacy {
         let summary: String
 
         switch (stt, ai) {
+        case (nil, nil) where inputs.archiveServerHost != nil:
+            headline = "Only text goes to your Pebble Audio server"
+            summary =
+                "Transcription and AI both run on this iPhone. No recording is sent to any "
+                + "service."
         case (nil, nil):
             headline = "Everything stays on this phone"
             summary =
@@ -133,6 +144,12 @@ extension Copy.Privacy {
         if let ai, let line = aiQualifier(inputs.aiMode, destination: ai) {
             qualifiers.append(line)
         }
+        if let host = inputs.archiveServerHost {
+            qualifiers.append(
+                "Transcripts, titles, notes, and follow-ups are also copied to \(host), the "
+                    + "Pebble Audio server you linked. Audio goes there only as a clip an "
+                    + "assistant asks for.")
+        }
         if let age = inputs.coldStorageAgeDays {
             qualifiers.append(
                 "Audio older than \(Copy.Settings.Storage.ageLabel(age)) is kept in your own "
@@ -141,11 +158,12 @@ extension Copy.Privacy {
 
         return Stance(
             headline: headline,
-            isFullyLocal: stt == nil && ai == nil,
+            isFullyLocal: stt == nil && ai == nil && inputs.archiveServerHost == nil,
             summary: summary,
             qualifiers: qualifiers,
-            commitments: commitments,
-            deletionNote: (stt == nil && ai == nil) ? nil : deletionNote
+            commitments: inputs.archiveServerHost == nil ? commitments : linkedCommitments,
+            deletionNote: (stt == nil && ai == nil && inputs.archiveServerHost == nil)
+                ? nil : deletionNote
         )
     }
 
@@ -223,7 +241,10 @@ extension Copy.Privacy {
     ///    header that report content "is never included".
     /// 2. Verified: the complete outbound host list from source is the two transcription
     ///    providers, OpenAI for AI, and Hugging Face for a model download the user starts (a
-    ///    plain GET that uploads nothing).
+    ///    plain GET that uploads nothing) — and, since 2026-10-20, the Pebble Audio server the
+    ///    person links themselves (`ArchiveSyncService`; https only, and nothing is sent until a
+    ///    link is confirmed). While one is linked the stance names it
+    ///    (`StanceInputs.archiveServerHost`) and the first commitment is `linkedCommitments[0]`.
     /// 3. Verified: `FlightRecorder` writes to `Application Support/audio-companion/diagnostics`,
     ///    and the ONLY readers of `export()`/`exportFile()` are two `ShareLink`s on the
     ///    Diagnostics screen, which cannot fire without a tap. Every logging call site was
@@ -258,6 +279,16 @@ extension Copy.Privacy {
             + "it — nothing, titles and summaries, or everything — is your choice on this screen.",
     ]
 
+    /// The commitments while a Pebble Audio server is linked. The first one is the only one that
+    /// changes: "no server of its own" stops being the whole truth once the person has linked
+    /// their own, and the rest still hold as written.
+    static let linkedCommitments =
+        [
+            "Nothing you record, transcribe or write is sent to this app's developer, and none of "
+                + "it is used for training, advertising or profiling. The Pebble Audio server you "
+                + "linked holds a copy of the text because you linked it."
+        ] + Array(commitments.dropFirst())
+
     /// Required by the UX plan §17: the app must say what deletion can and cannot reach.
     static let deletionNote =
         "Deleting recordings here removes them from this iPhone. What a provider keeps after "
@@ -286,7 +317,8 @@ extension AppSettings {
                 remoteAiDestination: remoteAiDestination,
                 // The age that takes effect, not the raw choice: under a short "Keep audio" the
                 // two differ, and nil (nothing can move) leaves the iCloud line out entirely.
-                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
+                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil,
+                archiveServerHost: archiveServerHost
             )
         )
     }
