@@ -382,11 +382,13 @@ struct Tally {
             Output.line(Output.padRight(kind.rawValue, 14) + values.map { Output.pad($0.formatted(), 13) }.joined())
         }
 
-        let ignored = kinds.values.reduce(into: [String: Int]()) { all, k in
+        var ignored = kinds.values.reduce(into: [String: Int]()) { all, k in
             for (reason, count) in k.ignored { all[reason, default: 0] += count }
         }
+        let outsideScope = ignored.removeValue(forKey: "outsideScope") ?? 0
         if !ignored.isEmpty {
-            // §3: `duplicate` is the same version again, `stale` older than the server's copy.
+            // §3: `duplicate` is the same version again, `stale` older than the server's copy,
+            // `outsideScope` outside the account's sharing scope (not stored).
             let parts = ignored.sorted { $0.key < $1.key }.map { reason, count in
                 switch reason {
                 case "duplicate": return "\(count.formatted()) at the same version"
@@ -396,6 +398,10 @@ struct Tally {
             }
             Output.line("")
             Output.line("The server already had \(Output.list(parts)).")
+        }
+        if outsideScope > 0 {
+            Output.line("")
+            Output.line("The server skipped \(outsideScope.formatted()) items outside the account's sharing scope.")
         }
         if overLimit > 0 {
             Output.line("")
