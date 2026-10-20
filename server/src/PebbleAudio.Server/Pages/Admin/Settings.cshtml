@@ -1,0 +1,46 @@
+@page
+@using PebbleAudio.Server.Settings
+@model PebbleAudio.Server.Pages.Admin.SettingsModel
+@{
+	ViewData["Title"] = "Settings";
+	ViewData["Section"] = "settings";
+}
+<header class="page-header">
+	<h1>Settings</h1>
+	<p class="lede">Limits for assistants, clips, and background work.</p>
+</header>
+
+@if (Model.Saved)
+{
+	<p class="notice notice-success" role="status">Settings saved.</p>
+}
+
+<form method="post" class="card settings">
+	@foreach (var setting in SettingDefinition.All)
+	{
+		var value = Model.Values.TryGetValue(setting.Key, out var v) ? v : setting.Get(Model.Current);
+		var error = ViewData.ModelState[$"Values[{setting.Key}]"]?.Errors.FirstOrDefault()?.ErrorMessage;
+		<div class="setting">
+			<label class="setting-text" for="setting-@setting.Key">
+				<strong>@setting.Label</strong>
+				<span class="muted">@setting.Hint</span>
+			</label>
+			<div class="setting-value">
+				<input id="setting-@setting.Key" name="Values[@setting.Key]" type="number" inputmode="numeric" step="1" min="@setting.Min" max="@setting.Max" value="@value" required>
+				<span class="unit">@setting.Unit</span>
+			</div>
+			@if (error is not null)
+			{
+				<span class="field-error">@error</span>
+			}
+			else if (value != setting.Default)
+			{
+				<span class="setting-default">Default: @Display.Count(setting.Default)</span>
+			}
+		</div>
+	}
+	<div class="actions">
+		<button type="submit" class="button button-primary">Save</button>
+		<button type="submit" class="button" asp-page-handler="Reset" formnovalidate>Restore defaults</button>
+	</div>
+</form>

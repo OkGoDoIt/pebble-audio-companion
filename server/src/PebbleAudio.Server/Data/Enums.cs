@@ -1,0 +1,154 @@
+namespace PebbleAudio.Server.Data;
+
+// Every enum is stored as its member name (see ArchiveDbContext.ConfigureConventions) and switched on
+// exhaustively: a switch that misses a member is a build error (CS8509 in the project file).
+
+/// <summary>
+/// The kinds of entity the phone syncs (sync-protocol.md §2).
+/// </summary>
+public enum SyncKind
+{
+	Conversation,
+	Transcript,
+	Recap,
+	Brief,
+	FollowUp,
+	Note,
+	Person,
+	Coverage,
+}
+
+/// <summary>
+/// What a sync item does to its entity (sync-protocol.md §2).
+/// </summary>
+public enum SyncOp
+{
+	/// <summary>The payload replaces the entity.</summary>
+	Upsert,
+
+	/// <summary>The person deleted it in the app; the server deletes it and everything derived from it.</summary>
+	Delete,
+
+	/// <summary>The app's retention aged it out; the server keeps it and marks it expired on the phone.</summary>
+	Expire,
+}
+
+public enum ConversationState
+{
+	Live,
+	Closed,
+}
+
+/// <summary>
+/// What a conversation's audio turned out to be. Music, TV, and announcements still sync so days add up.
+/// </summary>
+public enum ContentKind
+{
+	Conversation,
+	NoConversation,
+}
+
+/// <summary>
+/// A stretch inside a conversation with no stored audio.
+/// </summary>
+public enum GapKind
+{
+	/// <summary>Silence skipped on purpose. Not loss.</summary>
+	Quiet,
+
+	/// <summary>Audio that is genuinely missing.</summary>
+	Lost,
+}
+
+public enum TranscriptItemKind
+{
+	Turn,
+	Quiet,
+	Lost,
+	Masked,
+}
+
+public enum CoverageKind
+{
+	Recorded,
+	Quiet,
+	Missing,
+	Paused,
+	Off,
+}
+
+public enum BriefKind
+{
+	Week,
+	Month,
+}
+
+/// <summary>
+/// Who wrote a follow-up or note: the app's AI, the person, or an assistant through an MCP write tool.
+/// </summary>
+public enum ContentOrigin
+{
+	Ai,
+	User,
+	Assistant,
+}
+
+/// <summary>
+/// Work the server asks the phone to do (sync-protocol.md §4).
+/// </summary>
+public enum PhoneRequestKind
+{
+	Clip,
+	FollowUpCreate,
+	FollowUpUpdate,
+	NoteCreate,
+}
+
+public enum PhoneRequestState
+{
+	/// <summary>Waiting for the phone.</summary>
+	Pending,
+
+	Done,
+	Failed,
+
+	/// <summary>The phone no longer has what was asked for (aged out or deleted).</summary>
+	Unavailable,
+
+	/// <summary>The phone did not answer within the request's time to live.</summary>
+	Expired,
+}
+
+public enum ClipStatus
+{
+	/// <summary>Requested; waiting for the phone to upload the audio.</summary>
+	Waiting,
+
+	/// <summary>Uploaded; waiting for the transcode job.</summary>
+	Received,
+
+	Ready,
+	Failed,
+
+	/// <summary>The phone no longer has the audio.</summary>
+	Unavailable,
+}
+
+public enum JobState
+{
+	Pending,
+	Running,
+	Succeeded,
+
+	/// <summary>Failed on every allowed attempt and set aside.</summary>
+	DeadLettered,
+}
+
+/// <summary>
+/// What a bearer token may do.
+/// </summary>
+public enum TokenAccess
+{
+	Read,
+	ReadWrite,
+}

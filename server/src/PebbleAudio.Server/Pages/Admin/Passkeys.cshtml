@@ -1,0 +1,53 @@
+@page
+@model PebbleAudio.Server.Pages.Admin.PasskeysModel
+@{
+	ViewData["Title"] = "Passkeys";
+	ViewData["Section"] = "passkeys";
+	var onlyOne = Model.Passkeys.Count == 1;
+}
+<header class="page-header">
+	<h1>Passkeys</h1>
+	<p class="lede">Any of these signs you in here.</p>
+</header>
+
+@if (Model.Message is { } message)
+{
+	<p class="notice" role="status">@message</p>
+}
+
+<section class="card">
+	<ul class="rows">
+		@foreach (var passkey in Model.Passkeys)
+		{
+			<li class="row">
+				<div class="row-main">
+					<strong class="row-title">@passkey.Name</strong>
+					<span class="row-meta">
+						<span>Added @Display.Time(passkey.CreatedAt, "date")</span>
+						@if (passkey.IsSynced)
+						{
+							<span class="badge">Synced</span>
+						}
+					</span>
+				</div>
+				<form method="post" asp-page-handler="Remove" asp-route-id="@passkey.Id">
+					<button type="submit" class="button button-danger" disabled="@onlyOne" title="@(onlyOne ? "Add another passkey before removing this one." : null)">Remove</button>
+				</form>
+			</li>
+		}
+	</ul>
+</section>
+
+<section class="card">
+	<h2>Add a passkey</h2>
+	<form class="form" data-passkey="add">
+		<label class="field">
+			<span class="field-label">Name</span>
+			<input name="name" data-passkey-name maxlength="60" placeholder="@Model.SuggestedName" autocomplete="off">
+		</label>
+		<div class="actions">
+			<button type="submit" class="button button-primary">Add passkey</button>
+		</div>
+		<p class="status" data-status role="status"></p>
+	</form>
+</section>

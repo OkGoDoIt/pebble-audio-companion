@@ -1,0 +1,26 @@
+bin/
+obj/
+.DS_Store
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+*.log
+TestResults/
+coverage/
+artifacts/
+publish/
+efbundle
+efbundle-real
+pebbleaudio-*.tar.gz
+
+# Local-only configuration and secrets
+.env
+.env.*
+appsettings.Local.json
+appsettings.*.local.json
+
+# Runtime-generated app data (data-protection keys and clips in development)
+src/PebbleAudio.Server/App_Data/

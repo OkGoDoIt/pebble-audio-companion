@@ -1,0 +1,17 @@
+@page
+@model PebbleAudio.Server.Pages.Admin.SetupModel
+@{
+	ViewData["Title"] = "Set up";
+}
+<section class="auth">
+	<form class="card auth-card" data-passkey="setup">
+		<h1>Set up Pebble Audio</h1>
+		<p class="lede">Enter the setup code from the server log, then create the passkey you'll sign in with.</p>
+		<label class="field">
+			<span class="field-label">Setup code</span>
+			<input name="setupCode" data-setup-code required autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" maxlength="20">
+		</label>
+		<button type="submit" class="button button-primary button-wide">Create passkey</button>
+		<p class="status" data-status role="status"></p>
+	</form>
+</section>
