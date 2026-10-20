@@ -2,6 +2,7 @@ import AppDB
 import Foundation
 import Intelligence
 import Testing
+import UserNotifications
 
 // "Notify me when my recap is ready": what it says, when it fires, and that it fires from the
 // point a recap is written. The OS notification center is faked; nothing is posted.
@@ -141,6 +142,20 @@ struct RecapNotificationTests {
         await notifier(poster: poster, recaps: recaps, suite: suite)
             .recapWritten(dateKey: Self.yesterday)
         #expect(poster.posted.first?.body == "Lease call with Sam")
+    }
+
+    /// The request iOS is handed: a tap goes through the one notification router to that day in
+    /// History, and it makes no sound. (The recap entity id it carries on iOS 27 is write-only
+    /// on the content; it cannot be read back here.)
+    @Test func theRequestOpensTheDayInHistory() throws {
+        let content = try #require(RecapNotificationRules.content(for: Self.recap(), timeZoneID: Self.zone))
+        let request = SystemRecapNotificationPoster.request(for: content, trigger: nil)
+        #expect(request.identifier == "recap-2026-10-20")
+        #expect(request.content.title == "Tuesday’s recap")
+        #expect(request.content.sound == nil)
+        #expect(
+            LossNotificationRouter.route(for: request.content.userInfo)
+                == .history(date: Self.yesterday, level: nil))
     }
 
     // MARK: - Where it listens
