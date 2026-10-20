@@ -745,6 +745,9 @@ public actor ArchiveSyncService {
         guard response.status == 200,
             let server = try? JSONDecoder().decode(ArchiveServerStatus.self, from: response.body)
         else { return }
+        // The same answer is not news: stamping a fresh fetch time on it made every refresh a
+        // change, so each one woke every observer of the status for nothing.
+        guard server != self.status.value.server else { return }
         var status = self.status.value
         status.server = server
         status.serverStatusAtMs = deps.clock.nowMs
