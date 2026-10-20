@@ -5,8 +5,8 @@ import SwiftUI
 /// Settings · Pebble Audio server: link this phone to the person's own server, see that it is
 /// syncing and what it shares, and what assistants have read there.
 ///
-/// The questions, in order: is this phone linked, and is it working? What goes there? What did
-/// an assistant read? Then the two actions: sync now, unlink. Linking is the whole screen until
+/// The questions, in order: is this phone linked, and is it working? What did an assistant read
+/// there? What goes there? Then the way out: unlink. Linking is the whole screen until
 /// it is done — there is nothing else to show a phone that is not linked.
 struct SettingsServerScreen: View {
     private var source: ArchiveServerSource { SettingsDataSources.current.server }
@@ -21,26 +21,11 @@ struct SettingsServerScreen: View {
     var body: some View {
         SettingsScroll {
             if let invitation = source.pendingInvitation {
+                // A link from the server's QR code is the one question on the screen until it
+                // is answered.
                 invitationCard(invitation)
-            }
-            switch status.link {
-            case .notLinked:
-                stateCard(
-                    heading: Copy.ArchiveServer.notLinkedHeading,
-                    line: Copy.ArchiveServer.notLinkedLine, dot: Tokens.neutralDot)
-                linkForm
-            case .revoked(let host):
-                stateCard(
-                    heading: Copy.ArchiveServer.revokedHeading,
-                    line: Copy.ArchiveServer.revokedLine(host), dot: Tokens.attention)
-                linkForm
-                unlinkCard(host)
-            case .linked(let host):
-                linkedState(host)
-                sharedCard(host)
-                statusCard
-                aiReadCard
-                unlinkCard(host)
+            } else {
+                content
             }
         }
         .navigationTitle(Copy.ArchiveServer.title)
@@ -48,6 +33,31 @@ struct SettingsServerScreen: View {
         // The source watches the sync only while this screen is on screen.
         .onAppear { source.startObserving() }
         .onDisappear { source.stopObserving() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch status.link {
+        case .notLinked:
+            stateCard(
+                heading: Copy.ArchiveServer.notLinkedHeading,
+                line: Copy.ArchiveServer.notLinkedLine, dot: Tokens.neutralDot)
+            linkForm
+        case .revoked(let host):
+            stateCard(
+                heading: Copy.ArchiveServer.revokedHeading,
+                line: Copy.ArchiveServer.revokedLine(host), dot: Tokens.attention)
+            linkForm
+            unlinkCard(host)
+        case .linked(let host):
+            // Is it working, and what has it been used for — then what it shares, which is
+            // read once — then the way out.
+            linkedState(host)
+            statusCard
+            aiReadCard
+            sharedCard(host)
+            unlinkCard(host)
+        }
     }
 
     // MARK: State
