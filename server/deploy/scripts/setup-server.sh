@@ -28,6 +28,14 @@ fi
 # Ubuntu 22.04's ffmpeg 4.4 decodes Speex only through libspeex (Sync/ClipTranscodeJob.cs).
 ffmpeg -hide_banner -decoders 2>/dev/null | grep -q ' libspeex ' || { echo "ffmpeg lists no libspeex decoder; clips cannot be converted" >&2; exit 1; }
 command -v dotnet >/dev/null || { echo "dotnet runtime missing (expected aspnetcore-runtime-10.0)"; exit 1; }
+aspnet="$(dotnet --list-runtimes | sed -n 's/^Microsoft\.AspNetCore\.App \(10\.0\.[0-9]*\) .*/\1/p' | sort -V | tail -n 1)"
+[[ -n "$aspnet" ]] || { echo "the ASP.NET Core 10.0 runtime is missing (apt-get install aspnetcore-runtime-10.0)" >&2; exit 1; }
+echo "   ASP.NET Core ${aspnet}"
+# Patches are security fixes. Upgrading is left to a person: Situ runs on the same runtime, and both apps
+# need a restart to pick it up.
+if apt list --upgradable 2>/dev/null | grep -q '^aspnetcore-runtime-10\.0/'; then
+  echo "   a newer ASP.NET Core 10.0 patch is available: apt-get install --only-upgrade aspnetcore-runtime-10.0, then restart the .NET services"
+fi
 
 echo "== users"
 if ! id "$app" >/dev/null 2>&1; then
