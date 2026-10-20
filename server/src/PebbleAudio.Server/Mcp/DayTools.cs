@@ -311,7 +311,14 @@ public sealed class DayTools
 				Days.Minutes(coverage.RecordedMs),
 				Days.Minutes(coverage.QuietMs),
 				Days.Minutes(coverage.MissingMs),
-				[.. coverage.Spans.OrderBy(s => s.StartedAt).Select(s => new CoverageSpanOut(s.Kind.ToWire(), Days.Local(s.StartedAt, zone), Days.Local(s.EndedAt, zone), Days.Minutes(s.EndedAt - s.StartedAt)))]);
+				// On the day the sharing window opens, nothing before its start is shown: spans are cut at it.
+				[
+					.. coverage.Spans
+						.Where(s => s.EndedAt > call.From)
+						.OrderBy(s => s.StartedAt)
+						.Select(s => (s.Kind, Start: s.StartedAt > call.From ? s.StartedAt : call.From, End: s.EndedAt))
+						.Select(s => new CoverageSpanOut(s.Kind.ToWire(), Days.Local(s.Start, zone), Days.Local(s.End, zone), Days.Minutes(s.End - s.Start))),
+				]);
 		var recapOut = recap is null
 			? null
 			: new RecapOut(ArchiveReader.Blank(recap.Headline), ArchiveReader.Blank(recap.LineSummary), Speak.Cap(ArchiveReader.Blank(recap.Text), call.Settings.ToolMaxCharacters / 3));

@@ -164,6 +164,24 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal(Wire.T(since), JsonDocument.Parse(await sinceAnswer.Content.ReadAsStringAsync()).RootElement.GetProperty("scope").GetProperty("since").GetString());
 		var after = await ArchiveFixture.CallAsync(mcp, "list_conversations");
 		Assert.Equal(["conv-launch-2"], after.GetProperty("conversations").EnumerateArray().Select(c => c.GetProperty("id").GetString()));
+
+		// On the day the window opens, coverage before its start is not shown: spans are cut at it.
+		var firstDay = fx.Day.AddDays(1);
+		var firstCoverage = new JsonObject
+		{
+			["dayKey"] = ArchiveFixture.Key(firstDay),
+			["missingMs"] = 0,
+			["quietMs"] = 0,
+			["recordedMs"] = 7_200_000,
+			["spans"] = new JsonArray(
+				new JsonObject { ["endedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 30)), ["kind"] = "recorded", ["startedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 0)) },
+				new JsonObject { ["endedAt"] = Wire.T(ArchiveFixture.At(firstDay, 7, 0)), ["kind"] = "recorded", ["startedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 45)) }),
+			["timeZone"] = ArchiveFixture.Zone,
+		};
+		Assert.Single(Phone.Ids(await phone.BatchAsync(ArchiveFixture.Item("coverage", ArchiveFixture.Key(firstDay), firstCoverage)), "accepted"));
+		var spans = (await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(firstDay) })).GetProperty("coverage").GetProperty("spans");
+		var span = Assert.Single(spans.EnumerateArray());
+		Assert.Equal((Wire.T(since), 60.0), (Wire.T(span.GetProperty("startedAt").GetDateTimeOffset()), span.GetProperty("minutes").GetDouble()));
 		Assert.Equal(HttpStatusCode.OK, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "all" } }))).StatusCode);
 		Assert.Single((await ArchiveFixture.CallAsync(mcp, "list_conversations")).GetProperty("conversations").EnumerateArray());
 		var kitchen = fx.Items().Single(i => i["kind"]!.GetValue<string>() == "conversation" && i["id"]!.GetValue<string>() == "conv-kitchen");
