@@ -23,9 +23,17 @@ public sealed record ArchiveSettings
 	/// <summary>How many times a background job runs before it is set aside.</summary>
 	public int JobMaxAttempts { get; init; } = 5;
 
+	/// <summary>How long a clip link an assistant is given keeps working.</summary>
+	public int ClipLinkMinutes { get; init; } = 60;
+
+	/// <summary>The bit rate clips are served at (AAC, 16 kHz mono). The watch records Speex at 9.8 kbps.</summary>
+	public int ClipAudioKbps { get; init; } = 32;
+
 	public TimeSpan ClipMaxDuration => TimeSpan.FromMinutes(ClipMaxMinutes);
 
 	public TimeSpan RequestTtl => TimeSpan.FromHours(RequestTtlHours);
+
+	public TimeSpan ClipLinkLifetime => TimeSpan.FromMinutes(ClipLinkMinutes);
 }
 
 /// <summary>
@@ -89,6 +97,24 @@ public sealed record SettingDefinition(
 			720,
 			s => s.RequestTtlHours,
 			(s, v) => s with { RequestTtlHours = v }),
+		new(
+			nameof(ArchiveSettings.ClipLinkMinutes),
+			"How long a clip link works",
+			"A link to a clip that an assistant was given stops working after this.",
+			"minutes",
+			1,
+			1440,
+			s => s.ClipLinkMinutes,
+			(s, v) => s with { ClipLinkMinutes = v }),
+		new(
+			nameof(ArchiveSettings.ClipAudioKbps),
+			"Clip audio quality",
+			"Lower makes smaller files. The watch records at about 10 kbps.",
+			"kbps",
+			16,
+			128,
+			s => s.ClipAudioKbps,
+			(s, v) => s with { ClipAudioKbps = v }),
 		new(
 			nameof(ArchiveSettings.JobMaxAttempts),
 			"Attempts for background work",

@@ -567,6 +567,8 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<string>("Origin");
 
+                            b1.Property<string>("Reason");
+
                             b1.Property<DateTimeOffset>("StartedAt");
 
                             b1
@@ -1117,6 +1119,28 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.ToTable("SyncItems");
                 });
 
+            modelBuilder.Entity("PebbleAudio.Server.Data.SyncPreferences", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Clips")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("DeviceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Edits")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("SyncPreferences");
+                });
+
             modelBuilder.Entity("PebbleAudio.Server.Data.Transcript", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -1434,6 +1458,15 @@ namespace PebbleAudio.Server.Data.Migrations
                 });
 
             modelBuilder.Entity("PebbleAudio.Server.Data.SyncItem", b =>
+                {
+                    b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PebbleAudio.Server.Data.SyncPreferences", b =>
                 {
                     b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
                         .WithMany()

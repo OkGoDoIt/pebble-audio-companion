@@ -20,6 +20,9 @@ public sealed class ArchiveServerFactory : WebApplicationFactory<Program>, IAsyn
 	private readonly string _databaseName = $"pebbleaudio_test_{Guid.NewGuid():N}";
 	private readonly string _keysPath = Path.Combine(Path.GetTempPath(), "pebbleaudio-tests", Guid.NewGuid().ToString("N"));
 
+	/// <summary>Where this run's clip audio goes; removed with the database.</summary>
+	public string ClipsPath { get; } = Path.Combine(Path.GetTempPath(), "pebbleaudio-tests", Guid.NewGuid().ToString("N"), "clips");
+
 	private static string AdminConnectionString =>
 		Environment.GetEnvironmentVariable("PEBBLEAUDIO_TEST_POSTGRES")
 		?? $"Host=localhost;Database=postgres;Username={Environment.UserName}";
@@ -44,6 +47,7 @@ public sealed class ArchiveServerFactory : WebApplicationFactory<Program>, IAsyn
 		builder.UseSetting("ConnectionStrings:DefaultConnection", ConnectionString);
 		builder.UseSetting("PebbleAudio:PublicOrigin", PublicOrigin);
 		builder.UseSetting("DataProtection:KeysPath", _keysPath);
+		builder.UseSetting("PebbleAudio:ClipsPath", ClipsPath);
 		builder.UseSetting("Database:MigrateOnStartup", "true");
 
 		builder.ConfigureTestServices(services =>
@@ -71,6 +75,12 @@ public sealed class ArchiveServerFactory : WebApplicationFactory<Program>, IAsyn
 		if (Directory.Exists(_keysPath))
 		{
 			Directory.Delete(_keysPath, recursive: true);
+		}
+
+		var clipsRun = Path.GetDirectoryName(ClipsPath)!;
+		if (Directory.Exists(clipsRun))
+		{
+			Directory.Delete(clipsRun, recursive: true);
 		}
 	}
 }

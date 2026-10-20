@@ -135,6 +135,7 @@ builder.Services.AddSingleton<SetupCodes>();
 builder.Services.AddHostedService<SetupAnnouncer>();
 builder.Services.AddJobQueue()
 	.AddJobHandler<NoopJobHandler>(NoopJobHandler.Type);
+builder.Services.AddSync();
 
 builder.Services.AddRazorPages(options =>
 {
@@ -189,6 +190,7 @@ app.MapGet("/.well-known/oauth-protected-resource", (IOptionsMonitor<McpAuthenti
 		McpJsonUtilities.DefaultOptions));
 
 app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy);
+app.MapSync();
 
 app.MapStaticAssets();
 app.MapRazorPages()

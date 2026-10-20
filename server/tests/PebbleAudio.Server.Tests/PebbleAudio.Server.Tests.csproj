@@ -25,4 +25,9 @@
 		<ProjectReference Include="../../src/PebbleAudio.Server/PebbleAudio.Server.csproj" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<!-- Real firmware-encoded Speex frames, shared with the app and the firmware tests. -->
+		<None Include="../../../spec/fixtures/speex_frames_v1.bin" Link="Fixtures/speex_frames_v1.bin" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
 </Project>

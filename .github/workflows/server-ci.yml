@@ -53,6 +53,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # The clip test converts a real Ogg Speex upload with the system ffmpeg (Ubuntu's decodes it through
+      # libspeex, like the droplet's). Without ffmpeg that one test is skipped.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+
       - name: Restore dependencies
         run: dotnet restore PebbleAudio.Server.slnx
 
