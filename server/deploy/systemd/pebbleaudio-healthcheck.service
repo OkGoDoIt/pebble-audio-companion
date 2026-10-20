@@ -1,0 +1,6 @@
+[Unit]
+Description=Check the Pebble Audio health endpoint
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pebbleaudio/healthcheck-pebbleaudio.sh

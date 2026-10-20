@@ -1,0 +1,6 @@
+[Unit]
+Description=Back up the Pebble Audio PostgreSQL database
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pebbleaudio/backup-pebbleaudio-db.sh

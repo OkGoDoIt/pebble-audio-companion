@@ -1,0 +1,25 @@
+[Unit]
+Description=Pebble Audio archive server
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=notify
+User=pebbleaudio
+Group=pebbleaudio
+WorkingDirectory=/opt/pebbleaudio/current/app
+EnvironmentFile=/etc/pebbleaudio/pebbleaudio.env
+ExecStart=/opt/pebbleaudio/current/app/PebbleAudio.Server
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+SyslogIdentifier=pebbleaudio
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/pebbleaudio /opt/pebbleaudio /var/backups/pebbleaudio
+
+[Install]
+WantedBy=multi-user.target
