@@ -1263,21 +1263,13 @@ final class AppComposition {
 
     private func install(nativeSurfaces: NativeSurfaceCoordinator) {
         // Spotlight donation reuses this database connection rather than opening a second pool,
-        // and reads each conversation's transcript so the index keeps the words that were
-        // actually said — the pass replaces the document, so donating without them erases them.
-        let queries = ConversationQueries(db: database)
-        let transcripts = self.transcripts
-        nativeSurfaces.attachDatabase(database) { conversationId in
-            guard let detail = try? await queries.detail(id: conversationId) else { return nil }
-            // Collapsed before it is indexed: 1 649 copies of one sentence in a single
-            // recording would otherwise dominate bm25 for every word in it, so searching
-            // "clothes" would return that one silent afternoon ahead of anything real.
-            //
-            // And only the conversation's own pieces of its segments: indexing whole members
-            // put the end of the previous conversation and the start of the next under this
-            // one's title, so a search for a phrase opened the conversation beside the one it
-            // was said in.
-            return ConversationText.joined(detail.pieces) { transcripts.load($0) }
+        // and the one donator, so the foreground pass honours "Siri & Spotlight can see" like
+        // everything else. Its conversations go through the pipeline's own donation, which
+        // indexes the conversation's pieces with loops collapsed — the pass replaces the
+        // document, so a thinner donation here would erase what the pipeline wrote.
+        let enrichment = runtime.enrichment
+        nativeSurfaces.attachDatabase(database, donator: donator) { conversationIds in
+            await enrichment.donate(conversationIds: conversationIds)
         }
         // Held so Diagnostics → Rebuild Search Index can clear the donation watermark it owns.
         self.nativeSurfaces = nativeSurfaces

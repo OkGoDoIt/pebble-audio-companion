@@ -19,33 +19,29 @@ final class SpotlightService {
     private static let watermarkKey = "spotlight_last_donation_ms"
 
     private let database: AppDatabase
+    /// The composition's donator, for notes. Required, never a private one: this pass used to
+    /// build its own `CoreSpotlightIndexer` that nothing configured, so it indexed at the
+    /// default visibility (Everything) whatever "Siri & Spotlight can see" said, without the
+    /// iOS 27 entity association, and past the index's change gate.
     private let donator: SpotlightDonator
     private let defaults: UserDefaults
-    /// A conversation's full transcript, for the index body.
-    ///
-    /// This pass used to donate `title + summary` and nothing else. Because a donation REPLACES
-    /// the document (delete-then-insert), every foreground pass quietly overwrote the
-    /// transcript-bearing document that enrichment had written with a summary-only one — so the
-    /// searchable text of a conversation decayed to a sentence shortly after it was recorded.
-    /// Searching for a phrase somebody actually said then found nothing.
-    private let transcript: @Sendable (String) async -> String?
+    /// The changed conversations go through the PIPELINE's donation (`EnrichmentService
+    /// .donate`), the one that carries the transcript pieces, the people and the tags the
+    /// Library shows. A lighter donation of its own here replaced that document with a thinner
+    /// one on every foreground (first title + summary only; later without the people).
+    private let donateConversations: @Sendable ([String]) async -> Void
     /// One pass at a time; a re-entrant foreground (app switcher scrubbing) is a no-op.
     private var isDonating = false
 
     init(
         database: AppDatabase,
-        donator: SpotlightDonator? = nil,
+        donator: SpotlightDonator,
         defaults: UserDefaults = SharedAppGroup.defaults,
-        transcript: @escaping @Sendable (String) async -> String? = { _ in nil }
+        donateConversations: @escaping @Sendable ([String]) async -> Void
     ) {
         self.database = database
-        self.transcript = transcript
-        self.donator =
-            donator
-            ?? SpotlightDonator(
-                index: TranscriptIndex(database: database),
-                spotlight: CoreSpotlightIndexer()
-            )
+        self.donator = donator
+        self.donateConversations = donateConversations
         self.defaults = defaults
     }
 
@@ -77,6 +73,7 @@ final class SpotlightService {
         let sections = try await ConversationQueries(db: database).library()
         let notes = NotesStore(db: database)
         var newest = watermark
+        var changed: [String] = []
 
         for section in sections {
             for row in section.rows {
@@ -86,17 +83,7 @@ final class SpotlightService {
                 let changedAtMs = max(row.endMs, row.startMs)
                 newest = max(newest, changedAtMs)
                 guard changedAtMs > watermark else { continue }
-
-                try await donator.donateConversation(
-                    conversationId: row.id,
-                    title: row.title,
-                    summary: row.summary,
-                    tags: row.tags,
-                    fullTranscript: await transcript(row.id),
-                    startDateMs: row.startMs,
-                    endDateMs: row.endMs,
-                    createdAtMs: row.startMs
-                )
+                changed.append(row.id)
 
                 for note in try await notes.list(conversationId: row.id) {
                     let noteChangedAt = note.editedAtMs ?? note.createdAtMs
@@ -110,6 +97,8 @@ final class SpotlightService {
                 }
             }
         }
+        // One batched pass; what the pipeline already indexed as it is costs nothing.
+        await donateConversations(changed)
         return newest
     }
 

@@ -348,6 +348,55 @@ struct SiriPathTests {
         #expect(system.removed == ["conversation:c3"])
     }
 
+    /// The foreground pass used to build its own, unconfigured indexer: it indexed transcripts
+    /// whatever "Siri & Spotlight can see" said. It now hands its conversations to the
+    /// pipeline's donation and writes nothing to the system index of its own.
+    @Test func theForegroundPassGoesThroughThePipelinesDonation() async throws {
+        let database = try AppDatabase.inMemory()
+        let start: Int64 = 1_790_000_000_000
+        try await database.writer.write { db in
+            for (index, id) in ["c1", "c2"].enumerated() {
+                let begins = start + Int64(index) * 3_600_000
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversations (id, startMs, endMs, timezone, state)
+                        VALUES (?, ?, ?, 'UTC', 'closed')
+                        """,
+                    arguments: [id, begins, begins + 1_800_000])
+                try db.execute(
+                    sql: "INSERT INTO annotations (conversationId, title) VALUES (?, ?)",
+                    arguments: [id, "Title \(id)"])
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversation_segments
+                            (conversationId, segmentId, ordinal, transcriptionState)
+                        VALUES (?, ?, 0, 'Complete')
+                        """,
+                    arguments: [id, "seg-\(id)"])
+            }
+        }
+        final class Routed: @unchecked Sendable { var batches: [[String]] = [] }
+        let routed = Routed()
+        let system = FakeSystemIndex()
+        let suite = "siri-path-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = SpotlightService(
+            database: database,
+            donator: SpotlightDonator(index: FakeAppIndex(), spotlight: system),
+            defaults: defaults,
+            donateConversations: { routed.batches.append($0) })
+
+        await service.donateOnForeground()
+        #expect(routed.batches.count == 1)
+        #expect(Set(routed.batches.first ?? []) == ["c1", "c2"])
+        #expect(system.donateCalls.isEmpty)
+
+        // Nothing ended since: the next pass hands over nothing.
+        await service.donateOnForeground()
+        #expect(routed.batches.last == [])
+    }
+
     // MARK: - Ask My Archive
 
     @Test func thePeriodComesFromTheQuestionWhenNoneIsPicked() {
