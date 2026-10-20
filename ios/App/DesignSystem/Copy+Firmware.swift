@@ -154,7 +154,7 @@ extension Copy {
             case .storage:
                 return "Couldn't save the download."
             case .cancelled:
-                return "Cancelled."
+                return "Canceled."
             }
         }
 

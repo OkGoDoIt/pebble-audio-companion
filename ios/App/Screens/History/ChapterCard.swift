@@ -419,7 +419,7 @@ struct CardHeading: View {
                 .italic(Self.quoteIsItalic)
                 .foregroundStyle(Tokens.label)
         case .placeholder:
-            Text(Copy.History.notSummarisedYet)
+            Text(Copy.History.notSummarizedYet)
                 .font(AppFont.callout)
                 .foregroundStyle(Tokens.tertiary)
         }
