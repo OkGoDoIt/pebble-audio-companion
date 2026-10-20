@@ -154,6 +154,7 @@ public actor ArchiveSyncService {
     private var started = false
     private var running = false
     private var rerun = false
+    private var queuedTrigger: ArchiveSyncTrigger?
     private var requestsDue = true
     private var lastRequestPullMs: Int64?
     private var foregroundTask: Task<Void, Never>?
@@ -228,11 +229,12 @@ public actor ArchiveSyncService {
     }
 
     /// The pipeline's hook, at the end of every pass. Cheap when nothing changed: an in-memory
-    /// flag and nothing else.
-    public func pipelinePassFinished(changed: Bool) async {
+    /// flag and nothing else. Never makes the pipeline wait: the pass it starts may wait on the
+    /// server's answer, and the loop that called this has a live preview to keep up.
+    public func pipelinePassFinished(changed: Bool) {
         let outboxChanged = signal.take()
         guard changed || outboxChanged || requestsPulledDue() else { return }
-        await pass(.pipeline)
+        Task { await self.pass(.pipeline) }
     }
 
     private func requestsPulledDue() -> Bool {
@@ -244,17 +246,28 @@ public actor ArchiveSyncService {
     /// The BGProcessing window, background entry, and the person's own taps.
     public func pass(_ trigger: ArchiveSyncTrigger) async {
         if running {
+            // Run again once this one finishes, for the trigger that asked: a tap that lands
+            // during an automatic pass is still a tap (it skips the backoff and pulls requests).
             rerun = true
+            if trigger != .pipeline { queuedTrigger = trigger }
             return
         }
         running = true
         defer { running = false }
+        var current = trigger
         var rounds = 0
         repeat {
             rerun = false
             rounds += 1
-            await passOnce(trigger)
-        } while rerun && rounds < 3
+            await passOnce(current)
+            current = queuedTrigger ?? current
+            queuedTrigger = nil
+        } while rerun && rounds < 4
+    }
+
+    /// For tests: returns once no pass is running.
+    func idle() async {
+        while running { await Task.yield() }
     }
 
     // MARK: - Linking (the app writes the settings and the Keychain; this talks to the server)

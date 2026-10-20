@@ -540,6 +540,8 @@ public actor CompanionRuntime {
             maxSegments: BackgroundTaskPolicy.chargingCatchUpMaxSegments
         )
         log.write("charging catch-up processed \(processed) segment(s)")
+        // What that changed, to the archive server while the window is still open.
+        await environment.archiveSync?.pass(.backgroundTask)
         return processed
     }
 

@@ -133,12 +133,15 @@ struct ArchiveSyncServiceTests {
         let uploadsBefore = w.uploads.bodies.count
         let httpBefore = w.http.requests.count
         await w.service.pipelinePassFinished(changed: false)
+        await w.service.idle()
         await w.service.pipelinePassFinished(changed: false)
+        await w.service.idle()
         #expect(w.uploads.bodies.count == uploadsBefore && w.http.requests.count == httpBefore)
         try await w.db.writer.write { d in
             try ArchiveOutbox.enqueue(d, kind: .followUp, id: item.id, op: .upsert)
         }
         await w.service.pass(.userAsked)
+        await w.service.idle()
         #expect(w.uploads.bodies.count == uploadsBefore)
         #expect(try await w.outbox.counts().pending == 0)
     }
@@ -169,6 +172,27 @@ struct ArchiveSyncServiceTests {
         #expect(sizes.first == 4)
         #expect(sizes.dropFirst().allSatisfy { $0 <= ArchiveSyncProtocol.maxItemsPerBatch / 2 })
         #expect(try await w.outbox.counts().pending == 0)
+    }
+}
+
+@Suite("archive link invitation")
+struct ArchiveLinkInvitationTests {
+    @Test func theServersQRCodeIsReadAndOnlyHttpsServersAreAccepted() throws {
+        let url = try #require(
+            URL(string: "pebbleaudio://link?code=ab3d-ef7h&origin=https://pebbleaudio.okgodoit.com"))
+        let invitation = try #require(ArchiveLinkInvitation.parse(url))
+        #expect(invitation.code == "AB3DEF7H")
+        #expect(invitation.origin.absoluteString == "https://pebbleaudio.okgodoit.com")
+        // No origin: the product's own server.
+        let bare = try #require(URL(string: "pebbleaudio://link?code=AB3DEF7H"))
+        #expect(ArchiveLinkInvitation.parse(bare)?.host == "pebbleaudio.okgodoit.com")
+        // A code is never sent to a plain-http server, except this Mac's own loopback.
+        let plain = try #require(URL(string: "pebbleaudio://link?code=AB3DEF7H&origin=http://example.com"))
+        #expect(ArchiveLinkInvitation.parse(plain) == nil)
+        #expect(ArchiveEndpoint.acceptableOrigin("http://localhost:5090")?.absoluteString == "http://localhost:5090")
+        #expect(ArchiveEndpoint.acceptableOrigin("pebbleaudio.okgodoit.com/admin")?.absoluteString
+            == "https://pebbleaudio.okgodoit.com")
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "companion://today"))) == nil)
     }
 }
 

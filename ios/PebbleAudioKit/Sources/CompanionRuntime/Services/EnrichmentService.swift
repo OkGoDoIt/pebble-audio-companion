@@ -661,6 +661,13 @@ public actor EnrichmentService {
     }
 
     /// Invalidates the cached grouping (after a delete, retention sweep, or import).
+    /// The conversations whose boundaries may still move, as the latest grouping saw them
+    /// (`GroupedConversation.isProvisional` is a property of a grouping pass and is not stored).
+    /// Empty before the first regroup of a launch. Read by the archive sync's payloads.
+    public func provisionalConversationIds() -> Set<String> {
+        Set((cachedGrouping ?? []).filter(\.isProvisional).map(\.id))
+    }
+
     public func invalidateGrouping() {
         cachedGrouping = nil
     }
