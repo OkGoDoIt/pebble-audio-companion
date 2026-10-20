@@ -73,9 +73,11 @@ muse.ai/privacy; nothing has run on a device yet):
   prompt on the watch (see section 4); Allow makes the source Allowed, Don't Allow makes it Off,
   Not Now refuses only that call. Nothing is read or sent except while a question asked on the
   watch is open. Health comes from the watch's own activity data, not from Apple Health.
-  Calendar and Reminders also need iOS's permission, which the app asks for on the Muse screen
-  when the person first sets either source to Ask first or Allowed, never in the middle of a
-  question (a background app cannot show that prompt).
+  Calendar and Reminders also need iOS's own permission. The app never asks for it up front
+  (Roger, 2026-10-21): only when a Muse question needs it, or when the person sets Calendar or
+  Reminders to Allowed themselves in Settings › Muse (the app then asks at once). When a question
+  needs it and the app lacks it, the watch says so and the request waits for the next time the
+  app is opened (a background app cannot show the iOS prompt); see section 4.
 - **Planned, not built:** drawing an image from a URL Muse chose (the phone would fetch it).
 
 ## 2. Inputs
@@ -167,7 +169,19 @@ Ask first once paired: nothing is read until the person allows it on the watch, 
 Muse asks. The watch prompt, word for word: "Let Muse read your <calendar | reminders |
 follow-ups | health data>? What it reads goes to Meta." For conversations: "Let Muse read your
 conversations? What it reads, including what others said, goes to Meta." Buttons: Allow, Not Now,
-Don't Allow. Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
+Don't Allow.
+
+When the person allows Calendar or Reminders on the watch but iOS has not given the app access
+yet, Muse's call answers that access is still needed, and the watch shows, word for word: "Open
+Pebble Audio on your iPhone to give it access to your <calendar | reminders>." The next time the
+app comes to the foreground, it shows the iOS permission prompt for that source (once; Not Now on
+the watch never queues one). If iOS access was refused before, the watch says instead: "Pebble
+Audio can't read your <calendar | reminders>. You can allow it in iPhone Settings." and the
+source's row in Settings › Muse reads "No access in iPhone Settings" with an Open Settings button.
+Setting Calendar or Reminders to Allowed by hand in Settings › Muse asks iOS at that moment;
+leaving it at Ask first never does.
+
+Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
 "Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
 conversations row's subtitle "Includes what other people said."), with the footer "Muse reads
 these only while answering a question you asked on your watch. What it reads goes to Meta." Turning a destination off says what
