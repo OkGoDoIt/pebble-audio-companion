@@ -12,7 +12,7 @@ import Transcription
 // job is to validate + normalize + index what is already there:
 //
 //  - segments (`segments/*.spxlog` + `*.meta.json`): SegmentStore recovery, a startTime clamp
-//    for pre-1e5db02 anchors, and a `recordedTimeZone` backfill;
+//    for pre-b18a79e anchors, and a `recordedTimeZone` backfill;
 //  - transcripts (`transcription/transcripts/*.transcript.json`): verified readable, left in
 //    place (they ARE the durable store);
 //  - DB bootstrap: conversations from ConversationGrouper, `transcription_tasks` rows for the
@@ -375,7 +375,7 @@ public struct LegacyImporter: @unchecked Sendable {
     /// recorded, so that anchored start must not land after `receivedAtMs` (beyond clock skew),
     /// and the watch's bounded spool means received audio never predates receipt by hours.
     ///
-    /// Pre-1e5db02 data violates this in one direction: a RESUME re-announcement carried a
+    /// Pre-b18a79e data violates this in one direction: a RESUME re-announcement carried a
     /// freshly recomputed `startTimeMs` (≈ send time) while the frames kept their stream-birth
     /// sample indexes, pushing the anchored start HOURS into the future. (Rotation successors
     /// with the true stream-birth `startTimeMs` are fine — their large `firstSampleIndex`
@@ -650,7 +650,7 @@ public struct LegacyImporter: @unchecked Sendable {
                     segmentId: segmentId, parsedId: parsedId, scan: scan, codec: codec,
                     transcribed: transcribed, timeZoneID: timeZoneID, nowMs: nowMs())
             }
-            // A restored sidecar can carry the pre-1e5db02 anchor bug that phase 1 clamps on
+            // A restored sidecar can carry the pre-b18a79e anchor bug that phase 1 clamps on
             // every other segment; three of the real container's do. Phase 1 has already run by
             // the time this audio exists, so the clamp is applied here instead of leaving those
             // segments filed hours into the future. Reconstructed metas satisfy it by
