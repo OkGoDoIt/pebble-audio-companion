@@ -149,6 +149,43 @@ struct SiriPathTests {
         #expect(entity?.modificationDate == Date(timeIntervalSince1970: 1 + 25 * 60))
     }
 
+    private static let doneFollowUp = FollowUp(
+        id: "fu-9", text: "Send Sam the lease", done: true, sourceConversationId: "conv-1",
+        sourceSegmentId: "s1", createdAtMs: 1_000, why: "He asked for it by Friday.",
+        dueAtMs: 1_792_800_000_000, priority: .high, completedAtMs: 1_792_700_000_000)
+
+    /// A follow-up's item carries its state, so the entity resolved from Spotlight agrees with
+    /// the list: it used to be rebuilt as open, undated and unflagged whatever the row said.
+    @Test func aFollowUpsIndexDocumentCarriesItsState() async throws {
+        let system = FakeSystemIndex()
+        let donator = SpotlightDonator(index: FakeAppIndex(), spotlight: system)
+        try await donator.donateFollowUp(Self.doneFollowUp)
+        let donation = try #require(system.donateCalls.first?.first)
+        #expect(donation.isCompleted)
+        #expect(donation.isFlagged)
+        #expect(donation.dueDateMs == 1_792_800_000_000)
+        #expect(donation.completionDateMs == 1_792_700_000_000)
+        #expect(donation.contentDescription == "He asked for it by Friday.")
+        #expect(donation.deepLinkURL == "companion://followup/fu-9")
+
+        // Reopened: no completion date is left behind on the document.
+        var reopened = Self.doneFollowUp
+        reopened.done = false
+        try await donator.donateFollowUp(reopened)
+        let open = try #require(system.donateCalls.last?.first)
+        #expect(!open.isCompleted)
+        #expect(open.completionDateMs == nil)
+        #expect(SpotlightIndexGate.fingerprint(open) != SpotlightIndexGate.fingerprint(donation))
+
+        guard #available(iOS 27, *) else { return }
+        let entity = try #require(FollowUpEntity(donation: donation))
+        #expect(entity.isCompleted)
+        #expect(entity.isFlagged == true)
+        #expect(entity.dueDate?.day != nil)
+        #expect(entity.completionDate == Date(timeIntervalSince1970: 1_792_700_000))
+        #expect(entity.note.map { String($0.characters) } == "He asked for it by Friday.")
+    }
+
     // MARK: - Visibility
 
     /// What a Shortcut piping Get Conversations into Use Model receives, at each setting.
@@ -297,6 +334,11 @@ struct SiriPathTests {
         d = base; d.deepLinkURL = "companion://conversation/b"; variants.append(d)
         d = base; d.contentCreationDateMs = 11; variants.append(d)
         d = base; d.startDateMs = nil; variants.append(d)
+        d = base; d.endDateMs = 99; variants.append(d)
+        d = base; d.dueDateMs = 99; variants.append(d)
+        d = base; d.completionDateMs = 99; variants.append(d)
+        d = base; d.isCompleted = true; variants.append(d)
+        d = base; d.isFlagged = true; variants.append(d)
         let reference = SpotlightIndexGate.fingerprint(base)
         #expect(SpotlightIndexGate.fingerprint(base) == reference)
         for variant in variants {

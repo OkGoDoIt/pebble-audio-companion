@@ -2019,30 +2019,36 @@ extension LiveFollowUps: FollowUpsDataSource {
             text: text, dueAtMs: dueAtMs, nowMs: composition.clock.nowMs)
         // Findable from the moment it exists. Extraction donates what it writes; a follow-up
         // somebody typed themselves is at least as worth finding.
-        try? await composition.donator.donateFollowUp(
-            id: item.id, text: item.text, createdAtMs: item.createdAtMs)
+        try? await composition.donator.donateFollowUp(item)
         return item.id
     }
 
     func setDone(id: String, done: Bool) async throws {
         try await composition.followUps.setDone(id: id, done, nowMs: composition.clock.nowMs)
+        await redonateFollowUp(id: id)
     }
 
     func setText(id: String, text: String) async throws {
         try await composition.followUps.setText(id: id, text, nowMs: composition.clock.nowMs)
         // Otherwise the old wording is what search keeps finding.
-        guard let row = try await composition.followUps.load(id: id) else { return }
-        try? await composition.donator.donateFollowUp(
-            id: row.id, text: row.text, sourceConversationId: row.sourceConversationId,
-            createdAtMs: row.createdAtMs)
+        await redonateFollowUp(id: id)
     }
 
     func setDue(id: String, dueAtMs: Int64?) async throws {
         try await composition.followUps.setDue(id: id, dueAtMs)
+        await redonateFollowUp(id: id)
     }
 
     func setPriority(id: String, priority: FollowUpPriority) async throws {
         try await composition.followUps.setPriority(id: id, priority)
+        await redonateFollowUp(id: id)
+    }
+
+    /// The index document carries done, due and flagged (the entity Siri resolves reads them),
+    /// so every change to one of those is donated again, from the row as it now is.
+    private func redonateFollowUp(id: String) async {
+        guard let row = try? await composition.followUps.load(id: id) else { return }
+        try? await composition.donator.donateFollowUp(row)
     }
 
     func snooze(id: String, untilMs: Int64?) async throws {

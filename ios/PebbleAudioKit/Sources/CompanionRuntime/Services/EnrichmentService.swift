@@ -374,12 +374,7 @@ public actor EnrichmentService {
         if let donator {
             for item in written {
                 do {
-                    try await donator.donateFollowUp(
-                        id: item.id,
-                        text: item.text,
-                        sourceConversationId: item.sourceConversationId,
-                        createdAtMs: item.createdAtMs
-                    )
+                    try await donator.donateFollowUp(item)
                 } catch {
                     log.failure("follow-up donation", error)
                 }
