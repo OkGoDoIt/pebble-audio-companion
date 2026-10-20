@@ -216,6 +216,20 @@ struct ArchiveLinkInvitationTests {
             == "https://pebbleaudio.okgodoit.com")
         #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "companion://today"))) == nil)
     }
+
+    @Test func theServersOwnLinkPageOpensTheSameStepWithItsOriginAsTheServer() throws {
+        let universal = try #require(URL(string: "https://pebbleaudio.okgodoit.com/link?code=k7qm-3xwd"))
+        let invitation = try #require(ArchiveLinkInvitation.parse(universal))
+        #expect(invitation.code == "K7QM3XWD")
+        #expect(invitation.origin.absoluteString == "https://pebbleaudio.okgodoit.com")
+        // The page's origin is the server; an `origin` in the query cannot redirect the code.
+        let redirect = try #require(
+            URL(string: "https://pebbleaudio.okgodoit.com/link?code=K7QM3XWD&origin=https://example.com"))
+        #expect(ArchiveLinkInvitation.parse(redirect)?.host == "pebbleaudio.okgodoit.com")
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "https://pebbleaudio.okgodoit.com/link"))) == nil)
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "https://pebbleaudio.okgodoit.com/c/conv-1?t=12"))) == nil)
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "http://pebbleaudio.okgodoit.com/link?code=K7QM3XWD"))) == nil)
+    }
 }
 
 private final class Counter: @unchecked Sendable {
