@@ -8,15 +8,12 @@ import WireProtocol
 public protocol MuseWatchLink: Sendable {
     /// Info `watch_capabilities`, nil before the watch's Info has been read.
     var watchCapabilities: UInt32? { get }
-    /// The watch's firmware version text, nil when it does not say.
-    var watchFirmwareVersion: String? { get }
     func sendMuseSetup(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> AudioReceiverSession.MuseSetupReply
     func setMuseSetupHandler(_ handler: (@Sendable (AudioReceiverSession.MuseSetupInbound) -> Void)?) async
 }
 
 extension ReceiverService: MuseWatchLink {
     public nonisolated var watchCapabilities: UInt32? { watchInfo.value?.watchCapabilities }
-    public nonisolated var watchFirmwareVersion: String? { watchInfo.value?.fwVersionText }
 }
 
 /// Puts MUSE_SETUP_RX pieces back together into the values the Muse app wrote.

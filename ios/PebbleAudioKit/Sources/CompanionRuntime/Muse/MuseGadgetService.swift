@@ -52,6 +52,10 @@ public actor MuseGadgetService {
     /// How long the watch keeps a window open.
     public static let windowSeconds = 300
 
+    /// The version this gadget reports to Muse. Fixed, so nothing about the watch or its firmware
+    /// goes to Meta (docs/privacy-model.md, D7).
+    public static let gadgetVersion = "1.0.0"
+
     public nonisolated let pairing = StateSubject<PairingState>(.idle)
     /// The name the Muse app lists this gadget under, nil until paired.
     public nonisolated let pairedName: StateSubject<String?>
@@ -267,7 +271,7 @@ public actor MuseGadgetService {
         let attemptID = current.id
         let controller = MuseSetupController(
             identity: current.identity,
-            firmwareVersion: link.watchFirmwareVersion ?? "1.0.0",
+            firmwareVersion: Self.gadgetVersion,
             sdkToken: secrets.sdkToken(),
             transport: WatchMuseSetupTransport(link: link, log: log),
             network: network,

@@ -34,6 +34,8 @@ struct MuseGadgetServiceTests {
         #expect(info["type"]?.string == "device_info")
         #expect(info["node_id"]?.string == identity.nodeID)
         #expect(info["network_ready"]?.bool == true)
+        // Nothing about the watch goes to Meta: the version is the gadget's own, fixed.
+        #expect(info["version"]?.string == MuseGadgetService.gadgetVersion)
     }
 
     @Test func aBusyWatchIsAskedAgain() async throws {
@@ -209,7 +211,6 @@ private final class FakeMuseWatchLink: MuseWatchLink, @unchecked Sendable {
     var hasHandler: Bool { lock.withLock { handler != nil } }
 
     var watchCapabilities: UInt32? { capabilities }
-    var watchFirmwareVersion: String? { "4.40.0" }
 
     func sendMuseSetup(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> AudioReceiverSession.MuseSetupReply {
         lock.withLock {

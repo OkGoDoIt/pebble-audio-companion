@@ -4,8 +4,9 @@ import SwiftUI
 
 /// Settings · Muse: pair the watch with Meta's Muse assistant, then try it.
 ///
-/// The watch does the Bluetooth half of pairing: the Muse app finds it as a new device while this
-/// screen walks through the steps, one heading and one line at a time.
+/// Laid out like every opt-in that sends something off the phone (docs/privacy-model.md §4):
+/// what it does, exactly what goes to Meta, then the button that starts it. The watch does the
+/// Bluetooth half of pairing; this screen walks through the steps one heading at a time.
 struct SettingsMuseScreen: View {
     @State private var model = MuseScreenModel()
     @State private var confirmForget = false
@@ -14,25 +15,7 @@ struct SettingsMuseScreen: View {
 
     var body: some View {
         SettingsScroll {
-            statusCard
-            if model.isPaired && !model.pairing.isActive {
-                askSection
-            } else {
-                setupCard
-            }
-            if model.isPaired && !model.pairing.isActive {
-                ListCard {
-                    DestructiveRow(title: Copy.Muse.forget) { confirmForget = true }
-                }
-                .confirmationDialog(Copy.Muse.forgetTitle, isPresented: $confirmForget, titleVisibility: .visible) {
-                    Button(Copy.Muse.forgetConfirm, role: .destructive) {
-                        Haptics.destructiveConfirmed()
-                        model.forget()
-                    }
-                } message: {
-                    Text(Copy.Muse.forgetMessage)
-                }
-            }
+            content
         }
         .navigationTitle(Copy.Muse.title)
         // Each follows one of the service's values while the screen is up, and ends with it.
@@ -41,110 +24,94 @@ struct SettingsMuseScreen: View {
         .task { await model.followToken() }
     }
 
-    // MARK: Status
+    @ViewBuilder
+    private var content: some View {
+        if model.pairing.isActive {
+            stateCard
+            ListCard {
+                TintActionRow(title: Copy.Muse.cancel, action: model.cancel)
+            }
+        } else if model.isPaired {
+            // Is it working, then try it, then what it sends (read once), then the way out.
+            stateCard
+            askSection
+            whatGoesCard
+            forgetCard
+        } else {
+            stateCard
+            whatGoesCard
+            if model.hasToken {
+                ListCard {
+                    TintActionRow(title: pairTitle, action: model.pair)
+                }
+            }
+        }
+    }
 
-    private var statusCard: some View {
+    // MARK: State
+
+    private var stateCard: some View {
         Card {
-            HStack(alignment: .top, spacing: 14) {
-                statusIcon
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(status.title)
-                        .font(AppFont.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    StatusDot(color: state.dot, size: .lifecycle)
+                    Text(state.heading)
+                        .font(AppFont.cardHead)
                         .foregroundStyle(Tokens.label)
-                    if let line = status.line {
-                        Text(line)
-                            .font(AppFont.subBody)
-                            .foregroundStyle(Tokens.secondaryBody)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let deadline = model.windowDeadline, case .waitingForMuse = model.pairing {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            let left = max(0, Int(deadline.timeIntervalSince(context.date)))
-                            VStack(alignment: .leading, spacing: 6) {
-                                ProgressView(value: Double(left), total: Double(MuseGadgetService.windowSeconds))
-                                    .tint(Tokens.tint)
-                                Text(Copy.Muse.timeLeft(left))
-                                    .font(AppFont.footnote)
-                                    .foregroundStyle(Tokens.meta)
-                                    .monospacedDigit()
-                            }
-                            .padding(.top, 6)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let line = state.line {
+                    Text(line)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let deadline = model.windowDeadline, case .waitingForMuse = model.pairing {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let left = max(0, Int(deadline.timeIntervalSince(context.date)))
+                        VStack(alignment: .leading, spacing: 6) {
+                            ProgressView(value: Double(left), total: Double(MuseGadgetService.windowSeconds))
+                                .tint(Tokens.tint)
+                            Text(Copy.Muse.timeLeft(left))
+                                .font(AppFont.footnote)
+                                .foregroundStyle(Tokens.meta)
+                                .monospacedDigit()
                         }
+                        .padding(.top, 6)
                     }
                 }
-                Spacer(minLength: 0)
-            }
-            .accessibilityElement(children: .combine)
-        }
-    }
-
-    @ViewBuilder
-    private var statusIcon: some View {
-        ZStack {
-            Circle().fill(status.tone.opacity(0.14))
-            if model.pairing.isActive {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: status.symbol)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(status.tone)
             }
         }
-        .frame(width: 40, height: 40)
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .combine)
     }
 
-    private struct Status {
-        let title: String
+    private struct StateText {
+        let heading: String
         let line: String?
-        let symbol: String
-        let tone: Color
+        let dot: Color
     }
 
-    private var status: Status {
+    private var state: StateText {
         switch model.pairing {
         case .starting:
-            return Status(title: Copy.Muse.startingTitle, line: nil, symbol: "applewatch", tone: Tokens.tint)
+            return StateText(heading: Copy.Muse.startingTitle, line: nil, dot: Tokens.tint)
         case .confirmOnWatch:
-            return Status(title: Copy.Muse.confirmTitle, line: Copy.Muse.confirmLine, symbol: "applewatch", tone: Tokens.tint)
+            return StateText(heading: Copy.Muse.confirmTitle, line: Copy.Muse.confirmLine, dot: Tokens.tint)
         case .waitingForMuse(let name, _):
-            return Status(title: Copy.Muse.addTitle, line: Copy.Muse.addLine(name), symbol: "plus.circle", tone: Tokens.tint)
+            return StateText(heading: Copy.Muse.addTitle, line: Copy.Muse.addLine(name), dot: Tokens.tint)
         case .museConnected:
-            return Status(title: Copy.Muse.connectedTitle, line: Copy.Muse.connectedLine, symbol: "link", tone: Tokens.tint)
+            return StateText(heading: Copy.Muse.connectedTitle, line: Copy.Muse.connectedLine, dot: Tokens.tint)
         case .failed(let failure):
-            return Status(title: failure.title, line: failure.line, symbol: "exclamationmark", tone: Tokens.attention)
+            return StateText(heading: failure.title, line: failure.line, dot: Tokens.attention)
         case .idle, .paired:
             if let name = model.pairedName {
-                return Status(title: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name), symbol: "checkmark", tone: Tokens.good)
+                return StateText(heading: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name), dot: Tokens.good)
             }
-            return Status(title: Copy.Muse.notPairedTitle, line: Copy.Muse.notPairedLine, symbol: "sparkles", tone: Tokens.meta)
-        }
-    }
-
-    // MARK: Setup
-
-    private var setupCard: some View {
-        ListCard {
-            // Settled before a window opens; nothing to look at while one is.
-            if !model.pairing.isActive {
-                SettingsPushRow(
-                    title: Copy.Muse.tokenRow,
-                    value: model.hasToken ? Copy.Muse.tokenAdded : Copy.Muse.tokenMissing,
-                    valueColor: model.hasToken ? Tokens.meta : Tokens.attention
-                ) {
-                    MuseTokenScreen(model: model)
-                }
+            if !model.hasToken {
+                return StateText(heading: Copy.Muse.notSetUpTitle, line: Copy.Muse.notSetUpLine, dot: Tokens.neutralDot)
             }
-            if model.pairing.isActive {
-                TintActionRow(title: Copy.Muse.cancel, action: model.cancel)
-            } else if model.hasToken {
-                TintActionRow(title: pairTitle, action: model.pair)
-            } else {
-                Text(Copy.Muse.tokenNeeded)
-                    .font(AppFont.callout)
-                    .foregroundStyle(Tokens.meta)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            return StateText(heading: Copy.Muse.notPairedTitle, line: Copy.Muse.notPairedLine, dot: Tokens.neutralDot)
         }
     }
 
@@ -153,33 +120,68 @@ struct SettingsMuseScreen: View {
         return Copy.Muse.pair
     }
 
+    // MARK: What goes to Meta
+
+    private var whatGoesCard: some View {
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.whatGoesHeader)
+            ListCard {
+                ForEach([Copy.Muse.questionsLine, Copy.Muse.trainingLine], id: \.self) { line in
+                    Text(line)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    // MARK: Forget
+
+    private var forgetCard: some View {
+        ListCard {
+            DestructiveRow(title: Copy.Muse.forget) { confirmForget = true }
+        }
+        .confirmationDialog(Copy.Muse.forgetTitle, isPresented: $confirmForget, titleVisibility: .visible) {
+            Button(Copy.Muse.forgetConfirm, role: .destructive) {
+                Haptics.destructiveConfirmed()
+                model.forget()
+            }
+        } message: {
+            Text(Copy.Muse.forgetMessage)
+        }
+    }
+
     // MARK: Asking
 
-    @ViewBuilder
     private var askSection: some View {
-        SettingsSectionHeader(title: Copy.Muse.askHeader)
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    TextField(Copy.Muse.askPlaceholder, text: $question, axis: .vertical)
-                        .font(AppFont.callout)
-                        .lineLimit(1...4)
-                        .focused($askFocused)
-                        .submitLabel(.send)
-                        .onSubmit(send)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
-                    Button(action: send) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(canSend ? Tokens.tint : Tokens.meta.opacity(0.5))
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.askHeader)
+            Card {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        TextField(Copy.Muse.askPlaceholder, text: $question, axis: .vertical)
+                            .font(AppFont.callout)
+                            .lineLimit(1...4)
+                            .focused($askFocused)
+                            .submitLabel(.send)
+                            .onSubmit(send)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+                        Button(action: send) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundStyle(canSend ? Tokens.tint : Tokens.meta.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSend)
+                        .accessibilityLabel(Copy.Muse.askSend)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .accessibilityLabel(Copy.Muse.askSend)
+                    answerView
                 }
-                answerView
             }
         }
     }
@@ -228,9 +230,10 @@ struct SettingsMuseScreen: View {
     }
 }
 
-/// Settings · Muse · Gadget token.
-private struct MuseTokenScreen: View {
-    let model: MuseScreenModel
+/// Settings · Diagnostics · Muse SDK token: the developer's token from gadgets.muse.ai, pasted
+/// once. It lives in Diagnostics because it names a mechanism (docs/privacy-model.md §5).
+struct MuseDeveloperTokenScreen: View {
+    @State private var model = MuseScreenModel()
     @Environment(\.dismiss) private var dismiss
     @State private var token = ""
 
@@ -238,7 +241,7 @@ private struct MuseTokenScreen: View {
         SettingsScroll {
             ListCard {
                 HStack(spacing: 10) {
-                    SecureField(Copy.Muse.tokenPlaceholder, text: $token)
+                    SecureField(Copy.Muse.developerTokenPlaceholder, text: $token)
                         .font(AppFont.callout)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -253,22 +256,23 @@ private struct MuseTokenScreen: View {
                     .labelStyle(.iconOnly)
                     .buttonBorderShape(.capsule)
                 }
-                TintActionRow(title: Copy.Muse.tokenSave, action: save)
+                TintActionRow(title: Copy.Muse.developerTokenSave, action: save)
                     .disabled(trimmed.isEmpty)
                     .opacity(trimmed.isEmpty ? 0.5 : 1)
             }
             if model.hasToken {
                 ListCard {
-                    DestructiveRow(title: Copy.Muse.tokenRemove) {
+                    DestructiveRow(title: Copy.Muse.developerTokenRemove) {
                         model.setToken(nil)
                         dismiss()
                     }
                 }
             }
-            SettingsFooter(text: Copy.Muse.tokenFooter)
+            SettingsFooter(text: Copy.Muse.developerTokenFooter)
         }
-        .navigationTitle(Copy.Muse.tokenTitle)
+        .navigationTitle(Copy.Muse.developerTokenTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .task { await model.followToken() }
     }
 
     private var trimmed: String { token.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -314,9 +318,10 @@ final class MuseScreenModel {
             hasToken = true
             let name = "MuseGadgetF1A69C"
             switch args[index + 1] {
+            case "notsetup": hasToken = false
+            case "notpaired": break
             case "confirm": pairing = .confirmOnWatch
-            case "waiting":
-                apply(.waitingForMuse(gadgetName: name, secondsLeft: 243))
+            case "waiting": apply(.waitingForMuse(gadgetName: name, secondsLeft: 243))
             case "connected": pairing = .museConnected(gadgetName: name)
             case "timedout": pairing = .failed(.timedOut)
             case "answered":

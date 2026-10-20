@@ -8,6 +8,8 @@ extension Copy {
         static let rowPaired = "Paired"
 
         // Status card: a heading and at most one line.
+        static let notSetUpTitle = "Muse isn't set up on this phone"
+        static let notSetUpLine = "It needs a one-time developer setup in Diagnostics."
         static let notPairedTitle = "Not paired"
         static let notPairedLine = "Pair once, and your watch shows up in the Muse app."
         static let startingTitle = "Starting…"
@@ -45,16 +47,24 @@ extension Copy {
         static let forgetMessage = "Your watch stops reaching Muse until you pair again."
         static let forgetConfirm = "Forget"
 
-        // Gadget token
-        static let tokenRow = "Gadget token"
-        static let tokenAdded = "Added"
-        static let tokenMissing = "Not added"
-        static let tokenTitle = "Gadget token"
-        static let tokenPlaceholder = "Gadget token"
-        static let tokenSave = "Save"
-        static let tokenRemove = "Remove Token"
-        static let tokenFooter = "From gadgets.muse.ai. Stored in this phone's Keychain."
-        static let tokenNeeded = "Add your gadget token to pair."
+        // What goes where: the privacy model's D7 sentences (docs/privacy-model.md), word for
+        // word, until the model's own function supplies them.
+        static let whatGoesHeader = "What goes to Meta"
+        static let questionsLine =
+            "The questions you ask Muse go to Meta as text, and its answers come back. Nothing "
+            + "goes while you aren't asking."
+        static let trainingLine =
+            "Meta may use your questions to improve its AI. You can turn that off in the Muse app."
+
+        // Developer setup, in Diagnostics: the one place a mechanism may be named.
+        static let developerTokenRow = "Muse SDK token"
+        static let developerTokenTitle = "Muse SDK token"
+        static let developerTokenPlaceholder = "SDK token"
+        static let developerTokenSave = "Save"
+        static let developerTokenRemove = "Remove Token"
+        static let developerTokenAdded = "Added"
+        static let developerTokenMissing = "Not added"
+        static let developerTokenFooter = "From gadgets.muse.ai. Stored in this phone's Keychain."
 
         // Trying it
         static let askHeader = "Try it"

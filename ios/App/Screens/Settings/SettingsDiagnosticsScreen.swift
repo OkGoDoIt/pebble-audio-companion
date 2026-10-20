@@ -266,6 +266,12 @@ struct SettingsDiagnosticsScreen: View {
             }
             SettingsFooter(text: Copy.Settings.Diagnostics.redoOnboardingFooter)
 
+            // Developer setup for Muse. Here, not on the Muse screen, because it names a
+            // mechanism (docs/privacy-model.md §5).
+            ListCard {
+                SettingsPushRow(title: Copy.Muse.developerTokenRow) { MuseDeveloperTokenScreen() }
+            }
+
             #if DEBUG
             designSection
             #endif
