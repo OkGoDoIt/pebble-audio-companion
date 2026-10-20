@@ -230,6 +230,28 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal(2, (await phone.GetJsonAsync("/sync/status")).GetProperty("access").GetArrayLength());
 		Assert.True(Directory.Exists(Path.Combine(factory.ClipsPath, userId.ToString("N"))));
 
+		// A backup import adds an older conversation: the status still says where what a phone sent begins, so a later
+		// import adds only what came before it; nothing has been deleted yet.
+		using (var import = await Phone.LinkAsync(factory, userId, "Backup import on the test Mac", build: SyncProtocol.ImportBuild))
+		{
+			var older = fx.Day.AddDays(-30);
+			await import.BatchAsync(ArchiveFixture.Item("conversation", "conv-imported", ArchiveFixture.Conversation(older, ArchiveFixture.At(older, 9, 0), ArchiveFixture.At(older, 9, 20), "An old talk", null, [], [], [], 20)));
+			DateTimeOffset phoneFirst;
+			await using (var scope = factory.Services.CreateAsyncScope())
+			{
+				phoneFirst = await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Conversations
+					.Where(c => c.UserId == userId && c.Id != "conv-imported").MinAsync(c => c.StartedAt);
+			}
+
+			var holdings = await import.GetJsonAsync("/sync/status");
+			Assert.Equal(phoneFirst, holdings.GetProperty("phoneSince").GetDateTimeOffset());
+			Assert.Equal(JsonValueKind.Null, holdings.GetProperty("wipedAt").ValueKind);
+
+			// Done, the import is unlinked in the admin area, as its README says.
+			await using var admin = factory.Services.CreateAsyncScope();
+			Assert.True(await admin.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, import.DeviceId, CancellationToken.None));
+		}
+
 		// The admin area unlinks an old phone while others stay linked: only its token ends.
 		using (var oldPhone = await Phone.LinkAsync(factory, userId, "An old iPhone"))
 		{
@@ -269,6 +291,8 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		var remaining = await otherPhone.GetJsonAsync("/sync/status");
 		Assert.Equal(0, remaining.GetProperty("counts").GetProperty("conversation").GetInt32());
 		Assert.Equal(0, remaining.GetProperty("access").GetArrayLength());
+		Assert.True(DateTimeOffset.UtcNow - remaining.GetProperty("wipedAt").GetDateTimeOffset() < TimeSpan.FromMinutes(1));
+		Assert.Equal(JsonValueKind.Null, remaining.GetProperty("phoneSince").ValueKind);
 
 		// It syncs again and an assistant connects; the admin area then unlinks it, the last phone, which clears the
 		// server as unlinking on the phone does.

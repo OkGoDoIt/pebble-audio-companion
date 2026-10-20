@@ -275,6 +275,15 @@ public static class SyncModule
 			[SyncKind.Coverage.ToWire()] = counts.CoverageDays,
 		};
 
+		// For a backup import (§5): where what a phone sent begins (a backup import's own devices do not count), and
+		// when the archive was last deleted, so it adds only what the phone no longer has.
+		var phoneSince = await db.Conversations
+			.Where(c => c.UserId == userId && db.SyncItems.Any(s =>
+				s.UserId == userId && s.Kind == SyncKind.Conversation && s.EntityId == c.Id &&
+				db.Devices.Any(d => d.Id == s.DeviceId && d.AppBuild != SyncProtocol.ImportBuild)))
+			.MinAsync(c => (DateTimeOffset?)c.StartedAt, cancellationToken);
+		var wipedAt = await db.SyncPreferences.Where(p => p.UserId == userId).Select(p => p.WipedAt).SingleOrDefaultAsync(cancellationToken);
+
 		return Results.Json(
 			new StatusResponse(
 				time.GetUtcNow(),
@@ -282,7 +291,9 @@ public static class SyncModule
 				status.PendingRequests,
 				byKind,
 				reads,
-				await assistants.ListAsync(userId, cancellationToken)),
+				await assistants.ListAsync(userId, cancellationToken),
+				phoneSince,
+				wipedAt),
 			SyncJson.Options);
 	}
 
@@ -490,7 +501,9 @@ public static class SyncModule
 		int PendingRequests,
 		IReadOnlyDictionary<string, int> Counts,
 		IReadOnlyList<AiReadWire> AiReads,
-		IReadOnlyList<AccessEntry> Access);
+		IReadOnlyList<AccessEntry> Access,
+		DateTimeOffset? PhoneSince,
+		DateTimeOffset? WipedAt);
 
 	internal sealed record AiReadWire(DateTimeOffset At, string Client, string Tool, IReadOnlyList<string> Ids);
 

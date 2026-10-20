@@ -23,7 +23,7 @@ internal sealed class Phone(ArchiveServerFactory factory, string token, Guid dev
 	public Guid UserId { get; } = userId;
 
 	/// <summary>Mints a code the way the admin page does and links with it.</summary>
-	public static async Task<Phone> LinkAsync(ArchiveServerFactory factory, Guid userId, string name = "Roger's iPhone")
+	public static async Task<Phone> LinkAsync(ArchiveServerFactory factory, Guid userId, string name = "Roger's iPhone", string build = "812")
 	{
 		string code;
 		await using (var scope = factory.Services.CreateAsyncScope())
@@ -32,7 +32,7 @@ internal sealed class Phone(ArchiveServerFactory factory, string token, Guid dev
 		}
 
 		using var http = factory.CreateClient();
-		var response = await http.SendAsync(LinkRequest(code, name));
+		var response = await http.SendAsync(LinkRequest(code, name, build));
 		Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 		using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 		var root = body.RootElement;
@@ -46,11 +46,11 @@ internal sealed class Phone(ArchiveServerFactory factory, string token, Guid dev
 	}
 
 	/// <summary><c>POST /link</c> as the app sends it: no token, a normalized code, the protocol header.</summary>
-	public static HttpRequestMessage LinkRequest(string code, string name = "Roger's iPhone")
+	public static HttpRequestMessage LinkRequest(string code, string name = "Roger's iPhone", string build = "812")
 	{
 		var request = new HttpRequestMessage(HttpMethod.Post, "/link")
 		{
-			Content = Json(new JsonObject { ["code"] = code, ["deviceName"] = name, ["appVersion"] = "1.4", ["appBuild"] = "812" }),
+			Content = Json(new JsonObject { ["code"] = code, ["deviceName"] = name, ["appVersion"] = "1.4", ["appBuild"] = build }),
 		};
 		request.Headers.Add(SyncProtocol.VersionHeader, "1");
 		return request;

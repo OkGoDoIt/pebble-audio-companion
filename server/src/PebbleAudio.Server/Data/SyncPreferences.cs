@@ -33,6 +33,12 @@ public sealed class SyncPreferences
 	/// <summary>The 03:30 whose scope deletion was last queued, so each night's runs once.</summary>
 	public DateTimeOffset? ScopeSweptFor { get; set; }
 
+	/// <summary>
+	/// When the whole archive was last deleted (Delete all, or unlinking), so a backup import does not bring back what
+	/// the person deleted.
+	/// </summary>
+	public DateTimeOffset? WipedAt { get; set; }
+
 	public DateTimeOffset UpdatedAt { get; set; }
 
 	/// <summary>The phone that set them last.</summary>

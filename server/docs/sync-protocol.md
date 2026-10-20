@@ -305,6 +305,12 @@ with its request and its file, and asking for that span again asks the phone aga
   `lastBatchAt` is this phone's last batch (null before its first). The phone also accepts
   `when` for `at` and `entityIds` for `ids`; the server sends `at` and `ids`.
 
+  For the Mac's backup import (`ios/Tools/ArchiveImport`, which links with `appBuild`
+  `archive-import`), the answer also carries `phoneSince`, the start of the earliest conversation
+  the server holds from a phone (an import's own do not count; null before the first), and
+  `wipedAt`, when the archive was last deleted by `POST /sync/wipe` or unlinking (null if never).
+  The import sends only what is dated before the first and after the second.
+
   ```json
   "access": [
     { "kind": "oauth", "id": "…", "name": "ChatGPT", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" },

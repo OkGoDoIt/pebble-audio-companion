@@ -24,6 +24,12 @@ public static class SyncProtocol
 	public const int LinkCodeLength = 8;
 
 	public static readonly TimeSpan LinkCodeLifetime = TimeSpan.FromMinutes(10);
+
+	/// <summary>
+	/// The <c>appBuild</c> the Mac's backup import links with (ios/Tools/ArchiveImport). Its conversations do not count
+	/// as what a phone holds (§5, <c>phoneSince</c>).
+	/// </summary>
+	public const string ImportBuild = "archive-import";
 }
 
 /// <summary>

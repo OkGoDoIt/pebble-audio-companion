@@ -101,6 +101,14 @@ public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConne
 
 	private async Task DeleteArchiveAsync(Guid userId, CancellationToken cancellationToken)
 	{
+		// Noted with the preferences, which stay: a backup import reads it so it does not bring the archive back.
+		var now = time.GetUtcNow();
+		if (await db.SyncPreferences.Where(p => p.UserId == userId).ExecuteUpdateAsync(s => s.SetProperty(p => p.WipedAt, now), cancellationToken) == 0)
+		{
+			db.SyncPreferences.Add(new SyncPreferences { UserId = userId, WipedAt = now, UpdatedAt = now });
+			await db.SaveChangesAsync(cancellationToken);
+		}
+
 		await db.Requests.Where(r => r.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.Clips.Where(c => c.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.Jobs.Where(j => j.UserId == userId).ExecuteDeleteAsync(cancellationToken);
