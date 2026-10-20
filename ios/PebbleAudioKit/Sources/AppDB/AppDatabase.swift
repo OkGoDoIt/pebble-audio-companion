@@ -786,6 +786,29 @@ public struct AppDatabase: Sendable {
                 t.column("lastError", .text)
             }
         }
+        // The Pebble Audio archive sync (`server/docs/sync-protocol.md`, `ArchiveOutbox.swift`).
+        //
+        // `sync_outbox` is one row per synced entity: its version, whether the server still
+        // needs it, and what the server last accepted. DERIVED in the sense that dropping it
+        // costs one full re-send (`ArchiveOutbox.markEverything`), never a byte of the library.
+        // `sync_outbox_state.active` is off until a server is linked, so a phone that never links
+        // records nothing. The triggers are the outbox's writers for every table a payload is
+        // built from; `ConversationGrouper.apply` and `DeleteCascade` write the rest.
+        //
+        // `notes.origin` is new: a note an assistant wrote through the server (`assistant`) must
+        // say so when it syncs back, and nothing recorded who wrote a note before. NULL is every
+        // existing row, and reads as the app's own (`user`, or `ai` when a model wrote it).
+        migrator.registerMigration("archive-sync-outbox-v1") { db in
+            // Guarded like the triggers below: the hand-built legacy fixtures in the migration
+            // tests hold only the tables their suite reads, and a table that does not exist has
+            // no writes to record.
+            if try db.tableExists("notes") {
+                try db.alter(table: "notes") { t in
+                    t.add(column: "origin", .text)
+                }
+            }
+            try ArchiveOutbox.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

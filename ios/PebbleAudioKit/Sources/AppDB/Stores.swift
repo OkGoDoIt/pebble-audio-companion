@@ -49,6 +49,10 @@ public enum FollowUpPriority: Int, Equatable, Sendable, CaseIterable, Codable {
 public enum FollowUpOrigin: String, Equatable, Sendable, Codable {
     case ai
     case user
+    /// Written by an assistant through the Pebble Audio server (an MCP write tool), and applied
+    /// here from the sync request channel. Left alone by curation and the age rule, like a
+    /// person's own item: someone asked for it.
+    case assistant
 }
 
 /// Which slice of the list a query wants. `open` is what the app shows by default: not done,
@@ -258,11 +262,14 @@ public struct Note: Equatable, Sendable {
     public var model: String?
     public var createdAtMs: Int64
     public var editedAtMs: Int64?
+    /// Who wrote it: `assistant` for a note an assistant created through the Pebble Audio
+    /// server; nil for every note the app made itself (a person's, or a template's).
+    public var origin: String?
 
     public init(
         id: String, conversationId: String, templateId: String, title: String, body: String,
         citationsJson: String, provider: String?, model: String?, createdAtMs: Int64,
-        editedAtMs: Int64?
+        editedAtMs: Int64?, origin: String? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -274,6 +281,7 @@ public struct Note: Equatable, Sendable {
         self.model = model
         self.createdAtMs = createdAtMs
         self.editedAtMs = editedAtMs
+        self.origin = origin
     }
 }
 
@@ -953,6 +961,98 @@ public struct FollowUpStore: Sendable {
         }
     }
 
+    /// An item an assistant created through the Pebble Audio server, under the id the server
+    /// gave it (`origin` is forced to `.assistant`). A second delivery of the same request finds
+    /// it there and changes nothing. Returns false when it was already there.
+    @discardableResult
+    public func insertFromAssistant(_ item: FollowUp) async throws -> Bool {
+        var stamped = item
+        stamped.origin = .assistant
+        let toWrite = stamped
+        return try await db.writer.write { db in
+            try db.execute(
+                sql: Self.insertSQL + "\nON CONFLICT(id) DO NOTHING",
+                arguments: Self.arguments(toWrite))
+            return db.changesCount > 0
+        }
+    }
+
+    /// The fields an assistant may change on an item (`sync-protocol.md` §4 `followUp.update`).
+    /// `nil` leaves a field alone; `.some(nil)` clears it.
+    public struct AssistantChange: Equatable, Sendable {
+        public var done: Bool?
+        public var completedAtMs: Int64??
+        public var text: String?
+        public var dueAtMs: Int64??
+        public var snoozedUntilMs: Int64??
+        public var archivedAtMs: Int64??
+
+        public init(
+            done: Bool? = nil, completedAtMs: Int64?? = nil, text: String? = nil,
+            dueAtMs: Int64?? = nil, snoozedUntilMs: Int64?? = nil, archivedAtMs: Int64?? = nil
+        ) {
+            self.done = done
+            self.completedAtMs = completedAtMs
+            self.text = text
+            self.dueAtMs = dueAtMs
+            self.snoozedUntilMs = snoozedUntilMs
+            self.archivedAtMs = archivedAtMs
+        }
+
+        public var isEmpty: Bool {
+            done == nil && completedAtMs == nil && text == nil && dueAtMs == nil
+                && snoozedUntilMs == nil && archivedAtMs == nil
+        }
+    }
+
+    /// Applies an assistant's change. Like a person's own edit it stamps `touchedAtMs` (so the
+    /// age rule leaves the item alone) and, for new text, `editedAtMs` (so re-extraction never
+    /// overwrites it). Ticking without a completion time stamps now. Returns false when there is
+    /// no such item.
+    @discardableResult
+    public func applyAssistantChange(
+        id: String, _ change: AssistantChange,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Bool {
+        var sets: [String] = ["touchedAtMs = ?"]
+        var arguments: [(any DatabaseValueConvertible)?] = [nowMs]
+        if let done = change.done {
+            sets.append("done = ?")
+            arguments.append(done)
+            sets.append("completedAtMs = ?")
+            arguments.append(done ? ((change.completedAtMs ?? nil) ?? nowMs) : nil)
+        } else if let completed = change.completedAtMs {
+            sets.append("completedAtMs = ?")
+            arguments.append(completed)
+        }
+        if let text = change.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        {
+            sets.append("text = ?")
+            arguments.append(text)
+            sets.append("editedAtMs = ?")
+            arguments.append(nowMs)
+        }
+        if let due = change.dueAtMs {
+            sets.append("dueAtMs = ?")
+            arguments.append(due)
+        }
+        if let snoozed = change.snoozedUntilMs {
+            sets.append("snoozedUntilMs = ?")
+            arguments.append(snoozed)
+        }
+        if let archived = change.archivedAtMs {
+            sets.append("archivedAtMs = ?")
+            arguments.append(archived)
+        }
+        arguments.append(id)
+        let sql = "UPDATE follow_ups SET \(sets.joined(separator: ", ")) WHERE id = ?"
+        let statementArguments = StatementArguments(arguments)
+        return try await db.writer.write { db in
+            try db.execute(sql: sql, arguments: statementArguments)
+            return db.changesCount > 0
+        }
+    }
+
     /// The age rule, run by the pipeline: an open item the AI proposed, that nobody has
     /// touched, that has no deadline of its own, and that is older than `olderThanMs`, leaves
     /// the working list.
@@ -1148,7 +1248,30 @@ public struct NotesStore: Sendable {
             id: row["id"], conversationId: row["conversationId"],
             templateId: row["templateId"], title: row["title"], body: row["body"],
             citationsJson: row["citations"], provider: row["provider"], model: row["model"],
-            createdAtMs: row["createdAtMs"], editedAtMs: row["editedAtMs"])
+            createdAtMs: row["createdAtMs"], editedAtMs: row["editedAtMs"],
+            origin: row["origin"])
+    }
+
+    /// A note an assistant wrote through the Pebble Audio server, under the id the server gave
+    /// it. A second delivery of the same request finds the note there and changes nothing.
+    /// Returns false when it was already there.
+    @discardableResult
+    public func insertFromAssistant(_ note: Note) async throws -> Bool {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO notes (id, conversationId, templateId, title, body, citations,
+                        provider, model, createdAtMs, editedAtMs, origin)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'assistant')
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                arguments: [
+                    note.id, note.conversationId, note.templateId, note.title, note.body,
+                    note.citationsJson, note.provider, note.model, note.createdAtMs,
+                    note.editedAtMs,
+                ])
+            return db.changesCount > 0
+        }
     }
 
     @discardableResult

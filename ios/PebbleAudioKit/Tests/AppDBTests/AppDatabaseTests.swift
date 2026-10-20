@@ -89,6 +89,8 @@ import Testing
         do {
             let db = try AppDatabase.open(at: url)
             try db.writer.write { d in
+                // The archive sync came after v14, and its triggers read the columns dropped below.
+                try removeArchiveSync(d)
                 for name in Self.indexes { try d.execute(sql: "DROP INDEX \(name)") }
                 try d.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v14-history-indexes'")
                 try d.execute(
@@ -168,6 +170,8 @@ import Testing
         do {
             let db = try AppDatabase.open(at: url)
             try db.writer.write { d in
+                // The archive sync came after v14, and its triggers read the columns dropped below.
+                try removeArchiveSync(d)
                 for name in Self.indexes { try d.execute(sql: "DROP INDEX \(name)") }
                 for table in Self.tables {
                     for column in Self.columns {
@@ -589,6 +593,8 @@ import Testing
         do {
             let db = try AppDatabase.open(at: url)
             try db.writer.write { d in
+                // The archive sync came after v16, and its triggers read what is dropped below.
+                try removeArchiveSync(d)
                 try d.execute(sql: "DROP TABLE period_briefs")
                 for column in Self.recapColumns {
                     try d.execute(sql: "ALTER TABLE recaps DROP COLUMN \(column)")

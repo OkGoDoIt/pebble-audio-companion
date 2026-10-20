@@ -619,6 +619,11 @@ public enum ConversationGrouper {
         }
         let stored = try storedImage(db)
         let next = image(of: conversations, state: state)
+        // The archive sync's marks, in this transaction: what changed, what went away, and
+        // whose provisional flag flipped (which no stored row records). Before the early
+        // return, because a flag can flip on a pass that writes nothing else.
+        try ArchiveOutboxGrouping.note(
+            stored: stored, next: next, conversations: conversations, in: db)
         if stored == next { return ApplyOutcome(wrote: false, structureChanged: false) }
         let structureChanged = structure(of: stored) != structure(of: next)
         try db.execute(sql: "DELETE FROM conversation_segments")

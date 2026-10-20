@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import SegmentStore
 import Testing
 import WireProtocol
@@ -312,4 +313,22 @@ extension GroupedConversation {
         copy.isProvisional = false
         return copy
     }
+}
+
+/// Takes the archive sync's migration back out of a fully migrated database, so a test can
+/// build "the database as an earlier release left it" by dropping later columns: the sync's
+/// triggers name those columns, and SQLite refuses to drop a column a trigger reads.
+func removeArchiveSync(_ db: GRDB.Database) throws {
+    for name in try String.fetchAll(
+        db, sql: "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync_%'")
+    {
+        try db.execute(sql: "DROP TRIGGER \(name)")
+    }
+    try db.execute(sql: "DROP TABLE IF EXISTS sync_outbox")
+    try db.execute(sql: "DROP TABLE IF EXISTS sync_outbox_state")
+    if try db.columns(in: "notes").contains(where: { $0.name == "origin" }) {
+        try db.execute(sql: "ALTER TABLE notes DROP COLUMN origin")
+    }
+    try db.execute(
+        sql: "DELETE FROM grdb_migrations WHERE identifier = 'archive-sync-outbox-v1'")
 }
