@@ -229,6 +229,23 @@ final class TierClock: @unchecked Sendable {
         #expect(summary.available)
     }
 
+    /// End to end on the shipped defaults (Keep audio 30 days, move at 2 months): turning the
+    /// switch on must move audio that retention has not deleted yet. Before 2026-10-20 the
+    /// policy asked for 60-day-old audio, and retention had deleted everything past 30 days.
+    @Test func theDefaultSettingsMoveAudioBeforeKeepAudioDeletesIt() async throws {
+        let w = try World()
+        let settings = RuntimeSettingsSnapshot(coldStorageEnabled: true)
+        w.setPolicy(settings.coldStoragePolicy)
+        let keepDays = Int64(settings.retentionDays)
+        let movable = try await w.segment(ageDays: keepDays - 5)
+        let young = try await w.segment(ageDays: 3)
+
+        #expect(await w.tier.sweepIfDue())
+
+        #expect(await w.meta(movable).coldStorage != nil, "audio younger than Keep audio moved")
+        #expect(await w.meta(young).coldStorage == nil)
+    }
+
     @Test func aConfirmedUploadIsEvictedAndFetchBringsItBack() async throws {
         let w = try World()
         let old = try await w.segment(ageDays: 90)

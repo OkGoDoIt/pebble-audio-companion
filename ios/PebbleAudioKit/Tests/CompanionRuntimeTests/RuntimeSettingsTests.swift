@@ -43,6 +43,57 @@ import Transcription
         #expect(RuntimeSettingsSnapshot(retentionDays: 0).retentionConfig.maxAgeMs > 0)
     }
 
+    // MARK: - The iCloud move age against Keep audio
+
+    /// The 2026-10-20 defect: move at 60 days, delete at 30, so the switch moved nothing, ever.
+    /// On the defaults the rule must now be live, and younger than Keep audio.
+    @Test func theDefaultCloudRuleCanActuallyMoveSomething() {
+        let defaults = RuntimeSettingsSnapshot(coldStorageEnabled: true)
+        #expect(defaults.retentionDays == RuntimeSettingsDefaults.retentionDays)
+        #expect(defaults.coldStorageMinAgeDays == RuntimeSettingsDefaults.coldStorageMinAgeDays)
+        let policy = defaults.coldStoragePolicy
+        #expect(policy.enabled)
+        #expect(policy.minAgeMs < defaults.retentionConfig.maxAgeMs)
+        #expect(policy.minAgeMs == 14 * 24 * 60 * 60 * 1000)
+    }
+
+    @Test func aMoveAgeYoungerThanKeepAudioStandsAsChosen() {
+        let settings = RuntimeSettingsSnapshot(
+            retentionDays: 365, coldStorageEnabled: true, coldStorageMinAgeDays: 60)
+        #expect(settings.effectiveColdStorageMinAgeDays == 60)
+        #expect(settings.coldStoragePolicy == ColdStoragePolicy(enabled: true, minAgeMs: 60 * 86_400_000))
+    }
+
+    /// At or past Keep audio, the oldest offered age that is still younger takes effect — and
+    /// the strictness matters: retention runs first in the pass, so equal ages move nothing.
+    @Test func aMoveAgeAtOrPastKeepAudioFallsToTheOldestThatCanHappen() {
+        typealias D = RuntimeSettingsDefaults
+        #expect(D.effectiveColdStorageMinAgeDays(chosen: 30, retentionDays: 30) == 14)
+        #expect(D.effectiveColdStorageMinAgeDays(chosen: 90, retentionDays: 90) == 60)
+        #expect(D.effectiveColdStorageMinAgeDays(chosen: 365, retentionDays: 180) == 90)
+        #expect(D.effectiveColdStorageMinAgeDays(chosen: 365, retentionDays: 365) == 180)
+        #expect(D.effectiveColdStorageMinAgeDays(chosen: 14, retentionDays: 30) == 14)
+        // Every pairing the two pickers can store ends younger than Keep audio, or nil.
+        for keep in [7, 14, 30, 90, 180, 365] {
+            for age in D.coldStorageMinAgeOptions {
+                if let effective = D.effectiveColdStorageMinAgeDays(chosen: age, retentionDays: keep) {
+                    #expect(effective < keep)
+                    #expect(effective <= age)
+                }
+            }
+        }
+    }
+
+    /// Keep audio at 14 days or less leaves no offered age that could fire: the rule is off in
+    /// the runtime, whatever the switch says, and the Storage screen says why.
+    @Test func keepAudioTooShortForAnyAgeTurnsTheRuleOff() {
+        for keep in [7, 14] {
+            let settings = RuntimeSettingsSnapshot(retentionDays: keep, coldStorageEnabled: true)
+            #expect(settings.effectiveColdStorageMinAgeDays == nil)
+            #expect(!settings.coldStoragePolicy.enabled)
+        }
+    }
+
     @Test func retentionMaxBytesDefaultsWithoutTheAppDeclaringIt() {
         struct MinimalSettings: RuntimeSettings {
             var captureIntent: CaptureIntent = .active

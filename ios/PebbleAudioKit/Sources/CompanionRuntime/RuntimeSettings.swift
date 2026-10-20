@@ -56,11 +56,21 @@ extension RuntimeSettings {
     public var coldStorageEnabled: Bool { RuntimeSettingsDefaults.coldStorageEnabled }
     public var coldStorageMinAgeDays: Int { RuntimeSettingsDefaults.coldStorageMinAgeDays }
 
-    /// The cold-storage rule this settings state implies.
+    /// The age audio actually moves to iCloud at, given "Keep audio"; nil when Keep audio is too
+    /// short for any offered age. See `RuntimeSettingsDefaults.effectiveColdStorageMinAgeDays`.
+    public var effectiveColdStorageMinAgeDays: Int? {
+        RuntimeSettingsDefaults.effectiveColdStorageMinAgeDays(
+            chosen: coldStorageMinAgeDays, retentionDays: retentionDays)
+    }
+
+    /// The cold-storage rule this settings state implies. Its age is the EFFECTIVE one, never
+    /// the raw choice: the raw "2 months" under the default "Keep audio · 30 days" was a rule
+    /// that could never fire, because retention deleted every recording first.
     public var coldStoragePolicy: ColdStoragePolicy {
-        ColdStoragePolicy(
-            enabled: coldStorageEnabled,
-            minAgeMs: Int64(max(1, coldStorageMinAgeDays)) * 24 * 60 * 60 * 1000)
+        let days = effectiveColdStorageMinAgeDays
+        return ColdStoragePolicy(
+            enabled: coldStorageEnabled && days != nil,
+            minAgeMs: Int64(max(1, days ?? coldStorageMinAgeDays)) * 24 * 60 * 60 * 1000)
     }
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
@@ -178,6 +188,23 @@ public enum RuntimeSettingsDefaults {
     /// The ages the Storage screen offers, in days. Lives here so the kit and the app cannot
     /// drift on what the picker may store.
     public static let coldStorageMinAgeOptions = [14, 30, 60, 90, 180, 365]
+
+    /// The cold-storage age that can actually take effect under "Keep audio · `retentionDays`".
+    ///
+    /// "Keep audio" deletes a recording — its audio from iCloud too — once it passes that age,
+    /// and the retention stage runs before the cold-storage stage. So audio only ever moves if
+    /// the move age is strictly YOUNGER than Keep audio. Until 2026-10-20 nothing enforced that,
+    /// and the two defaults (move at 60 days, delete at 30) made the iCloud switch a control
+    /// that did nothing at all: not one recording ever reached the age.
+    ///
+    /// The rule: the choice stands when it is younger than Keep audio; otherwise the oldest
+    /// offered age that still is — the closest thing to what was asked for that can happen;
+    /// nil when no offered age is (Keep audio at 14 days or less), and the Storage screen says
+    /// why. The choice itself is not overwritten, so raising Keep audio again restores it.
+    public static func effectiveColdStorageMinAgeDays(chosen: Int, retentionDays: Int) -> Int? {
+        if chosen < retentionDays { return chosen }
+        return coldStorageMinAgeOptions.filter { $0 < retentionDays }.max()
+    }
 }
 
 /// The two retention knobs the runtime derives from settings; `RetentionService` turns these into
