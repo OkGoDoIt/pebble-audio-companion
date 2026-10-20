@@ -54,6 +54,10 @@ public static class ViewerModule
 			},
 			contentType: "application/json")).AllowAnonymous();
 
+		// Browsers ask for /favicon.ico on every page that names no icon (the admin area, a widget opened on its
+		// own); without this each of those logs a 404.
+		app.MapGet("/favicon.ico", () => Results.Redirect("/favicon.svg", permanent: true)).AllowAnonymous();
+
 		// The page's clip calls. They answer 401 rather than the cookie's redirect, since a script reads them.
 		app.MapPost("/c/{conversationId}/clip", RequestClipAsync).AllowAnonymous();
 		app.MapGet("/c/{conversationId}/clip", ClipAroundAsync).AllowAnonymous();
