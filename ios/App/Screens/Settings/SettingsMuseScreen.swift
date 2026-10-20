@@ -2,17 +2,24 @@ import CompanionRuntime
 import Receiver
 import SwiftUI
 
-/// Settings · Muse: pair the watch with Meta's Muse assistant, then try it.
+/// Settings · Muse: set Muse up, pair the watch, then ask it things.
 ///
-/// Laid out like every opt-in that sends something off the phone (docs/privacy-model.md §4):
-/// what it does, exactly what goes to Meta, then the button that starts it. Everything setting
-/// Muse up happens here, the SDK token included. The watch does the Bluetooth half of pairing;
-/// this screen walks through the steps one heading at a time.
+/// Built around what the person is doing, one step at a time. The top card always says where
+/// they are and holds the one thing to do next, as a filled button (the app's status-card
+/// rule: filled resolves the state). Setting up is two steps: the SDK token, then pairing.
+/// Pairing happens partly on the watch and partly in the Muse app, so while it runs the card is
+/// a checklist that says exactly what to do and where. Before anything goes to Meta, the card
+/// says what goes (docs/privacy-model.md §4). Once paired, asking comes first; managing the
+/// token and forgetting Muse sit at the bottom.
 struct SettingsMuseScreen: View {
     @State private var model = MuseScreenModel()
     @State private var confirmForget = false
     @State private var question = ""
+    @State private var tokenText = ""
     @FocusState private var askFocused: Bool
+
+    /// Where Muse developers make SDK tokens.
+    static let tokenPage = URL(string: "https://gadgets.muse.ai/settings/sdk-tokens")!
 
     var body: some View {
         SettingsScroll {
@@ -28,166 +35,203 @@ struct SettingsMuseScreen: View {
     @ViewBuilder
     private var content: some View {
         if model.pairing.isActive {
-            stateCard
-            ListCard {
-                TintActionRow(title: Copy.Muse.cancel, action: model.cancel)
-            }
-        } else if model.isPaired {
-            // Is it working, then try it, then what it sends (read once), then the way out.
-            stateCard
+            pairingCard
+        } else if let name = model.pairedName {
+            MuseCard(dot: Tokens.good, headline: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name)) {}
             askSection
-            whatGoesCard
-            forgetCard
-        } else if model.hasToken {
-            stateCard
-            whatGoesCard
-            ListCard {
-                tokenRow
-                TintActionRow(title: pairTitle, action: model.pair)
-            }
+            whatGoesSection
+            manageCard
+        } else if !model.hasToken {
+            tokenStepCard
         } else {
-            // First step: the token, typed or pasted right here; then what pairing sends.
-            stateCard
-            VStack(alignment: .leading, spacing: Tokens.blockGap) {
-                SettingsSectionHeader(title: Copy.Muse.tokenHeader)
-                ListCard {
-                    MuseTokenEntry(model: model)
-                    Link(destination: Self.tokenPage) {
-                        HStack {
-                            Text(Copy.Muse.tokenGet)
-                                .font(AppFont.callout)
-                                .foregroundStyle(Tokens.tint)
-                            Spacer(minLength: 0)
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Tokens.meta)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+            pairStepCard
+            ListCard { tokenRow }
+        }
+    }
+
+    // MARK: Step 1: the SDK token
+
+    private var tokenStepCard: some View {
+        MuseCard(
+            step: Copy.Muse.step(1, of: 2), dot: Tokens.neutralDot,
+            headline: Copy.Muse.tokenStepTitle, line: Copy.Muse.tokenStepLine
+        ) {
+            Link(destination: Self.tokenPage) {
+                HStack(spacing: 4) {
+                    Text(Copy.Muse.tokenGet)
+                    Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold))
                 }
+                .font(AppFont.subBody)
+                .foregroundStyle(Tokens.tint)
             }
-            whatGoesCard
+            HStack(spacing: 10) {
+                SecureField(Copy.Muse.tokenPlaceholder, text: $tokenText)
+                    .font(AppFont.callout)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit(saveToken)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+                PasteButton(payloadType: String.self) { strings in
+                    if let first = strings.first { tokenText = first }
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.capsule)
+            }
+            Button(Copy.Muse.tokenSave, action: saveToken)
+                .buttonStyle(.inCardFilled)
+                .disabled(trimmedToken.isEmpty)
+                .opacity(trimmedToken.isEmpty ? 0.5 : 1)
+                .padding(.top, 2)
         }
     }
 
-    /// Where Muse developers make SDK tokens.
-    static let tokenPage = URL(string: "https://gadgets.muse.ai/settings/sdk-tokens")!
+    private var trimmedToken: String { tokenText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private var tokenRow: some View {
-        SettingsPushRow(title: Copy.Muse.tokenRow, value: Copy.Muse.tokenAdded) {
-            MuseTokenScreen(model: model)
-        }
+    private func saveToken() {
+        guard !trimmedToken.isEmpty else { return }
+        model.setToken(trimmedToken)
+        tokenText = ""
     }
 
-    // MARK: State
+    // MARK: Step 2: pairing
 
-    private var stateCard: some View {
-        Card {
+    private var pairStepCard: some View {
+        let failure: MuseGadgetService.PairingFailure? = {
+            if case .failed(let failure) = model.pairing { return failure }
+            return nil
+        }()
+        return MuseCard(
+            step: Copy.Muse.step(2, of: 2),
+            dot: failure == nil ? Tokens.neutralDot : Tokens.attention,
+            headline: failure?.title ?? Copy.Muse.pairStepTitle,
+            line: failure?.line ?? Copy.Muse.pairStepLine
+        ) {
+            // What goes to Meta, said right where the person decides.
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    StatusDot(color: state.dot, size: .lifecycle)
-                    Text(state.heading)
-                        .font(AppFont.cardHead)
-                        .foregroundStyle(Tokens.label)
-                        .fixedSize(horizontal: false, vertical: true)
+                Text(Copy.Muse.whatGoesHeader)
+                    .font(AppFont.footnote.weight(.semibold))
+                    .foregroundStyle(Tokens.label)
+                Text(Copy.Muse.questionsLine)
+                Text(Copy.Muse.trainingLine)
+            }
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.secondaryBody)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.ground))
+            Button(failure == nil ? Copy.Muse.pair : Copy.Muse.tryAgain, action: model.pair)
+                .buttonStyle(.inCardFilled)
+                .padding(.top, 2)
+        }
+    }
+
+    // MARK: Pairing in progress
+
+    private enum StepState { case done, current, upcoming }
+
+    /// 1 allow on the watch, 2 add in Muse, 3 finish.
+    private var currentStep: Int {
+        switch model.pairing {
+        case .waitingForMuse: return 2
+        case .museConnected: return 3
+        default: return 1
+        }
+    }
+
+    private func stepState(_ index: Int) -> StepState {
+        index < currentStep ? .done : (index == currentStep ? .current : .upcoming)
+    }
+
+    private var pairingCard: some View {
+        MuseCard(dot: Tokens.tint, headline: Copy.Muse.pairingTitle) {
+            VStack(alignment: .leading, spacing: 14) {
+                stepRow(
+                    title: Copy.Muse.allowStep,
+                    detail: model.pairing == .starting ? nil : Copy.Muse.allowDetail,
+                    state: stepState(1))
+                stepRow(title: Copy.Muse.addStep, detail: addDetail, state: stepState(2)) {
+                    countdown
                 }
-                if let line = state.line {
-                    Text(line)
-                        .font(AppFont.subBody)
-                        .foregroundStyle(Tokens.secondaryBody)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                stepRow(title: Copy.Muse.finishStep, detail: Copy.Muse.finishDetail, state: stepState(3))
+            }
+            .padding(.top, 4)
+            // The next step happens on the watch or in Muse, so nothing here is primary; leaving
+            // is a small helper, not a competing button.
+            Button(Copy.Muse.cancel, action: model.cancel)
+                .buttonStyle(.smallBordered)
+        }
+    }
+
+    private var addDetail: String? {
+        switch model.pairing {
+        case .waitingForMuse(let name, _), .museConnected(let name): return Copy.Muse.addDetail(name)
+        default: return nil
+        }
+    }
+
+    @ViewBuilder
+    private var countdown: some View {
+        if let deadline = model.windowDeadline, case .waitingForMuse = model.pairing {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let left = max(0, Int(deadline.timeIntervalSince(context.date)))
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: Double(left), total: Double(MuseGadgetService.windowSeconds))
+                        .tint(Tokens.tint)
+                    Text(Copy.Muse.timeLeft(left))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .monospacedDigit()
                 }
-                if let deadline = model.windowDeadline, case .waitingForMuse = model.pairing {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let left = max(0, Int(deadline.timeIntervalSince(context.date)))
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView(value: Double(left), total: Double(MuseGadgetService.windowSeconds))
-                                .tint(Tokens.tint)
-                            Text(Copy.Muse.timeLeft(left))
-                                .font(AppFont.footnote)
-                                .foregroundStyle(Tokens.meta)
-                                .monospacedDigit()
-                        }
-                        .padding(.top, 6)
-                    }
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private func stepRow<Extra: View>(
+        title: String, detail: String?, state: StepState,
+        @ViewBuilder extra: () -> Extra = { EmptyView() }
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                switch state {
+                case .done:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Tokens.good)
+                case .current:
+                    ProgressView().controlSize(.small)
+                case .upcoming:
+                    Image(systemName: "circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Tokens.meta.opacity(0.5))
                 }
             }
+            .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(state == .current ? AppFont.cardHead : AppFont.subBody)
+                    .foregroundStyle(state == .upcoming ? Tokens.meta : Tokens.label)
+                if state == .current {
+                    if let detail {
+                        Text(detail)
+                            .font(AppFont.subBody)
+                            .foregroundStyle(Tokens.secondaryBody)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    extra()
+                }
+            }
+            Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
     }
 
-    private struct StateText {
-        let heading: String
-        let line: String?
-        let dot: Color
-    }
-
-    private var state: StateText {
-        switch model.pairing {
-        case .starting:
-            return StateText(heading: Copy.Muse.startingTitle, line: nil, dot: Tokens.tint)
-        case .confirmOnWatch:
-            return StateText(heading: Copy.Muse.confirmTitle, line: Copy.Muse.confirmLine, dot: Tokens.tint)
-        case .waitingForMuse(let name, _):
-            return StateText(heading: Copy.Muse.addTitle, line: Copy.Muse.addLine(name), dot: Tokens.tint)
-        case .museConnected:
-            return StateText(heading: Copy.Muse.connectedTitle, line: Copy.Muse.connectedLine, dot: Tokens.tint)
-        case .failed(let failure):
-            return StateText(heading: failure.title, line: failure.line, dot: Tokens.attention)
-        case .idle, .paired:
-            if let name = model.pairedName {
-                return StateText(heading: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name), dot: Tokens.good)
-            }
-            if !model.hasToken {
-                return StateText(heading: Copy.Muse.notSetUpTitle, line: Copy.Muse.notSetUpLine, dot: Tokens.neutralDot)
-            }
-            return StateText(heading: Copy.Muse.notPairedTitle, line: Copy.Muse.notPairedLine, dot: Tokens.neutralDot)
-        }
-    }
-
-    private var pairTitle: String {
-        if case .failed = model.pairing { return Copy.Muse.tryAgain }
-        return Copy.Muse.pair
-    }
-
-    // MARK: What goes to Meta
-
-    private var whatGoesCard: some View {
-        VStack(alignment: .leading, spacing: Tokens.blockGap) {
-            SettingsSectionHeader(title: Copy.Muse.whatGoesHeader)
-            ListCard {
-                ForEach([Copy.Muse.questionsLine, Copy.Muse.trainingLine], id: \.self) { line in
-                    Text(line)
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.secondaryBody)
-                        .lineSpacing(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-    }
-
-    // MARK: Forget
-
-    private var forgetCard: some View {
-        ListCard {
-            tokenRow
-            DestructiveRow(title: Copy.Muse.forget) { confirmForget = true }
-        }
-        .confirmationDialog(Copy.Muse.forgetTitle, isPresented: $confirmForget, titleVisibility: .visible) {
-            Button(Copy.Muse.forgetConfirm, role: .destructive) {
-                Haptics.destructiveConfirmed()
-                model.forget()
-            }
-        } message: {
-            Text(Copy.Muse.forgetMessage)
-        }
-    }
-
-    // MARK: Asking
+    // MARK: Paired
 
     private var askSection: some View {
         VStack(alignment: .leading, spacing: Tokens.blockGap) {
@@ -261,35 +305,136 @@ struct SettingsMuseScreen: View {
         askFocused = false
         model.send(text)
     }
+
+    /// Read once, below what the person came to do.
+    private var whatGoesSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.whatGoesHeader)
+            ListCard {
+                ForEach([Copy.Muse.questionsLine, Copy.Muse.trainingLine], id: \.self) { line in
+                    Text(line)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var tokenRow: some View {
+        SettingsPushRow(title: Copy.Muse.tokenRow, value: Copy.Muse.tokenAdded) {
+            MuseTokenScreen(model: model)
+        }
+    }
+
+    private var manageCard: some View {
+        ListCard {
+            tokenRow
+            DestructiveRow(title: Copy.Muse.forget) { confirmForget = true }
+        }
+        .confirmationDialog(Copy.Muse.forgetTitle, isPresented: $confirmForget, titleVisibility: .visible) {
+            Button(Copy.Muse.forgetConfirm, role: .destructive) {
+                Haptics.destructiveConfirmed()
+                model.forget()
+            }
+        } message: {
+            Text(Copy.Muse.forgetMessage)
+        }
+    }
 }
 
-/// The SDK token field: paste or type it, then Save. Used on the Muse screen before the first
-/// pairing and on the token screen to replace it.
-private struct MuseTokenEntry: View {
+/// The app's status-card shell (`StatusCard`: dot, headline, one calm line, then the action),
+/// with room for what a step needs between the line and its action. An optional step caption
+/// sits above, so a two-step setup always says how far along it is.
+private struct MuseCard<Content: View>: View {
+    var step: String? = nil
+    let dot: Color
+    let headline: String
+    var line: String? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                if let step {
+                    Text(step)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                }
+                HStack(spacing: 8) {
+                    StatusDot(color: dot, size: .status)
+                    Text(headline)
+                        .font(AppFont.headline)
+                        .foregroundStyle(Tokens.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                if let line {
+                    Text(line)
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Settings · Muse · SDK token: replace or remove the token once one is saved.
+private struct MuseTokenScreen: View {
     let model: MuseScreenModel
-    var onSaved: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
     @State private var token = ""
 
     var body: some View {
-        HStack(spacing: 10) {
-            SecureField(Copy.Muse.tokenPlaceholder, text: $token)
-                .font(AppFont.callout)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.done)
-                .onSubmit(save)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
-            PasteButton(payloadType: String.self) { strings in
-                if let first = strings.first { token = first }
+        SettingsScroll {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        SecureField(Copy.Muse.tokenPlaceholder, text: $token)
+                            .font(AppFont.callout)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.done)
+                            .onSubmit(save)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+                        PasteButton(payloadType: String.self) { strings in
+                            if let first = strings.first { token = first }
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonBorderShape(.capsule)
+                    }
+                    Link(destination: SettingsMuseScreen.tokenPage) {
+                        HStack(spacing: 4) {
+                            Text(Copy.Muse.tokenGet)
+                            Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold))
+                        }
+                        .font(AppFont.subBody)
+                        .foregroundStyle(Tokens.tint)
+                    }
+                    Button(Copy.Muse.tokenSave, action: save)
+                        .buttonStyle(.inCardFilled)
+                        .disabled(trimmed.isEmpty)
+                        .opacity(trimmed.isEmpty ? 0.5 : 1)
+                        .padding(.top, 2)
+                }
             }
-            .labelStyle(.iconOnly)
-            .buttonBorderShape(.capsule)
+            ListCard {
+                DestructiveRow(title: Copy.Muse.tokenRemove) {
+                    model.setToken(nil)
+                    dismiss()
+                }
+            }
+            SettingsFooter(text: Copy.Muse.tokenFooter)
         }
-        TintActionRow(title: Copy.Muse.tokenSave, action: save)
-            .disabled(trimmed.isEmpty)
-            .opacity(trimmed.isEmpty ? 0.5 : 1)
+        .navigationTitle(Copy.Muse.tokenTitle)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var trimmed: String { token.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -298,45 +443,23 @@ private struct MuseTokenEntry: View {
         guard !trimmed.isEmpty else { return }
         model.setToken(trimmed)
         token = ""
-        onSaved()
+        dismiss()
     }
 }
 
-/// Settings · Muse · SDK token: replace or remove the token once one is saved.
-private struct MuseTokenScreen: View {
-    let model: MuseScreenModel
-    @Environment(\.dismiss) private var dismiss
+/// The Muse row on the Settings root, saying "Paired" once it is.
+struct MuseSettingsRow: View {
+    @State private var model = MuseScreenModel()
 
     var body: some View {
-        SettingsScroll {
-            ListCard {
-                MuseTokenEntry(model: model) { dismiss() }
-                Link(destination: SettingsMuseScreen.tokenPage) {
-                    HStack {
-                        Text(Copy.Muse.tokenGet)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Tokens.tint)
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Tokens.meta)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            if model.hasToken {
-                ListCard {
-                    DestructiveRow(title: Copy.Muse.tokenRemove) {
-                        model.setToken(nil)
-                        dismiss()
-                    }
-                }
-            }
-            SettingsFooter(text: Copy.Muse.tokenFooter)
+        SettingsPushRow(
+            title: Copy.Muse.rowTitle,
+            value: model.isPaired ? Copy.Muse.rowPaired : Copy.Muse.rowNotSetUp,
+            valueColor: model.isPaired ? Tokens.good : Tokens.meta
+        ) {
+            SettingsMuseScreen()
         }
-        .navigationTitle(Copy.Muse.tokenTitle)
-        .navigationBarTitleDisplayMode(.inline)
+        .task { await model.followPairedName() }
     }
 }
 
@@ -375,6 +498,7 @@ final class MuseScreenModel {
             switch args[index + 1] {
             case "notsetup": hasToken = false
             case "notpaired": break
+            case "starting": pairing = .starting
             case "confirm": pairing = .confirmOnWatch
             case "waiting": apply(.waitingForMuse(gadgetName: name, secondsLeft: 243))
             case "connected": pairing = .museConnected(gadgetName: name)

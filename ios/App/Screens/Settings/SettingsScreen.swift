@@ -209,6 +209,7 @@ struct SettingsScreen: View {
                 value: transcriptionPreview,
                 route: .settings(.transcription)
             )
+            MuseSettingsRow()
             SettingsNavRow(
                 title: Copy.Settings.Root.storage,
                 value: storagePreview,
@@ -233,7 +234,6 @@ struct SettingsScreen: View {
             if SettingsFirmwareScreen.isReachable {
                 SettingsPushRow(title: Copy.Firmware.rowTitle) { SettingsFirmwareScreen() }
             }
-            SettingsPushRow(title: Copy.Muse.rowTitle) { SettingsMuseScreen() }
             SettingsNavRow(title: Copy.Settings.Root.diagnostics, route: .settings(.diagnostics))
         }
     }
