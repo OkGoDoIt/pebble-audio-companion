@@ -73,9 +73,11 @@ muse.ai/privacy; nothing has run on a device yet):
   prompt on the watch (see section 4); Allow makes the source Allowed, Don't Allow makes it Off,
   Not Now refuses only that call. Nothing is read or sent except while a question asked on the
   watch is open. Health comes from the watch's own activity data, not from Apple Health.
-  Calendar and Reminders also need iOS's permission, which the app asks for on the Muse screen
-  when the person first sets either source to Ask first or Allowed, never in the middle of a
-  question (a background app cannot show that prompt).
+  Calendar and Reminders also need iOS's own permission. The app never asks for it up front
+  (Roger, 2026-10-21): only when a Muse question needs it, or when the person sets Calendar or
+  Reminders to Allowed themselves in Settings › Muse (the app then asks at once). When a question
+  needs it and the app lacks it, the watch says so and the request waits for the next time the
+  app is opened (a background app cannot show the iOS prompt); see section 4.
 - **Planned, not built:** drawing an image from a URL Muse chose (the phone would fetch it).
 
 ## 2. Inputs
@@ -167,7 +169,37 @@ Ask first once paired: nothing is read until the person allows it on the watch, 
 Muse asks. The watch prompt, word for word: "Let Muse read your <calendar | reminders |
 follow-ups | health data>? What it reads goes to Meta." For conversations: "Let Muse read your
 conversations? What it reads, including what others said, goes to Meta." Buttons: Allow, Not Now,
-Don't Allow. Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
+Don't Allow.
+
+When the person allows Calendar or Reminders on the watch but iOS has not given the app access
+yet, Muse's call answers that access is still needed, and the watch shows, word for word: "Open
+Pebble Audio on your iPhone to give it access to your <calendar | reminders>." The next time the
+app comes to the foreground, it shows the iOS permission prompt for that source (once; Not Now on
+the watch never queues one). If iOS access was refused before, the watch says instead: "Pebble
+Audio can't read your <calendar | reminders>. You can allow it in iPhone Settings." and the
+source's row in Settings › Muse reads "No access in iPhone Settings" with an Open Settings button.
+Setting Calendar or Reminders to Allowed by hand in Settings › Muse asks iOS at that moment;
+leaving it at Ask first never does.
+
+**What Muse is told** (Roger, 2026-10-21). While the person has not answered yet (the watch
+prompt, or the iOS prompt after "Open Pebble Audio on your iPhone…"), Muse's call stays open
+and gets no reply; when the person answers, the call goes on with the read or ends with the
+answer below. Only if no answer comes before a time limit a little under Muse's own limit for
+a call does it end as "not answered" (Muse gives each data call 180 s, its `timeout_ms`; a held
+call ends at 170 s, `MuseTools.holdLimitSeconds`; the question's answer deadline is 240 s, so a
+held call never closes the question first). Every ending tells Muse plainly what happened, so it
+neither retries what was refused nor gives up on what is only pending:
+- Don't Allow on the watch, or the source is Off: denied. "The person does not allow Muse to
+  read their <source>. Do not ask for it again." (An Off source is also never registered.)
+- Not Now on the watch: declined for now. "The person said not now. Do not ask for their
+  <source> again in this conversation."
+- iOS access refused: no system access. "Pebble Audio has no access to the person's <source>
+  in iPhone Settings. They can allow it there. Do not ask again until they do."
+- No answer in time: not answered. "The person has not answered yet. You can ask again
+  later."
+These are outcomes only, like D7b: no data goes with them.
+
+Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
 "Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
 conversations row's subtitle "Includes what other people said."), with the footer "Muse reads
 these only while answering a question you asked on your watch. What it reads goes to Meta." Turning a destination off says what
