@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Skip to the next track",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "0404",
+    "request_token": 78
+  },
+  "name": "watch_action_music_next",
+  "size": 7
+}

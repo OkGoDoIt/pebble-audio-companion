@@ -160,8 +160,11 @@ def watch_action(token, action_id, flags, payload: bytes) -> bytes:
     return struct.pack("<BBBBB", MSG_WATCH_ACTION, token, action_id, flags, len(payload)) + payload
 
 
-def watch_action_result(action_id, status, value) -> bytes:
-    return struct.pack("<BBBB", MSG_WATCH_ACTION_RESULT, action_id, status, value)
+def watch_action_result(action_id, status, value, text: bytes = b"") -> bytes:
+    out = struct.pack("<BBBB", MSG_WATCH_ACTION_RESULT, action_id, status, value)
+    if text:
+        out += struct.pack("<B", len(text)) + text
+    return out
 
 
 def wa_str(text: str) -> bytes:
@@ -175,6 +178,30 @@ def wa_timer(seconds, label) -> bytes:
 
 def wa_alarm(hour, minute, label) -> bytes:
     return struct.pack("<BBB", 2, hour, minute) + wa_str(label)
+
+
+def wa_music(command) -> bytes:
+    return struct.pack("<BB", 4, command)
+
+
+def wa_quiet_time(on, minutes) -> bytes:
+    return struct.pack("<BBH", 5, 1 if on else 0, minutes)
+
+
+def wa_launch_app(name) -> bytes:
+    return struct.pack("<B", 6) + wa_str(name)
+
+
+def wa_find_watch(seconds) -> bytes:
+    return struct.pack("<BB", 7, seconds)
+
+
+def wa_health(metric, days) -> bytes:
+    return struct.pack("<BBB", 8, metric, days)
+
+
+def wa_notice(text) -> bytes:
+    return struct.pack("<B", 9) + wa_str(text)
 
 
 def wa_choose(timeout_s, question, options) -> bytes:
@@ -688,6 +715,27 @@ def build_fixtures():
         {"request_token": 0x4B, "action_id": 5, "flags": 0, "payload_hex": rest.hex()},
         "Last write of the same choice: same action id, MORE clear",
     )
+    for name, payload, note in [
+        ("watch_action_music_next", wa_music(4), "Skip to the next track"),
+        ("watch_action_music_now_playing", wa_music(8), "Ask what is playing; nothing changes"),
+        ("watch_action_quiet_time", wa_quiet_time(True, 60), "Quiet Time on for an hour"),
+        ("watch_action_launch_app", wa_launch_app("Workout"), "Open the watch app named Workout"),
+        ("watch_action_find_watch", wa_find_watch(10), "Buzz and light up for ten seconds"),
+        ("watch_action_health_steps", wa_health(1, 7), "Step counts for today and the six days before"),
+        (
+            "watch_action_notice",
+            wa_notice("Open Pebble Audio on your iPhone to give it access to your calendar."),
+            "A message from the receiver itself, shown on the watch",
+        ),
+    ]:
+        add(
+            name,
+            watch_action(0x4E, 7, 0, payload),
+            "control_in",
+            "parse",
+            {"request_token": 0x4E, "action_id": 7, "flags": 0, "payload_hex": payload.hex()},
+            note,
+        )
     add(
         "watch_action_id_zero",
         watch_action(0x4C, 0, 0, timer),
@@ -907,6 +955,23 @@ def build_fixtures():
         "parse",
         {"action_id": 5, "status": 2, "value": 0},
         "The wearer backed out of the choice",
+    )
+    now_playing = "Clair de lune\nDebussy".encode("utf-8")
+    add(
+        "watch_action_result_text",
+        watch_action_result(6, 1, 0, now_playing),
+        "control_out",
+        "parse",
+        {"action_id": 6, "status": 1, "value": 0, "text": now_playing.decode("utf-8")},
+        "Done, with text: what is playing (title, then artist)",
+    )
+    add(
+        "watch_action_result_text_truncated",
+        watch_action_result(6, 1, 0, now_playing)[:-3],
+        "control_out",
+        "reject",
+        {},
+        "WATCH_ACTION_RESULT text length overruns the bytes present",
     )
     add(
         "muse_setup_rx_get_device_info",

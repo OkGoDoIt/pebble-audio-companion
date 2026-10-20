@@ -191,11 +191,12 @@ class GoldenFixtureTest {
             "frame_count" to message.frameCount.toString(),
             "max_seconds" to message.maxSeconds.toString(),
         )
-        is WatchActionResult -> mapOf(
-            "action_id" to message.actionId.toString(),
-            "status" to message.statusRaw.toString(),
-            "value" to message.value.toString(),
-        )
+        is WatchActionResult -> buildMap {
+            put("action_id", message.actionId.toString())
+            put("status", message.statusRaw.toString())
+            put("value", message.value.toString())
+            message.textString?.let { put("text", it) }
+        }
         is PttAudio -> mapOf(
             "turn" to message.turn.toString(),
             "first_frame" to message.firstFrame.toString(),

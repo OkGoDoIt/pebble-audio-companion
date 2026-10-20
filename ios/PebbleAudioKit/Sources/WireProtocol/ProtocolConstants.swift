@@ -60,6 +60,11 @@ public enum ProtocolConstants {
     public static let watchActionOptionMaxBytes: Int = 48
     public static let watchActionMinOptions: Int = 2
     public static let watchActionMaxOptions: Int = 6
+    public static let watchActionResultTextMaxBytes: Int = 160
+    public static let watchActionAppNameMaxBytes: Int = 48
+    public static let watchActionHealthMaxDays: Int = 7
+    public static let watchActionFindMaxSeconds: Int = 30
+    public static let watchActionNoticeMaxBytes: Int = 120
 
     // MUSE_SETUP_RX flags (Section 4.3).
     public static let museSetupRxFlagMore: UInt8 = 1

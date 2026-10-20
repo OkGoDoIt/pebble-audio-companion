@@ -219,11 +219,13 @@ import Testing
                 "max_seconds": String(m.maxSeconds),
             ]
         case let m as WatchActionResult:
-            return [
+            var fields = [
                 "action_id": String(m.actionId),
                 "status": String(m.statusRaw),
                 "value": String(m.value),
             ]
+            if let text = m.textString { fields["text"] = text }
+            return fields
         case let m as PttAudio:
             return [
                 "turn": String(m.turn),

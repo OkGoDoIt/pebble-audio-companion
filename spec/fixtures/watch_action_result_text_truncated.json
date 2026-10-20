@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "WATCH_ACTION_RESULT text length overruns the bytes present",
+  "expect": "reject",
+  "fields": {},
+  "name": "watch_action_result_text_truncated",
+  "size": 23
+}

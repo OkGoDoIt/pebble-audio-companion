@@ -730,16 +730,33 @@ class WatchAction(
     override fun toString(): String = "WatchAction(id=$actionId, flags=$flags, ${payload.size} bytes)"
 }
 
-/** How a watch action ended: 1 done, 2 declined, 3 timed out, 4 failed, 5 unsupported. */
-data class WatchActionResult(
+/**
+ * How a watch action ended: 1 done, 2 declined, 3 timed out, 4 failed, 5 unsupported. `text` is
+ * what is playing, the app that was opened, or health numbers (Section 4.5); empty for none.
+ */
+class WatchActionResult(
     val actionId: Int,
     val statusRaw: Int,
     val value: Int,
+    val text: ByteArray = ByteArray(0),
 ) : ControlOutMessage {
-    override fun encode(): ByteArray = WireWriter(4)
-        .u8(MessageId.WATCH_ACTION_RESULT)
-        .u8(actionId)
-        .u8(statusRaw)
-        .u8(value)
-        .toByteArray()
+    override fun encode(): ByteArray {
+        val w = WireWriter(5 + text.size)
+            .u8(MessageId.WATCH_ACTION_RESULT)
+            .u8(actionId)
+            .u8(statusRaw)
+            .u8(value)
+        if (text.isNotEmpty()) w.u8(text.size).bytes(text)
+        return w.toByteArray()
+    }
+
+    val textString: String? get() = if (text.isEmpty()) null else text.decodeToString()
+
+    override fun equals(other: Any?): Boolean = other is WatchActionResult &&
+        other.actionId == actionId && other.statusRaw == statusRaw && other.value == value &&
+        other.text.contentEquals(text)
+
+    override fun hashCode(): Int = ((actionId * 31 + statusRaw) * 31 + value) * 31 + text.contentHashCode()
+
+    override fun toString(): String = "WatchActionResult(id=$actionId, status=$statusRaw, value=$value, ${text.size} text bytes)"
 }

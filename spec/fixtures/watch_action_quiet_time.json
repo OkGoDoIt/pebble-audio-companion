@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Quiet Time on for an hour",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "05013c00",
+    "request_token": 78
+  },
+  "name": "watch_action_quiet_time",
+  "size": 9
+}

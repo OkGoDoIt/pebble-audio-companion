@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Ask what is playing; nothing changes",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "0408",
+    "request_token": 78
+  },
+  "name": "watch_action_music_now_playing",
+  "size": 7
+}

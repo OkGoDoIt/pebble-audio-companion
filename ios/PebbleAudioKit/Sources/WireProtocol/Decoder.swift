@@ -222,10 +222,18 @@ public enum AudioCompanionProtocol {
                 return PttEvent(turn: r.u8(), eventRaw: UInt8(r.u8()), detail: UInt8(r.u8()), frameCount: r.u16(), maxSeconds: r.u16())
             }
         case MessageId.watchActionResult:
-            return sized(bytes, 4) { r in
-                _ = r.u8()
-                return WatchActionResult(actionId: r.u8(), statusRaw: UInt8(r.u8()), value: r.u8())
+            guard bytes.count >= 4 else {
+                return .malformed(reason: "WATCH_ACTION_RESULT too short: \(bytes.count) < 4")
             }
+            var text: [UInt8] = []
+            if bytes.count > 4 {
+                let length = Int(bytes[4])
+                guard bytes.count >= 5 + length else {
+                    return .malformed(reason: "WATCH_ACTION_RESULT text \(length) does not fit \(bytes.count) bytes")
+                }
+                text = Array(bytes[5..<(5 + length)])
+            }
+            return .decoded(WatchActionResult(actionId: Int(bytes[1]), statusRaw: bytes[2], value: Int(bytes[3]), text: text))
         case MessageId.museSetupEvent:
             return sized(bytes, 7) { r in
                 _ = r.u8()

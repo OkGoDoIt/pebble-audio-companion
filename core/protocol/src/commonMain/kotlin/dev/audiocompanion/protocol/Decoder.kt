@@ -215,9 +215,24 @@ object AudioCompanionProtocol {
                 r.u8()
                 PttEvent(turn = r.u8(), eventRaw = r.u8(), detail = r.u8(), frameCount = r.u16(), maxSeconds = r.u16())
             }
-            MessageId.WATCH_ACTION_RESULT -> sized(bytes, 4) { r ->
-                r.u8()
-                WatchActionResult(actionId = r.u8(), statusRaw = r.u8(), value = r.u8())
+            MessageId.WATCH_ACTION_RESULT -> {
+                if (bytes.size < 4) return DecodeResult.Malformed("WATCH_ACTION_RESULT too short: ${bytes.size} < 4")
+                var text = ByteArray(0)
+                if (bytes.size > 4) {
+                    val length = bytes[4].toInt() and 0xFF
+                    if (bytes.size < 5 + length) {
+                        return DecodeResult.Malformed("WATCH_ACTION_RESULT text $length does not fit ${bytes.size} bytes")
+                    }
+                    text = bytes.copyOfRange(5, 5 + length)
+                }
+                DecodeResult.Decoded(
+                    WatchActionResult(
+                        actionId = bytes[1].toInt() and 0xFF,
+                        statusRaw = bytes[2].toInt() and 0xFF,
+                        value = bytes[3].toInt() and 0xFF,
+                        text = text,
+                    )
+                )
             }
             MessageId.MUSE_SETUP_EVENT -> sized(bytes, 7) { r ->
                 r.u8()

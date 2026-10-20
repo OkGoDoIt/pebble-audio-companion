@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "Done, with text: what is playing (title, then artist)",
+  "expect": "parse",
+  "fields": {
+    "action_id": 6,
+    "status": 1,
+    "text": "Clair de lune\nDebussy",
+    "value": 0
+  },
+  "name": "watch_action_result_text",
+  "size": 26
+}

@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Open the watch app named Workout",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "0607576f726b6f7574",
+    "request_token": 78
+  },
+  "name": "watch_action_launch_app",
+  "size": 14
+}

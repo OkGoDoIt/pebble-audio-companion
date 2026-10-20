@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Buzz and light up for ten seconds",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "070a",
+    "request_token": 78
+  },
+  "name": "watch_action_find_watch",
+  "size": 7
+}

@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Step counts for today and the six days before",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "080107",
+    "request_token": 78
+  },
+  "name": "watch_action_health_steps",
+  "size": 8
+}

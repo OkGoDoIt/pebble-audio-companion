@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "A message from the receiver itself, shown on the watch",
+  "expect": "parse",
+  "fields": {
+    "action_id": 7,
+    "flags": 0,
+    "payload_hex": "09444f70656e20506562626c6520417564696f206f6e20796f7572206950686f6e6520746f20676976652069742061636365737320746f20796f75722063616c656e6461722e",
+    "request_token": 78
+  },
+  "name": "watch_action_notice",
+  "size": 75
+}

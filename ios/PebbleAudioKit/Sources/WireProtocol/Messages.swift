@@ -1056,11 +1056,47 @@ public enum WatchActionRequest: Equatable, Sendable {
     case timer(seconds: Int, label: String)
     case alarm(hour: Int, minute: Int, label: String)
     case choose(question: String, options: [String], timeoutSeconds: Int)
+    case music(MusicCommand)
+    /// `minutes` 0: until turned off.
+    case quietTime(on: Bool, minutes: Int)
+    case launchApp(name: String)
+    case findWatch(seconds: Int)
+    case health(HealthMetric, days: Int)
+    /// The receiver's own short message, shown on the watch.
+    case notice(String)
 
     public enum Kind: UInt8, Sendable {
         case timer = 1
         case alarm = 2
         case choose = 3
+        case music = 4
+        case quietTime = 5
+        case launchApp = 6
+        case findWatch = 7
+        case health = 8
+        case notice = 9
+    }
+
+    public enum MusicCommand: UInt8, Sendable, CaseIterable {
+        case play = 1
+        case pause = 2
+        case togglePlayPause = 3
+        case next = 4
+        case previous = 5
+        case volumeUp = 6
+        case volumeDown = 7
+        /// Changes nothing; the result says what is playing.
+        case nowPlaying = 8
+    }
+
+    public enum HealthMetric: UInt8, Sendable, CaseIterable {
+        case steps = 1
+        case distanceMeters = 2
+        case activeSeconds = 3
+        case activeKCalories = 4
+        case sleepSeconds = 5
+        /// The latest reading: the result is "bpm,age_seconds".
+        case heartRate = 6
     }
 
     public enum Invalid: Error, Equatable, Sendable {
@@ -1095,6 +1131,29 @@ public enum WatchActionRequest: Equatable, Sendable {
             for option in options {
                 Self.string(&w, option, max: ProtocolConstants.watchActionOptionMaxBytes)
             }
+        case .music(let command):
+            w.u8(Int(Kind.music.rawValue))
+            w.u8(Int(command.rawValue))
+        case .quietTime(let on, let minutes):
+            guard (0...0xFFFF).contains(minutes) else { throw .outOfRange("quiet time minutes \(minutes)") }
+            w.u8(Int(Kind.quietTime.rawValue))
+            w.u8(on ? 1 : 0)
+            w.u16(minutes)
+        case .launchApp(let name):
+            guard !name.isEmpty else { throw .outOfRange("empty app name") }
+            w.u8(Int(Kind.launchApp.rawValue))
+            Self.string(&w, name, max: ProtocolConstants.watchActionAppNameMaxBytes)
+        case .findWatch(let seconds):
+            w.u8(Int(Kind.findWatch.rawValue))
+            w.u8(min(max(seconds, 1), ProtocolConstants.watchActionFindMaxSeconds))
+        case .health(let metric, let days):
+            w.u8(Int(Kind.health.rawValue))
+            w.u8(Int(metric.rawValue))
+            w.u8(min(max(days, 1), ProtocolConstants.watchActionHealthMaxDays))
+        case .notice(let text):
+            guard !text.isEmpty else { throw .outOfRange("empty notice") }
+            w.u8(Int(Kind.notice.rawValue))
+            Self.string(&w, text, max: ProtocolConstants.watchActionNoticeMaxBytes)
         }
         return w.toBytes()
     }
@@ -1146,6 +1205,25 @@ public enum WatchActionRequest: Equatable, Sendable {
                 options.append(option)
             }
             return .choose(question: question, options: options, timeoutSeconds: timeout)
+        case .music:
+            guard r.remaining >= 1, let command = MusicCommand(rawValue: UInt8(r.u8())) else { return nil }
+            return .music(command)
+        case .quietTime:
+            guard r.remaining >= 3 else { return nil }
+            let on = r.u8() != 0
+            return .quietTime(on: on, minutes: r.u16())
+        case .launchApp:
+            guard let name = string(), !name.isEmpty else { return nil }
+            return .launchApp(name: name)
+        case .findWatch:
+            guard r.remaining >= 1 else { return nil }
+            return .findWatch(seconds: r.u8())
+        case .health:
+            guard r.remaining >= 2, let metric = HealthMetric(rawValue: UInt8(r.u8())) else { return nil }
+            return .health(metric, days: r.u8())
+        case .notice:
+            guard let text = string(), !text.isEmpty else { return nil }
+            return .notice(text)
         }
     }
 
@@ -1170,21 +1248,29 @@ public struct WatchActionResult: ControlOutMessage, Equatable {
     public let statusRaw: UInt8
     /// Choose: the chosen option's index.
     public let value: Int
+    /// What is playing, the app that was opened, or health numbers (Section 4.5); empty for none.
+    public let text: [UInt8]
 
-    public init(actionId: Int, statusRaw: UInt8, value: Int = 0) {
+    public init(actionId: Int, statusRaw: UInt8, value: Int = 0, text: [UInt8] = []) {
         self.actionId = actionId
         self.statusRaw = statusRaw
         self.value = value
+        self.text = text
     }
 
     public var status: WatchActionStatus? { WatchActionStatus(rawValue: statusRaw) }
+    public var textString: String? { text.isEmpty ? nil : String(decoding: text, as: UTF8.self) }
 
     public func encode() -> [UInt8] {
-        var w = WireWriter(initialCapacity: 4)
+        var w = WireWriter(initialCapacity: 5 + text.count)
         w.u8(MessageId.watchActionResult)
         w.u8(actionId)
         w.u8(Int(statusRaw))
         w.u8(value)
+        if !text.isEmpty {
+            w.u8(text.count)
+            w.bytes(text)
+        }
         return w.toBytes()
     }
 }
