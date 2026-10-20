@@ -129,18 +129,27 @@ jobs:
           printf '%s\n' "${GITHUB_SHA}" > artifacts/package/REVISION
           tar -C artifacts/package -czf "${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz" .
 
+      # The droplet's host keys are pinned in PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS (known_hosts lines, checked against
+      # /etc/ssh on the droplet). Without it the run falls back to trusting whatever key answers, and says so.
       - name: Configure SSH
         if: steps.deploy-config.outputs.configured == 'true'
         env:
           PEBBLEAUDIO_DEPLOY_SSH_KEY: ${{ secrets.PEBBLEAUDIO_DEPLOY_SSH_KEY }}
           PEBBLEAUDIO_DEPLOY_HOST: ${{ secrets.PEBBLEAUDIO_DEPLOY_HOST }}
           PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
+          PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS: ${{ secrets.PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "$PEBBLEAUDIO_DEPLOY_SSH_KEY" > ~/.ssh/pebbleaudio_deploy_key
           chmod 600 ~/.ssh/pebbleaudio_deploy_key
-          ssh-keyscan -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" "$PEBBLEAUDIO_DEPLOY_HOST" >> ~/.ssh/known_hosts
+          if [ -n "$PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS is not set, so this run trusts the droplet's host key on first use. See server/README.md."
+            ssh-keyscan -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" "$PEBBLEAUDIO_DEPLOY_HOST" > ~/.ssh/known_hosts
+          fi
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Upload artifact
         if: steps.deploy-config.outputs.configured == 'true'
@@ -149,7 +158,7 @@ jobs:
           PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
           PEBBLEAUDIO_DEPLOY_USER: ${{ secrets.PEBBLEAUDIO_DEPLOY_USER }}
         run: |
-          scp -i ~/.ssh/pebbleaudio_deploy_key -P "${PEBBLEAUDIO_DEPLOY_PORT:-22}" \
+          scp -i ~/.ssh/pebbleaudio_deploy_key -P "${PEBBLEAUDIO_DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes \
             "${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz" \
             "${PEBBLEAUDIO_DEPLOY_USER}@${PEBBLEAUDIO_DEPLOY_HOST}:/tmp/${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz"
 
@@ -160,6 +169,6 @@ jobs:
           PEBBLEAUDIO_DEPLOY_PORT: ${{ secrets.PEBBLEAUDIO_DEPLOY_PORT }}
           PEBBLEAUDIO_DEPLOY_USER: ${{ secrets.PEBBLEAUDIO_DEPLOY_USER }}
         run: |
-          ssh -i ~/.ssh/pebbleaudio_deploy_key -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" \
+          ssh -i ~/.ssh/pebbleaudio_deploy_key -p "${PEBBLEAUDIO_DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes \
             "${PEBBLEAUDIO_DEPLOY_USER}@${PEBBLEAUDIO_DEPLOY_HOST}" \
             "sudo /opt/pebbleaudio/deploy-pebbleaudio.sh '${GITHUB_SHA}' '/tmp/${ARTIFACT_NAME}-${GITHUB_SHA}.tar.gz'"
