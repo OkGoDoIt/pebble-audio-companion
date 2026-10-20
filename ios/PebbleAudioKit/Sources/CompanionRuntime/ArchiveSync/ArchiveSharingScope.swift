@@ -276,3 +276,26 @@ public struct ArchiveScopeCounts: Equatable, Sendable {
         return ArchiveScopeCounts(startsMs: starts)
     }
 }
+
+// MARK: - What an assistant read, named
+
+/// The titles of the conversations an assistant read (the server's AI-read log gives ids only).
+public enum ArchiveReadTitles {
+    public static func load(_ ids: [String], in database: AppDatabase) async throws -> [String: String] {
+        guard !ids.isEmpty else { return [:] }
+        return try await database.reader.read { d in
+            var out: [String: String] = [:]
+            for row in try Row.fetchAll(
+                d,
+                sql: """
+                    SELECT conversationId, title FROM annotations
+                    WHERE conversationId IN (\(databaseQuestionMarks(count: ids.count)))
+                    """,
+                arguments: StatementArguments(ids))
+            {
+                if let title: String = row["title"], !title.isEmpty { out[row["conversationId"]] = title }
+            }
+            return out
+        }
+    }
+}

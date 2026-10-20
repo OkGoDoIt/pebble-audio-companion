@@ -394,6 +394,19 @@ struct ChipFlow: Layout {
     }
 }
 
+// MARK: - Text with another app's labels in bold
+
+extension AttributedString {
+    /// `**Plugins**` in bold, and in `bold` color (the mockups' `b { color: label }`).
+    static func boldMarked(_ text: String, bold: Color = Tokens.label) -> AttributedString {
+        var out = (try? AttributedString(markdown: text)) ?? AttributedString(text)
+        for run in out.runs where run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
+            out[run.range].foregroundColor = bold
+        }
+        return out
+    }
+}
+
 // MARK: - Choices
 
 /// `.option`: a selectable card, radius 14, 1 pt border (2 pt tint when chosen), a radio on the

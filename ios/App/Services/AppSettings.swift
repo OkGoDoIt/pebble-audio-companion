@@ -233,39 +233,33 @@ final class AppSettings {
         }
     }
 
-    /// The Pebble Audio server this phone is linked to, its id there, and the sync switch.
+    /// The Pebble Audio server this phone is linked to, its id there, the sync switch, what the
+    /// person allowed (clips, edits, the sharing scope), and whether they finished choosing.
     /// Written by linking and unlinking (`linkArchiveServer` / `unlinkArchiveServer`, which also
-    /// own the token in the Keychain) and by the switch. One value, so a link is one mirror.
+    /// own the token in the Keychain), by Start Syncing, and by the switches. One value, so a
+    /// change is one mirror.
     var archiveSync: ArchiveSyncSettings {
         didSet {
             guard archiveSync != oldValue else { return }
             localDefaults.set(archiveSync.origin, forKey: Keys.archiveSyncOrigin)
             localDefaults.set(archiveSync.deviceId, forKey: Keys.archiveSyncDeviceId)
             localDefaults.set(archiveSync.enabled, forKey: Keys.archiveSyncEnabled)
+            localDefaults.set(
+                try? JSONEncoder().encode(archiveSync.preferences), forKey: Keys.archiveSyncPreferences)
+            localDefaults.set(archiveSync.setupComplete, forKey: Keys.archiveSyncSetupComplete)
             mirrorToRuntime()
         }
     }
 
-    /// The linked server's host while text is syncing to it, for the privacy copy.
-    var archiveServerHost: String? {
-        guard archiveSync.isLinked, archiveSync.enabled, let origin = archiveSync.origin else {
-            return nil
-        }
-        return URL(string: origin)?.host ?? origin
-    }
-
-    /// The linked server's host whether or not sync is paused: "Delete all" wipes it either way.
-    var archiveLinkedHost: String? {
-        guard archiveSync.isLinked, let origin = archiveSync.origin else { return nil }
-        return URL(string: origin)?.host ?? origin
-    }
-
     /// Stores a new link: the token in the Keychain first (a link with no token is unusable),
-    /// then the origin and device id. Returns false when the Keychain refused the token.
+    /// then the origin and device id. Nothing syncs yet: the person chooses what syncs next, and
+    /// Start Syncing turns it on. Returns false when the Keychain refused the token.
     @discardableResult
     func linkArchiveServer(origin: String, deviceId: String, token: String) -> Bool {
         guard keychain.set(token, for: .archiveDeviceToken) else { return false }
-        archiveSync = ArchiveSyncSettings(origin: origin, deviceId: deviceId, enabled: true)
+        archiveSync = ArchiveSyncSettings(
+            origin: origin, deviceId: deviceId, enabled: false,
+            preferences: ArchivePreferences(), setupComplete: false)
         return true
     }
 
@@ -530,7 +524,13 @@ final class AppSettings {
             origin: localDefaults.string(forKey: Keys.archiveSyncOrigin),
             deviceId: localDefaults.string(forKey: Keys.archiveSyncDeviceId),
             // Absent key => on: linking is the choice, the switch only pauses it.
-            enabled: (localDefaults.object(forKey: Keys.archiveSyncEnabled) as? Bool) ?? true)
+            enabled: (localDefaults.object(forKey: Keys.archiveSyncEnabled) as? Bool) ?? true,
+            // Absent => clips and edits off, everything in scope: the server's own defaults.
+            preferences: localDefaults.data(forKey: Keys.archiveSyncPreferences)
+                .flatMap { try? JSONDecoder().decode(ArchivePreferences.self, from: $0) }
+                ?? ArchivePreferences(),
+            // Absent => done: a link made before the Choose step existed already synced.
+            setupComplete: (localDefaults.object(forKey: Keys.archiveSyncSetupComplete) as? Bool) ?? true)
 
         captureIntent =
             defaults.string(forKey: Keys.captureIntent)
@@ -716,6 +716,8 @@ final class AppSettings {
         static let archiveSyncOrigin = "archive_sync_origin"
         static let archiveSyncDeviceId = "archive_sync_device_id"
         static let archiveSyncEnabled = "archive_sync_enabled"
+        static let archiveSyncPreferences = "archive_sync_preferences"
+        static let archiveSyncSetupComplete = "archive_sync_setup_complete"
     }
 }
 

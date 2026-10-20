@@ -101,8 +101,8 @@ struct LiveMockConformanceTests {
         Pair(protocolName: "ConversationPlayback", live: "", mock: ""),
         Pair(protocolName: "HistoryDataSource", live: "LiveHistory", mock: "MockHistory"),
         Pair(
-            protocolName: "ArchiveServerSource", live: "LiveArchiveServerSource",
-            mock: "MockArchiveServerSource"),
+            protocolName: "AssistantsSource", live: "LiveAssistantsSource",
+            mock: "MockAssistantsSource"),
     ]
 
     // MARK: - Exemptions
