@@ -8,8 +8,8 @@ extension Copy {
         static let rowPaired = "Paired"
 
         // Status card: a heading and at most one line.
-        static let notSetUpTitle = "Muse isn't set up on this phone"
-        static let notSetUpLine = "It needs a one-time developer setup in Diagnostics."
+        static let notSetUpTitle = "Not set up"
+        static let notSetUpLine = "Add your Muse SDK token, then pair your watch."
         static let notPairedTitle = "Not paired"
         static let notPairedLine = "Pair once, and your watch shows up in the Muse app."
         static let startingTitle = "Starting…"
@@ -56,15 +56,17 @@ extension Copy {
         static let trainingLine =
             "Meta may use your questions to improve its AI. You can turn that off in the Muse app."
 
-        // Developer setup, in Diagnostics: the one place a mechanism may be named.
-        static let developerTokenRow = "Muse SDK token"
-        static let developerTokenTitle = "Muse SDK token"
-        static let developerTokenPlaceholder = "SDK token"
-        static let developerTokenSave = "Save"
-        static let developerTokenRemove = "Remove Token"
-        static let developerTokenAdded = "Added"
-        static let developerTokenMissing = "Not added"
-        static let developerTokenFooter = "From gadgets.muse.ai. Stored in this phone's Keychain."
+        // SDK token: Muse pairs a gadget only with a token its developer made at gadgets.muse.ai.
+        // Named the way that site names it, so it can be found there.
+        static let tokenHeader = "SDK token"
+        static let tokenRow = "SDK token"
+        static let tokenTitle = "SDK token"
+        static let tokenPlaceholder = "Paste your SDK token"
+        static let tokenSave = "Save"
+        static let tokenGet = "Get a token at gadgets.muse.ai"
+        static let tokenAdded = "Added"
+        static let tokenRemove = "Remove Token"
+        static let tokenFooter = "Stored in this phone's Keychain."
 
         // Trying it
         static let askHeader = "Try it"

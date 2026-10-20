@@ -5,8 +5,9 @@ import SwiftUI
 /// Settings · Muse: pair the watch with Meta's Muse assistant, then try it.
 ///
 /// Laid out like every opt-in that sends something off the phone (docs/privacy-model.md §4):
-/// what it does, exactly what goes to Meta, then the button that starts it. The watch does the
-/// Bluetooth half of pairing; this screen walks through the steps one heading at a time.
+/// what it does, exactly what goes to Meta, then the button that starts it. Everything setting
+/// Muse up happens here, the SDK token included. The watch does the Bluetooth half of pairing;
+/// this screen walks through the steps one heading at a time.
 struct SettingsMuseScreen: View {
     @State private var model = MuseScreenModel()
     @State private var confirmForget = false
@@ -37,14 +38,45 @@ struct SettingsMuseScreen: View {
             askSection
             whatGoesCard
             forgetCard
-        } else {
+        } else if model.hasToken {
             stateCard
             whatGoesCard
-            if model.hasToken {
+            ListCard {
+                tokenRow
+                TintActionRow(title: pairTitle, action: model.pair)
+            }
+        } else {
+            // First step: the token, typed or pasted right here; then what pairing sends.
+            stateCard
+            VStack(alignment: .leading, spacing: Tokens.blockGap) {
+                SettingsSectionHeader(title: Copy.Muse.tokenHeader)
                 ListCard {
-                    TintActionRow(title: pairTitle, action: model.pair)
+                    MuseTokenEntry(model: model)
+                    Link(destination: Self.tokenPage) {
+                        HStack {
+                            Text(Copy.Muse.tokenGet)
+                                .font(AppFont.callout)
+                                .foregroundStyle(Tokens.tint)
+                            Spacer(minLength: 0)
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Tokens.meta)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+            whatGoesCard
+        }
+    }
+
+    /// Where Muse developers make SDK tokens.
+    static let tokenPage = URL(string: "https://gadgets.muse.ai/settings/sdk-tokens")!
+
+    private var tokenRow: some View {
+        SettingsPushRow(title: Copy.Muse.tokenRow, value: Copy.Muse.tokenAdded) {
+            MuseTokenScreen(model: model)
         }
     }
 
@@ -142,6 +174,7 @@ struct SettingsMuseScreen: View {
 
     private var forgetCard: some View {
         ListCard {
+            tokenRow
             DestructiveRow(title: Copy.Muse.forget) { confirmForget = true }
         }
         .confirmationDialog(Copy.Muse.forgetTitle, isPresented: $confirmForget, titleVisibility: .visible) {
@@ -230,49 +263,33 @@ struct SettingsMuseScreen: View {
     }
 }
 
-/// Settings · Diagnostics · Muse SDK token: the developer's token from gadgets.muse.ai, pasted
-/// once. It lives in Diagnostics because it names a mechanism (docs/privacy-model.md §5).
-struct MuseDeveloperTokenScreen: View {
-    @State private var model = MuseScreenModel()
-    @Environment(\.dismiss) private var dismiss
+/// The SDK token field: paste or type it, then Save. Used on the Muse screen before the first
+/// pairing and on the token screen to replace it.
+private struct MuseTokenEntry: View {
+    let model: MuseScreenModel
+    var onSaved: () -> Void = {}
     @State private var token = ""
 
     var body: some View {
-        SettingsScroll {
-            ListCard {
-                HStack(spacing: 10) {
-                    SecureField(Copy.Muse.developerTokenPlaceholder, text: $token)
-                        .font(AppFont.callout)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.done)
-                        .onSubmit(save)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
-                    PasteButton(payloadType: String.self) { strings in
-                        if let first = strings.first { token = first }
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.capsule)
-                }
-                TintActionRow(title: Copy.Muse.developerTokenSave, action: save)
-                    .disabled(trimmed.isEmpty)
-                    .opacity(trimmed.isEmpty ? 0.5 : 1)
+        HStack(spacing: 10) {
+            SecureField(Copy.Muse.tokenPlaceholder, text: $token)
+                .font(AppFont.callout)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .onSubmit(save)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.fieldFill))
+            PasteButton(payloadType: String.self) { strings in
+                if let first = strings.first { token = first }
             }
-            if model.hasToken {
-                ListCard {
-                    DestructiveRow(title: Copy.Muse.developerTokenRemove) {
-                        model.setToken(nil)
-                        dismiss()
-                    }
-                }
-            }
-            SettingsFooter(text: Copy.Muse.developerTokenFooter)
+            .labelStyle(.iconOnly)
+            .buttonBorderShape(.capsule)
         }
-        .navigationTitle(Copy.Muse.developerTokenTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await model.followToken() }
+        TintActionRow(title: Copy.Muse.tokenSave, action: save)
+            .disabled(trimmed.isEmpty)
+            .opacity(trimmed.isEmpty ? 0.5 : 1)
     }
 
     private var trimmed: String { token.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -281,7 +298,45 @@ struct MuseDeveloperTokenScreen: View {
         guard !trimmed.isEmpty else { return }
         model.setToken(trimmed)
         token = ""
-        dismiss()
+        onSaved()
+    }
+}
+
+/// Settings · Muse · SDK token: replace or remove the token once one is saved.
+private struct MuseTokenScreen: View {
+    let model: MuseScreenModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        SettingsScroll {
+            ListCard {
+                MuseTokenEntry(model: model) { dismiss() }
+                Link(destination: SettingsMuseScreen.tokenPage) {
+                    HStack {
+                        Text(Copy.Muse.tokenGet)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.tint)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Tokens.meta)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if model.hasToken {
+                ListCard {
+                    DestructiveRow(title: Copy.Muse.tokenRemove) {
+                        model.setToken(nil)
+                        dismiss()
+                    }
+                }
+            }
+            SettingsFooter(text: Copy.Muse.tokenFooter)
+        }
+        .navigationTitle(Copy.Muse.tokenTitle)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
