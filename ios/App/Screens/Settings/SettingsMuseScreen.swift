@@ -42,10 +42,68 @@ struct SettingsMuseScreen: View {
             whatGoesSection
             manageCard
         } else if !model.hasToken {
+            introCard(showingNeeds: true)
             tokenStepCard
         } else {
+            // Already started: what it is for stays, what it takes has been met.
+            introCard(showingNeeds: false)
             pairStepCard
             ListCard { tokenRow }
+        }
+    }
+
+    // MARK: Before setting up
+
+    /// What Muse is for and what setting it up takes, so someone can decide it is worth it
+    /// before starting. Shown until the watch is paired.
+    private func introCard(showingNeeds: Bool) -> some View {
+        let fromWatch = MuseGadgetService.asksFromWatch
+        return Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: fromWatch ? "applewatch.radiowaves.left.and.right" : "sparkles")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Tokens.tint)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Tokens.tint.opacity(0.12)))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(Copy.Muse.introTitle(fromWatch: fromWatch))
+                            .font(AppFont.headline)
+                            .foregroundStyle(Tokens.label)
+                        Text(Copy.Muse.introLine(fromWatch: fromWatch))
+                            .font(AppFont.subBody)
+                            .foregroundStyle(Tokens.secondaryBody)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if showingNeeds {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Copy.Muse.needsHeader)
+                            .font(AppFont.footnote.weight(.semibold))
+                            .foregroundStyle(Tokens.label)
+                        needRow("iphone", Copy.Muse.needsMuseApp)
+                        needRow("key", Copy.Muse.needsToken)
+                        needRow("clock", Copy.Muse.needsTime)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func needRow(_ symbol: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Tokens.meta)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(AppFont.footnote)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

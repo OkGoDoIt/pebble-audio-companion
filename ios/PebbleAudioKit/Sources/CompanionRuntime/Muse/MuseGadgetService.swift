@@ -52,6 +52,10 @@ public actor MuseGadgetService {
     /// How long the watch keeps a window open.
     public static let windowSeconds = 300
 
+    /// Whether questions can be asked from the watch (push-to-talk). False until that ships; the
+    /// setup screen's description and the privacy model's `MuseState.spokenQuestions` follow it.
+    public static let asksFromWatch = false
+
     /// The version this gadget reports to Muse. Fixed, so nothing about the watch or its firmware
     /// goes to Meta (docs/privacy-model.md, D7).
     public static let gadgetVersion = "1.0.0"

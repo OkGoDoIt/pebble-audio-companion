@@ -10,6 +10,21 @@ extension Copy {
 
         static func step(_ number: Int, of total: Int) -> String { "Step \(number) of \(total)" }
 
+        // Before setting up: what it is for, and what it takes, so it is clear it's worth it.
+        // The watch wording appears only once asking from the watch exists.
+        static func introTitle(fromWatch: Bool) -> String {
+            fromWatch ? "Ask Muse from your watch" : "Ask Muse from Pebble Audio"
+        }
+        static func introLine(fromWatch: Bool) -> String {
+            fromWatch
+                ? "Muse is Meta's AI assistant. Pair once, then hold a button on your watch, ask out loud, and read the answer on your wrist."
+                : "Muse is Meta's AI assistant. Pair your watch once, then type a question here and get Muse's answer."
+        }
+        static let needsHeader = "What you need"
+        static let needsMuseApp = "The Muse app and your Muse account"
+        static let needsToken = "An SDK token from gadgets.muse.ai"
+        static let needsTime = "A few minutes, with your watch nearby"
+
         // Step 1: the SDK token.
         static let tokenStepTitle = "Add your SDK token"
         static let tokenStepLine = "Make one at gadgets.muse.ai, then paste it here."
