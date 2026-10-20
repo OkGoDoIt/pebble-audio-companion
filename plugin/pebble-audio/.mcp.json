@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pebble-audio": {
+      "type": "http",
+      "url": "https://pebbleaudio.okgodoit.com/mcp"
+    }
+  }
+}
