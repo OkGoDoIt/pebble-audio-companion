@@ -325,12 +325,17 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         return try JSONDecoder().decode(SonioxTranscript.self, from: response.body)
     }
 
-    private func mapTranscript(_ transcript: SonioxTranscript) throws -> TranscriptionResult {
-        let spokenTokens = (transcript.tokens ?? []).filter {
-            $0.isAudioEvent != true && !($0.text ?? "").isBlank
-        }
+    func mapTranscript(_ transcript: SonioxTranscript) throws -> TranscriptionResult {
+        // EVERY token, whitespace included. Soniox sends some spaces as tokens of their own —
+        // most often the one after a comma (", right") and between words of a script it does
+        // not separate itself — and this used to drop every blank token before grouping, which
+        // glued the next word onto the one before it in 765 of the 1,176 transcripts of a real
+        // backup (5,140 joins), while Soniox's own `text` kept them. `groupIntoSegments` keeps
+        // the space and lets nothing else about a blank token count.
+        let tokens = (transcript.tokens ?? []).filter { !($0.text ?? "").isEmpty }
+        let spokenTokens = tokens.filter { $0.isAudioEvent != true && !($0.text ?? "").isBlank }
         let text = transcript.text?.trimmed.nonBlank
-            ?? spokenTokens.map { $0.text ?? "" }.joined().trimmed
+            ?? Self.joinedText(tokens).trimmed
         if text.isBlank {
             throw TranscriptionError.noSpeechDetected("Soniox returned no speech")
         }
@@ -338,7 +343,9 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
             text: text,
             providerId: id,
             modelUsed: model(),
-            segments: groupIntoSegments(spokenTokens),
+            segments: groupIntoSegments(tokens),
+            // Words stay the spoken tokens: the transcript's word aligner walks letters, not
+            // spaces, so the spacing above moves no highlight.
             words: spokenTokens.compactMap { token in
                 let cleaned = (token.text ?? "").trimmed
                 if cleaned.isEmpty { return nil }
@@ -352,11 +359,32 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         )
     }
 
+    /// A token that is a word (or part of one): not blank, not an audio event.
+    static func isSpoken(_ token: SonioxBatchToken) -> Bool {
+        token.isAudioEvent != true && !(token.text ?? "").isBlank
+    }
+
+    /// What a token adds to the text: its own text, or for an audio event only the space
+    /// around it, so leaving the event out cannot join the words either side of it.
+    static func spokenText(_ token: SonioxBatchToken) -> String {
+        let text = token.text ?? ""
+        guard token.isAudioEvent == true else { return text }
+        return text.contains(where: \.isWhitespace) ? " " : ""
+    }
+
+    static func joinedText(_ tokens: [SonioxBatchToken]) -> String {
+        tokens.map(spokenText).joined()
+    }
+
     /// Groups consecutive tokens into segments, breaking on a speaker change or a silence gap.
     /// Internal rather than private so the per-turn confidence summary can be asserted directly
     /// against a real response body, without standing up the four-request control plane.
+    ///
+    /// Takes every token. Only spoken ones decide a segment's speaker, timing, boundaries and
+    /// confidence; a blank token or an audio event adds its space to the segment it falls in
+    /// and nothing else.
     func groupIntoSegments(_ tokens: [SonioxBatchToken]) -> [TranscriptSegment] {
-        guard let first = tokens.first else { return [] }
+        guard let first = tokens.first(where: Self.isSpoken) else { return [] }
         var segments: [TranscriptSegment] = []
         var current = ""
         var start = first.startMs ?? 0
@@ -385,6 +413,11 @@ public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUplo
         }
 
         for token in tokens {
+            guard Self.isSpoken(token) else {
+                // A segment's leading and trailing space is trimmed anyway.
+                if !current.isEmpty { current += Self.spokenText(token) }
+                continue
+            }
             let tokenStart = token.startMs ?? 0
             let speakerChanged = token.speaker != speaker
             let longGap = tokenStart - prevEnd > Self.segmentGapMs
