@@ -75,11 +75,13 @@ struct PrivacyInputs: Equatable {
     var aiDestination: String?              // D2, nil when local only
     var iCloudAgeDays: Int?                 // D3
     var systemSearch: SystemSearchVisibility // D4
-    var server: ServerState?                // D5, nil when not linked or sync paused
+    var server: ServerState?                // D5, nil only when not linked (paused is a state, not nil)
     var museState: MuseState?               // D7, nil when not paired
 }
 struct ServerState: Equatable {
     var host: String
+    var paused: Bool                        // Sync off; the server keeps what it has and assistants can still read it
+    var scope: SharingScope                 // all, since(date), lastDays(n)
     var clipsAllowed: Bool                  // D5a
     var editsAllowed: Bool                  // D5b
     var assistants: [Assistant]             // D6, from GET /sync/status `access`, cached with its fetch time
@@ -108,10 +110,13 @@ sentence.
    "Meta may use your questions to improve its AI. You can turn that off in the Muse app." Before
    push-to-talk ships (spokenQuestions false), the first sentence is "The questions you ask Muse
    go to Meta as text." 
-   - more than one: "Your data goes to N places you chose", neutral dot, and the line "Each is listed below. Nothing else leaves this phone."
-2. **Where it goes**, one row per active destination, in the order of the table, each row: who
-   receives it, what goes (Audio, Text, Clips when asked, Your questions), and a chevron to the
-   screen that controls it. Inactive destinations are not listed.
+   - more than one: "Your data goes to N places you chose", neutral dot, and the line "Each is listed below." Never "Nothing else leaves this phone": the bundled third-party speech engine carries its own network stack, so that blanket claim cannot be verified from source (the reason `Copy+PrivacyStance.swift` has always left it out). N counts every destination, including each assistant that can read the server.
+   - sync paused but the server still holds text: the server is still a destination (`ServerState.paused == true`). Its row reads "Sync is paused" and the stance never says "Everything stays on this phone" while anything sits on the server or any assistant can read it.
+2. **Where it goes**, one row per destination the PHONE sends to (D1, D2, D3, D5, D7), in the
+   order of the table, each row: who receives it, what goes (Audio, Text, Clips when asked, Your
+   questions), and a chevron to the screen that controls it. Inactive destinations are not listed.
+   D6 (assistants reading the server) is not repeated here; it appears once, under "Who can read
+   your archive", and still counts in the headline's N.
 3. **Who can read your archive**, only when D5 is on: each assistant by name with what it may do
    ("Can read", "Can read and add"), when it last read, and a row to manage them. With D5 on and
    no assistant: "No assistant is connected yet." The list says when it was last fetched if the
