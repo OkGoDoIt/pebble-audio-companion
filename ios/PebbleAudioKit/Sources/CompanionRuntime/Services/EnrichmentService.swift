@@ -480,7 +480,8 @@ public actor EnrichmentService {
             // re-donation a different document to the change gate, and told Spotlight that a
             // week-old conversation was new. The foreground pass already donated it this way.
             createdAtMs: conversation.startMs,
-            systemIndex: !(conversation.isLive || conversation.isProvisional)
+            systemIndex: !(conversation.isLive || conversation.isProvisional),
+            timeZoneID: conversation.timeZoneID
         )
     }
 

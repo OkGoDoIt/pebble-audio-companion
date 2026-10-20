@@ -37,6 +37,10 @@ public struct SpotlightDonation: Equatable, Sendable {
     /// When a conversation ended. Without it the entity built from a donation had ended the
     /// moment it began: zero minutes long, modified at its start.
     public var endDateMs: Int64?
+    /// The zone a conversation was RECORDED in. The entity built from the donation files the
+    /// conversation under its day and reads its times in this zone, as the Library does; without
+    /// it a conversation from a trip landed on the phone's current day.
+    public var timeZoneID: String? = nil
 
     // A follow-up's state, so the entity attached to its item says what the list says. Without
     // these a done, dated, flagged follow-up resolved through Spotlight read as open and undated.
@@ -220,13 +224,16 @@ public final class SpotlightDonator: Sendable {
         /// search still gets it. A live conversation is still growing: Spotlight and Siri get it
         /// once it has closed, not a new partial copy at every provisional refresh.
         public var systemIndex: Bool
+        /// The recorded zone (`SpotlightDonation.timeZoneID`).
+        public var timeZoneID: String?
 
         public init(
             conversationId: String, title: String?, summary: String? = nil, tags: [String] = [],
             people: [String] = [], fullTranscript: String? = nil, startDateMs: Int64? = nil,
             endDateMs: Int64? = nil, createdAtMs: Int64, excluded: Bool = false,
-            systemIndex: Bool = true
+            systemIndex: Bool = true, timeZoneID: String? = nil
         ) {
+            self.timeZoneID = timeZoneID
             self.conversationId = conversationId
             self.title = title
             self.summary = summary
@@ -259,16 +266,16 @@ public final class SpotlightDonator: Sendable {
                 excluded: input.excluded
             )
         }
-        let people = Dictionary(
-            batch.map { ($0.conversationId, $0.people) }, uniquingKeysWith: { _, last in last })
-        let ends = Dictionary(
-            batch.map { ($0.conversationId, $0.endDateMs) }, uniquingKeysWith: { _, last in last })
+        let inputs = Dictionary(
+            batch.map { ($0.conversationId, $0) }, uniquingKeysWith: { _, last in last })
         let heldBack = Set(batch.filter { !$0.systemIndex }.map(\.conversationId))
         try await donate(
             items,
             decorate: { item, donation in
-                donation.people = people[item.id] ?? []
-                donation.endDateMs = ends[item.id] ?? nil
+                guard let input = inputs[item.id] else { return }
+                donation.people = input.people
+                donation.endDateMs = input.endDateMs
+                donation.timeZoneID = input.timeZoneID
             },
             systemIndex: { !heldBack.contains($0.id) })
     }

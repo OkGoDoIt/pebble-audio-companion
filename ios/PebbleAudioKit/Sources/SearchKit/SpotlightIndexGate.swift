@@ -131,6 +131,7 @@ public struct SpotlightIndexGate: Equatable, Sendable {
         hash.add(UInt64(bitPattern: donation.contentCreationDateMs))
         hash.add(donation.startDateMs.map { UInt64(bitPattern: $0) })
         hash.add(donation.endDateMs.map { UInt64(bitPattern: $0) })
+        hash.add(donation.timeZoneID)
         hash.add(donation.dueDateMs.map { UInt64(bitPattern: $0) })
         hash.add(donation.completionDateMs.map { UInt64(bitPattern: $0) })
         hash.add(UInt64(donation.isCompleted ? 1 : 0) | UInt64(donation.isFlagged ? 2 : 0))

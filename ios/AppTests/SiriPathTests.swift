@@ -149,6 +149,37 @@ struct SiriPathTests {
         #expect(entity?.modificationDate == Date(timeIntervalSince1970: 1 + 25 * 60))
     }
 
+    /// The entity attached to a conversation's item is filed under the day it was RECORDED,
+    /// in the zone it was recorded in — not the phone's zone at indexing time.
+    @Test func anEntityFromADonationUsesTheRecordedZone() async throws {
+        // 06:00 UTC: mid-afternoon in Tokyo, the evening before in Los Angeles.
+        let startMs: Int64 = 1_792_476_000_000
+        let tokyoDay = LogicalDay.dateKey(forMs: startMs, timeZoneID: "Asia/Tokyo")
+        let laDay = LogicalDay.dateKey(forMs: startMs, timeZoneID: "America/Los_Angeles")
+        #expect(tokyoDay != laDay)
+
+        // The zone travels from the pipeline's donation onto the item.
+        let system = FakeSystemIndex()
+        try await SpotlightDonator(index: FakeAppIndex(), spotlight: system).donateConversations([
+            .init(
+                conversationId: "c1", title: "Ramen with Ken", startDateMs: startMs,
+                endDateMs: startMs + 60_000, createdAtMs: startMs, timeZoneID: "Asia/Tokyo")
+        ])
+        let donation = try #require(system.donateCalls.first?.first)
+        #expect(donation.timeZoneID == "Asia/Tokyo")
+
+        guard #available(iOS 27, *) else { return }
+        #expect(ConversationEntity(donation: donation, visibility: .full)?.folder?.id == tokyoDay)
+        var elsewhere = donation
+        elsewhere.timeZoneID = "America/Los_Angeles"
+        #expect(ConversationEntity(donation: elsewhere, visibility: .full)?.folder?.id == laDay)
+        // An item from before the zone was carried falls back to the phone's zone.
+        elsewhere.timeZoneID = nil
+        #expect(
+            ConversationEntity(donation: elsewhere, visibility: .full)?.folder?.id
+                == LogicalDay.dateKey(forMs: startMs, timeZoneID: TimeZone.current.identifier))
+    }
+
     private static let doneFollowUp = FollowUp(
         id: "fu-9", text: "Send Sam the lease", done: true, sourceConversationId: "conv-1",
         sourceSegmentId: "s1", createdAtMs: 1_000, why: "He asked for it by Friday.",
@@ -335,6 +366,7 @@ struct SiriPathTests {
         d = base; d.contentCreationDateMs = 11; variants.append(d)
         d = base; d.startDateMs = nil; variants.append(d)
         d = base; d.endDateMs = 99; variants.append(d)
+        d = base; d.timeZoneID = "Asia/Tokyo"; variants.append(d)
         d = base; d.dueDateMs = 99; variants.append(d)
         d = base; d.completionDateMs = 99; variants.append(d)
         d = base; d.isCompleted = true; variants.append(d)
