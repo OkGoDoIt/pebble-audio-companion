@@ -71,7 +71,7 @@ struct PrivacyStanceTests {
 
         #expect(stance.isFullyLocal)
         #expect(stance.headline == "Everything stays on this phone")
-        #expect(stance.summary.contains("No recording, transcript or note is sent to any service"))
+        #expect(stance.summary.contains("No recording, transcript, or note is sent to any service"))
         // Nothing to qualify and nothing a provider could still be holding.
         #expect(stance.qualifiers.isEmpty)
         #expect(stance.deletionNote == nil)
