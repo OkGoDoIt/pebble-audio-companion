@@ -152,9 +152,13 @@ public sealed class PhoneLinkService(ArchiveDbContext db, TimeProvider time)
 	public static string Display(string code) =>
 		code.Length == SyncProtocol.LinkCodeLength ? $"{code[..4]}-{code[4..]}" : code;
 
-	/// <summary>The link the QR code carries; the app opens it from the Camera.</summary>
+	/// <summary>
+	/// The link the QR code carries: <c>{origin}/link?code=…</c>, a universal link the app opens from the Camera (the
+	/// app-site association claims <c>/link*</c>). Without the app it is the /link page, which shows the code. The app
+	/// still accepts the older <c>pebbleaudio://link?code=…&amp;origin=…</c>.
+	/// </summary>
 	public static string InvitationUrl(string code, string publicOrigin) =>
-		$"pebbleaudio://link?code={Uri.EscapeDataString(code)}&origin={Uri.EscapeDataString(publicOrigin)}";
+		$"{publicOrigin}/link?code={Uri.EscapeDataString(code)}";
 
 	private static byte[] Hash(string normalizedCode) => SHA256.HashData(Encoding.UTF8.GetBytes(normalizedCode));
 

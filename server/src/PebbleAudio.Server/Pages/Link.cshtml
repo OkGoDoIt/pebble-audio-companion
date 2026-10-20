@@ -1,0 +1,16 @@
+@page "/link"
+@model PebbleAudio.Server.Pages.LinkModel
+@{
+	Layout = "/Pages/View/_ServerLayout.cshtml";
+	ViewData["Title"] = "Link your iPhone";
+	ViewData["Bare"] = true;
+}
+<section class="link-page">
+	<h1 class="screen-title">Link your iPhone</h1>
+	<p class="lede">Open this on the iPhone with Pebble Audio, or type the code into the app.</p>
+	@if (Model.Code is not null)
+	{
+		<p class="link-code" aria-label="Code @Model.Code">@Model.Code</p>
+		<p class="link-server">Server <b>@Model.Host</b></p>
+	}
+</section>

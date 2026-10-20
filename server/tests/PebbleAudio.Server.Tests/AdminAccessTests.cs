@@ -75,7 +75,7 @@ public sealed partial class AdminAccessTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
 		var invitation = await shown.Content.ReadAsStringAsync();
 		Assert.Contains("<svg", invitation);
-		Assert.Contains($"pebbleaudio://link?code=", invitation);
+		Assert.Contains($"{ArchiveServerFactory.PublicOrigin}/link?code=", invitation);
 		var code = LinkCodePattern().Match(invitation).Groups[1].Value;
 		Assert.Matches("^[A-Z0-9]{4}-[A-Z0-9]{4}$", code);
 		using (var api = factory.CreateClient())

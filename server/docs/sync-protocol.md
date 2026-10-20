@@ -19,8 +19,10 @@ Optional fields are sent as an explicit `null`, never left out. An error answer 
 1. The person opens the admin area on the server (passkey login), *Phones*, and taps *Link a
    phone*. The server shows a one-time code (8 characters from `A–Z` and `2–9` without `I`, `L`,
    `O`, valid 10 minutes, shown as `K7QM-3XWD`) and a QR code of
-   `pebbleaudio://link?code=K7QM3XWD&origin=https%3A%2F%2Fpebbleaudio.okgodoit.com`. Showing a
-   new code ends the previous unused one.
+   `https://pebbleaudio.okgodoit.com/link?code=K7QM3XWD`, a universal link the app opens (the
+   app-site association claims `/link*`); without the app, that page shows the code to type in.
+   The app still accepts the older `pebbleaudio://link?code=…&origin=…`. Showing a new code ends
+   the previous unused one.
 2. The app calls `POST /link` (no token) with `{ "code": "…", "deviceName": "Roger's iPhone", "appVersion": "…", "appBuild": "…" }`.
    Case, spaces and dashes in the code do not matter.
 3. Response `201 { "deviceId": "…", "deviceToken": "pad_…", "userId": "…", "serverTime": "…" }`.
