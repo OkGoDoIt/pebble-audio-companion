@@ -117,8 +117,9 @@ stays where it went ("Your server keeps what it already has").
 
 ## 5. Copy rules
 
-These rules cover every screen a person reads in normal use. Diagnostics is the one developer
-surface where a mechanism word may appear (a developer setting such as pasting a Muse SDK token
-lives there, not on the Muse screen). Heading plus at most one line per state; name receivers by name; say "text", "audio", "a clip",
+These rules cover every screen a person reads. One exception: a credential the person must fetch
+from a vendor (Muse's SDK token) is named the way the vendor names it, on that feature's own
+screen, so it can be found there (Roger, 2026-10-21: setting up Muse happens entirely on the Muse
+screen). Heading plus at most one line per state; name receivers by name; say "text", "audio", "a clip",
 "your questions", never mechanisms (no MCP, OAuth, token, gadget, batch); no reassurance nobody
 asked for; Oxford comma; American spelling.
