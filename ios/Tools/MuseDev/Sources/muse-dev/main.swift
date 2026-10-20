@@ -147,6 +147,38 @@ let watchCommands: MuseJSON = [
     ],
 ]
 
+/// A one-shot result that several callers may try to set; only the first wins.
+final class Finished: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var result: Bool?
+
+    var value: Bool {
+        get async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let result {
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                } else {
+                    self.continuation = continuation
+                    lock.unlock()
+                }
+            }
+        }
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        guard result == nil else { lock.unlock(); return }
+        result = value
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 /// Thread-safe holder for the turn being followed, shared by the event reader and the poller.
 actor TurnBox {
     var turn: MuseTurn
@@ -278,6 +310,21 @@ do {
     case "pair": try await pair(force: arguments.contains("--force"))
     case "status": try await status()
     case "refresh": _ = try await freshCredentials(force: true)
+    case "central":
+        // Probe a watch (or any gadget) advertising the Muse setup service from this Mac.
+        let suffix = arguments.dropFirst().first { !$0.hasPrefix("--") }
+        // CBCentralManager holds its delegate weakly: the probe must outlive the continuation.
+        let finished = Finished()
+        let probe = MacCentralProbe(nameFilter: suffix) { finished.resume($0) }
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(90))
+            say("gave up after 90 s")
+            finished.resume(false)
+        }
+        let ok = await finished.value
+        timeout.cancel()
+        withExtendedLifetime(probe) {}
+        exit(ok ? 0 : 1)
     case "turn":
         let flagsWithValues: Set<String> = ["--session-id", "--voice"]
         var words: [String] = []
@@ -298,6 +345,7 @@ do {
     default:
         print("""
             usage: muse-dev pair [--force]
+                   muse-dev central [NAME-SUFFIX]   connect to a MuseGadget advertiser and test the echo
                    muse-dev status
                    muse-dev refresh
                    muse-dev turn "message" [--session-id ID] [--register] [--voice file.wav] [--raw]
