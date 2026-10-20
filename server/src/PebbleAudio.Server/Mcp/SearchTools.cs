@@ -132,7 +132,13 @@ public sealed class SearchTools
 			return ToolResults.Error($"There is no item “{key}” in what the person shares. Use an id from search.");
 		}
 
-		await archive.LogAsync(call, "fetch", [result.Metadata.TryGetValue("conversationId", out var conversationId) ? (string)conversationId : result.Id], cancellationToken);
+		var ids = new List<string> { result.Id };
+		if (result.Metadata.TryGetValue("conversationId", out var conversationId) && conversationId is string source)
+		{
+			ids.Add(source);
+		}
+
+		await archive.LogAsync(call, "fetch", ids, cancellationToken);
 		return ToolResults.Of(result);
 	}
 

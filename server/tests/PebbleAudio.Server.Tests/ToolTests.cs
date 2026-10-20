@@ -471,6 +471,10 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		{
 			var tool = Assert.Single(tools, t => t.Name == name).ProtocolTool;
 			Assert.Equal((false, false, false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
+			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
+			Assert.All(
+				new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" },
+				key => Assert.InRange(tool.Meta?[key]?.GetValue<string>().Length ?? 0, 1, 64));
 		}
 
 		Assert.True((await ArchiveFixture.CallAsync(mcp, "get_status")).GetProperty("canWrite").GetBoolean());
