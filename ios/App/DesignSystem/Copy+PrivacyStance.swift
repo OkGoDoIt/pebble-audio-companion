@@ -3,10 +3,11 @@ import Intelligence
 import SearchKit
 import Transcription
 
-// The privacy stance for Settings · Storage & Privacy, plus that screen's destructive
-// confirmation. `Copy.swift` already owns the one-line version of this
-// (`Copy.Privacy.dataFlow`, on the Settings root); this is the same fact told at length, from
-// the same inputs, so the two cannot disagree.
+// The transcription-and-AI stance: what the two modes do with audio and text, for onboarding's
+// step 3, which shows the consequence of a choice before it is applied. The Privacy screen itself
+// is derived from every destination at once (`PrivacyModel`, `docs/privacy-model.md`), the server
+// and assistants included; this file no longer speaks for them. `Copy.swift` owns the one-line
+// version (`Copy.Privacy.dataFlow`), from the same inputs, so the two cannot disagree.
 //
 // Rules this copy is written to (they are why it reads the way it does):
 //
@@ -40,25 +41,19 @@ extension Copy.Privacy {
         /// a place data goes, so the stance names it — in the person's own account, not a
         /// service of this app's.
         var coldStorageAgeDays: Int?
-        /// The Pebble Audio server text is syncing to (`AppSettings.archiveServerHost`), nil
-        /// when none is linked or sync is paused. The person's own server, but still a place
-        /// the text goes, so the stance names it.
-        var archiveServerHost: String?
 
         init(
             transcriptionMode: TranscriptionMode,
             aiMode: AiProcessingMode,
             cloudTranscriptionDestination: String?,
             remoteAiDestination: String?,
-            coldStorageAgeDays: Int? = nil,
-            archiveServerHost: String? = nil
+            coldStorageAgeDays: Int? = nil
         ) {
             self.transcriptionMode = transcriptionMode
             self.aiMode = aiMode
             self.cloudTranscriptionDestination = cloudTranscriptionDestination
             self.remoteAiDestination = remoteAiDestination
             self.coldStorageAgeDays = coldStorageAgeDays
-            self.archiveServerHost = archiveServerHost
         }
     }
 
@@ -95,21 +90,16 @@ extension Copy.Privacy {
         let summary: String
 
         switch (stt, ai) {
-        case (nil, nil) where inputs.archiveServerHost != nil:
-            headline = "Only text goes to your Pebble Audio server"
-            summary =
-                "Transcription and AI both run on this iPhone. No recording is sent to any "
-                + "service."
         case (nil, nil):
             headline = "Everything stays on this phone"
             summary =
-                "Transcription and AI both run on this iPhone. No recording, transcript or note "
+                "Transcription and AI both run on this iPhone. No recording, transcript, or note "
                 + "is sent to any service."
 
         case (let stt?, nil):
             headline = "Audio goes to \(stt)"
             summary =
-                "Recordings are sent to \(stt) to be transcribed. Summaries, notes and answers "
+                "Recordings are sent to \(stt) to be transcribed. Summaries, notes, and answers "
                 + "are then written on this iPhone, so the text does not go on anywhere else."
 
         case (nil, let ai?):
@@ -118,7 +108,7 @@ extension Copy.Privacy {
                 "Recordings are transcribed on this iPhone, so the audio itself never leaves it. "
                 + "Transcript text, and everything in About You — including names imported from "
                 + "Contacts and Calendar — is sent to \(ai) "
-                + "to write summaries, notes and answers."
+                + "to write summaries, notes, and answers."
 
         case (let stt?, let ai?) where stt == ai:
             headline = "Audio and text go to \(stt)"
@@ -126,7 +116,7 @@ extension Copy.Privacy {
                 "Recordings are sent to \(stt) to be transcribed. The transcript text, and "
                 + "everything in About You — including names imported from Contacts and Calendar — "
                 + "goes back to \(stt) to write "
-                + "summaries, notes and answers."
+                + "summaries, notes, and answers."
 
         case (let stt?, let ai?):
             headline = "Audio goes to \(stt), text to \(ai)"
@@ -134,7 +124,7 @@ extension Copy.Privacy {
                 "Recordings are sent to \(stt) to be transcribed. The transcript text, and "
                 + "everything in About You — including names imported from Contacts and Calendar — "
                 + "is then sent to \(ai) to write "
-                + "summaries, notes and answers."
+                + "summaries, notes, and answers."
         }
 
         var qualifiers: [String] = []
@@ -144,12 +134,6 @@ extension Copy.Privacy {
         if let ai, let line = aiQualifier(inputs.aiMode, destination: ai) {
             qualifiers.append(line)
         }
-        if let host = inputs.archiveServerHost {
-            qualifiers.append(
-                "Transcripts, titles, notes, and follow-ups are also copied to \(host), the "
-                    + "Pebble Audio server you linked. Audio goes there only as a clip an "
-                    + "assistant asks for.")
-        }
         if let age = inputs.coldStorageAgeDays {
             qualifiers.append(
                 "Audio older than \(Copy.Settings.Storage.ageLabel(age)) is kept in your own "
@@ -158,12 +142,11 @@ extension Copy.Privacy {
 
         return Stance(
             headline: headline,
-            isFullyLocal: stt == nil && ai == nil && inputs.archiveServerHost == nil,
+            isFullyLocal: stt == nil && ai == nil,
             summary: summary,
             qualifiers: qualifiers,
-            commitments: inputs.archiveServerHost == nil ? commitments : linkedCommitments,
-            deletionNote: (stt == nil && ai == nil && inputs.archiveServerHost == nil)
-                ? nil : deletionNote
+            commitments: stt == nil && ai == nil ? commitments : sharedCommitments,
+            deletionNote: (stt == nil && ai == nil) ? nil : deletionNote
         )
     }
 
@@ -243,8 +226,8 @@ extension Copy.Privacy {
     ///    providers, OpenAI for AI, and Hugging Face for a model download the user starts (a
     ///    plain GET that uploads nothing) — and, since 2026-10-20, the Pebble Audio server the
     ///    person links themselves (`ArchiveSyncService`; https only, and nothing is sent until a
-    ///    link is confirmed). While one is linked the stance names it
-    ///    (`StanceInputs.archiveServerHost`) and the first commitment is `linkedCommitments[0]`.
+    ///    link is confirmed). The Privacy screen names it (`PrivacyModel`, from the link,
+    ///    paused or not), with the assistants that read it.
     /// 3. Verified: `FlightRecorder` writes to `Application Support/audio-companion/diagnostics`,
     ///    and the ONLY readers of `export()`/`exportFile()` are two `ShareLink`s on the
     ///    Diagnostics screen, which cannot fire without a tap. Every logging call site was
@@ -266,28 +249,28 @@ extension Copy.Privacy {
     /// its own HTTP stack, so the blanket version of that claim could not be verified from
     /// source — and an unverified promise is exactly what this screen must not print.
     static let commitments = [
-        "This app has no account and no server of its own. Nothing you record, transcribe or "
-            + "write is sent to its developer, and none of it is used for training, advertising "
+        "This app has no account and no server of its own. Nothing you record, transcribe, or "
+            + "write is sent to its developer, and none of it is used for training, advertising, "
             + "or profiling.",
         "Your recordings and transcripts are never sold or shared. They go only where this "
             + "screen says they go.",
         "Diagnostic logs stay on this phone. They hold no audio and no transcript text, and are "
             + "only ever shared if you send them yourself from Diagnostics.",
-        "Recordings, transcripts and notes are stored in this app on your iPhone, and are "
+        "Recordings, transcripts, and notes are stored in this app on your iPhone, and are "
             + "included in the iPhone's usual backups.",
         "Spotlight's index of your recordings is kept on this iPhone by iOS. What goes into "
             + "it — nothing, titles and summaries, or everything — is your choice on this screen.",
     ]
 
-    /// The commitments while a Pebble Audio server is linked. The first one is the only one that
-    /// changes: "no server of its own" stops being the whole truth once the person has linked
-    /// their own, and the rest still hold as written.
-    static let linkedCommitments =
+    /// The commitments once a provider receives audio or text: "never sold or shared" stops being
+    /// true the moment anything is shared with anyone, so it says "never sold" (privacy-model.md
+    /// §3.5). The Privacy screen's own commitments are `PrivacyModel.commitments`.
+    static let sharedCommitments =
         [
-            "Nothing you record, transcribe or write is sent to this app's developer, and none of "
-                + "it is used for training, advertising or profiling. The Pebble Audio server you "
-                + "linked holds a copy of the text because you linked it."
-        ] + Array(commitments.dropFirst())
+            commitments[0],
+            "Your recordings and transcripts are never sold. They go only where this screen says "
+                + "they go.",
+        ] + Array(commitments.dropFirst(2))
 
     /// Required by the UX plan §17: the app must say what deletion can and cannot reach.
     static let deletionNote =
@@ -317,8 +300,7 @@ extension AppSettings {
                 remoteAiDestination: remoteAiDestination,
                 // The age that takes effect, not the raw choice: under a short "Keep audio" the
                 // two differ, and nil (nothing can move) leaves the iCloud line out entirely.
-                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil,
-                archiveServerHost: archiveServerHost
+                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
             )
         )
     }
@@ -337,7 +319,7 @@ extension Copy.Settings.Storage {
     /// delete of every recording on the phone.
     static let deleteAllTitle = "Delete all recordings?"
     static let deleteAllMessage =
-        "Every recording, transcript, note and follow-up on this iPhone is deleted — and any "
+        "Every recording, transcript, note, and follow-up on this iPhone is deleted — and any "
         + "audio in iCloud with it. This cannot be undone. Recording itself is not turned off."
     static let deleteAllConfirm = "Delete All Recordings"
 
