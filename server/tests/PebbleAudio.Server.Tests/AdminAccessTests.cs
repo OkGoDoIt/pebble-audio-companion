@@ -66,6 +66,25 @@ public sealed partial class AdminAccessTests(ArchiveServerFactory factory)
 			Assert.Contains("get_status", await listed.Content.ReadAsStringAsync());
 		}
 
+		// A code shown at /admin/phones links a phone, which then shows there.
+		var phonesCsrf = await CsrfTokenAsync(browser, "/admin/phones");
+		var shown = await browser.PostAsync("/admin/phones?handler=Link", new FormUrlEncodedContent(new Dictionary<string, string>
+		{
+			["__RequestVerificationToken"] = phonesCsrf,
+		}));
+		Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+		var invitation = await shown.Content.ReadAsStringAsync();
+		Assert.Contains("<svg", invitation);
+		Assert.Contains($"pebbleaudio://link?code=", invitation);
+		var code = LinkCodePattern().Match(invitation).Groups[1].Value;
+		Assert.Matches("^[A-Z0-9]{4}-[A-Z0-9]{4}$", code);
+		using (var api = factory.CreateClient())
+		{
+			Assert.Equal(HttpStatusCode.Created, (await api.SendAsync(Phone.LinkRequest(code, "Admin test phone"))).StatusCode);
+		}
+
+		Assert.Contains("Admin test phone", await (await browser.GetAsync("/admin/phones")).Content.ReadAsStringAsync());
+
 		// A fresh browser signs in with the passkey alone.
 		using var other = NewBrowser();
 		var loginCsrf = await CsrfTokenAsync(other, "/admin/login");
@@ -120,6 +139,9 @@ public sealed partial class AdminAccessTests(ArchiveServerFactory factory)
 
 	[GeneratedRegex("<code id=\"new-token\">(pat_[^<]+)</code>")]
 	private static partial Regex NewTokenPattern();
+
+	[GeneratedRegex("<code class=\"link-code\" id=\"link-code\">([^<]+)</code>")]
+	private static partial Regex LinkCodePattern();
 
 	[GeneratedRegex("<form method=\"post\" class=\"signout\" action=\"(?<action>[^\"]+)\">\\s*<button[^>]*>[^<]*</button>\\s*<input name=\"__RequestVerificationToken\" type=\"hidden\" value=\"(?<token>[^\"]+)\"")]
 	private static partial Regex SignOutFormPattern();
