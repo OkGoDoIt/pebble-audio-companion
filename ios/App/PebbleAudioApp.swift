@@ -94,6 +94,12 @@ struct PebbleAudioApp: App {
         }
     }
 
+    /// The servers whose pages open in the app: the product's own, and the one this phone links.
+    private var archiveServers: [String] {
+        [URL(string: ArchiveSyncProtocol.defaultOrigin)?.host, settings.archiveSync.origin.flatMap { URL(string: $0)?.host }]
+            .compactMap { $0 }
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -114,14 +120,26 @@ struct PebbleAudioApp: App {
                 .environment(settings)
                 .tint(Tokens.tint)
                 .onOpenURL { url in
-                    // The QR code on the Pebble Audio server's Link a phone page. Nothing is sent
-                    // anywhere until the person confirms the server it names.
-                    if let invitation = ArchiveLinkInvitation.parse(url) {
-                        SettingsDataSources.current.server.receive(invitation)
-                        router.navigate(to: .settings(.server))
+                    // The QR code on the Pebble Audio server's Link a phone page, or the page
+                    // itself: the Link step, filled in. Nothing is sent until Link This Phone.
+                    if url.scheme == ArchiveLinkInvitation.scheme,
+                        let invitation = ArchiveLinkInvitation.parse(url)
+                    {
+                        router.open(.link(invitation))
+                        return
+                    }
+                    // The server's own pages (universal links): a moment, a day, a brief.
+                    if let link = UniversalLink.parse(url, servers: archiveServers) {
+                        router.open(link)
                         return
                     }
                     if let route = Route.parse(url) { router.navigate(to: route) }
+                }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL,
+                        let link = UniversalLink.parse(url, servers: archiveServers)
+                    else { return }
+                    router.open(link)
                 }
                 // Widget taps, the Q9 loss notification, Siri, and Spotlight results all end
                 // up here — one navigation path, no per-surface special cases.

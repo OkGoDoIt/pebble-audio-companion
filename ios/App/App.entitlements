@@ -7,6 +7,16 @@
 		<string>group.dev.audiocompanion</string>
 	</array>
 	<!--
+	  Universal links from the person's Pebble Audio server: its Link a phone page, and the
+	  viewer links assistants cite (/c, /d, /b). The server serves the apple-app-site-association
+	  file for both the release and the side-by-side .dev app ids; this one file is the
+	  entitlements of both (project.yml, every configuration).
+	-->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:pebbleaudio.okgodoit.com</string>
+	</array>
+	<!--
 	  iCloud Drive, for the cold audio tier (ColdAudioTier): frame logs older than the user's
 	  chosen age move into this container and are evicted locally once uploaded. The container
 	  has no NSUbiquitousContainers entry in Info.plist on purpose: the files are the app's
