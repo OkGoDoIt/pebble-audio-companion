@@ -65,7 +65,8 @@ enum RecapNotificationRules {
         guard !saysNothingRecorded(body) else { return nil }
         return RecapNotificationContent(
             dateKey: recap.dateKey,
-            title: Copy.RecapNotification.title(weekday: weekday(of: recap.dateKey, timeZoneID: timeZoneID)),
+            title: Copy.RecapNotification.title(
+                weekday: weekday(of: recap.dateKey, timeZoneID: timeZoneID)),
             body: body,
             route: .history(date: recap.dateKey, level: nil))
     }
@@ -87,7 +88,8 @@ enum RecapNotificationRules {
         let firstSentence = source.split(
             omittingEmptySubsequences: true, whereSeparator: { ".!?\n".contains($0) }
         ).first.map { String($0).trimmingCharacters(in: .whitespaces) + "." } ?? source
-        return firstSentence.count <= 140 ? firstSentence : String(firstSentence.prefix(139)) + "…"
+        guard firstSentence.count > 140 else { return firstSentence }
+        return String(firstSentence.prefix(139)) + "…"
     }
 
     /// "Tuesday" for "2026-10-20", read at midday so no zone puts it on the next day.
@@ -118,13 +120,23 @@ struct SystemRecapNotificationPoster: RecapNotificationPosting {
     }
 
     func post(_ recap: RecapNotificationContent) async {
+        try? await UNUserNotificationCenter.current().add(Self.request(for: recap, trigger: nil))
+    }
+
+    /// The request itself, shared with the DEBUG preview so what is shown is what is posted.
+    static func request(
+        for recap: RecapNotificationContent, trigger: UNNotificationTrigger?
+    ) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         content.title = recap.title
         content.body = recap.body
         // The same payload key the loss alert uses, so a tap goes through the one router.
-        content.userInfo = [UserNotificationLossNotifier.routeUserInfoKey: recap.route.url.absoluteString]
-        // News about yesterday, not an alarm: no sound, nothing that lights the screen.
-        content.interruptionLevel = .passive
+        content.userInfo = [
+            UserNotificationLossNotifier.routeUserInfoKey: recap.route.url.absoluteString
+        ]
+        // Something the person asked for, so it shows; news about yesterday, not an alarm, so it
+        // makes no sound.
+        content.interruptionLevel = .active
         if #available(iOS 27, *) {
             // So Siri and Apple Intelligence can refer to the recap it is about.
             content.appEntityIdentifiers = [
@@ -132,11 +144,42 @@ struct SystemRecapNotificationPoster: RecapNotificationPosting {
                     for: RecapEntity.self, identifier: RecapEntity.id(dateKey: recap.dateKey))
             ]
         }
-        let request = UNNotificationRequest(
-            identifier: recap.identifier, content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
+        return UNNotificationRequest(
+            identifier: recap.identifier, content: content, trigger: trigger)
     }
 }
+
+#if DEBUG
+    /// `-recap-notification-preview`: asks for permission, then posts one made-up recap
+    /// notification six seconds later, built by the real rules and the real request — time to
+    /// leave the app so iOS shows it as a banner. For screenshots only.
+    enum RecapNotificationPreview {
+        static let launchArgument = "-recap-notification-preview"
+
+        static var isRequested: Bool {
+            ProcessInfo.processInfo.arguments.contains(launchArgument)
+        }
+
+        static func run() async {
+            let center = UNUserNotificationCenter.current()
+            let granted = (try? await center.requestAuthorization(options: [.alert])) ?? false
+            guard granted else { return }
+            let text = "Lease talk with Sam in the afternoon, then a quiet evening at home."
+            let recap = DailyRecap(
+                dateKey: "2026-10-20", text: text,
+                headline: "Lease call with Sam, then a quiet evening",
+                briefOfHash: RecapCondenser.fingerprint(text))
+            guard
+                let content = RecapNotificationRules.content(
+                    for: recap, timeZoneID: TimeZone.current.identifier)
+            else { return }
+            try? await center.add(
+                SystemRecapNotificationPoster.request(
+                    for: content,
+                    trigger: UNTimeIntervalNotificationTrigger(timeInterval: 6, repeats: false)))
+        }
+    }
+#endif
 
 actor RecapReadyNotifier {
     private static let notifiedKey = "recap_notified_days"

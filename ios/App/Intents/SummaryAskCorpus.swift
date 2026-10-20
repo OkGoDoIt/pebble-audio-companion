@@ -64,7 +64,9 @@ struct SummaryAskCorpus: Equatable, Sendable {
                 startMs: conversation.startMs, endMs: conversation.endMs,
                 timeZoneID: conversation.timeZoneID, nowMs: nowMs)
         }
-        let days = recaps.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let days = recaps.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         return SummaryAskCorpus(
             stretches: CitableExcerpts.numbered(drafts),
             sources: sources,
