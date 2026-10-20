@@ -99,7 +99,7 @@ public sealed class SearchTools
 
 		var result = Fit.Largest(hits.Count, Build, call.Settings.ToolMaxCharacters);
 		await archive.LogAsync(call, "search", result.Results.Select(r => r.Id), cancellationToken);
-		return ToolResults.Of(result);
+		return ToolResults.Document(result);
 	}
 
 	[McpServerTool(
@@ -139,7 +139,7 @@ public sealed class SearchTools
 		}
 
 		await archive.LogAsync(call, "fetch", ids, cancellationToken);
-		return ToolResults.Of(result);
+		return ToolResults.Document(result);
 	}
 
 	internal static async Task<FetchResult?> FetchAsync(ArchiveReader archive, ToolCall call, string key, CancellationToken cancellationToken)

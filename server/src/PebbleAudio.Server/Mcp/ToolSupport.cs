@@ -77,6 +77,19 @@ public static class ToolResults
 		};
 	}
 
+	/// <summary>
+	/// <c>search</c> and <c>fetch</c>, as OpenAI's connector contract has them: the structured content, and the same JSON
+	/// as the only <c>content</c> item, for clients that read the compatibility copy there. The speakable summary is the
+	/// JSON's first key.
+	/// </summary>
+	public static CallToolResult Document<T>(T value)
+		where T : IToolResult
+	{
+		var result = Of(value);
+		result.Content = [result.Content[1]];
+		return result;
+	}
+
 	/// <summary>Arguments the tool cannot use: the text says what to send instead.</summary>
 	public static CallToolResult Error(string message) => new()
 	{

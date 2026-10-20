@@ -16,8 +16,11 @@ A tool result is an MCP `CallToolResult` with:
 - `content`: two text blocks, in this order:
   1. the result's `summary` alone, one speakable sentence (for voice and AirPods, and for clients that read
      only the first block);
-  2. the same JSON as `structuredContent`, serialized, which ChatGPT requires for `search` and `fetch` and
-     every client that ignores `structuredContent` can parse.
+  2. the same JSON as `structuredContent`, serialized, which every client that ignores `structuredContent`
+     can parse.
+
+  `search` and `fetch` carry only the second, as OpenAI's connector contract has it (one text item holding the
+  JSON); their `summary` is the JSON's first key.
 - `_meta`: only on `get_audio` when a clip is ready (below). `_meta` reaches widgets, never the model.
 - `isError: true` only for arguments the tool cannot use (an unknown `include`, a malformed time) or a write
   from a read-only connection; the text says what to send instead. Something that is simply not there (an

@@ -191,10 +191,16 @@ internal sealed class ArchiveFixture
 		var problems = new List<string>();
 		SchemaCheck.Validate(schemas[tool], structured, tool, problems);
 		Assert.True(problems.Count == 0, $"{tool}'s structured content does not match its output schema: {string.Join("; ", problems.Take(5))}");
-		Assert.Equal(2, result.Content.Count);
-		Assert.Equal(structured.GetProperty("summary").GetString(), Assert.IsType<TextContentBlock>(result.Content[0]).Text);
+		// search and fetch: the JSON alone, as OpenAI's connector contract has it; every other tool: the summary, then it.
+		var document = tool is "search" or "fetch";
+		Assert.Equal(document ? 1 : 2, result.Content.Count);
+		if (!document)
+		{
+			Assert.Equal(structured.GetProperty("summary").GetString(), Assert.IsType<TextContentBlock>(result.Content[0]).Text);
+		}
+
 		Assert.True(
-			JsonNode.DeepEquals(JsonNode.Parse(Assert.IsType<TextContentBlock>(result.Content[1]).Text), JsonNode.Parse(structured.GetRawText())),
+			JsonNode.DeepEquals(JsonNode.Parse(Assert.IsType<TextContentBlock>(result.Content[^1]).Text), JsonNode.Parse(structured.GetRawText())),
 			$"{tool}'s text content is not its structured content.");
 		return structured.Clone();
 	}
