@@ -748,6 +748,28 @@ private extension HistoryDay {
         #expect(built.zoneID == zone)
     }
 
+    @Test("a conversation that runs through a zone change is two cards with two ids, one conversation")
+    func chapterAcrossAZoneChange() throws {
+        let tokyo = "Asia/Tokyo"
+        var day = HonestyDay()
+        var first = day.record("a", at(9), at(10))
+        first.recordedTimeZone = zone
+        var second = day.record("b", at(10), at(11))
+        second.recordedTimeZone = tokyo
+        day.segments = [first, second]
+        day.speech("a", at(9), at(10))
+        day.speech("b", at(10), at(11))
+        day.chapters = [HistoryChapterInput(id: "trip", startMs: at(9), endMs: at(11), title: "Trip")]
+        day.windows = HistoryDayWindow.from(
+            ZoneTimeline(segments: day.segments, currentZoneID: zone).windows(of: dateKey))
+        try #require(day.windows.count == 2)
+        // `build()` checks the ids are unique along with every other promise.
+        let cards = day.build().cards
+        #expect(cards.map(\.id) == ["trip", "trip~\(at(10))"])
+        #expect(cards.map(\.chapterId) == ["trip", "trip"])
+        #expect(cards.map(\.zoneID) == [zone, tokyo])
+    }
+
     // MARK: - The proposed rule: short loss carried by its neighbour
 
     @Test("carryShortLoss: a burst of buffer drops is one row with its loss, still counted and named")
