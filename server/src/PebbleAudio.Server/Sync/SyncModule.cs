@@ -101,27 +101,11 @@ public static class SyncModule
 			statusCode: StatusCodes.Status201Created);
 	}
 
-	/// <summary>
-	/// Unlinks and deletes the server's copy, ending every assistant's access. <c>?keepData=true</c> only revokes this
-	/// phone's token, for the admin area's unlink of one phone while another stays linked.
-	/// </summary>
-	private static async Task<IResult> UnlinkAsync(
-		ClaimsPrincipal user,
-		bool? keepData,
-		PhoneLinkService links,
-		ArchiveWipe wipe,
-		CancellationToken cancellationToken)
+	/// <summary>Unlinks and deletes the server's copy, ending every assistant's access.</summary>
+	private static async Task<IResult> UnlinkAsync(ClaimsPrincipal user, ArchiveWipe wipe, CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
-		if (keepData == true)
-		{
-			await links.UnlinkAsync(userId, deviceId, cancellationToken);
-		}
-		else
-		{
-			await wipe.UnlinkAsync(userId, deviceId, cancellationToken);
-		}
-
+		await wipe.UnlinkAsync(userId, deviceId, cancellationToken);
 		return Results.NoContent();
 	}
 

@@ -230,6 +230,16 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal(2, (await phone.GetJsonAsync("/sync/status")).GetProperty("access").GetArrayLength());
 		Assert.True(Directory.Exists(Path.Combine(factory.ClipsPath, userId.ToString("N"))));
 
+		// The admin area unlinks an old phone while others stay linked: only its token ends.
+		using (var oldPhone = await Phone.LinkAsync(factory, userId, "An old iPhone"))
+		{
+			await using var scope = factory.Services.CreateAsyncScope();
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, oldPhone.DeviceId, CancellationToken.None));
+			Assert.Equal(HttpStatusCode.Unauthorized, (await oldPhone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Conversations.AnyAsync(c => c.UserId == userId));
+			Assert.Equal(2, (await phone.GetJsonAsync("/sync/status")).GetProperty("access").GetArrayLength());
+		}
+
 		// The person unlinks on the phone.
 		Assert.Equal(HttpStatusCode.NoContent, (await phone.SendAsync(HttpMethod.Delete, "/link")).StatusCode);
 
@@ -259,6 +269,23 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		var remaining = await otherPhone.GetJsonAsync("/sync/status");
 		Assert.Equal(0, remaining.GetProperty("counts").GetProperty("conversation").GetInt32());
 		Assert.Equal(0, remaining.GetProperty("access").GetArrayLength());
+
+		// It syncs again and an assistant connects; the admin area then unlinks it, the last phone, which clears the
+		// server as unlinking on the phone does.
+		await otherPhone.BatchAsync(fx.Items());
+		string again;
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			(_, again) = await scope.ServiceProvider.GetRequiredService<ApiTokenService>().CreateAsync(userId, "Codex again", TokenAccess.Read, CancellationToken.None);
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, otherPhone.DeviceId, CancellationToken.None));
+			Assert.False(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, otherPhone.DeviceId, CancellationToken.None));
+			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+			Assert.Equal(0, await db.Conversations.CountAsync(c => c.UserId == userId));
+			Assert.Equal(0, await db.SyncItems.CountAsync(s => s.UserId == userId));
+		}
+
+		Assert.Equal(HttpStatusCode.Unauthorized, (await otherPhone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
+		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(again))).StatusCode);
 	}
 
 	[Fact]

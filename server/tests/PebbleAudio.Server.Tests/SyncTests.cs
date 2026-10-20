@@ -177,13 +177,9 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		Assert.Equal(0, status.GetProperty("aiReads").GetArrayLength());
 		Assert.Equal(0, status.GetProperty("access").GetArrayLength());
 
-		// Unlinked with keepData (the admin area's unlink of one phone): the token stops working at once, the data stays.
-		Assert.Equal(HttpStatusCode.NoContent, (await phone.SendAsync(HttpMethod.Delete, "/link?keepData=true")).StatusCode);
+		// Unlinked: the token stops working at once (what goes with it is AccountTests').
+		Assert.Equal(HttpStatusCode.NoContent, (await phone.SendAsync(HttpMethod.Delete, "/link")).StatusCode);
 		Assert.Equal(HttpStatusCode.Unauthorized, (await phone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
-		await using (var scope = factory.Services.CreateAsyncScope())
-		{
-			Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Conversations.CountAsync(c => c.UserId == userId));
-		}
 	}
 
 	[Fact]

@@ -23,6 +23,6 @@ public sealed class Device
 
 	public DateTimeOffset? LastBatchAt { get; set; }
 
-	/// <summary>Set by <c>DELETE /link</c>: the token is revoked and the data stays.</summary>
+	/// <summary>Set when the phone is unlinked: its token stops working at once.</summary>
 	public DateTimeOffset? UnlinkedAt { get; set; }
 }

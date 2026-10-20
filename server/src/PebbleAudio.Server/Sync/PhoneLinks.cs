@@ -133,16 +133,6 @@ public sealed class PhoneLinkService(ArchiveDbContext db, TimeProvider time)
 			.ExecuteUpdateAsync(s => s.SetProperty(d => d.Name, cleaned), cancellationToken) > 0;
 	}
 
-	/// <summary>
-	/// Revokes the phone's token at once. Its data stays; linking again starts a new device.
-	/// </summary>
-	public async Task<bool> UnlinkAsync(Guid userId, Guid deviceId, CancellationToken cancellationToken)
-	{
-		var now = time.GetUtcNow();
-		return await db.Devices
-			.Where(d => d.Id == deviceId && d.UserId == userId && d.UnlinkedAt == null)
-			.ExecuteUpdateAsync(s => s.SetProperty(d => d.UnlinkedAt, now), cancellationToken) > 0;
-	}
 
 	/// <summary>What a person might type for a code: case, spaces, and dashes are not part of it.</summary>
 	public static string Normalize(string? code) =>

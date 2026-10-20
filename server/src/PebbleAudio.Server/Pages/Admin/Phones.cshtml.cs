@@ -7,7 +7,7 @@ using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Pages.Admin;
 
-public sealed class PhonesModel(PhoneLinkService links, IOptions<PebbleAudioOptions> options) : PageModel
+public sealed class PhonesModel(PhoneLinkService links, ArchiveWipe wipe, IOptions<PebbleAudioOptions> options) : PageModel
 {
 	public IReadOnlyList<Device> Phones { get; private set; } = [];
 
@@ -47,7 +47,7 @@ public sealed class PhonesModel(PhoneLinkService links, IOptions<PebbleAudioOpti
 
 	public async Task<IActionResult> OnPostUnlinkAsync(Guid id, CancellationToken cancellationToken)
 	{
-		await links.UnlinkAsync(CurrentUserId(), id, cancellationToken);
+		await wipe.UnlinkFromAdminAsync(CurrentUserId(), id, cancellationToken);
 		return RedirectToPage();
 	}
 

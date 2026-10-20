@@ -32,10 +32,10 @@ Optional fields are sent as an explicit `null`, never left out. An error answer 
 the account (as `POST /sync/wipe` does), ends every assistant's access (every OAuth connection
 and every personal token), then revokes this device token, all in one transaction, `204`. The
 person asked for this (2026-10-21): unlinking must clear the server, never leave a copy behind.
-The phone says so in its confirmation before calling it. `DELETE /link?keepData=true` exists
-only for the admin area's "Unlink this phone" when another phone stays linked; the app never
-sends it.
-The admin area can rename and unlink a phone too.
+The phone says so in its confirmation before calling it.
+The admin area can rename and unlink a phone too. Unlinking the last linked phone there does
+what `DELETE /link` does, after a confirmation that says so; while another phone stays linked,
+it only revokes that phone's token, and the archive stays for the phone that keeps syncing it.
 
 ## 2. Entities
 

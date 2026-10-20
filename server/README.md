@@ -61,8 +61,9 @@ Built:
 - The sharing scope (`Sync/SharingScope.cs`, `Sync/ScopeSweep.cs`): stored with the preferences, applied to every
   tool query and every batch (items outside are ignored as `outsideScope`), and enforced by a deletion at 03:30
   in the account's time zone (the zone of its latest conversation) and at once when the phone narrows it.
-  `DELETE /link` deletes the account's archive and ends every assistant's access with the device's;
-  `?keepData=true` only revokes the device.
+  `DELETE /link` deletes the account's archive and ends every assistant's access with the device's, and so does
+  the admin area's Unlink of the last linked phone; with another phone still linked, the admin Unlink only revokes
+  that phone.
 - Batches announce a recap whose text changed and a follow-up the phone added (recent ones only) through
   `IEventPublisher`.
 - CI and deploy workflows, mirroring Situ.
