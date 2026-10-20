@@ -246,6 +246,18 @@ public actor ReceiverService {
         await session.sendMuseSetup(build)
     }
 
+    public func sendControlRequest(
+        _ build: @escaping @Sendable (Int) -> [UInt8]
+    ) async -> AudioReceiverSession.MuseSetupReply {
+        await session.sendControlRequest(build)
+    }
+
+    public func setAssistantHandler(
+        _ handler: (@Sendable (AudioReceiverSession.AssistantInbound) -> Void)?
+    ) async {
+        await session.setAssistantHandler(handler)
+    }
+
     public func setMuseSetupHandler(
         _ handler: (@Sendable (AudioReceiverSession.MuseSetupInbound) -> Void)?
     ) async {
@@ -523,6 +535,24 @@ public actor ReceiverService {
     /// Race: a fast Stop → Start flips the intent back to `.active` while the pause request is
     /// still in flight. Tearing down then would strand the restart (a dead session with the
     /// intent on), so instead we keep the live session and just undo the pause.
+    /// Muse can be asked from the watch: with recording off, the link to the watch stays up
+    /// with the watch paused, so a held button still reaches the phone. Nothing is recorded; the
+    /// watch's mic runs only for the question. Recording on or paused needs no help: the link is
+    /// up anyway.
+    private var quietLinkWanted = false
+
+    public func setQuietLink(_ wanted: Bool) async {
+        guard wanted != quietLinkWanted else { return }
+        quietLinkWanted = wanted
+        guard intentBox.value == .off else { return }
+        log.write("quiet link \(wanted ? "kept" : "dropped") with recording off")
+        if wanted {
+            start()
+        } else {
+            await stopReceiving()
+        }
+    }
+
     public func stopReceiving() async {
         _ = await session.requestPause()
         if intentBox.value == .active {
@@ -571,7 +601,13 @@ public actor ReceiverService {
         case .off:
             // Leaving a pause behind: the interval ends here — "off" is its own coverage state.
             if previous == .paused { await endPauseInterval() }
-            await stopReceiving()
+            if quietLinkWanted {
+                // Recording stops but the link stays, so a question asked on the watch still
+                // reaches the phone. The watch holds a user pause: its mic is off.
+                _ = await session.requestPause()
+            } else {
+                await stopReceiving()
+            }
         }
         await onCoverageTrigger(.pauseChanged)
     }

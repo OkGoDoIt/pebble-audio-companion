@@ -1420,9 +1420,37 @@ public actor AudioReceiverSession {
             museSetupHandler?(.rx(rx))
         case let event as MuseSetupEvent:
             museSetupHandler?(.event(event))
+        case let event as PttEvent:
+            assistantHandler?(.pttEvent(event))
+        case let result as WatchActionResult:
+            assistantHandler?(.watchActionResult(result))
         default:
             break
         }
+    }
+
+    // --- Push-to-talk and watch actions (protocol Sections 4.4 and 4.5) --------------------------
+
+    /// What the watch sends about a question asked on it, and about the watch actions it ran.
+    public enum AssistantInbound: Sendable, Equatable {
+        case pttEvent(PttEvent)
+        /// A question's audio; arrives on the data channel, interleaved with any recording.
+        case pttAudio(PttAudio)
+        case watchActionResult(WatchActionResult)
+    }
+
+    private var assistantHandler: (@Sendable (AssistantInbound) -> Void)?
+
+    /// Receives every PTT_EVENT, PTT_AUDIO and WATCH_ACTION_RESULT, in arrival order, on the
+    /// session's executor: hand the value on and return.
+    public func setAssistantHandler(_ handler: (@Sendable (AssistantInbound) -> Void)?) {
+        assistantHandler = handler
+    }
+
+    /// Sends one request (ASSISTANT_UPDATE, WATCH_ACTION) on the single in-flight slot and reports
+    /// the watch's ACK.
+    public func sendControlRequest(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> MuseSetupReply {
+        await sendMuseSetup(build)
     }
 
     // --- Muse gadget setup relay (protocol Section 4.3) ------------------------------------------
@@ -1627,6 +1655,11 @@ public actor AudioReceiverSession {
 
     private func handleData(_ message: DataMessage) async throws {
         if !authorized { return }
+        if let audio = message as? PttAudio {
+            // A question, not the recording: it never touches the open segment.
+            assistantHandler?(.pttAudio(audio))
+            return
+        }
         switch message {
         case let start as StreamStart:
             // A RESUME re-announcement of the stream we are already receiving (the watch
