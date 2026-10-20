@@ -15,10 +15,21 @@ import Testing
 // folder before it is opened. Nothing a transcript says is asserted or committed; titles are
 // printed only when a day's timeline is asked for.
 //
-// PEBBLE_HISTORY_ZONE overrides the zone unstamped recordings are dated in (default
-// Asia/Jakarta, where the backup's stamped recordings were made).
+// PEBBLE_HISTORY_ZONE overrides the zone unstamped recordings are dated in. The default is the
+// zone of the backup's newest stamped recording, read from the backup: where the phone was when
+// it was taken, which is what the app dates unstamped recordings in (`ZoneTimeline`). A fixed
+// city here dated them in a zone the stamped ones never name, and `ZoneTimeline` makes a change
+// point of every differing identifier, so the days grew zone changes the phone never had.
 
 private let backupRoot: String? = ProcessInfo.processInfo.environment["PEBBLE_HISTORY_BACKUP"]
+
+/// The zone of the newest recording that carries a valid stamp; the Mac's own when none does.
+func backupCurrentZoneID(_ metas: [SegmentMeta]) -> String {
+    metas
+        .filter { $0.recordedTimeZone.flatMap(TimeZone.init(identifier:)) != nil }
+        .max { $0.startWallMs < $1.startWallMs }?
+        .recordedTimeZone ?? TimeZone.current.identifier
+}
 
 private var backupAvailable: Bool {
     guard let backupRoot else { return false }
@@ -34,11 +45,11 @@ struct RealHistoryDayTests {
     func everyDayIsHonest() throws {
         let root = URL(fileURLWithPath: backupRoot!)
         let env = ProcessInfo.processInfo.environment
-        let zone = env["PEBBLE_HISTORY_ZONE"] ?? "Asia/Jakarta"
         let printDays = Set((env["PEBBLE_HISTORY_DAYS"] ?? "2026-09-22,2026-09-23,2026-09-24").split(separator: ",").map(String.init))
 
         let metas = SegmentFileReader(root: root).listSegments()
         try #require(!metas.isEmpty)
+        let zone = env["PEBBLE_HISTORY_ZONE"] ?? backupCurrentZoneID(metas)
         let store = try BackupDatabase(root: root)
         defer { store.remove() }
         let tasks = try store.tasks()
