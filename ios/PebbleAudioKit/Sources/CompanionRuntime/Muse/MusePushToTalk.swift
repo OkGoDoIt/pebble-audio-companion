@@ -31,6 +31,19 @@ public actor MusePushToTalk {
         public var heard: String?
         public var answered: Bool
         public var problem: AssistantError?
+
+        public init(
+            askedAt: Date, seconds: Double, missingFrames: Int, level: VoiceNoteLevel.Report?,
+            heard: String?, answered: Bool, problem: AssistantError?
+        ) {
+            self.askedAt = askedAt
+            self.seconds = seconds
+            self.missingFrames = missingFrames
+            self.level = level
+            self.heard = heard
+            self.answered = answered
+            self.problem = problem
+        }
     }
 
     public nonisolated let lastQuestion = StateSubject<QuestionReport?>(nil)

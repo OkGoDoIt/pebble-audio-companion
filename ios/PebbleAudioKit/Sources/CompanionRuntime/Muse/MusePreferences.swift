@@ -2,7 +2,7 @@ import Foundation
 import Receiver
 
 /// How loud a question is made before it goes to Muse.
-public enum MuseVoiceLevel: Equatable, Sendable {
+public enum MuseVoiceLevel: Hashable, Sendable {
     /// Each question is measured and brought to the level recognizers expect.
     case automatic
     /// The same boost for every question, in dB.

@@ -1,6 +1,7 @@
 import CompanionRuntime
 import Receiver
 import SwiftUI
+import WireProtocol
 
 /// Settings · Muse: set Muse up, pair the watch, then ask it things.
 ///
@@ -30,6 +31,8 @@ struct SettingsMuseScreen: View {
         .task { await model.followPairing() }
         .task { await model.followPairedName() }
         .task { await model.followToken() }
+        .task { await model.followPreferences() }
+        .task { await model.followLastQuestion() }
     }
 
     @ViewBuilder
@@ -38,7 +41,10 @@ struct SettingsMuseScreen: View {
             pairingCard
         } else if let name = model.pairedName {
             MuseCard(dot: Tokens.good, headline: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name)) {}
+            watchAskCard
             askSection
+            watchActionsSection
+            watchQuestionsSection
             whatGoesSection
             manageCard
         } else if !model.hasToken {
@@ -291,6 +297,153 @@ struct SettingsMuseScreen: View {
 
     // MARK: Paired
 
+    /// How to ask from the watch, until a question has been asked; then what Muse heard last,
+    /// which is how someone checks it understood them.
+    private var watchAskCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: "applewatch.radiowaves.left.and.right")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Tokens.tint)
+                        .accessibilityHidden(true)
+                    Text(Copy.Muse.watchAskTitle)
+                        .font(AppFont.headline)
+                        .foregroundStyle(Tokens.label)
+                }
+                if let last = model.lastQuestion {
+                    lastQuestionView(last)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        howToRow(1, Copy.Muse.watchAskStepSettings)
+                        howToRow(2, Copy.Muse.watchAskStepPick)
+                        howToRow(3, Copy.Muse.watchAskStepHold)
+                    }
+                    Text(Copy.Muse.watchAskInApp)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func howToRow(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number)")
+                .font(AppFont.footnote.weight(.semibold))
+                .foregroundStyle(Tokens.tint)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(Tokens.tint.opacity(0.12)))
+                .accessibilityHidden(true)
+            Text(text)
+                .font(AppFont.subBody)
+                .foregroundStyle(Tokens.secondaryBody)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func lastQuestionView(_ last: MusePushToTalk.QuestionReport) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(Copy.Muse.lastQuestionHeader) · \(last.askedAt.formatted(.relative(presentation: .named)))")
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.meta)
+            if let heard = last.heard, !heard.isEmpty {
+                Text(Copy.Muse.heard(heard))
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if last.problem != .didNotCatch {
+                Text(Copy.Muse.heardNothing)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.secondaryBody)
+            }
+            HStack(spacing: 6) {
+                StatusDot(color: last.answered ? Tokens.good : Tokens.attention, size: .status)
+                Text(last.problem.map(Copy.Muse.lastQuestionProblem) ?? Copy.Muse.answered)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// D7b: one switch per action, on once paired.
+    private var watchActionsSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.actionsHeader)
+            ListCard {
+                actionToggle(.timer, Copy.Muse.actionTimer)
+                actionToggle(.alarm, Copy.Muse.actionAlarm)
+                actionToggle(.choice, Copy.Muse.actionChoice)
+            }
+            SettingsFooter(text: Copy.Muse.actionsFooter)
+        }
+    }
+
+    private func actionToggle(_ kind: MuseWatchActionKind, _ title: String) -> some View {
+        Toggle(isOn: Binding(
+            get: { model.preferences.watchActions.contains(kind) },
+            set: { on in model.setAction(kind, on: on) }
+        )) {
+            Text(title)
+                .font(AppFont.callout)
+                .foregroundStyle(Tokens.label)
+        }
+        .tint(Tokens.tint)
+    }
+
+    private var watchQuestionsSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.questionsHeader)
+            ListCard {
+                SettingsPushRow(
+                    title: Copy.Muse.chatRow,
+                    value: model.preferences.chatPlace == .watchChat ? Copy.Muse.chatWatch : Copy.Muse.chatMain
+                ) {
+                    ChoiceScreen(
+                        title: Copy.Muse.chatRow,
+                        options: [
+                            .init(value: MuseChatPlace.watchChat, label: Copy.Muse.chatWatch),
+                            .init(value: MuseChatPlace.mainChat, label: Copy.Muse.chatMain),
+                        ],
+                        selection: Binding(
+                            get: { model.preferences.chatPlace },
+                            set: { model.setChatPlace($0) }),
+                        footer: Copy.Muse.chatFooter)
+                }
+                SettingsPushRow(title: Copy.Muse.levelRow, value: levelLabel(model.preferences.voiceLevel)) {
+                    ChoiceScreen(
+                        title: Copy.Muse.levelRow,
+                        options: [.init(value: MuseVoiceLevel.automatic, label: Copy.Muse.levelAutomatic)]
+                            + stride(from: 0, through: MuseVoiceLevel.fixedRange.upperBound, by: 6).map {
+                                .init(value: MuseVoiceLevel.fixed(gainDB: $0), label: Copy.Muse.levelFixed($0))
+                            },
+                        selection: Binding(
+                            get: { model.preferences.voiceLevel },
+                            set: { model.setVoiceLevel($0) }),
+                        footer: levelFooter)
+                }
+            }
+        }
+    }
+
+    private func levelLabel(_ level: MuseVoiceLevel) -> String {
+        switch level {
+        case .automatic: return Copy.Muse.levelAutomatic
+        case .fixed(let gain): return Copy.Muse.levelFixed(gain)
+        }
+    }
+
+    /// What Automatic does, and what the last question needed, so a fixed level is chosen
+    /// from evidence.
+    private var levelFooter: String {
+        guard let gain = model.lastQuestion?.level?.gainDB else { return Copy.Muse.levelFooterAutomatic }
+        return Copy.Muse.levelFooterAutomatic + " " + Copy.Muse.levelLast(Int(gain.rounded()))
+    }
+
     private var askSection: some View {
         VStack(alignment: .leading, spacing: Tokens.blockGap) {
             SettingsSectionHeader(title: Copy.Muse.askHeader)
@@ -539,6 +692,8 @@ final class MuseScreenModel {
     /// When the watch's window closes, while one is open.
     private(set) var windowDeadline: Date?
     private(set) var ask: AskState = .idle
+    private(set) var preferences = MusePreferences()
+    private(set) var lastQuestion: MusePushToTalk.QuestionReport?
 
     var isPaired: Bool { pairedName != nil }
 
@@ -564,6 +719,12 @@ final class MuseScreenModel {
             case "answered":
                 pairedName = name
                 ask = .answered("It's 72°F and sunny in Austin right now, with a light breeze from the south.", complete: true)
+            case "spoken":
+                pairedName = name
+                lastQuestion = MusePushToTalk.QuestionReport(
+                    askedAt: Date().addingTimeInterval(-95), seconds: 2.4, missingFrames: 0,
+                    level: nil, heard: "what's the weather in Austin this afternoon", answered: true,
+                    problem: nil)
             default: pairedName = name
             }
         }
@@ -585,6 +746,36 @@ final class MuseScreenModel {
     func followToken() async {
         guard let service else { return }
         for await has in service.hasSDKToken.stream() { hasToken = has }
+    }
+
+    func followPreferences() async {
+        guard !previewing else { return }
+        for await value in MuseComposition.preferences.current.stream() { preferences = value }
+    }
+
+    func followLastQuestion() async {
+        guard !previewing, let reports = MuseComposition.lastQuestion else { return }
+        for await report in reports.stream() { lastQuestion = report }
+    }
+
+    func setAction(_ kind: MuseWatchActionKind, on: Bool) {
+        guard !previewing else {
+            if on { preferences.watchActions.insert(kind) } else { preferences.watchActions.remove(kind) }
+            return
+        }
+        MuseComposition.preferences.update {
+            if on { $0.watchActions.insert(kind) } else { $0.watchActions.remove(kind) }
+        }
+    }
+
+    func setChatPlace(_ place: MuseChatPlace) {
+        guard !previewing else { preferences.chatPlace = place; return }
+        MuseComposition.preferences.update { $0.chatPlace = place }
+    }
+
+    func setVoiceLevel(_ level: MuseVoiceLevel) {
+        guard !previewing else { preferences.voiceLevel = level; return }
+        MuseComposition.preferences.update { $0.voiceLevel = level }
     }
 
     private func apply(_ state: MuseGadgetService.PairingState) {

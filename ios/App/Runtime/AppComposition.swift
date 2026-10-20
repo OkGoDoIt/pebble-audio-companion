@@ -1369,6 +1369,7 @@ final class AppComposition {
         // them is a no-op below the OS version that has the framework.
         installEntitySurfaces()
         installNowPlaying()
+        MuseComposition.startPushToTalk()
         installTelemetry()
 
         // The device conditions the catch-up policy judges on. Pushed into the shared foreground

@@ -1,4 +1,5 @@
 import Foundation
+import WireProtocol
 
 // Settings · Muse: set Muse up (two steps), pair the watch, then ask it things.
 extension Copy {
@@ -73,13 +74,54 @@ extension Copy {
         // word, until the model's own function supplies them.
         static let whatGoesHeader = "What goes to Meta"
         static let questionsLine =
-            "The questions you ask Muse go to Meta as text, and its answers come back. Nothing "
-            + "goes while you aren't asking."
+            "The questions you ask Muse go to Meta: typed ones as text, spoken ones as a short "
+            + "recording. Its answers come back as text. Nothing goes while you aren't asking."
         static let trainingLine =
             "Meta may use your questions to improve its AI. You can turn that off in the Muse app."
 
-        // Asking.
-        static let askHeader = "Ask Muse"
+        // Asking from the watch.
+        static let watchAskTitle = "Ask from your watch"
+        static let watchAskStepSettings = "On your watch, open Settings › Quick Launch."
+        static let watchAskStepPick = "Choose Hold Up, Hold Center or Hold Down, then Apps › Muse."
+        static let watchAskStepHold = "On your watch face, hold that button, ask, and let go."
+        static let watchAskInApp = "Or open Muse on your watch and hold the center button."
+        static let lastQuestionHeader = "Last question"
+        static func heard(_ text: String) -> String { "\u{201C}\(text)\u{201D}" }
+        static let heardNothing = "Muse didn't catch the words."
+        static let answered = "Answered on your watch"
+        static func lastQuestionProblem(_ error: AssistantError) -> String {
+            switch error {
+            case .notSetUp: return "Muse needs setting up again"
+            case .unreachable: return "Couldn't reach Muse"
+            case .noAnswer: return "Muse didn't answer"
+            case .didNotCatch: return "Too short to ask"
+            case .busy: return "Muse was busy"
+            }
+        }
+
+        // What Muse can do on the watch (D7b): a switch each, on once paired.
+        static let actionsHeader = "What Muse can do on your watch"
+        static let actionTimer = "Set timers"
+        static let actionAlarm = "Set alarms"
+        static let actionChoice = "Ask you to choose"
+        static let actionsFooter = "Only while it's answering a question you asked. Only the outcome goes back."
+
+        // Questions from the watch.
+        static let questionsHeader = "Questions from your watch"
+        static let chatRow = "Go to"
+        static let chatWatch = "Their own chat"
+        static let chatMain = "Your main chat"
+        static let chatFooter = "Where they appear in the Muse app."
+        static let levelRow = "Voice level"
+        static let levelAutomatic = "Automatic"
+        static func levelFixed(_ gain: Int) -> String { gain == 0 ? "No boost" : "+\(gain) dB" }
+        static let levelFooterAutomatic = "Each question is measured and raised to a level Muse hears well."
+        static func levelLast(_ gain: Int) -> String {
+            gain <= 0 ? "Your last question needed no boost." : "Your last question was raised \(gain) dB."
+        }
+
+        // Asking by typing.
+        static let askHeader = "Type a question"
         static let askPlaceholder = "Ask Muse something"
         static let askSend = "Ask"
         static let asking = "Asking Muse…"
