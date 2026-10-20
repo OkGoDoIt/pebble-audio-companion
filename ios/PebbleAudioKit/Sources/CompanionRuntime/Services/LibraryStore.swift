@@ -54,6 +54,12 @@ public struct LibraryStore: Sendable {
         try await queries.rows(overlappingMs: window)
     }
 
+    /// Conversations deleted but still in their undo window: hidden from everything that reads
+    /// them out, as if already gone.
+    public func pendingDeleteConversationIds() async -> Set<String> {
+        await deferredDeletes?.hiddenConversationIds ?? []
+    }
+
     /// Every segment's conversation, in one read — see `ConversationQueries.conversationIdsBySegment`.
     public func conversationIdsBySegment() async throws -> [String: String] {
         try await queries.conversationIdsBySegment()

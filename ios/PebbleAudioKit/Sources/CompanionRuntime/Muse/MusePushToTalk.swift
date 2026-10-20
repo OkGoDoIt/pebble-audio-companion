@@ -20,7 +20,7 @@ extension ReceiverService: MuseAssistantLink {}
 /// decoded, brought to a level a recognizer can hear, and sent as one voice note. What Muse heard,
 /// what it is doing and its answer go back to the watch as they arrive. While it answers, Muse
 /// may set a timer or an alarm on the watch, or put a choice to the wearer.
-public actor MusePushToTalk {
+public actor MusePushToTalk: MuseWatchSide {
     /// The last question, for the Muse screen: what Muse heard, and what was done to the audio.
     public struct QuestionReport: Equatable, Sendable {
         public let askedAt: Date
@@ -75,8 +75,9 @@ public actor MusePushToTalk {
     static let instructions =
         "Asked on a Pebble watch. Your reply is read as plain text on the watch's small screen: "
         + "answer in a few short sentences, without tables, images or links."
-    /// The longest Muse may take over an answer.
-    static let answerTimeout: Duration = .seconds(90)
+    /// The longest Muse may take over an answer: room for a data call held open while the person
+    /// answers (`MuseTools.holdLimitSeconds`) and the answer after it.
+    static let answerTimeout: Duration = .seconds(MuseTools.dataCallLimitSeconds + 60)
     /// A link to Muse stays open this long after an answer, for a follow-up.
     static let followUpWindow: Duration = .seconds(60)
     /// Fewer frames than this (0.2 s) is not a question.
@@ -128,12 +129,20 @@ public actor MusePushToTalk {
     private var sending = false
 
     private var nextActionID = 0
+    /// Muse's calls still running: the link must not close under one.
+    private var commandsInFlight = 0
+    private let tools: MuseTools
+    private let hasData: Bool
     private var actionWaiters: [Int: CheckedContinuation<WatchActionResult?, Never>] = [:]
 
     public init(
         link: any MuseAssistantLink,
         connector: any MuseVoiceConnector,
         preferences: MusePreferencesStore,
+        data: (any MuseDataProvider)? = nil,
+        eventKit: MuseEventKitSource = MuseEventKitSource(),
+        // MuseTools.holdLimitSeconds: a little under the 180 s Muse is given for a data call.
+        toolHoldLimit: Duration = .seconds(170),
         keepAwake: @escaping @Sendable () -> Void = {},
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -142,6 +151,9 @@ public actor MusePushToTalk {
         self.preferences = preferences
         self.keepAwake = keepAwake
         self.log = log
+        self.hasData = data != nil
+        self.tools = MuseTools(
+            preferences: preferences, data: data, eventKit: eventKit, holdLimit: toolHoldLimit, log: { log("tools: \($0)") })
     }
 
     /// Starts listening for questions. `paired` follows whether Muse is set up: while it is, the
@@ -354,7 +366,7 @@ public actor MusePushToTalk {
         let prefs = preferences.current.value
         let chatID: String? = prefs.chatPlace == .watchChat ? preferences.watchChatID() : nil
         let opened = try await connector.open(
-            chatID: chatID, commands: Self.commands(for: prefs.watchActions)
+            chatID: chatID, commands: MuseTools.commands(for: prefs, hasData: hasData)
         ) { [weak self] command, params, _ in
             guard let self else { return ["ok": false, "error": "The watch is not available."] }
             return await self.runCommand(command, params)
@@ -374,6 +386,10 @@ public actor MusePushToTalk {
 
     private func closeIdle() async {
         if let turn, !turn.finished { return }
+        if commandsInFlight > 0 {
+            scheduleIdleClose()
+            return
+        }
         let open = conversation
         conversation = nil
         await open?.close()
@@ -500,108 +516,62 @@ public actor MusePushToTalk {
         return false
     }
 
-    // MARK: - Watch actions
+    // MARK: - Watch actions and tools
 
-    static let timerCommand = "watch.set_timer"
-    static let alarmCommand = "watch.set_alarm"
-    static let choiceCommand = "watch.choose"
-
-    /// The gadget's commands for the actions the person allows.
-    static func commands(for allowed: Set<MuseWatchActionKind>) -> MuseJSON {
-        func param(_ type: String, _ description: String) -> MuseJSON {
-            ["type": .string(type), "description": .string(description)]
-        }
-        var commands: [String: MuseJSON] = [:]
-        if allowed.contains(.timer) {
-            commands[timerCommand] = [
-                "description": "Start a countdown timer on the user's Pebble watch. When it ends, the watch buzzes and shows its label.",
-                "required": ["seconds": param("integer", "How long, in seconds, from 1 to 86400.")],
-                "optional": ["label": param("string", "A word or two shown when it ends, like \"Pasta\".")],
-                "timeout_ms": 15_000,
-            ]
-        }
-        if allowed.contains(.alarm) {
-            commands[alarmCommand] = [
-                "description": "Set a one-time alarm on the user's Pebble watch, at a time of day in the watch's local time. It rings once, at the next time that clock time comes round.",
-                "required": [
-                    "hour": param("integer", "Hour, 0 to 23."),
-                    "minute": param("integer", "Minute, 0 to 59."),
-                ],
-                "optional": ["label": param("string", "What it is for, like \"Flight\".")],
-                "timeout_ms": 15_000,
-            ]
-        }
-        if allowed.contains(.choice) {
-            commands[choiceCommand] = [
-                "description": "Ask the user to pick one of 2 to 6 short options on their Pebble watch, when you need their decision to go on. Returns the option they picked, or that they declined or did not answer.",
-                "required": [
-                    "question": param("string", "The question, at most 120 characters."),
-                    "options": param("string", "The options, one per line, each at most 48 characters."),
-                ],
-                "optional": ["timeout_seconds": param("integer", "How long to wait for an answer, 10 to 300 seconds; 60 if not given.")],
-                "timeout_ms": 330_000,
-            ]
-        }
-        return .object(commands)
+    /// What Muse calls while answering: runs on the watch or the phone, through `MuseTools`.
+    func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
+        commandsInFlight += 1
+        defer { commandsInFlight -= 1 }
+        return await tools.run(command, params, watch: self)
     }
 
-    /// Runs one of the gadget's commands on the watch.
-    func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
-        let allowed = preferences.current.value.watchActions
-        let request: WatchActionRequest
-        let kind: MuseWatchActionKind
-        switch command {
-        case Self.timerCommand:
-            kind = .timer
-            guard let seconds = params["seconds"]?.number.map({ Int($0.rounded()) }), (1...86_400).contains(seconds) else {
-                return ["ok": false, "error": "seconds must be between 1 and 86400"]
-            }
-            request = .timer(seconds: seconds, label: params["label"]?.string ?? "")
-        case Self.alarmCommand:
-            kind = .alarm
-            guard let hour = params["hour"]?.number.map({ Int($0) }), (0...23).contains(hour),
-                let minute = params["minute"]?.number.map({ Int($0) }), (0...59).contains(minute)
-            else { return ["ok": false, "error": "hour must be 0-23 and minute 0-59"] }
-            request = .alarm(hour: hour, minute: minute, label: params["label"]?.string ?? "")
-        case Self.choiceCommand:
-            kind = .choice
-            let options = Self.options(params["options"])
-            guard let question = params["question"]?.string, !question.isEmpty,
-                (ProtocolConstants.watchActionMinOptions...ProtocolConstants.watchActionMaxOptions).contains(options.count)
-            else { return ["ok": false, "error": "a question and 2 to 6 options are needed"] }
-            let timeout = params["timeout_seconds"]?.number.map { Int($0) } ?? 60
-            request = .choose(question: question, options: options, timeoutSeconds: min(max(timeout, 10), 300))
-        default:
-            return ["ok": false, "error": "unsupported command"]
-        }
-        guard allowed.contains(kind) else {
-            return ["ok": false, "error": "The user has turned this off for their watch."]
-        }
-
+    /// Sends one watch action and waits up to `wait` for how it ended; nil when the watch never
+    /// took it or never answered.
+    func runWatchAction(_ request: WatchActionRequest, wait: Duration) async -> WatchActionResult? {
         nextActionID = nextActionID % 255 + 1
         let actionID = nextActionID
         let messages: [WatchAction]
         do {
             messages = try request.messages(actionId: actionID) { 0 }
         } catch {
-            return ["ok": false, "error": .string("\(error)")]
+            log("watch action \(actionID): \(error)")
+            return nil
         }
-        if case .choose = request, let current = turn {
-            // The watch is showing the choice now: keep its screen from deciding Muse went quiet.
-            send(turn: current.id, .status, text: Array("Waiting for your pick".utf8))
-        }
-        log("watch action \(actionID): \(kind.rawValue)")
+        log("watch action \(actionID): \(Self.describe(request))")
         for message in messages {
             let delivered = await deliver { token in
                 WatchAction(requestToken: token, actionId: message.actionId, flags: message.flags, payload: message.payload).encode()
             }
-            guard delivered else { return ["ok": false, "error": "The watch isn't reachable right now."] }
+            guard delivered else {
+                log("watch action \(actionID): the watch didn't take it")
+                return nil
+            }
         }
-        let wait: Duration
-        if case .choose(_, _, let timeout) = request { wait = .seconds(timeout + 15) } else { wait = .seconds(10) }
         let result = await waitForResult(actionID, wait)
-        log("watch action \(actionID): \(result.map { "\($0.status.map { "\($0)" } ?? "\($0.statusRaw)")" } ?? "no answer")")
-        return Self.commandResult(request, result)
+        log("watch action \(actionID): \(result.map { $0.status.map { "\($0)" } ?? "\($0.statusRaw)" } ?? "no answer")")
+        return result
+    }
+
+    /// Says on the watch what is happening, while a question is open: it also keeps the
+    /// watch's screen from deciding Muse went quiet.
+    func showStatus(_ text: String) async {
+        guard let current = turn else { return }
+        send(turn: current.id, .status, text: Self.cut(text, bytes: 63))
+    }
+
+    /// A log line that names what was asked, never what it carries.
+    static func describe(_ request: WatchActionRequest) -> String {
+        switch request {
+        case .timer: return "timer"
+        case .alarm: return "alarm"
+        case .choose(_, let options, _): return "choice of \(options.count)"
+        case .music(let command): return "music \(command)"
+        case .quietTime(let on, _): return "Quiet Time \(on ? "on" : "off")"
+        case .launchApp: return "open an app"
+        case .findWatch: return "find the watch"
+        case .health(let metric, let days): return "health \(metric) for \(days) day(s)"
+        case .notice: return "notice"
+        }
     }
 
     private func waitForResult(_ actionID: Int, _ wait: Duration) async -> WatchActionResult? {
@@ -616,46 +586,6 @@ public actor MusePushToTalk {
 
     private func resolveAction(_ actionID: Int, _ result: WatchActionResult?) {
         actionWaiters.removeValue(forKey: actionID)?.resume(returning: result)
-    }
-
-    static func commandResult(_ request: WatchActionRequest, _ result: WatchActionResult?) -> MuseJSON {
-        guard let result else { return ["ok": false, "error": "The watch didn't answer."] }
-        switch result.status {
-        case .done?:
-            switch request {
-            case .timer(let seconds, _):
-                return ["ok": true, "payload": ["set": true, "seconds": .number(Double(seconds))]]
-            case .alarm(let hour, let minute, _):
-                return ["ok": true, "payload": ["set": true, "time": .string(String(format: "%02d:%02d", hour, minute))]]
-            case .choose(_, let options, _):
-                let index = result.value
-                guard options.indices.contains(index) else { return ["ok": false, "error": "The watch sent back an option that wasn't offered."] }
-                return ["ok": true, "payload": ["chosen": .string(options[index]), "index": .number(Double(index))]]
-            }
-        case .declined?:
-            return ["ok": true, "payload": ["answered": false, "declined": true]]
-        case .timedOut?:
-            return ["ok": true, "payload": ["answered": false, "declined": false]]
-        case .unsupported?:
-            return ["ok": false, "error": "The watch can't do this."]
-        case .failed?, nil:
-            return ["ok": false, "error": "The watch couldn't do this."]
-        }
-    }
-
-    /// Options as one per line (the registered form), or a JSON array if Muse sends one.
-    static func options(_ value: MuseJSON?) -> [String] {
-        let raw: [String]
-        if let array = value?.array {
-            raw = array.compactMap(\.string)
-        } else if let text = value?.string {
-            raw = text.contains("\n") ? text.components(separatedBy: "\n") : text.components(separatedBy: "|")
-        } else {
-            raw = []
-        }
-        return raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : $0 }
-            .filter { !$0.isEmpty }
     }
 
     // MARK: - Audio

@@ -18,11 +18,38 @@ public enum MuseChatPlace: String, Equatable, Sendable, CaseIterable {
     case mainChat
 }
 
-/// What Muse may do on the watch while answering.
+/// What Muse may do on the watch while answering (docs/privacy-model.md, D7b). Nothing but the
+/// outcome goes back, except what is playing when asked.
 public enum MuseWatchActionKind: String, Equatable, Sendable, CaseIterable {
     case timer
     case alarm
     case choice
+    case music
+    case quietTime
+    case launchApp
+    case findWatch
+    /// Pause or resume recording, and mark a moment.
+    case recording
+}
+
+/// What Muse may read while answering, each sent to Meta only when it asks.
+public enum MuseDataSource: String, Equatable, Sendable, CaseIterable {
+    /// Transcripts, recaps, and answers from the person's own AI about their recordings (D7a).
+    case conversations
+    /// Steps, distance, active time, calories, sleep and heart rate from the watch.
+    case health
+    case calendar
+    case reminders
+    case followUps
+}
+
+/// Whether Muse may use a data source.
+public enum MuseAccess: String, Equatable, Sendable, CaseIterable {
+    /// The first time Muse asks, the watch asks the wearer.
+    case ask
+    case allowed
+    /// Muse isn't told the source exists.
+    case off
 }
 
 /// The person's Muse choices. Kept in the app's own defaults: none of it is secret.
@@ -31,15 +58,24 @@ public struct MusePreferences: Equatable, Sendable {
     public var chatPlace: MuseChatPlace = .watchChat
     /// On once paired, each with its own switch (docs/privacy-model.md, D7b).
     public var watchActions: Set<MuseWatchActionKind> = Set(MuseWatchActionKind.allCases)
+    /// Ask first until the wearer says otherwise.
+    public var dataAccess: [MuseDataSource: MuseAccess] = [:]
+    /// Sources allowed on the watch while iOS hadn't given the app access yet: the next time the
+    /// app comes to the foreground it asks iOS, once.
+    public var pendingPhoneAccess: Set<MuseDataSource> = []
 
     public init(
         voiceLevel: MuseVoiceLevel = .automatic, chatPlace: MuseChatPlace = .watchChat,
-        watchActions: Set<MuseWatchActionKind> = Set(MuseWatchActionKind.allCases)
+        watchActions: Set<MuseWatchActionKind> = Set(MuseWatchActionKind.allCases),
+        dataAccess: [MuseDataSource: MuseAccess] = [:]
     ) {
         self.voiceLevel = voiceLevel
         self.chatPlace = chatPlace
         self.watchActions = watchActions
+        self.dataAccess = dataAccess
     }
+
+    public func access(_ source: MuseDataSource) -> MuseAccess { dataAccess[source] ?? .ask }
 }
 
 /// Reads and writes `MusePreferences`, and publishes them.
@@ -53,6 +89,8 @@ public final class MusePreferencesStore: @unchecked Sendable {
         static let chatPlace = "muse.chatPlace"
         static let actionsOff = "muse.watchActionsOff"
         static let watchChatID = "muse.watchChatID"
+        static func access(_ source: MuseDataSource) -> String { "muse.access.\(source.rawValue)" }
+        static let pendingPhoneAccess = "muse.pendingPhoneAccess"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -71,6 +109,15 @@ public final class MusePreferencesStore: @unchecked Sendable {
             defaults.set(value.chatPlace.rawValue, forKey: Key.chatPlace)
             let off = MuseWatchActionKind.allCases.filter { !value.watchActions.contains($0) }.map(\.rawValue)
             defaults.set(off, forKey: Key.actionsOff)
+            defaults.set(value.pendingPhoneAccess.map(\.rawValue).sorted(), forKey: Key.pendingPhoneAccess)
+            for source in MuseDataSource.allCases {
+                let access = value.access(source)
+                if access == .ask {
+                    defaults.removeObject(forKey: Key.access(source))
+                } else {
+                    defaults.set(access.rawValue, forKey: Key.access(source))
+                }
+            }
             return value
         }
         current.value = next
@@ -97,6 +144,12 @@ public final class MusePreferencesStore: @unchecked Sendable {
         }
         let off = Set((defaults.stringArray(forKey: Key.actionsOff) ?? []).compactMap(MuseWatchActionKind.init(rawValue:)))
         value.watchActions = Set(MuseWatchActionKind.allCases).subtracting(off)
+        value.pendingPhoneAccess = Set((defaults.stringArray(forKey: Key.pendingPhoneAccess) ?? []).compactMap(MuseDataSource.init(rawValue:)))
+        for source in MuseDataSource.allCases {
+            if let raw = defaults.string(forKey: Key.access(source)), let access = MuseAccess(rawValue: raw) {
+                value.dataAccess[source] = access
+            }
+        }
         return value
     }
 }

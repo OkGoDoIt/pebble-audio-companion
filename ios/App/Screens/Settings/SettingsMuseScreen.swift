@@ -1,6 +1,7 @@
 import CompanionRuntime
 import Receiver
 import SwiftUI
+import UIKit
 import WireProtocol
 
 /// Settings · Muse: set Muse up, pair the watch, then ask it things.
@@ -43,6 +44,7 @@ struct SettingsMuseScreen: View {
             MuseCard(dot: Tokens.good, headline: Copy.Muse.pairedTitle, line: Copy.Muse.pairedLine(name)) {}
             watchAskCard
             askSection
+            dataSourcesSection
             watchActionsSection
             watchQuestionsSection
             whatGoesSection
@@ -370,6 +372,91 @@ struct SettingsMuseScreen: View {
         }
     }
 
+    /// D7a, D7c-D7e: each source Ask first, Allowed or Off; Calendar and Reminders also need
+    /// iOS's permission, asked for here, never in the middle of a question.
+    private var dataSourcesSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.blockGap) {
+            SettingsSectionHeader(title: Copy.Muse.seeHeader)
+            ListCard {
+                sourceRow(.conversations, Copy.Muse.seeConversations, subtitle: Copy.Muse.seeConversationsSubtitle)
+                sourceRow(.health, Copy.Muse.seeHealth)
+                sourceRow(.calendar, Copy.Muse.seeCalendar, phone: model.calendarPermission)
+                sourceRow(.reminders, Copy.Muse.seeReminders, phone: model.remindersPermission)
+                sourceRow(.followUps, Copy.Muse.seeFollowUps)
+            }
+            SettingsFooter(text: Copy.Muse.seeFooter)
+        }
+        .onAppear { model.refreshPhonePermissions() }
+    }
+
+    private func sourceRow(
+        _ source: MuseDataSource, _ title: String, subtitle: String? = nil,
+        phone: MuseScreenModel.PhonePermission = .granted
+    ) -> some View {
+        let access = model.preferences.access(source)
+        // iOS said no: the row says so whatever Muse is set to, and offers the way to fix it.
+        let refused = access != .off && phone == .refused
+        // Set to Allowed by hand but iOS hasn't been asked (the request was dismissed).
+        let notAsked = access == .allowed && phone == .notAsked
+        return VStack(alignment: .leading, spacing: 8) {
+            NavigationLink {
+                ChoiceScreen(
+                    title: title,
+                    options: [
+                        .init(value: MuseAccess.ask, label: Copy.Muse.accessAsk),
+                        .init(value: MuseAccess.allowed, label: Copy.Muse.accessAllowed),
+                        .init(value: MuseAccess.off, label: Copy.Muse.accessOff),
+                    ],
+                    selection: Binding(get: { model.preferences.access(source) }, set: { model.setAccess(source, $0) }),
+                    footer: Copy.Muse.accessAskFooter)
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.label)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(AppFont.footnote)
+                                .foregroundStyle(Tokens.meta)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 10)
+                    Text(refused ? Copy.Muse.noPhoneAccess : accessLabel(access))
+                        .font(AppFont.subBody)
+                        .foregroundStyle(refused ? Tokens.attention : Tokens.meta)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Tokens.chevron)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            if refused || notAsked {
+                Button(refused ? Copy.Muse.openSettings : Copy.Muse.allowAccess) {
+                    if refused {
+                        model.openSystemSettings()
+                    } else {
+                        model.requestPhoneAccess(source)
+                    }
+                }
+                .buttonStyle(.smallBordered)
+            }
+        }
+    }
+
+    private func accessLabel(_ access: MuseAccess) -> String {
+        switch access {
+        case .ask: return Copy.Muse.accessAsk
+        case .allowed: return Copy.Muse.accessAllowed
+        case .off: return Copy.Muse.accessOff
+        }
+    }
+
     /// D7b: one switch per action, on once paired.
     private var watchActionsSection: some View {
         VStack(alignment: .leading, spacing: Tokens.blockGap) {
@@ -378,6 +465,11 @@ struct SettingsMuseScreen: View {
                 actionToggle(.timer, Copy.Muse.actionTimer)
                 actionToggle(.alarm, Copy.Muse.actionAlarm)
                 actionToggle(.choice, Copy.Muse.actionChoice)
+                actionToggle(.music, Copy.Muse.actionMusic)
+                actionToggle(.quietTime, Copy.Muse.actionQuietTime)
+                actionToggle(.launchApp, Copy.Muse.actionLaunchApp)
+                actionToggle(.findWatch, Copy.Muse.actionFindWatch)
+                actionToggle(.recording, Copy.Muse.actionRecording)
             }
             SettingsFooter(text: Copy.Muse.actionsFooter)
         }
@@ -845,6 +937,49 @@ final class MuseScreenModel {
     func setChatPlace(_ place: MuseChatPlace) {
         guard !previewing else { preferences.chatPlace = place; return }
         MuseComposition.preferences.update { $0.chatPlace = place }
+    }
+
+    enum PhonePermission: Equatable { case granted, notAsked, refused }
+
+    private(set) var calendarPermission: PhonePermission = .granted
+    private(set) var remindersPermission: PhonePermission = .granted
+
+    func refreshPhonePermissions() {
+        guard !previewing else { return }
+        calendarPermission = MuseEventKitSource.calendarAuthorized ? .granted : (MuseEventKitSource.calendarRefused ? .refused : .notAsked)
+        remindersPermission = MuseEventKitSource.remindersAuthorized ? .granted : (MuseEventKitSource.remindersRefused ? .refused : .notAsked)
+    }
+
+    func setAccess(_ source: MuseDataSource, _ access: MuseAccess) {
+        if previewing {
+            preferences.dataAccess[source] = access
+            return
+        }
+        MuseComposition.preferences.update { $0.dataAccess[source] = access }
+        // Set to Allowed by hand: iOS's own permission is asked right then, while the screen is
+        // up. Ask first never asks iOS up front; that waits until Muse first wants the source
+        // (docs/privacy-model.md, D7d).
+        if access == .allowed, source == .calendar || source == .reminders {
+            requestPhoneAccess(source)
+        }
+    }
+
+    func requestPhoneAccess(_ source: MuseDataSource) {
+        Task {
+            let events = MuseComposition.eventKit
+            switch source {
+            case .calendar: _ = await events.requestCalendar()
+            case .reminders: _ = await events.requestReminders()
+            default: break
+            }
+            refreshPhonePermissions()
+        }
+    }
+
+    func openSystemSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
     }
 
     func setVoiceLevel(_ level: MuseVoiceLevel) {

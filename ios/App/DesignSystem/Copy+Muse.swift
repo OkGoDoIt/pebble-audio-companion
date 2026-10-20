@@ -104,6 +104,32 @@ extension Copy {
         static let actionTimer = "Set timers"
         static let actionAlarm = "Set alarms"
         static let actionChoice = "Ask you to choose"
+        static let actionMusic = "Control music"
+        static let actionQuietTime = "Turn on Quiet Time"
+        static let actionLaunchApp = "Open watch apps"
+        static let actionFindWatch = "Find your watch"
+        static let actionRecording = "Pause or resume recording"
+
+        // What Muse can see (D7a, D7c-D7e), word for word from docs/privacy-model.md.
+        static let seeHeader = "What Muse can see"
+        static let seeConversations = "Your conversations"
+        static let seeConversationsSubtitle = "Includes what other people said."
+        static let seeHealth = "Health"
+        static let seeCalendar = "Calendar"
+        static let seeReminders = "Reminders"
+        static let seeFollowUps = "Follow-ups"
+        static let accessAsk = "Ask first"
+        static let accessAllowed = "Allowed"
+        static let accessOff = "Off"
+        static let seeFooter = "Muse reads these only while answering a question you asked on your watch. What it reads goes to Meta."
+        static let accessAskFooter = "The first time Muse wants it, your watch asks you."
+        static let noPhoneAccess = "No access in iPhone Settings"
+        static let allowAccess = "Allow Access"
+        static let openSettings = "Open Settings"
+
+        // A moment Muse marked, as it appears in Follow-ups.
+        static let markedMoment = "Marked moment"
+        static func marked(_ label: String) -> String { "Marked: \(label)" }
         static let actionsFooter = "Only while it's answering a question you asked. Only the outcome goes back."
 
         // Questions from the watch.
