@@ -950,9 +950,10 @@ extension LiveWorld: AskDataSource {
                     header: header, coverageLine: plan.coverage.promptLine, question: question,
                     rendered: render(plan.batches.first ?? [])))
         } else {
+            // Labelled for what it is: the sweep would otherwise call these "TRANSCRIPTS".
             answer = try await sweep(
                 plan: plan, question: question, header: header, threadContext: nil,
-                render: render)
+                sourcesLabel: "SUMMARIES", render: render)
         }
         return try await save(
             question: question,
@@ -985,6 +986,7 @@ extension LiveWorld: AskDataSource {
         question: String,
         header: String,
         threadContext: String?,
+        sourcesLabel: String = "TRANSCRIPTS",
         render: @escaping @Sendable ([CitableExcerpt]) -> String
     ) async throws -> String {
         let total = plan.batches.count
@@ -999,7 +1001,7 @@ extension LiveWorld: AskDataSource {
                     var content = header
                     content += "\n\nQUESTION: \(question)"
                     content += "\n\nThis is part \(index + 1) of \(total) of the range."
-                    content += "\n\nTRANSCRIPTS:\n" + render(batch)
+                    content += "\n\n\(sourcesLabel):\n" + render(batch)
                     let text = try await self.run(
                         prompt: AiPromptTemplates.askSweepFindings, content: content)
                     return (index, text)
