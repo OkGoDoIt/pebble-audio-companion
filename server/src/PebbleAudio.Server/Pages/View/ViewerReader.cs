@@ -179,7 +179,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			await ClipStateAsync(call, c, span.From, span.To, moment ?? span.From, cancellationToken));
 	}
 
-	private sealed record Speaker(string Label, string Name, bool Named, double Seconds, int Rank);
+	private sealed record Speaker(string Label, string Name, bool Named, double Seconds);
 
 	/// <summary>Everyone who speaks, most talk first. A label the app has not matched keeps the transcriber's number.</summary>
 	private static List<Speaker> Speakers(Conversation c, IReadOnlyList<TranscriptItem> items)
@@ -220,10 +220,10 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			.. order
 				.OrderByDescending(label => talk[label])
 				.ThenBy(label => order.IndexOf(label))
-				.Select((label, rank) =>
+				.Select(label =>
 				{
 					var name = names.GetValueOrDefault(label);
-					return new Speaker(label, name ?? (label == "?" ? "Someone" : $"Speaker {label}"), name is not null, talk[label], rank);
+					return new Speaker(label, name ?? (label == "?" ? "Someone" : $"Speaker {label}"), name is not null, talk[label]);
 				}),
 		];
 	}
