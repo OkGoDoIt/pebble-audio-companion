@@ -124,7 +124,7 @@ builder.Services.AddMcpServer(options =>
 		options.ServerInstructions = Instructions.Text;
 	})
 	.WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
-	.WithTools<StatusTools>();
+	.WithArchive();
 
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
