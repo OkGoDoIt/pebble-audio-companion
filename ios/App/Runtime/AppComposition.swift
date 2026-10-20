@@ -332,7 +332,16 @@ final class AppComposition {
         self.annotations = annotations
         let aiOutputs = AiOutputStore(db: database, nowMs: nowMs)
         self.aiOutputs = aiOutputs
-        let recapStore = DailyRecapStore(db: database, nowMs: nowMs)
+        // "Notify me when my recap is ready" listens where recaps are written, never on a timer.
+        // Its own store has no hook, so reading a recap cannot set it off again.
+        let recapReader = DailyRecapStore(db: database, nowMs: nowMs)
+        let recapNotifier = RecapReadyNotifier(
+            isEnabled: { UserDefaults.standard.bool(forKey: AppSettings.recapNotificationsKey) },
+            recap: { try? await recapReader.load(dateKey: $0) },
+            nowMs: nowMs)
+        let recapStore = DailyRecapStore(
+            db: database, nowMs: nowMs,
+            didWrite: { await recapNotifier.recapWritten(dateKey: $0) })
         self.recapStore = recapStore
         let personalContext = FilePersonalContextStore(root: containerRoot)
         self.personalContext = personalContext
