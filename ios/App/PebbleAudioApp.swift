@@ -161,6 +161,11 @@ struct PebbleAudioApp: App {
                         router.navigate(to: route)
                     }
                 }
+                // `-siri-snippet-preview`: the Ask My Archive card over everything, with made-up
+                // content, for light/dark screenshots (use with `-onboarding.skip`).
+                .overlay {
+                    if AskArchiveSnippetPreview.isRequested { AskArchiveSnippetPreview() }
+                }
                 #endif
         }
     }

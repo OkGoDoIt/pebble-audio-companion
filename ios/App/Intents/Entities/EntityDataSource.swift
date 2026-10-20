@@ -27,6 +27,9 @@ struct ConversationEntitySnapshot: Equatable, Sendable {
     var tags: [String]
     var isLive: Bool
     var transcript: String?
+    /// The names given to its speakers. Not gated: a name is what the person typed to label a
+    /// voice, the same tier as a tag.
+    var people: [String] = []
 }
 
 /// A saved note, body included only when the setting allows text out.
@@ -159,6 +162,7 @@ struct LiveEntityDataSource: EntityDataSource {
         var notes: NotesStore
         var followUps: FollowUpStore
         var recaps: DailyRecapStore
+        var people: PeopleStore
         var runtime: CompanionRuntime
         var donator: SpotlightDonator
         var visibility: SystemSearchVisibility
@@ -173,6 +177,7 @@ struct LiveEntityDataSource: EntityDataSource {
             notes: composition.notes,
             followUps: composition.followUps,
             recaps: composition.recapStore,
+            people: composition.people,
             runtime: composition.runtime,
             donator: composition.donator,
             visibility: EntityVisibility.current()
@@ -195,8 +200,14 @@ struct LiveEntityDataSource: EntityDataSource {
         return snapshot(
             row: detail.row,
             transcript: graph.visibility.includesText
-                ? transcript(of: detail, transcripts: graph.transcripts) : nil
+                ? transcript(of: detail, transcripts: graph.transcripts) : nil,
+            people: await people(of: id, in: graph)
         )
+    }
+
+    private static func people(of conversationId: String, in graph: Graph) async -> [String] {
+        let assignments = (try? await graph.people.assignments(forConversation: conversationId)) ?? []
+        return EntityMapping.people(assignments.map(\.personName))
     }
 
     func conversations(scope: EntityScope, tag: String?, limit: Int) async
@@ -219,7 +230,10 @@ struct LiveEntityDataSource: EntityDataSource {
             {
                 transcript = Self.transcript(of: detail, transcripts: graph.transcripts)
             }
-            out.append(Self.snapshot(row: row, transcript: transcript))
+            out.append(
+                Self.snapshot(
+                    row: row, transcript: transcript,
+                    people: await Self.people(of: row.id, in: graph)))
         }
         return out
     }
@@ -242,7 +256,7 @@ struct LiveEntityDataSource: EntityDataSource {
         return out
     }
 
-    private static func snapshot(row: ConversationListRow, transcript: String?)
+    private static func snapshot(row: ConversationListRow, transcript: String?, people: [String])
         -> ConversationEntitySnapshot
     {
         ConversationEntitySnapshot(
@@ -255,7 +269,8 @@ struct LiveEntityDataSource: EntityDataSource {
             dateKey: row.dateKey,
             tags: row.tags,
             isLive: row.isLive,
-            transcript: transcript
+            transcript: transcript,
+            people: people
         )
     }
 

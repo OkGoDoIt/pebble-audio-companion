@@ -18,6 +18,14 @@ import SearchKit
 // macro fixes the schema at the type, so there is no iOS 26 shape of it. Below 27 nothing here
 // exists and the app behaves exactly as it did.
 //
+// How it reaches the index: through the Spotlight donation, with this entity associated to the
+// donated item (`EntityAssociation`), not through `CSSearchableIndex.indexAppEntities`. Apple
+// documents that indexing an entity AND a searchable item for the same content shows both; the
+// item has to exist (Ask's semantic recall reads it back by its `conversation:` id, and a tapped
+// result is routed by it), so association is the one-document way. Whatever the entity makes
+// searchable — title, summary, tags, people, the transcript under `.full` — `CoreSpotlightIndexer`
+// writes onto that item too, so nothing depends on the association merging attributes.
+//
 // Two things the metadata processor taught, recorded because the documentation does not say
 // them: a schema entity must NOT declare `typeDisplayRepresentation` (the schema names the
 // type — "Note" here — and the processor warns on an override), and every schema property must
@@ -53,6 +61,16 @@ struct ConversationEntity: IndexedEntity {
     @Property(title: "Tags")
     var tags: [String]
 
+    /// The names given to its speakers ("Sam", "Dana") — who the conversation was with, as far
+    /// as the person has said. Empty until someone names a speaker.
+    @Property(title: "People")
+    var people: [String]
+
+    /// The day it belongs to, written out ("Tuesday, October 20, 2026"): what a Shortcut or a
+    /// model reading this entity can quote without doing date arithmetic on `creationDate`.
+    @Property(title: "Day")
+    var day: String
+
     @Property(title: "Duration (minutes)")
     var durationMinutes: Int
 
@@ -75,7 +93,9 @@ struct ConversationEntity: IndexedEntity {
         attributes.title = String(name.characters)
         attributes.contentDescription = summary
         attributes.textContent = transcript
-        attributes.keywords = tags.isEmpty ? nil : tags
+        let keywords = tags + people.filter { !tags.contains($0) }
+        attributes.keywords = keywords.isEmpty ? nil : keywords
+        attributes.participants = people.isEmpty ? nil : people
         attributes.contentCreationDate = creationDate
         attributes.startDate = creationDate
         attributes.endDate = modificationDate
@@ -99,6 +119,8 @@ struct ConversationEntity: IndexedEntity {
         transcript = EntityMapping.indexedTranscript(snapshot.transcript, visibility: visibility)
         summary = snapshot.summary?.nilIfBlank
         tags = snapshot.tags
+        people = EntityMapping.people(snapshot.people)
+        day = EntityMapping.dayName(dateKey: snapshot.dateKey, timeZoneID: snapshot.timeZoneID)
         durationMinutes = Int(max(0, snapshot.endMs - snapshot.startMs) / 60_000)
         subtitle = EntityMapping.conversationSubtitle(
             startMs: snapshot.startMs, dateKey: snapshot.dateKey, timeZoneID: snapshot.timeZoneID
@@ -122,7 +144,8 @@ struct ConversationEntity: IndexedEntity {
                 dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: TimeZone.current.identifier),
                 tags: donation.keywords,
                 isLive: false,
-                transcript: donation.textContent
+                transcript: donation.textContent,
+                people: donation.people
             ),
             visibility: visibility
         )

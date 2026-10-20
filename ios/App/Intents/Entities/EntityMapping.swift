@@ -52,6 +52,28 @@ enum EntityMapping {
         "\(TimeFmt.dayLabel(dateKey: dateKey)) · \(time(ms: startMs, timeZoneID: timeZoneID))"
     }
 
+    /// The day a conversation belongs to, as an indexed property: always the absolute date
+    /// ("Tuesday, October 20, 2026"), never "Today". The index keeps what it is given for weeks,
+    /// and a document that says "Today" is wrong from the next morning on.
+    static func dayName(dateKey: String, timeZoneID: String) -> String {
+        let zone = TimeZone(identifier: timeZoneID) ?? .current
+        guard let bounds = LogicalDay.bounds(ofDateKey: dateKey, timeZoneID: zone.identifier) else {
+            return dateKey
+        }
+        return date(ms: bounds.startMs).formatted(
+            Date.FormatStyle(date: .complete, time: .omitted, timeZone: zone))
+    }
+
+    /// Speaker names as the entity carries them: trimmed, each once, in assignment order.
+    static func people(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        return names.compactMap { name in
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { return nil }
+            return trimmed
+        }
+    }
+
     /// Short clock time in a named zone; falls back to the device zone for an unknown id.
     static func time(ms: Int64, timeZoneID: String) -> String {
         let zone = TimeZone(identifier: timeZoneID) ?? .current
