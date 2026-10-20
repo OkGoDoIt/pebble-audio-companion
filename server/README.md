@@ -67,8 +67,11 @@ Built:
   `IEventPublisher`.
 - CI and deploy workflows, mirroring Situ.
 
-Not built yet: the import from a Desktop backup, the MCP Apps widgets, and the conversation viewer (tool results
-and event payloads already link to its `/c/{id}?t=…`, `/d/{day}`, and `/b/week|month/…` pages).
+The import from a Desktop backup is a Mac tool beside the app, [`ios/Tools/ArchiveImport`](../ios/Tools/ArchiveImport):
+it links like a phone and sends the phone's own payloads.
+
+Not built yet: the MCP Apps widgets and the conversation viewer (tool results and event payloads already link to
+its `/c/{id}?t=…`, `/d/{day}`, and `/b/week|month/…` pages).
 
 ## Layout
 
