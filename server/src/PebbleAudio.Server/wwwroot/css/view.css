@@ -156,7 +156,7 @@ h1, h2, h3, p { margin: 0; }
 .tb { min-width: 0; }
 .say { padding: 0 0 14px; font-size: var(--fs-callout); line-height: 1.55; color: var(--label); text-wrap: pretty; overflow-wrap: anywhere; }
 .say.low, .bit.low { color: var(--tertiary); }
-.who { font: 600 var(--fs-meta)/1 var(--font); letter-spacing: 0.07em; text-transform: uppercase; margin-right: 0.55em; }
+.who { display: inline-block; font: 600 var(--fs-meta)/1 var(--font); letter-spacing: 0.07em; text-transform: uppercase; margin-right: 0.55em; }
 .who.s0 { color: var(--lane-0-text); }
 .who.s1 { color: var(--lane-1-text); }
 .who.s2 { color: var(--lane-2-text); }
