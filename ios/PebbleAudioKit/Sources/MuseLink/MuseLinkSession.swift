@@ -381,9 +381,24 @@ public actor MuseLinkSession {
         }
     }
 
+    /// One subscription row, with its name under `event` wherever Muse put it: Meta's ESP32
+    /// gadget reads the name from `event` or `event_name`, at the top level or in the payload.
     static func chatEvent(_ raw: Data) -> MuseJSON? {
-        guard let event = MuseJSON.parse(raw), event["type"]?.string == "event" else { return nil }
-        return event
+        guard var event = MuseJSON.parse(raw)?.object, event["type"]?.string == "event" else { return nil }
+        if event["event"]?.string == nil {
+            let name = event["event_name"]?.string ?? event["payload"]?["event"]?.string
+                ?? event["payload"]?["event_name"]?.string
+            if let name { event["event"] = .string(name) }
+        }
+        return .object(event)
+    }
+
+    /// What a chat event looks like, for the flight recorder: its name and the payload's keys,
+    /// never their values (no question or answer text, no ids).
+    public static func shape(_ event: MuseJSON) -> String {
+        let name = event["event"]?.string ?? "?"
+        let keys = event["payload"]?.object?.keys.sorted().joined(separator: ",") ?? "-"
+        return "\(name)[\(keys)]"
     }
 
     private func startStream(

@@ -66,21 +66,35 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
         wav: Data, instructions: String, timeout: Duration,
         onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
     ) async throws -> Bool {
-        let events = try await session.subscribeChat(sessionID: chatID)
-        let follower = VoiceTurnFollower(sessionID: chatID, onEvent: onEvent)
         let trace = self.trace
-        let reader = Task {
-            do {
-                for try await event in events { try await follower.feed(event) }
-            } catch {
-                trace?("chat events ended: \(error)")
-            }
+        let follower = VoiceTurnFollower(sessionID: chatID, onEvent: onEvent, trace: trace)
+        var readers: [Task<Void, Never>] = []
+        defer { readers.forEach { $0.cancel() } }
+        func follow(_ events: AsyncThrowingStream<MuseJSON, Error>) {
+            readers.append(Task {
+                do {
+                    for try await event in events { try await follower.feed(event) }
+                } catch {
+                    trace?("chat events ended: \(error)")
+                }
+            })
         }
-        defer { reader.cancel() }
+
+        // The watch's own chat doesn't exist until its first message, and Muse answers a
+        // subscription to it with 404: then the note goes first and the subscription right after,
+        // the order Meta's ESP32 gadget always uses.
+        var subscribed = false
+        do {
+            follow(try await session.subscribeChat(sessionID: chatID))
+            subscribed = true
+        } catch let MuseLinkSession.Failure.http(status, _) where status == 404 && chatID != nil {
+            trace?("the watch's chat is new; subscribing after the note")
+        }
 
         let ack = try await session.sendVoice(wav: wav, sessionID: chatID, message: instructions)
         trace?("voice note acknowledged: HTTP \(ack.status)")
         guard ack.ok else { throw MuseQuestionFailure.refused(ack.status) }
+        if !subscribed { follow(try await session.subscribeChat(sessionID: chatID)) }
         try await follower.acknowledge(ack.response)
 
         let clock = ContinuousClock()
@@ -88,6 +102,7 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
         while !(await follower.isComplete()), clock.now < deadline {
             try await Task.sleep(for: .milliseconds(200))
         }
+        await follower.summarize()
         return await follower.isComplete()
     }
 }
@@ -102,13 +117,25 @@ actor VoiceTurnFollower {
     private var lastAnswer = ""
     private var lastStatus = ""
     private var lastHeard = ""
+    private let trace: (@Sendable (String) -> Void)?
+    /// The first events' shapes, for the flight recorder (names and keys only).
+    private var shapes: [String] = []
+    private var eventCount = 0
 
-    init(sessionID: String?, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void) {
+    init(sessionID: String?, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void, trace: (@Sendable (String) -> Void)? = nil) {
         turn = MuseTurn(sessionID: sessionID)
         self.onEvent = onEvent
+        self.trace = trace
+    }
+
+    /// One line saying what the turn saw, without any of its text.
+    func summarize() {
+        trace?("turn saw \(eventCount) event(s), \(turn.replies.count) reply(ies), answer \(turn.answerText.count) chars, complete \(turn.isComplete()); first: \(shapes.joined(separator: " "))")
     }
 
     func feed(_ event: MuseJSON) async throws {
+        eventCount += 1
+        if shapes.count < 12 { shapes.append(MuseLinkSession.shape(event)) }
         if Self.isUserMessage(event) {
             if acknowledged { await noteHeard(event) } else { heldUserMessages.append(event) }
             return
@@ -118,6 +145,7 @@ actor VoiceTurnFollower {
 
     func acknowledge(_ response: MuseJSON?) async throws {
         let result = response?["result"] ?? response
+        trace?("acknowledgement keys: \(result?.object?.keys.sorted().joined(separator: ",") ?? "none")")
         userIDs = Set(["message_id", "reply_to_message_id"].compactMap { result?[$0]?.string }.filter { !$0.isEmpty })
         let held = try turn.acknowledge(response)
         acknowledged = true
@@ -126,7 +154,7 @@ actor VoiceTurnFollower {
         await emit(held)
     }
 
-    func isComplete() -> Bool { turn.isComplete() }
+    func isComplete() -> Bool { turn.isAnswered() }
 
     private func emit(_ events: [MuseTurn.Event]) async {
         for event in events {

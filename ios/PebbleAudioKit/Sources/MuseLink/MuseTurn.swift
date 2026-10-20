@@ -143,6 +143,13 @@ public struct MuseTurn: Sendable {
         return []
     }
 
+    /// Muse has answered: at least one reply arrived and Muse is done. Unlike `isComplete`, a
+    /// subscription's replay of an earlier request's "completed" can't end a turn that has heard
+    /// nothing yet.
+    public func isAnswered(now: TimeInterval? = nil) -> Bool {
+        !replies.isEmpty && isComplete(now: now)
+    }
+
     /// Muse is done answering: every reply is done and Muse is idle, finished, or quiet.
     public func isComplete(now: TimeInterval? = nil) -> Bool {
         let now = now ?? clock()

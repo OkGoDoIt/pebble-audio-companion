@@ -106,7 +106,11 @@ public struct MuseAsk: Sendable {
         let box = TurnBox(MuseTurn(sessionID: sessionID))
         let reader = Task {
             do {
+                var seen = 0
                 for try await event in events {
+                    // The first events' names and keys (never their text), to see what Muse sends.
+                    if seen < 12 { trace?("event \(MuseLinkSession.shape(event))") }
+                    seen += 1
                     try await box.feed(event)
                 }
             } catch {
@@ -118,6 +122,8 @@ public struct MuseAsk: Sendable {
         let ack = try await session.sendChat(message, sessionID: sessionID)
         trace?("chat acknowledged: HTTP \(ack.status)")
         guard ack.ok else { throw Failure.refused(ack.status) }
+        let result = ack.response?["result"] ?? ack.response
+        trace?("acknowledgement keys: \(result?.object?.keys.sorted().joined(separator: ",") ?? "none")")
         try await box.acknowledge(ack.response)
 
         let clock = ContinuousClock()
@@ -125,7 +131,9 @@ public struct MuseAsk: Sendable {
         while !(await box.isComplete()), clock.now < deadline {
             try await Task.sleep(for: .milliseconds(200))
         }
-        return Answer(text: await box.answerText(), complete: await box.isComplete())
+        let answer = Answer(text: await box.answerText(), complete: await box.isComplete())
+        trace?("answer \(answer.text.count) chars, complete \(answer.complete)")
+        return answer
     }
 }
 
@@ -143,7 +151,7 @@ private actor TurnBox {
         _ = try turn.acknowledge(response)
     }
 
-    func isComplete() -> Bool { turn.isComplete() }
+    func isComplete() -> Bool { turn.isAnswered() }
 
     func answerText() -> String { turn.answerText }
 }
