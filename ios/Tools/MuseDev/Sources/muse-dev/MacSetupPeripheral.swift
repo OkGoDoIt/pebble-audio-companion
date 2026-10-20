@@ -7,10 +7,11 @@ import MuseLink
 /// `MuseSetupController`; every packet it sends is notified on TX, waiting out CoreBluetooth's
 /// queue when it is full.
 ///
-/// Differences from Meta's Linux gadget that the Muse app might notice (unknown until tried):
-/// macOS can't advertise manufacturer data (the "paired" byte), and the GAP device name is the
-/// Mac's own name. If the app won't list or accept this Mac, the watch — which can do both — is
-/// the real fix.
+/// Differences from Meta's Linux gadget: macOS can't advertise manufacturer data (the "paired"
+/// byte, which the SDK calls informational), and the GAP device name is the Mac's own name. An
+/// iPhone that has connected to this Mac before shows the Mac's cached name in scanners whatever
+/// is advertised, so LightBlue saying "Roger's MacBook Pro" is expected; the Muse app's own list
+/// is the real test.
 final class MacSetupPeripheral: NSObject, CBPeripheralManagerDelegate, MuseSetupTransport, @unchecked Sendable {
     static let serviceUUID = CBUUID(string: "7fdd3d1c-38ea-46cf-8b46-314ecf5f240c")
     static let rxUUID = CBUUID(string: "4d593029-28a2-4a6e-a1f0-3c2d5e8f9b01")
@@ -88,10 +89,13 @@ final class MacSetupPeripheral: NSObject, CBPeripheralManagerDelegate, MuseSetup
             onEvent("couldn't add the setup service: \(error.localizedDescription)")
             return
         }
-        peripheral.startAdvertising([
-            CBAdvertisementDataLocalNameKey: localName,
-            CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
-        ])
+        // Name only. CoreBluetooth gives an app 28 bytes of advertisement; the 128-bit service UUID
+        // takes 18 and "MuseGadgetXXXXXX" another 18, and macOS then drops the name rather than
+        // moving it to the scan response. The Muse app finds gadgets by that name (the SDK README:
+        // "look for devices prefixed with MuseGadget"), and two other Mac stand-ins only paired once
+        // they advertised the name alone (muse-gadget-sdk PR #63, muse-portal-kit). The app finds
+        // the service after connecting.
+        peripheral.startAdvertising([CBAdvertisementDataLocalNameKey: localName])
     }
 
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
