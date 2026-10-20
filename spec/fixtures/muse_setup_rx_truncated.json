@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "MUSE_SETUP_RX length (28) overruns the 10 bytes present",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_rx_truncated",
+  "size": 14
+}

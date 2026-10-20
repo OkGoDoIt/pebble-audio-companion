@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "The user said yes on the watch; it is advertising for five minutes",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "event": 1,
+    "mtu": 0,
+    "seconds_left": 300
+  },
+  "name": "muse_setup_event_opened",
+  "size": 7
+}

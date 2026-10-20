@@ -101,6 +101,31 @@ object AudioCompanionProtocol {
                 r.u8()
                 PhoneMediaState(requestToken = r.u8(), flags = r.u8())
             }
+            MessageId.MUSE_SETUP_OPEN -> sized(bytes, 11) { r ->
+                r.u8()
+                val token = r.u8()
+                val seconds = r.u16()
+                val suffix = r.bytes(ProtocolConstants.MUSE_SUFFIX_BYTES).decodeToString()
+                MuseSetupOpen(requestToken = token, windowSeconds = seconds, suffix = suffix, flags = r.u8())
+            }
+            MessageId.MUSE_SETUP_CLOSE -> sized(bytes, 3) { r ->
+                r.u8()
+                MuseSetupClose(requestToken = r.u8(), reasonRaw = r.u8())
+            }
+            MessageId.MUSE_SETUP_TX -> {
+                if (bytes.size < 3) return DecodeResult.Malformed("MUSE_SETUP_TX too short: ${bytes.size}")
+                val length = bytes[2].toInt() and 0xFF
+                if (length < 1 || length > ProtocolConstants.MUSE_SETUP_TX_MAX_BYTES || bytes.size < 3 + length) {
+                    return DecodeResult.Malformed("MUSE_SETUP_TX length $length does not fit ${bytes.size} bytes")
+                }
+                DecodeResult.Decoded(
+                    MuseSetupTx(requestToken = bytes[1].toInt() and 0xFF, data = bytes.copyOfRange(3, 3 + length)),
+                )
+            }
+            MessageId.MUSE_SETUP_DISCONNECT -> sized(bytes, 4) { r ->
+                r.u8()
+                MuseSetupDisconnect(requestToken = r.u8(), delayMs = r.u16())
+            }
             MessageId.RECEIVER_HEALTH -> sized(bytes, 8) { r ->
                 r.u8()
                 ReceiverHealth(
@@ -137,6 +162,24 @@ object AudioCompanionProtocol {
             MessageId.PHONE_MEDIA_QUERY -> sized(bytes, 1) { r ->
                 r.u8()
                 PhoneMediaQuery
+            }
+            MessageId.MUSE_SETUP_RX -> {
+                if (bytes.size < 4) return DecodeResult.Malformed("MUSE_SETUP_RX too short: ${bytes.size}")
+                val length = bytes[3].toInt() and 0xFF
+                if (bytes.size < 4 + length) {
+                    return DecodeResult.Malformed("MUSE_SETUP_RX length $length does not fit ${bytes.size} bytes")
+                }
+                DecodeResult.Decoded(
+                    MuseSetupRx(
+                        seq = bytes[1].toInt() and 0xFF,
+                        flags = bytes[2].toInt() and 0xFF,
+                        data = bytes.copyOfRange(4, 4 + length),
+                    ),
+                )
+            }
+            MessageId.MUSE_SETUP_EVENT -> sized(bytes, 7) { r ->
+                r.u8()
+                MuseSetupEvent(eventRaw = r.u8(), detail = r.u8(), mtu = r.u16(), secondsLeft = r.u16())
             }
             MessageId.ERROR -> sized(bytes, 6) { r ->
                 r.u8()

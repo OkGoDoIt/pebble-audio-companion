@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "App finished pairing: the watch shows 'Paired with Muse' and closes the window",
+  "expect": "parse",
+  "fields": {
+    "reason": 1,
+    "request_token": 51
+  },
+  "name": "muse_setup_close_paired",
+  "size": 3
+}

@@ -29,6 +29,10 @@ MSG_RESUME_REQUEST = 0x05
 MSG_RECEIVER_HEALTH = 0x06
 MSG_ENABLE_REQUEST = 0x07
 MSG_PHONE_MEDIA_STATE = 0x08
+MSG_MUSE_SETUP_OPEN = 0x09
+MSG_MUSE_SETUP_CLOSE = 0x0A
+MSG_MUSE_SETUP_TX = 0x0B
+MSG_MUSE_SETUP_DISCONNECT = 0x0C
 
 # Control message ids (watch -> phone)
 MSG_AUTH_RESULT = 0x41
@@ -37,6 +41,8 @@ MSG_ACK = 0x43
 MSG_STATE_CHANGED = 0x44
 MSG_ERROR = 0x45
 MSG_PHONE_MEDIA_QUERY = 0x46
+MSG_MUSE_SETUP_RX = 0x47
+MSG_MUSE_SETUP_EVENT = 0x48
 
 # Data message ids (watch -> phone)
 MSG_STREAM_START = 0x80
@@ -92,6 +98,47 @@ def phone_media_state(token, flags) -> bytes:
 
 def phone_media_query() -> bytes:
     return struct.pack("<B", MSG_PHONE_MEDIA_QUERY)
+
+
+# Muse gadget setup relay (Section 4.3)
+MUSE_SETUP_TX_MAX_BYTES = 240
+MUSE_SETUP_RX_MAX_BYTES = 249
+MUSE_SETUP_RX_FLAG_MORE = 0x01
+
+
+def muse_setup_open(token, window_secs, suffix: bytes, flags=0) -> bytes:
+    assert len(suffix) == 6
+    return struct.pack("<BBH", MSG_MUSE_SETUP_OPEN, token, window_secs) + suffix + struct.pack(
+        "<B", flags
+    )
+
+
+def muse_setup_close(token, reason) -> bytes:
+    return struct.pack("<BBB", MSG_MUSE_SETUP_CLOSE, token, reason)
+
+
+def muse_setup_tx(token, data: bytes) -> bytes:
+    return struct.pack("<BBB", MSG_MUSE_SETUP_TX, token, len(data)) + data
+
+
+def muse_setup_disconnect(token, delay_ms) -> bytes:
+    return struct.pack("<BBH", MSG_MUSE_SETUP_DISCONNECT, token, delay_ms)
+
+
+def muse_setup_rx(seq, flags, data: bytes) -> bytes:
+    return struct.pack("<BBBB", MSG_MUSE_SETUP_RX, seq, flags, len(data)) + data
+
+
+def muse_setup_event(event, detail, mtu, seconds_left) -> bytes:
+    return struct.pack("<BBBHH", MSG_MUSE_SETUP_EVENT, event, detail, mtu, seconds_left)
+
+
+# What the Muse app writes first, and a plausible gadget reply (Muse community pairing v5).
+MUSE_GET_DEVICE_INFO = b'{"action":"get_device_info"}'
+MUSE_DEVICE_INFO_REPLY = (
+    b'{"type":"device_info","node_id":"F1A69C","version":"1.0.0","build_sha":"0000000",'
+    b'"network_ready":true}'
+)
 
 
 def auth_result(token, status, granted) -> bytes:
@@ -487,6 +534,104 @@ def build_fixtures():
         {},
         "PHONE_MEDIA_STATE without its flags byte",
     )
+
+    # ---- Control (phone -> watch): Muse gadget setup relay ----
+    add(
+        "muse_setup_open",
+        muse_setup_open(0x31, 300, b"F1A69C"),
+        "control_in",
+        "parse",
+        {"request_token": 0x31, "window_secs": 300, "suffix": "F1A69C", "flags": 0},
+        "App asks for a five-minute pairing window advertised as MuseGadgetF1A69C",
+    )
+    add(
+        "muse_setup_open_short",
+        muse_setup_open(0x32, 300, b"F1A69C")[:-1],
+        "control_in",
+        "reject",
+        {},
+        "MUSE_SETUP_OPEN without its flags byte",
+    )
+    add(
+        "muse_setup_close_paired",
+        muse_setup_close(0x33, 1),
+        "control_in",
+        "parse",
+        {"request_token": 0x33, "reason": 1},
+        "App finished pairing: the watch shows 'Paired with Muse' and closes the window",
+    )
+    add(
+        "muse_setup_close_failed",
+        muse_setup_close(0x34, 3),
+        "control_in",
+        "parse",
+        {"request_token": 0x34, "reason": 3},
+        "App gave up on the pairing",
+    )
+    add(
+        "muse_setup_tx_device_info",
+        muse_setup_tx(0x35, MUSE_DEVICE_INFO_REPLY),
+        "control_in",
+        "parse",
+        {
+            "request_token": 0x35,
+            "length": len(MUSE_DEVICE_INFO_REPLY),
+            "data_hex": MUSE_DEVICE_INFO_REPLY.hex(),
+        },
+        "One value for the watch to notify to the Muse app verbatim",
+    )
+    add(
+        "muse_setup_tx_max",
+        muse_setup_tx(0x36, bytes(range(MUSE_SETUP_TX_MAX_BYTES))),
+        "control_in",
+        "parse",
+        {
+            "request_token": 0x36,
+            "length": MUSE_SETUP_TX_MAX_BYTES,
+            "data_hex": bytes(range(MUSE_SETUP_TX_MAX_BYTES)).hex(),
+        },
+        "Largest MUSE_SETUP_TX value (240 bytes)",
+    )
+    add(
+        "muse_setup_tx_too_long",
+        muse_setup_tx(0x37, bytes(MUSE_SETUP_TX_MAX_BYTES + 1)),
+        "control_in",
+        "reject",
+        {},
+        "MUSE_SETUP_TX value of 241 bytes exceeds the 240-byte limit",
+    )
+    add(
+        "muse_setup_tx_empty",
+        muse_setup_tx(0x38, b""),
+        "control_in",
+        "reject",
+        {},
+        "MUSE_SETUP_TX with no value",
+    )
+    add(
+        "muse_setup_tx_truncated",
+        struct.pack("<BBB", MSG_MUSE_SETUP_TX, 0x39, 40) + bytes(10),
+        "control_in",
+        "reject",
+        {},
+        "MUSE_SETUP_TX length (40) overruns the 10 bytes present",
+    )
+    add(
+        "muse_setup_disconnect",
+        muse_setup_disconnect(0x3A, 250),
+        "control_in",
+        "parse",
+        {"request_token": 0x3A, "delay_ms": 250},
+        "App ends the Muse app's link after the pairing's last read",
+    )
+    add(
+        "muse_setup_disconnect_short",
+        struct.pack("<BBB", MSG_MUSE_SETUP_DISCONNECT, 0x3B, 250),
+        "control_in",
+        "reject",
+        {},
+        "MUSE_SETUP_DISCONNECT with half its delay",
+    )
     add(
         "control_unknown_id",
         struct.pack("<BB", 0x3F, 0x00),
@@ -544,6 +689,88 @@ def build_fixtures():
         "parse",
         {},
         "Watch asks the receiver whether the phone is actually playing audio",
+    )
+    add(
+        "muse_setup_rx_get_device_info",
+        muse_setup_rx(0, 0, MUSE_GET_DEVICE_INFO),
+        "control_out",
+        "parse",
+        {
+            "seq": 0, "flags": 0, "length": len(MUSE_GET_DEVICE_INFO),
+            "data_hex": MUSE_GET_DEVICE_INFO.hex(),
+        },
+        "The Muse app's first write, relayed whole",
+    )
+    _long_value = bytes((i * 7) & 0xFF for i in range(300))
+    add(
+        "muse_setup_rx_fragment_more",
+        muse_setup_rx(1, MUSE_SETUP_RX_FLAG_MORE, _long_value[:MUSE_SETUP_RX_MAX_BYTES]),
+        "control_out",
+        "parse",
+        {
+            "seq": 1, "flags": 1, "length": MUSE_SETUP_RX_MAX_BYTES,
+            "data_hex": _long_value[:MUSE_SETUP_RX_MAX_BYTES].hex(),
+        },
+        "First notification of a 300-byte value split at the 249-byte limit; MORE set",
+    )
+    add(
+        "muse_setup_rx_fragment_last",
+        muse_setup_rx(1, 0, _long_value[MUSE_SETUP_RX_MAX_BYTES:]),
+        "control_out",
+        "parse",
+        {
+            "seq": 1, "flags": 0, "length": 300 - MUSE_SETUP_RX_MAX_BYTES,
+            "data_hex": _long_value[MUSE_SETUP_RX_MAX_BYTES:].hex(),
+        },
+        "Last notification of the same value: same seq, MORE clear",
+    )
+    add(
+        "muse_setup_rx_truncated",
+        struct.pack("<BBBB", MSG_MUSE_SETUP_RX, 2, 0, 28) + MUSE_GET_DEVICE_INFO[:10],
+        "control_out",
+        "reject",
+        {},
+        "MUSE_SETUP_RX length (28) overruns the 10 bytes present",
+    )
+    add(
+        "muse_setup_event_opened",
+        muse_setup_event(1, 0, 0, 300),
+        "control_out",
+        "parse",
+        {"event": 1, "detail": 0, "mtu": 0, "seconds_left": 300},
+        "The user said yes on the watch; it is advertising for five minutes",
+    )
+    add(
+        "muse_setup_event_connected",
+        muse_setup_event(2, 0, 256, 287),
+        "control_out",
+        "parse",
+        {"event": 2, "detail": 0, "mtu": 256, "seconds_left": 287},
+        "The Muse app connected with a 256-byte ATT MTU",
+    )
+    add(
+        "muse_setup_event_closed_timeout",
+        muse_setup_event(5, 4, 0, 0),
+        "control_out",
+        "parse",
+        {"event": 5, "detail": 4, "mtu": 0, "seconds_left": 0},
+        "The window ended without the Muse app connecting",
+    )
+    add(
+        "muse_setup_event_rx_overflow",
+        muse_setup_event(6, 2, 256, 120),
+        "control_out",
+        "parse",
+        {"event": 6, "detail": 2, "mtu": 256, "seconds_left": 120},
+        "Two writes were dropped before the values that follow this event",
+    )
+    add(
+        "muse_setup_event_short",
+        muse_setup_event(1, 0, 0, 300)[:-1],
+        "control_out",
+        "reject",
+        {},
+        "MUSE_SETUP_EVENT missing the last byte of seconds_left",
     )
     add(
         "ack_ok",

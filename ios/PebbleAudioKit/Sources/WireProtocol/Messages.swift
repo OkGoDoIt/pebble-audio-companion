@@ -350,6 +350,110 @@ public struct PhoneMediaState: ControlInMessage, Equatable {
     }
 }
 
+// Muse gadget setup relay (Section 4.3): the watch hosts Muse's setup service for a window and
+// relays its characteristic values to this app, which runs the pairing protocol.
+
+/// Asks the watch to open a pairing window, advertising as `MuseGadget` + `suffix`. The watch
+/// asks the user first; the outcome arrives as `MuseSetupEvent` opened or closed.
+public struct MuseSetupOpen: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let windowSeconds: Int
+    /// Six uppercase hex digits: the gadget identity's suffix.
+    public let suffix: String
+    public let flags: UInt8
+
+    public init(requestToken: Int, windowSeconds: Int, suffix: String, flags: UInt8 = 0) {
+        self.requestToken = requestToken
+        self.windowSeconds = windowSeconds
+        self.suffix = suffix
+        self.flags = flags
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 11)
+        w.u8(MessageId.museSetupOpen)
+        w.u8(requestToken)
+        w.u16(Int(UInt16(clamping: windowSeconds)))
+        var ascii = Array(suffix.utf8.prefix(6))
+        while ascii.count < 6 { ascii.append(0x30) }
+        w.bytes(ascii)
+        w.u8(Int(flags))
+        return w.toBytes()
+    }
+}
+
+public enum MuseSetupAppCloseReason: UInt8, Sendable {
+    case paired = 1
+    case cancelled = 2
+    case failed = 3
+}
+
+/// Ends the window; the watch shows the matching ending.
+public struct MuseSetupClose: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let reasonRaw: UInt8
+
+    public init(requestToken: Int, reasonRaw: UInt8) {
+        self.requestToken = requestToken
+        self.reasonRaw = reasonRaw
+    }
+
+    public init(requestToken: Int, reason: MuseSetupAppCloseReason) {
+        self.init(requestToken: requestToken, reasonRaw: reason.rawValue)
+    }
+
+    public var reason: MuseSetupAppCloseReason? { MuseSetupAppCloseReason(rawValue: reasonRaw) }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 3)
+        w.u8(MessageId.museSetupClose)
+        w.u8(requestToken)
+        w.u8(Int(reasonRaw))
+        return w.toBytes()
+    }
+}
+
+/// One value for the watch to notify on the setup TX characteristic, verbatim (1–240 bytes).
+public struct MuseSetupTx: ControlInMessage, Equatable {
+    public static let maxBytes = 240
+
+    public let requestToken: Int
+    public let data: [UInt8]
+
+    public init(requestToken: Int, data: [UInt8]) {
+        self.requestToken = requestToken
+        self.data = data
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 3 + data.count)
+        w.u8(MessageId.museSetupTx)
+        w.u8(requestToken)
+        w.u8(data.count)
+        w.bytes(data)
+        return w.toBytes()
+    }
+}
+
+/// Ends the Muse app's link, leaving the window open for it to connect again.
+public struct MuseSetupDisconnect: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let delayMs: Int
+
+    public init(requestToken: Int, delayMs: Int) {
+        self.requestToken = requestToken
+        self.delayMs = delayMs
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 4)
+        w.u8(MessageId.museSetupDisconnect)
+        w.u8(requestToken)
+        w.u16(Int(UInt16(clamping: delayMs)))
+        return w.toBytes()
+    }
+}
+
 public struct ReceiverHealth: ControlInMessage, Equatable {
     public let requestToken: Int
     public let batteryPct: Int
@@ -387,6 +491,86 @@ public struct PhoneMediaQuery: ControlOutMessage, Equatable {
     public func encode() -> [UInt8] {
         var w = WireWriter(initialCapacity: 1)
         w.u8(MessageId.phoneMediaQuery)
+        return w.toBytes()
+    }
+}
+
+/// One value the Muse app wrote to the watch's setup RX characteristic. A long value arrives as
+/// several of these sharing `seq`, with `more` set on all but the last.
+public struct MuseSetupRx: ControlOutMessage, Equatable {
+    public let seq: Int
+    public let flags: UInt8
+    public let data: [UInt8]
+
+    public init(seq: Int, flags: UInt8, data: [UInt8]) {
+        self.seq = seq
+        self.flags = flags
+        self.data = data
+    }
+
+    public var more: Bool { flags & ProtocolConstants.museSetupRxFlagMore != 0 }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 4 + data.count)
+        w.u8(MessageId.museSetupRx)
+        w.u8(seq)
+        w.u8(Int(flags))
+        w.u8(data.count)
+        w.bytes(data)
+        return w.toBytes()
+    }
+}
+
+public enum MuseSetupEventKind: UInt8, Sendable {
+    case opened = 1
+    case clientConnected = 2
+    case subscribed = 3
+    case clientDisconnected = 4
+    case closed = 5
+    case rxOverflow = 6
+    case mtu = 7
+}
+
+public enum MuseSetupCloseReason: UInt8, Sendable {
+    case appPaired = 1
+    case appCancelled = 2
+    case appFailed = 3
+    case timeout = 4
+    case cancelledOnWatch = 5
+    case declinedOnWatch = 6
+    case phoneLinkLost = 7
+    case couldNotStart = 8
+    case receiverGone = 9
+}
+
+/// What happened on the pairing window.
+public struct MuseSetupEvent: ControlOutMessage, Equatable {
+    public let eventRaw: UInt8
+    public let detail: UInt8
+    /// The Muse link's ATT MTU, 0 when there is none.
+    public let mtu: Int
+    public let secondsLeft: Int
+
+    public init(eventRaw: UInt8, detail: UInt8, mtu: Int, secondsLeft: Int) {
+        self.eventRaw = eventRaw
+        self.detail = detail
+        self.mtu = mtu
+        self.secondsLeft = secondsLeft
+    }
+
+    public var event: MuseSetupEventKind? { MuseSetupEventKind(rawValue: eventRaw) }
+    /// For a `closed` event, why.
+    public var closeReason: MuseSetupCloseReason? {
+        event == .closed ? MuseSetupCloseReason(rawValue: detail) : nil
+    }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 7)
+        w.u8(MessageId.museSetupEvent)
+        w.u8(Int(eventRaw))
+        w.u8(Int(detail))
+        w.u16(Int(UInt16(clamping: mtu)))
+        w.u16(Int(UInt16(clamping: secondsLeft)))
         return w.toBytes()
     }
 }

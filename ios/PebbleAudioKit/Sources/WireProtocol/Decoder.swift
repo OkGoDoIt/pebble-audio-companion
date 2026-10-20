@@ -112,6 +112,31 @@ public enum AudioCompanionProtocol {
                 _ = r.u8()
                 return PhoneMediaState(requestToken: r.u8(), flags: UInt8(r.u8()))
             }
+        case MessageId.museSetupOpen:
+            return sized(bytes, 11) { r in
+                _ = r.u8()
+                let token = r.u8()
+                let seconds = Int(r.u16())
+                let suffix = String(decoding: r.readBytes(6), as: UTF8.self)
+                return MuseSetupOpen(requestToken: token, windowSeconds: seconds, suffix: suffix, flags: UInt8(r.u8()))
+            }
+        case MessageId.museSetupClose:
+            return sized(bytes, 3) { r in
+                _ = r.u8()
+                return MuseSetupClose(requestToken: r.u8(), reasonRaw: UInt8(r.u8()))
+            }
+        case MessageId.museSetupTx:
+            guard bytes.count >= 3 else { return .malformed(reason: "MUSE_SETUP_TX too short") }
+            let length = Int(bytes[2])
+            guard length >= 1, length <= MuseSetupTx.maxBytes, bytes.count >= 3 + length else {
+                return .malformed(reason: "MUSE_SETUP_TX length \(length) does not fit \(bytes.count) bytes")
+            }
+            return .decoded(MuseSetupTx(requestToken: Int(bytes[1]), data: Array(bytes[3..<(3 + length)])))
+        case MessageId.museSetupDisconnect:
+            return sized(bytes, 4) { r in
+                _ = r.u8()
+                return MuseSetupDisconnect(requestToken: r.u8(), delayMs: Int(r.u16()))
+            }
         case MessageId.receiverHealth:
             return sized(bytes, 8) { r in
                 _ = r.u8()
@@ -158,6 +183,18 @@ public enum AudioCompanionProtocol {
             return sized(bytes, 1) { r in
                 _ = r.u8()
                 return PhoneMediaQuery()
+            }
+        case MessageId.museSetupRx:
+            guard bytes.count >= 4 else { return .malformed(reason: "MUSE_SETUP_RX too short") }
+            let length = Int(bytes[3])
+            guard bytes.count >= 4 + length else {
+                return .malformed(reason: "MUSE_SETUP_RX length \(length) does not fit \(bytes.count) bytes")
+            }
+            return .decoded(MuseSetupRx(seq: Int(bytes[1]), flags: bytes[2], data: Array(bytes[4..<(4 + length)])))
+        case MessageId.museSetupEvent:
+            return sized(bytes, 7) { r in
+                _ = r.u8()
+                return MuseSetupEvent(eventRaw: UInt8(r.u8()), detail: UInt8(r.u8()), mtu: Int(r.u16()), secondsLeft: Int(r.u16()))
             }
         case MessageId.error:
             return sized(bytes, 6) { r in

@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MUSE_SETUP_OPEN without its flags byte",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_open_short",
+  "size": 10
+}

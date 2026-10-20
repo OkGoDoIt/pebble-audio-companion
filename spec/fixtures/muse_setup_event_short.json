@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "MUSE_SETUP_EVENT missing the last byte of seconds_left",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_event_short",
+  "size": 6
+}

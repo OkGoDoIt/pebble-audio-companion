@@ -41,6 +41,13 @@ public enum ProtocolConstants {
     public static let receiverFlagLowStorage: UInt32 = 1
     public static let receiverFlagPauseRequested: UInt32 = 2
 
+    // Info watch_capabilities bits (Section 3).
+    /// The watch can host Muse's gadget setup service and relay it (Section 4.3).
+    public static let capabilityMuseSetup: UInt32 = 1
+
+    // MUSE_SETUP_RX flags (Section 4.3).
+    public static let museSetupRxFlagMore: UInt8 = 1
+
     // STREAM_START flags (Section 5). RESUME marks a re-announcement of an already-running stream
     // to a freshly (re)attached receiver: take the first STREAM_DATA/STREAM_GAP sequence as the
     // contiguity base instead of assuming the stream begins at sequence 0.
@@ -58,6 +65,10 @@ public enum MessageId {
     public static let receiverHealth: Int = 0x06
     public static let enableRequest: Int = 0x07
     public static let phoneMediaState: Int = 0x08
+    public static let museSetupOpen: Int = 0x09
+    public static let museSetupClose: Int = 0x0A
+    public static let museSetupTx: Int = 0x0B
+    public static let museSetupDisconnect: Int = 0x0C
 
     // Watch -> phone control notifications (0x41-0x7F).
     public static let authResult: Int = 0x41
@@ -66,6 +77,8 @@ public enum MessageId {
     public static let stateChanged: Int = 0x44
     public static let error: Int = 0x45
     public static let phoneMediaQuery: Int = 0x46
+    public static let museSetupRx: Int = 0x47
+    public static let museSetupEvent: Int = 0x48
 
     // Watch -> phone data notifications (0x80-0x9F).
     public static let streamStart: Int = 0x80

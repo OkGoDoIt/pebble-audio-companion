@@ -171,6 +171,37 @@ class GoldenFixtureTest {
             "app_state" to message.appStateRaw.toString(),
             "queue_depth_frames" to message.queueDepthFrames.toString(),
         )
+        is MuseSetupOpen -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "window_secs" to message.windowSeconds.toString(),
+            "suffix" to message.suffix,
+            "flags" to message.flags.toString(),
+        )
+        is MuseSetupClose -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "reason" to message.reasonRaw.toString(),
+        )
+        is MuseSetupTx -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "length" to message.data.size.toString(),
+            "data_hex" to message.data.toHex(),
+        )
+        is MuseSetupDisconnect -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "delay_ms" to message.delayMs.toString(),
+        )
+        is MuseSetupRx -> mapOf(
+            "seq" to message.seq.toString(),
+            "flags" to message.flags.toString(),
+            "length" to message.data.size.toString(),
+            "data_hex" to message.data.toHex(),
+        )
+        is MuseSetupEvent -> mapOf(
+            "event" to message.eventRaw.toString(),
+            "detail" to message.detail.toString(),
+            "mtu" to message.mtu.toString(),
+            "seconds_left" to message.secondsLeft.toString(),
+        )
         is AuthResult -> mapOf(
             "request_token" to message.requestToken.toString(),
             "status" to message.statusRaw.toString(),

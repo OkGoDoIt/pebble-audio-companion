@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "Two writes were dropped before the values that follow this event",
+  "expect": "parse",
+  "fields": {
+    "detail": 2,
+    "event": 6,
+    "mtu": 256,
+    "seconds_left": 120
+  },
+  "name": "muse_setup_event_rx_overflow",
+  "size": 7
+}

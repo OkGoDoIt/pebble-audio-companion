@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "App gave up on the pairing",
+  "expect": "parse",
+  "fields": {
+    "reason": 3,
+    "request_token": 52
+  },
+  "name": "muse_setup_close_failed",
+  "size": 3
+}

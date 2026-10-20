@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MUSE_SETUP_TX value of 241 bytes exceeds the 240-byte limit",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_tx_too_long",
+  "size": 244
+}

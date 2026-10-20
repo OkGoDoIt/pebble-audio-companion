@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "The Muse app connected with a 256-byte ATT MTU",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "event": 2,
+    "mtu": 256,
+    "seconds_left": 287
+  },
+  "name": "muse_setup_event_connected",
+  "size": 7
+}

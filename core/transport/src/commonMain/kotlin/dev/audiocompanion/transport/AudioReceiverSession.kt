@@ -12,6 +12,8 @@ import dev.audiocompanion.protocol.DecodeResult
 import dev.audiocompanion.protocol.EnableRequest
 import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
+import dev.audiocompanion.protocol.MuseSetupEvent
+import dev.audiocompanion.protocol.MuseSetupRx
 import dev.audiocompanion.protocol.PauseReason
 import dev.audiocompanion.protocol.PauseRequest
 import dev.audiocompanion.protocol.PhoneMediaQuery
@@ -483,6 +485,8 @@ class AudioReceiverSession(
             // Not answered here: this shared session has no view of the phone's audio. The watch
             // then judges playback by the media service alone. The native iOS app answers it.
             is PhoneMediaQuery -> Unit
+            // Muse gadget pairing runs only in the iOS app; nothing here opens a window.
+            is MuseSetupRx, is MuseSetupEvent -> Unit
         }
     }
 

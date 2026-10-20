@@ -195,6 +195,43 @@ import Testing
                 "app_state": String(m.appStateRaw),
                 "queue_depth_frames": String(m.queueDepthFrames),
             ]
+        case let m as MuseSetupOpen:
+            return [
+                "request_token": String(m.requestToken),
+                "window_secs": String(m.windowSeconds),
+                "suffix": m.suffix,
+                "flags": String(m.flags),
+            ]
+        case let m as MuseSetupClose:
+            return [
+                "request_token": String(m.requestToken),
+                "reason": String(m.reasonRaw),
+            ]
+        case let m as MuseSetupTx:
+            return [
+                "request_token": String(m.requestToken),
+                "length": String(m.data.count),
+                "data_hex": hex(m.data),
+            ]
+        case let m as MuseSetupDisconnect:
+            return [
+                "request_token": String(m.requestToken),
+                "delay_ms": String(m.delayMs),
+            ]
+        case let m as MuseSetupRx:
+            return [
+                "seq": String(m.seq),
+                "flags": String(m.flags),
+                "length": String(m.data.count),
+                "data_hex": hex(m.data),
+            ]
+        case let m as MuseSetupEvent:
+            return [
+                "event": String(m.eventRaw),
+                "detail": String(m.detail),
+                "mtu": String(m.mtu),
+                "seconds_left": String(m.secondsLeft),
+            ]
         case let m as AuthResult:
             return [
                 "request_token": String(m.requestToken),

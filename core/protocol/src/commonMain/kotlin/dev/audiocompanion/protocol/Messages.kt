@@ -235,6 +235,92 @@ data class PhoneMediaState(
     }
 }
 
+// Muse gadget setup relay (Section 4.3): the watch hosts Muse's setup service for a window and
+// relays its characteristic values to this app, which runs the pairing protocol.
+
+/**
+ * Asks the watch to open a pairing window, advertising as `MuseGadget` + [suffix]. The watch asks
+ * the user first; the outcome arrives as a [MuseSetupEvent] (opened or closed).
+ */
+data class MuseSetupOpen(
+    val requestToken: Int,
+    val windowSeconds: Int,
+    /** Six uppercase hex digits: the gadget identity's suffix. */
+    val suffix: String,
+    val flags: Int = 0,
+) : ControlInMessage {
+    override fun encode(): ByteArray {
+        val ascii = ByteArray(ProtocolConstants.MUSE_SUFFIX_BYTES) { '0'.code.toByte() }
+        val given = suffix.encodeToByteArray()
+        given.copyInto(ascii, endIndex = minOf(given.size, ascii.size))
+        return WireWriter(11)
+            .u8(MessageId.MUSE_SETUP_OPEN)
+            .u8(requestToken)
+            .u16(windowSeconds)
+            .bytes(ascii)
+            .u8(flags)
+            .toByteArray()
+    }
+}
+
+enum class MuseSetupAppCloseReason(val raw: Int) {
+    PAIRED(1),
+    CANCELLED(2),
+    FAILED(3);
+
+    companion object {
+        fun fromRaw(raw: Int): MuseSetupAppCloseReason? = entries.firstOrNull { it.raw == raw }
+    }
+}
+
+/** Ends the window; the watch shows the matching ending. */
+data class MuseSetupClose(
+    val requestToken: Int,
+    val reasonRaw: Int,
+) : ControlInMessage {
+    constructor(requestToken: Int, reason: MuseSetupAppCloseReason) : this(requestToken, reason.raw)
+
+    val reason: MuseSetupAppCloseReason? get() = MuseSetupAppCloseReason.fromRaw(reasonRaw)
+
+    override fun encode(): ByteArray = WireWriter(3)
+        .u8(MessageId.MUSE_SETUP_CLOSE)
+        .u8(requestToken)
+        .u8(reasonRaw)
+        .toByteArray()
+}
+
+/** One value for the watch to notify on the setup TX characteristic, verbatim (1–240 bytes). */
+class MuseSetupTx(
+    val requestToken: Int,
+    val data: ByteArray,
+) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(3 + data.size)
+        .u8(MessageId.MUSE_SETUP_TX)
+        .u8(requestToken)
+        .u8(data.size)
+        .bytes(data)
+        .toByteArray()
+
+    override fun equals(other: Any?): Boolean =
+        other is MuseSetupTx && other.requestToken == requestToken && other.data.contentEquals(data)
+
+    override fun hashCode(): Int = 31 * requestToken + data.contentHashCode()
+
+    override fun toString(): String = "MuseSetupTx(requestToken=$requestToken, ${data.size} bytes)"
+}
+
+/** Ends the Muse app's link, leaving the window open for it to connect again. */
+data class MuseSetupDisconnect(
+    val requestToken: Int,
+    val delayMs: Int,
+) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(4)
+        .u8(MessageId.MUSE_SETUP_DISCONNECT)
+        .u8(requestToken)
+        .u16(delayMs)
+        .toByteArray()
+}
+
 data class ReceiverHealth(
     val requestToken: Int,
     val batteryPct: Int,
@@ -255,6 +341,86 @@ data class ReceiverHealth(
 // ---------------------------------------------------------------------------------------------
 // Control: watch -> phone (Section 4.2)
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * One value the Muse app wrote to the watch's setup RX characteristic. A long value arrives as
+ * several of these sharing [seq], with [more] set on all but the last.
+ */
+class MuseSetupRx(
+    val seq: Int,
+    val flags: Int,
+    val data: ByteArray,
+) : ControlOutMessage {
+    val more: Boolean get() = flags and ProtocolConstants.MUSE_SETUP_RX_FLAG_MORE != 0
+
+    override fun encode(): ByteArray = WireWriter(4 + data.size)
+        .u8(MessageId.MUSE_SETUP_RX)
+        .u8(seq)
+        .u8(flags)
+        .u8(data.size)
+        .bytes(data)
+        .toByteArray()
+
+    override fun equals(other: Any?): Boolean =
+        other is MuseSetupRx && other.seq == seq && other.flags == flags && other.data.contentEquals(data)
+
+    override fun hashCode(): Int = (31 * seq + flags) * 31 + data.contentHashCode()
+
+    override fun toString(): String = "MuseSetupRx(seq=$seq, flags=$flags, ${data.size} bytes)"
+}
+
+enum class MuseSetupEventKind(val raw: Int) {
+    OPENED(1),
+    CLIENT_CONNECTED(2),
+    SUBSCRIBED(3),
+    CLIENT_DISCONNECTED(4),
+    CLOSED(5),
+    RX_OVERFLOW(6),
+    MTU(7);
+
+    companion object {
+        fun fromRaw(raw: Int): MuseSetupEventKind? = entries.firstOrNull { it.raw == raw }
+    }
+}
+
+enum class MuseSetupCloseReason(val raw: Int) {
+    APP_PAIRED(1),
+    APP_CANCELLED(2),
+    APP_FAILED(3),
+    TIMEOUT(4),
+    CANCELLED_ON_WATCH(5),
+    DECLINED_ON_WATCH(6),
+    PHONE_LINK_LOST(7),
+    COULD_NOT_START(8),
+    RECEIVER_GONE(9);
+
+    companion object {
+        fun fromRaw(raw: Int): MuseSetupCloseReason? = entries.firstOrNull { it.raw == raw }
+    }
+}
+
+/** What happened on the pairing window. */
+data class MuseSetupEvent(
+    val eventRaw: Int,
+    val detail: Int,
+    /** The Muse link's ATT MTU, 0 when there is none. */
+    val mtu: Int,
+    val secondsLeft: Int,
+) : ControlOutMessage {
+    val event: MuseSetupEventKind? get() = MuseSetupEventKind.fromRaw(eventRaw)
+
+    /** For a [MuseSetupEventKind.CLOSED] event, why. */
+    val closeReason: MuseSetupCloseReason?
+        get() = if (event == MuseSetupEventKind.CLOSED) MuseSetupCloseReason.fromRaw(detail) else null
+
+    override fun encode(): ByteArray = WireWriter(7)
+        .u8(MessageId.MUSE_SETUP_EVENT)
+        .u8(eventRaw)
+        .u8(detail)
+        .u16(mtu)
+        .u16(secondsLeft)
+        .toByteArray()
+}
 
 data class AuthResult(
     val requestToken: Int,

@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MUSE_SETUP_TX length (40) overruns the 10 bytes present",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_tx_truncated",
+  "size": 13
+}

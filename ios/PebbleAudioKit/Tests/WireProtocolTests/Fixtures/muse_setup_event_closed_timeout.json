@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "The window ended without the Muse app connecting",
+  "expect": "parse",
+  "fields": {
+    "detail": 4,
+    "event": 5,
+    "mtu": 0,
+    "seconds_left": 0
+  },
+  "name": "muse_setup_event_closed_timeout",
+  "size": 7
+}

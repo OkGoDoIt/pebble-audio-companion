@@ -51,6 +51,16 @@ object ProtocolConstants {
     // to a freshly (re)attached receiver: take the first STREAM_DATA/STREAM_GAP sequence as the
     // contiguity base instead of assuming the stream begins at sequence 0.
     const val STREAM_START_FLAG_RESUME: UInt = 1u
+
+    // Info watch_capabilities bits (Section 3).
+    /** The watch can host Muse's gadget setup service and relay it (Section 4.3). */
+    const val CAPABILITY_MUSE_SETUP: UInt = 1u
+
+    // Muse gadget setup relay (Section 4.3).
+    const val MUSE_SUFFIX_BYTES: Int = 6
+    const val MUSE_SETUP_TX_MAX_BYTES: Int = 240
+    const val MUSE_SETUP_RX_MAX_BYTES: Int = 249
+    const val MUSE_SETUP_RX_FLAG_MORE: Int = 1
 }
 
 /** One-byte message ids (Sections 4 and 5). */
@@ -64,6 +74,10 @@ object MessageId {
     const val RECEIVER_HEALTH: Int = 0x06
     const val ENABLE_REQUEST: Int = 0x07
     const val PHONE_MEDIA_STATE: Int = 0x08
+    const val MUSE_SETUP_OPEN: Int = 0x09
+    const val MUSE_SETUP_CLOSE: Int = 0x0A
+    const val MUSE_SETUP_TX: Int = 0x0B
+    const val MUSE_SETUP_DISCONNECT: Int = 0x0C
 
     // Watch -> phone control notifications (0x41-0x7F).
     const val AUTH_RESULT: Int = 0x41
@@ -72,6 +86,8 @@ object MessageId {
     const val STATE_CHANGED: Int = 0x44
     const val ERROR: Int = 0x45
     const val PHONE_MEDIA_QUERY: Int = 0x46
+    const val MUSE_SETUP_RX: Int = 0x47
+    const val MUSE_SETUP_EVENT: Int = 0x48
 
     // Watch -> phone data notifications (0x80-0x9F).
     const val STREAM_START: Int = 0x80

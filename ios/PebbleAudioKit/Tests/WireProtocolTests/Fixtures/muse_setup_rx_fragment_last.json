@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "Last notification of the same value: same seq, MORE clear",
+  "expect": "parse",
+  "fields": {
+    "data_hex": "cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d",
+    "flags": 0,
+    "length": 51,
+    "seq": 1
+  },
+  "name": "muse_setup_rx_fragment_last",
+  "size": 55
+}

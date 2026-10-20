@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "App ends the Muse app's link after the pairing's last read",
+  "expect": "parse",
+  "fields": {
+    "delay_ms": 250,
+    "request_token": 58
+  },
+  "name": "muse_setup_disconnect",
+  "size": 4
+}

@@ -1,0 +1,13 @@
+{
+  "channel": "control_out",
+  "description": "The Muse app's first write, relayed whole",
+  "expect": "parse",
+  "fields": {
+    "data_hex": "7b22616374696f6e223a226765745f6465766963655f696e666f227d",
+    "flags": 0,
+    "length": 28,
+    "seq": 0
+  },
+  "name": "muse_setup_rx_get_device_info",
+  "size": 32
+}

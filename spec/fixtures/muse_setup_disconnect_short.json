@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MUSE_SETUP_DISCONNECT with half its delay",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_disconnect_short",
+  "size": 3
+}

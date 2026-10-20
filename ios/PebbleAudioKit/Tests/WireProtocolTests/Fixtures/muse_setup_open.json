@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "App asks for a five-minute pairing window advertised as MuseGadgetF1A69C",
+  "expect": "parse",
+  "fields": {
+    "flags": 0,
+    "request_token": 49,
+    "suffix": "F1A69C",
+    "window_secs": 300
+  },
+  "name": "muse_setup_open",
+  "size": 11
+}

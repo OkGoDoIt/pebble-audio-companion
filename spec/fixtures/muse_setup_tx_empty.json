@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MUSE_SETUP_TX with no value",
+  "expect": "reject",
+  "fields": {},
+  "name": "muse_setup_tx_empty",
+  "size": 3
+}

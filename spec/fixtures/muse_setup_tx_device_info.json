@@ -1,0 +1,12 @@
+{
+  "channel": "control_in",
+  "description": "One value for the watch to notify to the Muse app verbatim",
+  "expect": "parse",
+  "fields": {
+    "data_hex": "7b2274797065223a226465766963655f696e666f222c226e6f64655f6964223a22463141363943222c2276657273696f6e223a22312e302e30222c226275696c645f736861223a2230303030303030222c226e6574776f726b5f7265616479223a747275657d",
+    "length": 102,
+    "request_token": 53
+  },
+  "name": "muse_setup_tx_device_info",
+  "size": 105
+}
