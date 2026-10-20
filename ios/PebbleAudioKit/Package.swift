@@ -145,7 +145,7 @@ let package = Package(
             name: "CompanionRuntime",
             dependencies: [
                 "Receiver", "Transcription", "Intelligence", "LiveAudio", "SearchKit",
-                "Migration", "StatusUI", "AppDB", "SegmentStore", "AudioCodec",
+                "Migration", "StatusUI", "AppDB", "SegmentStore", "AudioCodec", "MuseLink",
             ],
             swiftSettings: swiftSettings
         ),
@@ -189,7 +189,7 @@ let package = Package(
             name: "CompanionRuntimeTests",
             dependencies: [
                 "CompanionRuntime", "AppDB", "SegmentStore", "Receiver", "Transcription",
-                "Intelligence", "LiveAudio", "SearchKit", "StatusUI", "WireProtocol",
+                "Intelligence", "LiveAudio", "SearchKit", "StatusUI", "WireProtocol", "MuseLink",
             ],
             // One real conversation from a backup (two sidecars and their transcripts, word
             // timings stripped) for the archive sync's export (`ArchiveTranscriptExportTests`).

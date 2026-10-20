@@ -8,8 +8,8 @@ import os
 public protocol MuseSetupTransport: Sendable {
     /// Notifies one packet on the TX characteristic. Returns once it is queued.
     func send(_ packet: Data) async
-    /// Ends the setup client's connection after `delay`, where the transport can. The watch relay
-    /// must not: the phone's link to the watch is shared with the official Pebble app.
+    /// Ends the setup client's connection after `delay`. Over the watch this ends only the Muse
+    /// app's private link to the window, never the phone's link to the watch.
     func disconnect(after delay: Duration) async
 }
 

@@ -238,6 +238,20 @@ public actor ReceiverService {
     /// Restoration relaunch flag — see `applyLaunchedInBackground()`.
     public nonisolated var launchedInBackground: Bool { intentBox.launchedInBackground }
 
+    // --- Muse gadget setup relay (see `MuseGadgetService`) --------------------------------------
+
+    public func sendMuseSetup(
+        _ build: @escaping @Sendable (Int) -> [UInt8]
+    ) async -> AudioReceiverSession.MuseSetupReply {
+        await session.sendMuseSetup(build)
+    }
+
+    public func setMuseSetupHandler(
+        _ handler: (@Sendable (AudioReceiverSession.MuseSetupInbound) -> Void)?
+    ) async {
+        await session.setMuseSetupHandler(handler)
+    }
+
     // --- lifecycle ---------------------------------------------------------------------------
 
     /// Starts the session. Idempotent: repeated calls (foreground entry, restoration relaunch,
