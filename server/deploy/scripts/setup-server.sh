@@ -22,8 +22,11 @@ fi
 echo "== packages"
 if ! command -v ffmpeg >/dev/null 2>&1; then
   apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg
+  # Without recommends: about 140 packages and 100 MB less (X11, OpenCL), as CI installs it.
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg
 fi
+# Ubuntu 22.04's ffmpeg 4.4 decodes Speex only through libspeex (Sync/ClipTranscodeJob.cs).
+ffmpeg -hide_banner -decoders 2>/dev/null | grep -q ' libspeex ' || { echo "ffmpeg lists no libspeex decoder; clips cannot be converted" >&2; exit 1; }
 command -v dotnet >/dev/null || { echo "dotnet runtime missing (expected aspnetcore-runtime-10.0)"; exit 1; }
 
 echo "== users"
