@@ -1,0 +1,160 @@
+@page "/connect/{tool}"
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using System.Text.Encodings.Web
+@using Microsoft.AspNetCore.Html
+@using PebbleAudio.Server.Pages.View
+@{
+	Layout = "_ServerLayout";
+	var tool = Model.Tool;
+	ViewData["Title"] = $"Connect {tool.Name}";
+	ViewData["Section"] = "connect";
+	var cursor = tool.Key == "cursor";
+	var plural = tool.Key == "codex" ? "these commands" : "this command";
+	IHtmlContent Marked(string command, string key)
+	{
+		var encoded = HtmlEncoder.Default.Encode(command);
+		var encodedKey = HtmlEncoder.Default.Encode(key);
+		return new HtmlString(encoded.Replace(encodedKey, $"<span class=\"k\">{encodedKey}</span>"));
+	}
+}
+@section Head {
+	<script type="module" src="~/js/view/connect.js" asp-append-version="true"></script>
+}
+<div class="connect" data-connect data-tool="@tool.Key" data-since="@Model.Since">
+	<div class="col">
+		<h1 class="screen-title">Connect @tool.Name</h1>
+		<p class="lede">@tool.Name signs in with your passkey, so it can read your conversations.</p>
+		<nav class="seg" aria-label="App">
+			@foreach (var t in ConnectModel.Tools)
+			{
+				<a href="@Model.ToolUrl(t)" class="@(t == tool ? "on" : null)" aria-current="@(t == tool ? "page" : null)">@t.Name</a>
+			}
+		</nav>
+
+		<ol class="card steps-card">
+			@if (Model.Key is { } key)
+			{
+				<li class="stepn">
+					<span class="n" aria-hidden="true">1</span>
+					<div class="g">
+						@if (cursor)
+						{
+							<span class="t">Click Add to Cursor</span>
+							<a class="btn filled inline" href="@Model.KeyCommand(key)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></svg>Add to Cursor</a>
+							<span class="note">The access key is in this button. Leave this page and you'll get a new one.</span>
+						}
+						else
+						{
+							<span class="t">Copy @plural</span>
+							<pre class="cmd" id="cmd">@Marked(Model.KeyCommand(key), key)</pre>
+							<button type="button" class="btn filled inline" data-copy="#cmd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></svg><span>Copy Command@(tool.Key == "codex" ? "s" : "")</span></button>
+							<span class="note">The access key is shown once. Leave this page and you'll get a new one.</span>
+						}
+					</div>
+				</li>
+				<li class="stepn">
+					<span class="n" aria-hidden="true">2</span>
+					<div class="g">
+						@if (cursor)
+						{
+							<span class="t">Confirm in Cursor</span>
+						}
+						else
+						{
+							<span class="t">Paste @(tool.Key == "codex" ? "them" : "it") into Terminal on your Mac and press Return</span>
+							@if (tool.Key == "codex")
+							{
+								<span class="note">Then open a new Terminal window and start Codex.</span>
+							}
+							@if (Model.OnIPhone)
+							{
+								<span class="note">Copied on this iPhone, it pastes on a Mac signed in to the same Apple Account.</span>
+							}
+						}
+					</div>
+				</li>
+			}
+			else
+			{
+				<li class="stepn">
+					<span class="n" aria-hidden="true">1</span>
+					<div class="g">
+						@if (cursor)
+						{
+							<span class="t">Click Add to Cursor</span>
+							<a class="btn filled inline" href="@Model.OAuthCommand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></svg>Add to Cursor</a>
+							@if (Model.OnIPhone)
+							{
+								<span class="note">Open this page on your Mac to use the button.</span>
+							}
+						}
+						else
+						{
+							<span class="t">Copy @plural</span>
+							<pre class="cmd" id="cmd">@Model.OAuthCommand</pre>
+							<button type="button" class="btn filled inline" data-copy="#cmd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></svg><span>Copy Command@(tool.Key == "codex" ? "s" : "")</span></button>
+						}
+					</div>
+				</li>
+				<li class="stepn">
+					<span class="n" aria-hidden="true">2</span>
+					<div class="g">
+						@switch (tool.Key)
+						{
+							case "cursor":
+								<span class="t">Confirm in Cursor</span>
+								<span class="note">Cursor asks you to sign in. Use your passkey, then allow access.</span>
+								break;
+							case "claude-code":
+								<span class="t">Paste it into Terminal on your Mac and press Return</span>
+								<span class="note">Then type /mcp in Claude Code, choose pebble-audio, and sign in with your passkey.</span>
+								break;
+							default:
+								<span class="t">Paste them into Terminal on your Mac and press Return</span>
+								<span class="note">Your browser opens to sign in. Use your passkey, then allow access.</span>
+								break;
+						}
+						@if (Model.OnIPhone && !cursor)
+						{
+							<span class="note">Copied on this iPhone, it pastes on a Mac signed in to the same Apple Account.</span>
+						}
+					</div>
+				</li>
+			}
+			<li class="stepn">
+				<span class="n" aria-hidden="true">3</span>
+				<div class="g">
+					<span class="t">Ask @tool.Name about your conversations</span>
+					<div class="wait" data-wait>
+						@if (Model.Ready)
+						{
+							<span class="check-badge small" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+							<span class="note">@tool.Name is connected.</span>
+						}
+						else
+						{
+							<span class="spinner" aria-hidden="true"></span>
+							<span class="note">Waiting for @tool.Name. It shows up here and in Pebble Audio once it reads.</span>
+						}
+					</div>
+				</div>
+			</li>
+		</ol>
+
+		@if (Model.Key is null)
+		{
+			<form method="post" asp-page-handler="Key" asp-route-tool="@tool.Key" class="fallback">
+				<p class="fallback-head">No browser on that Mac?</p>
+				<p class="note">Use an access key instead. It is shown once, and only this app gets it.</p>
+				<button type="submit" class="btn small bordered">Make an Access Key</button>
+			</form>
+		}
+		else
+		{
+			<p class="fallback"><a class="btn small plain" href="@Model.ToolUrl(tool)">Sign in with the browser instead</a></p>
+		}
+	</div>
+	<div class="aside" data-who-slot>
+		<partial name="_Who" model="Model" />
+	</div>
+</div>
