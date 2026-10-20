@@ -138,7 +138,7 @@ struct AskArchiveSnippetView: View {
         }()
 
         static let sampleNotice = AskArchiveAnswerer.notice(
-            Copy.Siri.tookTooLong, period: .last7Days,
+            Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading, period: .last7Days,
             action: AskArchiveCard.Action(
                 label: Copy.Siri.askInApp, link: Route.ask(scope: "last7", query: "x").url))
 

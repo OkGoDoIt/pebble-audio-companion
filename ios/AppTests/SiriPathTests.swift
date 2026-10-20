@@ -486,6 +486,9 @@ struct SiriPathTests {
         .answer(question: "a long one", period: .last7Days)
         #expect(ContinuousClock.now - started < .seconds(5))
         #expect(outcome.full == Copy.Siri.tookTooLong)
+        // The heading above the card is not the card's own line said twice.
+        #expect(outcome.supporting == Copy.Siri.tookTooLongHeading)
+        #expect(outcome.card.body == Copy.Siri.tookTooLong)
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "last7", query: "a long one"))
     }
 

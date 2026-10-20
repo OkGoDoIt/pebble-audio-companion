@@ -34,6 +34,13 @@ extension Copy {
 
         // ── Ask My Archive ───────────────────────────────────────────────────
 
+        // Headings Siri shows above a card that has no answer on it. The card carries the reason.
+        static let notReadyHeading = "Still starting up"
+        static let offHeading = "Kept in Pebble Audio"
+        static let nothingRecordedHeading = "Nothing recorded yet"
+        static let tookTooLongHeading = "Taking longer than Siri waits"
+        static let noAnswerHeading = "No answer this time"
+
         /// A Siri request that raced the app's own start-up.
         static let notReady = "Pebble Audio is still starting up. Try again in a moment."
         static let nothingRecorded =

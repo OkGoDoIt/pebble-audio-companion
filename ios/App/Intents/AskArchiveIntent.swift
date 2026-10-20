@@ -189,15 +189,21 @@ struct AskArchiveAnswerer: Sendable {
                 .url)
 
         guard await isReady() else {
-            return Self.notice(Copy.Siri.notReady, period: period, action: nil)
+            return Self.notice(
+                Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading, period: period,
+                action: nil)
         }
         // The person's "Siri & Spotlight can see" choice. Off means Siri hears nothing from
         // the archive — not even an answer built from it.
         guard visibility().donates else {
-            return Self.notice(Copy.Siri.offForSiri("answers"), period: period, action: askInApp)
+            return Self.notice(
+                Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading, period: period,
+                action: askInApp)
         }
         guard await hasContent() else {
-            return Self.notice(Copy.Siri.nothingRecorded, period: period, action: nil)
+            return Self.notice(
+                Copy.Siri.nothingRecorded, heading: Copy.Siri.nothingRecordedHeading,
+                period: period, action: nil)
         }
 
         let entry: AskEntry
@@ -207,14 +213,17 @@ struct AskArchiveAnswerer: Sendable {
                 let answered = try await Self.withDeadline(
                     deadline, { try await ask(trimmed, period.askScope) })
             else {
-                return Self.notice(Copy.Siri.tookTooLong, period: period, action: askInApp)
+                return Self.notice(
+                    Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading, period: period,
+                    action: askInApp)
             }
             entry = answered
         } catch {
             let failure = AiFailure.classify(error)
             // `.unknown` adds nothing the sentence does not already say, as on the Ask screen.
             let line = Copy.Siri.couldNotAnswer(failure.kind == .unknown ? nil : failure.reason)
-            return Self.notice(line, period: period, action: askInApp)
+            return Self.notice(
+                line, heading: Copy.Siri.noAnswerHeading, period: period, action: askInApp)
         }
 
         // One row per cited CONVERSATION, in the order the answer first cites it. Two
@@ -267,12 +276,15 @@ struct AskArchiveAnswerer: Sendable {
         )
     }
 
+    /// No answer: a heading above the card, the reason on it (and spoken in full), and one way
+    /// on. The heading is short so the card's line is not said twice on screen.
     static func notice(
-        _ line: String, period: AskArchivePeriod, action: AskArchiveCard.Action?
+        _ line: String, heading: String, period: AskArchivePeriod,
+        action: AskArchiveCard.Action?
     ) -> AskArchiveOutcome {
         AskArchiveOutcome(
             full: line,
-            supporting: line,
+            supporting: heading,
             card: AskArchiveCard(
                 periodLabel: Copy.Siri.periodLabel(period), body: line, isAnswer: false,
                 partialNote: nil, sources: [], moreSources: 0, action: action)
