@@ -45,7 +45,6 @@ public enum LibraryFilter: String, Equatable, Sendable {
     case all
     case untranscribed
     case withFollowUps
-    case withMissingAudio
 }
 
 /// Shared with the enrichment worker (Intelligence depends on this module) so the library's
@@ -65,9 +64,6 @@ public struct ConversationListRow: Equatable, Sendable {
     public var isLive: Bool
     public var tags: [String]
     public var lifecycle: ConversationLifecycle
-    /// Quiet > 60% of the span ("mostly quiet" folds into the row meta).
-    public var mostlyQuiet: Bool
-    public var hasMissingAudio: Bool
     public var followUpCount: Int
     public var openFollowUpCount: Int
     /// Logical-day key (5 AM boundary) in the conversation's recorded zone.
@@ -98,8 +94,6 @@ public struct ConversationListRow: Equatable, Sendable {
         isLive: Bool = false,
         tags: [String] = [],
         lifecycle: ConversationLifecycle = .complete,
-        mostlyQuiet: Bool = false,
-        hasMissingAudio: Bool = false,
         followUpCount: Int = 0,
         openFollowUpCount: Int = 0,
         dateKey: String = "",
@@ -116,8 +110,6 @@ public struct ConversationListRow: Equatable, Sendable {
         self.isLive = isLive
         self.tags = tags
         self.lifecycle = lifecycle
-        self.mostlyQuiet = mostlyQuiet
-        self.hasMissingAudio = hasMissingAudio
         self.followUpCount = followUpCount
         self.openFollowUpCount = openFollowUpCount
         self.dateKey = dateKey
@@ -246,21 +238,6 @@ public struct ConversationQueries: Sendable {
     /// Task-row-only overload (no durable-transcript information available).
     static func aggregateLifecycle(_ states: [TranscriptionState?]) -> ConversationLifecycle {
         aggregateLifecycle(states.map { ConversationMemberState(task: $0, segment: nil) })
-    }
-
-    /// Sums quiet/missing coverage overlapping [startMs, endMs) from cached day spans.
-    static func coverageStats(
-        spans: [CoverageSpan], startMs: Int64, endMs: Int64
-    ) -> (quietMs: Int64, missingMs: Int64) {
-        var quiet: Int64 = 0
-        var missing: Int64 = 0
-        for span in spans {
-            let overlap = min(span.endMs, endMs) - max(span.startMs, startMs)
-            guard overlap > 0 else { continue }
-            if span.kind == .quiet { quiet += overlap }
-            if span.kind == .missing { missing += overlap }
-        }
-        return (quiet, missing)
     }
 
     /// Logical-day keys a conversation touches (capped — conversations don't span weeks).
@@ -398,40 +375,15 @@ public struct ConversationQueries: Sendable {
             followUps[row["conversationId"]] = (row["total"], row["open"])
         }
 
-        // Coverage spans for every logical day the listed conversations touch.
-        struct Prelim {
-            var row: Row
-            var keys: [String]
-        }
-        var prelims: [Prelim] = []
-        var wantedKeys = Set<String>()
-        for row in convoRows {
-            let keys = dateKeys(
-                startMs: row["startMs"], endMs: row["endMs"] ?? row["startMs"],
-                timeZoneID: row["timezone"])
-            wantedKeys.formUnion(keys)
-            prelims.append(Prelim(row: row, keys: keys))
-        }
-        var coverage: [String: [CoverageSpan]] = [:]
-        if !wantedKeys.isEmpty {
-            let keyList = Array(wantedKeys)
-            let placeholders = databaseQuestionMarks(count: keyList.count)
-            for row in try Row.fetchAll(
-                db,
-                sql: "SELECT dateKey, spans FROM coverage_days WHERE dateKey IN (\(placeholders))",
-                arguments: StatementArguments(keyList)
-            ) {
-                coverage[row["dateKey"]] = CoverageDayStore.decodeSpans(row["spans"]) ?? []
-            }
-        }
-
-        return prelims.map { prelim in
-            let row = prelim.row
+        // No quiet or missing-audio flags. They used to be read from the `coverage_days` cache,
+        // which nothing in the app ever wrote, so every row said "not quiet, nothing missing"
+        // whatever the recording held. History works coverage out live (`CoverageComputer`)
+        // and the archive sync from the sidecars (`ArchiveExport.gaps`); a list row that needs
+        // them should do the same rather than read a cache.
+        return convoRows.map { row in
             let id: String = row["id"]
             let startMs: Int64 = row["startMs"]
             let endMs: Int64 = row["endMs"] ?? startMs
-            let spans = prelim.keys.flatMap { coverage[$0] ?? [] }
-            let stats = coverageStats(spans: spans, startMs: startMs, endMs: endMs)
             let counts = followUps[id] ?? (0, 0)
             let title: String? = row["title"]
             let summary: String? = row["summary"]
@@ -445,11 +397,9 @@ public struct ConversationQueries: Sendable {
                 isLive: (row["state"] as String) == "live",
                 tags: tagNames[id] ?? [],
                 lifecycle: aggregateLifecycle(memberStates[id] ?? []),
-                mostlyQuiet: endMs > startMs && stats.quietMs * 10 > (endMs - startMs) * 6,
-                hasMissingAudio: stats.missingMs > 0,
                 followUpCount: counts.total,
                 openFollowUpCount: counts.open,
-                dateKey: prelim.keys[0],
+                dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: row["timezone"]),
                 hasAnnotation: !(title ?? "").isEmpty || !(summary ?? "").isEmpty,
                 annotationFinalAttempts: row["finalAttempts"] ?? 0,
                 hasSpeech: (memberStates[id] ?? []).contains { $0.segment == .complete }
@@ -472,7 +422,6 @@ public struct ConversationQueries: Sendable {
         case .all: return true
         case .untranscribed: return row.lifecycle != .complete
         case .withFollowUps: return row.followUpCount > 0
-        case .withMissingAudio: return row.hasMissingAudio
         }
     }
 

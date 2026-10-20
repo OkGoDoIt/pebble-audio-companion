@@ -517,14 +517,11 @@ enum Copy {
         // scope menu actually uses.)
         static let searchPlaceholder = "Search or ask"
         static let moreTags = "more…"
-        /// Folds into the row meta line, e.g. "7:02 PM · 1 hr 40 min · mostly quiet".
-        static let mostlyQuiet = "mostly quiet"
 
         // "All ⌄" scope menu (6.7).
         static let filterAll = "All"
         static let filterUntranscribed = "Untranscribed"
         static let filterWithFollowUps = "With follow-ups"
-        static let filterWithMissingAudio = "With missing audio"
     }
 
     enum Search {

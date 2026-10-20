@@ -226,6 +226,9 @@ public struct AppDatabase: Sendable {
                 t.column("model", .text)
                 t.column("updatedAtMs", .integer).notNull()
             }
+            // Unused: nothing ever wrote it, and since 2026-10-21 nothing reads it. Not dropped,
+            // because a build from before that reads it in its library query and the
+            // side-by-side install shares this database.
             try db.create(table: "coverage_days") { t in
                 t.column("dateKey", .text).primaryKey()
                 t.column("spans", .text).notNull() // JSON [{kind, startMs, endMs}]

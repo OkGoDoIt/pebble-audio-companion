@@ -48,8 +48,6 @@ final class LiveWorld {
             isLive: source.isLive,
             tags: source.tags,
             lifecycle: source.lifecycle,
-            mostlyQuiet: source.mostlyQuiet,
-            hasMissingAudio: source.hasMissingAudio,
             followUpCount: source.openFollowUpCount,
             dateKey: source.dateKey,
             awaitingAnnotation: source.awaitingAnnotation
