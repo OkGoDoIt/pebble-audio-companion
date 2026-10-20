@@ -18,6 +18,9 @@ public sealed class LoginModel(
 	[BindProperty(SupportsGet = true)]
 	public string? ReturnUrl { get; set; }
 
+	/// <summary>True when sign-in is a step of an app's OAuth sign-in, which returns to the consent page.</summary>
+	public bool ForConnection => ReturnUrl?.StartsWith("/oauth/", StringComparison.OrdinalIgnoreCase) == true;
+
 	public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
 	{
 		if (!await AdminAccount.IsSetUpAsync(db, cancellationToken))

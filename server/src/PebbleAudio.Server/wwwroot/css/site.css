@@ -705,3 +705,48 @@ input:not([type]) {
 .auth-card input::placeholder {
 	letter-spacing: 0.08em;
 }
+
+/* OAuth consent: an auth card with what the app can do, where it is from, and Deny / Allow. */
+
+.consent {
+	gap: var(--space-5);
+}
+
+.consent-header,
+.consent-abilities {
+	display: grid;
+	gap: var(--space-2);
+}
+
+.consent-header h1 {
+	overflow-wrap: anywhere;
+}
+
+.consent-label {
+	font-size: var(--text-body);
+	font-weight: 600;
+}
+
+.consent-list {
+	margin: 0;
+	padding-left: var(--space-5);
+	display: grid;
+	gap: var(--space-2);
+}
+
+.consent .facts dd {
+	overflow-wrap: anywhere;
+}
+
+.consent-actions {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--space-2);
+}
+
+/* Admin rows */
+
+.row-error {
+	color: var(--color-danger);
+	font-size: var(--text-small);
+}

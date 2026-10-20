@@ -14,6 +14,7 @@ using ModelContextProtocol.Authentication;
 using PebbleAudio.Server;
 using PebbleAudio.Server.Auth;
 using PebbleAudio.Server.Data;
+using PebbleAudio.Server.Events;
 using PebbleAudio.Server.Jobs;
 using PebbleAudio.Server.Mcp;
 using PebbleAudio.Server.Settings;
@@ -136,6 +137,8 @@ builder.Services.AddHostedService<SetupAnnouncer>();
 builder.Services.AddJobQueue()
 	.AddJobHandler<NoopJobHandler>(NoopJobHandler.Type);
 builder.Services.AddSync();
+builder.Services.AddOAuthServer();
+builder.Services.AddMcpEvents();
 
 builder.Services.AddRazorPages(options =>
 {
@@ -191,6 +194,7 @@ app.MapGet("/.well-known/oauth-protected-resource", (IOptionsMonitor<McpAuthenti
 
 app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy);
 app.MapSync();
+app.MapOAuthServer();
 
 app.MapStaticAssets();
 app.MapRazorPages()

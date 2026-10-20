@@ -31,6 +31,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- The OAuth metadata documents of ChatGPT and Claude, used when a live fetch fails (Auth/OAuthClients.cs). -->
+		<Content Remove="Auth/KnownClients/*.json" />
+		<EmbeddedResource Include="Auth/KnownClients/*.json" LogicalName="KnownClients/%(Filename)%(Extension)" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<InternalsVisibleTo Include="PebbleAudio.Server.Tests" />
 	</ItemGroup>
 

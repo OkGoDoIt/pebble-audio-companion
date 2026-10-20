@@ -1,6 +1,7 @@
 @inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
 @{
-	var signedIn = User.Identity?.IsAuthenticated == true;
+	// The OAuth consent page sets HideNav: it stands on its own, without the admin area's navigation.
+	var signedIn = User.Identity?.IsAuthenticated == true && ViewData["HideNav"] is not true;
 	var csrfToken = Antiforgery.GetAndStoreTokens(Context).RequestToken;
 	var section = ViewData["Section"] as string;
 	string? Current(string name) => section == name ? "page" : null;
@@ -26,6 +27,7 @@
 				<nav class="nav" aria-label="Admin">
 					<a href="/admin" aria-current="@Current("status")">Status</a>
 					<a href="/admin/phones" aria-current="@Current("phones")">Phones</a>
+					<a href="/admin/apps" aria-current="@Current("apps")">Apps</a>
 					<a href="/admin/tokens" aria-current="@Current("tokens")">Tokens</a>
 					<a href="/admin/passkeys" aria-current="@Current("passkeys")">Passkeys</a>
 					<a href="/admin/settings" aria-current="@Current("settings")">Settings</a>

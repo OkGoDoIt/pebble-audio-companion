@@ -18,7 +18,7 @@ This README is the engineer handoff: layout, local run, migrations, and deploy.
 | [`docs/build-plan.md`](docs/build-plan.md) | Names, paths, packages, and the module layout this code follows |
 | [`docs/sync-protocol.md`](docs/sync-protocol.md) | The phone ↔ server wire contract |
 | `docs/research-verified-2026-10-20.md` | Verified facts about the MCP C# SDK, OAuth clients, and the stack |
-| [`src/PebbleAudio.Server/Auth/README.md`](src/PebbleAudio.Server/Auth/README.md) | Admin sign-in, bearer tokens, and the OAuth server still to build |
+| [`src/PebbleAudio.Server/Auth/README.md`](src/PebbleAudio.Server/Auth/README.md) | Admin sign-in, bearer tokens, and the OAuth 2.1 authorization server |
 
 ## Current state
 
@@ -32,7 +32,14 @@ Built:
 - The MCP server on the official SDK, stateless, at `/mcp`, with one tool: `get_status`.
 - Bearer tokens (`pat_…`) for `/mcp`, created and revoked in the admin area; an unauthenticated request gets
   a 401 with `WWW-Authenticate: Bearer resource_metadata="…"`.
-- The admin area at `/admin`, passkey-only, one user: status, tokens, passkeys, and settings.
+- The OAuth 2.1 authorization server (`Auth/`, see its README) for ChatGPT, Claude, and Claude Code: metadata,
+  authorize with a consent page behind the passkey sign-in, token with PKCE and refresh rotation, dynamic
+  registration, client metadata documents, and revocation. `oat_…` access tokens open `/mcp` alongside `pat_…`.
+- MCP Events (`Events/`): `events/list`, `events/subscribe` (verified with a signed challenge), and
+  `events/unsubscribe`, with `day_recap.ready` and `followup.created` delivered as Standard Webhooks from the job
+  queue. Other modules call `IEventPublisher`.
+- The admin area at `/admin`, passkey-only, one user: status, linked phones, connected apps and event
+  subscriptions, tokens, passkeys, and settings.
 - The Postgres-backed job queue (`Jobs/`) with a `noop` handler and `clip.transcode`.
 - Typed settings with defaults, editable at `/admin/settings` (`Settings/`).
 - The sync half (`Sync/`, the whole of [`docs/sync-protocol.md`](docs/sync-protocol.md)): linking a phone at
@@ -44,8 +51,8 @@ Built:
   OAuth grants join the phone's access list by registering an `IConnectedAssistantSource`.
 - CI and deploy workflows, mirroring Situ.
 
-Not built yet: the OAuth authorization server (`Auth/`), the archive tools, MCP Events, the import from a
-Desktop backup, and the conversation viewer.
+Not built yet: the archive tools, the import from a Desktop backup, and the conversation viewer (event payloads
+already link to its `/d/{day}` and `/c/{id}` pages).
 
 ## Layout
 
@@ -56,8 +63,9 @@ server/
 ├── deploy/                        droplet setup, systemd units, nginx site, deploy and backup scripts
 ├── docs/
 ├── src/PebbleAudio.Server/
-│   ├── Auth/                      Identity user, setup code, bearer tokens
+│   ├── Auth/                      Identity user, setup code, bearer tokens, the OAuth authorization server
 │   ├── Data/                      ArchiveDbContext (also the Identity store), entities, Migrations/
+│   ├── Events/                    MCP Events: events/* methods, webhook signing and delivery
 │   ├── Jobs/                      IJobQueue, JobRunner, JobWorker, handlers
 │   ├── Mcp/                       server instructions, tools, the AI-read log
 │   ├── Pages/Admin/               Razor Pages for the admin area
@@ -102,8 +110,14 @@ To start over locally: `dropdb pebbleaudio && createdb pebbleaudio`.
 
 ## Connect an assistant
 
-Create a token at `/admin/tokens`. The page shows it once, with the server URL and a ready Claude Code
-command:
+ChatGPT, Claude, and Claude Code sign in with OAuth: add `https://pebbleaudio.okgodoit.com/mcp` as a custom
+connector (ChatGPT: chatgpt.com/plugins, **+**, Add custom MCP server, Authentication OAuth; Claude: Customize,
+Connectors; Claude Code: `claude mcp add --transport http pebble-audio https://pebbleaudio.okgodoit.com/mcp`, then
+`/mcp`). The app opens the consent page; sign in with the admin passkey and allow it. Connected apps are listed,
+and disconnected, at `/admin/apps`.
+
+For a tool without OAuth, create a token at `/admin/tokens`. The page shows it once, with the server URL and a
+ready Claude Code command:
 
 ```bash
 claude mcp add --transport http pebble-audio https://pebbleaudio.okgodoit.com/mcp \

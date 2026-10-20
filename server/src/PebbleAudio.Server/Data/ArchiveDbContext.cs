@@ -8,7 +8,7 @@ namespace PebbleAudio.Server.Data;
 /// <summary>
 /// The archive database, which is also the Identity store. Every archive table is scoped by <c>UserId</c>.
 /// </summary>
-public sealed class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
+public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
 	: IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)
 {
 	public DbSet<Conversation> Conversations => Set<Conversation>();
@@ -187,6 +187,9 @@ public sealed class ArchiveDbContext(DbContextOptions<ArchiveDbContext> options)
 		ConfigureOwner<Clip>(builder);
 		ConfigureOwner<ApiToken>(builder);
 		ConfigureOwner<AiRead>(builder);
+
+		OAuthModel.Configure(builder);
+		EventsModel.Configure(builder);
 	}
 
 	private static void ConfigureOwner<TEntity>(ModelBuilder builder)
