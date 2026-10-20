@@ -181,6 +181,22 @@ source's row in Settings › Muse reads "No access in iPhone Settings" with an O
 Setting Calendar or Reminders to Allowed by hand in Settings › Muse asks iOS at that moment;
 leaving it at Ask first never does.
 
+**What Muse is told** (Roger, 2026-10-21). While the person has not answered yet (the watch
+prompt, or the iOS prompt after "Open Pebble Audio on your iPhone…"), Muse's call stays open
+and gets no reply; when the person answers, the call goes on with the read or ends with the
+answer below. Only if no answer comes before a time limit a little under Muse's own limit for
+a call does it end as "not answered". Every ending tells Muse plainly what happened, so it
+neither retries what was refused nor gives up on what is only pending:
+- Don't Allow on the watch, or the source is Off: denied. "The person does not allow Muse to
+  read their <source>. Do not ask for it again." (An Off source is also never registered.)
+- Not Now on the watch: declined for now. "The person said not now. Do not ask for their
+  <source> again in this conversation."
+- iOS access refused: no system access. "Pebble Audio has no access to the person's <source>
+  in iPhone Settings. They can allow it there. Do not ask again until they do."
+- No answer in time: not answered. "The person has not answered yet. You can ask again
+  later."
+These are outcomes only, like D7b: no data goes with them.
+
 Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
 "Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
 conversations row's subtitle "Includes what other people said."), with the footer "Muse reads
