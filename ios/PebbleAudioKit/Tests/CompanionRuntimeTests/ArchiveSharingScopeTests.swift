@@ -89,6 +89,7 @@ struct ArchiveSharingScopeTests {
         var settings: ArchiveSettingsBox
         var clock: TestClock
         var service: ArchiveSyncService
+        var directory: URL
     }
 
     func world(
@@ -123,7 +124,7 @@ struct ArchiveSharingScopeTests {
         await service.start()
         return World(
             db: db, outbox: outbox, http: http, uploads: uploads, settings: box, clock: clock,
-            service: service)
+            service: service, directory: directory)
     }
 
     /// A follow-up said `daysAgo` days before now.
@@ -334,6 +335,93 @@ struct ArchiveSharingScopeTests {
         let delete = try #require(http.requests("DELETE", "/link").last)
         #expect(delete.url?.query == nil)  // never `keepData=true` from the app
         #expect(delete.value(forHTTPHeaderField: "Authorization") == "Bearer pad_test")
+    }
+
+    // MARK: - Delete All reaches the server
+
+    @Test func deleteAllWipesTheServerEvenWhileSyncIsPaused() async throws {
+        var settings = ArchiveSyncSettings(
+            origin: "https://pebbleaudio.okgodoit.com", deviceId: "dev-1", enabled: false)
+        settings.setupComplete = true
+        let w = try await world(settings: settings)
+        try await followUp("a", daysAgo: 1, in: w.db)
+        await w.service.didLink()
+        await w.service.willWipeLocally()
+        await w.service.didWipeLocally()
+        #expect(w.http.requests("POST", "/sync/wipe").count == 1)
+        #expect(w.service.status.value.wipePending == false)
+        // Paused: the wipe goes, the text does not.
+        #expect(w.uploads.bodies.isEmpty)
+    }
+
+    @Test func aDeleteAllInterruptedByAKillIsSentOnTheNextLaunchBeforeAnythingElse() async throws {
+        let w = try await world()
+        try await followUp("kept", daysAgo: 1, in: w.db)
+        await w.service.didLink()
+        await w.service.pass(.userAsked)
+        #expect(sentIds(w.uploads) == ["kept"])
+        // The app is killed after the local deletes began, before `didWipeLocally`.
+        await w.service.willWipeLocally()
+
+        let directory = FileManager.default.temporaryDirectory
+        // A new process: a new background session object (a stream has one reader).
+        let uploads = ArchiveFakeUploads(answer: { answer($0) })
+        let relaunched = ArchiveSyncService(
+            .init(
+                outbox: w.outbox,
+                builder: ArchivePayloadBuilder(
+                    sources: .init(
+                        database: w.db, readMeta: { _ in nil }, listSegments: { [] },
+                        transcript: { _ in nil }, transcriptVersion: { _ in "absent" })),
+                requests: ArchiveRequestHandler(
+                    sources: .init(
+                        builder: ArchivePayloadBuilder(
+                            sources: .init(
+                                database: w.db, readMeta: { _ in nil }, listSegments: { [] },
+                                transcript: { _ in nil }, transcriptVersion: { _ in "absent" })),
+                        readFrames: { _ in [] }, temporaryDirectory: directory, nowMs: { now })),
+                http: w.http, uploads: uploads, settings: { w.settings.value },
+                token: { "pad_test" }, directory: w.directory,
+                clock: w.clock, isForeground: { true }, isCharging: { false }))
+        await relaunched.start()
+        #expect(relaunched.status.value.wipePending)
+        await relaunched.pass(.foregroundTick)
+        // The owed wipe went, then what is left on the phone was sent to the empty server.
+        #expect(w.http.requests("POST", "/sync/wipe").count == 1)
+        #expect(relaunched.status.value.wipePending == false)
+        #expect(sentIds(uploads) == ["kept"])
+    }
+
+    /// Item 52 of the 2026-10-21 sweep, settled: a batch still uploading when Delete All runs is
+    /// cancelled, and the wipe waits for it, so nothing the person deleted lands after the wipe.
+    @Test func aBatchStillUploadingIsCancelledBeforeTheWipeAndNeverLandsAfterIt() async throws {
+        let w = try await world()
+        try await followUp("deleted-later", daysAgo: 1, in: w.db)
+        w.uploads.holds = true
+        // Linking sends the library; its first batch is still uploading when Delete All runs.
+        let pass = Task { await w.service.didLink() }
+        var spins = 0
+        while w.uploads.bodies.isEmpty, spins < 100_000 {
+            await Task.yield()
+            spins += 1
+        }
+        try #require(!w.uploads.bodies.isEmpty)
+        // The pass waits for the answer that never comes, then leaves the batch uploading.
+        await w.clock.advance(by: ArchiveSyncService.answerWaitMs)
+        await pass.value
+        #expect(await w.uploads.inFlight().count == 1)
+
+        w.uploads.holds = false
+        await w.service.willWipeLocally()
+        #expect(w.uploads.cancelled.count == 1)
+        #expect(await w.uploads.inFlight().isEmpty)
+        try await FollowUpStore(db: w.db).delete(id: "deleted-later")
+        await w.service.didWipeLocally()
+        #expect(w.http.requests("POST", "/sync/wipe").count == 1)
+        // The cancelled batch is not read as the server being unreachable.
+        #expect(w.service.status.value.lastError == nil)
+        // Only the one cancelled upload ever carried the deleted follow-up.
+        #expect(sentIds(w.uploads).filter { $0 == "deleted-later" }.count == 1)
     }
 
     // MARK: - Status: who can read, published only when it changes

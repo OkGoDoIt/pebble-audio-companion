@@ -39,18 +39,40 @@ final class ArchiveFakeUploads: ArchiveUploading, @unchecked Sendable {
         self.answer = answer
     }
 
+    /// While true, an upload stays in flight until `cancel` (a slow network under Delete All).
+    var holds = false
+    private var _held: [String: Data] = [:]
+    private var _cancelled: [String] = []
+    var cancelled: [String] { lock.withLock { _cancelled } }
+
     func upload(_ request: URLRequest, fromFile file: URL, description: String) async {
         let body = (try? Data(contentsOf: file)) ?? Data()
-        lock.withLock {
+        let hold = lock.withLock { () -> Bool in
             _bodies.append(body)
             _requests.append(request)
+            if holds { _held[description] = body }
+            return holds
         }
+        guard !hold else { return }
         let (status, response) = answer(body)
         continuation.yield(ArchiveUploadOutcome(description: description, status: status, body: response))
     }
 
-    func inFlight() async -> Set<String> { [] }
+    func inFlight() async -> Set<String> { lock.withLock { Set(_held.keys) } }
     func reconnect() async {}
+
+    func cancel(descriptionsWithPrefix prefix: String) async {
+        let gone = lock.withLock { () -> [String] in
+            let matching = _held.keys.filter { $0.hasPrefix(prefix) }
+            for key in matching { _held[key] = nil }
+            _cancelled += matching
+            return matching
+        }
+        for description in gone {
+            continuation.yield(
+                ArchiveUploadOutcome(description: description, status: 0, body: Data(), error: "cancelled"))
+        }
+    }
 }
 
 /// Accepts every item of a batch.

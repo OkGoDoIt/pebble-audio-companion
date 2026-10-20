@@ -453,15 +453,27 @@ public actor ArchiveSyncService {
 
     // MARK: - Delete all
 
-    /// Before "Delete all" wipes the library: stop recording, so the thousands of deletes it
-    /// writes are never sent one by one.
+    /// Before "Delete all" wipes the library: the server's wipe is owed from this moment, so it
+    /// is saved first — a kill anywhere after this still sends it on the next launch, before
+    /// anything else. Then recording stops (the thousands of deletes are never sent one by one),
+    /// and a batch still uploading is cancelled: the wipe clears the server's version ledger, so
+    /// a batch landing after it would be taken as new and put deleted text back.
     public func willWipeLocally() async {
         guard deps.settings().isLinked else { return }
+        state.wipePending = true
+        save()
+        if let inFlight = state.inFlightBatchId {
+            clearInFlight(inFlight)
+            resumeWaiter(inFlight, answered: false)
+        }
+        await deps.uploads.cancel(descriptionsWithPrefix: "batch:")
         try? await deps.outbox.setActive(false)
+        await publish(refreshCounts: false)
     }
 
     /// After it: the server is wiped by its own endpoint, then sent whatever is left (people,
-    /// hand-written follow-ups).
+    /// hand-written follow-ups). The wipe goes whether or not sync is on: Delete All deletes the
+    /// server's copy too, paused or not.
     public func didWipeLocally() async {
         guard deps.settings().isLinked else { return }
         state.wipePending = true
@@ -505,14 +517,19 @@ public actor ArchiveSyncService {
         {
             await sendPreferences(settings.preferences, endpoint)
         }
-        guard settings.isSyncing, let endpoint = endpoint() else { return }
         let now = deps.clock.nowMs
         let asked = trigger == .userAsked || trigger == .linked || trigger == .settings
-        if let next = state.nextAttemptAtMs, now < next, !asked { return }
-
+        // A Delete All the server has not heard yet goes first, whatever the switch says, and
+        // only once no batch is still uploading (one landing after the wipe would be new to it).
         if state.wipePending {
+            if let next = state.nextAttemptAtMs, now < next, !asked { return }
+            guard let endpoint = endpoint() else { return }
+            let uploading = await deps.uploads.inFlight().contains { $0.hasPrefix("batch:") }
+            guard !uploading else { return }
             guard await wipe(endpoint) else { return }
         }
+        guard settings.isSyncing, let endpoint = endpoint() else { return }
+        if let next = state.nextAttemptAtMs, now < next, !asked { return }
 
         // One batch in flight at a time. Its answer is applied whenever it arrives; one with
         // no task left behind it was lost, and its items are simply still pending.
@@ -682,6 +699,12 @@ public actor ArchiveSyncService {
     func handle(_ outcome: ArchiveUploadOutcome) async {
         if outcome.description.hasPrefix("batch:") {
             let id = String(outcome.description.dropFirst("batch:".count))
+            // A batch this phone gave up on (cancelled for a Delete All) failing is expected,
+            // not a server that cannot be reached. An answer that did come is still applied.
+            if outcome.error != nil, state.inFlightBatchId != id {
+                try? FileManager.default.removeItem(at: batchFile(id))
+                return
+            }
             await handleBatchAnswer(id: id, outcome)
             clearInFlight(id)
             var status = self.status.value

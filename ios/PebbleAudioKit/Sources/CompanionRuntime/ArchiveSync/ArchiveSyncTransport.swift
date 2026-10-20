@@ -63,6 +63,9 @@ public protocol ArchiveUploading: Sendable {
     /// Descriptions of the tasks the session still holds (running or suspended).
     func inFlight() async -> Set<String>
     func reconnect() async
+    /// Cancels every task whose description starts with `prefix` (a Delete All cancels the
+    /// batches still uploading, so none lands after the server's wipe).
+    func cancel(descriptionsWithPrefix prefix: String) async
 }
 
 /// The archive sync's background session. Its own identifier, never the transcription
@@ -111,6 +114,15 @@ public final class URLSessionArchiveUploader: NSObject, ArchiveUploading, @unche
     /// Touching the session recreates it with the same identifier, which re-attaches its tasks
     /// and delivers whatever finished while the app was not running.
     public func reconnect() async { _ = await inFlight() }
+
+    public func cancel(descriptionsWithPrefix prefix: String) async {
+        let tasks = await withCheckedContinuation { (done: CheckedContinuation<[URLSessionTask], Never>) in
+            session.getAllTasks { done.resume(returning: $0) }
+        }
+        for task in tasks where task.taskDescription?.hasPrefix(prefix) == true {
+            task.cancel()
+        }
+    }
 
     /// `handleEventsForBackgroundURLSession`'s handler, called once the session's events drain.
     public func addBackgroundEventsCompletion(_ completion: @escaping @Sendable () -> Void) {
