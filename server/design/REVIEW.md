@@ -1,5 +1,9 @@
 # Pebble Audio web: review of the four candidates
 
+The candidate folders this reviews were removed from the repository on 2026-10-21 because they were
+built from real recordings; a private copy is kept outside it. The direction chosen from them is
+"Reviewer's blend" below.
+
 Reviewed: every HTML, CSS, and JS file in `candidates/reading-first`, `candidates/timeline-first`,
 `candidates/calm-cards`, and `candidates/instrument`, plus a headless-Chrome pass over each
 viewer (390 px light and dark, 1280 px), day page (390 px full length, 1280 px), and all three

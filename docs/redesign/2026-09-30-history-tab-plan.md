@@ -60,7 +60,7 @@ stays as the record of how the design was reached.
 
 **Where things are:**
 
-- Mockups (HTML and PNG): `docs/redesign/history-mockups/`. The current ones are listed in
+- Mockups (HTML and PNG): formerly `docs/redesign/history-mockups/` (removed from the repository on 2026-10-21 because they were built from real recordings; a private copy is kept outside it). The current ones are listed in
   [section 12](#12-mockup-index).
 - Running journal: the 2026-09-30 History entries in
   `UPSTREAM_THIRD_PARTY_BACKGROUND_AUDIO_IMPLEMENTATION_PLAN.md`.
@@ -1227,7 +1227,7 @@ delete and undo) and its whole-library build is deleted in the last step.
 Sketches of the pieces below are in `docs/redesign/history-sketches/` (`Geometry.swift`,
 `Timeline.swift`, `Screen.swift`, `Stubs.swift`). They are the versions **corrected by the
 Phase 0 spike**, which ran them in the iOS 27.0 simulator on 2026-09-30; screenshots are in
-`docs/redesign/history-spike/`. What the spike found is folded into the text below and listed
+`docs/redesign/history-spike/` (removed from the repository on 2026-10-21 because they were built from real recordings; a private copy is kept outside it). What the spike found is folded into the text below and listed
 under [Phase 0](#phase-0--spike-done-2026-09-30). Not yet run: iOS 26, a real device,
 VoiceOver.
 
@@ -1378,7 +1378,7 @@ static func pinOffset(labelHeight h: CGFloat, gap: CGRect, visible: CGRect) -> C
 the horizontal pager. Its bounds **already exclude the area under the bars** (spike: 640 pt of
 an 874 pt screen), so no insets are subtracted and the page keeps no inset state. The gap clamp
 is applied last so a label whose gap is almost gone slides out with the gap's edge. All four
-states are in `history-spike/pinned-labels-four-states.png`.
+states were in `history-spike/pinned-labels-four-states.png` (removed with the spike).
 
 #### Components
 
@@ -1635,7 +1635,7 @@ None of these block writing code for Phases 0–2. Each has a recommendation.
 
 ## 12. Mockup index
 
-In `docs/redesign/history-mockups/`, each as `.html` and `.png`.
+Formerly in `docs/redesign/history-mockups/`, each as `.html` and `.png` (removed from the repository on 2026-10-21 because they were built from real recordings; a private copy is kept outside it).
 
 | File | Shows | Status |
 |---|---|---|
