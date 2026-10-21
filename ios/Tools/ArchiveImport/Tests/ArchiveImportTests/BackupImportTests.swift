@@ -194,51 +194,76 @@ struct SyntheticBackup {
     #expect(try await library.everything().allSatisfy { $0.version == library.snapshotMs })
 }
 
-@Test func theScopeDatesEachKindTheWayTheContractDoes() throws {
+/// The import dates every kind by the phone's own rule (`ArchiveScopeGate`), asked of the
+/// backup's database: whatever the phone's sync would hold back, the import holds back too.
+@Test func theScopeDatesEachKindTheWayThePhoneDoes() async throws {
     let zone = "Asia/Jakarta"
     // 2026-10-10 05:00 in Jakarta, the start of that logical day.
     let cutoff = try #require(LogicalDay.bounds(ofDateKey: "2026-10-10", timeZoneID: zone)).startMs
-    let dates = ScopeDates(
-        conversationStartMs: ["old": cutoff - 1, "new": cutoff, "late-night": cutoff - 3_600_000],
-        noteConversation: ["note-old": "old", "note-new": "new"],
-        followUpMs: ["fu-old": cutoff - 1, "fu-new": cutoff + 1],
-        zoneID: zone)
+    let db = try AppDatabase.inMemory()
+    let conversations = [("old", cutoff - 1), ("new", cutoff)].map { id, start in
+        GroupedConversation(
+            id: id, startMs: start, endMs: start + 60_000, timeZoneID: zone, isLive: false,
+            members: [ConversationMember(segmentId: "seg-\(id)")])
+    }
+    try await db.writer.write { d in _ = try ConversationGrouper.apply(conversations, in: d) }
+    let notes = NotesStore(db: db)
+    // Dated by its conversation, whenever it was written; with the conversation gone, by when.
+    let noteOld = try await notes.create(
+        conversationId: "old", templateId: "t", title: "a", body: "b", nowMs: cutoff + 1)
+    let noteNew = try await notes.create(
+        conversationId: "new", templateId: "t", title: "a", body: "b", nowMs: cutoff - 10)
+    let noteLoose = try await notes.create(
+        conversationId: "gone", templateId: "t", title: "a", body: "b", nowMs: cutoff - 1)
+    let followUps = FollowUpStore(db: db)
+    let fuOld = try await followUps.add(text: "x", nowMs: cutoff - 1)
+    let fuNew = try await followUps.add(text: "y", nowMs: cutoff + 1)
+    let dates = ScopeDates(database: db, zoneID: zone)
 
-    #expect(!dates.contains(.conversation, id: "old", cutoffMs: cutoff))
-    #expect(dates.contains(.conversation, id: "new", cutoffMs: cutoff))
-    #expect(!dates.contains(.transcript, id: "old", cutoffMs: cutoff))
-    #expect(!dates.contains(.note, id: "note-old", cutoffMs: cutoff))
-    #expect(dates.contains(.note, id: "note-new", cutoffMs: cutoff))
-    #expect(!dates.contains(.followUp, id: "fu-old", cutoffMs: cutoff))
-    #expect(dates.contains(.followUp, id: "fu-new", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.conversation, id: "old", cutoffMs: cutoff))
+    #expect(try await dates.contains(.conversation, id: "new", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.transcript, id: "old", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.note, id: noteOld.id, cutoffMs: cutoff))
+    #expect(try await dates.contains(.note, id: noteNew.id, cutoffMs: cutoff))
+    #expect(try await !dates.contains(.note, id: noteLoose.id, cutoffMs: cutoff))
+    #expect(try await !dates.contains(.followUp, id: fuOld.id, cutoffMs: cutoff))
+    #expect(try await dates.contains(.followUp, id: fuNew.id, cutoffMs: cutoff))
     // Days: the day the window opens on is in it, the one before is not.
-    #expect(dates.contains(.recap, id: "2026-10-10", cutoffMs: cutoff))
-    #expect(!dates.contains(.recap, id: "2026-10-09", cutoffMs: cutoff))
-    #expect(!dates.contains(.coverage, id: "2026-10-09", cutoffMs: cutoff))
+    #expect(try await dates.contains(.recap, id: "2026-10-10", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.recap, id: "2026-10-09", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.coverage, id: "2026-10-09", cutoffMs: cutoff))
     // A brief by its last day: the week from 2026-10-04 ends on the 10th.
-    #expect(dates.contains(.brief, id: "week:2026-10-04", cutoffMs: cutoff))
-    #expect(!dates.contains(.brief, id: "week:2026-10-03", cutoffMs: cutoff))
-    #expect(!dates.contains(.brief, id: "month:2026-09", cutoffMs: cutoff))
-    #expect(dates.contains(.brief, id: "month:2026-10", cutoffMs: cutoff))
-    #expect(dates.contains(.person, id: "anyone", cutoffMs: cutoff))
-    #expect(dates.contains(.conversation, id: "old", cutoffMs: nil))
+    #expect(try await dates.contains(.brief, id: "week:2026-10-04", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.brief, id: "week:2026-10-03", cutoffMs: cutoff))
+    #expect(try await !dates.contains(.brief, id: "month:2026-09", cutoffMs: cutoff))
+    #expect(try await dates.contains(.brief, id: "month:2026-10", cutoffMs: cutoff))
+    #expect(try await dates.contains(.person, id: "anyone", cutoffMs: cutoff))
+    #expect(try await dates.contains(.conversation, id: "old", cutoffMs: nil))
+    // A transcript of a conversation that is gone is the builder's to settle.
+    #expect(try await dates.contains(.transcript, id: "gone", cutoffMs: cutoff))
 
     // What the phone no longer has: what is dated before its own archive on the server begins.
-    #expect(dates.isBefore(.conversation, id: "old", boundaryMs: cutoff))
-    #expect(!dates.isBefore(.conversation, id: "new", boundaryMs: cutoff))
-    #expect(!dates.isBefore(.note, id: "note-new", boundaryMs: cutoff))
-    #expect(dates.isBefore(.followUp, id: "fu-old", boundaryMs: cutoff))
-    #expect(dates.isBefore(.recap, id: "2026-10-09", boundaryMs: cutoff))
-    #expect(!dates.isBefore(.recap, id: "2026-10-10", boundaryMs: cutoff))
-    #expect(dates.isBefore(.brief, id: "week:2026-10-03", boundaryMs: cutoff))
-    #expect(!dates.isBefore(.brief, id: "week:2026-10-04", boundaryMs: cutoff))
-    #expect(dates.isBefore(.person, id: "anyone", boundaryMs: cutoff))
-    // A note without a conversation is dated by when it was written.
-    let loose = ScopeDates(
-        conversationStartMs: [:], noteConversation: [:], noteCreatedMs: ["note-loose": cutoff - 1],
-        followUpMs: [:], zoneID: zone)
-    #expect(!loose.contains(.note, id: "note-loose", cutoffMs: cutoff))
-    #expect(loose.isBefore(.note, id: "note-loose", boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.conversation, id: "old", boundaryMs: cutoff))
+    #expect(try await !dates.isBefore(.conversation, id: "new", boundaryMs: cutoff))
+    #expect(try await !dates.isBefore(.note, id: noteNew.id, boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.note, id: noteLoose.id, boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.followUp, id: fuOld.id, boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.recap, id: "2026-10-09", boundaryMs: cutoff))
+    #expect(try await !dates.isBefore(.recap, id: "2026-10-10", boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.brief, id: "week:2026-10-03", boundaryMs: cutoff))
+    #expect(try await !dates.isBefore(.brief, id: "week:2026-10-04", boundaryMs: cutoff))
+    #expect(try await dates.isBefore(.person, id: "anyone", boundaryMs: cutoff))
+
+    // And the phone's gate, made the way its sync makes it, gives the same answers.
+    let phone = try await ArchiveScopeGate.make(.since(ms: cutoff), nowMs: cutoff, database: db)
+    for (kind, id) in [
+        (ArchiveEntityKind.conversation, "old"), (.conversation, "new"), (.note, noteOld.id),
+        (.note, noteLoose.id), (.followUp, fuNew.id), (.recap, "2026-10-09"), (.brief, "week:2026-10-04"),
+    ] {
+        #expect(
+            try await phone.contains(kind, id: id, in: db)
+                == dates.contains(kind, id: id, cutoffMs: cutoff), "\(kind) \(id)")
+    }
 
     let hcm = try #require(TimeZone(identifier: zone))
     #expect(ImportBoundary.parse("all") == .everything)

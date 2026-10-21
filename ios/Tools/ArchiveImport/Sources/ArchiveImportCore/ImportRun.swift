@@ -127,11 +127,13 @@ public struct ImportRun {
         var tally = Tally()
         var selected: [ArchiveOutboxRow] = []
         for row in rows {
-            if !dates.contains(row.kind, id: row.entityId, cutoffMs: cutoff) {
+            if try await !dates.contains(row.kind, id: row.entityId, cutoffMs: cutoff) {
                 tally[row.kind].outOfScope += 1
-            } else if let wipedAt, !dates.contains(row.kind, id: row.entityId, cutoffMs: wipedAt) {
+            } else if let wipedAt, try await !dates.contains(row.kind, id: row.entityId, cutoffMs: wipedAt) {
                 tally.deletedBefore += 1
-            } else if let boundary, !dates.isBefore(row.kind, id: row.entityId, boundaryMs: boundary) {
+            } else if let boundary,
+                try await !dates.isBefore(row.kind, id: row.entityId, boundaryMs: boundary)
+            {
                 tally.phoneHas += 1
             } else {
                 selected.append(row)
