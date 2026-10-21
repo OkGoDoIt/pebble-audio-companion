@@ -157,7 +157,7 @@ struct GetFollowUpsIntent: AppIntent {
 struct ProcessNowIntent: AppIntent {
     static let title: LocalizedStringResource = "Catch Up Now"
     static let description = IntentDescription(
-        "Starts transcribing and summarising anything Pebble Audio has not got to yet."
+        "Starts transcribing and summarizing anything Pebble Audio has not got to yet."
     )
     static let supportedModes: IntentModes = .background
 
@@ -177,7 +177,7 @@ struct ProcessNowIntent: AppIntent {
         }
         if backlog.awaitingEnrichment > 0 {
             parts.append(
-                "\(backlog.awaitingEnrichment) \(backlog.awaitingEnrichment == 1 ? "conversation" : "conversations") to summarise"
+                "\(backlog.awaitingEnrichment) \(backlog.awaitingEnrichment == 1 ? "conversation" : "conversations") to summarize"
             )
         }
         return "Catching up: " + parts.joined(separator: " and ") + "."
