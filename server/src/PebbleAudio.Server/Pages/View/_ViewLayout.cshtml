@@ -1,6 +1,8 @@
 @inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
 @{
 	var csrfToken = Antiforgery.GetAndStoreTokens(Context).RequestToken;
+	// The site menu (Pages/Shared/_SiteMenu) marks the viewer's own row.
+	ViewData["Section"] ??= "conversations";
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -15,6 +17,7 @@
 	<link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true">
 	<link rel="stylesheet" href="~/css/player.css" asp-append-version="true">
 	<link rel="stylesheet" href="~/css/view.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/site.css" asp-append-version="true">
 	@await RenderSectionAsync("Head", required: false)
 </head>
 <body class="view @ViewData["BodyClass"]">
@@ -29,9 +32,11 @@
 				<a class="vbar-brand" href="/">Pebble Audio</a>
 			}
 			<span class="vbar-title" data-bar-title aria-hidden="true">@ViewData["BarTitle"]</span>
+			<button type="button" class="site-menu-btn" popovertarget="site-menu" aria-label="Menu">@SiteIcons.Dots</button>
 		</div>
 		@await RenderSectionAsync("Bar", required: false)
 	</header>
+	<partial name="_SiteMenu" />
 	@RenderBody()
 </body>
 </html>
