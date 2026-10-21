@@ -961,6 +961,8 @@ public enum AssistantUpdateKind: UInt8, Sendable {
     case answer = 3
     case done = 4
     case error = 5
+    /// The answer so far is replaced by this text; `answer` appends to it from here.
+    case answerRestart = 6
 }
 
 public enum AssistantError: UInt8, Sendable {

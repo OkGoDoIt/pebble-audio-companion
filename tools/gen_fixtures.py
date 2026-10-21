@@ -681,6 +681,15 @@ def build_fixtures():
         "ASSISTANT_UPDATE length (40) overruns the 5 bytes present",
     )
     timer = wa_timer(600, "Pasta")
+    restart = "1. 09:53 - your 1st voice note".encode("utf-8")
+    add(
+        "assistant_update_answer_restart",
+        assistant_update(0x4F, 7, 6, 0, restart),
+        "control_in",
+        "parse",
+        {"request_token": 0x4F, "turn": 7, "kind": 6, "detail": 0, "text_hex": restart.hex()},
+        "The finished answer replaces what streamed",
+    )
     add(
         "watch_action_timer",
         watch_action(0x48, 3, 0, timer),

@@ -44,6 +44,9 @@ public protocol MuseVoiceConnector: Sendable {
 
 /// One voice question at a time over a `MuseLinkSession`.
 actor LiveMuseVoiceConversation: MuseVoiceConversation {
+    /// The first message of the watch's own chat, which Muse names the chat from.
+    static let chatOpening = "Pebble watch: this chat is for the questions I ask out loud on my Pebble watch."
+
     private let session: MuseLinkSession
     private let chatID: String?
     private let trace: (@Sendable (String) -> Void)?
@@ -88,7 +91,11 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
             follow(try await session.subscribeChat(sessionID: chatID))
             subscribed = true
         } catch let MuseLinkSession.Failure.http(status, _) where status == 404 && chatID != nil {
-            trace?("the watch's chat is new; subscribing after the note")
+            trace?("the watch's chat is new; naming it, then subscribing after the note")
+            // Muse names a new chat from its first message. Without this line it named the
+            // watch's chat after the first question's content ("Transcribe audio file").
+            let named = try? await session.sendChat(Self.chatOpening, sessionID: chatID)
+            trace?("chat opening: HTTP \(named?.status ?? 0)")
         }
 
         let ack = try await session.sendVoice(wav: wav, sessionID: chatID, message: instructions)

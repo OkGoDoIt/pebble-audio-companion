@@ -88,7 +88,9 @@ public final class MusePreferencesStore: @unchecked Sendable {
         static let voiceLevel = "muse.voiceLevel"
         static let chatPlace = "muse.chatPlace"
         static let actionsOff = "muse.watchActionsOff"
-        static let watchChatID = "muse.watchChatID"
+        // ".2": the first watch chat was named by Muse from its first question ("Transcribe audio
+        // file"); a new one starts with a line saying what it is for (LiveMuseVoiceConversation).
+        static let watchChatID = "muse.watchChatID.2"
         static func access(_ source: MuseSource) -> String { "muse.access.\(source.rawValue)" }
         static let pendingPhoneAccess = "muse.pendingPhoneAccess"
     }

@@ -142,7 +142,7 @@ public enum AudioCompanionProtocol {
             let turn = Int(bytes[2])
             let kind = bytes[3]
             let length = Int(bytes[5])
-            guard turn != 0, (1...5).contains(kind), length <= ProtocolConstants.assistantTextMaxBytes,
+            guard turn != 0, (1...6).contains(kind), length <= ProtocolConstants.assistantTextMaxBytes,
                 bytes.count >= 6 + length
             else {
                 return .malformed(reason: "ASSISTANT_UPDATE turn \(turn) kind \(kind) length \(length) in \(bytes.count) bytes")

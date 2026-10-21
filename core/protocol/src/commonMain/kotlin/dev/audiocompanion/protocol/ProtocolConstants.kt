@@ -59,6 +59,8 @@ object ProtocolConstants {
     const val CAPABILITY_PUSH_TO_TALK: UInt = 2u
     /** Watch actions an assistant can ask for (Section 4.5). */
     const val CAPABILITY_WATCH_ACTIONS: UInt = 4u
+    /** ASSISTANT_UPDATE AnswerRestart (kind 6) is understood (Section 4.4). */
+    const val CAPABILITY_ANSWER_RESTART: UInt = 8u
 
     const val PTT_MAX_SECONDS: Int = 15
     const val ASSISTANT_TEXT_MAX_BYTES: Int = 180

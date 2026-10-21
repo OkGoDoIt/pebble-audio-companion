@@ -131,7 +131,7 @@ object AudioCompanionProtocol {
                 val turn = bytes[2].toInt() and 0xFF
                 val kind = bytes[3].toInt() and 0xFF
                 val length = bytes[5].toInt() and 0xFF
-                if (turn == 0 || kind !in 1..5 || length > ProtocolConstants.ASSISTANT_TEXT_MAX_BYTES || bytes.size < 6 + length) {
+                if (turn == 0 || kind !in 1..6 || length > ProtocolConstants.ASSISTANT_TEXT_MAX_BYTES || bytes.size < 6 + length) {
                     return DecodeResult.Malformed("ASSISTANT_UPDATE turn $turn kind $kind length $length in ${bytes.size} bytes")
                 }
                 DecodeResult.Decoded(

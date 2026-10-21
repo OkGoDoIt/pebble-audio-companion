@@ -9,6 +9,8 @@ public protocol MuseAssistantLink: Sendable {
     func sendControlRequest(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> AudioReceiverSession.MuseSetupReply
     func setAssistantHandler(_ handler: (@Sendable (AudioReceiverSession.AssistantInbound) -> Void)?) async
     func setQuietLink(_ wanted: Bool) async
+    /// The watch's Info `watch_capabilities`, nil before it has been read.
+    var watchCapabilities: UInt32? { get }
 }
 
 extension ReceiverService: MuseAssistantLink {}
@@ -335,12 +337,27 @@ public actor MusePushToTalk: MuseWatchSide {
     /// Sends what `rendered` adds to what the watch already has. The watch only appends; a
     /// rendering that rewrote what was sent (Muse replacing its streamed text) adds nothing.
     private func sendAnswer(_ current: Turn, rendered: String) {
-        guard rendered.hasPrefix(current.sentAnswer), rendered.utf8.count > current.sentAnswer.utf8.count else { return }
-        guard current.sentAnswer.utf8.count < Self.watchAnswerBytes + 64 else { return }
-        let delta = String(rendered.dropFirst(current.sentAnswer.count))
+        guard rendered != current.sentAnswer else { return }
+        let limit = Self.watchAnswerBytes + 64
+        if rendered.hasPrefix(current.sentAnswer) {
+            guard current.sentAnswer.utf8.count < limit else { return }
+            let delta = String(rendered.dropFirst(current.sentAnswer.count))
+            current.sentAnswer = rendered
+            for piece in AssistantUpdate.chunks(of: delta) {
+                enqueue(.update(turn: current.id, kind: .answer, detail: 0, text: piece))
+            }
+            return
+        }
+        // Muse's finished text differs from what streamed (its list formatting, say). A watch
+        // that can replace its copy gets the whole answer again; an older one keeps what came.
+        guard (link.watchCapabilities ?? 0) & ProtocolConstants.capabilityAnswerRestart != 0 else {
+            log("question \(current.id): the answer changed after it streamed; this watch can't replace it")
+            return
+        }
         current.sentAnswer = rendered
-        for piece in AssistantUpdate.chunks(of: delta) {
-            enqueue(.update(turn: current.id, kind: .answer, detail: 0, text: piece))
+        let pieces = AssistantUpdate.chunks(of: String(decoding: Array(rendered.utf8.prefix(limit)), as: UTF8.self))
+        for (index, piece) in pieces.enumerated() {
+            enqueue(.update(turn: current.id, kind: index == 0 ? .answerRestart : .answer, detail: 0, text: piece))
         }
     }
 
@@ -486,14 +503,15 @@ public actor MusePushToTalk: MuseWatchSide {
     /// The head of the outbox, joined with the answer pieces right behind it while they fit.
     private func coalesce() -> Outgoing {
         let head = outbox.removeFirst()
-        guard case .update(let turnID, .answer, _, var text) = head else { return head }
+        guard case .update(let turnID, let kind, _, var text) = head, kind == .answer || kind == .answerRestart
+        else { return head }
         while case .update(turnID, .answer, _, let next)? = outbox.first,
             text.count + next.count <= ProtocolConstants.assistantTextMaxBytes
         {
             text += next
             outbox.removeFirst()
         }
-        return .update(turn: turnID, kind: .answer, detail: 0, text: text)
+        return .update(turn: turnID, kind: kind, detail: 0, text: text)
     }
 
     /// Sends one request, asking again while the watch is busy.

@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "The finished answer replaces what streamed",
+  "expect": "parse",
+  "fields": {
+    "detail": 0,
+    "kind": 6,
+    "request_token": 79,
+    "text_hex": "312e2030393a3533202d20796f75722031737420766f696365206e6f7465",
+    "turn": 7
+  },
+  "name": "assistant_update_answer_restart",
+  "size": 36
+}

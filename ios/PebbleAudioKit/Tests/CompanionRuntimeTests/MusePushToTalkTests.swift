@@ -42,6 +42,33 @@ struct MusePushToTalkTests {
         #expect(report.heard == "what's the weather in Lisbon")
     }
 
+    @Test func anAnswerMuseRewritesIsReplacedOnTheWatch() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        // Streamed, then finished with different formatting: the watch can only append, so it
+        // gets the whole answer again as a restart.
+        fx.muse.script = [
+            .answer("1. 09:53 your first note"),
+            .answer("1. 09:53 — your 1st voice note: \"testing\". I confirmed I heard it."),
+        ]
+        try fx.ask(turn: 12, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        let updates = fx.link.updates()
+        let restart = try #require(updates.firstIndex { $0.kind == .answerRestart })
+        let after = updates[restart...].filter { $0.kind == .answer || $0.kind == .answerRestart }.flatMap(\.text)
+        #expect(String(decoding: after, as: UTF8.self) == "1. 09:53 — your 1st voice note: \"testing\". I confirmed I heard it.")
+    }
+
+    @Test func anOlderWatchKeepsWhatStreamed() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk
+        await fx.start()
+        fx.muse.script = [.answer("Short"), .answer("Different")]
+        try fx.ask(turn: 13, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        #expect(!fx.link.updates().contains { $0.kind == .answerRestart })
+    }
+
     @Test func aLostFrameIsSilenceNotASkip() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
@@ -281,8 +308,13 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
     private var replies: [AudioReceiverSession.MuseSetupReply] = []
     private var token = 0
     private var _quietLink: [Bool] = []
+    private var _capabilities: UInt32? = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
 
     var quietLink: [Bool] { lock.withLock { _quietLink } }
+    var watchCapabilities: UInt32? {
+        get { lock.withLock { _capabilities } }
+        set { lock.withLock { _capabilities = newValue } }
+    }
 
     func scriptReplies(_ scripted: [AudioReceiverSession.MuseSetupReply]) {
         lock.withLock { replies = scripted }
