@@ -1,6 +1,7 @@
 import CompanionRuntime
 import Foundation
 import Receiver
+import SwiftUI
 import UIKit
 
 /// The Muse gadget, built from the running composition. Pairing and typed questions are things a
@@ -47,6 +48,7 @@ enum MuseComposition {
     /// Starts answering questions asked on the watch. Called once the composition is installed.
     static func startPushToTalk() {
         guard pushToTalk == nil, let composition = AppComposition.shared, let service else { return }
+        installPrivacyHooks()
         // A question can wake a suspended app; this keeps it running until the answer is out.
         let awake = BackgroundActivityAssertion(log: AppRuntimeLog.runtimeLog)
         let pushToTalk = MusePushToTalk(
@@ -89,6 +91,63 @@ enum MuseComposition {
                 }
             }
             askingPhoneAccess = false
+        }
+    }
+
+    // MARK: - Privacy (docs/privacy-model.md, D7)
+
+    /// What the Privacy screen says about Muse, read from the Muse settings each time it asks,
+    /// and where its Meta row leads.
+    static func installPrivacyHooks() {
+        PrivacyHooks.museState = { museState() }
+        PrivacyHooks.museScreen = { AnyView(SettingsMuseScreen()) }
+    }
+
+    /// Nil until Muse is paired. A source iOS refused can't be read, so it reads as off.
+    static func museState() -> PrivacyInputs.MuseState? {
+        guard let service, service.isPaired else { return nil }
+        let prefs = preferences.current.value
+        var sources: [MuseDataSource: MuseAccess] = [:]
+        for source in MuseSource.allCases {
+            var access = prefs.access(source)
+            if source == .calendar, MuseEventKitSource.calendarRefused { access = .off }
+            if source == .reminders, MuseEventKitSource.remindersRefused { access = .off }
+            sources[privacySource(source)] = privacyAccess(access)
+        }
+        return PrivacyInputs.MuseState(
+            spokenQuestions: MuseGadgetService.asksFromWatch,
+            watchActions: Set(prefs.watchActions.map(privacyAction)),
+            dataSources: sources)
+    }
+
+    static func privacyAction(_ kind: MuseWatchActionKind) -> MuseWatchAction {
+        switch kind {
+        case .timer: return .timer
+        case .alarm: return .alarm
+        case .choice: return .choice
+        case .music: return .music
+        case .quietTime: return .quietTime
+        case .launchApp: return .openApp
+        case .findWatch: return .findWatch
+        case .recording: return .recording
+        }
+    }
+
+    static func privacySource(_ source: MuseSource) -> MuseDataSource {
+        switch source {
+        case .conversations: return .conversations
+        case .health: return .health
+        case .calendar: return .calendar
+        case .reminders: return .reminders
+        case .followUps: return .followUps
+        }
+    }
+
+    static func privacyAccess(_ access: MuseSourceAccess) -> MuseAccess {
+        switch access {
+        case .ask: return .ask
+        case .allowed: return .allowed
+        case .off: return .off
         }
     }
 }
