@@ -59,6 +59,26 @@ public func gapDescription(_ gap: GapMeta) -> String {
     }
 }
 
+/// The cause of one gap record as a stable code, for the archive sync's wire: the server words
+/// it, and an assistant reads it, without parsing `gapDescription`'s English. The watch's own
+/// reason by name (`spoolOverflow`, `transportReset`, `powerSave`, …), `phoneMissed` for a
+/// receiver-synthesized sequence skip, and `unknown` when the watch gave no reason we can
+/// decode — one code per `gapDescription` cause, so the two never describe a record differently.
+public func gapReasonCode(_ gap: GapMeta) -> String {
+    if gap.origin == GapMeta.originSequenceSkip { return "phoneMissed" }
+    switch gapReason(of: gap) {
+    case .spoolOverflow: return "spoolOverflow"
+    case .micConflict: return "micConflict"
+    case .userDisabled: return "userDisabled"
+    case .lowBattery: return "lowBattery"
+    case .codecError: return "codecError"
+    case .transportReset: return "transportReset"
+    case .powerSave: return "powerSave"
+    case .silenceSuppressed: return "silenceSuppressed"
+    case nil: return "unknown"
+    }
+}
+
 /// A silence-suppressed gap is audio the watch intentionally skipped because it was below the
 /// voice-activity threshold — known-quiet time it withheld to save Bluetooth/battery, not lost
 /// audio. The app treats it as silence everywhere, never as a gap, interruption, or error.
