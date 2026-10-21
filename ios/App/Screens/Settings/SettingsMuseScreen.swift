@@ -181,7 +181,8 @@ struct SettingsMuseScreen: View {
                 Text(Copy.Muse.whatGoesHeader)
                     .font(AppFont.footnote.weight(.semibold))
                     .foregroundStyle(Tokens.label)
-                Text(Copy.Muse.questionsLine)
+                // Once paired, "Muse's own messages" is on unless switched off.
+                Text(Copy.Muse.questionsLine(staysConnected: model.preferences.messagesOnWatch))
                 Text(Copy.Muse.trainingLine)
             }
             .font(AppFont.footnote)
@@ -661,7 +662,10 @@ struct SettingsMuseScreen: View {
         VStack(alignment: .leading, spacing: Tokens.blockGap) {
             SettingsSectionHeader(title: Copy.Muse.whatGoesHeader)
             ListCard {
-                ForEach([Copy.Muse.questionsLine, Copy.Muse.trainingLine], id: \.self) { line in
+                ForEach(
+                    [Copy.Muse.questionsLine(staysConnected: model.preferences.messagesOnWatch), Copy.Muse.trainingLine],
+                    id: \.self
+                ) { line in
                     Text(line)
                         .font(AppFont.footnote)
                         .foregroundStyle(Tokens.secondaryBody)
