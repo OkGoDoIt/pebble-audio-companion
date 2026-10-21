@@ -1,5 +1,6 @@
 // <pa-strip>: a conversation drawn to scale, one lane per voice (timeline-first's strip). Quiet is a row of
-// dots, the watch's power-save pause muted stripes, missing audio a full-height amber hatch. It can show the
+// dots, the watch's power-save pause muted stripes, missing audio a full-height amber hatch — to scale for a hole,
+// and a tick where it starts for brief drops spread over a stretch (the app's scrubber tick). It can show the
 // clip's window, the moment a link cites, and the playhead; tapping or dragging it, or its arrow keys, asks
 // to move there with a `pa-seek` event ({ t } in seconds from the conversation's start).
 //
@@ -88,8 +89,14 @@ class PaStrip extends HTMLElement {
       const ticks = document.createElement('div');
       ticks.className = 'st-ticks';
       ticks.setAttribute('aria-hidden', 'true');
-      ticks.innerHTML = this.ticks(dur);
+      this.$ticks = ticks;
       this.append(ticks);
+      this.layoutTicks();
+      // The labels depend on the width: thinned to fit, and laid out again when it changes.
+      if (!this._ro) {
+        this._ro = new ResizeObserver(() => this.layoutTicks());
+        this._ro.observe(this);
+      }
       this.setAttribute('aria-label', `Conversation, ${duration(dur)}${this.summary()}`);
       this.setAttribute('aria-valuemax', String(Math.round(dur)));
     }
@@ -110,25 +117,52 @@ class PaStrip extends HTMLElement {
 
   summary() {
     const m = this._m;
-    const lost = m.gaps.filter((g) => g.k === 'lost').reduce((a, g) => a + g.e - g.s, 0);
+    // The page's own total when it gives one: a mark of brief drops is a tick, not their sum.
+    const lost = m.missing ?? m.gaps.filter((g) => g.k === 'lost').reduce((a, g) => a + g.e - g.s, 0);
     const quiet = m.gaps.filter((g) => g.k === 'quiet').reduce((a, g) => a + g.e - g.s, 0);
     return (quiet ? `, quiet ${duration(quiet, { seconds: true })}` : '') + (lost ? `, ${duration(lost, { seconds: true })} missing` : '');
   }
 
-  ticks(dur) {
-    const m = this._m;
-    const steps = [60, 120, 300, 600, 900, 1800, 3600];
-    const step = steps.find((s) => dur / s <= 5) || 3600;
+  /**
+   * The times under the strip: its start and end always, and round times between them, as many as the width holds.
+   * The step is thinned to the width first; then every label is measured, and one that would come within a few pixels
+   * of the one before it, or of the end, is left out — so no two ever run together ("10:51 AM11:00"), at any width.
+   */
+  layoutTicks() {
+    const m = this._m, el = this.$ticks;
+    if (!m || !el) return;
+    const width = el.clientWidth || this.clientWidth || 320;
+    if (width === this._ticksWidth && el.childElementCount) return;
+    this._ticksWidth = width;
+    const dur = Math.max(1, m.dur);
     const start = m.startMs;
+    const steps = [60, 120, 300, 600, 900, 1800, 3600, 7200];
+    // About one label per 72 px, the two ends included.
+    const most = Math.max(1, Math.floor(width / 72) - 1);
+    const step = steps.find((s) => dur / s <= most) || steps[steps.length - 1];
     let html = `<span>${clock(start, m.tz)}</span>`;
     const first = Math.ceil(start / 1000 / step) * step * 1000;
     for (let w = first; w < start + dur * 1000; w += step * 1000) {
       const f = (w - start) / 1000 / dur;
-      if (f < 0.12 || f > 0.88) continue;
-      html += `<span style="left:${(f * 100).toFixed(2)}%">${clock(w, m.tz, { period: false })}</span>`;
+      if (f <= 0 || f >= 1) continue;
+      html += `<span data-mid style="left:${(f * 100).toFixed(2)}%">${clock(w, m.tz, { period: false })}</span>`;
     }
     html += `<span style="left:100%">${clock(start + dur * 1000, m.tz)}</span>`;
-    return html;
+    el.innerHTML = html;
+
+    const GAP = 8;
+    const spans = [...el.children];
+    const box = el.getBoundingClientRect();
+    const edges = (s) => { const r = s.getBoundingClientRect(); return [r.left - box.left, r.right - box.left]; };
+    const end = edges(spans[spans.length - 1]);
+    let right = edges(spans[0])[1];
+    for (const span of spans.slice(1, -1)) {
+      const [l, r] = edges(span);
+      if (l < right + GAP || r > end[0] - GAP) span.remove();
+      else right = r;
+    }
+    // Narrower than both ends: the start alone (hidden rather than removed, so the start keeps its own alignment).
+    if (spans.length > 1 && end[0] < edges(spans[0])[1] + GAP) spans[spans.length - 1].style.visibility = 'hidden';
   }
 
   bindPointer(band) {
