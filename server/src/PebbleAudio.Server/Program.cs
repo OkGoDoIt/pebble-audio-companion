@@ -17,6 +17,7 @@ using PebbleAudio.Server.Data;
 using PebbleAudio.Server.Events;
 using PebbleAudio.Server.Jobs;
 using PebbleAudio.Server.Mcp;
+using PebbleAudio.Server.Pages;
 using PebbleAudio.Server.Settings;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -89,10 +90,11 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
 
 builder.Services.ConfigureApplicationCookie(options =>
 {
+	// The cookie keeps its old name, so nobody is signed out by the move from /admin to the site's own pages.
 	options.Cookie.Name = "pebbleaudio.admin";
-	options.LoginPath = "/admin/login";
-	options.LogoutPath = "/admin/logout";
-	options.AccessDeniedPath = "/admin/login";
+	options.LoginPath = "/sign-in";
+	options.LogoutPath = "/sign-out";
+	options.AccessDeniedPath = "/sign-in";
 });
 
 // The cookie stays the app's default scheme. Bearer tokens and the MCP challenge apply only to /mcp,
@@ -199,6 +201,7 @@ app.MapGet("/.well-known/oauth-protected-resource", (IOptionsMonitor<McpAuthenti
 app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy).RequireCors(BrowserClients.CorsPolicy);
 app.MapSync();
 app.MapOAuthServer();
+app.MapOldAdminUrls();
 
 app.MapStaticAssets();
 app.MapRazorPages()

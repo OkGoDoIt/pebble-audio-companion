@@ -32,7 +32,7 @@ public sealed partial class ViewerTests(ArchiveServerFactory factory)
 			var response = await client.GetAsync(path);
 			Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
 			var location = response.Headers.Location!.ToString();
-			Assert.Contains("/admin/login", location, StringComparison.Ordinal);
+			Assert.Contains("/sign-in", location, StringComparison.Ordinal);
 			Assert.Contains($"ReturnUrl={Uri.EscapeDataString(path)}", location, StringComparison.Ordinal);
 		}
 

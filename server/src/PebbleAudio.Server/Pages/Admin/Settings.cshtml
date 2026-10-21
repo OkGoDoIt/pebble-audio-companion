@@ -1,64 +1,142 @@
-@page
+@page "/settings"
 @using PebbleAudio.Server.Settings
 @model PebbleAudio.Server.Pages.Admin.SettingsModel
 @{
 	ViewData["Title"] = "Settings";
 	ViewData["Section"] = "settings";
+	var status = Model.Status;
+	var onlyOnePasskey = Model.Passkeys.Count == 1;
 }
-<header class="page-header">
-	<h1>Settings</h1>
-	<p class="lede">Limits for assistants, clips, and background work.</p>
-</header>
+<div class="page">
+	<h1 class="screen-title">Settings</h1>
 
-@if (Model.Saved)
-{
-	<p class="notice notice-success" role="status">Settings saved.</p>
-}
-
-<section class="card" aria-labelledby="sharing-heading">
-	<h2 id="sharing-heading">Sharing</h2>
-	<dl class="facts">
-		<div>
-			<dt>Conversations</dt>
-			<dd>@Model.SharingText</dd>
-		</div>
-		@if (Model.Sharing is { } sharing)
+	<section class="card state-card" aria-label="Sync">
+		@switch (Model.Freshness)
 		{
-			<div>
-				<dt>Time zone</dt>
-				<dd>@sharing.TimeZoneId</dd>
-			</div>
+			case SettingsModel.SyncFreshness.Recent:
+			case SettingsModel.SyncFreshness.Stale:
+				<p class="state-head"><span class="dot @(Model.Freshness == SettingsModel.SyncFreshness.Recent ? "good" : "attention")" aria-hidden="true"></span>Synced @SiteText.Ago(status.LastSyncAt!.Value, Model.Now, Model.Zone)</p>
+				break;
+			case SettingsModel.SyncFreshness.Never when status.LinkedPhones == 0:
+				<p class="state-head"><span class="dot neutral" aria-hidden="true"></span>No phone linked yet</p>
+				<a class="btn filled small inline" href="/phones">Link a Phone</a>
+				break;
+			default:
+				<p class="state-head"><span class="dot neutral" aria-hidden="true"></span>Waiting for the first sync</p>
+				break;
 		}
-	</dl>
-	<p class="muted">Set in Pebble Audio on the phone.</p>
-</section>
+	</section>
 
-<form method="post" class="card settings">
-	@foreach (var setting in SettingDefinition.All)
-	{
-		var value = Model.Values.TryGetValue(setting.Key, out var v) ? v : setting.Get(Model.Current);
-		var error = ViewData.ModelState[$"Values[{setting.Key}]"]?.Errors.FirstOrDefault()?.ErrorMessage;
-		<div class="setting">
-			<label class="setting-text" for="setting-@setting.Key">
-				<strong>@setting.Label</strong>
-				<span class="muted">@setting.Hint</span>
-			</label>
-			<div class="setting-value">
-				<input id="setting-@setting.Key" name="Values[@setting.Key]" type="number" inputmode="numeric" step="1" min="@setting.Min" max="@setting.Max" value="@value" required>
-				<span class="unit">@setting.Unit</span>
+	<section class="group" aria-labelledby="holds-h">
+		<h2 class="section-header" id="holds-h">On this server</h2>
+		<ul class="list-card">
+			@foreach (var (label, count) in Model.Counts)
+			{
+				<li class="row"><span class="grow"><span class="t">@label</span></span><span class="v">@Display.Count(count)</span></li>
+			}
+			<li class="row"><span class="grow"><span class="t">Days on record</span></span><span class="v">@(Model.DaysOnRecord ?? "None yet")</span></li>
+			<li class="row"><span class="grow"><span class="t">Waiting for the phone</span></span><span class="v">@(status.PendingRequests == 1 ? "1 request" : $"{Display.Count(status.PendingRequests)} requests")</span></li>
+			<li><a class="row" href="/phones"><span class="grow"><span class="t">Linked phones</span></span><span class="v">@Display.Count(status.LinkedPhones)</span>@SiteIcons.Chevron</a></li>
+		</ul>
+	</section>
+
+	<section class="group" aria-labelledby="shared-h">
+		<h2 class="section-header" id="shared-h">Shared from your phone</h2>
+		<ul class="list-card">
+			<li class="row"><span class="grow"><span class="t">Conversations</span></span><span class="v">@Model.SharingText</span></li>
+			@if (Model.Sharing is { } sharing)
+			{
+				<li class="row"><span class="grow"><span class="t">Time zone</span></span><span class="v">@sharing.TimeZoneId</span></li>
+			}
+		</ul>
+		<p class="footer">Set in Pebble Audio on your iPhone.</p>
+	</section>
+
+	<section class="group" id="passkeys" aria-labelledby="passkeys-h">
+		<h2 class="section-header" id="passkeys-h">Passkeys</h2>
+		@if (Model.PasskeyMessage is { } message)
+		{
+			<p class="notice attention" role="status">@message</p>
+		}
+		<ul class="list-card">
+			@foreach (var passkey in Model.Passkeys)
+			{
+				<li class="row">
+					<span class="itile" aria-hidden="true">@SiteIcons.Key</span>
+					<span class="grow">
+						<span class="t strong">@passkey.Name</span>
+						<span class="s">Added @SiteText.ShortDay(passkey.CreatedAt, Model.Zone)@(passkey.IsSynced ? " · Synced" : null)</span>
+					</span>
+					@if (onlyOnePasskey)
+					{
+						<button type="button" class="btn small danger" disabled title="Add another passkey before removing this one.">Remove</button>
+					}
+					else
+					{
+						<form method="post" asp-page-handler="RemovePasskey" asp-route-id="@passkey.Id" data-confirm>
+							<button type="submit" class="btn small danger">Remove</button>
+							<dialog class="confirm" aria-labelledby="rm-@passkey.Id">
+								<p class="h" id="rm-@passkey.Id">Remove @passkey.Name?</p>
+								<p>It can't sign you in here after this.</p>
+								<div class="acts">
+									<button type="submit" class="danger" data-confirmed>Remove</button>
+									<button type="button" data-cancel>Cancel</button>
+								</div>
+							</dialog>
+						</form>
+					}
+				</li>
+			}
+			<li>
+				<form class="passkey-add" data-passkey="add">
+					<label class="field-label" for="passkey-name">Add a passkey</label>
+					<div class="line">
+						<input class="field" id="passkey-name" name="name" data-passkey-name maxlength="60" placeholder="@Model.SuggestedName" autocomplete="off">
+						<button type="submit" class="btn small bordered">Add Passkey</button>
+					</div>
+					<p class="status" data-status role="status"></p>
+				</form>
+			</li>
+		</ul>
+		<p class="footer">@(onlyOnePasskey ? "This passkey signs you in here. Add another before removing it." : "Any of these signs you in here.")</p>
+	</section>
+
+	<section class="group" id="limits" aria-labelledby="limits-h">
+		<h2 class="section-header" id="limits-h">Limits</h2>
+		@if (Model.Saved)
+		{
+			<p class="notice" role="status"><span class="check-badge small" aria-hidden="true">@SiteIcons.Check</span>Settings saved.</p>
+		}
+		<form method="post" class="list-card" novalidate>
+			@foreach (var setting in SettingDefinition.All)
+			{
+				var value = Model.Values.TryGetValue(setting.Key, out var v) ? v : setting.Get(Model.Current);
+				var error = ViewData.ModelState[$"Values[{setting.Key}]"]?.Errors.FirstOrDefault()?.ErrorMessage;
+				<div class="setting">
+					<label class="what" for="setting-@setting.Key">
+						<span class="t">@setting.Label</span>
+						<span class="s">@setting.Hint</span>
+					</label>
+					<span class="how">
+						<input class="field" id="setting-@setting.Key" name="Values[@setting.Key]" type="number" inputmode="numeric" step="1" min="@setting.Min" max="@setting.Max" value="@value" required aria-invalid="@(error is null ? null : "true")">
+						<span class="unit">@setting.Unit</span>
+					</span>
+					@if (error is not null)
+					{
+						<span class="after field-error">@error</span>
+					}
+					else if (value != setting.Default)
+					{
+						<span class="after">Default: @Display.Count(setting.Default)</span>
+					}
+				</div>
+			}
+			<div class="form-acts">
+				<button type="submit" class="btn small filled">Save</button>
+				<button type="submit" class="btn small gray" asp-page-handler="Reset" formnovalidate>Restore Defaults</button>
 			</div>
-			@if (error is not null)
-			{
-				<span class="field-error">@error</span>
-			}
-			else if (value != setting.Default)
-			{
-				<span class="setting-default">Default: @Display.Count(setting.Default)</span>
-			}
-		</div>
-	}
-	<div class="actions">
-		<button type="submit" class="button button-primary">Save</button>
-		<button type="submit" class="button" asp-page-handler="Reset" formnovalidate>Restore defaults</button>
-	</div>
-</form>
+		</form>
+	</section>
+
+	<p class="footer">Pebble Audio @AppVersion.Number@(AppVersion.Commit is { } commit ? $" ({commit})" : "")</p>
+</div>

@@ -1,17 +1,18 @@
-@page
+@page "/setup"
 @model PebbleAudio.Server.Pages.Admin.SetupModel
 @{
 	ViewData["Title"] = "Set up";
+	ViewData["Bare"] = true;
 }
-<section class="auth">
-	<form class="card auth-card" data-passkey="setup">
-		<h1>Set up Pebble Audio</h1>
+<div class="auth">
+	<form class="card" data-passkey="setup">
+		<h1 class="screen-title">Set up Pebble Audio</h1>
 		<p class="lede">Enter the setup code from the server log, then create the passkey you'll sign in with.</p>
-		<label class="field">
-			<span class="field-label">Setup code</span>
-			<input name="setupCode" data-setup-code required autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" maxlength="20">
-		</label>
-		<button type="submit" class="button button-primary button-wide">Create passkey</button>
+		<div>
+			<label class="field-label" for="setup-code">Setup code</label>
+			<input class="field" id="setup-code" name="setupCode" data-setup-code required autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" maxlength="20">
+		</div>
+		<button type="submit" class="btn filled">Create Passkey</button>
 		<p class="status" data-status role="status"></p>
 	</form>
-</section>
+</div>

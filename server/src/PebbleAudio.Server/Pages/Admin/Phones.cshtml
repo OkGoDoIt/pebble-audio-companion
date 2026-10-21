@@ -1,102 +1,115 @@
-@page
+@page "/phones"
 @using PebbleAudio.Server.Sync
 @model PebbleAudio.Server.Pages.Admin.PhonesModel
 @{
-	ViewData["Title"] = "Phones";
+	ViewData["Title"] = "Link a phone";
 	ViewData["Section"] = "phones";
+	var last = Model.Phones.Count == 1;
+	var n = 0;
 }
-<header class="page-header">
-	<h1>Phones</h1>
-	<p class="lede">A linked phone syncs its conversations here.</p>
-</header>
+<div class="page">
+	<h1 class="screen-title">Link a phone</h1>
+	<p class="lede">In Pebble Audio on your iPhone, open <b>Settings › AI Assistants</b>, tap <b>Link Your Server</b>, and point the camera at the code.</p>
 
-@if (Model.Invitation is { } invitation)
-{
-	<section class="card card-accent link-card" aria-labelledby="link-heading">
-		<h2 id="link-heading">Scan with your iPhone's Camera</h2>
-		<a class="qr" href="@invitation.Url" aria-label="Open in Pebble Audio">@Html.Raw(invitation.QrSvg)</a>
-		<dl class="facts">
-			<div>
-				<dt>Server</dt>
-				<dd><code>@Model.ServerAddress</code></dd>
-			</div>
-			<div>
-				<dt>Code</dt>
-				<dd><code class="link-code" id="link-code">@invitation.Code</code></dd>
-			</div>
-		</dl>
-		<p class="muted">Or enter both in Pebble Audio. The code works once and expires @Display.Time(invitation.ExpiresAt, "relative").</p>
-	</section>
-}
-else
-{
-	<section class="card" aria-labelledby="link-heading">
-		<h2 id="link-heading">Link a phone</h2>
-		<form method="post" asp-page-handler="Link" class="actions">
-			<button type="submit" class="button button-primary">Show a code</button>
-		</form>
-	</section>
-}
-
-<section class="card" aria-labelledby="phones-heading">
-	<h2 id="phones-heading">Linked phones</h2>
-	@if (Model.Phones.Count == 0)
+	@if (Model.Invitation is { } invitation)
 	{
-		<p class="muted">No phones yet.</p>
+		var minutes = Math.Max(1, (int)Math.Round((invitation.ExpiresAt - Model.Now).TotalMinutes));
+		var code = invitation.Code.Replace("-", "");
+		<section class="group" aria-label="Code">
+			<div class="card link-card">
+				<a class="qr" href="@invitation.Url" aria-label="Open in Pebble Audio">@Html.Raw(invitation.QrSvg)</a>
+				<p class="section-header">Or enter it</p>
+				<div>
+					<span class="field-label">Server</span>
+					<div class="server-field">@Model.ServerAddress</div>
+				</div>
+				<div>
+					<span class="field-label">Code</span>
+					<div class="code-boxes" data-code="@invitation.Code" role="img" aria-label="Code @invitation.Code">
+						@for (var i = 0; i < code.Length; i++)
+						{
+							if (i == 4)
+							{
+								<span class="gap"></span>
+							}
+							<span class="box">@code[i]</span>
+						}
+					</div>
+				</div>
+			</div>
+			<p class="footer">It works once, for the next @(minutes == 1 ? "minute" : $"{minutes} minutes").</p>
+		</section>
+		<form method="post" asp-page-handler="Link">
+			<button type="submit" class="btn small gray inline">Show a New Code</button>
+		</form>
 	}
 	else
 	{
-		<ul class="rows">
+		<section class="card intro-card">
+			<div class="intro">
+				<span class="circle" aria-hidden="true">@SiteIcons.Phone</span>
+				<div>
+					<p class="h">Show a code for your iPhone</p>
+					<p>It works once, for ten minutes.</p>
+				</div>
+			</div>
+			<form method="post" asp-page-handler="Link">
+				<button type="submit" class="btn filled">Show a Code</button>
+			</form>
+		</section>
+	}
+
+	<section class="group" aria-labelledby="phones-h">
+		<h2 class="section-header" id="phones-h">Linked phones</h2>
+		<ul class="list-card">
+			@if (Model.Phones.Count == 0)
+			{
+				<li class="row"><span class="grow"><span class="t quiet">No phones yet.</span></span></li>
+			}
 			@foreach (var phone in Model.Phones)
 			{
-				<li class="row">
-					<div class="row-main">
-						<strong class="row-title">@phone.Name</strong>
-						<span class="row-meta">
-							@if (phone.AppVersion is { } version)
-							{
-								<span>Version @version@(phone.AppBuild is { } build ? $" ({build})" : "")</span>
-							}
-							<span>Linked @Display.Time(phone.LinkedAt, "date")</span>
-							@if (phone.LastBatchAt is { } synced)
-							{
-								<span>Synced @Display.Time(synced, "relative")</span>
-							}
-							else
-							{
-								<span>Not synced yet</span>
-							}
-						</span>
-						<details class="rename">
-							<summary class="button button-quiet">Rename</summary>
-							<form method="post" asp-page-handler="Rename" asp-route-id="@phone.Id" class="rename-form">
-								<input name="name" value="@phone.Name" maxlength="@PhoneLinkService.NameLength" aria-label="Name" autocomplete="off" required>
-								<button type="submit" class="button">Save</button>
-							</form>
-						</details>
-					</div>
-					@if (Model.Phones.Count == 1)
-					{
-						@* The last phone: unlinking it clears the server, as unlinking on the phone does. *@
-						<details class="unlink">
-							<summary class="button button-danger">Unlink</summary>
-							<form method="post" asp-page-handler="Unlink" asp-route-id="@phone.Id" class="unlink-form">
-								<p>This is the only linked phone. Unlinking it deletes everything on this server and disconnects every assistant.</p>
-								<div class="unlink-actions">
-									<button type="button" class="button" data-close-details>Cancel</button>
-									<button type="submit" class="button button-danger">Unlink and delete</button>
-								</div>
-							</form>
-						</details>
-					}
-					else
-					{
-						<form method="post" asp-page-handler="Unlink" asp-route-id="@phone.Id">
-							<button type="submit" class="button button-danger">Unlink</button>
+				n++;
+				<li class="row wrap">
+					<span class="itile" aria-hidden="true">@SiteIcons.Phone</span>
+					<span class="grow"><span class="t strong">@phone.Name</span><span class="s">@Model.Line(phone)</span></span>
+					<span class="acts-inline">
+						<button type="button" class="btn small gray" data-dialog="#rename-@n">Rename</button>
+						<form method="post" asp-page-handler="Unlink" asp-route-id="@phone.Id" data-confirm>
+							<button type="submit" class="btn small danger">Unlink</button>
+							<dialog class="confirm" aria-labelledby="unlink-@n-h">
+								@if (last)
+								{
+									<p class="h" id="unlink-@n-h">Unlink and delete from your server?</p>
+									<p>Deletes everything on @Model.Host. @Model.LoseAccessLine Nothing on the phone changes.</p>
+									<div class="acts">
+										<button type="submit" class="danger" data-confirmed>Unlink and Delete</button>
+										<button type="button" data-cancel>Cancel</button>
+									</div>
+								}
+								else
+								{
+									<p class="h" id="unlink-@n-h">Unlink @phone.Name?</p>
+									<p>It stops syncing here. Everything on your server stays.</p>
+									<div class="acts">
+										<button type="submit" class="danger" data-confirmed>Unlink</button>
+										<button type="button" data-cancel>Cancel</button>
+									</div>
+								}
+							</dialog>
 						</form>
-					}
+					</span>
+					<dialog class="confirm" id="rename-@n" aria-labelledby="rename-@n-h">
+						<form method="post" asp-page-handler="Rename" asp-route-id="@phone.Id">
+							<p class="h" id="rename-@n-h">Rename this phone</p>
+							<input class="field" name="name" value="@phone.Name" maxlength="@PhoneLinkService.NameLength" aria-label="Name" autocomplete="off" required>
+							<div class="acts">
+								<button type="submit" class="primary">Save</button>
+								<button type="button" data-cancel>Cancel</button>
+							</div>
+						</form>
+					</dialog>
 				</li>
 			}
 		</ul>
-	}
-</section>
+	</section>
+</div>

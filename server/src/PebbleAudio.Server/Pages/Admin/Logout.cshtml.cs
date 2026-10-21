@@ -7,7 +7,7 @@ namespace PebbleAudio.Server.Pages.Admin;
 
 public sealed class LogoutModel(SignInManager<ApplicationUser> signInManager) : PageModel
 {
-	public IActionResult OnGet() => RedirectToPage("/Admin/Index");
+	public IActionResult OnGet() => Redirect("/");
 
 	public async Task<IActionResult> OnPostAsync()
 	{
