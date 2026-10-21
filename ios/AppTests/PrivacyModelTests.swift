@@ -229,6 +229,12 @@ struct PrivacyModelTests {
         // All off: the D7 sentence alone, one chip, one place.
         let off = muse([:])
         #expect(off.whereItGoesFooters == [PrivacyModel.museSentence])
+        // Staying connected to message the watch: the idle claim gives way to what still goes.
+        var connected = PrivacyInputs()
+        connected.museState = .init(spokenQuestions: true, watchActions: [], dataSources: [:], staysConnected: true)
+        let c = PrivacyModel.derive(connected, nowMs: Self.now)
+        #expect(c.whereItGoesFooters == [PrivacyModel.museSentenceConnected])
+        #expect(!(c.whereItGoesFooters + [c.headline, c.line]).joined().contains("aren't asking"))
         #expect(off.destinations.first?.chips.map(\.label) == ["Your questions"])
         #expect(off.placeCount == 1 && off.headline == "Your questions to Muse go to Meta")
 
