@@ -141,7 +141,9 @@ enum MuseComposition {
         return PrivacyInputs.MuseState(
             spokenQuestions: MuseGadgetService.asksFromWatch,
             watchActions: Set(prefs.watchActions.map(privacyAction)),
-            dataSources: sources)
+            dataSources: sources,
+            // "Muse's own messages" keeps a link to Meta open while paired (privacy-model.md D7).
+            staysConnected: prefs.messagesOnWatch)
     }
 
     static func privacyAction(_ kind: MuseWatchActionKind) -> MuseWatchAction {
