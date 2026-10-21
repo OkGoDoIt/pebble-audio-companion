@@ -34,7 +34,7 @@ echo "   ASP.NET Core ${aspnet}"
 # Patches are security fixes. Upgrading is left to a person: Situ runs on the same runtime, and both apps
 # need a restart to pick it up.
 if apt list --upgradable 2>/dev/null | grep -q '^aspnetcore-runtime-10\.0/'; then
-  echo "   a newer ASP.NET Core 10.0 patch is available: apt-get install --only-upgrade aspnetcore-runtime-10.0, then restart the .NET services"
+  echo "   a newer ASP.NET Core 10.0 patch is available: apt-get install --only-upgrade aspnetcore-runtime-10.0 dotnet-runtime-10.0 dotnet-host-10.0 (all three together: ASP.NET Core alone leaves the base runtime behind and every app fails to start with exit 150), then restart the .NET services"
 fi
 
 echo "== users"
