@@ -136,6 +136,28 @@ struct ArchiveTranscriptExportTests {
         }
     }
 
+    /// The conversation's `people` stay the contract's shape: a plain label, never the stored
+    /// `seg-…#1` key, and one entry per person however many recordings they were named in.
+    @Test func peopleAreOnePerPersonUnderAPlainLabel() {
+        typealias Speaker = ArchiveConversationPayload.Speaker
+        let first = SpeakerKey(segmentId: Self.first, label: "1").stored
+        let secondOne = SpeakerKey(segmentId: Self.second, label: "1").stored
+        let secondThree = SpeakerKey(segmentId: Self.second, label: "3").stored
+        // As `conversationRecord` reads them: ordered by stored label, an unscoped row first.
+        let stored = [
+            Speaker(label: "Speaker 2", personId: "p-dana", name: "Dana"),
+            Speaker(label: first, personId: "p-sam", name: "Sam"),
+            Speaker(label: secondOne, personId: "p-alex", name: "Alex"),
+            Speaker(label: secondThree, personId: "p-sam", name: "Sam"),
+        ]
+        #expect(
+            ArchivePayloadBuilder.people(stored) == [
+                Speaker(label: "Speaker 2", personId: "p-dana", name: "Dana"),
+                Speaker(label: "1", personId: "p-sam", name: "Sam"),
+                Speaker(label: "1", personId: "p-alex", name: "Alex"),
+            ])
+    }
+
     @Test func theJSONIsTheContractsShape() throws {
         let pieces = try Self.pieces()
         let export = ArchiveExport.transcript(
