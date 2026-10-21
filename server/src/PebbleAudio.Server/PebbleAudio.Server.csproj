@@ -10,6 +10,8 @@
 		     (CS8524) are not a concern: every enum comes from our own code or a parsed wire string. -->
 		<WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
 		<NoWarn>$(NoWarn);CS8524</NoWarn>
+		<!-- MCP Apps (the widgets) is an official extension the SDK still marks experimental. -->
+		<NoWarn>$(NoWarn);MCPEXP003</NoWarn>
 	</PropertyGroup>
 
 	<ItemGroup>

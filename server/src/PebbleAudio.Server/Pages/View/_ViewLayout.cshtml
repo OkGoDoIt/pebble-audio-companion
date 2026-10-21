@@ -1,0 +1,37 @@
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+@{
+	var csrfToken = Antiforgery.GetAndStoreTokens(Context).RequestToken;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="color-scheme" content="light dark">
+	<meta name="robots" content="noindex">
+	<meta name="csrf-token" content="@csrfToken">
+	<title>@ViewData["Title"] · Pebble Audio</title>
+	<link rel="icon" href="~/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/player.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/view.css" asp-append-version="true">
+	@await RenderSectionAsync("Head", required: false)
+</head>
+<body class="view @ViewData["BodyClass"]">
+	<header class="vbar" data-bar>
+		<div class="vbar-in">
+			@if (IsSectionDefined("Back"))
+			{
+				@await RenderSectionAsync("Back")
+			}
+			else
+			{
+				<a class="vbar-brand" href="/">Pebble Audio</a>
+			}
+			<span class="vbar-title" data-bar-title aria-hidden="true">@ViewData["BarTitle"]</span>
+		</div>
+		@await RenderSectionAsync("Bar", required: false)
+	</header>
+	@RenderBody()
+</body>
+</html>

@@ -1,0 +1,189 @@
+/* The conversation's shape and its player: <pa-strip> (timeline-first's per-speaker lane strip) and
+   <pa-player> (instrument's player). The viewer links this file; the clip-player widget includes it inline.
+   One mark vocabulary everywhere (design/REVIEW.md): speech is a lane color, quiet a calm row of dots,
+   paused muted tint stripes, missing an amber hatch with amber edges at full height, never smaller than
+   speech. */
+
+/* ── Legend swatches ─────────────────────────────────────────────────── */
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 10px 0 0; padding: 0; list-style: none; font-size: var(--fs-meta); color: var(--meta); }
+.legend li { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.legend b { font-weight: 600; color: var(--secondary); }
+.legend .k-missing, .legend .k-missing b { color: var(--missing-text); }
+.sw { display: inline-block; flex: none; width: 16px; height: 10px; border-radius: 3px; }
+.sw.s0, .sw.talk { background: var(--lane-0); }
+.sw.s1 { background: var(--lane-1); }
+.sw.s2 { background: var(--lane-2); }
+.sw.s3 { background: var(--lane-3); }
+.sw.quiet { background: var(--pat-quiet) 1px 50% / 6px 6px repeat-x; }
+.sw.paused { background: var(--pat-paused), var(--paused-ground); }
+.sw.missing { background: var(--pat-missing), var(--missing-hatch-fill); box-shadow: inset 0 0 0 1.5px var(--missing); }
+.sw.masked { background: var(--background-audio); }
+.sw.off { background: linear-gradient(var(--axis-tick), var(--axis-tick)) 0 50% / 100% 1px no-repeat; }
+
+/* ── <pa-strip> ──────────────────────────────────────────────────────── */
+pa-strip { display: block; position: relative; user-select: none; -webkit-user-select: none; touch-action: pan-y; }
+pa-strip:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 6px; }
+.st-track { position: relative; }
+.st-band { position: relative; border-radius: 6px; background: var(--band); overflow: hidden; cursor: pointer; }
+.st-lane { position: absolute; left: 0; right: 0; }
+.st-lane > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px; background: var(--lane-c); }
+.st-lane.s0 { --lane-c: var(--lane-0); }
+.st-lane.s1 { --lane-c: var(--lane-1); }
+.st-lane.s2 { --lane-c: var(--lane-2); }
+.st-lane.s3 { --lane-c: var(--lane-3); }
+.st-quiet {
+  position: absolute; top: 0; bottom: 0;
+  background: var(--pat-quiet) 2px 50% / 7px 7px repeat-x, var(--surface);
+  box-shadow: inset 1px 0 0 var(--hairline), inset -1px 0 0 var(--hairline);
+}
+.st-paused { position: absolute; top: 0; bottom: 0; background: var(--pat-paused), var(--paused-ground); }
+.st-masked { position: absolute; top: 30%; bottom: 30%; border-radius: 2px; background: var(--background-audio); opacity: 0.8; }
+.st-lost {
+  position: absolute; top: 0; bottom: 0; min-width: 4px; z-index: 2;
+  background: var(--pat-missing), var(--missing-hatch-fill);
+  box-shadow: inset 2px 0 0 var(--missing), inset -2px 0 0 var(--missing);
+}
+.st-clip {
+  position: absolute; top: -4px; bottom: -4px; border-radius: 4px; pointer-events: none; z-index: 3;
+  border: 1.5px solid var(--tint); background: var(--tint-fill-10);
+}
+.st-pin { position: absolute; top: -22px; bottom: -2px; width: 0; border-left: 2px solid var(--label); pointer-events: none; z-index: 4; }
+.st-pin span {
+  position: absolute; bottom: 100%; left: 0; transform: translate(-50%, 2px);
+  padding: 1px 6px; border-radius: 6px; background: var(--label); color: var(--surface);
+  font: 600 var(--fs-micro)/1.5 var(--font); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.st-pin span:empty { display: none; }
+.st-head { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--playhead); pointer-events: none; z-index: 5; }
+.st-ticks { position: relative; height: 18px; margin-top: 6px; color: var(--meta); font: 400 var(--fs-micro)/1 var(--font); font-variant-numeric: tabular-nums; }
+.st-ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.st-ticks span::before { content: ""; position: absolute; left: 50%; top: -6px; width: 1px; height: 4px; background: var(--axis-tick); }
+.st-ticks span:first-child { transform: none; }
+.st-ticks span:first-child::before { left: 0; }
+.st-ticks span:last-child { transform: translateX(-100%); }
+.st-ticks span:last-child::before { left: auto; right: 0; }
+pa-strip.has-pin { margin-top: 22px; }
+pa-strip[compact] .st-band { border-radius: 4px; }
+pa-strip[compact] .st-pin { top: -2px; }
+pa-strip[compact] .st-pin span { display: none; }
+pa-strip[compact].has-pin { margin-top: 0; }
+
+/* ── <pa-player> ─────────────────────────────────────────────────────── */
+pa-player { display: block; }
+.pl { display: grid; gap: 8px; }
+.pl-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pl-label { font-size: var(--fs-meta); font-weight: 600; color: var(--secondary); }
+.pl-range { font-size: var(--fs-meta); color: var(--meta); font-variant-numeric: tabular-nums; }
+.pl-scrub {
+  position: relative; padding: 4px 0; border-radius: 8px; cursor: ew-resize;
+  touch-action: pan-y; user-select: none; -webkit-user-select: none;
+}
+.pl.no-audio .pl-scrub { cursor: default; }
+.pl-scrub:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.pl-wave, .pl-lanes { line-height: 0; }
+.pl-wave svg, .pl-lanes svg { display: block; width: 100%; overflow: visible; }
+.pl-lanes { margin-top: 6px; }
+.pl-head { position: absolute; top: 0; bottom: 0; left: 0; width: 0; pointer-events: none; }
+.pl-head::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; border-radius: 1px; background: var(--playhead); }
+.pl-head span { position: absolute; top: -5px; left: -6px; width: 12px; height: 12px; border-radius: 50%; background: var(--playhead); box-shadow: 0 0 0 3px var(--surface); }
+.pl-scrub.is-drag .pl-head span { transform: scale(1.25); }
+.pl.no-audio .pl-head { display: none; }
+
+/* bars: speech is a lane color at a fixed height (no made-up amplitude), the time between turns a low stub */
+.b-s0 { stroke: var(--lane-0); }
+.b-s1 { stroke: var(--lane-1); }
+.b-s2 { stroke: var(--lane-2); }
+.b-s3 { stroke: var(--lane-3); }
+.b-room { stroke: var(--quiet); stroke-width: 1; }
+.b-masked { stroke: var(--background-audio); }
+.pl-unplayed { opacity: 0.42; }
+.w-quiet { stroke: var(--quiet-dot); stroke-width: 2.4; stroke-dasharray: 0.1 6; stroke-linecap: round; fill: none; }
+.w-lost-bg { fill: var(--missing-hatch-fill); }
+.w-lost-edge { stroke: var(--missing); stroke-width: 2; }
+.hatch-ink { fill: var(--missing); }
+.paused-ink { fill: var(--paused-stripe); }
+.w-label { font: 600 10px/1 var(--font); fill: var(--meta); text-anchor: middle; letter-spacing: 0.02em; }
+.w-label.lost { fill: var(--missing-text); }
+.ln-s0 { fill: var(--lane-0); }
+.ln-s1 { fill: var(--lane-1); }
+.ln-s2 { fill: var(--lane-2); }
+.ln-s3 { fill: var(--lane-3); }
+.pl-lanes rect { opacity: 0.45; }
+.pl-lanes rect.on { opacity: 1; }
+
+.pl-axis { position: relative; height: 18px; border-top: 1px solid var(--hairline); }
+.pl-axis .tick { position: absolute; top: 0; width: 1px; height: 4px; background: var(--axis-tick); }
+.pl-axis .tick.major { height: 7px; background: var(--meta-shape); }
+.pl-axis .tick-label { position: absolute; top: 6px; transform: translateX(-50%); font-size: var(--fs-micro); color: var(--meta); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.pl-bar { display: flex; align-items: center; gap: 12px; }
+.pl-play {
+  flex: none; display: grid; place-items: center; width: 56px; height: 56px; border-radius: 50%;
+  border: 0; background: var(--tint); color: var(--on-tint); cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.pl-play:hover { background: var(--tint-pressed); }
+.pl-play:active { transform: scale(0.97); }
+.pl-play:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.pl-play svg { width: 26px; height: 26px; }
+.pl-read { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.pl-clock { font-size: 24px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; color: var(--label); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pl-clock .ap { margin-left: 5px; font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--meta); }
+.pl-pos { font-size: var(--fs-meta); color: var(--meta); font-variant-numeric: tabular-nums; }
+.pl-skip { display: flex; gap: 2px; flex: none; }
+.pl-icon {
+  display: grid; place-items: center; width: var(--target); height: var(--target); border: 0; border-radius: 50%;
+  background: none; color: var(--tint); cursor: pointer;
+}
+.pl-icon:hover { background: var(--tint-fill-10); }
+.pl-icon:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.pl-icon svg { width: 26px; height: 26px; }
+.pl-play:disabled, .pl-icon:disabled { opacity: 0.4; cursor: default; }
+
+.pl-note {
+  display: none; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: var(--target); padding: 0 4px 0 12px; border-radius: 10px;
+  background: var(--inset); font-size: var(--fs-meta); color: var(--secondary);
+}
+.pl-note.on { display: flex; }
+.pl-note.missing { color: var(--missing-text); background: var(--missing-fill); }
+.pl-note .g { display: inline-block; width: 14px; height: 4px; margin-right: 6px; vertical-align: middle; background: var(--pat-quiet) 0 50% / 6px 6px repeat-x; }
+.pl-note button { min-height: var(--target); padding: 0 12px; border: 0; background: none; color: var(--tint); font: 600 var(--fs-footnote)/1 var(--font); cursor: pointer; border-radius: 8px; }
+.pl-note button:hover { background: var(--tint-fill-10); }
+
+.pl-state { display: grid; gap: 2px; }
+.pl-state[hidden] { display: none; }
+.pl-state-head { margin: 0; font-size: var(--fs-card-head); font-weight: 600; color: var(--label); }
+.pl-state-line { margin: 0; font-size: var(--fs-body); color: var(--tertiary); line-height: 1.4; }
+.pl-state-line:empty { display: none; }
+.pl-action {
+  justify-self: start; display: inline-flex; align-items: center; gap: 8px; margin-top: 8px;
+  min-height: var(--target); padding: 0 18px; border: 0; border-radius: var(--radius-option);
+  background: var(--action); color: var(--on-tint); font: 600 var(--fs-card-head)/1 var(--font); cursor: pointer;
+}
+.pl-action:hover { background: var(--action-pressed); }
+.pl-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.pl-action[hidden] { display: none; }
+.pl-state.busy .pl-state-head::after {
+  content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; vertical-align: -1px;
+  border-radius: 50%; border: 2px solid var(--tint-border); border-top-color: var(--tint);
+  animation: pl-spin 1s linear infinite;
+}
+@keyframes pl-spin { to { transform: rotate(360deg); } }
+.pl.no-audio .pl-bar, .pl.no-audio .pl-axis { display: none; }
+.pl.no-audio.empty .pl-scrub { display: none; }
+
+/* Docked at the bottom of a phone: the same player, smaller. */
+pa-player[docked] .pl { gap: 6px; }
+pa-player[docked] .pl-top, pa-player[docked] .pl-axis { display: none; }
+pa-player[docked] .pl-play { width: 48px; height: 48px; }
+pa-player[docked] .pl-play svg { width: 22px; height: 22px; }
+pa-player[docked] .pl-clock { font-size: 20px; }
+pa-player[docked] .pl-lanes { margin-top: 4px; }
+pa-player[docked] .pl-state { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; }
+pa-player[docked] .pl-state-head, pa-player[docked] .pl-state-line { grid-column: 1; }
+pa-player[docked] .pl-action { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pl-state.busy .pl-state-head::after { animation: none; }
+}

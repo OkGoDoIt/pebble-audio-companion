@@ -1,0 +1,46 @@
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+@inject Microsoft.Extensions.Options.IOptions<PebbleAudio.Server.PebbleAudioOptions> Options
+@using PebbleAudio.Server.Pages.View
+@{
+	var csrfToken = Antiforgery.GetAndStoreTokens(Context).RequestToken;
+	var host = new Uri(Options.Value.PublicOrigin).Authority;
+	var section = ViewData["Section"] as string;
+	string? Current(string name) => section == name ? "page" : null;
+	// A page for someone not signed in (the link page) shows the brand alone.
+	var bare = ViewData["Bare"] is true;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="color-scheme" content="light dark">
+	<meta name="robots" content="noindex">
+	<meta name="csrf-token" content="@csrfToken">
+	<title>@ViewData["Title"] · Pebble Audio</title>
+	<link rel="icon" href="~/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/server.css" asp-append-version="true">
+	@await RenderSectionAsync("Head", required: false)
+</head>
+<body class="server@(bare ? " bare" : null)">
+	<div class="srv">
+		<aside class="srv-side">
+			<a class="brand" href="/">@BrandMarks.Own<span class="brand-words"><span>Pebble Audio</span><span class="host">@host</span></span></a>
+			@if (!bare)
+			{
+			<nav class="srv-nav" aria-label="Pebble Audio">
+				<a class="nav" href="/" aria-current="@Current("conversations")"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20z"/><path d="M14 3.5V8h4M10 12h5M10 16h5"/></svg>Conversations</a>
+				<a class="nav" href="/admin/apps" aria-current="@Current("who")"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5 19 4M16 7l2.5 2.5M14 9l2 2"/></svg>Who can read</a>
+				<a class="nav" href="/connect/codex" aria-current="@Current("connect")"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Connect an app</a>
+				<a class="nav" href="/admin/phones" aria-current="@Current("phones")"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.5-2h5.6l1.5 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.4"/></svg>Link a phone</a>
+			</nav>
+			<p class="who-signed">Signed in with your passkey</p>
+			}
+		</aside>
+		<main class="srv-main">
+			@RenderBody()
+		</main>
+	</div>
+</body>
+</html>

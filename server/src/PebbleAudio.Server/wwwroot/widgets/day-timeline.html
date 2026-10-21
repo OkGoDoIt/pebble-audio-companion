@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Day</title>
+<style>
+/* @include css/tokens.css */
+/* @include widgets/widget.css */
+
+/* The day on a time axis (reading-first's lanes: one, or two halves when the day is long). Quiet is dots,
+   paused stripes, missing the amber hatch at full height, not recording a dashed hairline; each conversation
+   is a tint block, and the chosen one is outlined. */
+.w-line { margin-top: 4px; font-size: var(--fs-meta); color: var(--meta); font-variant-numeric: tabular-nums; }
+.tlw { margin-top: 12px; display: grid; gap: 10px; touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: pointer; border-radius: 8px; }
+.lane-band { position: relative; height: 28px; border-radius: 6px; background: var(--track); overflow: hidden; }
+.lane-band span { position: absolute; top: 0; bottom: 0; }
+.k-recorded { background: var(--captured); }
+.k-quiet { background: var(--pat-quiet) 2px 50% / 7px 7px repeat-x, var(--surface); }
+.k-paused { background: var(--pat-paused), var(--paused-ground); }
+.k-off { background: linear-gradient(90deg, var(--axis-tick) 50%, transparent 0) 0 50% / 6px 1px repeat-x; }
+.k-missing { z-index: 3; min-width: 4px; background: var(--pat-missing), var(--missing-hatch-fill); box-shadow: inset 2px 0 0 var(--missing), inset -2px 0 0 var(--missing); }
+.blk { z-index: 2; min-width: 3px; border-radius: 3px; background: var(--tint); opacity: 0.7; box-shadow: 0 0 0 1px var(--surface); transition: opacity 0.15s ease; }
+.blk.bg { background: var(--background-audio); }
+.blk.on { opacity: 1; z-index: 4; box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--label); }
+.lane-axis { position: relative; height: 14px; margin-top: 5px; font-size: var(--fs-micro); color: var(--meta); font-variant-numeric: tabular-nums; }
+.lane-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.lane-axis span:first-child { transform: none; }
+.lane-axis span:last-child { transform: translateX(-100%); }
+.sel { margin-top: 12px; padding: 12px 13px 4px; border-radius: var(--radius); background: var(--inset); }
+.sel .w-title { font-size: var(--fs-card-head); }
+.sel .w-sum { margin-top: 4px; }
+.sel .pills { margin-top: 8px; }
+.sel .nav { margin-top: 4px; gap: 4px; }
+.sel .nav .w-open { margin-left: auto; }
+.days { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 2px; }
+.day-btn { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; min-height: var(--target); padding: 6px 8px; margin: 0 -8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
+.day-btn:hover { background: var(--tint-fill-10); }
+.day-btn[aria-pressed="true"] { background: var(--tint-fill-12); }
+.day-btn b { font-size: var(--fs-meta); font-weight: 600; color: var(--secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mini { position: relative; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.mini span { position: absolute; top: 0; bottom: 0; }
+.mini .rec { background: var(--tint); }
+.mini .q { background: var(--pat-quiet) 1px 50% / 6px 6px repeat-x; }
+@container (max-width: 440px) {
+  .sel .nav { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<div class="w-root"><article class="w" id="widget" aria-live="polite"></article></div>
+<script type="module">
+// @include js/view/format.js
+// @include widgets/bridge.js
+
+// The day timeline: get_day's conversations on the day's axis (tap or arrow to pick one, its card below), or
+// list_days' days as rows of recorded, quiet, and missing time.
+const root = document.getElementById('widget');
+const CHEV = (left) => `<svg width="9" height="15" viewBox="0 0 9 15" aria-hidden="true"${left ? ' style="transform:scaleX(-1)"' : ''}><path d="M1.5 1.5l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const OPEN = '<svg width="7" height="12" viewBox="0 0 7 12" aria-hidden="true"><path d="M1 1l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const place = (tz) => (tz || 'UTC').split('/').pop().replace(/_/g, ' ');
+const hourStart = (ms, tz) => {
+  // Back to the hour on the zone's wall clock (zone offsets are whole or half hours; minutes are kept honest).
+  const minutes = Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, minute: 'numeric' }).format(new Date(ms)));
+  const seconds = Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, second: 'numeric' }).format(new Date(ms)));
+  return ms - (minutes * 60 + seconds) * 1000 - (ms % 1000);
+};
+let selected = 0;
+
+function linkify(el, url) {
+  el.addEventListener('click', (e) => { e.preventDefault(); openLink(url); });
+}
+
+function dayView(d) {
+  const tz = d.timeZone;
+  const conversations = d.conversations || [];
+  const spans = d.coverage?.spans || [];
+  const starts = [...spans.map((s) => instant(s.startedAt)), ...conversations.map((c) => instant(c.startedAt))];
+  const ends = [...spans.map((s) => instant(s.endedAt)), ...conversations.map((c) => instant(c.endedAt) || instant(c.startedAt) + c.minutes * 60000)];
+  if (!starts.length) return `<p class="w-kicker">${esc(longDay(d.day))}</p><div class="w-state"><p class="head">Nothing recorded</p></div>`;
+  const first = hourStart(Math.min(...starts), tz);
+  let last = hourStart(Math.max(...ends), tz);
+  if (last < Math.max(...ends)) last += 3600000;
+  const hours = (last - first) / 3600000;
+  const lanes = hours > 8 ? [[first, first + Math.ceil(hours / 2) * 3600000], [first + Math.ceil(hours / 2) * 3600000, last]] : [[first, Math.max(last, first + 2 * 3600000)]];
+  const pct = (ms, [a, b]) => ((Math.max(a, Math.min(b, ms)) - a) / (b - a)) * 100;
+  const piece = (cls, s, e, lane, extra = '') => {
+    if (e <= lane[0] || s >= lane[1]) return '';
+    return `<span class="${cls}" style="left:${pct(s, lane).toFixed(2)}%;width:${(pct(e, lane) - pct(s, lane)).toFixed(2)}%"${extra}></span>`;
+  };
+  const laneHtml = lanes.map((lane) => {
+    let band = spans.map((s) => piece(`k-${s.kind}`, instant(s.startedAt), instant(s.endedAt), lane)).join('');
+    conversations.forEach((c, i) => {
+      band += piece(`blk${c.kind === 'noConversation' ? ' bg' : ''}`, instant(c.startedAt), instant(c.endedAt) || instant(c.startedAt) + c.minutes * 60000, lane, ` data-i="${i}"`);
+    });
+    const step = (lane[1] - lane[0]) / 3600000 <= 4 ? 1 : (lane[1] - lane[0]) / 3600000 <= 8 ? 2 : 3;
+    let axis = '';
+    for (let t = lane[0]; t <= lane[1]; t += step * 3600000) axis += `<span style="left:${pct(t, lane).toFixed(2)}%">${esc(clock(t, tz).replace(':00', ''))}</span>`;
+    return `<div class="lane" data-a="${lane[0]}" data-b="${lane[1]}"><div class="lane-band">${band}</div><div class="lane-axis" aria-hidden="true">${axis}</div></div>`;
+  }).join('');
+
+  const talk = conversations.filter((c) => c.kind !== 'noConversation').length;
+  const recorded = d.coverage?.recordedMinutes ?? conversations.reduce((a, c) => a + (c.recordedMinutes || 0), 0);
+  const lost = d.coverage?.lostMinutes ?? conversations.reduce((a, c) => a + (c.lostMinutes || 0), 0);
+  const line = [`${talk} ${talk === 1 ? 'conversation' : 'conversations'}`, recorded ? `${duration(recorded * 60)} recorded` : ''].filter(Boolean).join(' · ');
+  return `
+    <p class="w-kicker">${esc(longDay(d.day))} · ${esc(place(tz))} time</p>
+    <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
+    <p class="w-line">${esc(line)}${lost > 0 ? `<span> · </span><span class="loss">${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
+    ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div><div class="sel" id="sel"></div>` : `<div class="tlw">${laneHtml}</div>`}
+    <div class="w-foot"><span class="hint"></span><a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+}
+
+function select(d, i) {
+  const conversations = d.conversations || [];
+  if (!conversations.length) return;
+  selected = Math.max(0, Math.min(conversations.length - 1, i));
+  const c = conversations[selected];
+  root.querySelectorAll('.blk').forEach((b) => b.classList.toggle('on', Number(b.dataset.i) === selected));
+  const tz = c.timeZone || d.timeZone;
+  const start = instant(c.startedAt), end = instant(c.endedAt);
+  const lost = c.lostMinutes > 0 ? `<span> · </span><span class="loss">${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
+  const title = c.title || (c.kind === 'noConversation' ? (c.descriptor ? c.descriptor[0].toUpperCase() + c.descriptor.slice(1) : 'No conversation') : 'Not summarized yet');
+  const slider = root.querySelector('.tlw');
+  slider.setAttribute('aria-valuenow', String(selected + 1));
+  slider.setAttribute('aria-valuetext', `${title}, ${clock(start, tz)}`);
+  const sel = root.querySelector('#sel');
+  sel.innerHTML = `
+    <p class="w-kicker">${esc(end ? range(start, end, tz) : clock(start, tz))} · ${esc(duration((c.minutes || 0) * 60))}${lost}</p>
+    <p class="w-title${c.title ? '' : ' untitled'}">${esc(title)}</p>
+    ${c.overview ? `<p class="w-sum">${esc(c.overview)}</p>` : ''}
+    ${(c.tags || []).length ? `<ul class="pills">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
+    <div class="nav">
+      <button type="button" class="step" data-step="-1" aria-label="Earlier conversation" ${selected === 0 ? 'disabled' : ''}>${CHEV(true)}</button>
+      <span class="count">${selected + 1} of ${conversations.length}</span>
+      <button type="button" class="step" data-step="1" aria-label="Later conversation" ${selected === conversations.length - 1 ? 'disabled' : ''}>${CHEV(false)}</button>
+      <a class="w-open filled" href="${esc(c.url)}" target="_blank" rel="noopener">Open</a>
+    </div>`;
+  sel.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => select(d, selected + Number(b.dataset.step))));
+  linkify(sel.querySelector('.w-open'), c.url);
+}
+
+function bindDay(d) {
+  const conversations = d.conversations || [];
+  linkify(root.querySelector('#open-day'), d.url);
+  const slider = root.querySelector('.tlw[role="slider"]');
+  if (!slider) return;
+  // A tap or a drag picks the conversation nearest to that time.
+  const pick = (e) => {
+    const lane = e.target.closest('.lane') || slider.querySelector('.lane');
+    const r = lane.querySelector('.lane-band').getBoundingClientRect();
+    const a = Number(lane.dataset.a), b = Number(lane.dataset.b);
+    const t = a + Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (b - a);
+    let best = 0, bestD = Infinity;
+    conversations.forEach((c, i) => {
+      const s = instant(c.startedAt), en = instant(c.endedAt) || s + c.minutes * 60000;
+      const dist = t < s ? s - t : t > en ? t - en : 0;
+      if (dist < bestD) { bestD = dist; best = i; }
+    });
+    select(d, best);
+  };
+  let dragging = false;
+  slider.addEventListener('pointerdown', (e) => { dragging = true; slider.setPointerCapture?.(e.pointerId); pick(e); });
+  slider.addEventListener('pointermove', (e) => { if (dragging) pick(e); });
+  slider.addEventListener('pointerup', () => { dragging = false; });
+  slider.addEventListener('pointercancel', () => { dragging = false; });
+  slider.addEventListener('keydown', (e) => {
+    const moves = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+    if (e.key in moves) { e.preventDefault(); select(d, selected + moves[e.key]); }
+    if (e.key === 'Home') { e.preventDefault(); select(d, 0); }
+    if (e.key === 'End') { e.preventDefault(); select(d, conversations.length - 1); }
+  });
+  select(d, 0);
+}
+
+function daysView(r) {
+  const days = r.days || [];
+  const scale = Math.max(1, ...days.map((d) => d.recordedMinutes + d.quietMinutes + d.lostMinutes));
+  const rows = days.map((d, i) => {
+    const rec = (d.recordedMinutes / scale) * 100, q = (d.quietMinutes / scale) * 100, l = (d.lostMinutes / scale) * 100;
+    return `<li><button type="button" class="day-btn" data-i="${i}" aria-pressed="false">
+      <b>${esc(shortDay(d.day))}</b>
+      <span class="mini" role="img" aria-label="${esc(`${duration(d.recordedMinutes * 60)} recorded${d.lostMinutes > 0 ? `, ${duration(d.lostMinutes * 60, { seconds: true })} missing` : ''}`)}">
+        <span class="rec" style="left:0;width:${rec.toFixed(2)}%"></span>
+        <span class="q" style="left:${rec.toFixed(2)}%;width:${q.toFixed(2)}%"></span>
+        ${l > 0 ? `<span class="k-missing" style="left:${(rec + q).toFixed(2)}%;width:${Math.max(l, 1.2).toFixed(2)}%"></span>` : ''}
+      </span>
+    </button></li>`;
+  }).join('');
+  return `
+    <p class="w-kicker">${esc(shortDay(r.from))} – ${esc(shortDay(r.to))}</p>
+    <h1 class="w-title">${days.length ? `${days.length} ${days.length === 1 ? 'day' : 'days'} with recordings` : 'Nothing recorded'}</h1>
+    ${days.length ? `<ul class="days">${rows}</ul><div class="sel" id="sel"></div>` : ''}`;
+}
+
+function selectDay(r, i) {
+  const d = r.days[i];
+  root.querySelectorAll('.day-btn').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.i) === i)));
+  const lost = d.lostMinutes > 0 ? `<span> · </span><span class="loss">${esc(duration(d.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
+  const sel = root.querySelector('#sel');
+  sel.innerHTML = `
+    <p class="w-kicker">${esc(longDay(d.day))}</p>
+    <p class="w-title${d.headline ? '' : ' untitled'}">${esc(d.headline || 'No summary yet')}</p>
+    ${d.lineSummary ? `<p class="w-sum">${esc(d.lineSummary)}</p>` : ''}
+    <div class="nav">
+      <span class="count">${esc(`${d.conversationCount} ${d.conversationCount === 1 ? 'conversation' : 'conversations'} · ${duration(d.recordedMinutes * 60)} recorded`)}${lost}</span>
+      <a class="w-open filled" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a>
+    </div>`;
+  linkify(sel.querySelector('.w-open'), d.url);
+}
+
+function render({ structuredContent: r }) {
+  if (!r) return;
+  if (Array.isArray(r.days)) {
+    root.innerHTML = daysView(r);
+    root.querySelectorAll('.day-btn').forEach((b) => b.addEventListener('click', () => selectDay(r, Number(b.dataset.i))));
+    if (r.days.length) selectDay(r, 0);
+    return;
+  }
+  if (!r.found) {
+    root.innerHTML = `<div class="w-state"><p class="head">${esc(r.day ? `Nothing recorded on ${longDay(r.day)}` : 'Which day?')}</p><p class="line">${esc(r.summary || '')}</p></div>`;
+    return;
+  }
+  root.innerHTML = dayView(r);
+  bindDay(r);
+}
+
+connectHost({ name: 'Pebble Audio day timeline', onResult: render });
+watchSize();
+</script>
+</body>
+</html>

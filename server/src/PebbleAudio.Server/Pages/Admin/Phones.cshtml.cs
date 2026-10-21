@@ -58,7 +58,7 @@ public sealed class PhonesModel(PhoneLinkService links, ArchiveWipe wipe, IOptio
 		User.UserId() ?? throw new InvalidOperationException("The admin page requires a signed-in user.");
 
 	/// <param name="Code">The code as shown, <c>K7QM-3XWD</c>.</param>
-	/// <param name="Url">The <c>pebbleaudio://link</c> link the QR code carries.</param>
+	/// <param name="Url">The <c>/link?code=…</c> universal link the QR code carries.</param>
 	/// <param name="QrSvg">The QR code as inline SVG.</param>
 	/// <param name="ExpiresAt">When the code stops working.</param>
 	public sealed record LinkInvitation(string Code, string Url, string QrSvg, DateTimeOffset ExpiresAt);

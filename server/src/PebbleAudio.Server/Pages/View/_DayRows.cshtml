@@ -1,0 +1,41 @@
+@model IReadOnlyList<PebbleAudio.Server.Pages.View.DayRow>
+@using PebbleAudio.Server.Pages.View
+@{
+	var months = Model.GroupBy(d => d.Month).ToList();
+	var showMonths = (bool?)ViewData["ShowMonths"] ?? true;
+}
+@foreach (var month in months)
+{
+	@if (showMonths)
+	{
+		<h2 class="section-label">@month.Key</h2>
+	}
+	<ul class="days">
+		@foreach (var d in month)
+		{
+			<li>
+				<a class="day-row" href="@d.Url">
+					<span class="day-num" aria-hidden="true"><small>@d.WeekdayShort</small>@d.Numeral</span>
+					<span class="day-body">
+						<span class="visually-hidden">@ViewText.Weekday(d.Day), @ViewText.LongDate(d.Day): </span>
+						@if (d.Headline is not null)
+						{
+							<span class="day-title">@d.Headline</span>
+						}
+						@if (d.Line is not null)
+						{
+							<span class="day-line">@d.Line</span>
+						}
+						else if (d.Headline is null)
+						{
+							<span class="day-title untitled">No summary yet</span>
+						}
+						<span class="timeline-meta">@d.Meta@if (d.MissingText is not null)
+							{<span class="sep"> · </span><span class="loss">@d.MissingText</span>}</span>
+					</span>
+					@Icons.Forward
+				</a>
+			</li>
+		}
+	</ul>
+}

@@ -1,0 +1,23 @@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using PebbleAudio.Server.Pages.View
+<div class="who-list" data-who data-ready="@(Model.Ready ? "true" : "false")" aria-live="polite">
+	<p class="section-header" id="who-h">Who can read</p>
+	<ul class="list-card" aria-labelledby="who-h">
+		@foreach (var row in Model.Who)
+		{
+			<li class="row">
+				@BrandMarks.Tile(row.Name)
+				<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.Line</span></span>
+				@if (row.Waiting)
+				{
+					<span class="spinner" role="img" aria-label="Waiting"></span>
+				}
+				else if (row.Arrived)
+				{
+					<span class="check-badge" role="img" aria-label="Connected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+				}
+			</li>
+		}
+	</ul>
+	<p class="footer">Each app connects on its own. Removing one stops only that app.</p>
+</div>

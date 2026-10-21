@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Conversation</title>
+<style>
+/* @include css/tokens.css */
+/* @include widgets/widget.css */
+</style>
+</head>
+<body>
+<div class="w-root"><article class="w" id="card" aria-live="polite"></article></div>
+<script type="module">
+// @include js/view/format.js
+// @include widgets/bridge.js
+
+// The conversation card: what get_conversation found, in the app's words, with a way to open it.
+const card = document.getElementById('card');
+const PERSON = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="3.6" r="2.4" fill="currentColor"/><path d="M1.5 11c.4-2.6 2.2-4 4.5-4s4.1 1.4 4.5 4z" fill="currentColor"/></svg>';
+const CHEVRON = '<svg width="7" height="12" viewBox="0 0 7 12" aria-hidden="true"><path d="M1 1l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function shapeOf(c) {
+  const start = instant(c.startedAt), end = instant(c.endedAt) || start + (c.minutes || 0) * 60000;
+  const total = Math.max(1, (end - start) / 1000);
+  const marks = (c.gaps || []).map((g) => {
+    const s = (instant(g.startedAt) - start) / 1000, e = (instant(g.endedAt) - start) / 1000;
+    const kind = g.kind === 'lost' ? 'lost' : g.reason === 'watchPause' ? 'paused' : 'quiet';
+    return `<i class="${kind}" style="left:${((Math.max(0, s) / total) * 100).toFixed(2)}%;width:${((Math.max(0, e - s) / total) * 100).toFixed(2)}%"></i>`;
+  });
+  return `<div class="shape" role="img" aria-label="${esc(holesWords(c) || 'Speech throughout')}">${marks.join('')}</div>`;
+}
+
+function holesWords(c) {
+  const bits = [];
+  if (c.quietMinutes > 0) bits.push(`Quiet ${duration(c.quietMinutes * 60, { seconds: true })}`);
+  if (c.lostMinutes > 0) bits.push(`${duration(c.lostMinutes * 60, { seconds: true })} missing`);
+  return bits.join(', ');
+}
+
+function render({ structuredContent: c }) {
+  if (!c) return;
+  if (!c.found) {
+    card.innerHTML = `<div class="w-state"><p class="head">Not in your archive</p><p class="line">${esc(c.summary || '')}</p></div>`;
+    return;
+  }
+  const tz = c.timeZone;
+  const start = instant(c.startedAt), end = instant(c.endedAt);
+  const lost = c.lostMinutes > 0 ? `<span class="sep"> · </span><span class="loss">${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
+  const when = `${esc(shortDay(c.day))} · ${esc(end ? range(start, end, tz) : clock(start, tz))} · ${esc(duration((c.minutes || 0) * 60))}${lost}`;
+  const people = peopleLine((c.people || []).map((p) => ({ name: p.name })));
+  const followUps = (c.followUps || []).filter((f) => f.status === 'open').length;
+  card.innerHTML = `
+    <p class="w-kicker">${when}</p>
+    <h1 class="w-title${c.title ? '' : ' untitled'}">${esc(c.title || 'Not summarized yet')}</h1>
+    ${c.overview ? `<p class="w-sum">${esc(c.overview)}</p>` : ''}
+    ${shapeOf(c)}
+    ${people ? `<p class="w-people">${PERSON}<span>${esc(people)}</span></p>` : ''}
+    ${(c.tags || []).length ? `<ul class="pills" aria-label="Topics">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
+    <div class="w-foot">
+      <span class="hint">${followUps ? esc(followUps === 1 ? '1 open follow-up' : `${followUps} open follow-ups`) : ''}</span>
+      <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open ${CHEVRON}</a>
+    </div>`;
+  card.querySelector('.w-open').addEventListener('click', (e) => { e.preventDefault(); openLink(c.url); });
+}
+
+connectHost({ name: 'Pebble Audio conversation card', onResult: render });
+watchSize();
+</script>
+</body>
+</html>

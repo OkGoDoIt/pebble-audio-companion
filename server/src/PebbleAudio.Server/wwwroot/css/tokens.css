@@ -1,0 +1,228 @@
+/* Pebble Audio web tokens: the iPhone app's design of record (ios/App/DesignSystem/Tokens.swift and
+   Tokens+History.swift), as the calm-cards candidate carried it to the web (design/REVIEW.md, the
+   approved "reviewer's blend"). Where an app color fails WCAG AA as small text on
+   the web, the TEXT token is darker and the SHAPE token keeps the app's value: meta, missing, and the
+   second speaker's teal each have both. The viewer links this file; each widget includes it inline.
+
+   Differences from the app, on purpose:
+   - --action (a filled button with words on it) in dark is the light tint: white on the app's dark tint
+     #7D7DE8 is 3.5:1, under AA for 15 px text; on #5B5BD6 it is 5.4:1. Icon-only buttons keep the tint.
+   - --paused-stripe in dark is tint at 0.30, not the app's 0.55: at 0.55 the paused stripes were the
+     loudest mark on a near-black day strip, louder than missing audio (design/REVIEW.md).
+   - The strip's voices: tint, the app's teal, and timeline-first's rose for a third named voice; an unnamed
+     voice, and the lane of other voices, take the app's unresolved-speaker gray. */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --ground: #F2F2F7;
+  --surface: #FFFFFF;
+  --surface-raised: #FAFAFC;
+  --inset: #F2F2F7;
+  --bar-bg: rgba(249, 249, 249, 0.92);
+
+  --label: #1C1C1E;
+  --secondary: #3C3C43;
+  --tertiary: #6E6E73;
+  --meta: #6E6E73;          /* app meta #8A8A8E is 3.4:1 on white; text uses tertiary */
+  --meta-shape: #8A8A8E;
+  --faint: #B0B0B6;
+  --chevron: #C7C7CC;
+
+  --tint: #5B5BD6;
+  --tint-pressed: #4A4AC4;
+  --on-tint: #FFFFFF;
+  --tint-fill-10: rgba(91, 91, 214, 0.10);
+  --tint-fill-12: rgba(91, 91, 214, 0.12);
+  --tint-fill-18: rgba(91, 91, 214, 0.18);
+  --tint-border: rgba(91, 91, 214, 0.40);
+  --tint-on-fill: #5B5BD6;
+  --tint-line: rgba(91, 91, 214, 0.40);  /* Tokens.timelineTalk */
+  --action: #5B5BD6;
+  --action-pressed: #4A4AC4;
+  --captured: #B9B9EE;
+
+  --speaker-other: #1F7F7F;  /* app #2E9E9E is 3.3:1; same hue, darker */
+  --speaker-other-shape: #2E9E9E;
+
+  /* Voices: one color per lane of the strip, the same in the transcript. */
+  --lane-0: var(--tint);
+  --lane-1: var(--speaker-other-shape);
+  --lane-2: #D35D95;
+  --lane-3: var(--meta-shape);
+  --lane-0-text: var(--tint);
+  --lane-1-text: var(--speaker-other);
+  --lane-2-text: #A83A6E;       /* the rose at AA on white */
+  --lane-3-text: var(--tertiary);
+
+  --quiet: #D1D1D6;          /* the quiet shape */
+  --quiet-dot: #A3A3AB;      /* quiet dots on the strip */
+  --quiet-text: #6E6E73;
+  --missing: #FF9500;        /* the loss shape */
+  --missing-text: #A35F00;   /* app #C77700 is 3.2:1 on white */
+  --missing-hair: rgba(255, 149, 0, 0.35);
+  --missing-fill: rgba(255, 149, 0, 0.08);
+  --missing-hatch-fill: rgba(255, 149, 0, 0.14);
+  --paused-ground: #DCDCF6;
+  --paused-stripe: rgba(91, 91, 214, 0.20);
+  --background-audio: #C7C7CC;
+  --good: #34C759;
+
+  --hairline: rgba(60, 60, 67, 0.18);
+  --card-border: rgba(60, 60, 67, 0.22);
+  --track: #ECECF1;
+  --band: #E4E4EC;           /* a strip's ground */
+  --chip-fill: #EFEFF4;
+  --axis: #DCDCE2;
+  --axis-tick: #C7C7CC;
+  --playhead: #1C1C1E;
+  --focus: #5B5BD6;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.02);
+  --shadow-dock: 0 -1px 0 rgba(60, 60, 67, 0.12), 0 -8px 24px rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #000000;
+    --surface: #1C1C1E;
+    --surface-raised: #242426;
+    --inset: #262628;
+    --bar-bg: rgba(22, 22, 22, 0.9);
+    --label: #F2F2F7;
+    --secondary: #D1D1D6;
+    --tertiary: #AEAEB2;
+    --meta: #98989D;
+    --meta-shape: #98989D;
+    --faint: #7C7C80;
+    --chevron: #48484A;
+    --tint: #7D7DE8;
+    --tint-pressed: #6B6BDA;
+    --on-tint: #FFFFFF;
+    --tint-fill-10: rgba(125, 125, 232, 0.24);
+    --tint-fill-12: rgba(125, 125, 232, 0.26);
+    --tint-fill-18: rgba(125, 125, 232, 0.34);
+    --tint-border: rgba(125, 125, 232, 0.55);
+    --tint-on-fill: #9F9FF0;
+    --tint-line: rgba(125, 125, 232, 0.75);
+    --action: #5B5BD6;
+    --action-pressed: #4A4AC4;
+    --captured: #55558A;
+    --speaker-other: #40C8C8;
+    --speaker-other-shape: #40C8C8;
+    --lane-2: #E58AB4;
+    --lane-2-text: #E58AB4;
+    --quiet: #48484A;
+    --quiet-dot: #7C7C80;
+    --quiet-text: #AEAEB2;
+    --missing: #FF9F0A;
+    --missing-text: #FFA23A;
+    --missing-hair: rgba(255, 159, 10, 0.5);
+    --missing-fill: rgba(255, 159, 10, 0.11);
+    --missing-hatch-fill: rgba(255, 159, 10, 0.16);
+    --paused-ground: #2A2A44;
+    --paused-stripe: rgba(125, 125, 232, 0.30);
+    --background-audio: #545458;
+    --good: #30D158;
+    --hairline: rgba(84, 84, 88, 0.40);
+    --card-border: rgba(84, 84, 88, 0.48);
+    --track: #2C2C2E;
+    --band: #2C2C2E;
+    --chip-fill: #2C2C2E;
+    --axis: #38383A;
+    --axis-tick: #48484A;
+    --playhead: #F2F2F7;
+    --focus: #9F9FF0;
+    --shadow: none;
+    --shadow-dock: 0 -1px 0 rgba(84, 84, 88, 0.5), 0 -8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #000000;
+  --surface: #1C1C1E;
+  --surface-raised: #242426;
+  --inset: #262628;
+  --bar-bg: rgba(22, 22, 22, 0.9);
+  --label: #F2F2F7;
+  --secondary: #D1D1D6;
+  --tertiary: #AEAEB2;
+  --meta: #98989D;
+  --meta-shape: #98989D;
+  --faint: #7C7C80;
+  --chevron: #48484A;
+  --tint: #7D7DE8;
+  --tint-pressed: #6B6BDA;
+  --on-tint: #FFFFFF;
+  --tint-fill-10: rgba(125, 125, 232, 0.24);
+  --tint-fill-12: rgba(125, 125, 232, 0.26);
+  --tint-fill-18: rgba(125, 125, 232, 0.34);
+  --tint-border: rgba(125, 125, 232, 0.55);
+  --tint-on-fill: #9F9FF0;
+  --tint-line: rgba(125, 125, 232, 0.75);
+  --action: #5B5BD6;
+  --action-pressed: #4A4AC4;
+  --captured: #55558A;
+  --speaker-other: #40C8C8;
+  --speaker-other-shape: #40C8C8;
+  --lane-2: #E58AB4;
+  --lane-2-text: #E58AB4;
+  --quiet: #48484A;
+  --quiet-dot: #7C7C80;
+  --quiet-text: #AEAEB2;
+  --missing: #FF9F0A;
+  --missing-text: #FFA23A;
+  --missing-hair: rgba(255, 159, 10, 0.5);
+  --missing-fill: rgba(255, 159, 10, 0.11);
+  --missing-hatch-fill: rgba(255, 159, 10, 0.16);
+  --paused-ground: #2A2A44;
+  --paused-stripe: rgba(125, 125, 232, 0.30);
+  --background-audio: #545458;
+  --good: #30D158;
+  --hairline: rgba(84, 84, 88, 0.40);
+  --card-border: rgba(84, 84, 88, 0.48);
+  --track: #2C2C2E;
+  --band: #2C2C2E;
+  --chip-fill: #2C2C2E;
+  --axis: #38383A;
+  --axis-tick: #48484A;
+  --playhead: #F2F2F7;
+  --focus: #9F9FF0;
+  --shadow: none;
+  --shadow-dock: 0 -1px 0 rgba(84, 84, 88, 0.5), 0 -8px 24px rgba(0, 0, 0, 0.5);
+}
+
+:root {
+  /* Type: the app's scale (AppFont), the system font only. */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --fs-history-title: 30px;  /* 30/700 a day's title */
+  --fs-detail-title: 24px;   /* 24/700 a conversation's title */
+  --fs-section: 20px;        /* 20/700 */
+  --fs-numeral: 20px;        /* 20/500 a day number in a list */
+  --fs-headline: 17px;       /* 17/600 */
+  --fs-row-title: 16px;      /* 16/600 card titles */
+  --fs-callout: 16px;        /* 16/400 transcript body */
+  --fs-card-head: 15px;      /* 15/600 card heads, buttons */
+  --fs-body: 14px;           /* 14/400 summaries, briefs */
+  --fs-footnote: 13px;       /* 13 meta */
+  --fs-meta: 12px;           /* 12 time lines, gap labels, speaker names */
+  --fs-micro: 11px;          /* 11 timecodes, pills */
+
+  /* Space and shape (Tokens.screenMargin, blockGap, cardRadius …). */
+  --margin: 16px;
+  --gap: 12px;
+  --radius: 12px;
+  --radius-small: 8px;
+  --radius-option: 14px;
+  --radius-sheet: 16px;
+  --target: 44px;
+  --pill-h: 20px;
+
+  /* The marks, one vocabulary everywhere: missing is an amber hatch with amber edges, full height; quiet a
+     calm row of dots; paused muted tint stripes; not recording a dashed hairline. */
+  --pat-missing: repeating-linear-gradient(135deg, var(--missing) 0 2px, transparent 2px 5px);
+  --pat-paused: repeating-linear-gradient(135deg, var(--paused-stripe) 0 2px, transparent 2px 6px);
+  --pat-quiet: radial-gradient(circle, var(--quiet-dot) 1.6px, transparent 2.1px);
+}

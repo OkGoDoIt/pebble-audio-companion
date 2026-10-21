@@ -1,0 +1,164 @@
+/* The server's own pages for the person (connecting an app, linking a phone), ported from the round-3
+   assistant-access mockups (docs/redesign/assistant-access-mockups/round3: 06a on the iPhone, 06b and 06c on
+   the Mac, 03a for the link page) on the design-of-record tokens. The mockup's few extra tokens are below. */
+
+:root,
+[data-theme="light"] {
+  --code-bg: #F2F2F7;
+  --pill-fill: #E9E9EE;
+  --gray-chip: #EFEFF4;
+  --good-ink: #248A3D;
+  --brand-edge-light: rgba(0, 0, 0, 0.12);
+  --brand-edge-dark: transparent;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --code-bg: #2C2C2E;
+    --pill-fill: #2C2C2E;
+    --gray-chip: #2C2C2E;
+    --good-ink: #30D158;
+    --brand-edge-light: transparent;
+    --brand-edge-dark: rgba(255, 255, 255, 0.24);
+  }
+}
+[data-theme="dark"] {
+  --code-bg: #2C2C2E;
+  --pill-fill: #2C2C2E;
+  --gray-chip: #2C2C2E;
+  --good-ink: #30D158;
+  --brand-edge-light: transparent;
+  --brand-edge-dark: rgba(255, 255, 255, 0.24);
+}
+:root {
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --button-radius: 14px;
+  --f-screen-title: 700 28px/34px var(--font);
+  --f-headline: 600 17px/22px var(--font);
+  --f-row-title: 600 16px/21px var(--font);
+  --f-callout: 400 16px/21px var(--font);
+  --f-sub-body: 400 15px/20px var(--font);
+  --f-section-header: 600 13px/18px var(--font);
+  --f-footnote: 400 13px/18px var(--font);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { margin: 0; background: var(--ground); color: var(--label); font-family: var(--font); font-size: var(--fs-body); line-height: 1.4; -webkit-font-smoothing: antialiased; }
+h1, p, ol, ul { margin: 0; }
+a { color: var(--tint); text-decoration: none; }
+button { font: inherit; color: inherit; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
+
+/* ── The frame: a sidebar on a computer, the brand alone on a phone ──── */
+.srv { min-height: 100vh; }
+.srv-side { padding: 18px var(--margin) 6px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; min-height: var(--target); font: var(--f-headline); color: var(--label); }
+.brand:hover { text-decoration: none; }
+.brand .itile { width: 30px; height: 30px; border-radius: 8px; }
+.brand-words { display: flex; flex-direction: column; }
+.brand .host { font: var(--f-footnote); color: var(--tertiary); }
+.srv-nav, .who-signed { display: none; }
+.srv-main { padding: 10px var(--margin) 48px; }
+
+@media (min-width: 1000px) {
+  .bare .srv { display: block; }
+  .bare .srv-side { width: auto; min-height: 0; border-right: 0; position: static; padding: 22px 48px 0; }
+  .bare .srv-side .brand { padding: 0; }
+  .srv { display: flex; }
+  .srv-side { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; gap: 4px; padding: 22px 14px; border-right: 0.5px solid var(--hairline); min-height: 100vh; position: sticky; top: 0; align-self: flex-start; }
+  .srv-side .brand { padding: 0 10px 18px; }
+  .srv-nav { display: flex; flex-direction: column; gap: 4px; }
+  .nav { min-height: var(--target); border-radius: 10px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font: var(--f-callout); color: var(--label); }
+  .nav:hover { text-decoration: none; background: var(--tint-fill-10); }
+  .nav svg { width: 18px; height: 18px; color: var(--tertiary); }
+  .nav[aria-current="page"] { background: var(--tint-fill-12); color: var(--tint); font-weight: 600; }
+  .nav[aria-current="page"] svg { color: var(--tint); }
+  .who-signed { display: block; margin-top: auto; padding: 0 12px; font: var(--f-footnote); color: var(--tertiary); }
+  .srv-main { flex: 1; min-width: 0; padding: 36px 48px; }
+}
+
+/* ── Shared pieces (round-3 tokens.css) ───────────────────────────────── */
+.screen-title { font: var(--f-screen-title); letter-spacing: 0.36px; margin: 2px 0 0; }
+.lede { font: var(--f-sub-body); color: var(--secondary); }
+.card { background: var(--surface); border-radius: var(--radius); padding: 16px; }
+.list-card { list-style: none; background: var(--surface); border-radius: var(--radius); padding: 0 16px; }
+.list-card > * + * { border-top: 0.5px solid var(--hairline); }
+.row { min-height: 46px; display: flex; align-items: center; gap: 12px; padding: 10px 0; }
+.row .grow { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row .t.strong { font: var(--f-row-title); }
+.row .s { font: var(--f-footnote); color: var(--tertiary); }
+.section-header { font: var(--f-section-header); letter-spacing: 0.4px; text-transform: uppercase; color: var(--tertiary); padding: 10px 4px 0; margin-bottom: 8px; }
+.footer { font: var(--f-footnote); color: var(--tertiary); padding: 0 4px; margin-top: 8px; }
+.note { font: var(--f-footnote); color: var(--tertiary); }
+.btn { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 50px; width: 100%; padding: 0 16px; border: 0; border-radius: var(--button-radius); font: var(--f-headline); cursor: pointer; }
+.btn:hover { text-decoration: none; }
+.btn svg { width: 19px; height: 19px; }
+.btn.filled { background: var(--action); color: var(--on-tint); }
+.btn.filled:hover { background: var(--action-pressed); }
+.btn.bordered { background: var(--tint-fill-12); color: var(--tint); }
+.btn.bordered:hover { background: var(--tint-fill-18); }
+.btn.plain { color: var(--tint); min-height: var(--target); }
+.btn.small { min-height: var(--target); width: auto; padding: 0 14px; font: 600 15px/20px var(--font); border-radius: 12px; }
+.seg { display: flex; background: var(--pill-fill); border-radius: 10px; padding: 2px; gap: 2px; margin: 6px 0 4px; }
+.seg a { flex: 1 1 0; min-height: var(--target); display: flex; align-items: center; justify-content: center; border-radius: 8px; font: 500 15px/1 var(--font); color: var(--label); text-align: center; }
+.seg a:hover { text-decoration: none; background: rgba(127, 127, 127, 0.08); }
+.seg a.on { background: var(--surface); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04); }
+.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--hairline); border-top-color: var(--meta-shape); flex: 0 0 auto; animation: srv-spin 1s linear infinite; }
+@keyframes srv-spin { to { transform: rotate(360deg); } }
+.check-badge { width: 24px; height: 24px; border-radius: 12px; background: var(--good); color: #FFFFFF; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.check-badge svg { width: 14px; height: 14px; }
+.check-badge.small { width: 18px; height: 18px; }
+.check-badge.small svg { width: 11px; height: 11px; }
+
+/* Identity tiles: 34 px, radius 9, in lists; brand marks on their fixed tiles. */
+.itile {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px; background: var(--gray-chip);
+  box-shadow: inset 0 0 0 0.5px var(--card-border); color: var(--secondary);
+  display: inline-flex; align-items: center; justify-content: center; font: 600 13px/1 var(--mono);
+}
+.itile svg { width: 19px; height: 19px; }
+.itile.own { background: var(--tint-fill-12); color: var(--tint); box-shadow: none; }
+.itile.brand { background: #FFFFFF; box-shadow: inset 0 0 0 0.5px var(--brand-edge-light); overflow: hidden; }
+.itile.brand svg { width: 58%; height: 58%; display: block; }
+.itile.brand.on-black { background: #000000; box-shadow: inset 0 0 0 0.5px var(--brand-edge-dark); }
+.itile.brand.on-ink { background: #191919; box-shadow: inset 0 0 0 0.5px var(--brand-edge-dark); }
+
+/* ── Connect an app ───────────────────────────────────────────────────── */
+.connect { display: flex; flex-direction: column; gap: 14px; }
+.connect .col { display: flex; flex-direction: column; gap: var(--gap); }
+.steps-card { list-style: none; padding: 2px 16px; }
+.stepn { display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; }
+.stepn + .stepn { border-top: 0.5px solid var(--hairline); }
+.stepn .n { flex: 0 0 26px; height: 26px; border-radius: 13px; background: var(--tint-fill-12); color: var(--tint); font: 600 14px/26px var(--font); text-align: center; }
+.stepn .g { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.stepn .t { font: var(--f-headline); padding-top: 2px; }
+.cmd { margin: 0 0 0 -40px; padding: 12px; border-radius: 10px; background: var(--code-bg); color: var(--label); font: 12px/19px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmd .k { color: var(--tint); font-weight: 600; }
+.wait { display: flex; align-items: flex-start; gap: 10px; }
+.wait .spinner, .wait .check-badge { margin-top: 1px; }
+.fallback { display: grid; gap: 4px; justify-items: start; padding: 4px 4px 0; }
+.fallback-head { font: var(--f-card-head, 600 15px/20px var(--font)); color: var(--label); }
+.fallback .btn { margin-top: 6px; }
+.aside .list-card { padding: 0 16px; }
+
+@media (min-width: 1000px) {
+  .connect { flex-direction: row; gap: 28px; align-items: flex-start; }
+  .connect .col { flex: 1; max-width: 660px; gap: 14px; }
+  .connect .lede { margin: 0; }
+  .seg { max-width: 420px; }
+  .steps-card { padding: 4px 20px; }
+  .cmd { margin-left: 0; padding: 14px 16px; font-size: 13.5px; line-height: 21px; }
+  .btn.inline { width: auto; align-self: flex-start; padding: 0 20px; }
+  .aside { width: 300px; flex: 0 0 300px; margin-top: 94px; }
+}
+
+/* ── The link page (no app on this phone) ─────────────────────────────── */
+.link-page { max-width: 520px; display: grid; gap: 8px; padding-top: 18px; }
+.link-page .lede { margin-bottom: 8px; }
+.link-code { padding: 18px 16px; border-radius: var(--radius); background: var(--surface); font: 600 30px/1.1 var(--mono); letter-spacing: 0.08em; text-align: center; font-variant-numeric: tabular-nums; }
+.link-server { font: var(--f-footnote); color: var(--tertiary); text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}

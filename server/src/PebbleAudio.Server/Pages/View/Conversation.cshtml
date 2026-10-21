@@ -1,0 +1,227 @@
+@page "/c/{conversationId}"
+@model PebbleAudio.Server.Pages.View.ConversationModel
+@using PebbleAudio.Server.Pages.View
+@{
+	var v = Model.View;
+	ViewData["Title"] = v?.Title ?? "Not in your archive";
+	ViewData["BarTitle"] = v?.Title;
+	ViewData["BodyClass"] = v is null ? "page-state" : "page-conversation";
+	string KindClass(RowKind kind) => kind switch
+	{
+		RowKind.Turn => "turn",
+		RowKind.Run => "run",
+		RowKind.Quiet => "quiet",
+		RowKind.Paused => "paused",
+		RowKind.Lost => "lost",
+		RowKind.Masked => "masked",
+	};
+	string Lane(int index) => v is not null && index < v.Lanes.Count ? v.Lanes[index].Css : "s3";
+}
+@section Back {
+	@if (v is null)
+	{
+		<a class="vbar-back" href="/">@Icons.Back<span>Days</span></a>
+	}
+	else
+	{
+		<a class="vbar-back" href="@v.DayUrl">@Icons.Back<span>@v.DayName</span></a>
+	}
+}
+@section Head {
+	@if (v is not null)
+	{
+		<script type="module" src="~/js/view/viewer.js" asp-append-version="true"></script>
+	}
+}
+@section Bar {
+	@if (v is not null)
+	{
+		<div class="mini" data-mini aria-hidden="true">
+			<div class="mini-in">
+				<pa-strip compact data-strip="mini"></pa-strip>
+			</div>
+		</div>
+	}
+}
+@if (v is null)
+{
+	<main class="state-page">
+		<h1>Not in your archive</h1>
+		<p>This conversation isn't here, or your phone doesn't share it.</p>
+		<a class="text-btn" href="/">See your recent days</a>
+	</main>
+	return;
+}
+<main class="cv" data-conversation>
+	<section class="cv-ident">
+		<h1 class="@(v.HasTitle ? null : "untitled")">@v.Title</h1>
+		<p class="timeline-meta">@v.DateText<span class="sep"> · </span>@v.RangeText<span class="sep"> · </span>@v.DurationText@if (v.MissingText is not null)
+			{<span class="sep"> · </span><span class="loss">@v.MissingText</span>}</p>
+		@if (v.PeopleLine is not null)
+		{
+			<p class="cv-people">@Icons.Person<span>@v.PeopleLine</span></p>
+		}
+		@if (v.Tags.Count > 0)
+		{
+			<ul class="pills" aria-label="Topics">
+				@foreach (var tag in v.Tags)
+				{
+					<li class="pill topic">@tag</li>
+				}
+			</ul>
+		}
+	</section>
+
+	@if (v.Summary is not null)
+	{
+		<section class="cv-summary" aria-label="Summary">
+			<p>@v.Summary</p>
+		</section>
+	}
+
+	<aside class="cv-side">
+		<section class="card cv-shape" aria-label="The conversation at a glance">
+			<pa-strip data-strip="main"></pa-strip>
+			<ul class="legend">
+				@foreach (var lane in v.Lanes)
+				{
+					<li><i class="sw @lane.Css"></i>@lane.Name</li>
+				}
+				@if (v.Marks.Any(m => m.Kind == "quiet"))
+				{
+					<li><i class="sw quiet"></i>Quiet</li>
+				}
+				@if (v.Marks.Any(m => m.Kind == "paused"))
+				{
+					<li><i class="sw paused"></i>Paused</li>
+				}
+				@if (v.Marks.Any(m => m.Kind == "masked"))
+				{
+					<li><i class="sw masked"></i>Music or TV</li>
+				}
+				@if (v.MissingText is not null)
+				{
+					<li class="k-missing"><i class="sw missing"></i>@v.MissingText</li>
+				}
+			</ul>
+		</section>
+		<div class="dock" data-dock>
+			<pa-player data-player></pa-player>
+		</div>
+	</aside>
+
+	<section class="cv-transcript" aria-labelledby="tx-h">
+		<h2 class="section-label" id="tx-h">Transcript</h2>
+		@if (!v.HasTranscript)
+		{
+			<div class="state">
+				<p class="state-head">Not transcribed yet</p>
+				<p>The words appear here once your phone has transcribed this conversation.</p>
+			</div>
+		}
+		<div class="tx" data-transcript>
+			@for (var i = 0; i < v.Rows.Count; i++)
+			{
+				var r = v.Rows[i];
+				var cited = v.CitedIndex == i;
+				var spoken = r.Kind is RowKind.Turn or RowKind.Run;
+				<div class="row @KindClass(r.Kind) @(spoken ? Lane(r.Bits[0].Lane) : null) @(cited ? "cited" : null)" id="r@(i)" data-s="@r.S" data-e="@r.E">
+					<div class="m">
+						@if (spoken)
+						{
+							<button type="button" class="stamp @(r.NewMinute ? null : "same")" data-t="@r.S" aria-label="@r.StampLabel">@Icons.Play<span>@r.Stamp</span></button>
+						}
+					</div>
+					<div class="tb">
+						@if (cited)
+						{
+							<div class="cite-head">
+								<span class="cite-label">The moment this cites</span>
+								<button type="button" class="text-btn" data-play-from="@v.T">@Icons.Play Play from here</button>
+							</div>
+						}
+						@if (r.Kind == RowKind.Turn)
+						{
+							var bit = r.Bits[0];
+							<p class="say @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane)">@bit.Who</span>@bit.Text</p>
+						}
+						else if (r.Kind == RowKind.Run)
+						{
+							<p class="say run-text">
+								@foreach (var bit in r.Bits)
+								{
+									<span class="bit @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane)">@bit.Who</span>@bit.Text</span>
+								}
+							</p>
+						}
+						else
+						{
+							<p class="gap">@r.Text</p>
+						}
+					</div>
+				</div>
+			}
+		</div>
+	</section>
+
+	@if (v.FollowUps.Count > 0)
+	{
+		<section class="card cv-extra" aria-labelledby="fu-h">
+			<h2 class="card-head" id="fu-h">Follow-ups</h2>
+			<ul class="fu">
+				@foreach (var f in v.FollowUps)
+				{
+					var done = f.Status is "done" or "archived";
+					<li class="@(done ? "done" : null)">
+						@(done ? Icons.Done : Icons.Circle)
+						<span class="fu-text">@f.Text</span>
+						@if (f.Source?.T is { } at && f.Source.At is { } when)
+						{
+							<a class="fu-at" href="?t=@at" data-t="@at">@ViewText.Clock(when)</a>
+						}
+					</li>
+				}
+			</ul>
+		</section>
+	}
+
+	@if (v.Notes.Count > 0)
+	{
+		<section class="card cv-extra" aria-labelledby="notes-h">
+			<h2 class="card-head" id="notes-h">Notes</h2>
+			@foreach (var n in v.Notes)
+			{
+				<article class="note">
+					@if (n.Title is not null)
+					{
+						<h3>@n.Title</h3>
+					}
+					<p>@n.Body</p>
+					@if (n.Citations.Count > 0)
+					{
+						<p class="note-cites">
+							@foreach (var c in n.Citations)
+							{
+								<a href="?t=@c.T" data-t="@c.T">@ViewText.Clock(c.At)</a>
+							}
+						</p>
+					}
+				</article>
+			}
+		</section>
+	}
+
+	<nav class="cv-onward" aria-label="On this day">
+		@if (v.Previous is not null)
+		{
+			<a class="onward-link" href="@v.Previous.Url"><span class="onward-k">Before · @v.Previous.Time</span><span class="onward-t">@v.Previous.Title</span></a>
+		}
+		@if (v.Next is not null)
+		{
+			<a class="onward-link" href="@v.Next.Url"><span class="onward-k">After · @v.Next.Time</span><span class="onward-t">@v.Next.Title</span></a>
+		}
+		<a class="onward-day" href="@v.DayUrl">See the rest of @v.DayName @Icons.Forward</a>
+	</nav>
+</main>
+<button class="back-to" type="button" data-back-to hidden>Back to playing</button>
+<script type="application/json" id="cv-model">@Html.Raw(Model.ModelJson)</script>
