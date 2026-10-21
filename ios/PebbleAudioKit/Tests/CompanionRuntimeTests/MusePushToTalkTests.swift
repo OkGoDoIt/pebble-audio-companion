@@ -206,6 +206,19 @@ struct MusePushToTalkTests {
         #expect(await fx.waitUntil { fx.link.updates().filter { $0.kind == .done }.count == 2 })
     }
 
+    @Test func aReactionSitsAfterTheQuestionOrIsTheAnswer() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.muse.script = [.heard("thanks, that's all"), .reaction("👍")]
+        try fx.ask(turn: 8, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        let updates = fx.link.updates()
+        let heard = updates.filter { $0.kind == .heard }.map { String(decoding: $0.text, as: UTF8.self) }
+        #expect(heard == ["thanks, that's all", "thanks, that's all 👍"])
+        let answer = updates.filter { $0.kind == .answer || $0.kind == .answerRestart }.flatMap(\.text)
+        #expect(String(decoding: answer, as: UTF8.self) == "👍")
+    }
+
     @Test func aWatchThatCannotFollowUpKeepsTheChoiceAsText() async throws {
         let fx = PushToTalkFixture()
         await fx.start()

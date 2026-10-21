@@ -117,6 +117,8 @@ public actor MusePushToTalk: MuseWatchSide {
         var sentHeard = false
         /// The choice the latest answer ends on, offered on the watch once it is done.
         var choice: MuseChoice?
+        /// Muse's reaction to what was asked, shown after it on the watch.
+        var reaction: String?
 
         init(serial: Int, id: Int, trigger: PttTrigger?) {
             self.serial = serial
@@ -314,6 +316,8 @@ public actor MusePushToTalk: MuseWatchSide {
             return
         }
         guard turn === current else { return }
+        // A reaction and no words: the reaction is the answer.
+        if current.answerText.isEmpty, let reaction = current.reaction { current.answerText = reaction }
         // Whatever the stream held back as unfinished Markdown goes now.
         sendAnswer(current, rendered: WatchAnswerText.render(current.answerText, final: true))
         current.finished = true
@@ -363,8 +367,9 @@ public actor MusePushToTalk: MuseWatchSide {
             current.answerText = ""
             current.sentAnswer = ""
             current.heard = picked
+            current.reaction = nil
             current.sentHeard = true
-            send(turn: current.id, .heard, text: Self.cut(picked, bytes: ProtocolConstants.assistantTextMaxBytes))
+            sendHeard(current)
             let serial = current.serial
             let done: Bool
             do {
@@ -383,6 +388,7 @@ public actor MusePushToTalk: MuseWatchSide {
                 return
             }
             guard turn === current else { return }
+            if current.answerText.isEmpty, let reaction = current.reaction { current.answerText = reaction }
             sendAnswer(current, rendered: WatchAnswerText.render(current.answerText, final: true))
             current.finished = true
             guard !current.answerText.isEmpty else {
@@ -402,7 +408,10 @@ public actor MusePushToTalk: MuseWatchSide {
             current.heard = text
             guard !current.sentHeard else { return }
             current.sentHeard = true
-            send(turn: current.id, .heard, text: Self.cut(text, bytes: ProtocolConstants.assistantTextMaxBytes))
+            sendHeard(current)
+        case .reaction(let emoji):
+            current.reaction = emoji
+            if current.sentHeard { sendHeard(current) }
         case .status(let text):
             send(turn: current.id, .status, text: Self.cut(text, bytes: 63))
         case .answer(let text):
@@ -411,6 +420,12 @@ public actor MusePushToTalk: MuseWatchSide {
         case .choice(let choice):
             current.choice = choice
         }
+    }
+
+    /// What was asked, with Muse's reaction after it, as the Muse app shows it on the message.
+    private func sendHeard(_ current: Turn) {
+        let heard = [current.heard, current.reaction].compactMap { $0 }.joined(separator: " ")
+        send(turn: current.id, .heard, text: Self.cut(heard, bytes: ProtocolConstants.assistantTextMaxBytes))
     }
 
     /// Sends what `rendered` adds to what the watch already has. The watch only appends; a
@@ -533,7 +548,7 @@ public actor MusePushToTalk: MuseWatchSide {
                     switch event {
                     case .heard(let text): await heard.setHeard(text)
                     case .answer(let text): await heard.setAnswer(text)
-                    case .status, .choice: break
+                    case .status, .choice, .reaction: break
                     }
                 }
             } catch {

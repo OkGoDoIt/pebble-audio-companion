@@ -75,4 +75,19 @@ struct VoiceTurnFollowerTests {
             """#))
         #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK)])
     }
+
+    @Test func aReactionAloneIsAnAnswer() async throws {
+        let events = Events()
+        let follower = try await follower(events)
+        try await follower.feed(event(#"{"type":"event","event":"message.reaction","payload":{"session_id":"chat-1","message_id":"u1","emoji":"👍"}}"#))
+        try await follower.feed(event(#"{"type":"event","event":"task.status","payload":{"status":"completed","task_id":"t1"}}"#))
+        #expect(await events.list == [.reaction("👍")])
+        #expect(await follower.isComplete())
+        // Muse's care reaction is a heart; a reaction to another message isn't this question's.
+        #expect(VoiceTurnFollower.reactionText("hatch:heart_v1") == "\u{2764}")
+        let other = Events()
+        let second = try await self.follower(other)
+        try await second.feed(event(#"{"type":"event","event":"reaction.set","payload":{"target_message_id":"old","emoji":"🎉"}}"#))
+        #expect(await other.list.isEmpty)
+    }
 }

@@ -2,8 +2,9 @@ import Foundation
 
 /// Muse's answer as the watch can show it: plain text in the watch's fonts.
 ///
-/// Muse writes Markdown and emoji; the watch draws neither. Emphasis marks and heading hashes
-/// go, list markers become bullets, links keep their words, and emoji are dropped.
+/// Muse writes Markdown; the watch draws plain text. Emphasis marks and heading hashes go, list
+/// markers become bullets, and links keep their words. Emoji stay: the watch's system fonts carry
+/// an emoji set of about 1,400 glyphs, and it skips joiners and variation selectors itself.
 ///
 /// The watch only appends, so a rendering of a partial answer must never change once sent. Every
 /// rule here only deletes characters or swaps ones that are already settled, and a tail that could
@@ -12,12 +13,17 @@ import Foundation
 ///
 /// A widget Muse places (`[[hatch_widget:<id>]]`) arrives here already replaced by its words
 /// when its contents came with it; one still waiting for them holds back everything after it,
-/// and at the end it goes.
+/// and at the end it goes. Muse's other formats, as it described them (2026-10-21): a reply in
+/// several bubbles is split by `<message_break/>`, which becomes a paragraph break; a file it
+/// attaches is a line `![name](sandbox://workspace/…)`, which becomes a paperclip and the name;
+/// a citation `【source†L12-L20】` goes; and any other `[[name…]]` marker goes.
 enum WatchAnswerText {
     static let widgetMarker = "[[hatch_"
 
     static func render(_ markdown: String, final: Bool) -> String {
         var text = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: #"<message_break\s*/?>"#, with: "\n\n", options: .regularExpression)
+            .replacingOccurrences(of: #"【[^】\n]*】"#, with: "", options: .regularExpression)
         if final {
             text = removingWidgetMarkers(text)
         } else if let marker = text.range(of: widgetMarker) {
@@ -50,6 +56,12 @@ enum WatchAnswerText {
         if trimmed.count <= 2, let first = trimmed.first, "-*+#0123456789".contains(first) {
             return ("", line)
         }
+        // A tag ("<message_break/>") or a citation ("【…】") still arriving.
+        for (open, close) in [("<", ">"), ("【", "】")] {
+            if let start = line.range(of: open, options: .backwards), !line[start.upperBound...].contains(close) {
+                return (String(line[..<start.lowerBound]), String(line[start.lowerBound...]))
+            }
+        }
         // An open link, or a widget's "[[": hold from its first "[" until the ")" arrives.
         if var open = line.lastIndex(of: "[") {
             while open > line.startIndex, line[line.index(before: open)] == "[" { open = line.index(before: open) }
@@ -64,16 +76,24 @@ enum WatchAnswerText {
         return (line, "")
     }
 
-    /// `[[hatch_…:…]]` markers taken out; the line they stood on keeps its other words.
+    /// `[[name…]]` markers taken out (a name in lower case, then `:` and an argument, or
+    /// nothing); the line they stood on keeps its other words.
     static func removingWidgetMarkers(_ text: String) -> String {
-        var out = ""
-        var rest = Substring(text)
-        while let open = rest.range(of: widgetMarker) {
-            out += rest[..<open.lowerBound]
-            guard let close = rest[open.upperBound...].range(of: "]]") else { return out }
-            rest = rest[close.upperBound...]
+        text.replacingOccurrences(of: markerPattern, with: "", options: .regularExpression)
+    }
+
+    static let markerPattern = #"\[\[[a-z][a-z0-9_]*(:[^\]\s]*)?\]\]"#
+
+    /// The names of the markers in `text` ("hatch_widget"), for the flight recorder.
+    static func markerNames(_ text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[\[([a-z][a-z0-9_]*)(:[^\]\s]*)?\]\]"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        var names: [String] = []
+        for match in regex.matches(in: text, range: range) {
+            guard let name = Range(match.range(at: 1), in: text).map({ String(text[$0]) }), !names.contains(name) else { continue }
+            names.append(name)
         }
-        return out + rest
+        return names
     }
 
     static func renderLine(_ raw: String) -> String {
@@ -90,12 +110,21 @@ enum WatchAnswerText {
             body = ""
         }
         line = String(indent) + body
+        line = replacingAttachments(line)
         line = replacingLinks(line)
         line = line.replacingOccurrences(of: "**", with: "")
         line = line.replacingOccurrences(of: "__", with: "")
         line = line.replacingOccurrences(of: "`", with: "")
         line = removingEmphasisStars(line)
-        return removingEmoji(line)
+        return line
+    }
+
+    /// A file Muse attaches, "![name](sandbox://workspace/…)" -> "📎 name".
+    static func replacingAttachments(_ line: String) -> String {
+        guard line.contains("![") else { return line }
+        return line.replacingOccurrences(of: #"!\[([^\]]*)\]\([^)]*\)"#, with: "\u{1F4CE} $1", options: .regularExpression)
+            .replacingOccurrences(of: "\u{1F4CE} \n", with: "\u{1F4CE} Attachment\n")
+            .replacingOccurrences(of: #"\x{1F4CE} $"#, with: "\u{1F4CE} Attachment", options: .regularExpression)
     }
 
     /// "[words](url)" -> "words".
@@ -132,17 +161,5 @@ enum WatchAnswerText {
             out.append(character)
         }
         return out
-    }
-
-    static func removingEmoji(_ text: String) -> String {
-        var scalars = String.UnicodeScalarView()
-        for scalar in text.unicodeScalars {
-            let value = scalar.value
-            if value == 0xFE0F || value == 0x200D || value == 0x20E3 { continue }
-            if scalar.properties.isEmojiPresentation { continue }
-            if scalar.properties.isEmoji, value >= 0x1F000 { continue }
-            scalars.append(scalar)
-        }
-        return String(scalars)
     }
 }

@@ -11,6 +11,8 @@ public enum MuseQuestionEvent: Sendable, Equatable {
     case answer(String)
     /// The answer ends on a choice for the wearer (a widget the Muse app draws as buttons).
     case choice(MuseChoice)
+    /// Muse reacted to the question with an emoji, as the Muse app shows on the person's message.
+    case reaction(String)
 }
 
 /// Options Muse put to the wearer (its buttons, or list rows that send a message), and the
@@ -169,6 +171,8 @@ actor VoiceTurnFollower {
     private var knownApprovals: Set<String>?
     /// This question's approvals still waiting for the person.
     private var ownApprovals: Set<String> = []
+    /// Muse reacted to the question: an answer even with no words.
+    private var reacted = false
     private var approvalShapes = 0
     private let trace: (@Sendable (String) -> Void)?
     /// The first events' shapes, for the flight recorder (names and keys only).
@@ -184,6 +188,8 @@ actor VoiceTurnFollower {
 
     /// One line saying what the turn saw, without any of its text.
     func summarize() {
+        let markers = WatchAnswerText.markerNames(turn.answerText)
+        if !markers.isEmpty { trace?("markers in the answer: \(markers.joined(separator: ", "))") }
         trace?("turn saw \(eventCount) event(s), \(turn.replies.count) reply(ies), answer \(turn.answerText.count) chars, complete \(turn.isComplete()); first: \(shapes.joined(separator: " "))")
     }
 
@@ -193,6 +199,12 @@ actor VoiceTurnFollower {
         traceWidgets(event)
         if event["event"]?.string == "approvals.snapshot" {
             await noteApprovals(event)
+            return
+        }
+        if let emoji = reaction(event) {
+            reacted = true
+            trace?("Muse reacted to the question")
+            await onEvent(.reaction(emoji))
             return
         }
         if Self.isUserMessage(event) {
@@ -266,8 +278,34 @@ actor VoiceTurnFollower {
         await emit(held)
     }
 
-    /// Muse has answered and isn't waiting on the person to approve something.
-    func isComplete() -> Bool { turn.isAnswered() && ownApprovals.isEmpty }
+    /// Muse has answered (in words, or with only a reaction) and isn't waiting on the person to
+    /// approve something.
+    func isComplete() -> Bool {
+        (turn.isAnswered() || (reacted && turn.isComplete())) && ownApprovals.isEmpty
+    }
+
+    /// A reaction Muse set on the question (`muse.react_to_user_message`): one emoji, or its care
+    /// reaction `hatch:heart_v1`. Meta doesn't document the event, so any event named for a
+    /// reaction that carries an emoji counts, unless it names another message.
+    private func reaction(_ event: MuseJSON) -> String? {
+        guard let name = event["event"]?.string, name.contains("reaction"), let payload = event["payload"] else { return nil }
+        let target = ["target_message_id", "user_message_id", "reply_to_message_id", "message_id"].lazy
+            .compactMap { payload[$0]?.string ?? payload["reaction"]?[$0]?.string }.first
+        if let target, !userIDs.isEmpty, !userIDs.contains(target) { return nil }
+        let raw = ["emoji", "reaction", "value", "key"].lazy
+            .compactMap { payload[$0]?.string ?? payload["reaction"]?[$0]?.string }.first
+        guard let raw, let emoji = Self.reactionText(raw) else { return nil }
+        return emoji
+    }
+
+    /// The emoji a reaction shows: itself, or a heart for Muse's own care reaction.
+    static func reactionText(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("hatch:") { return value.contains("heart") ? "\u{2764}" : nil }
+        guard !value.isEmpty, value.count <= 2, value.unicodeScalars.contains(where: { $0.properties.isEmoji && $0.value > 0x7F })
+        else { return nil }
+        return value
+    }
 
     private func emit(_ events: [MuseTurn.Event]) async {
         for event in events {
