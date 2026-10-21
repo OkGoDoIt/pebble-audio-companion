@@ -37,7 +37,7 @@ public static class BrandMarks
 			: n.Contains("claude", StringComparison.Ordinal) ? ("on-white", Claude, "#D97757")
 			: n.Contains("cursor", StringComparison.Ordinal) ? ("on-white", Cursor, "#000000")
 			: n.Contains("gemini", StringComparison.Ordinal) ? ("on-white", Gemini, "#8E75B2")
-			: n.Contains("muse", StringComparison.Ordinal) || n.Contains("meta", StringComparison.Ordinal) ? ("on-white meta", Meta, "#0467DF")
+			: n.Contains("muse", StringComparison.Ordinal) || n == "meta" || n.StartsWith("meta ", StringComparison.Ordinal) ? ("on-white meta", Meta, "#0467DF")
 			: n.Contains("openai", StringComparison.Ordinal) ? ("on-white", OpenAi, "#000000")
 			: (null, null, null);
 		var size = large ? " lg" : null;

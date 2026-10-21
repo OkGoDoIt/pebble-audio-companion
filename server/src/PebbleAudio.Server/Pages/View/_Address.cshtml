@@ -2,5 +2,5 @@
 @model (string Host, string Url)
 <div class="card address">
 	<span class="grow"><span class="label">Your server address</span><span class="value">@Model.Host</span></span>
-	<button type="button" class="btn small bordered" data-copy-value="@Model.Url" aria-label="Copy your server address">@SiteIcons.Copy<span>Copy</span></button>
+	<button type="button" class="btn small bordered" data-copy-value="@Model.Url">@SiteIcons.Copy<span>Copy</span><span class="visually-hidden"> your server address</span></button>
 </div>
