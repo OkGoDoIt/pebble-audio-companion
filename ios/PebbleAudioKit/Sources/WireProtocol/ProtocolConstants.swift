@@ -50,6 +50,8 @@ public enum ProtocolConstants {
     public static let capabilityWatchActions: UInt32 = 1 << 2
     /// ASSISTANT_UPDATE AnswerRestart (kind 6) is understood (Section 4.4).
     public static let capabilityAnswerRestart: UInt32 = 1 << 3
+    /// A Heard update after Done starts a follow-up on the same screen (Section 4.4).
+    public static let capabilityFollowUp: UInt32 = 1 << 4
 
     // Push-to-talk and watch actions (Sections 4.4, 4.5).
     public static let pttMaxSeconds: Int = 15

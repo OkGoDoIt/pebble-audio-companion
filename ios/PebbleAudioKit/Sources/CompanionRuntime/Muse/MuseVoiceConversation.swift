@@ -9,6 +9,21 @@ public enum MuseQuestionEvent: Sendable, Equatable {
     case status(String)
     /// The whole answer so far.
     case answer(String)
+    /// The answer ends on a choice for the wearer (a widget the Muse app draws as buttons).
+    case choice(MuseChoice)
+}
+
+/// Options Muse put to the wearer (its buttons, or list rows that send a message), and the
+/// question they answer when it can be told. Picking one sends its `reply` as the wearer's
+/// next message, as a tap does in the Muse app.
+public struct MuseChoice: Sendable, Equatable {
+    public let question: String?
+    public let options: [MuseWidget.Option]
+
+    public init(question: String?, options: [MuseWidget.Option]) {
+        self.question = question
+        self.options = options
+    }
 }
 
 /// Why a spoken question got no answer.
@@ -27,6 +42,11 @@ public protocol MuseVoiceConversation: Sendable {
     /// was done; false when `timeout` passed first.
     func ask(
         wav: Data, instructions: String, timeout: Duration,
+        onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
+    ) async throws -> Bool
+    /// Sends the wearer's typed (or picked) reply to the same chat, the same way.
+    func reply(
+        text: String, timeout: Duration,
         onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
     ) async throws -> Bool
     var isOpen: Bool { get async }
@@ -69,6 +89,24 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
         wav: Data, instructions: String, timeout: Duration,
         onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
     ) async throws -> Bool {
+        try await run(timeout: timeout, onEvent: onEvent) { session, chatID in
+            try await session.sendVoice(wav: wav, sessionID: chatID, message: instructions)
+        }
+    }
+
+    func reply(
+        text: String, timeout: Duration,
+        onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
+    ) async throws -> Bool {
+        try await run(timeout: timeout, onEvent: onEvent) { session, chatID in
+            try await session.sendChat(text, sessionID: chatID)
+        }
+    }
+
+    private func run(
+        timeout: Duration, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void,
+        send: (MuseLinkSession, String?) async throws -> MuseLinkSession.ChatAck
+    ) async throws -> Bool {
         let trace = self.trace
         let follower = VoiceTurnFollower(sessionID: chatID, onEvent: onEvent, trace: trace)
         var readers: [Task<Void, Never>] = []
@@ -98,8 +136,8 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
             trace?("chat opening: HTTP \(named?.status ?? 0)")
         }
 
-        let ack = try await session.sendVoice(wav: wav, sessionID: chatID, message: instructions)
-        trace?("voice note acknowledged: HTTP \(ack.status)")
+        let ack = try await send(session, chatID)
+        trace?("message acknowledged: HTTP \(ack.status)")
         guard ack.ok else { throw MuseQuestionFailure.refused(ack.status) }
         if !subscribed { follow(try await session.subscribeChat(sessionID: chatID)) }
         try await follower.acknowledge(ack.response)
@@ -124,6 +162,14 @@ actor VoiceTurnFollower {
     private var lastAnswer = ""
     private var lastStatus = ""
     private var lastHeard = ""
+    private var lastChoice: MuseChoice?
+    private var widgetShapes: Set<String> = []
+    private let sessionID: String?
+    /// Approvals already waiting when the turn began; nil before Muse's first snapshot.
+    private var knownApprovals: Set<String>?
+    /// This question's approvals still waiting for the person.
+    private var ownApprovals: Set<String> = []
+    private var approvalShapes = 0
     private let trace: (@Sendable (String) -> Void)?
     /// The first events' shapes, for the flight recorder (names and keys only).
     private var shapes: [String] = []
@@ -131,6 +177,7 @@ actor VoiceTurnFollower {
 
     init(sessionID: String?, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void, trace: (@Sendable (String) -> Void)? = nil) {
         turn = MuseTurn(sessionID: sessionID)
+        self.sessionID = sessionID
         self.onEvent = onEvent
         self.trace = trace
     }
@@ -143,11 +190,69 @@ actor VoiceTurnFollower {
     func feed(_ event: MuseJSON) async throws {
         eventCount += 1
         if shapes.count < 12 { shapes.append(MuseLinkSession.shape(event)) }
+        traceWidgets(event)
+        if event["event"]?.string == "approvals.snapshot" {
+            await noteApprovals(event)
+            return
+        }
         if Self.isUserMessage(event) {
             if acknowledged { await noteHeard(event) } else { heldUserMessages.append(event) }
             return
         }
         await emit(try turn.feed(event))
+    }
+
+    /// A widget's layout the first time it is seen, for the flight recorder (never its words):
+    /// Meta doesn't document widgets, and this is how a new kind gets read right.
+    private func traceWidgets(_ event: MuseJSON) {
+        // `presentations` (cards Muse shows on their own, outside the text) are only logged
+        // until their layout is known.
+        for key in ["widgets", "presentations"] {
+            guard let widgets = event["payload"]?[key], widgets != .null, widgets != .array([]), widgets != .object([:])
+            else { continue }
+            let shape = MuseWidget.shape(widgets)
+            guard widgetShapes.count < 6, widgetShapes.insert(key + shape).inserted else { continue }
+            let read = MuseWidget.collect(widgets).map {
+                "\($0.kind.map { MuseWidget.shape(.string($0), key: "type") } ?? "untyped"): \($0.options.count) option(s), "
+                    + "\($0.lines.count) line(s)\($0.title == nil ? "" : ", a title")"
+            }
+            trace?("\(key) \(String(shape.prefix(900))) read as \(read.isEmpty ? "nothing" : read.joined(separator: "; "))")
+        }
+    }
+
+    /// Muse waits for an OK before some steps (a purchase, a permission, a password, a sign-in),
+    /// shown in its app as an approval card. The watch says where to give it, and the question
+    /// stays open until it is answered, so what Muse does next still reaches the watch. An
+    /// approval is this question's when it names this chat or appears while it is being asked.
+    private func noteApprovals(_ event: MuseJSON) async {
+        let pending = event["payload"]?["pending_approvals"]?.array ?? []
+        if !pending.isEmpty, approvalShapes < 2 {
+            approvalShapes += 1
+            trace?("approvals pending: \(String(MuseWidget.shape(.array(pending)).prefix(900)))")
+        }
+        var ids: Set<String> = []
+        var onThisChat: Set<String> = []
+        for item in pending {
+            let id = ["id", "approval_id", "request_id"].lazy.compactMap { item[$0]?.string }.first ?? item.compactString()
+            ids.insert(id)
+            if let chat = sessionID,
+                ["session_id", "chat_id", "thread_id"].contains(where: { item[$0]?.string == chat || item["context"]?[$0]?.string == chat })
+            {
+                onThisChat.insert(id)
+            }
+        }
+        let appeared = knownApprovals.map { ids.subtracting($0) } ?? []
+        knownApprovals = (knownApprovals ?? []).union(ids)
+        let waiting = !ownApprovals.isEmpty
+        ownApprovals = ownApprovals.union(appeared).union(onThisChat).intersection(ids)
+        if ownApprovals.isEmpty, waiting {
+            trace?("the approval was answered")
+            lastStatus = ""
+        }
+        guard !ownApprovals.isEmpty, !waiting else { return }
+        trace?("Muse is waiting for an approval")
+        lastStatus = Self.waitingForOK
+        await onEvent(.status(Self.waitingForOK))
     }
 
     func acknowledge(_ response: MuseJSON?) async throws {
@@ -161,7 +266,8 @@ actor VoiceTurnFollower {
         await emit(held)
     }
 
-    func isComplete() -> Bool { turn.isAnswered() }
+    /// Muse has answered and isn't waiting on the person to approve something.
+    func isComplete() -> Bool { turn.isAnswered() && ownApprovals.isEmpty }
 
     private func emit(_ events: [MuseTurn.Event]) async {
         for event in events {
@@ -173,10 +279,23 @@ actor VoiceTurnFollower {
                 lastStatus = text
                 await onEvent(.status(text))
             case .reply:
-                let answer = turn.answerText
-                guard answer != lastAnswer else { continue }
-                lastAnswer = answer
-                await onEvent(.answer(answer))
+                let raw = turn.answerText
+                let widgets = turn.replies.flatMap(\.widgets)
+                let answer = MuseWidget.substitute(raw, widgets: widgets, elsewhere: Self.seeInMuse)
+                if answer != lastAnswer {
+                    lastAnswer = answer
+                    await onEvent(.answer(answer))
+                }
+                if let widget = widgets.last(where: \.isChoice) {
+                    // Buttons sit under the question they answer; a list names itself.
+                    let asked = MuseWidget.question(before: widget.id, in: raw)
+                    let choice = MuseChoice(
+                        question: widget.isOnlyOptionsWidget ? asked : (widget.title ?? asked), options: widget.options)
+                    if choice != lastChoice {
+                        lastChoice = choice
+                        await onEvent(.choice(choice))
+                    }
+                }
             case .taskFinished:
                 break
             }
@@ -201,6 +320,11 @@ actor VoiceTurnFollower {
         return event["payload"]?["role"]?.string == "user"
             && Self.messageEvents.contains(event["event"]?.string ?? "")
     }
+
+    /// What a widget the watch can't draw (a map, a chart, a card) says in its place.
+    static let seeInMuse = "See it in Muse on your phone"
+    /// Muse is waiting for the wearer to approve a step in its app.
+    static let waitingForOK = "Muse needs your OK on your phone"
 
     static let messageEvents: Set<String> = [
         "delta.message_start", "delta.text_append", "delta.message_done", "message.assistant",

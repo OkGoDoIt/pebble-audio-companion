@@ -27,6 +27,8 @@ public struct MuseTurn: Sendable {
         /// Proven to answer this request (its parent chain reaches it, or it is on the gadget's
         /// own chat), rather than merely carrying no parent on a shared chat.
         public var bound = false
+        /// The widgets the text places (`[[hatch_widget:<id>]]`), as their latest event had them.
+        public var widgets: [MuseWidget] = []
     }
 
     public enum Event: Sendable, Equatable {
@@ -45,6 +47,7 @@ public struct MuseTurn: Sendable {
     static let maxPendingEvents = 64
     static let maxTextBytes = 64 * 1024
     static let maxMessages = 32
+    static let maxWidgets = 16
     static let maxObservedIDs = 256
     static let maxIgnoredMessages = 256
     static let activityCodes: Set<String> = [
@@ -237,6 +240,13 @@ public struct MuseTurn: Sendable {
             let clean = Self.stripControls(delta)
             current.text += clean
             current.streamed += clean
+        }
+        for widget in MuseWidget.collect(payload["widgets"]) {
+            if let index = current.widgets.firstIndex(where: { $0.id == widget.id }) {
+                current.widgets[index] = widget
+            } else if current.widgets.count < Self.maxWidgets {
+                current.widgets.append(widget)
+            }
         }
         if name == "delta.message_done" || name == "message.assistant" {
             var completed = payload["display_text"]?.string

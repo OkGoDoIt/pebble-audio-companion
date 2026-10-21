@@ -61,6 +61,8 @@ object ProtocolConstants {
     const val CAPABILITY_WATCH_ACTIONS: UInt = 4u
     /** ASSISTANT_UPDATE AnswerRestart (kind 6) is understood (Section 4.4). */
     const val CAPABILITY_ANSWER_RESTART: UInt = 8u
+    /** A Heard update after Done starts a follow-up on the same screen (Section 4.4). */
+    const val CAPABILITY_FOLLOW_UP: UInt = 16u
 
     const val PTT_MAX_SECONDS: Int = 15
     const val ASSISTANT_TEXT_MAX_BYTES: Int = 180

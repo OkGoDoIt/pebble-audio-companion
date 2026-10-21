@@ -84,7 +84,6 @@ actor MuseTools {
 
     static let timerCommand = "watch.set_timer"
     static let alarmCommand = "watch.set_alarm"
-    static let choiceCommand = "watch.choose"
     static let musicCommand = "watch.music"
     static let quietTimeCommand = "watch.quiet_time"
     static let openAppCommand = "watch.open_app"
@@ -132,17 +131,6 @@ actor MuseTools {
                 ],
                 "optional": ["label": param("string", "What it is for, like \"Flight\".")],
                 "timeout_ms": 15_000,
-            ]
-        }
-        if actions.contains(.choice) {
-            c[choiceCommand] = [
-                "description": "Ask the user to pick one of 2 to 6 short options on their Pebble watch, when you need their decision to go on. Returns the option they picked, or that they declined or did not answer.",
-                "required": [
-                    "question": param("string", "The question, at most 120 characters."),
-                    "options": param("string", "The options, one per line, each at most 48 characters."),
-                ],
-                "optional": ["timeout_seconds": param("integer", "How long to wait for an answer, 10 to 300 seconds; 60 if not given.")],
-                "timeout_ms": 330_000,
             ]
         }
         if actions.contains(.music) {
@@ -269,16 +257,6 @@ actor MuseTools {
             else { return Self.error("hour must be 0-23 and minute 0-59") }
             let result = await watch.runWatchAction(.alarm(hour: hour, minute: minute, label: params["label"]?.string ?? ""), wait: .seconds(10))
             return Self.outcome(result) { _ in ["set": true, "time": .string(String(format: "%02d:%02d", hour, minute))] }
-        case Self.choiceCommand:
-            guard prefs.watchActions.contains(.choice) else { return Self.turnedOff }
-            let options = Self.options(params["options"])
-            guard let question = params["question"]?.string, !question.isEmpty,
-                (ProtocolConstants.watchActionMinOptions...ProtocolConstants.watchActionMaxOptions).contains(options.count)
-            else { return Self.error("a question and 2 to 6 options are needed") }
-            let timeout = min(max(Self.int(params["timeout_seconds"]) ?? 60, 10), 300)
-            await watch.showStatus("Waiting for your pick")
-            let result = await watch.runWatchAction(.choose(question: question, options: options, timeoutSeconds: timeout), wait: .seconds(timeout + 15))
-            return Self.choiceOutcome(result, options: options)
         case Self.musicCommand:
             guard prefs.watchActions.contains(.music) else { return Self.turnedOff }
             guard let action = Self.musicAction(params["action"]?.string) else {
@@ -657,42 +635,10 @@ actor MuseTools {
         }
     }
 
-    static func choiceOutcome(_ result: WatchActionResult?, options: [String]) -> MuseJSON {
-        guard let result else { return error("The watch didn't answer.") }
-        switch result.status {
-        case .done?:
-            guard options.indices.contains(result.value) else { return error("The watch sent back an option that wasn't offered.") }
-            return ["ok": true, "payload": ["chosen": .string(options[result.value]), "index": .number(Double(result.value))]]
-        case .declined?:
-            return ["ok": true, "payload": ["answered": false, "declined": true]]
-        case .timedOut?:
-            return ["ok": true, "payload": ["answered": false, "declined": false]]
-        case .unsupported?:
-            return error("The watch can't do this; its software may need updating.")
-        default:
-            return error("The watch couldn't do this.")
-        }
-    }
-
     static func int(_ value: MuseJSON?) -> Int? {
         if let number = value?.number { return Int(number.rounded()) }
         if let text = value?.string { return Int(text.trimmingCharacters(in: .whitespaces)) }
         return nil
-    }
-
-    /// Options as one per line (the registered form), or a JSON array if Muse sends one.
-    static func options(_ value: MuseJSON?) -> [String] {
-        let raw: [String]
-        if let array = value?.array {
-            raw = array.compactMap(\.string)
-        } else if let text = value?.string {
-            raw = text.contains("\n") ? text.components(separatedBy: "\n") : text.components(separatedBy: "|")
-        } else {
-            raw = []
-        }
-        return raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : $0 }
-            .filter { !$0.isEmpty }
     }
 
     static func musicAction(_ name: String?) -> WatchActionRequest.MusicCommand? {
@@ -753,7 +699,7 @@ actor MuseTools {
         return formatter
     }()
 
-    nonisolated(unsafe) static let dayFormatter: DateFormatter = {
+    static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current

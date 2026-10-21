@@ -24,6 +24,14 @@ struct WatchAnswerTextTests {
             """)
     }
 
+    @Test func aWidgetStillWaitingForItsContentsIsHeldThenDropped() {
+        let answer = "Tap your answer:\n\n[[hatch_widget:widget-1]]\n\nOr say it."
+        #expect(WatchAnswerText.render(answer, final: false) == "Tap your answer:")
+        #expect(WatchAnswerText.render(answer, final: true) == "Tap your answer:\n\nOr say it.")
+        // Half a placeholder on the last line holds from its first "[".
+        #expect(WatchAnswerText.render("Tap your answer: [[hatch_wid", final: false) == "Tap your answer: ")
+    }
+
     @Test func blankLinesCollapse() {
         #expect(WatchAnswerText.render("One.\n\n\n\nTwo.\n\n", final: true) == "One.\n\nTwo.")
     }

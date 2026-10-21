@@ -21,7 +21,8 @@ extension ReceiverService: MuseAssistantLink {}
 /// press this opens a link to Muse, so it is ready by the release; at the release the frames are
 /// decoded, brought to a level a recognizer can hear, and sent as one voice note. What Muse heard,
 /// what it is doing and its answer go back to the watch as they arrive. While it answers, Muse
-/// may set a timer or an alarm on the watch, or put a choice to the wearer.
+/// may set a timer or an alarm on the watch. An answer that ends on Muse's own buttons becomes a
+/// picker on the watch, and the pick goes back to Muse as the wearer's reply.
 public actor MusePushToTalk: MuseWatchSide {
     /// The last question, for the Muse screen: what Muse heard, and what was done to the audio.
     public struct QuestionReport: Equatable, Sendable {
@@ -82,6 +83,13 @@ public actor MusePushToTalk: MuseWatchSide {
     static let answerTimeout: Duration = .seconds(MuseTools.dataCallLimitSeconds + 60)
     /// A link to Muse stays open this long after an answer, for a follow-up.
     static let followUpWindow: Duration = .seconds(60)
+    /// How long the watch shows a choice Muse offered, and how many in a row it follows.
+    static let choiceSeconds = 120
+    static let maxChoiceRounds = 5
+    /// The picker's heading when Muse's answer names no question.
+    static let choiceQuestion = "Your answer"
+    /// Beside a single button: not picking it.
+    static let leaveIt = "Not now"
     /// Fewer frames than this (0.2 s) is not a question.
     static let minimumFrames = 10
     /// The watch keeps 1536 bytes of an answer; past that it shows an ellipsis.
@@ -107,6 +115,8 @@ public actor MusePushToTalk: MuseWatchSide {
         var answerText = ""
         var heard: String?
         var sentHeard = false
+        /// The choice the latest answer ends on, offered on the watch once it is done.
+        var choice: MuseChoice?
 
         init(serial: Int, id: Int, trigger: PttTrigger?) {
             self.serial = serial
@@ -238,7 +248,9 @@ public actor MusePushToTalk: MuseWatchSide {
     private func end(_ event: PttEvent) async {
         guard let current = turn, current.id == event.turn, !current.finished else { return }
         current.frameCount = event.frameCount
-        await answer(current)
+        // Answered on its own: the watch's next press, and its replies to what Muse puts to it,
+        // must reach here while Muse is still answering.
+        Task { await self.answer(current) }
     }
 
     // MARK: - Asking Muse
@@ -314,8 +326,73 @@ public actor MusePushToTalk: MuseWatchSide {
             log("question \(current.id): answered (\(current.answerText.utf8.count) bytes)\(done ? "" : ", cut off by the deadline")")
             send(turn: current.id, .done)
             report(current, seconds: level.durationSeconds, missing: missing, level: level, problem: nil)
+            await offerChoices(current)
         }
         scheduleIdleClose()
+    }
+
+    /// Muse ended its answer on a choice (a widget its app draws as buttons). The watch shows the
+    /// options as a picker; the one picked goes back to Muse as the wearer's reply, and Muse's
+    /// answer to it replaces the question on the watch. A reply can end on another choice.
+    private func offerChoices(_ current: Turn) async {
+        for _ in 0..<Self.maxChoiceRounds {
+            guard turn === current, let choice = current.choice else { return }
+            current.choice = nil
+            guard (link.watchCapabilities ?? 0) & ProtocolConstants.capabilityFollowUp != 0 else {
+                log("question \(current.id): Muse offered a choice; this watch can only show it as text")
+                return
+            }
+            var options = choice.options.map {
+                String(decoding: Self.cut($0.label, bytes: ProtocolConstants.watchActionOptionMaxBytes), as: UTF8.self)
+            }
+            guard (1...ProtocolConstants.watchActionMaxOptions).contains(options.count) else {
+                log("question \(current.id): Muse offered \(options.count) options; the watch shows them as text")
+                return
+            }
+            // One button alone ("Book it") gets a way to leave it be.
+            if options.count == 1 { options.append(Self.leaveIt) }
+            let question = String(
+                decoding: Self.cut(choice.question ?? Self.choiceQuestion, bytes: ProtocolConstants.watchActionQuestionMaxBytes), as: UTF8.self)
+            let result = await runWatchAction(
+                .choose(question: question, options: options, timeoutSeconds: Self.choiceSeconds), wait: .seconds(Self.choiceSeconds + 15))
+            guard turn === current, let result, result.status == .done, choice.options.indices.contains(result.value) else { return }
+            let picked = choice.options[result.value].reply
+            log("question \(current.id): option \(result.value + 1) of \(choice.options.count) picked; asking Muse")
+
+            current.finished = false
+            current.answerText = ""
+            current.sentAnswer = ""
+            current.heard = picked
+            current.sentHeard = true
+            send(turn: current.id, .heard, text: Self.cut(picked, bytes: ProtocolConstants.assistantTextMaxBytes))
+            let serial = current.serial
+            let done: Bool
+            do {
+                let conversation = try await readyConversation()
+                done = try await conversation.reply(text: picked, timeout: Self.answerTimeout) { [weak self] event in
+                    await self?.relay(event, serial: serial)
+                }
+            } catch {
+                log("question \(current.id): the reply to the choice failed: \(error)")
+                let broken = conversation
+                conversation = nil
+                await broken?.close()
+                guard turn === current else { return }
+                current.finished = true
+                send(turn: current.id, .error, detail: Self.assistantError(error).rawValue)
+                return
+            }
+            guard turn === current else { return }
+            sendAnswer(current, rendered: WatchAnswerText.render(current.answerText, final: true))
+            current.finished = true
+            guard !current.answerText.isEmpty else {
+                log("question \(current.id): no answer to the choice (\(done ? "Muse finished" : "timed out"))")
+                send(turn: current.id, .error, detail: AssistantError.noAnswer.rawValue)
+                return
+            }
+            log("question \(current.id): the choice was answered (\(current.answerText.utf8.count) bytes)")
+            send(turn: current.id, .done)
+        }
     }
 
     private func relay(_ event: MuseQuestionEvent, serial: Int) {
@@ -331,6 +408,8 @@ public actor MusePushToTalk: MuseWatchSide {
         case .answer(let text):
             current.answerText = text
             sendAnswer(current, rendered: WatchAnswerText.render(text, final: false))
+        case .choice(let choice):
+            current.choice = choice
         }
     }
 
@@ -454,7 +533,7 @@ public actor MusePushToTalk: MuseWatchSide {
                     switch event {
                     case .heard(let text): await heard.setHeard(text)
                     case .answer(let text): await heard.setAnswer(text)
-                    case .status: break
+                    case .status, .choice: break
                     }
                 }
             } catch {

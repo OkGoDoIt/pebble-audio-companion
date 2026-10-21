@@ -23,7 +23,6 @@ public enum MuseChatPlace: String, Equatable, Sendable, CaseIterable {
 public enum MuseWatchActionKind: String, Equatable, Sendable, CaseIterable {
     case timer
     case alarm
-    case choice
     case music
     case quietTime
     case launchApp

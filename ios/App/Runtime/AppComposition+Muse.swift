@@ -124,7 +124,6 @@ enum MuseComposition {
         switch kind {
         case .timer: return .timer
         case .alarm: return .alarm
-        case .choice: return .choice
         case .music: return .music
         case .quietTime: return .quietTime
         case .launchApp: return .openApp

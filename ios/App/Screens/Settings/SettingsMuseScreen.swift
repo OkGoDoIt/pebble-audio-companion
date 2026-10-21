@@ -464,7 +464,6 @@ struct SettingsMuseScreen: View {
             ListCard {
                 actionToggle(.timer, Copy.Muse.actionTimer)
                 actionToggle(.alarm, Copy.Muse.actionAlarm)
-                actionToggle(.choice, Copy.Muse.actionChoice)
                 actionToggle(.music, Copy.Muse.actionMusic)
                 actionToggle(.quietTime, Copy.Muse.actionQuietTime)
                 actionToggle(.launchApp, Copy.Muse.actionLaunchApp)

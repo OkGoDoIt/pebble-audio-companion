@@ -154,6 +154,88 @@ struct MusePushToTalkTests {
         #expect(await fx.waitUntil { fx.link.quietLink.last == false })
     }
 
+    // MARK: - Choices Muse offers
+
+    @Test func aChoiceMuseOffersIsPickedOnTheWatchAndAnsweredThere() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
+            | ProtocolConstants.capabilityFollowUp
+        await fx.start()
+        fx.muse.script = [
+            .answer("What is 2 times 7?\n\nA: 12\nB: 14\nC: 16"),
+            .choice(MuseChoice(question: "What is 2 times 7?", options: ["A: 12", "B: 14", "C: 16"].map { MuseWidget.Option($0) })),
+        ]
+        fx.muse.replyScript = [.heard("B: 14"), .answer("Right, **14**.")]
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
+        let actions = fx.link.actions()
+        #expect(WatchActionRequest.parse(actions.flatMap(\.payload))
+            == .choose(question: "What is 2 times 7?", options: ["A: 12", "B: 14", "C: 16"], timeoutSeconds: 120))
+
+        fx.link.push(.watchActionResult(WatchActionResult(actionId: actions[0].actionId, statusRaw: WatchActionStatus.done.rawValue, value: 1)))
+        #expect(await fx.waitUntil { fx.link.updates().filter { $0.kind == .done }.count == 2 })
+        #expect(fx.muse.replies == ["B: 14"])
+        #expect(fx.muse.notes.count == 1)
+        let updates = fx.link.updates()
+        let firstDone = try #require(updates.firstIndex { $0.kind == .done })
+        let followUp = updates[(firstDone + 1)...]
+        #expect(followUp.allSatisfy { $0.turn == 3 })
+        #expect(followUp.first?.kind == .heard)
+        #expect(String(decoding: followUp.first?.text ?? [], as: UTF8.self) == "B: 14")
+        #expect(followUp.filter { $0.kind == .heard }.count == 1)
+        let answer = followUp.filter { $0.kind == .answer }.flatMap(\.text)
+        #expect(String(decoding: answer, as: UTF8.self) == "Right, 14.")
+    }
+
+    @Test func aListRowSendsItsOwnMessageAndALoneButtonCanBeLeft() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityFollowUp
+        await fx.start()
+        fx.muse.script = [
+            .answer("Coffee near you"),
+            .choice(MuseChoice(question: "Coffee near you", options: [MuseWidget.Option("Blue Bottle", reply: "Tell me more about Blue Bottle")])),
+        ]
+        fx.muse.replyScript = [.answer("It opened in 2002.")]
+        try fx.ask(turn: 6, seconds: 1)
+        #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
+        let action = fx.link.actions()[0]
+        #expect(WatchActionRequest.parse(action.payload)
+            == .choose(question: "Coffee near you", options: ["Blue Bottle", "Not now"], timeoutSeconds: 120))
+        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, value: 0)))
+        #expect(await fx.waitUntil { fx.muse.replies == ["Tell me more about Blue Bottle"] })
+        #expect(await fx.waitUntil { fx.link.updates().filter { $0.kind == .done }.count == 2 })
+    }
+
+    @Test func aWatchThatCannotFollowUpKeepsTheChoiceAsText() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.muse.script = [
+            .answer("Tea or coffee?\n\nTea\nCoffee"),
+            .choice(MuseChoice(question: "Tea or coffee?", options: [MuseWidget.Option("Tea"), MuseWidget.Option("Coffee")])),
+        ]
+        try fx.ask(turn: 4, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fx.link.actions().isEmpty)
+        let answer = fx.link.updates().filter { $0.kind == .answer }.flatMap(\.text)
+        #expect(String(decoding: answer, as: UTF8.self) == "Tea or coffee?\n\nTea\nCoffee")
+    }
+
+    @Test func aChoiceSetAsideOnTheWatchAsksMuseNothing() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityFollowUp
+        await fx.start()
+        fx.muse.script = [.answer("Tea or coffee?"), .choice(MuseChoice(question: nil, options: [MuseWidget.Option("Tea"), MuseWidget.Option("Coffee")]))]
+        try fx.ask(turn: 5, seconds: 1)
+        #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
+        let action = fx.link.actions()[0]
+        #expect(WatchActionRequest.parse(action.payload) == .choose(question: "Your answer", options: ["Tea", "Coffee"], timeoutSeconds: 120))
+        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.declined.rawValue)))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fx.muse.replies.isEmpty)
+        #expect(fx.link.updates().filter { $0.kind == .heard }.isEmpty)
+    }
+
     // MARK: - Watch actions
 
     @Test func aTimerIsSetOnTheWatch() async throws {
@@ -169,48 +251,18 @@ struct MusePushToTalkTests {
         #expect(result["payload"]?["seconds"]?.number == 90)
     }
 
-    @Test func aChoiceComesBackAsTheOptionPicked() async throws {
-        let fx = PushToTalkFixture()
-        await fx.start()
-        let reply = Task {
-            await fx.service.runCommand(
-                MuseTools.choiceCommand,
-                ["question": "Which table?", "options": "Window\n- Bar\nPatio", "timeout_seconds": 30])
-        }
-        #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
-        let actions = fx.link.actions()
-        let joined = actions.flatMap(\.payload)
-        #expect(WatchActionRequest.parse(joined) == .choose(question: "Which table?", options: ["Window", "Bar", "Patio"], timeoutSeconds: 30))
-        fx.link.push(.watchActionResult(WatchActionResult(actionId: actions[0].actionId, statusRaw: WatchActionStatus.done.rawValue, value: 2)))
-        let result = await reply.value
-        #expect(result["payload"]?["chosen"]?.string == "Patio")
-    }
-
-    @Test func aDeclinedChoiceIsAnAnswerToo() async throws {
-        let fx = PushToTalkFixture()
-        await fx.start()
-        let reply = Task {
-            await fx.service.runCommand(MuseTools.choiceCommand, ["question": "Tea?", "options": ["Yes", "No"]])
-        }
-        #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
-        fx.link.push(.watchActionResult(WatchActionResult(actionId: fx.link.actions()[0].actionId, statusRaw: WatchActionStatus.declined.rawValue)))
-        let result = await reply.value
-        #expect(result["ok"]?.bool == true)
-        #expect(result["payload"]?["declined"]?.bool == true)
-    }
-
     @Test func anActionTurnedOffIsRefusedWithoutTouchingTheWatch() async {
         let fx = PushToTalkFixture()
-        fx.preferences.update { $0.watchActions = [.choice] }
+        fx.preferences.update { $0.watchActions = [.timer] }
         await fx.start()
         let result = await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 7, "minute": 30])
         #expect(result["ok"]?.bool == false)
         #expect(fx.link.actions().isEmpty)
         // And it was never offered to Muse.
         let offered = MuseTools.commands(
-            for: MusePreferences(watchActions: [.choice], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
+            for: MusePreferences(watchActions: [.timer], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true)
-        #expect(offered.object?.keys.sorted() == [MuseTools.choiceCommand])
+        #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand])
     }
 
     @Test func badParametersAreRefused() async {
@@ -218,8 +270,8 @@ struct MusePushToTalkTests {
         await fx.start()
         let result = await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 0])
         #expect(result["ok"]?.bool == false)
-        let choice = await fx.service.runCommand(MuseTools.choiceCommand, ["question": "Pick", "options": "Only one"])
-        #expect(choice["ok"]?.bool == false)
+        let alarm = await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 25, "minute": 0])
+        #expect(alarm["ok"]?.bool == false)
         #expect(fx.link.actions().isEmpty)
     }
 }
@@ -360,7 +412,9 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     private let lock = NSLock()
     private let paired: Bool
     private var _script: [MuseQuestionEvent] = []
+    private var _replyScript: [MuseQuestionEvent] = []
     private var _notes: [Data] = []
+    private var _replies: [String] = []
     private var _opens = 0
     private var _openFailure: MuseQuestionFailure?
 
@@ -371,7 +425,12 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         get { lock.withLock { _script } }
         set { lock.withLock { _script = newValue } }
     }
+    var replyScript: [MuseQuestionEvent] {
+        get { lock.withLock { _replyScript } }
+        set { lock.withLock { _replyScript = newValue } }
+    }
     var notes: [Data] { lock.withLock { _notes } }
+    var replies: [String] { lock.withLock { _replies } }
     var opens: Int { lock.withLock { _opens } }
     var openFailure: MuseQuestionFailure? {
         get { lock.withLock { _openFailure } }
@@ -393,6 +452,13 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         }
     }
 
+    fileprivate func took(reply text: String) -> [MuseQuestionEvent] {
+        lock.withLock {
+            _replies.append(text)
+            return _replyScript
+        }
+    }
+
     private final class Conversation: MuseVoiceConversation, @unchecked Sendable {
         let muse: FakeMuse
         init(muse: FakeMuse) { self.muse = muse }
@@ -403,6 +469,12 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
             onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
         ) async throws -> Bool {
             for event in muse.took(wav) { await onEvent(event) }
+            return true
+        }
+        func reply(
+            text: String, timeout: Duration, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
+        ) async throws -> Bool {
+            for event in muse.took(reply: text) { await onEvent(event) }
             return true
         }
     }
@@ -601,7 +673,7 @@ struct MuseToolsTests {
 
     @Test func everyCommandIsOfferedOnlyWhileItsSwitchAllows() {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
-        #expect(all.count == 13)
+        #expect(all.count == 12)
         let none = MuseTools.commands(
             for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]

@@ -9,9 +9,21 @@ import Foundation
 /// rule here only deletes characters or swaps ones that are already settled, and a tail that could
 /// still turn into Markdown (an open link, a lone `-` that may be a bullet) is held back until it
 /// is complete or the answer is.
+///
+/// A widget Muse places (`[[hatch_widget:<id>]]`) arrives here already replaced by its words
+/// when its contents came with it; one still waiting for them holds back everything after it,
+/// and at the end it goes.
 enum WatchAnswerText {
+    static let widgetMarker = "[[hatch_"
+
     static func render(_ markdown: String, final: Bool) -> String {
-        var lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var text = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+        if final {
+            text = removingWidgetMarkers(text)
+        } else if let marker = text.range(of: widgetMarker) {
+            text = String(text[..<marker.lowerBound])
+        }
+        var lines = text.components(separatedBy: "\n")
         if !final, let last = lines.last {
             lines[lines.count - 1] = splitUnsettled(last).0
         }
@@ -38,8 +50,9 @@ enum WatchAnswerText {
         if trimmed.count <= 2, let first = trimmed.first, "-*+#0123456789".contains(first) {
             return ("", line)
         }
-        // An open link: hold from its "[" until the ")" arrives.
-        if let open = line.lastIndex(of: "[") {
+        // An open link, or a widget's "[[": hold from its first "[" until the ")" arrives.
+        if var open = line.lastIndex(of: "[") {
+            while open > line.startIndex, line[line.index(before: open)] == "[" { open = line.index(before: open) }
             let tail = line[open...]
             if !tail.contains(")") { return (String(line[..<open]), String(tail)) }
         }
@@ -49,6 +62,18 @@ enum WatchAnswerText {
             return (String(line.dropLast(marks)), String(line.suffix(marks)))
         }
         return (line, "")
+    }
+
+    /// `[[hatch_…:…]]` markers taken out; the line they stood on keeps its other words.
+    static func removingWidgetMarkers(_ text: String) -> String {
+        var out = ""
+        var rest = Substring(text)
+        while let open = rest.range(of: widgetMarker) {
+            out += rest[..<open.lowerBound]
+            guard let close = rest[open.upperBound...].range(of: "]]") else { return out }
+            rest = rest[close.upperBound...]
+        }
+        return out + rest
     }
 
     static func renderLine(_ raw: String) -> String {

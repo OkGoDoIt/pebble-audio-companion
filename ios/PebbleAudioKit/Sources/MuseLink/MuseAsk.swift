@@ -153,5 +153,7 @@ private actor TurnBox {
 
     func isComplete() -> Bool { turn.isAnswered() }
 
-    func answerText() -> String { turn.answerText }
+    func answerText() -> String {
+        MuseWidget.removingPlaceholders(MuseWidget.substitute(turn.answerText, widgets: turn.replies.flatMap(\.widgets)))
+    }
 }
