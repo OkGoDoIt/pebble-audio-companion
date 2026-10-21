@@ -82,12 +82,16 @@ public actor MusePushToTalk: MuseWatchSide {
         "This is a test recording. Reply with exactly the words spoken in it, and nothing else."
 
     /// What Muse is told with every question. Not the person's words: how to answer them.
+    /// The recording comes from a small wrist microphone, so Muse is told to answer what was most
+    /// likely meant: taken literally, a misheard word sent it off on the wrong question.
     static let instructions =
-        "Asked on a Pebble watch. Your reply is read as plain text on the watch's small screen: "
-        + "answer in a few short sentences, without tables, images or links."
-    /// The longest Muse may take over an answer: room for a data call held open while the person
-    /// answers (`MuseTools.holdLimitSeconds`) and the answer after it.
-    static let answerTimeout: Duration = .seconds(MuseTools.dataCallLimitSeconds + 60)
+        "Asked out loud on a Pebble watch. The recording is from a small wrist microphone and may be "
+        + "quiet or unclear: answer what I most likely meant rather than taking odd words literally, "
+        + "and ask if you really can't tell. Your reply is read as plain text on the watch's small "
+        + "screen: answer in a few short sentences, without tables, images or links."
+    /// The longest Muse may take over an answer: room for a call Muse makes (it ends one at about
+    /// two minutes) and the answer after it, or for the person to approve a step on their phone.
+    static let answerTimeout: Duration = .seconds(240)
     /// A link to Muse stays open this long after an answer, for a follow-up.
     static let followUpWindow: Duration = .seconds(60)
     /// How long the watch shows a choice Muse offered, and how many in a row it follows.

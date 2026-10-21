@@ -67,7 +67,10 @@ public protocol MuseVoiceConnector: Sendable {
 /// One voice question at a time over a `MuseLinkSession`.
 actor LiveMuseVoiceConversation: MuseVoiceConversation {
     /// The first message of the watch's own chat, which Muse names the chat from.
-    static let chatOpening = "Pebble watch: this chat is for the questions I ask out loud on my Pebble watch."
+    static let chatOpening =
+        "Pebble watch: this chat is for the questions I ask out loud on my Pebble watch. Its microphone "
+        + "is small, so a recording can be quiet or unclear: work out what I most likely meant rather "
+        + "than taking odd words literally, and ask if you really can't tell."
 
     private let session: MuseLinkSession
     private let chatID: String?
