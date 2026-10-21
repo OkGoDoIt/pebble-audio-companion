@@ -74,9 +74,16 @@ extension Copy {
         // What goes where: the privacy model's D7 sentences (docs/privacy-model.md), word for
         // word, until the model's own function supplies them.
         static let whatGoesHeader = "What goes to Meta"
-        static let questionsLine =
-            "The questions you ask Muse go to Meta: typed ones as text, spoken ones as a short "
-            + "recording. Its answers come back as text. Nothing goes while you aren't asking."
+        /// D7, the sentence the Privacy screen shows (PrivacyModel), so the two always match:
+        /// while Muse stays connected to message the watch, it says so instead of "Nothing goes
+        /// while you aren't asking".
+        static func questionsLine(staysConnected: Bool) -> String {
+            let spoken = MuseGadgetService.asksFromWatch
+            if staysConnected {
+                return spoken ? PrivacyModel.museSentenceConnected : PrivacyModel.museSentenceTypedConnected
+            }
+            return spoken ? PrivacyModel.museSentence : PrivacyModel.museSentenceTyped
+        }
         static let trainingLine =
             "Meta may use your questions to improve its AI. You can turn that off in the Muse app."
 
