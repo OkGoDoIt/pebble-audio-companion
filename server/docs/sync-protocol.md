@@ -357,7 +357,11 @@ with its request and its file, and asking for that span again asks the phone aga
     period ends before the window, follow-ups whose source time is before it, and clip files.
   - "Dated" means a conversation's `startedAt`, a recap's day, a brief's `endDay`, a follow-up's
     `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`), a transcript's
-    conversation (else its first item). A day is inside
+    conversation (else its first item). A transcript the server holds without its conversation is
+    therefore kept while its first item is inside the window, even when its conversation (which
+    the server ignored as outside) started before it: every word in it is inside the window, no
+    tool shows it without its conversation, and the sweep removes it once its first item falls
+    out. A day is inside
     when it is on or after the logical day the window's start falls on. Widening the window does
     not bring anything back by itself; the phone re-sends what now falls inside it (it watches
     for a widened scope and marks those items pending). The server forgets the versions of what it
