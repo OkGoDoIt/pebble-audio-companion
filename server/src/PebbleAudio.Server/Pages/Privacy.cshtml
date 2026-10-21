@@ -2,11 +2,11 @@
 @model PebbleAudio.Server.Pages.PrivacyModel
 @{
 	ViewData["Title"] = "Privacy";
+	ViewData["Bare"] = true;
 }
-<header class="page-header">
-	<h1>Privacy</h1>
+<div class="legal">
+	<h1 class="screen-title">Privacy</h1>
 	<p class="lede">This server keeps one person's Pebble Audio archive so the assistants they choose can read it.</p>
-</header>
 
 <section class="card" aria-labelledby="holds-heading">
 	<h2 id="holds-heading">What it holds</h2>
@@ -28,4 +28,5 @@
 	<p>Like any website, the server logs requests, with IP addresses, to keep it running.</p>
 </section>
 
-<p class="footnote">Questions: <a href="https://github.com/OkGoDoIt/pebble-audio-companion/issues">github.com/OkGoDoIt/pebble-audio-companion/issues</a></p>
+<p class="footer">Questions: <a href="https://github.com/OkGoDoIt/pebble-audio-companion/issues">github.com/OkGoDoIt/pebble-audio-companion/issues</a></p>
+</div>

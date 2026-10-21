@@ -1,0 +1,19 @@
+@* The site's navigation and account actions (round-3 06b's sidebar): the sidebar on a computer, and on a phone (and
+   in the viewer's bar) a menu opened by its button. ViewData["Section"] names the page's own row. *@
+@{
+	var section = ViewData["Section"] as string;
+	string? Current(string name) => section == name ? "page" : null;
+}
+<div class="site-menu" id="site-menu" popover>
+	<nav class="site-nav" aria-label="Pebble Audio">
+		<a class="nav" href="/" aria-current="@Current("conversations")">@SiteIcons.Conversations<span>Conversations</span></a>
+		<a class="nav" href="/access" aria-current="@Current("who")">@SiteIcons.Key<span>Who can read</span></a>
+		<a class="nav" href="/connect" aria-current="@Current("connect")">@SiteIcons.Plus<span>Connect an app</span></a>
+		<a class="nav" href="/phones" aria-current="@Current("phones")">@SiteIcons.Camera<span>Link a phone</span></a>
+		<a class="nav" href="/settings" aria-current="@Current("settings")">@SiteIcons.Gear<span>Settings</span></a>
+	</nav>
+	<div class="site-account">
+		<p class="who-signed">Signed in with your passkey</p>
+		<form method="post" asp-page="/Admin/Logout" class="signout"><button type="submit" class="signout-btn">Sign Out</button></form>
+	</div>
+</div>

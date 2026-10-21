@@ -2,10 +2,11 @@
 @model PebbleAudio.Server.Pages.ErrorModel
 @{
 	ViewData["Title"] = "Something went wrong";
+	ViewData["Bare"] = true;
 }
-<section class="auth">
-	<div class="card auth-card">
-		<h1>Something went wrong</h1>
+<div class="auth">
+	<div class="card">
+		<h1 class="screen-title">Something went wrong</h1>
 		<p class="lede">Try again in a moment.</p>
 	</div>
-</section>
+</div>
