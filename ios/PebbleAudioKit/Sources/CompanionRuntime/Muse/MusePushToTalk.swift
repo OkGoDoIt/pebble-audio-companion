@@ -34,10 +34,15 @@ public actor MusePushToTalk: MuseWatchSide {
         public var heard: String?
         public var answered: Bool
         public var problem: AssistantError?
+        /// Muse's answer, as the watch showed it.
+        public var answer: String?
+        /// What Muse asked of the watch or the phone while answering, in order.
+        public var tools: [MuseToolUse]
 
         public init(
             askedAt: Date, seconds: Double, missingFrames: Int, level: VoiceNoteLevel.Report?,
-            heard: String?, answered: Bool, problem: AssistantError?
+            heard: String?, answered: Bool, problem: AssistantError?, answer: String? = nil,
+            tools: [MuseToolUse] = []
         ) {
             self.askedAt = askedAt
             self.seconds = seconds
@@ -46,6 +51,8 @@ public actor MusePushToTalk: MuseWatchSide {
             self.heard = heard
             self.answered = answered
             self.problem = problem
+            self.answer = answer
+            self.tools = tools
         }
     }
 
@@ -119,6 +126,8 @@ public actor MusePushToTalk: MuseWatchSide {
         var choice: MuseChoice?
         /// Muse's reaction to what was asked, shown after it on the watch.
         var reaction: String?
+        /// What Muse asked of the watch or the phone while answering.
+        var tools: [MuseToolUse] = []
 
         init(serial: Int, id: Int, trigger: PttTrigger?) {
             self.serial = serial
@@ -464,9 +473,11 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func report(_ current: Turn, seconds: Double, missing: Int, level: VoiceNoteLevel.Report?, problem: AssistantError?) {
+        let answer = WatchAnswerText.render(current.answerText, final: true)
         lastQuestion.value = QuestionReport(
             askedAt: current.startedAt, seconds: seconds, missingFrames: missing, level: level,
-            heard: current.heard, answered: problem == nil, problem: problem)
+            heard: current.heard, answered: problem == nil, problem: problem,
+            answer: answer.isEmpty ? nil : answer, tools: current.tools)
     }
 
     /// The open link, or a new one.
@@ -634,7 +645,21 @@ public actor MusePushToTalk: MuseWatchSide {
     func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
         commandsInFlight += 1
         defer { commandsInFlight -= 1 }
-        return await tools.run(command, params, watch: self)
+        let asking = turn
+        let result = await tools.run(command, params, watch: self)
+        let use = MuseToolUse(command: command, outcome: MuseTools.outcome(of: result))
+        log("tools: \(command) \(Self.describe(use.outcome))")
+        if let asking, !asking.finished || turn === asking { asking.tools.append(use) }
+        return result
+    }
+
+    static func describe(_ outcome: MuseToolUse.Outcome) -> String {
+        switch outcome {
+        case .done: return "done"
+        case .declined: return "declined"
+        case .unanswered: return "not answered"
+        case .failed: return "failed"
+        }
     }
 
     /// Sends one watch action and waits up to `wait` for how it ended; nil when the watch never

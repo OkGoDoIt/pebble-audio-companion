@@ -178,6 +178,8 @@ actor VoiceTurnFollower {
     /// The first events' shapes, for the flight recorder (names and keys only).
     private var shapes: [String] = []
     private var eventCount = 0
+    /// How many of each event the turn saw, by name, for the flight recorder.
+    private var eventNames: [String: Int] = [:]
 
     init(sessionID: String?, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void, trace: (@Sendable (String) -> Void)? = nil) {
         turn = MuseTurn(sessionID: sessionID)
@@ -190,12 +192,16 @@ actor VoiceTurnFollower {
     func summarize() {
         let markers = WatchAnswerText.markerNames(turn.answerText)
         if !markers.isEmpty { trace?("markers in the answer: \(markers.joined(separator: ", "))") }
+        trace?("events: " + eventNames.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
         trace?("turn saw \(eventCount) event(s), \(turn.replies.count) reply(ies), answer \(turn.answerText.count) chars, complete \(turn.isComplete()); first: \(shapes.joined(separator: " "))")
     }
 
     func feed(_ event: MuseJSON) async throws {
         eventCount += 1
         if shapes.count < 12 { shapes.append(MuseLinkSession.shape(event)) }
+        if let name = event["event"]?.string, eventNames.count < 64 || eventNames[name] != nil {
+            eventNames[String(name.prefix(48)), default: 0] += 1
+        }
         traceWidgets(event)
         if event["event"]?.string == "approvals.snapshot" {
             await noteApprovals(event)
@@ -219,6 +225,12 @@ actor VoiceTurnFollower {
     private func traceWidgets(_ event: MuseJSON) {
         // `presentations` (cards Muse shows on their own, outside the text) are only logged
         // until their layout is known.
+        // A card Muse shows on its own (`delta.presentation`): its layout, until it is read.
+        if event["event"]?.string == "delta.presentation", let payload = event["payload"],
+            widgetShapes.count < 6, widgetShapes.insert("presentation" + MuseWidget.shape(payload)).inserted
+        {
+            trace?("delta.presentation \(String(MuseWidget.shape(payload).prefix(900)))")
+        }
         for key in ["widgets", "presentations"] {
             guard let widgets = event["payload"]?[key], widgets != .null, widgets != .array([]), widgets != .object([:])
             else { continue }

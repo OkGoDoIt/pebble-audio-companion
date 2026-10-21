@@ -18,6 +18,7 @@ struct SettingsMuseScreen: View {
     @State private var confirmForget = false
     @State private var question = ""
     @State private var tokenText = ""
+    @State private var answerExpanded = false
     @FocusState private var askFocused: Bool
 
     /// Where Muse developers make SDK tokens.
@@ -362,6 +363,32 @@ struct SettingsMuseScreen: View {
                     .font(AppFont.subBody)
                     .foregroundStyle(Tokens.secondaryBody)
             }
+            if let answer = last.answer {
+                Text(answer)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .lineLimit(answerExpanded ? nil : 6)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if answer.count > 280 {
+                    Button(answerExpanded ? Copy.Muse.showLess : Copy.Muse.showAll) {
+                        answerExpanded.toggle()
+                    }
+                    .font(AppFont.footnote)
+                }
+                Spacer().frame(height: 4)
+            }
+            // What Muse asked of the watch or this phone, and how each ended.
+            ForEach(Array(last.tools.enumerated()), id: \.offset) { _, use in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    StatusDot(color: toolColor(use.outcome), size: .status)
+                    Text(Copy.Muse.toolUse(use))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.secondaryBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+            }
             HStack(spacing: 6) {
                 StatusDot(color: last.answered ? Tokens.good : Tokens.attention, size: .status)
                 Text(last.problem.map(Copy.Muse.lastQuestionProblem) ?? Copy.Muse.answered)
@@ -369,6 +396,14 @@ struct SettingsMuseScreen: View {
                     .foregroundStyle(Tokens.secondaryBody)
             }
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func toolColor(_ outcome: MuseToolUse.Outcome) -> Color {
+        switch outcome {
+        case .done: return Tokens.good
+        case .declined: return Tokens.meta
+        case .unanswered, .failed: return Tokens.attention
         }
     }
 
@@ -889,7 +924,18 @@ final class MuseScreenModel {
                 lastQuestion = MusePushToTalk.QuestionReport(
                     askedAt: Date().addingTimeInterval(-95), seconds: 2.4, missingFrames: 0,
                     level: nil, heard: "what's the weather in Austin this afternoon", answered: true,
-                    problem: nil)
+                    problem: nil, answer: "Sunny and 72°F this afternoon, with a light breeze from the south.")
+            case "tools":
+                pairedName = name
+                lastQuestion = MusePushToTalk.QuestionReport(
+                    askedAt: Date().addingTimeInterval(-180), seconds: 3.1, missingFrames: 0,
+                    level: nil, heard: "Can you tell me how far I walked yesterday?", answered: true,
+                    problem: nil,
+                    answer: "I couldn't get it: the read from your Pebble watch timed out. Want me to try again?",
+                    tools: [
+                        MuseToolUse(command: "calendar", outcome: .declined),
+                        MuseToolUse(command: "health.read", outcome: .failed("The watch didn't answer.")),
+                    ])
             default: pairedName = name
             }
         }

@@ -97,11 +97,13 @@ actor MuseTools {
 
     /// The most transcript text one call sends to Meta.
     static let conversationCharacters = 6_000
-    /// Muse's own limit for a data call: the `timeout_ms` registered for it.
-    static let dataCallLimitSeconds = 180
+    /// Muse's own limit for a data call, registered as its `timeout_ms`. Muse ends any call at
+    /// about two minutes whatever is registered: a 180 s registration timed out at 125 s on
+    /// 2026-10-21 (`node_invoke_timeout`).
+    static let dataCallLimitSeconds = 120
     /// How long a call is held open waiting for the person (the watch prompt, or iOS's prompt
     /// after "Open Pebble Audio…"): a little under Muse's limit, so the reply still reaches it.
-    static let holdLimitSeconds = 170
+    static let holdLimitSeconds = 110
 
     // MARK: - What Muse is told
 
@@ -614,7 +616,19 @@ actor MuseTools {
 
     static func error(_ message: String) -> MuseJSON { ["ok": false, "error": .string(message)] }
 
-
+    /// How a call ended, read from its reply, for the Muse screen.
+    static func outcome(of result: MuseJSON) -> MuseToolUse.Outcome {
+        if result["ok"]?.bool == true { return .done }
+        let message = result["error"]?.string ?? ""
+        if message == turnedOff["error"]?.string { return .declined }
+        for source in MuseSource.allCases {
+            if [Refusal.notAllowed, .notNow, .phoneRefused].contains(where: { reply($0, source)["error"]?.string == message }) {
+                return .declined
+            }
+        }
+        if message == reply(.notAnswered, .health)["error"]?.string { return .unanswered }
+        return .failed(message)
+    }
 
     static func sourceName(_ source: MuseSource) -> String {
         switch source {
@@ -733,5 +747,27 @@ actor MuseTools {
         if let end = conversation.end { entry["end"] = .string(isoFormatter.string(from: end)) }
         if let title = conversation.title, !title.isEmpty { entry["title"] = .string(title) }
         return .object(entry)
+    }
+}
+
+/// A request Muse made of the watch or the phone while answering a question, and how it ended,
+/// for the Muse screen: its command, never what it carried.
+public struct MuseToolUse: Equatable, Sendable {
+    public enum Outcome: Equatable, Sendable {
+        case done
+        /// The person said no, or has it turned off.
+        case declined
+        /// The watch asked and the person didn't answer in time.
+        case unanswered
+        /// It couldn't be done; the words say why.
+        case failed(String)
+    }
+
+    public let command: String
+    public let outcome: Outcome
+
+    public init(command: String, outcome: Outcome) {
+        self.command = command
+        self.outcome = outcome
     }
 }

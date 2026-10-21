@@ -1,3 +1,4 @@
+import CompanionRuntime
 import Foundation
 import WireProtocol
 
@@ -89,6 +90,40 @@ extension Copy {
         static func heard(_ text: String) -> String { "\u{201C}\(text)\u{201D}" }
         static let heardNothing = "Muse didn't catch the words."
         static let answered = "Answered on your watch"
+        static let showAll = "Show All"
+        static let showLess = "Show Less"
+        /// One request Muse made while answering: what, then how it ended.
+        static func toolUse(_ use: MuseToolUse) -> String {
+            let what = toolName(use.command)
+            switch use.outcome {
+            case .done: return "\(what): done"
+            case .declined: return "\(what): not allowed"
+            case .unanswered: return "\(what): no answer on your watch"
+            case .failed(let why):
+                // The reason was written for Muse as a sentence; here it follows a colon.
+                var reason = why.trimmingCharacters(in: .whitespaces)
+                if reason.hasSuffix(".") { reason.removeLast() }
+                guard let first = reason.first else { return "\(what): didn't work" }
+                return "\(what): \(first.lowercased())\(reason.dropFirst())"
+            }
+        }
+        static func toolName(_ command: String) -> String {
+            switch command {
+            case "health.read": return "Health"
+            case "calendar": return "Calendar"
+            case "reminders": return "Reminders"
+            case "conversations": return "Your conversations"
+            case "followups": return "Follow-ups"
+            case "watch.set_timer": return "Timer"
+            case "watch.set_alarm": return "Alarm"
+            case "watch.music": return "Music"
+            case "watch.quiet_time": return "Quiet Time"
+            case "watch.open_app": return "Open a watch app"
+            case "watch.find": return "Find your watch"
+            case "recording": return "Recording"
+            default: return command
+            }
+        }
         static func lastQuestionProblem(_ error: AssistantError) -> String {
             switch error {
             case .notSetUp: return "Muse needs setting up again"

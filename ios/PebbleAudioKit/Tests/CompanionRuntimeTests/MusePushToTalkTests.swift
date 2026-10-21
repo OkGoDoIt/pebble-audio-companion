@@ -249,6 +249,32 @@ struct MusePushToTalkTests {
         #expect(fx.link.updates().filter { $0.kind == .heard }.isEmpty)
     }
 
+    @Test func museCanUseTheWatchWhileItAnswers() async throws {
+        // Until 2026-10-21 the answer held the watch's messages back until it finished, so a
+        // result the watch sent mid-answer waited behind the answer that was waiting for it.
+        let fx = PushToTalkFixture()
+        fx.preferences.update { $0.dataAccess[.health] = .allowed }
+        await fx.start()
+        fx.muse.toolCall = (MuseTools.healthCommand, ["metric": "distance", "days": 2])
+        fx.muse.script = [.answer("You walked 4.2 km yesterday.")]
+        try fx.ask(turn: 9, seconds: 1)
+        let action = try #require(await fx.answerNextAction(status: .done, text: "3100,4200"))
+        #expect(WatchActionRequest.parse(action.payload) == .health(.distanceMeters, days: 2))
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        #expect(fx.muse.toolResults.first?["ok"]?.bool == true)
+        let report = try #require(fx.service.lastQuestion.value)
+        #expect(report.tools == [MuseToolUse(command: MuseTools.healthCommand, outcome: .done)])
+        #expect(report.answer == "You walked 4.2 km yesterday.")
+    }
+
+    @Test func eachCallsOutcomeIsReadFromItsReply() {
+        #expect(MuseTools.outcome(of: ["ok": true, "payload": [:]]) == .done)
+        #expect(MuseTools.outcome(of: MuseTools.turnedOff) == .declined)
+        #expect(MuseTools.outcome(of: MuseTools.reply(.notNow, .calendar)) == .declined)
+        #expect(MuseTools.outcome(of: MuseTools.reply(.notAnswered, .health)) == .unanswered)
+        #expect(MuseTools.outcome(of: MuseTools.error("The watch didn't answer.")) == .failed("The watch didn't answer."))
+    }
+
     // MARK: - Watch actions
 
     @Test func aTimerIsSetOnTheWatch() async throws {
@@ -426,6 +452,9 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     private let paired: Bool
     private var _script: [MuseQuestionEvent] = []
     private var _replyScript: [MuseQuestionEvent] = []
+    private var _toolCall: (String, MuseJSON)?
+    private var _toolResults: [MuseJSON] = []
+    private var handler: MuseLinkSession.CommandHandler?
     private var _notes: [Data] = []
     private var _replies: [String] = []
     private var _opens = 0
@@ -444,6 +473,12 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     }
     var notes: [Data] { lock.withLock { _notes } }
     var replies: [String] { lock.withLock { _replies } }
+    /// A call Muse makes in the middle of answering, before its scripted events.
+    var toolCall: (String, MuseJSON)? {
+        get { lock.withLock { _toolCall } }
+        set { lock.withLock { _toolCall = newValue } }
+    }
+    var toolResults: [MuseJSON] { lock.withLock { _toolResults } }
     var opens: Int { lock.withLock { _opens } }
     var openFailure: MuseQuestionFailure? {
         get { lock.withLock { _openFailure } }
@@ -454,8 +489,19 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         chatID: String?, commands: MuseJSON, handler: @escaping MuseLinkSession.CommandHandler
     ) async throws(MuseQuestionFailure) -> any MuseVoiceConversation {
         if let failure = openFailure { throw failure }
-        lock.withLock { _opens += 1 }
+        lock.withLock {
+            _opens += 1
+            self.handler = handler
+        }
         return Conversation(muse: self)
+    }
+
+    /// Runs the scripted call through the gadget's handler, as Muse would mid-answer.
+    fileprivate func callTool() async {
+        let (call, handler) = lock.withLock { (_toolCall, self.handler) }
+        guard let call, let handler else { return }
+        let result = await handler(call.0, call.1, nil)
+        lock.withLock { _toolResults.append(result) }
     }
 
     fileprivate func took(_ wav: Data) -> [MuseQuestionEvent] {
@@ -481,6 +527,7 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
             wav: Data, instructions: String, timeout: Duration,
             onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
         ) async throws -> Bool {
+            await muse.callTool()
             for event in muse.took(wav) { await onEvent(event) }
             return true
         }
