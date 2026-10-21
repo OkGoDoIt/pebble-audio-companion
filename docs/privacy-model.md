@@ -47,9 +47,13 @@ muse.ai/privacy; nothing has run on a device yet):
   user agent. The app keeps no copy of questions or answers; Diagnostics records connection steps,
   never question or answer text, never tokens. Whether questions appear in the Muse app's chat
   history is unverified; the model says only "go to Meta".
-- **Paired but idle: nothing reaches Meta.** No background connection, no registration, no token
-  refresh; tokens rotate only when a question is asked. Meta knows the device exists (it is listed
-  in the person's Muse devices).
+- **Paired but idle.** With "Muse's own messages" off: nothing reaches Meta; no background
+  connection, no registration, no token refresh; tokens rotate only when a question is asked.
+  With it on (the default since 2026-10-21, so messages Muse starts and late answers reach the
+  watch): the phone keeps a connection to Meta open while Muse is set up. Meta then sees when the
+  phone is online and its IP address; nothing the person says, records, or keeps goes over it
+  unless they ask. Either way Meta knows the device exists (it is listed in the person's Muse
+  devices).
 - **Secrets** live in this phone's Keychain (`dev.audiocompanion.muse`, after first unlock, not
   iCloud-synced, included in encrypted backups). Forget Muse deletes the tokens and username and
   keeps the node id. Delete All Recordings does not unpair Muse (pairing is a connection, not
@@ -109,6 +113,7 @@ struct MuseState: Equatable {
     var spokenQuestions: Bool                        // = MuseGadgetService.asksFromWatch; D7 then names spoken questions
     var watchActions: Set<MuseWatchAction>           // D7b, the actions switched on
     var dataSources: [MuseDataSource: MuseAccess]    // D7a, D7c-D7e; a missing key reads as .off
+    var staysConnected: Bool                         // "Muse's own messages": a standing connection to Meta
 }
 // Owned by the derivation (so main builds without the Muse branch); the Muse branch maps onto them.
 enum MuseWatchAction: CaseIterable { case timer, alarm, music, quietTime, openApp, findWatch, recording }
@@ -128,7 +133,11 @@ sentence.
 
    **The D7 sentence, word for word** (used by the Muse screen and the Privacy screen):
    "The questions you ask Muse go to Meta: typed ones as text, spoken ones as a short recording.
-   Its answers come back as text. Nothing goes while you aren't asking." Training line, unchanged:
+   Its answers come back as text. Nothing goes while you aren't asking." While Muse stays
+   connected to message the watch (`MuseState.staysConnected`), the last sentence is instead:
+   "Muse stays connected so it can message your watch. Only your questions, and what you allow it
+   to read, go to Meta." and the stance line under "Your questions to Muse go to Meta" is "Only
+   your questions, and what you allow Muse to read, go to Meta." Training line, unchanged:
    "Meta may use your questions to improve its AI. You can turn that off in the Muse app." Before
    push-to-talk ships (spokenQuestions false), the first sentence is "The questions you ask Muse
    go to Meta as text." 

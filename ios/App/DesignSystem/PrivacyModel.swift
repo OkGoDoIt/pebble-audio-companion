@@ -69,6 +69,10 @@ struct PrivacyInputs: Equatable {
         var watchActions: Set<MuseWatchAction>
         /// D7a, D7c–D7e: what Muse may read while answering. A missing key reads as `.off`.
         var dataSources: [MuseDataSource: MuseAccess]
+        /// Muse keeps a connection to Meta open while idle, so it can message the watch first
+        /// ("Muse's own messages"). Meta then sees when the phone is online; nothing of the
+        /// person's goes over it unless they ask.
+        var staysConnected: Bool = false
 
         func access(_ source: MuseDataSource) -> MuseAccess { dataSources[source] ?? .off }
     }
@@ -210,6 +214,17 @@ enum PrivacyModel {
     static let museSentenceTyped =
         "The questions you ask Muse go to Meta as text. Its answers come back as text. Nothing "
         + "goes while you aren't asking."
+    /// D7 while Muse stays connected to message the watch: the idle claim no longer holds, so
+    /// the last sentence says what still goes instead.
+    static let museSentenceConnected =
+        "The questions you ask Muse go to Meta: typed ones as text, spoken ones as a short "
+        + "recording. Its answers come back as text. " + museConnectedLine
+    static let museSentenceTypedConnected =
+        "The questions you ask Muse go to Meta as text. Its answers come back as text. "
+        + museConnectedLine
+    static let museConnectedLine =
+        "Muse stays connected so it can message your watch. Only your questions, and what you "
+        + "allow it to read, go to Meta."
     static let museTrainingLine =
         "Meta may use your questions to improve its AI. You can turn that off in the Muse app."
 
@@ -333,7 +348,11 @@ enum PrivacyModel {
     /// D7 and "What Muse can see" (privacy-model.md §3.1), word for word, each line only when its
     /// list is not empty, lists in `MuseDataSource` order with the Oxford comma.
     static func museLines(_ muse: PrivacyInputs.MuseState) -> [String] {
-        var lines = [muse.spokenQuestions ? museSentence : museSentenceTyped]
+        var lines = [
+            muse.staysConnected
+                ? (muse.spokenQuestions ? museSentenceConnected : museSentenceTypedConnected)
+                : (muse.spokenQuestions ? museSentence : museSentenceTyped)
+        ]
         let allowed = MuseDataSource.allCases.filter { muse.access($0) == .allowed }
         let askFirst = MuseDataSource.allCases.filter { muse.access($0) == .ask }
         let readable = MuseDataSource.allCases.filter { muse.access($0) != .off }
@@ -430,7 +449,12 @@ enum PrivacyModel {
                     : "Your conversations' text goes to your own server. Audio stays on this phone."
             )
         case .muse:
-            return (.neutral, "Your questions to Muse go to Meta", "Nothing goes while you aren't asking.")
+            return (
+                .neutral, "Your questions to Muse go to Meta",
+                inputs.museState?.staysConnected == true
+                    ? "Only your questions, and what you allow Muse to read, go to Meta."
+                    : "Nothing goes while you aren't asking."
+            )
         }
     }
 
