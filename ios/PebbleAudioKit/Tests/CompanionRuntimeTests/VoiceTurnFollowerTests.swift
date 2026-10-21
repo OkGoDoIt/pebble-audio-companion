@@ -90,4 +90,15 @@ struct VoiceTurnFollowerTests {
         try await second.feed(event(#"{"type":"event","event":"reaction.set","payload":{"target_message_id":"old","emoji":"🎉"}}"#))
         #expect(await other.list.isEmpty)
     }
+
+    @Test func aReactionsUpdateNamesTheNewestReaction() async throws {
+        // The form Muse sent on 2026-10-21: the message's reactions as a whole.
+        let events = Events()
+        let follower = try await follower(events)
+        try await follower.feed(event(#"{"type":"event","event":"reactions.updated","payload":{"is_thread":true,"message_id":"u1","session_id":"chat-1","reactions":[{"emoji":"👍","count":1}]}}"#))
+        #expect(await events.list == [.reaction("👍")])
+        #expect(VoiceTurnFollower.reactionValue(MuseJSON.parse(Data(#"{"👍":1}"#.utf8))) == "👍")
+        #expect(VoiceTurnFollower.reactionValue(MuseJSON.parse(Data(#"["hatch:heart_v1"]"#.utf8))) == "hatch:heart_v1")
+        #expect(VoiceTurnFollower.reactionValue(MuseJSON.parse(Data(#"[]"#.utf8))) == nil)
+    }
 }

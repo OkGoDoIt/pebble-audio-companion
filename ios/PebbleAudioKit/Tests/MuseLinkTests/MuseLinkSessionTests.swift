@@ -28,7 +28,10 @@ private final class FakeMuseVM: @unchecked Sendable {
     private(set) var paths: [String] = []
     private(set) var registerParams: MuseJSON?
     private(set) var chatBody: MuseJSON?
-    private(set) var invokeResult: MuseJSON?
+    private(set) var invokeResults: [MuseJSON] = []
+    var invokeResult: MuseJSON? { invokeResults.first { $0["id"]?.string == "inv1" } }
+    /// The answer to the command Muse sent as a `client.invoke` chat event.
+    var clientInvokeResult: MuseJSON? { invokeResults.first { $0["id"]?.string == "ci1" } }
 
     init() throws {
         let parameters = NWParameters.tcp
@@ -147,6 +150,9 @@ private final class FakeMuseVM: @unchecked Sendable {
                 let ack: MuseJSON = ["result": ["message_id": "u1", "session_id": session, "is_thread": true]]
                 respond(MuseServiceFrame(streamID: frame.streamID, kind: .response(status: 200, headers: [], body: ack.compactData(), endBody: true)))
                 event("agent.status", ["activity_code": "thinking", "reply_to_message_id": "u1", "session_id": session])
+                // How Muse really sent a gadget command on 2026-10-21: a chat event, not link.invoke.
+                event("client.invoke", ["command_id": "watch.show", "invoke_id": "ci1",
+                                        "params_json": #"{"title":"Yo"}"#, "timeout_ms": 120000])
                 event("delta.message_start", ["message_id": "r1", "reply_to_message_id": "u1", "session_id": session])
                 event("delta.text_append", ["message_id": "r1", "reply_to_message_id": "u1", "text": "Hel", "session_id": session])
                 event("delta.text_append", ["message_id": "r1", "reply_to_message_id": "u1", "text": "lo", "session_id": session])
@@ -167,8 +173,9 @@ private final class FakeMuseVM: @unchecked Sendable {
                     sendControl(["type": "res", "id": message?["id"] ?? .null, "ok": true, "result": ["status": "registered"]])
                     sendControl(["method": "link.invoke", "id": "inv1", "command": "watch.show",
                                  "params": ["title": "Hi", "body": "From Muse"], "timeout_ms": 5000])
-                } else if message?["method"]?.string == "link.result" {
-                    invokeResult = message
+                } else if message?["method"]?.string == "link.result", let message {
+                    invokeResults.append(message)
+                    if message["id"]?.string == "ci1" { sendControl(["type": "res", "id": "ci1", "ok": true]) }
                 }
             }
         default:
@@ -231,7 +238,14 @@ struct MuseLinkSessionTests {
         for _ in 0..<50 where vm.snapshot({ $0.invokeResult }) == nil {
             try await Task.sleep(for: .milliseconds(20))
         }
-        #expect(calls.all == ["watch.show Hi"])
+        for _ in 0..<50 where vm.snapshot({ $0.clientInvokeResult }) == nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(Set(calls.all) == ["watch.show Hi", "watch.show Yo"])
+        // The command that came as a chat event was run too, and answered by its invoke id.
+        let client = try #require(vm.snapshot { $0.clientInvokeResult })
+        #expect(client["method"]?.string == "link.result")
+        #expect(client["ok"]?.bool == true)
         let result = try #require(vm.snapshot { $0.invokeResult })
         #expect(result["id"]?.string == "inv1")
         #expect(result["ok"]?.bool == true)

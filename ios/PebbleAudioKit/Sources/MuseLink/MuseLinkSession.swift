@@ -106,6 +106,10 @@ public actor MuseLinkSession {
     private var endWaiters: [CheckedContinuation<Outcome, Never>] = []
     public private(set) var isRegistered = false
     public private(set) var outcome: Outcome?
+    /// `client.invoke`s already run: the same one can arrive on more than one subscription.
+    private var answeredInvokes: [String] = []
+    /// Results sent for `client.invoke`s, by invoke id: Muse's reply to one is logged.
+    private var sentClientResults: Set<String> = []
 
     public static func url(noiseHost: String, vmID: String) -> URL? {
         // encodeURIComponent, as Meta's gadgets do.
@@ -364,7 +368,10 @@ public actor MuseLinkSession {
                                 throw Failure.protocolError("chat event exceeds 256 KiB")
                             }
                             guard byte == 0x0A else { continue }
-                            if let event = Self.chatEvent(line) { continuation.yield(event) }
+                            if let event = Self.chatEvent(line) {
+                                if event["event"]?.string == "client.invoke" { await self.answerClientInvoke(event) }
+                                continuation.yield(event)
+                            }
                             line.removeAll(keepingCapacity: true)
                         }
                     }
@@ -551,8 +558,73 @@ public actor MuseLinkSession {
                 let result = await handler?(command, params, timeoutMS) ?? ["ok": false, "error": "unsupported command"]
                 self.sendInvokeResult(id: id, result: result)
             })
+            return nil
         }
+        if let id = message["id"]?.string, sentClientResults.contains(id) {
+            // Muse's word on a result sent for a `client.invoke`.
+            sentClientResults.remove(id)
+            let verdict = message["error"] != nil || message["ok"]?.bool == false ? "refused" : "accepted"
+            note("client result \(verdict): \(Self.controlShape(message))")
+            return nil
+        }
+        // Anything else is logged by its shape (never its values), so a message Muse sends that
+        // this gadget doesn't know yet can be found in the log.
+        note("control message not handled: \(Self.controlShape(message))")
         return nil
+    }
+
+    /// A control message's kind and keys, and an `error`'s code or text when it is short, for the
+    /// flight recorder.
+    static func controlShape(_ message: MuseJSON) -> String {
+        let kind = ["method", "event", "type"].compactMap { key in message[key]?.string.map { "\(key)=\($0)" } }
+        var parts = kind + ["keys=" + (message.object?.keys.sorted().joined(separator: ",") ?? "-")]
+        if let error = message["error"] {
+            let text = error.string ?? error["message"]?.string ?? error["code"]?.string ?? error.compactString()
+            parts.append("error=\(text.prefix(160))")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// A command name as logged: letters, digits and `._-` only.
+    static func loggable(_ text: String) -> String {
+        String(text.filter { ($0.isASCII && ($0.isLetter || $0.isNumber)) || ".-_".contains($0) }.prefix(64))
+    }
+
+    /// Muse sends a gadget's command as a `client.invoke` chat event (`command_id`, `invoke_id`,
+    /// `params_json`, `timeout_ms`) rather than the `link.invoke` control message Meta's
+    /// reference gadgets wait for (seen 2026-10-21; the cause of the timeouts in
+    /// muse-gadget-sdk#154). It runs like a `link.invoke`, and its result goes back as a
+    /// `link.result` keyed by the invoke id.
+    func answerClientInvoke(_ event: MuseJSON) {
+        guard let payload = event["payload"], let invokeID = payload["invoke_id"]?.string ?? payload["id"]?.string,
+            !invokeID.isEmpty, !answeredInvokes.contains(invokeID)
+        else { return }
+        answeredInvokes.append(invokeID)
+        if answeredInvokes.count > 64 { answeredInvokes.removeFirst() }
+        let command = payload["command_id"]?.string ?? payload["command"]?.string ?? ""
+        var params: MuseJSON = [:]
+        if let text = payload["params_json"]?.string, let parsed = MuseJSON.parse(Data(text.utf8)), parsed.object != nil {
+            params = parsed
+        } else if let object = payload["params_json"] ?? payload["params"], object.object != nil {
+            params = object
+        }
+        let timeoutMS = payload["timeout_ms"]?.number.map { Int($0) }
+        note("client.invoke \(Self.loggable(command)), params \(params.object?.keys.sorted().joined(separator: ",") ?? "-"), timeout \(timeoutMS.map(String.init) ?? "-") ms")
+        guard let handler = commandHandler else {
+            note("client.invoke arrived on a session with no commands")
+            return
+        }
+        tasks.append(Task {
+            let result = await handler(command, params, timeoutMS)
+            self.sendClientResult(invokeID: invokeID, result: result)
+        })
+    }
+
+    private func sendClientResult(invokeID: String, result: MuseJSON) {
+        guard outcome == nil else { return }
+        sentClientResults.insert(invokeID)
+        note("client.invoke answered: ok \(result["ok"]?.bool ?? false)")
+        sendInvokeResult(id: invokeID, result: result)
     }
 
     private func sendInvokeResult(id: String, result: MuseJSON) {
