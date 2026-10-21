@@ -26,7 +26,7 @@
 					n++;
 					<li class="row wrap">
 						@BrandMarks.Tile(row.Name)
-						<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· @row.LastRead</span></span>
+						<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· <span class="nb">@row.LastRead</span></span></span>
 						<partial name="_Disconnect" model="(row, n)" />
 					</li>
 				}
@@ -45,7 +45,7 @@
 						n++;
 						<li class="row wrap">
 							@BrandMarks.Tile(row.Name)
-							<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· @row.LastRead</span></span>
+							<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· <span class="nb">@row.LastRead</span></span></span>
 							<partial name="_Disconnect" model="(row, n)" />
 						</li>
 					}

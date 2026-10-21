@@ -90,7 +90,7 @@ public sealed partial class AdminAccessTests(ArchiveServerFactory factory)
 
 		var access = WebUtility.HtmlDecode(await browser.GetStringAsync("/access"));
 		Assert.Contains("Codex on the test Mac", access);
-		Assert.Contains("Can read · Last read just now", access);
+		Assert.Contains("<span class=\"nb\">Last read just now</span>", access);
 		Assert.DoesNotContain(secret, access);
 		Assert.DoesNotContain(secret, await browser.GetStringAsync("/connect/other"));
 

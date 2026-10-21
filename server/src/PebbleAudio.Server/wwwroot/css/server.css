@@ -6,7 +6,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-body { margin: 0; background: var(--ground); color: var(--label); font-family: var(--font); font-size: var(--fs-body); line-height: 1.4; -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--ground); color: var(--label); font: var(--f-body); -webkit-font-smoothing: antialiased; }
 h1, h2, h3, p, ol, ul, dl, dd { margin: 0; }
 a { color: var(--tint); text-decoration: none; }
 button, input { font: inherit; color: inherit; }
@@ -48,7 +48,7 @@ b { font-weight: 600; color: var(--label); }
 }
 
 /* ── A page: one column of groups (a section header, a card, a footer) ── */
-.page { display: flex; flex-direction: column; gap: var(--gap); max-width: 660px; }
+.page { display: flex; flex-direction: column; gap: var(--gap); }
 .group { display: flex; flex-direction: column; gap: 8px; }
 .screen-title { font: var(--f-screen-title); letter-spacing: 0.36px; margin: 2px 0 0; }
 .lede { font: var(--f-sub-body); color: var(--secondary); }
@@ -57,7 +57,7 @@ b { font-weight: 600; color: var(--label); }
 .footer { font: var(--f-footnote); color: var(--tertiary); padding: 0 4px; }
 .note { font: var(--f-footnote); color: var(--tertiary); }
 @media (min-width: 1000px) {
-  .page { gap: 14px; }
+  .page { gap: 14px; max-width: 660px; }
   .page > .lede { margin-top: 0; }
 }
 
@@ -75,6 +75,7 @@ a.row:hover .t { color: var(--tint); }
 .row .t.strong { font: var(--f-row-title); }
 .row .s { font: var(--f-footnote); color: var(--tertiary); overflow-wrap: anywhere; }
 .row .s.attention { color: var(--attention-ink); }
+.nb { white-space: nowrap; }
 .row .v { font: var(--f-body); color: var(--tertiary); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .row .chev { flex: 0 0 auto; color: var(--chevron); width: 8px; height: 14px; }
 .row.tint .t { color: var(--tint); }
@@ -241,10 +242,12 @@ dialog.confirm::backdrop { background: var(--scrim); }
 .fallback-head { font: var(--f-card-head); color: var(--label); }
 .fallback .btn { margin-top: 6px; }
 .aside .list-card { padding: 0 16px; }
-.aside { display: flex; flex-direction: column; gap: 8px; }
+.aside { display: flex; flex-direction: column; gap: 10px; }
+.aside .group { gap: 6px; }
+.aside .section-header { padding-top: 0; }
 
 /* The server's address with its Copy button (05a). */
-.address { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.address { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
 .address .grow { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .address .label { font: var(--f-footnote); color: var(--tertiary); }
 .address .value { font: var(--f-row-title); color: var(--label); overflow-wrap: anywhere; }
