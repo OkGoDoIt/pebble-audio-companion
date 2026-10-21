@@ -107,13 +107,21 @@ public struct LossReason: Equatable, Sendable, Identifiable {
     /// Separate interruptions with this cause. Twelve two-second dropouts and one long silence
     /// are different problems, and only the count tells them apart.
     public var count: Int
+    /// The cause as a stable code (`StatusUI.gapReasonCode`): what the archive sync sends
+    /// beside `text`, so the server and assistants read the cause without parsing the words.
+    public var code: String
 
     public var id: String { text }
 
-    public init(text: String, durationMs: Int64, count: Int = 1) {
+    /// Genuine loss, as opposed to the watch's power-save pause (`GapClassifier`): the part a
+    /// recording's missing total counts.
+    public var isLoss: Bool { code != "powerSave" }
+
+    public init(text: String, durationMs: Int64, count: Int = 1, code: String = "unknown") {
         self.text = text
         self.durationMs = durationMs
         self.count = count
+        self.code = code
     }
 }
 
@@ -187,24 +195,72 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
         /// received and it was silent, so this is not loss and must never be labelled as loss.
         /// Zero for every row the caller did not ask to have suppressed.
         public var suppressedRepeats: Int
+        /// How far past `startMs` the stretch this row covers reaches. An interruption row is a
+        /// run of gap records collapsed together (records within `gapCollapseWindowMs` of each
+        /// other), and when the watch drops a fraction of a second every couple of seconds the
+        /// run covers many minutes while losing one of them. `durationMs` there is the run's
+        /// length, which is what decides whether it earns a transcript row; this is where it
+        /// ends, which is what places it. The two only differ once rows with no speech between
+        /// them are merged. Equal to `durationMs` for a quiet row.
+        public var extentMs: Int64
+        /// The audio NOT HEARD inside an interruption row: the union of its records, genuine
+        /// loss and the watch's power-save pause alike. This, not the run's length, is what the
+        /// row says it was interrupted for. Zero on a quiet row.
+        public var interruptedMs: Int64
+        /// The part of `interruptedMs` that is genuine loss (`GapClassifier` `.loss`) — the
+        /// quantity a recording's missing total counts. The power-save pause is not loss. Zero
+        /// on a quiet row.
+        public var missingMs: Int64
 
         public init(
             startMs: Int64, durationMs: Int64, missing: Bool, reasons: [LossReason] = [],
-            suppressedRepeats: Int = 0
+            suppressedRepeats: Int = 0, extentMs: Int64? = nil, interruptedMs: Int64? = nil,
+            missingMs: Int64? = nil
         ) {
             self.startMs = startMs
             self.durationMs = durationMs
             self.missing = missing
             self.reasons = reasons
             self.suppressedRepeats = suppressedRepeats
+            self.extentMs = max(extentMs ?? durationMs, 0)
+            let heard = missing ? max(interruptedMs ?? durationMs, 0) : 0
+            self.interruptedMs = heard
+            self.missingMs = missing ? min(max(missingMs ?? heard, 0), heard) : 0
         }
+
+        /// Where the stretch this row covers ends, on the caller's clock.
+        public var endMs: Int64 { startMs + extentMs }
+
+        /// The interruption is spread thin over its stretch — brief drops scattered through
+        /// minutes of audio that was heard — rather than one hole. Saying only "interrupted for
+        /// 1 min" there reads as a minute-long hole at this point in the words; saying only the
+        /// stretch ("for 14 min") claims thirteen minutes of loss that did not happen. So a
+        /// spread row says both.
+        public var isSpread: Bool {
+            missing && interruptedMs >= 1_000 && extentMs >= interruptedMs * spreadLossFactor
+                && Formatting.duration(extentMs) != Formatting.duration(interruptedMs)
+        }
+
+        /// What the row says, without its cause: "audio interrupted for 1 min over 14 min",
+        /// "quiet for 3 min". `label` is this plus `cause` in parentheses; the archive sync sends
+        /// the two apart so the server can set the cause in its own type.
+        public var summaryText: String {
+            if missing {
+                guard interruptedMs >= 1_000 else { return "audio briefly interrupted" }
+                let base = "audio interrupted for \(Formatting.duration(interruptedMs))"
+                return isSpread ? "\(base) over \(Formatting.duration(extentMs))" : base
+            }
+            return label
+        }
+
+        /// What caused an interruption, as its row names it: the one reason, or "2 reasons"
+        /// when the row has a breakdown. Nil on a quiet row and on an interruption nothing
+        /// explains.
+        public var cause: String? { missing ? reasonSummary : nil }
 
         public var label: String {
             if missing {
-                let base =
-                    durationMs < 1_000
-                    ? "audio briefly interrupted"
-                    : "audio interrupted for \(Formatting.duration(durationMs))"
+                let base = summaryText
                 if let summary = reasonSummary { return "\(base) (\(summary))" }
                 return base
             }
@@ -276,6 +332,13 @@ public enum TranscriptTimelineItem: Equatable, Sendable {
 /// `Pause.isShownInTranscript`). Ten seconds is about where a marker stops explaining a jump in
 /// the words and starts interrupting the reading of them.
 public let minimumShownLossMs: Int64 = 10_000
+
+/// An interruption row whose stretch is at least this many times the audio it lost reads as
+/// spread thin over that stretch (`Pause.isSpread`) and says both numbers. Roger's
+/// conversation of 2026-10-20 is the case it was set on: 432 drops of 0.1-1.3 s every ~2 s,
+/// 1 min 31 sec lost across a 15-minute recording, which the row used to call "audio
+/// interrupted for 14 min".
+public let spreadLossFactor: Int64 = 2
 
 /// Hidden looped lines below this many are collapsed without saying so. The line itself is
 /// still on screen — suppression never touches a first occurrence — so six echoes of "Yeah."
@@ -501,13 +564,23 @@ private func coalesceTimelineQuiet(
         var endMs = startMs
         var totalMs: Int64 = 0
         var suppressed = 0
+        var interruptedMs: Int64 = 0
+        var missingMs: Int64 = 0
         var j = i
         while j < items.count, timelineQuietKind(items[j]) == kind {
             let duration = timelineItemDurationMs(items[j])
             totalMs += duration
             startMs = min(startMs, items[j].startMs)
-            endMs = max(endMs, items[j].startMs + duration)
-            if case .pause(let pause) = items[j] { suppressed += pause.suppressedRepeats }
+            if case .pause(let pause) = items[j] {
+                suppressed += pause.suppressedRepeats
+                // The rows of one run never overlap (each is a collapsed cluster, and clusters
+                // are more than the collapse window apart), so their unions simply add.
+                interruptedMs += pause.interruptedMs
+                missingMs += pause.missingMs
+                endMs = max(endMs, pause.endMs)
+            } else {
+                endMs = max(endMs, items[j].startMs + duration)
+            }
             j += 1
         }
         if kind == .quiet { totalMs = max(endMs - startMs, 0) }
@@ -520,7 +593,9 @@ private func coalesceTimelineQuiet(
             out.append(
                 .pause(
                     TranscriptTimelineItem.Pause(
-                        startMs: startMs, durationMs: totalMs, missing: true, reasons: reasons
+                        startMs: startMs, durationMs: totalMs, missing: true, reasons: reasons,
+                        extentMs: max(endMs - startMs, totalMs), interruptedMs: interruptedMs,
+                        missingMs: missingMs
                     )
                 )
             )
@@ -652,6 +727,8 @@ private func collapsedTranscriptGaps(
 ) -> [TranscriptTimelineItem.Pause] {
     if meta.gaps.isEmpty { return [] }
     let segmentDuration = max(segmentDurationMs(meta), 0)
+    // Built once over ALL of the segment's records (see the note below on the window).
+    let classifier = GapClassifier(meta.gaps)
 
     func rangeOf(_ gap: GapMeta) -> (Int64, Int64) {
         let rawStart = sampleOffsetMs(meta, sampleIndex: gap.firstMissingSampleIndex)
@@ -686,11 +763,23 @@ private func collapsedTranscriptGaps(
         return merged
     }
 
+    /// Milliseconds covered by the union of these ranges.
+    func unionMs(_ ranges: [(Int64, Int64)]) -> Int64 {
+        var total: Int64 = 0
+        var cursor = Int64.min
+        for (start, end) in ranges.sorted(by: { $0.0 < $1.0 }) where end > start {
+            let from = max(start, cursor)
+            if end > from { total += end - from }
+            cursor = max(cursor, end)
+        }
+        return total
+    }
+
     func pauses(_ gaps: [GapMeta], missing: Bool) -> [TranscriptTimelineItem.Pause] {
         collapse(gaps).map { cluster in
             // Each gap contributes its own clipped length to its cause, so the expanded row
-            // adds up to roughly the row's own duration (overlapping records can exceed it —
-            // the row's length stays the union, which is the honest number).
+            // adds up to roughly what the row lost (overlapping records can exceed it — the
+            // row's own numbers are the union, which is the honest one).
             let reasons =
                 missing
                 ? mergedLossReasons(
@@ -703,15 +792,30 @@ private func collapsedTranscriptGaps(
                                 // wording has to match what the person is looking at. Without it
                                 // a 10 h 30 m hole read "the phone briefly missed audio".
                                 text: gapDescription(gap, displayedDurationMs: max(end - start, 0)),
-                                durationMs: max(end - start, 0))
+                                durationMs: max(end - start, 0),
+                                code: gapReasonCode(gap))
                         ]
                     })
                 : []
+            // The cluster's length is the run from its first record to its last, intact audio
+            // between them included; what it actually did not hear is the union of the records.
+            // On a stretch of brief drops the two differ by an order of magnitude, and only the
+            // second may be called an interruption (`Pause.isSpread`).
+            let placed = cluster.gaps.map(rangeOf)
+            let interrupted = missing ? unionMs(placed) : 0
+            let lost =
+                missing
+                ? unionMs(
+                    zip(cluster.gaps, placed).filter { classifier.classify($0.0) == .loss }
+                        .map(\.1))
+                : 0
             return TranscriptTimelineItem.Pause(
                 startMs: cluster.startMs,
                 durationMs: max(cluster.endMs - cluster.startMs, 0),
                 missing: missing,
-                reasons: reasons
+                reasons: reasons,
+                interruptedMs: interrupted,
+                missingMs: lost
             )
         }
     }
@@ -730,7 +834,6 @@ private func collapsedTranscriptGaps(
     // by the watch record that covers it, wherever a piece happens to be cut); only then are the
     // records outside the window dropped — before collapsing, so a cluster never reaches across
     // the edge of the piece and drags a neighbour's quiet in with it.
-    let classifier = GapClassifier(meta.gaps)
     let inWindow = meta.gaps.filter { gap in
         guard let window else { return true }
         return window.contains(rangeOf(gap).0)

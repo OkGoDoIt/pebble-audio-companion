@@ -14,9 +14,6 @@ namespace PebbleAudio.Server.Mcp;
 [McpServerToolType]
 public sealed class ConversationTools
 {
-	/// <summary>How many quiet minutes make a quiet gap worth listing on its own; shorter ones count in quietMinutes.</summary>
-	private const double ListedQuietMinutes = 1.0;
-
 	[McpServerTool(
 		Name = "list_conversations",
 		Title = "List conversations",
@@ -291,10 +288,11 @@ public sealed class ConversationTools
 		var withTranscript = mode is "transcript" or "both";
 		var transcript = await archive.Transcripts(call).SingleOrDefaultAsync(t => t.ConversationId == conversationId, cancellationToken);
 		var card = archive.Card(call, conversation, transcript is not null, overviewLength: call.Settings.ToolMaxCharacters / 4);
-		var gaps = conversation.Gaps
-			.Where(g => g.Kind == GapKind.Lost || (g.EndedAt - g.StartedAt).TotalMinutes >= ListedQuietMinutes)
-			.OrderBy(g => g.StartedAt)
-			.Select(g => archive.Gap(conversation, g))
+		// The rows the phone's transcript shows (GapRows): every interruption long enough for a line of its own, and the
+		// quiet. A brief one counts in lostMinutes without a row, as in the app.
+		var gaps = GapRows.Of(conversation)
+			.Where(r => r.Shown)
+			.Select(r => archive.Gap(conversation, r))
 			.ToList();
 		List<FollowUpOut>? followUps = null;
 		List<NoteOut>? notes = null;
@@ -309,9 +307,8 @@ public sealed class ConversationTools
 		var spoken = Spoken(conversation, call);
 		var window = transcript is null || !withTranscript
 			? []
-			: transcript.Items
+			: GapRows.Interleave(transcript.Items, conversation)
 				.Where(i => (windowFrom is not { } a || i.At >= a) && (windowTo is not { } b || i.At <= b))
-				.OrderBy(i => i.At)
 				.ToList();
 		var budget = Math.Clamp(max_chars ?? call.Settings.TranscriptReadCharacters, 1_000, call.Settings.ToolMaxCharacters);
 		var (allGaps, allFollowUps, allNotes) = (gaps, followUps, notes);

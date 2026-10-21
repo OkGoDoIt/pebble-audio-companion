@@ -35,10 +35,14 @@ public sealed class ConversationSpeaker
 }
 
 /// <summary>
-/// A stretch inside a conversation with no stored audio. Quiet and lost stay distinct.
+/// One quiet or interrupted row of a conversation, as the phone's Conversation screen shows it (sync-protocol.md
+/// §2.1). Quiet and lost stay distinct. A row from a phone before the gap change has no <see cref="Label"/>: it is a
+/// single gap record, and <see cref="Mcp.GapRows"/> reads it the app's way.
 /// </summary>
 public sealed class ConversationGap
 {
+	/// <summary>Where the stretch the row covers starts. For an interruption this is not how much is missing: brief
+	/// drops a few seconds apart are one row over the whole stretch (<see cref="MissingMs"/> is the loss).</summary>
 	public DateTimeOffset StartedAt { get; set; }
 
 	public DateTimeOffset EndedAt { get; set; }
@@ -51,6 +55,38 @@ public sealed class ConversationGap
 	/// <summary>Why a quiet stretch has no audio, when the phone says: <c>watchPause</c> for the watch's own
 	/// power-save pause.</summary>
 	public string? Reason { get; set; }
+
+	/// <summary>On a lost row: the audio genuinely missing inside it, in milliseconds.</summary>
+	public long? MissingMs { get; set; }
+
+	/// <summary>The row's own words without its cause, in the app's wording: <c>audio interrupted for 1 min over 14
+	/// min</c>, <c>quiet for 3 min</c>.</summary>
+	public string? Label { get; set; }
+
+	/// <summary>On a lost row: the cause it names, in the app's words (<c>watch buffer filled while
+	/// disconnected</c>), or <c>2 reasons</c> when <see cref="Causes"/> has the breakdown.</summary>
+	public string? Cause { get; set; }
+
+	/// <summary>On a lost row with more than one cause: each, largest first.</summary>
+	public List<GapCause> Causes { get; set; } = [];
+
+	/// <summary>False for an interruption too brief for a transcript row (under 10 seconds): it still counts and still
+	/// marks the strip. Null (a phone before the gap change) is decided by <see cref="Mcp.GapRows"/>.</summary>
+	public bool? Shown { get; set; }
+}
+
+/// <summary>One cause of a mixed interruption row.</summary>
+public sealed class GapCause
+{
+	/// <summary>A stable code: <c>spoolOverflow</c>, <c>transportReset</c>, <c>phoneMissed</c>, <c>powerSave</c>, …</summary>
+	public string Code { get; set; } = "";
+
+	/// <summary>The app's words for it.</summary>
+	public string Text { get; set; } = "";
+
+	public long Ms { get; set; }
+
+	public int Count { get; set; }
 }
 
 /// <summary>
@@ -77,6 +113,17 @@ public sealed class TranscriptItem
 
 	/// <summary>What was masked, for example <c>music</c> (masked items).</summary>
 	public string? Descriptor { get; set; }
+
+	/// <summary>Quiet and lost items: the row's words and cause, as on <see cref="ConversationGap"/>.</summary>
+	public string? Label { get; set; }
+
+	public string? Cause { get; set; }
+
+	/// <summary>Lost items: the audio genuinely missing inside the row, in milliseconds.</summary>
+	public long? MissingMs { get; set; }
+
+	/// <summary>Quiet items: <c>watchPause</c> for the watch's own power-save pause.</summary>
+	public string? Reason { get; set; }
 }
 
 /// <summary>
@@ -104,11 +151,17 @@ public sealed class NoteCitation
 }
 
 /// <summary>
-/// A lost span inside an uploaded clip (the <c>X-Clip-Gaps</c> header).
+/// A stretch inside an uploaded clip with no audio (the <c>X-Clip-Gaps</c> header): lost, or with
+/// <see cref="Kind"/> <c>quiet</c> the silence the watch skipped or its power-save pause.
 /// </summary>
 public sealed class ClipGap
 {
 	public DateTimeOffset StartedAt { get; set; }
 
 	public DateTimeOffset EndedAt { get; set; }
+
+	/// <summary>Null for lost audio; <c>quiet</c> for audio the watch did not send on purpose.</summary>
+	public string? Kind { get; set; }
+
+	public bool IsLost => Kind is null or "lost";
 }

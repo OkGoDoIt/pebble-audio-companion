@@ -161,6 +161,8 @@ h1, h2, h3, p { margin: 0; }
 .who.s1 { color: var(--lane-1-text); }
 .who.s2 { color: var(--lane-2-text); }
 .who.s3 { color: var(--lane-3-text); }
+/* A voice nobody has named, as the app shows one: gray, after a small dot in the captured color (its legend dot, 7 pt). */
+.who.unnamed::before { content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 5px 1px 0; border-radius: 50%; background: var(--captured); vertical-align: middle; }
 .run-text { font-size: calc(var(--fs-callout) * 0.92); line-height: 1.6; color: var(--secondary); }
 .run-text .bit { display: inline-block; margin-right: 0.9em; }
 .run-text .who { font-size: 0.66rem; margin-right: 0.4em; }

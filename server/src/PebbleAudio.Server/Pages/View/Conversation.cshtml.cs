@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using PebbleAudio.Server.Mcp;
 
 namespace PebbleAudio.Server.Pages.View;
 
@@ -33,11 +34,15 @@ public sealed class ConversationModel(ViewerReader viewer) : PageModel
 				startMs = View.Row.StartedAt.ToUnixTimeMilliseconds(),
 				tz = View.ZoneId,
 				dur = View.DurationSec,
+				// What is missing, as the header says it: the strip's marks of brief drops are ticks, not their total.
+				missing = Math.Round(GapRows.MissingSeconds(View.Row)),
 				t = View.T,
 				maxClip = (int)call.Settings.ClipMaxDuration.TotalSeconds,
 				lanes = View.Lanes.Select(l => new { name = l.Name, cls = l.Css }),
 				turns = View.Turns.Select(x => new[] { x.Lane, x.S, x.E }),
 				gaps = View.Marks.Select(m => new { k = m.Kind, s = m.S, e = m.E, label = m.Label }),
+				// Where an older phone's audio has none, for the player's clock (the rows above are for reading).
+				holes = View.Holes.Select(m => new { k = m.Kind, s = m.S, e = m.E }),
 				clip = View.Clip,
 				expiredOnPhone = View.Row.ExpiredOnPhoneAt is not null,
 			},

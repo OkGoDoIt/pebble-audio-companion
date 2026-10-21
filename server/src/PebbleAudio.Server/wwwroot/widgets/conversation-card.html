@@ -25,7 +25,11 @@ function shapeOf(c) {
   const start = instant(c.startedAt), end = instant(c.endedAt) || start + (c.minutes || 0) * 60000;
   const total = Math.max(1, (end - start) / 1000);
   const marks = (c.gaps || []).map((g) => {
-    const s = (instant(g.startedAt) - start) / 1000, e = (instant(g.endedAt) - start) / 1000;
+    const s = (instant(g.startedAt) - start) / 1000;
+    // A hole is drawn to scale; brief drops spread over a stretch are the app's tick where they start, not fourteen
+    // minutes of amber over words that are all there.
+    const spread = g.kind === 'lost' && g.missingMinutes != null && g.minutes >= g.missingMinutes * 2;
+    const e = spread ? s + 1 : (instant(g.endedAt) - start) / 1000;
     const kind = g.kind === 'lost' ? 'lost' : g.reason === 'watchPause' ? 'paused' : 'quiet';
     return `<i class="${kind}" style="left:${((Math.max(0, s) / total) * 100).toFixed(2)}%;width:${((Math.max(0, e - s) / total) * 100).toFixed(2)}%"></i>`;
   });

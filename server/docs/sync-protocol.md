@@ -85,33 +85,66 @@ a separate endpoint (§5).
   "mostlyQuiet": false,
   "hasMissingAudio": true,
   "recordedMs": 1123000,
+  "missingMs": 242920,
   "pieces": [
     { "ordinal": 0, "segmentId": "seg-1791997844787-ed737f28-63", "startMediaMs": 83010, "endMediaMs": null, "startedAt": "…", "endedAt": "…" }
   ],
   "people": [ { "label": "1", "personId": "…", "name": "Roger" } ],
   "gaps": [
-    { "startedAt": "…", "endedAt": "…", "kind": "lost", "origin": "watch" },
-    { "startedAt": "…", "endedAt": "…", "kind": "quiet" }
+    { "startedAt": "…", "endedAt": "…", "kind": "lost", "origin": "watch", "missingMs": 91300, "label": "audio interrupted for 1 min over 14 min", "cause": "watch buffer filled while disconnected" },
+    { "startedAt": "…", "endedAt": "…", "kind": "quiet", "label": "quiet for 3 min" },
+    { "startedAt": "…", "endedAt": "…", "kind": "lost", "origin": "watch", "missingMs": 3000, "label": "audio interrupted for 3 sec", "cause": "watch buffer filled while disconnected", "shown": false },
+    { "startedAt": "…", "endedAt": "…", "kind": "lost", "origin": "watch", "missingMs": 52000, "label": "audio interrupted for 52 sec", "cause": "2 reasons",
+      "causes": [ { "code": "spoolOverflow", "text": "watch buffer filled while disconnected", "ms": 40000, "count": 1 }, { "code": "transportReset", "text": "connection was interrupted", "ms": 12000, "count": 1 } ] }
   ]
 }
 ```
 
 `state` is `live` or `closed`; `provisional` is true while the segmenter may still move the
-boundary. `dayKey` is the app's logical day (5 AM boundary, in `timeZone`). `gaps` lists every
-stretch inside the conversation with no stored audio, `quiet` (skipped on purpose) kept
-distinct from `lost` (genuinely missing). `recordedMs` is stored audio inside the conversation.
-A conversation whose `contentKind` is `noConversation` (music, TV, announcements) is synced too,
-so days add up, but is flagged.
+boundary. `dayKey` is the app's logical day (5 AM boundary, in `timeZone`). `recordedMs` is
+stored audio inside the conversation; `missingMs` is the audio genuinely missing inside it (its
+first word to its last), the number the app's History card shows as "N missing", and
+`hasMissingAudio` says whether there is any. A conversation whose `contentKind` is
+`noConversation` (music, TV, announcements) is synced too, so days add up, but is flagged.
+
+`gaps` are the quiet and interrupted rows the app's Conversation screen shows, made by the
+screen's own rule (`SearchKit.pieceTimeline`), so the server, the viewer and every tool read a
+conversation the way the phone shows it:
+
+- Gap records within 5 seconds of each other are one row. When the watch drops a fraction of a
+  second every couple of seconds, one row covers minutes: `startedAt`…`endedAt` is that stretch,
+  and `missingMs` is what is actually missing inside it. Never read the stretch as the loss.
+- `kind` is `quiet` (nothing was said: a stretch of 30 seconds or more between two turns, or the
+  watch's skipped silence) or `lost` (an interruption: audio the phone does not have). The two are
+  never mixed up.
+- `label` is the row's own words, without its cause, exactly as the app shows them: "audio
+  interrupted for 1 min over 14 min" (a stretch of brief drops), "audio interrupted for 40 sec"
+  (one hole), "audio briefly interrupted", "quiet for 3 min". The app puts the `cause` after it in
+  parentheses.
+- A `lost` row's `cause` is the app's words for why ("watch buffer filled while disconnected",
+  "connection was interrupted", "phone briefly missed audio", …), or "2 reasons" with `causes`
+  listing each, largest first: a stable `code` (`spoolOverflow`, `micConflict`, `userDisabled`,
+  `lowBattery`, `codecError`, `transportReset`, `powerSave`, `phoneMissed`, `unknown`), the
+  words, the milliseconds, and how many records.
+- `shown: false` marks an interruption too brief for a transcript row of its own (its stretch is
+  under 10 seconds). It still counts in `missingMs`, and the app still ticks its scrubber for it.
+  Present only when false.
+- Only rows that reach into the conversation's first word to its last are sent.
 
 What the phone actually sends, and the server accepts:
 
 - A piece that is a whole segment has `startMediaMs: 0` and `endMediaMs: null`; `startMediaMs`
   is never null.
-- A `lost` gap's `origin` is `watch` (the watch never recorded it), `link` (recorded, but it
-  never reached the phone), or `unknown` (a hole between pieces that no record explains). A
-  `quiet` gap has no `origin`.
-- A `quiet` gap may carry `"reason": "watchPause"`: the watch's own power-save pause, as opposed
-  to its silence suppression. The server stores the reason.
+- A `lost` gap's `origin` is where its main cause happened: `watch` (the watch never recorded
+  it) or `link` (recorded, but it never reached the phone). A `quiet` gap has no `origin`.
+  `unknown` was a hole between pieces that no record explains; a phone with the gap change no
+  longer sends those (the app calls such a hole not recording, and before 2026-09-30 most were
+  the watch's skipped silence the old store dropped).
+- A `quiet` gap may carry `"reason": "watchPause"`: an interruption made only of the watch's own
+  power-save pause, which the app does not count as missing. The server stores the reason.
+- A phone before the gap change (export version 1) sends one gap per record, without `label`,
+  `missingMs` or `shown`, and no `missingMs` on the conversation. The server reads those the
+  app's way until the phone sends the conversation again (`GapRows`).
 - Required: `startedAt`, `timeZone`, `dayKey`, `state`, `contentKind`, `pieces` (it may be
   empty), each piece's `segmentId`, `startMediaMs` and `startedAt`, and each gap's times and
   `kind`. Anything else missing takes its empty value.
@@ -133,8 +166,8 @@ reads. Items are in time order and include the honest markers.
   "text": "Roger: … \nSpeaker 2: …",
   "items": [
     { "kind": "turn", "at": "…", "endAt": "…", "speaker": "1", "name": "Roger", "text": "…", "confidence": 0.93 },
-    { "kind": "quiet", "at": "…", "endAt": "…" },
-    { "kind": "lost", "at": "…", "endAt": "…", "origin": "watch" },
+    { "kind": "quiet", "at": "…", "endAt": "…", "label": "quiet for 3 min" },
+    { "kind": "lost", "at": "…", "endAt": "…", "origin": "watch", "missingMs": 91300, "label": "audio interrupted for 1 min over 14 min", "cause": "watch buffer filled while disconnected" },
     { "kind": "masked", "at": "…", "endAt": "…", "descriptor": "music" }
   ]
 }
@@ -145,7 +178,10 @@ transcript's version increases whenever any piece's transcript changes (re-trans
 speaker naming, a boundary move). Size: a two-hour conversation is under 1 MB.
 
 The phone sends `language: null` today (it does not know the language yet). `conversationId`
-must equal the item's `id`. A `lost` item carries the same origins as a lost gap.
+must equal the item's `id`. The `quiet` and `lost` items are the conversation's gaps that the
+app's transcript gives a row (§2.1, not the ones with `shown: false`), with the same fields
+(`origin`, `reason`, `label`, `cause`, `causes`, `missingMs`) and the gap's `startedAt`/`endedAt`
+as `at`/`endAt`.
 
 ### 2.3 `recap`
 
@@ -252,8 +288,12 @@ Results:
 
 - Clips: `PUT /sync/clips/{requestId}` with `Content-Type: audio/ogg`, the Ogg Speex file as the
   body, and headers `X-Clip-Start-At`, `X-Clip-End-At` (the span actually covered, which may be
-  shorter than asked when audio was lost) and `X-Clip-Gaps` (JSON array of lost spans inside it,
-  `[{ "startedAt": "…", "endedAt": "…" }]`). `201 { "clipId": "…" }` when stored, and again for
+  shorter than asked when audio was lost) and `X-Clip-Gaps` (JSON array of the stretches inside
+  it with no audio, placed where each gap record says: `[{ "startedAt": "…", "endedAt": "…" }]`
+  for lost audio, and the same with `"kind": "quiet"` for the silence the watch skipped and its
+  power-save pause, which are not lost but are not in the file either. A player places the
+  clip's audio on the clock from these, never from the conversation's rows, whose stretches
+  include audio the clip holds). `201 { "clipId": "…" }` when stored, and again for
   a retried upload of a clip the server already has. `415` if it is not `audio/ogg`, `400` if the
   body is not Ogg or a header cannot be read, `404` for an unknown request. The server queues a
   transcode job (ffmpeg to AAC in m4a, 16 kHz mono) and then serves the clip.
@@ -386,3 +426,8 @@ subscriptions. Deleting a conversation on the phone removes all of these for it.
 `X-Sync-Protocol: 1` on every request to `/link` and `/sync/*`; the server answers `426` with
 `{ "minimum": n }` when the header is missing or older than it speaks. Additive payload fields
 never bump the version; a changed meaning does.
+
+One change of meaning did not, because the server reads both forms: from the phone's export
+version 2 (`ArchiveExport.transcriptExportVersion`, which re-sends every conversation and
+transcript once), a conversation's `gaps` are the app's rows rather than one per gap record
+(§2.1). A row carries `label`; a record never did, and that is how the server tells them apart.

@@ -212,7 +212,7 @@ public static class SyncModule
 
 		if (!TryReadGaps(request.Headers["X-Clip-Gaps"], out var gaps))
 		{
-			return Error(StatusCodes.Status400BadRequest, "X-Clip-Gaps is a JSON array of { startedAt, endedAt }.");
+			return Error(StatusCodes.Status400BadRequest, "X-Clip-Gaps is a JSON array of { startedAt, endedAt, kind? }.");
 		}
 
 		var upload = await requests.ReceiveClipAsync(userId, requestId, coveredStart, coveredEnd, gaps, request.Body, cancellationToken);
@@ -470,7 +470,8 @@ public static class SyncModule
 					return false;
 				}
 
-				gaps.Add(new ClipGap { StartedAt = start, EndedAt = end });
+				// An entry with kind "quiet" is audio the watch did not send on purpose; anything else is lost.
+				gaps.Add(new ClipGap { StartedAt = start, EndedAt = end, Kind = gap.Kind == "quiet" ? "quiet" : null });
 			}
 
 			return true;
@@ -481,7 +482,7 @@ public static class SyncModule
 		}
 	}
 
-	internal sealed record GapHeader(DateTimeOffset? StartedAt, DateTimeOffset? EndedAt);
+	internal sealed record GapHeader(DateTimeOffset? StartedAt, DateTimeOffset? EndedAt, string? Kind = null);
 
 	internal sealed record LinkRequest(string? Code, string? DeviceName, string? AppVersion, string? AppBuild);
 

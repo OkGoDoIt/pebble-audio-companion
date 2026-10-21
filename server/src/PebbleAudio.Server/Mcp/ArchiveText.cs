@@ -83,7 +83,8 @@ public static class ArchiveText
 
 		Add("");
 		Add(markdown ? "## Transcript" : "Transcript:");
-		foreach (var item in transcript.Items.OrderBy(i => i.At))
+		// The words with the quiet and interrupted rows the phone's transcript shows between them (GapRows).
+		foreach (var item in GapRows.Interleave(transcript.Items, c))
 		{
 			if (!Add(Line(item, zone)))
 			{
@@ -95,7 +96,10 @@ public static class ArchiveText
 		return new Rendered(text.ToString().TrimEnd(), false, null);
 	}
 
-	/// <summary><c>[10:05:12] Sam: words</c>, or <c>[10:09–10:10] (lost audio, watch)</c>.</summary>
+	/// <summary>
+	/// <c>[10:05:12] Sam: words</c>, or a row in the app's words: <c>[10:09–10:23] (audio interrupted for 1 min over 14
+	/// min: watch buffer filled while disconnected)</c>, <c>[10:14–10:17] (quiet for 3 min)</c>.
+	/// </summary>
 	public static string Line(TranscriptItem item, TimeZoneInfo zone)
 	{
 		var at = Days.Local(item.At, zone);
@@ -105,9 +109,22 @@ public static class ArchiveText
 			TranscriptItemKind.Turn =>
 				$"[{at:HH:mm:ss}] {item.Name ?? (item.Speaker is { Length: > 0 } speaker ? $"Speaker {speaker}" : "Someone")}: {item.Text}" +
 				(item.Confidence < LowConfidence ? " (low confidence)" : ""),
-			TranscriptItemKind.Quiet => $"{span} (quiet)",
-			TranscriptItemKind.Lost => $"{span} (lost audio, {item.Origin ?? "unknown"})",
+			TranscriptItemKind.Quiet or TranscriptItemKind.Lost => $"{span} ({MarkerWords(item, ": ")})",
 			TranscriptItemKind.Masked => $"{span} ({item.Descriptor ?? "music"})",
 		};
+	}
+
+	/// <summary>
+	/// A quiet or lost item in the app's words, its cause after <paramref name="separator"/> (the app's own form, with the
+	/// cause in parentheses, by default): <c>audio interrupted for 1 min over 14 min (watch buffer filled while
+	/// disconnected)</c>. An item from before the phone sent words gets the plainest true ones.
+	/// </summary>
+	public static string MarkerWords(TranscriptItem item, string? separator = null)
+	{
+		var seconds = item.EndAt is { } end ? Math.Max(0, (end - item.At).TotalSeconds) : 0;
+		var words = item.Label ?? (item.Kind == TranscriptItemKind.Lost
+			? GapRows.InterruptionWords(item.MissingMs is { } ms ? ms / 1000.0 : seconds, seconds)
+			: $"quiet for {GapRows.AppDuration(seconds)}");
+		return item.Cause is { } cause ? separator is null ? $"{words} ({cause})" : $"{words}{separator}{cause}" : words;
 	}
 }

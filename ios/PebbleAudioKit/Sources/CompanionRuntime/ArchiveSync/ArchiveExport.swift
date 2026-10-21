@@ -4,9 +4,10 @@ import SearchKit
 import SegmentStore
 import Transcription
 
-// The conversation as the server holds it: pieces placed on the wall clock, the stretches inside
-// it with no stored audio, and the transcript cut, cleaned and masked exactly as the app's own AI
-// layer reads it (`EnrichmentService.pieceTranscriptOf`) — but kept as timed items rather than
+// The conversation as the server holds it: pieces placed on the wall clock, the quiet and
+// interrupted rows the Conversation screen shows (from the screen's own rule,
+// `SearchKit.pieceTimeline`), and the transcript cut, cleaned and masked exactly as the app's own
+// AI layer reads it (`EnrichmentService.pieceTranscriptOf`) — but kept as timed items rather than
 // collapsed into prose, so a tool can quote a turn and say when it was said.
 //
 // Pure: everything here is a function of the pieces (each one's sidecar, transcript and mask),
@@ -14,9 +15,12 @@ import Transcription
 // `ArchiveTranscriptExportTests` without a database or a store.
 
 public enum ArchiveExport {
-    /// Bumped when the export's meaning changes, so every transcript is sent again (paced by
-    /// `ArchiveSyncService`). 2: words Soniox spaced apart no longer run together, and a name
-    /// reaches only the recording it was given in.
+    /// Bumped when the export's meaning changes, so every conversation and transcript is sent
+    /// again (paced by `ArchiveSyncService`). 2: words Soniox spaced apart no longer run
+    /// together, a name reaches only the recording it was given in, and the gaps are the quiet
+    /// and interrupted rows the Conversation screen shows — merged, thresholded and worded by
+    /// the screen's own rule — instead of one row per gap record. (Never released on a phone
+    /// before the gap change, so the two share one re-send.)
     public static let transcriptExportVersion = "transcript-export-2"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
@@ -95,27 +99,70 @@ public enum ArchiveExport {
 
     // MARK: - Gaps
 
-    /// Every stretch inside `window` (the conversation's first word to its last) with no stored
-    /// audio: the segments' own gap records, classified by the app's one classifier
-    /// (`GapClassifier` — quiet is never loss), and any hole between two pieces no record
-    /// accounts for, which is loss of unknown origin. Loss wins where the two overlap, as it does
-    /// on the coverage strip.
+    /// The conversation's quiet and interrupted rows, exactly as the Conversation screen shows
+    /// them: each piece's rows from the screen's own rule (`SearchKit.pieceTimeline` — gap
+    /// records collapsed within 5 s of each other, consecutive rows with no speech between them
+    /// merged, quiet labelled from 30 s, an interruption given a transcript row from 10 s, the
+    /// app's classifier and its words), placed on the wall clock. Nothing else is added: a hole
+    /// between two pieces that no record explains is not loss to the app either (History draws
+    /// it as not recording), and before 2026-09-30 most such holes were the watch's skipped
+    /// silence the old store dropped.
     ///
-    /// A segment whose records do not account for its clocks (`SegmentMediaClock.isExact`
-    /// false) contributes none: its records cannot be placed, and a guess would be a lie in the
-    /// one place the product promises not to tell one.
+    /// A piece with no transcript has no rows, as on the screen; the conversation's missing
+    /// total (`missingMs`) still counts its loss.
+    ///
+    /// Only rows that reach into `window` (the conversation's first word to its last) are kept.
+    /// A piece runs on to where the next conversation is cut, so its last rows can lie wholly
+    /// after the last word; the screen lists them under it, but the server shows a conversation
+    /// as its window, and that time belongs to the day's stretch between conversations, which
+    /// the coverage sync already describes. A row that straddles an edge is kept whole: its
+    /// numbers are the row's, and clipping it would make them disagree with its words.
+    ///
+    /// `pieces` carry the WHOLE segment's transcript (the rule cuts it). Word timings are not
+    /// needed: the screen builds its blocks from them only when the provider labelled no
+    /// speakers, which 8 of the 1,643 transcripts in the 2026-10-21 backup are.
     public static func gaps(_ pieces: [Piece], window: Range<Int64>) -> [ArchiveGap] {
-        guard !window.isEmpty else { return [] }
-        let extents = pieces.map(wallExtent).sorted { $0.lowerBound < $1.lowerBound }
-        guard let hullLower = extents.first?.lowerBound,
-            let hullUpper = extents.map(\.upperBound).max()
-        else { return [] }
-        let lowerBound = max(hullLower, window.lowerBound)
-        let bounds = lowerBound..<max(min(hullUpper, window.upperBound), lowerBound)
-        guard !bounds.isEmpty else { return [] }
+        var out: [ArchiveGap] = []
+        for piece in pieces {
+            guard let transcript = piece.transcript else { continue }
+            let clock = piece.clock
+            let timeline = pieceTimeline(
+                meta: piece.meta, member: piece.member, clock: clock,
+                segments: transcript.segments.map {
+                    SearchKit.TranscriptSegment(
+                        text: $0.text, startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker)
+                },
+                words: transcript.words.map {
+                    SearchKit.TranscriptWord(text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
+                },
+                timebase: .media)
+            for pause in timeline.pauses {
+                let gap = ArchiveGap(pause, segmentStartWallMs: clock.startWallMs)
+                guard gap.endMs > window.lowerBound, gap.startMs < window.upperBound else { continue }
+                out.append(gap)
+            }
+        }
+        return out.sorted { $0.startMs < $1.startMs }
+    }
 
-        var lost: [(range: Range<Int64>, origin: String)] = []
-        var quiet: [(range: Range<Int64>, reason: String?)] = []
+    /// The audio genuinely missing inside `window`, placed where each gap record says it
+    /// happened and merged — the quantity History's card for the conversation says is missing
+    /// ("4 min missing"), and what a clip of the span is short of. Only `GapClassifier` loss:
+    /// quiet and the watch's power-save pause are not missing audio. A segment whose records do
+    /// not account for its clocks contributes none: its records cannot be placed, and a guess
+    /// would be a lie in the one place the product promises not to tell one.
+    public static func lostSpans(_ pieces: [Piece], window: Range<Int64>) -> [ArchiveGap] {
+        holes(pieces, window: window).filter { $0.kind == .lost }
+    }
+
+    /// Every stretch inside `window` with no stored audio, where each record says it is: the
+    /// loss (`lostSpans`), and the silence the watch skipped and its power-save pause as `quiet`
+    /// with the loss cut out of them. What a clip of the span leaves out of its audio, so the
+    /// player can place what it holds on the clock (`X-Clip-Gaps`).
+    public static func holes(_ pieces: [Piece], window: Range<Int64>) -> [ArchiveGap] {
+        guard !window.isEmpty else { return [] }
+        var lost: [(Range<Int64>, String)] = []
+        var quiet: [Range<Int64>] = []
         var seen = Set<String>()
         for piece in pieces {
             let meta = piece.meta
@@ -132,47 +179,28 @@ public enum ArchiveExport {
                     ? Int64(gap.firstMissingSampleIndex - anchor) * 1_000 / rate
                     : -(Int64(anchor - gap.firstMissingSampleIndex) * 1_000 / rate)
                 let duration = max(Int64(gap.missingFrameCount) * Int64(meta.frameDurationMs), 0)
-                let lower = max(clock.startWallMs + offset, bounds.lowerBound)
-                let upper = min(clock.startWallMs + offset + duration, bounds.upperBound)
+                let lower = max(clock.startWallMs + offset, window.lowerBound)
+                let upper = min(clock.startWallMs + offset + duration, window.upperBound)
                 guard upper > lower else { continue }
-                switch classifier.classify(gap) {
-                case .loss:
+                if classifier.classify(gap) == .loss {
                     lost.append((lower..<upper, gap.origin == GapMeta.originSequenceSkip ? "link" : "watch"))
-                case .quiet:
-                    quiet.append((lower..<upper, nil))
-                case .watchPause:
-                    quiet.append((lower..<upper, "watchPause"))
+                } else {
+                    quiet.append(lower..<upper)
                 }
             }
         }
+        let lostOut = mergeTagged(lost).map { range, origin in
+            ArchiveGap(startMs: range.lowerBound, endMs: range.upperBound, kind: .lost, origin: origin)
+        }
+        let quietOut = subtract(quiet, lostOut.map { $0.startMs..<$0.endMs }).map {
+            ArchiveGap(startMs: $0.lowerBound, endMs: $0.upperBound, kind: .quiet)
+        }
+        return (lostOut + quietOut).sorted { $0.startMs < $1.startMs }
+    }
 
-        // Holes between pieces that no record explains.
-        var covered = mergeRanges(lost.map(\.range) + quiet.map(\.range))
-        for (previous, next) in zip(extents, extents.dropFirst()) {
-            let lower = max(previous.upperBound, bounds.lowerBound)
-            let upper = min(next.lowerBound, bounds.upperBound)
-            guard upper - lower >= 1_000 else { continue }
-            for hole in subtract([lower..<upper], covered) where hole.count >= 1_000 {
-                lost.append((hole, "unknown"))
-            }
-        }
-        covered = mergeRanges(lost.map(\.range))
-
-        var out: [ArchiveGap] = []
-        // Loss: merged per origin run, in order.
-        for (range, origin) in mergeTagged(lost.map { ($0.range, $0.origin) }) {
-            out.append(ArchiveGap(startMs: range.lowerBound, endMs: range.upperBound, kind: .lost, origin: origin))
-        }
-        // Quiet, with the loss cut out of it.
-        for (range, reason) in mergeTagged(quiet.map { ($0.range, $0.reason ?? "") }) {
-            for piece in subtract([range], covered) where !piece.isEmpty {
-                out.append(
-                    ArchiveGap(
-                        startMs: piece.lowerBound, endMs: piece.upperBound, kind: .quiet,
-                        reason: reason.isEmpty ? nil : reason))
-            }
-        }
-        return out.sorted { ($0.startMs, $0.kind == .lost ? 0 : 1) < ($1.startMs, $1.kind == .lost ? 0 : 1) }
+    /// How much of `window` is genuinely missing (`lostSpans`), in milliseconds.
+    public static func missingMs(_ pieces: [Piece], window: Range<Int64>) -> Int64 {
+        lostSpans(pieces, window: window).reduce(0) { $0 + $1.durationMs }
     }
 
     // MARK: - Transcript
@@ -185,7 +213,8 @@ public enum ArchiveExport {
     /// then the turns inside the music/TV mask withheld — one `masked` item per masked stretch
     /// that withheld anything, saying what it held when that is known. Turns go on the wall
     /// clock through the segment's own gap records (`SegmentMediaClock.wallRange`). The quiet
-    /// and lost stretches (`gaps`) go in as their own items, and everything is in time order.
+    /// and interrupted rows (`gaps`) the screen shows between the words go in as their own
+    /// items, and everything is in time order.
     ///
     /// `text` is the turns alone, one line each: the speaker's name, or their label when nobody
     /// has named them, a colon, and what they said. A turn with no speaker label is its text.
@@ -250,11 +279,11 @@ public enum ArchiveExport {
             turnsBySource[sourceKey, default: 0] += spoken
             sources[sourceKey] = (transcript.providerId, transcript.modelUsed)
         }
-        for gap in gaps {
-            switch gap.kind {
-            case .quiet: items.append(.quiet(atMs: gap.startMs, endMs: gap.endMs))
-            case .lost: items.append(.lost(atMs: gap.startMs, endMs: gap.endMs, origin: gap.origin ?? "unknown"))
-            }
+        // The rows the screen draws between the words. An interruption too brief for a row of
+        // its own there (under 10 s) is not one here either; the conversation's gaps still carry
+        // it, and its missing total still counts it.
+        for gap in gaps where gap.shown {
+            items.append(.gap(gap))
         }
         // Time order; at one instant a marker reads before the words that follow it.
         let ordered = items.enumerated().sorted { a, b in

@@ -91,17 +91,6 @@ public static class ViewText
 		return city.Replace('_', ' ');
 	}
 
-	/// <summary>Why audio is missing, worded as the app words the same cause; null when nothing was recorded about why.</summary>
-	public static string? LossCause(string? origin) => origin switch
-	{
-		"link" => "connection was interrupted",
-		"watch" => "the watch didn't record it",
-		_ => null,
-	};
-
-	/// <summary>The app's sentence for the watch's power-save pause.</summary>
-	public const string WatchSavingPower = "watch was saving power";
-
 	/// <summary>An untitled conversation's place in a title.</summary>
 	public const string NotSummarized = "Not summarized yet";
 

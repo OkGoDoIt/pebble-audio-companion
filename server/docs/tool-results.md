@@ -130,28 +130,35 @@ Used by `get_day`, `list_conversations`, and as the top of `get_conversation`.
 | `state` | `live` while it is still being recorded, else `closed`. |
 | `provisional` | True while the app may still move its boundaries; its text may change. |
 | `expiredOnPhone` | True when the phone's retention has aged it out: the text stays here, the audio is gone. |
-| `quietMinutes` | Silence the watch skipped on purpose. Nothing was said. |
-| `lostMinutes` | Audio that is genuinely missing. Something may have been said. |
+| `quietMinutes` | The conversation's quiet rows: stretches of 30 seconds or more where nothing was said. |
+| `lostMinutes` | Audio that is genuinely missing, as the phone's History card counts it. Something may have been said. |
 
 ### Gap
 
+The quiet and interrupted rows the phone's transcript shows (sync-protocol.md §2.1), not one per gap record:
+
 ```json
-{ "kind": "lost", "startedAt": "2026-10-14T10:09:00+07:00", "endedAt": "2026-10-14T10:10:00+07:00", "t": 240, "minutes": 1.0, "origin": "watch" }
-{ "kind": "quiet", "startedAt": "…", "endedAt": "…", "t": 540, "minutes": 2.0, "reason": "watchPause" }
+{ "kind": "lost", "startedAt": "2026-10-14T10:09:00+07:00", "endedAt": "2026-10-14T10:23:57+07:00", "t": 240, "minutes": 14.9, "missingMinutes": 1.5, "origin": "watch", "label": "audio interrupted for 1 min over 14 min (watch buffer filled while disconnected)" }
+{ "kind": "lost", "startedAt": "…", "endedAt": "…", "t": 1800, "minutes": 0.7, "missingMinutes": 0.7, "origin": "watch", "label": "audio interrupted for 40 sec (connection was interrupted)" }
+{ "kind": "quiet", "startedAt": "…", "endedAt": "…", "t": 540, "minutes": 2.0, "label": "quiet for 2 min" }
+{ "kind": "quiet", "startedAt": "…", "endedAt": "…", "t": 2400, "minutes": 2.0, "reason": "watchPause", "label": "paused for 2 min (watch was saving power)" }
 ```
 
-`kind` is `quiet` or `lost`, never mixed up. A lost gap's `origin` is `watch` (never recorded), `link` (recorded,
-never reached the phone), or `unknown`. A quiet gap may carry `reason: "watchPause"` (the watch's power-save
-pause rather than its silence skipping).
+`kind` is `quiet` or `lost`, never mixed up. A lost gap covers `minutes` and is missing `missingMinutes`: brief
+drops a few seconds apart are one row over the whole stretch, with the words between them intact, so read the
+loss from `missingMinutes`, never from the stretch. `label` is the row in the app's words. A lost gap's `origin`
+is `watch` (never recorded) or `link` (recorded, never reached the phone); `unknown` only on conversations an older
+phone sent. A quiet gap may carry `reason: "watchPause"` (the watch's power-save pause, not counted as missing).
+An interruption too brief for a row of its own (under 10 seconds) is not listed; it counts in `lostMinutes`.
 
 ### Transcript item
 
-In time order. Turns and markers share the list:
+In time order. Turns and markers share the list; the markers are the conversation's gaps that have a row:
 
 ```json
 { "kind": "turn", "t": 12, "at": "2026-10-14T10:05:12+07:00", "speaker": "2", "name": "Sam", "text": "The matte ones hide water spots.", "confidence": 0.93 }
-{ "kind": "quiet", "t": 540, "at": "…", "endAt": "…", "minutes": 2.0 }
-{ "kind": "lost", "t": 240, "at": "…", "endAt": "…", "minutes": 1.0, "origin": "watch" }
+{ "kind": "quiet", "t": 540, "at": "…", "endAt": "…", "minutes": 2.0, "label": "quiet for 2 min" }
+{ "kind": "lost", "t": 240, "at": "…", "endAt": "…", "minutes": 14.9, "missingMinutes": 1.5, "origin": "watch", "label": "audio interrupted for 1 min over 14 min (watch buffer filled while disconnected)" }
 { "kind": "masked", "t": 900, "at": "…", "endAt": "…", "minutes": 1.0, "descriptor": "music" }
 ```
 
@@ -390,8 +397,8 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 `include: "summary"` leaves out `transcript`; `include: "transcript"` leaves out `overview`, `followUps`, and
 `notes`. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
 window asked for (items with `from_time` ≤ `at` ≤ `to_time`), `shownCount` what fits. A time without an offset
-is read on the conversation's wall clock. `gaps` lists every lost gap and the quiet gaps of a minute or more;
-shorter quiet stretches count in `quietMinutes` and appear as transcript items. The lists above the transcript
+is read on the conversation's wall clock. `gaps` lists the rows the phone's transcript shows: every interruption
+with a line of its own and every quiet row; a briefer interruption counts in `lostMinutes`. The lists above the transcript
 take at most half the answer when the transcript is asked for (all of it otherwise): past that, lost gaps stay
 first, then the longest quiet ones, then notes and follow-ups in order, and `summary` says how many it lists. An unknown id is `found: false`
 with `candidates`, conversations whose title matches the id as words:
@@ -445,7 +452,7 @@ Argument: `id` (any `id` from `search`, or a bare conversation id). ChatGPT's do
   "summary": "Kitchen tiles with Sam, Wednesday 10:05 AM to 10:41 AM, 36 minutes, 1 minute of lost audio.",
   "id": "conv-kitchen",
   "title": "Kitchen tiles with Sam",
-  "text": "Kitchen tiles with Sam\nWednesday, October 14, 2026, 10:05–10:41 (Asia/Jakarta)\nPeople: Roger, Sam\nTags: kitchen renovation, home\n\nSam and you compare…\n\nTranscript:\n[10:05:12] Sam: The matte ones hide water spots.\n[10:09–10:10] (lost audio, watch)\n[10:14–10:16] (quiet)\n…",
+  "text": "Kitchen tiles with Sam\nWednesday, October 14, 2026, 10:05–10:41 (Asia/Jakarta)\nPeople: Roger, Sam\nTags: kitchen renovation, home\n\nSam and you compare…\n\nTranscript:\n[10:05:12] Sam: The matte ones hide water spots.\n[10:09–10:23] (audio interrupted for 1 min over 14 min: watch buffer filled while disconnected)\n[10:14–10:16] (quiet for 2 min)\n…",
   "url": "https://pebbleaudio.okgodoit.com/c/conv-kitchen",
   "metadata": {
     "kind": "conversation",
@@ -463,8 +470,9 @@ Argument: `id` (any `id` from `search`, or a bare conversation id). ChatGPT's do
 ```
 
 `text` is plain text: the title, the time, the overview, then the transcript one line per turn
-(`[HH:mm:ss] Name: words`, with `(low confidence)` after turns below 0.6) and one per marker
-(`(quiet)`, `(lost audio, watch)`, `(music)`). For a recap, brief, follow-up, or note it is that item's own text.
+(`[HH:mm:ss] Name: words`, with `(low confidence)` after turns below 0.6) and one per row the phone's transcript
+shows, in the app's words with the cause after a colon (`(quiet for 2 min)`, `(audio interrupted for 40 sec:
+connection was interrupted)`, `(music)`). For a recap, brief, follow-up, or note it is that item's own text.
 When cut, `metadata.truncated` is true and `metadata.next` continues with `get_conversation`. An unknown id is
 an error result (ChatGPT's fetch has no "not found" shape).
 
@@ -532,9 +540,14 @@ default from its start for the *Longest audio clip* setting, 20 minutes).
   "coveredFrom": "2026-10-14T10:10:00+07:00",
   "coveredTo": "2026-10-14T10:15:00+07:00",
   "minutes": 5.0,
-  "lost": [ { "startedAt": "…", "endedAt": "…", "minutes": 0.5 } ]
+  "lost": [ { "startedAt": "…", "endedAt": "…", "minutes": 0.5 } ],
+  "quiet": [ { "startedAt": "…", "endedAt": "…", "minutes": 1.2 } ]
 }
 ```
+
+`lost` and `quiet` are where the clip's audio has none, each stretch where its gap record says: lost audio, and
+(`quiet`) the silence the watch skipped or its power-save pause, which is not lost but is not in the file either.
+A player places the audio on the clock from these.
 
 | `status` | Means | Fields |
 | --- | --- | --- |

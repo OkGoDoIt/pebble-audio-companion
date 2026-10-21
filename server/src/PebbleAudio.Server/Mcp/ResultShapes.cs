@@ -31,14 +31,22 @@ public sealed record ConversationCard(
 	double QuietMinutes,
 	double LostMinutes);
 
+/// <summary>One quiet or interrupted row, as the phone's transcript shows it.</summary>
+/// <param name="Minutes">The stretch the row covers.</param>
+/// <param name="MissingMinutes">On a lost row: the audio genuinely missing inside it, which brief drops spread over a
+/// long stretch can make far less than <paramref name="Minutes"/>.</param>
+/// <param name="Label">The row in the app's words: <c>audio interrupted for 1 min over 14 min (watch buffer filled while
+/// disconnected)</c>, <c>quiet for 3 min</c>.</param>
 public sealed record GapOut(
 	string Kind,
 	DateTimeOffset StartedAt,
 	DateTimeOffset EndedAt,
 	int T,
 	double Minutes,
+	double? MissingMinutes,
 	string? Origin,
-	string? Reason);
+	string? Reason,
+	string Label);
 
 public sealed record TranscriptItemOut(
 	string Kind,
@@ -51,7 +59,14 @@ public sealed record TranscriptItemOut(
 	string? Text,
 	double? Confidence,
 	string? Origin,
-	string? Descriptor);
+	string? Descriptor)
+{
+	/// <summary>Quiet and lost items: the row in the app's words, as on <see cref="GapOut.Label"/>.</summary>
+	public string? Label { get; init; }
+
+	/// <summary>Lost items: the audio genuinely missing inside the row.</summary>
+	public double? MissingMinutes { get; init; }
+}
 
 public sealed record FollowUpSourceOut(string ConversationId, string? Title, DateTimeOffset? At, int? T, string Url, bool Approximate);
 
@@ -297,7 +312,12 @@ public sealed record AudioResult(
 	double? Minutes,
 	IReadOnlyList<LostSpanOut> Lost,
 	Guid? RequestId,
-	DateTimeOffset? WaitingUntil) : IToolResult;
+	DateTimeOffset? WaitingUntil) : IToolResult
+{
+	/// <summary>Stretches inside the clip with no audio on purpose (the watch's skipped silence, its power-save pause):
+	/// not lost, and not in the file, so a player can place the audio on the conversation's clock.</summary>
+	public IReadOnlyList<LostSpanOut> Quiet { get; init; } = [];
+}
 
 // The write tools
 

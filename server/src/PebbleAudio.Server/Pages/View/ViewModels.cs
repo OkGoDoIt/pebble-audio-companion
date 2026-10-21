@@ -25,7 +25,12 @@ public sealed record HomeView(IReadOnlyList<DayRow> Days, string? ScopeLine);
 /// unnamed voice and for the lane of other voices.</param>
 public sealed record LaneView(int Index, string Name, string Css);
 
-/// <summary>A stretch of a conversation without speech: <c>quiet</c>, <c>paused</c> (the watch saving power), <c>lost</c>, or <c>masked</c>.</summary>
+/// <summary>
+/// A mark on the conversation's strip: <c>quiet</c>, <c>paused</c> (the watch saving power), <c>lost</c>, or <c>masked</c>.
+/// Quiet, paused, and masked cover their stretch, and so does a lost mark for a hole. A lost row of brief drops spread
+/// over a stretch is a one-second mark where it starts — the app's amber tick on its scrubber — so it is not painted as
+/// fourteen minutes of missing audio over words that are all there.
+/// </summary>
 public sealed record MarkView(string Kind, int S, int E, string Label);
 
 public enum RowKind
@@ -39,7 +44,8 @@ public enum RowKind
 }
 
 /// <summary>One spoken turn, or one bit of a run of short ones.</summary>
-public sealed record BitView(int Lane, string Who, string Text, int S, int E, bool LowConfidence);
+/// <param name="Unnamed">A voice nobody has named: the app draws its name gray after a small dot in its captured color.</param>
+public sealed record BitView(int Lane, string Who, string Text, int S, int E, bool LowConfidence, bool Unnamed = false);
 
 /// <summary>A transcript row: a turn, a run of short turns, or a stretch set where it happened.</summary>
 /// <param name="Stamp">The margin's clock, <c>10:18</c>; shown only on the first row of a minute.</param>
@@ -74,7 +80,11 @@ public sealed record ClipState(
 	int? CoveredTo,
 	IReadOnlyList<int[]> Lost,
 	long? DurationMs,
-	DateTimeOffset? WaitingUntil);
+	DateTimeOffset? WaitingUntil)
+{
+	/// <summary>What the clip skipped on purpose (the watch's silence, its power-save pause), for the player's clock.</summary>
+	public IReadOnlyList<int[]> Quiet { get; init; } = [];
+}
 
 public sealed record ConversationView(
 	Conversation Row,
@@ -97,6 +107,7 @@ public sealed record ConversationView(
 	IReadOnlyList<LaneView> Lanes,
 	IReadOnlyList<(int Lane, int S, int E)> Turns,
 	IReadOnlyList<MarkView> Marks,
+	IReadOnlyList<MarkView> Holes,
 	IReadOnlyList<RowView> Rows,
 	int? CitedIndex,
 	int? T,

@@ -136,6 +136,17 @@ internal static class SyncPayloads
 				return Unknown<Conversation>($"gaps[{i}].kind", gap.Kind);
 			}
 
+			var causes = new List<GapCause>();
+			foreach (var cause in gap.Causes ?? [])
+			{
+				if (cause is null || string.IsNullOrEmpty(cause.Code))
+				{
+					return Missing<Conversation>($"gaps[{i}].causes[].code");
+				}
+
+				causes.Add(new GapCause { Code = cause.Code, Text = cause.Text ?? "", Ms = Math.Max(0, cause.Ms ?? 0), Count = Math.Max(0, cause.Count ?? 0) });
+			}
+
 			gaps.Add(new ConversationGap
 			{
 				StartedAt = gapStart,
@@ -144,6 +155,13 @@ internal static class SyncPayloads
 				// The phone sends watch, link, or unknown for a loss, and nothing for quiet.
 				Origin = gapKind == GapKind.Lost ? gap.Origin ?? "unknown" : gap.Origin,
 				Reason = gap.Reason,
+				// The rest is how the phone's transcript shows the row (sync-protocol.md §2.1); a phone before the gap
+				// change sends none of it.
+				MissingMs = gap.MissingMs is { } ms ? Math.Max(0, ms) : null,
+				Label = gap.Label,
+				Cause = gap.Cause,
+				Causes = causes,
+				Shown = gap.Shown ?? (gap.Label is null ? null : true),
 			});
 		}
 
@@ -180,6 +198,7 @@ internal static class SyncPayloads
 			MostlyQuiet = p.MostlyQuiet ?? false,
 			HasMissingAudio = p.HasMissingAudio ?? false,
 			RecordedMs = p.RecordedMs ?? 0,
+			MissingMs = p.MissingMs is { } missing ? Math.Max(0, missing) : null,
 			Pieces = pieces,
 			People = people,
 			Gaps = gaps,
@@ -225,6 +244,10 @@ internal static class SyncPayloads
 				Confidence = item.Confidence,
 				Origin = item.Origin,
 				Descriptor = item.Descriptor,
+				Label = item.Label,
+				Cause = item.Cause,
+				MissingMs = item.MissingMs is { } ms ? Math.Max(0, ms) : null,
+				Reason = item.Reason,
 			});
 		}
 
@@ -465,6 +488,7 @@ internal static class SyncPayloads
 		public bool? MostlyQuiet { get; init; }
 		public bool? HasMissingAudio { get; init; }
 		public long? RecordedMs { get; init; }
+		public long? MissingMs { get; init; }
 		public List<PiecePayload?>? Pieces { get; init; }
 		public List<SpeakerPayload?>? People { get; init; }
 		public List<GapPayload?>? Gaps { get; init; }
@@ -494,6 +518,19 @@ internal static class SyncPayloads
 		public string? Kind { get; init; }
 		public string? Origin { get; init; }
 		public string? Reason { get; init; }
+		public long? MissingMs { get; init; }
+		public string? Label { get; init; }
+		public string? Cause { get; init; }
+		public List<CausePayload?>? Causes { get; init; }
+		public bool? Shown { get; init; }
+	}
+
+	private sealed class CausePayload
+	{
+		public string? Code { get; init; }
+		public string? Text { get; init; }
+		public long? Ms { get; init; }
+		public int? Count { get; init; }
 	}
 
 	private sealed class TranscriptPayload
@@ -519,6 +556,10 @@ internal static class SyncPayloads
 		public double? Confidence { get; init; }
 		public string? Origin { get; init; }
 		public string? Descriptor { get; init; }
+		public string? Label { get; init; }
+		public string? Cause { get; init; }
+		public long? MissingMs { get; init; }
+		public string? Reason { get; init; }
 	}
 
 	private sealed class RecapPayload

@@ -1,8 +1,10 @@
 import AppDB
 import Foundation
+import SearchKit
 import SegmentStore
 import Testing
 import Transcription
+import WireProtocol
 
 @testable import CompanionRuntime
 
@@ -50,22 +52,90 @@ struct ArchiveTranscriptExportTests {
 
     static var window: Range<Int64> { startMs..<endMs }
 
-    @Test func theConversationIsPlacedOnTheWallClockWithItsLossAndNoInventedQuiet() throws {
+    @Test func theConversationIsPlacedOnTheWallClockWithItsLoss() throws {
         let pieces = try Self.pieces()
         // The two pieces meet where the first recording ends and the second begins.
         #expect(ArchiveExport.wallExtent(pieces[0]) == 1_791_884_284_511..<1_791_884_515_121)
         #expect(ArchiveExport.wallExtent(pieces[1]).lowerBound == 1_791_884_515_121)
 
-        let gaps = ArchiveExport.gaps(pieces, window: Self.window)
-        // Eleven stretches of the watch's spool overflowing, 12.36 s in all, and nothing quiet:
-        // the silence the second recording's watch skipped comes after the last word.
-        #expect(gaps.count == 11)
-        #expect(gaps.allSatisfy { $0.kind == .lost && $0.origin == "watch" })
-        #expect(gaps.reduce(0) { $0 + $1.durationMs } == 12_360)
-        #expect(gaps.first.map { $0.startMs..<$0.endMs } == 1_791_884_289_721..<1_791_884_291_081)
-        #expect(gaps.allSatisfy { Self.window.contains($0.startMs) && $0.endMs <= Self.endMs })
+        // Eleven stretches of the watch's spool overflowing inside the window, 12.36 s in all:
+        // what History's card says is missing, and what a clip of the span is short of.
+        let lost = ArchiveExport.lostSpans(pieces, window: Self.window)
+        #expect(lost.count == 11)
+        #expect(lost.allSatisfy { $0.kind == .lost && $0.origin == "watch" })
+        #expect(ArchiveExport.missingMs(pieces, window: Self.window) == 12_360)
+        #expect(lost.first.map { $0.startMs..<$0.endMs } == 1_791_884_289_721..<1_791_884_291_081)
+        #expect(lost.allSatisfy { Self.window.contains($0.startMs) && $0.endMs <= Self.endMs })
         // What is left of the window is stored audio.
         #expect(ArchiveExport.recordedMs(pieces, window: Self.window) == (Self.endMs - Self.startMs) - 12_360)
+    }
+
+    /// The conversation's gaps are the rows the Conversation screen shows, from the screen's own
+    /// rule — not one row per gap record. The fixture's eleven stretches of loss are three rows:
+    /// one the transcript gives a line, two too brief for one that still count.
+    @Test func theGapsAreTheRowsTheScreenShows() throws {
+        let pieces = try Self.pieces()
+        let gaps = ArchiveExport.gaps(pieces, window: Self.window)
+        var screen: [ArchiveGap] = []
+        for piece in pieces {
+            let transcript = try #require(piece.transcript)
+            let clock = SegmentMediaClock(piece.meta)
+            let rows = pieceTimeline(
+                meta: piece.meta, member: piece.member, clock: clock,
+                segments: transcript.segments.map {
+                    SearchKit.TranscriptSegment(text: $0.text, startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker)
+                },
+                timebase: .media)
+            screen += rows.pauses.map { ArchiveGap($0, segmentStartWallMs: clock.startWallMs) }
+        }
+        // The same rows, less the ones wholly after the last word (the second piece runs on to
+        // where the next conversation is cut).
+        #expect(gaps == screen.filter { $0.endMs > Self.startMs && $0.startMs < Self.endMs }.sorted { $0.startMs < $1.startMs })
+        #expect(screen.count == gaps.count + 2)
+
+        #expect(gaps.allSatisfy { $0.kind == .lost && $0.origin == "watch" })
+        #expect(gaps.map(\.label) == ["audio interrupted for 9 sec", "audio interrupted for 1 sec", "audio briefly interrupted"])
+        #expect(gaps.allSatisfy { $0.cause == "watch buffer filled while disconnected" })
+        #expect(gaps.map(\.shown) == [true, false, false])
+        #expect(gaps.compactMap(\.missingMs) == [9_840, 1_760, 760])
+        // The rows' loss adds up to the conversation's missing total.
+        #expect(gaps.compactMap(\.missingMs).reduce(0, +) == ArchiveExport.missingMs(pieces, window: Self.window))
+        #expect(gaps.first.map { $0.startMs..<$0.endMs } == 1_791_884_289_721..<1_791_884_305_641)
+        // No hole between the pieces is invented: they meet, and a hole no record explains is
+        // not loss to the app.
+        #expect(!gaps.contains { $0.origin == "unknown" })
+    }
+
+    /// A clip says what its audio leaves out, so the server's player can place it on the clock: the
+    /// loss records as before, and the silence the watch skipped as `quiet` (with the loss cut out of
+    /// it) — not the screen's rows, whose stretch includes audio the clip holds.
+    @Test func aClipsHolesAreItsRecordsWithTheQuietNamed() throws {
+        let start: Int64 = 1_792_000_000_000
+        func record(_ ms: Int64, _ frames: UInt32, _ reason: GapReason) -> GapMeta {
+            GapMeta(
+                firstMissingSequence: UInt32(ms / 20), missingFrameCount: frames,
+                firstMissingSampleIndex: UInt64(ms) * 16, origin: GapMeta.originWatch,
+                reasonRaw: Int(reason.rawValue))
+        }
+        let gaps = [record(10_000, 50, .spoolOverflow), record(20_000, 1_500, .silenceSuppressed), record(40_000, 100, .spoolOverflow)]
+        let meta = SegmentMeta(
+            segmentId: "seg-holes", streamId: 1, protocolVersion: 1, codecIdRaw: 1, channels: 1,
+            frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 9_800, frameDurationMs: 20,
+            startTimeMs: UInt64(start), startMonotonicMs: 0, receivedAtMs: start + 60_000,
+            firstSequence: 0, lastSequence: 2_999, firstSampleIndex: 0,
+            lastSampleIndexExclusive: 60_000 * 16, frameCount: 1_450, gaps: gaps,
+            closeReason: .rotated, transcriptionState: .complete)
+        let pieces = [ArchiveExport.Piece(member: ConversationMember(segmentId: "seg-holes"), meta: meta)]
+        let holes = ArchiveExport.holes(pieces, window: start..<(start + 60_000))
+        #expect(holes.map { "\($0.kind.rawValue) \($0.startMs - start)-\($0.endMs - start)" } == [
+            "lost 10000-11000", "quiet 20000-40000", "lost 40000-42000", "quiet 42000-50000",
+        ])
+        #expect(ArchiveExport.lostSpans(pieces, window: start..<(start + 60_000)).count == 2)
+        let clip = ArchiveRequestHandler.Clip(
+            file: URL(fileURLWithPath: "/dev/null"), startMs: start, endMs: start + 60_000, lost: Array(holes.prefix(2)))
+        #expect(clip.gapsHeader == """
+            [{"endedAt":"2026-10-14T17:46:51.000Z","startedAt":"2026-10-14T17:46:50.000Z"},{"endedAt":"2026-10-14T17:47:20.000Z","kind":"quiet","startedAt":"2026-10-14T17:47:00.000Z"}]
+            """)
     }
 
     @Test func theTranscriptIsCutMaskedNamedAndInTimeOrder() throws {
@@ -97,8 +167,10 @@ struct ArchiveTranscriptExportTests {
         // The masked stretch, on the wall clock, named.
         let masked = export.items.filter { $0.kindName == "masked" }
         #expect(masked == [.masked(atMs: 1_791_884_360_201, endMs: 1_791_884_387_201, descriptor: "music")])
-        // Every loss is an item of its own, and the items are in time order.
-        #expect(export.items.filter { $0.kindName == "lost" }.count == 11)
+        // Every row the screen gives a line is an item of its own, and the items are in time
+        // order.
+        #expect(export.items.filter { $0.kindName != "turn" && $0.kindName != "masked" }.count
+            == gaps.filter(\.shown).count)
         #expect(export.items.map(\.atMs) == export.items.map(\.atMs).sorted())
 
         // The plain form: one line per turn, the name where there is one, the label otherwise.
@@ -175,7 +247,9 @@ struct ArchiveTranscriptExportTests {
         #expect(Set(turn.keys) == ["kind", "at", "endAt", "speaker", "name", "text", "confidence"])
         #expect(turn["name"] is NSNull)
         let lost = try #require(items.first { $0["kind"] as? String == "lost" })
-        #expect(Set(lost.keys) == ["kind", "at", "endAt", "origin"])
+        #expect(Set(lost.keys) == ["kind", "at", "endAt", "origin", "label", "missingMs", "cause"])
+        #expect((lost["label"] as? String)?.hasPrefix("audio interrupted for ") == true)
+        #expect(lost["cause"] as? String == "watch buffer filled while disconnected")
         // Same input, same bytes: the hash that skips an unchanged payload means what it says.
         #expect(try ArchivePayloadBuilder.encode(export) == data)
     }

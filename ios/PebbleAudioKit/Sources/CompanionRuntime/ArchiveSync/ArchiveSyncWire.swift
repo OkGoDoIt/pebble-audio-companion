@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import SearchKit
 
 // The JSON of `server/docs/sync-protocol.md`, version 1, exactly. Every payload encodes its
 // optional fields as an explicit `null` (the contract's own examples do), times as RFC 3339 in
@@ -116,6 +117,9 @@ public struct ArchiveConversationPayload: Encodable, Equatable, Sendable {
     public var mostlyQuiet: Bool
     public var hasMissingAudio: Bool
     public var recordedMs: Int64
+    /// Additive (§7): the audio genuinely missing inside the conversation
+    /// (`ArchiveExport.missingMs`) — the number History's card shows as "N missing".
+    public var missingMs: Int64
     public var pieces: [Piece]
     public var people: [Speaker]
     public var gaps: [ArchiveGap]
@@ -123,8 +127,8 @@ public struct ArchiveConversationPayload: Encodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case startedAt, endedAt, timeZone, dayKey, state, startReason, provisional, title
         case summary, tags, titleEditedByUser, isFinal, annotationProvider, annotationModel
-        case contentKind, contentDescriptor, mostlyQuiet, hasMissingAudio, recordedMs, pieces
-        case people, gaps
+        case contentKind, contentDescriptor, mostlyQuiet, hasMissingAudio, recordedMs, missingMs
+        case pieces, people, gaps
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -148,18 +152,55 @@ public struct ArchiveConversationPayload: Encodable, Equatable, Sendable {
         try c.encode(mostlyQuiet, forKey: .mostlyQuiet)
         try c.encode(hasMissingAudio, forKey: .hasMissingAudio)
         try c.encode(recordedMs, forKey: .recordedMs)
+        try c.encode(missingMs, forKey: .missingMs)
         try c.encode(pieces, forKey: .pieces)
         try c.encode(people, forKey: .people)
         try c.encode(gaps, forKey: .gaps)
     }
 }
 
-/// A stretch inside a conversation with no stored audio: `quiet` (skipped on purpose — the
-/// watch's silence suppression, or its own power-save pause, named in `reason`) or `lost`
-/// (genuinely missing; `origin` says where: `watch`, `link` for audio that never reached the
-/// phone, or `unknown` for a hole no record explains).
+/// One quiet or interrupted row of a conversation, as the Conversation screen shows it
+/// (`ArchiveExport.gaps`): `quiet` (a stretch with nothing said, the watch's skipped silence
+/// included; or, with `reason: watchPause`, the watch's own power-save pause, which is not
+/// loss) or `lost` (an interruption: `origin` says where its main cause happened, `watch` or
+/// `link` for audio that never reached the phone).
+///
+/// `startedAt`…`endedAt` is the stretch the row covers. For an interruption that is NOT how
+/// much is missing: a row collapses records within 5 s of each other, so a stretch of brief
+/// drops covers minutes and loses seconds. `missingMs` is the loss. `label` is the row's own
+/// words without its cause ("audio interrupted for 1 min over 14 min", "quiet for 3 min"),
+/// `cause` the cause the row names ("watch buffer filled while disconnected", "2 reasons"),
+/// and `causes` the breakdown behind a mixed row. `shown` is false for an interruption too brief
+/// for a transcript row (under 10 s): it still marks the scrubber and counts.
 public struct ArchiveGap: Encodable, Equatable, Sendable {
     public enum Kind: String, Sendable { case quiet, lost }
+
+    /// One cause of an interruption row.
+    public struct Cause: Encodable, Equatable, Sendable {
+        /// `StatusUI.gapReasonCode`: `spoolOverflow`, `phoneMissed`, `powerSave`, …
+        public var code: String
+        /// The app's words for it (`StatusUI.gapDescription`).
+        public var text: String
+        public var ms: Int64
+        public var count: Int
+
+        public init(code: String, text: String, ms: Int64, count: Int) {
+            self.code = code
+            self.text = text
+            self.ms = ms
+            self.count = count
+        }
+
+        enum CodingKeys: String, CodingKey { case code, text, ms, count }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(code, forKey: .code)
+            try c.encode(text, forKey: .text)
+            try c.encode(ms, forKey: .ms)
+            try c.encode(count, forKey: .count)
+        }
+    }
 
     public var startMs: Int64
     public var endMs: Int64
@@ -167,26 +208,96 @@ public struct ArchiveGap: Encodable, Equatable, Sendable {
     public var origin: String?
     /// Additive (§7): set to `watchPause` for the watch's own power-save pause.
     public var reason: String?
+    /// Additive (§7), on a lost row: the audio genuinely missing inside it.
+    public var missingMs: Int64?
+    /// Additive (§7): the row's words without its cause.
+    public var label: String?
+    /// Additive (§7), on a lost row: the cause the row names.
+    public var cause: String?
+    /// Additive (§7), on a lost row with more than one cause: each with its share.
+    public var causes: [Cause]
+    /// Additive (§7): false for an interruption too brief for a transcript row.
+    public var shown: Bool
 
-    public init(startMs: Int64, endMs: Int64, kind: Kind, origin: String? = nil, reason: String? = nil) {
+    public init(
+        startMs: Int64, endMs: Int64, kind: Kind, origin: String? = nil, reason: String? = nil,
+        missingMs: Int64? = nil, label: String? = nil, cause: String? = nil,
+        causes: [Cause] = [], shown: Bool = true
+    ) {
         self.startMs = startMs
         self.endMs = endMs
         self.kind = kind
         self.origin = origin
         self.reason = reason
+        self.missingMs = missingMs
+        self.label = label
+        self.cause = cause
+        self.causes = causes
+        self.shown = shown
+    }
+
+    /// The screen's row, on the wall clock: `segmentStartWallMs` plus the row's offsets.
+    ///
+    /// An interruption made only of the watch's power-save pause goes as the quiet kind with
+    /// reason `watchPause`, as it always has: the app's classifier, History and the missing
+    /// totals all call it a pause, and the transcript only draws it as an interruption because
+    /// it has two row kinds. A row that mixes it with real loss is lost, and its `missingMs`
+    /// counts the loss alone.
+    public init(_ pause: TranscriptTimelineItem.Pause, segmentStartWallMs: Int64) {
+        let start = segmentStartWallMs + pause.startMs
+        let end = segmentStartWallMs + max(pause.endMs, pause.startMs)
+        guard pause.missing else {
+            self.init(startMs: start, endMs: end, kind: .quiet, label: pause.summaryText)
+            return
+        }
+        let onlyPaused =
+            pause.missingMs == 0 && !pause.reasons.isEmpty
+            && pause.reasons.allSatisfy { !$0.isLoss }
+        if onlyPaused {
+            self.init(
+                startMs: start, endMs: end, kind: .quiet, reason: "watchPause",
+                label: pause.summaryText, shown: pause.isShownInTranscript)
+            return
+        }
+        // Where the main cause happened: the largest share of loss (reasons come largest first).
+        let main = pause.reasons.first { $0.isLoss }
+        self.init(
+            startMs: start, endMs: end, kind: .lost,
+            origin: main?.code == "phoneMissed" ? "link" : "watch",
+            missingMs: pause.missingMs, label: pause.summaryText, cause: pause.cause,
+            causes: pause.reasons.count > 1
+                ? pause.reasons.map {
+                    Cause(code: $0.code, text: $0.text, ms: $0.durationMs, count: $0.count)
+                } : [],
+            shown: pause.isShownInTranscript)
     }
 
     public var durationMs: Int64 { max(0, endMs - startMs) }
 
-    enum CodingKeys: String, CodingKey { case startedAt, endedAt, kind, origin, reason }
+    enum CodingKeys: String, CodingKey {
+        case startedAt, endedAt, kind, origin, reason, missingMs, label, cause, causes, shown
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(ArchiveTime.string(startMs), forKey: .startedAt)
         try c.encode(ArchiveTime.string(endMs), forKey: .endedAt)
         try c.encode(kind.rawValue, forKey: .kind)
-        if kind == .lost { try c.encode(origin ?? "unknown", forKey: .origin) }
-        if let reason { try c.encode(reason, forKey: .reason) }
+        try encodeDetail(into: &c)
+    }
+
+    /// Everything but the times and the kind, which a transcript item names its own way.
+    func encodeDetail<Key: CodingKey>(into c: inout KeyedEncodingContainer<Key>) throws {
+        func key(_ name: CodingKeys) -> Key { Key(stringValue: name.stringValue)! }
+        if kind == .lost { try c.encode(origin ?? "unknown", forKey: key(.origin)) }
+        if let reason { try c.encode(reason, forKey: key(.reason)) }
+        if let label { try c.encode(label, forKey: key(.label)) }
+        if kind == .lost {
+            try c.encode(missingMs ?? durationMs, forKey: key(.missingMs))
+            try c.encodeIfPresent(cause, forKey: key(.cause))
+            if !causes.isEmpty { try c.encode(causes, forKey: key(.causes)) }
+        }
+        if !shown { try c.encode(false, forKey: key(.shown)) }
     }
 }
 
@@ -195,37 +306,37 @@ public struct ArchiveGap: Encodable, Equatable, Sendable {
 public struct ArchiveTranscriptPayload: Encodable, Equatable, Sendable {
     public enum Item: Encodable, Equatable, Sendable {
         case turn(atMs: Int64, endMs: Int64, speaker: String?, name: String?, text: String, confidence: Double?)
-        case quiet(atMs: Int64, endMs: Int64)
-        case lost(atMs: Int64, endMs: Int64, origin: String)
+        /// A quiet or interrupted row the screen shows between the words (`ArchiveGap`, kind
+        /// `quiet` or `lost`, with the same detail the conversation's gap carries).
+        case gap(ArchiveGap)
         case masked(atMs: Int64, endMs: Int64, descriptor: String?)
 
         public var atMs: Int64 {
             switch self {
-            case .turn(let at, _, _, _, _, _), .quiet(let at, _), .lost(let at, _, _),
-                .masked(let at, _, _):
-                return at
+            case .turn(let at, _, _, _, _, _), .masked(let at, _, _): return at
+            case .gap(let gap): return gap.startMs
             }
         }
 
         public var endMs: Int64 {
             switch self {
-            case .turn(_, let end, _, _, _, _), .quiet(_, let end), .lost(_, let end, _),
-                .masked(_, let end, _):
-                return end
+            case .turn(_, let end, _, _, _, _), .masked(_, let end, _): return end
+            case .gap(let gap): return gap.endMs
             }
         }
 
         public var kindName: String {
             switch self {
             case .turn: return "turn"
-            case .quiet: return "quiet"
-            case .lost: return "lost"
+            case .gap(let gap): return gap.kind.rawValue
             case .masked: return "masked"
             }
         }
 
         enum CodingKeys: String, CodingKey {
             case kind, at, endAt, speaker, name, text, confidence, origin, descriptor
+            // The gap's detail (`ArchiveGap.encodeDetail`).
+            case reason, missingMs, label, cause, causes, shown
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -239,10 +350,8 @@ public struct ArchiveTranscriptPayload: Encodable, Equatable, Sendable {
                 try c.encode(name, forKey: .name)
                 try c.encode(text, forKey: .text)
                 try c.encode(confidence, forKey: .confidence)
-            case .quiet:
-                break
-            case .lost(_, _, let origin):
-                try c.encode(origin, forKey: .origin)
+            case .gap(let gap):
+                try gap.encodeDetail(into: &c)
             case .masked(_, _, let descriptor):
                 try c.encode(descriptor, forKey: .descriptor)
             }

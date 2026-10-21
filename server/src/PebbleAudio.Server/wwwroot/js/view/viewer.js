@@ -59,6 +59,7 @@ function applyClip(state) {
       url: state.audioUrl,
       covered: [state.coveredFrom ?? state.from, state.coveredTo ?? state.to],
       lost: state.lost ?? [],
+      quiet: state.quiet ?? [],
       durationMs: state.durationMs,
     };
     if (model.t != null && model.t >= state.from && model.t <= state.to) player.cueAt(model.t, false);

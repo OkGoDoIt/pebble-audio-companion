@@ -24,26 +24,9 @@ struct MemberTranscript {
     var missingMediaOffsets: [Int64] = []
 }
 
-/// Which clock a set of provider timings is measured on.
-///
-/// This is not a detail — the two producers disagree, and reading one as the other is worth
-/// minutes on an hour-long recording:
-///
-/// - **Durable** transcripts come from `TranscriptionProcessor.segmentPcmSource`, which decodes
-///   the segment's STORED frames and hands them to the provider. Gaps (lost audio and
-///   VAD-skipped silence alike) are simply absent from that stream, so provider timings are
-///   offsets into the stored audio — `.media`, the player's own clock.
-/// - The **live preview** (`LiveTranscriber`) offsets each chunk by `sampleOffsetMs`, which
-///   counts samples since the segment's first sample — `.wall`.
-///
-/// Everything downstream of `member` runs on the WALL clock and only the wall clock. The
-/// declared timebase says what has to be converted on the way in, not what the renderer works
-/// in — see the note in `member` on why mixing the two inside `transcriptTimelineItems` is not
-/// survivable.
-enum TranscriptTimebase {
-    case media
-    case wall
-}
+// `TranscriptTimebase` (which clock the provider's timings are on) and the piece's rows
+// themselves come from the kit (`SearchKit/PieceTimeline.swift`), so the archive sync sends the
+// server exactly the quiet and interrupted rows this screen shows.
 
 /// Deliberately NOT `@MainActor`. Nothing in here touches the UI — it maps stored segments and
 /// word timings onto the screen's value types — and the isolation was costing real freezes: the
@@ -104,20 +87,15 @@ enum TranscriptItems {
         func wallDate(_ offsetMs: Int64) -> Date {
             Date(timeIntervalSince1970: Double(wallStartMs + offsetMs) / 1000)
         }
-        // Whether the durable path can be converted at all. When a segment's gap records do not
-        // account for the difference between its stored audio and its elapsed wall time, the
-        // clock falls back to a proportional guess, and a guess is worse than the honest default
-        // here: 23 of the 765 segments in the real library claim hours of wall time around
-        // minutes of audio (the worst, 15 h 01 m around 14 m 45 s across 79 records that add up
-        // to neither), and spreading their turns proportionally moves 7,285 of them by over a
-        // minute, the worst by 14 h 44 m — inventing a stamp for every one. Left alone, the
-        // provider's offsets at least sit where the audio does.
-        //
-        // `ConversationBoundaryDetector.spokenRuns` declines for the same reason. The two must
-        // not disagree about when a word was said: the conversation's displayed extent comes
-        // from one and the stamps inside it from the other.
-        let convertsFromMedia = timebase == .media && clock.isExact
-        let passesMediaThrough = timebase == .media && !clock.isExact
+        // The piece's rows — its turns on the wall clock, loops taken out, and the quiet and
+        // interrupted rows between them — come from the kit, so the archive sync sends the
+        // server exactly what this screen shows (`SearchKit/PieceTimeline.swift` carries the
+        // clock and cutting rules this used to spell out here).
+        let built = pieceTimeline(
+            meta: meta, member: own.member, clock: clock, segments: segments, words: words,
+            timebase: timebase)
+        let passesMediaThrough = built.passesMediaThrough
+        let timeline = built.items
         /// A wall offset into this member, as a position on the CONVERSATION's scrubber: the
         /// pieces before this one, plus how far into THIS piece the moment is. Not how far into
         /// the segment — the part of the segment before the piece is another conversation's
@@ -136,88 +114,13 @@ enum TranscriptItems {
             wallDate(min(max(wallMs, 0), clock.wallSpanMs))
         }
 
-        // ONE CLOCK, DECIDED HERE, BEFORE ANYTHING IS DERIVED.
-        //
-        // `transcriptTimelineItems` interleaves the provider's speech with the segment's gap
-        // records, and those records are WALL offsets — they come from sample indices, which
-        // free-run through the audio nobody stored. Handing it media-clock speech therefore
-        // ordered two different clocks against each other: a gap row was inserted before the
-        // first block whose *media* start exceeded the gap's *wall* start, which pushes every
-        // quiet and interrupted marker later in the list by the stored/elapsed difference —
-        // measured over the real library, a median of 33 s and a p90 of 3 m 28 s TODAY, on loss
-        // gaps alone, rising to 54 s / 3 m 57 s once watch-side silence suppression ships
-        // (PebbleOS a47acac74; 4.1-13.8% of airtime withheld). It also computed the "quiet
-        // for…" rows between blocks as a media-time difference, which is zero across exactly
-        // the silence the row exists to describe.
-        //
-        // Lifting the provider's timings onto the wall clock up front is the whole fix, and it
-        // is cheap: one binary search per timing, no allocation beyond the mapped arrays. The
-        // rows' own stamps were already converted individually and were already right; this is
-        // about the order they appear in and the gaps derived BETWEEN them.
-        // ONLY THIS PIECE'S WORDS, decided on the clock the piece's bounds are on. A turn (and
-        // a word) belongs to the piece its first instant falls in — the rule
-        // `SegmentTranscript.piece` cuts by — so every turn of a shared segment appears in
-        // exactly one conversation. Durable timings are on the media clock, as the bounds are;
-        // the live preview is on the wall clock, so it is tested against the piece's wall
-        // window instead.
-        let ownSegments: [SearchKit.TranscriptSegment]
-        let ownWords: [SearchKit.TranscriptWord]
-        if own.member.isWhole {
-            ownSegments = segments
-            ownWords = words
-        } else if timebase == .media {
-            ownSegments = segments.filter { own.member.contains(mediaMs: $0.startMs) }
-            ownWords = words.filter { own.member.contains(mediaMs: $0.startMs) }
-        } else {
-            ownSegments = segments.filter { own.wallMs?.contains($0.startMs) ?? true }
-            ownWords = words.filter { own.wallMs?.contains($0.startMs) ?? true }
-        }
-
-        let wallSegments: [SearchKit.TranscriptSegment]
-        let wallWords: [SearchKit.TranscriptWord]
-        if convertsFromMedia {
-            // `wallOffset(ofMedia:)` is the shared form of this rule (exact → converted); this
-            // branch only runs on an exact clock, so it is `wall(fromMedia:)` here.
-            wallSegments = ownSegments.map {
-                var span = $0
-                span.startMs = clock.wallOffset(ofMedia: $0.startMs)
-                span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
-                return span
-            }
-            wallWords = ownWords.map {
-                var span = $0
-                span.startMs = clock.wallOffset(ofMedia: $0.startMs)
-                span.endMs = clock.wallOffset(ofMedia: max($0.endMs, $0.startMs))
-                return span
-            }
-        } else {
-            // Already the right clock (the live preview), or a segment whose records cannot
-            // place it. Deliberately NOT clamped to the segment's span either way: the live
-            // preview can be a flush ahead of the metadata it is previewing, and pinning its
-            // newest rows to the last known sample would stack them on one instant. The stamp
-            // is clamped where it is rendered, exactly as it was before.
-            wallSegments = ownSegments
-            wallWords = ownWords
-        }
-
-        // Looped transcriber output is taken out of the rows before anything else is derived
-        // from them (see `SearchKit/TranscriptLoopSuppression.swift`). Both streams have to be
-        // filtered together — the aligner below walks the word stream POSITIONALLY against the
-        // rendered text, so dropping turns without dropping their words slides every later
-        // highlight by the removed characters.
-        let cleaned = filteringLoopedArtefacts(segments: wallSegments, words: wallWords)
-        // The gap records are the one input nothing above could cut: the renderer reads them
-        // off the meta, so it is told which stretch of the segment this is.
-        let timeline = transcriptTimelineItems(
-            meta: meta, segments: cleaned.segments, words: cleaned.words,
-            suppressedLoops: cleaned.loops, window: own.wallMs)
         // Word timings are aligned to the rendered turns ONCE for the whole member, because the
         // only reliable correspondence between them is positional: both derive from the same
         // provider token stream, so the Nth letter of the transcript is the Nth letter of the
         // words. Aligning turn-by-turn on time windows instead would drift wherever
         // `splitSpeechBlock` interpolated a chunk boundary.
         var aligner = TranscriptWordAligner(
-            words: cleaned.words, speechTexts: timeline.compactMap { $0.asSpeech?.text })
+            words: built.words, speechTexts: timeline.compactMap { $0.asSpeech?.text })
 
         for (offset, item) in timeline.enumerated() {
             let itemId = "\(segmentId)-\(offset)"
