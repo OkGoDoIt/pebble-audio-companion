@@ -1,0 +1,6 @@
+@* "Your server address" and its Copy button (round-3 05a): the host to read, the whole address to paste. *@
+@model (string Host, string Url)
+<div class="card address">
+	<span class="grow"><span class="label">Your server address</span><span class="value">@Model.Host</span></span>
+	<button type="button" class="btn small bordered" data-copy-value="@Model.Url" aria-label="Copy your server address">@SiteIcons.Copy<span>Copy</span></button>
+</div>
