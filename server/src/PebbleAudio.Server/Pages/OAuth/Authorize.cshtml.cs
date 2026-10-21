@@ -26,7 +26,7 @@ public sealed class AuthorizeModel(
 	/// <summary>Where the app's identity comes from: the host serving its metadata document, or null when it registered itself.</summary>
 	public string? VerifiedHost => Pending?.Client.MetadataHost;
 
-	public bool ReturnsToThisDevice => Pending is { } p && OAuthRedirects.IsLoopback(p.RedirectUri);
+	public bool ReturnsToThisDevice => Pending is { } p && OAuthRedirects.ReturnsToDevice(p.RedirectUri);
 
 	public string ReturnHost => Pending is { } p ? OAuthRedirects.Host(p.RedirectUri) : "";
 

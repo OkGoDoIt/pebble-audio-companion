@@ -46,22 +46,39 @@ public sealed record ClientMetadata(
 
 /// <summary>
 /// Redirect URI rules (OAuth 2.1, RFC 8252): https anywhere, or http on a loopback host, never a fragment. Matching is
-/// exact, except that a loopback registration matches the same host, path, and query on any port.
+/// exact, except that a loopback registration matches the same host, path, and query on any port. One private-use
+/// redirect is allowed by its exact scheme and host, Cursor's (<see cref="CursorAppScheme"/>); custom schemes are
+/// otherwise refused, since any app on a device can claim one.
 /// </summary>
 public static class OAuthRedirects
 {
+	/// <summary>Cursor's desktop app returns to <c>cursor://anysphere.cursor-mcp/oauth/callback</c> on some installs.</summary>
+	public const string CursorAppScheme = "cursor";
+
+	public const string CursorAppHost = "anysphere.cursor-mcp";
+
 	public static bool IsAllowed(string value) =>
 		Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
 		uri.Fragment.Length == 0 &&
 		string.IsNullOrEmpty(uri.UserInfo) &&
 		uri.Host.Length > 0 &&
-		(uri.Scheme == Uri.UriSchemeHttps || IsLoopback(uri));
+		(uri.Scheme == Uri.UriSchemeHttps || IsLoopback(uri) || IsKnownApp(uri));
 
 	public static bool IsLoopback(Uri uri) =>
 		uri.Scheme == Uri.UriSchemeHttp && uri.Host is "localhost" or "127.0.0.1" or "[::1]";
 
 	public static bool IsLoopback(string value) =>
 		Uri.TryCreate(value, UriKind.Absolute, out var uri) && IsLoopback(uri);
+
+	/// <summary>A private-use redirect this server knows by its exact scheme and host, with no port.</summary>
+	public static bool IsKnownApp(Uri uri) =>
+		string.Equals(uri.Scheme, CursorAppScheme, StringComparison.Ordinal) &&
+		string.Equals(uri.Host, CursorAppHost, StringComparison.Ordinal) &&
+		uri.Port == -1;
+
+	/// <summary>Sign-in returns to an app on the same device: a loopback port, or a known app's own address.</summary>
+	public static bool ReturnsToDevice(string value) =>
+		Uri.TryCreate(value, UriKind.Absolute, out var uri) && (IsLoopback(uri) || IsKnownApp(uri));
 
 	public static bool Matches(string registered, string requested)
 	{
