@@ -1,6 +1,6 @@
 import { createPasskey, signInWithPasskey } from "./passkeys.js";
 
-// The server's own pages: passkey forms, copy buttons, confirmations, small dialogs, and times in the reader's zone.
+// The server's own pages: passkey forms, copy buttons, confirmations, and small dialogs.
 
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
 
@@ -141,49 +141,4 @@ function wireDialog(dialog) {
 			}
 		}
 	});
-}
-
-/* Times: the server renders UTC; show them in the reader's time zone. */
-
-const dateTimeFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
-const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
-const relativeFormat = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
-const units = [
-	["year", 365 * 24 * 3600],
-	["month", 30 * 24 * 3600],
-	["week", 7 * 24 * 3600],
-	["day", 24 * 3600],
-	["hour", 3600],
-	["minute", 60],
-];
-
-function relative(date) {
-	const seconds = (date.getTime() - Date.now()) / 1000;
-	for (const [unit, size] of units) {
-		if (Math.abs(seconds) >= size) {
-			return relativeFormat.format(Math.round(seconds / size), unit);
-		}
-	}
-
-	return "just now";
-}
-
-for (const element of document.querySelectorAll("time[data-format]")) {
-	const date = new Date(element.getAttribute("datetime") ?? "");
-	if (Number.isNaN(date.getTime())) {
-		continue;
-	}
-
-	element.title = dateTimeFormat.format(date);
-	switch (element.dataset.format) {
-		case "date":
-			element.textContent = dateFormat.format(date);
-			break;
-		case "relative":
-			element.textContent = relative(date);
-			break;
-		default:
-			element.textContent = dateTimeFormat.format(date);
-			break;
-	}
 }
