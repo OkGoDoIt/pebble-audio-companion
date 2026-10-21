@@ -181,7 +181,7 @@ struct MusePushToTalkTests {
         #expect(fx.link.actions().isEmpty)
         // And it was never offered to Muse.
         let offered = MuseTools.commands(
-            for: MusePreferences(watchActions: [.choice], dataAccess: Dictionary(uniqueKeysWithValues: MuseDataSource.allCases.map { ($0, .off) })),
+            for: MusePreferences(watchActions: [.choice], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true)
         #expect(offered.object?.keys.sorted() == [MuseTools.choiceCommand])
     }
@@ -571,7 +571,7 @@ struct MuseToolsTests {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
         #expect(all.count == 13)
         let none = MuseTools.commands(
-            for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseDataSource.allCases.map { ($0, .off) })),
+            for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]
         #expect(none.isEmpty)
         // Without the app's data, the tools that need it aren't offered.

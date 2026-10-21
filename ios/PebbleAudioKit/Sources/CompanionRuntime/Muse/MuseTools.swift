@@ -342,7 +342,7 @@ actor MuseTools {
     /// for. Nil when the source may be read now; otherwise what to tell Muse, after telling the
     /// wearer on the watch what to do.
     private func phoneAccess(
-        _ source: MuseDataSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
+        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
     ) async -> MuseJSON? {
         let what = source == .calendar ? "calendar" : "reminders"
         if Self.phoneRefused(source) {
@@ -375,11 +375,11 @@ actor MuseTools {
         return Self.reply(.notAnswered, source)
     }
 
-    static func phoneAuthorized(_ source: MuseDataSource) -> Bool {
+    static func phoneAuthorized(_ source: MuseSource) -> Bool {
         source == .calendar ? MuseEventKitSource.calendarAuthorized : MuseEventKitSource.remindersAuthorized
     }
 
-    static func phoneRefused(_ source: MuseDataSource) -> Bool {
+    static func phoneRefused(_ source: MuseSource) -> Bool {
         source == .calendar ? MuseEventKitSource.calendarRefused : MuseEventKitSource.remindersRefused
     }
 
@@ -396,7 +396,7 @@ actor MuseTools {
 
     /// The question the watch asks the first time Muse wants a source.
     /// Word for word from docs/privacy-model.md (D7a, D7c-e).
-    static func consentQuestion(_ source: MuseDataSource) -> String {
+    static func consentQuestion(_ source: MuseSource) -> String {
         switch source {
         case .conversations:
             return "Let Muse read your conversations? What it reads, including what others said, goes to Meta."
@@ -420,7 +420,7 @@ actor MuseTools {
         case notAnswered
     }
 
-    static func reply(_ refusal: Refusal, _ source: MuseDataSource) -> MuseJSON {
+    static func reply(_ refusal: Refusal, _ source: MuseSource) -> MuseJSON {
         let name = sourceName(source)
         switch refusal {
         case .notAllowed:
@@ -438,7 +438,7 @@ actor MuseTools {
     /// Nil when `source` may be used now: allowed already, or the wearer allows it on the watch.
     /// The call is held open while the watch asks, up to `deadline`.
     private func permission(
-        _ source: MuseDataSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
+        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
     ) async -> MuseJSON? {
         switch prefs.access(source) {
         case .allowed: return nil
@@ -638,7 +638,7 @@ actor MuseTools {
 
 
 
-    static func sourceName(_ source: MuseDataSource) -> String {
+    static func sourceName(_ source: MuseSource) -> String {
         switch source {
         case .conversations: return "conversations"
         case .health: return "health data"

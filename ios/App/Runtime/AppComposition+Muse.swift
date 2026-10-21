@@ -79,7 +79,7 @@ enum MuseComposition {
         guard !pending.isEmpty else { return }
         askingPhoneAccess = true
         Task { @MainActor in
-            for source in MuseDataSource.allCases where pending.contains(source) {
+            for source in MuseSource.allCases where pending.contains(source) {
                 // Cleared first: the prompt is shown once, whatever the answer.
                 preferences.update { $0.pendingPhoneAccess.remove(source) }
                 switch source {

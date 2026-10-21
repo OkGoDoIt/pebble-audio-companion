@@ -390,7 +390,7 @@ struct SettingsMuseScreen: View {
     }
 
     private func sourceRow(
-        _ source: MuseDataSource, _ title: String, subtitle: String? = nil,
+        _ source: MuseSource, _ title: String, subtitle: String? = nil,
         phone: MuseScreenModel.PhonePermission = .granted
     ) -> some View {
         let access = model.preferences.access(source)
@@ -403,9 +403,9 @@ struct SettingsMuseScreen: View {
                 ChoiceScreen(
                     title: title,
                     options: [
-                        .init(value: MuseAccess.ask, label: Copy.Muse.accessAsk),
-                        .init(value: MuseAccess.allowed, label: Copy.Muse.accessAllowed),
-                        .init(value: MuseAccess.off, label: Copy.Muse.accessOff),
+                        .init(value: MuseSourceAccess.ask, label: Copy.Muse.accessAsk),
+                        .init(value: MuseSourceAccess.allowed, label: Copy.Muse.accessAllowed),
+                        .init(value: MuseSourceAccess.off, label: Copy.Muse.accessOff),
                     ],
                     selection: Binding(get: { model.preferences.access(source) }, set: { model.setAccess(source, $0) }),
                     footer: Copy.Muse.accessAskFooter)
@@ -449,7 +449,7 @@ struct SettingsMuseScreen: View {
         }
     }
 
-    private func accessLabel(_ access: MuseAccess) -> String {
+    private func accessLabel(_ access: MuseSourceAccess) -> String {
         switch access {
         case .ask: return Copy.Muse.accessAsk
         case .allowed: return Copy.Muse.accessAllowed
@@ -950,7 +950,7 @@ final class MuseScreenModel {
         remindersPermission = MuseEventKitSource.remindersAuthorized ? .granted : (MuseEventKitSource.remindersRefused ? .refused : .notAsked)
     }
 
-    func setAccess(_ source: MuseDataSource, _ access: MuseAccess) {
+    func setAccess(_ source: MuseSource, _ access: MuseSourceAccess) {
         if previewing {
             preferences.dataAccess[source] = access
             return
@@ -964,7 +964,7 @@ final class MuseScreenModel {
         }
     }
 
-    func requestPhoneAccess(_ source: MuseDataSource) {
+    func requestPhoneAccess(_ source: MuseSource) {
         Task {
             let events = MuseComposition.eventKit
             switch source {
