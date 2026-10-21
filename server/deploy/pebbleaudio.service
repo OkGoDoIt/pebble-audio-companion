@@ -16,6 +16,9 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
 SyslogIdentifier=pebbleaudio
+# The droplet has 2 GB, shared with Postgres and other apps: the app and its ffmpeg children stop here rather
+# than push a neighbour into the OOM killer. .NET sizes its heap to the limit (75% by default).
+MemoryMax=768M
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

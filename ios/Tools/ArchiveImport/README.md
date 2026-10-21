@@ -1,8 +1,9 @@
 # archive-import
 
-Seeds the Pebble Audio server from one of the phone's Desktop backups. Every payload is built by the
-iOS app's own export code (`PebbleAudioKit/Sources/CompanionRuntime/ArchiveSync`), so the server
-receives exactly what the phone would send on linking: the same enumeration
+Seeds the Pebble Audio server from one of the phone's Desktop backups with what the phone no longer
+has. Every payload is built by the iOS app's own export code
+(`PebbleAudioKit/Sources/CompanionRuntime/ArchiveSync`), so each item is exactly what the phone would
+send for it on linking: the same enumeration
 (`ArchiveOutbox.markEverything`), the same builders, the same envelopes, and the same batches
 (200 items or 8 MB, `X-Sync-Protocol: 1`). The wire contract is
 [`server/docs/sync-protocol.md`](../../../server/docs/sync-protocol.md).
@@ -37,8 +38,19 @@ example `~/Desktop/PebbleAudioBackup/audio-companion-20261015-005220`.
 | `--scope all` | Everything (the default when the server holds no sharing scope). |
 | `--scope since:2026-10-01` | Only what is dated from that day on (the app's day, from 5 AM, in this Mac's zone). An RFC 3339 time works too. |
 | `--scope last:90` | Only the last 90 days. |
+| `--before 2026-09-01` | Only what is dated before that day (or RFC 3339 time), instead of before where the phone's own archive begins. Nothing deleted is held back then. |
+| `--before all` | Everything in the backup, whatever the phone has sent or the person deleted. |
 | `--dry-run` | Builds and checks every payload, prints counts per kind and the first item that fails the check. |
 | `--limit N` | Sends at most N items after the scope, in kind order (conversations first). |
+
+By default the import adds only what the phone no longer has. The server says where the phone's own
+archive on it begins (`phoneSince` in `GET /sync/status`, the earliest conversation a phone sent) and
+when the archive was last deleted (`wipedAt`, by Delete All or unlinking); the import sends what is
+dated before the first and not before the second. Without that boundary a conversation the phone has
+since re-cut (a segmenter change gives it a new id) would stay on the server next to the new cut, and
+what the person deleted would come back; the phone never deletes ids it does not hold, so both would
+stay for good. With no phone synced yet it stops and says so: link the phone first. People go only
+with something that mentions them. `--before` chooses the boundary by hand.
 
 Without `--scope`, the import uses the sharing scope stored on the server (`GET /sync/preferences`)
 when the server has one. Dating follows §5 of the contract: a conversation and its transcript by when
@@ -68,9 +80,10 @@ status is 0 when nothing was rejected or failed the check.
 
 ## Versions and replays
 
-Every item is sent at one version: when the backup's database was last written (the newer
-modification time of `companion.sqlite` and its `-wal`). Running the same backup again sends the
-same versions, and the server answers them as already held. A newer backup supersedes an older one,
+Every item is sent at one version: the newest change the backup's database records (the latest of
+its created, updated, edited, and similar times, read before anything writes to the copy), never the
+files' modification dates, which a copy without timestamps moves later. Running the same backup
+again sends the same versions, and the server answers them as already held. A newer backup supersedes an older one,
 and the phone's own sync, whose versions are the times of each change, supersedes both. The device
 shows up on the admin page as "Backup import on <this Mac>". Each `--code` links a new one; it can be
 unlinked there once the import is done.

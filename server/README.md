@@ -61,8 +61,9 @@ Built:
 - The sharing scope (`Sync/SharingScope.cs`, `Sync/ScopeSweep.cs`): stored with the preferences, applied to every
   tool query and every batch (items outside are ignored as `outsideScope`), and enforced by a deletion at 03:30
   in the account's time zone (the zone of its latest conversation) and at once when the phone narrows it.
-  `DELETE /link` deletes the account's archive and ends every assistant's access with the device's;
-  `?keepData=true` only revokes the device.
+  `DELETE /link` deletes the account's archive and ends every assistant's access with the device's, and so does
+  the admin area's Unlink of the last linked phone; with another phone still linked, the admin Unlink only revokes
+  that phone.
 - Batches announce a recap whose text changed and a follow-up the phone added (recent ones only) through
   `IEventPublisher`.
 - CI and deploy workflows, mirroring Situ.
@@ -220,10 +221,16 @@ Production is `https://pebbleaudio.okgodoit.com` on the shared DigitalOcean drop
   manual run): build, test, publish (Release, linux-x64, framework-dependent), migration bundle, package,
   `scp` to the droplet, then `sudo /opt/pebbleaudio/deploy-pebbleaudio.sh <sha> <artifact>`. The deploy
   script backs up the database, runs the bundle, swaps the `current` symlink, restarts the service, waits for
-  `/healthz`, and rolls back if it never passes. The deploy steps need the repository secrets
+  `/healthz`, and rolls back if it never passes. Nothing from the artifact runs as root: it is unpacked and its
+  bundle run as `pebbleaudio`, and the nginx site is installed only by `setup-server.sh` from the repo, so a
+  change to `deploy/nginx/pebbleaudio.conf` (or to the deploy script, the units, or the timers) needs a run of
+  `setup-server.sh` on the droplet. The deploy steps need the repository secrets
   `PEBBLEAUDIO_DEPLOY_SSH_KEY` (the private half of the key whose public half `setup-server.sh <key.pub>` installs for
-  `pebbleaudio-deploy`), `PEBBLEAUDIO_DEPLOY_HOST`, `PEBBLEAUDIO_DEPLOY_USER` (`pebbleaudio-deploy`), and
-  optionally `PEBBLEAUDIO_DEPLOY_PORT`; until the key is set, the workflow builds and tests only.
+  `pebbleaudio-deploy`), `PEBBLEAUDIO_DEPLOY_HOST`, `PEBBLEAUDIO_DEPLOY_USER` (`pebbleaudio-deploy`),
+  `PEBBLEAUDIO_DEPLOY_KNOWN_HOSTS` (the droplet's host keys as `known_hosts` lines, checked against
+  `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` on the droplet; SSH then refuses any other key), and optionally
+  `PEBBLEAUDIO_DEPLOY_PORT`; until the key is set, the workflow builds and tests only. Without the known hosts
+  the run trusts whatever key the droplet answers with, and warns.
 - **By hand**: `deploy/scripts/publish-local.sh` builds the same artifact on the Mac, runs the tests, and
   deploys it over SSH as root (`PEBBLEAUDIO_DEPLOY_TARGET`, default `root@pebbleaudio.okgodoit.com`).
 

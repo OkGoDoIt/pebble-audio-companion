@@ -173,6 +173,27 @@ struct SyntheticBackup {
     #expect(try backup.fingerprint() == before)
 }
 
+@Test func versionsComeFromTheBackupsContentsNotItsFileDates() async throws {
+    // A copy that reset the file dates five days later must not outrank what the phone sent since.
+    let backup = try SyntheticBackup()
+    defer { try? FileManager.default.removeItem(at: backup.root) }
+    let later = Date().addingTimeInterval(5 * 86_400)
+    for name in ["db/companion.sqlite", "db/companion.sqlite-wal"] {
+        let url = backup.root.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: url.path)
+        }
+    }
+
+    let library = try await BackupLibrary.open(backup.root)
+    defer { library.close() }
+    #expect(library.fileWrittenMs ?? 0 >= Int64(later.timeIntervalSince1970 * 1000) - 1_000)
+    // The newest thing the synthetic backup wrote is its note, unless the app's own setup stamped a row later.
+    #expect(library.snapshotMs >= SyntheticBackup.startMs + 110_000)
+    #expect(library.snapshotMs <= Int64(Date().timeIntervalSince1970 * 1000))
+    #expect(try await library.everything().allSatisfy { $0.version == library.snapshotMs })
+}
+
 @Test func theScopeDatesEachKindTheWayTheContractDoes() throws {
     let zone = "Asia/Jakarta"
     // 2026-10-10 05:00 in Jakarta, the start of that logical day.
@@ -202,7 +223,27 @@ struct SyntheticBackup {
     #expect(dates.contains(.person, id: "anyone", cutoffMs: cutoff))
     #expect(dates.contains(.conversation, id: "old", cutoffMs: nil))
 
+    // What the phone no longer has: what is dated before its own archive on the server begins.
+    #expect(dates.isBefore(.conversation, id: "old", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.conversation, id: "new", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.note, id: "note-new", boundaryMs: cutoff))
+    #expect(dates.isBefore(.followUp, id: "fu-old", boundaryMs: cutoff))
+    #expect(dates.isBefore(.recap, id: "2026-10-09", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.recap, id: "2026-10-10", boundaryMs: cutoff))
+    #expect(dates.isBefore(.brief, id: "week:2026-10-03", boundaryMs: cutoff))
+    #expect(!dates.isBefore(.brief, id: "week:2026-10-04", boundaryMs: cutoff))
+    #expect(dates.isBefore(.person, id: "anyone", boundaryMs: cutoff))
+    // A note without a conversation is dated by when it was written.
+    let loose = ScopeDates(
+        conversationStartMs: [:], noteConversation: [:], noteCreatedMs: ["note-loose": cutoff - 1],
+        followUpMs: [:], zoneID: zone)
+    #expect(!loose.contains(.note, id: "note-loose", cutoffMs: cutoff))
+    #expect(loose.isBefore(.note, id: "note-loose", boundaryMs: cutoff))
+
     let hcm = try #require(TimeZone(identifier: zone))
+    #expect(ImportBoundary.parse("all") == .everything)
+    #expect(ImportBoundary.parse("2026-10-10", timeZone: hcm) == .before(ms: cutoff))
+    #expect(ImportBoundary.parse("soon") == nil)
     #expect(ImportScope.parse("since:2026-10-10", timeZone: hcm) == .since(ms: cutoff))
     #expect(ImportScope.parse("since:2026-10-10T00:00:00Z") == .since(ms: 1_791_590_400_000))
     #expect(ImportScope.parse("last:90") == .lastDays(90))

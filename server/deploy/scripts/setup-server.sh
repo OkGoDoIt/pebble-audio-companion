@@ -11,6 +11,8 @@ port="5090"
 deploy_user="${app}-deploy"
 deploy_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deploy_pubkey="${1:-}"
+# Npgsql's default is 100, the shared Postgres's whole max_connections.
+pool_size=15
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root." >&2
@@ -20,9 +22,20 @@ fi
 echo "== packages"
 if ! command -v ffmpeg >/dev/null 2>&1; then
   apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg
+  # Without recommends: about 140 packages and 100 MB less (X11, OpenCL), as CI installs it.
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg
 fi
+# Ubuntu 22.04's ffmpeg 4.4 decodes Speex only through libspeex (Sync/ClipTranscodeJob.cs).
+ffmpeg -hide_banner -decoders 2>/dev/null | grep -q ' libspeex ' || { echo "ffmpeg lists no libspeex decoder; clips cannot be converted" >&2; exit 1; }
 command -v dotnet >/dev/null || { echo "dotnet runtime missing (expected aspnetcore-runtime-10.0)"; exit 1; }
+aspnet="$(dotnet --list-runtimes | sed -n 's/^Microsoft\.AspNetCore\.App \(10\.0\.[0-9]*\) .*/\1/p' | sort -V | tail -n 1)"
+[[ -n "$aspnet" ]] || { echo "the ASP.NET Core 10.0 runtime is missing (apt-get install aspnetcore-runtime-10.0)" >&2; exit 1; }
+echo "   ASP.NET Core ${aspnet}"
+# Patches are security fixes. Upgrading is left to a person: Situ runs on the same runtime, and both apps
+# need a restart to pick it up.
+if apt list --upgradable 2>/dev/null | grep -q '^aspnetcore-runtime-10\.0/'; then
+  echo "   a newer ASP.NET Core 10.0 patch is available: apt-get install --only-upgrade aspnetcore-runtime-10.0, then restart the .NET services"
+fi
 
 echo "== users"
 if ! id "$app" >/dev/null 2>&1; then
@@ -55,7 +68,7 @@ if [[ ! -f "$env_file" ]]; then
   cat > "$env_file" <<EOF
 ASPNETCORE_ENVIRONMENT=Production
 ASPNETCORE_URLS=http://127.0.0.1:${port}
-ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=${app};Username=${app};Password=${db_password}
+ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=${app};Username=${app};Password=${db_password};Maximum Pool Size=${pool_size}
 PebbleAudio__PublicOrigin=https://${host}
 PebbleAudio__ClipsPath=/var/lib/${app}/clips
 DataProtection__KeysPath=/var/lib/${app}/data-protection-keys
@@ -65,6 +78,10 @@ EOF
   echo "   wrote ${env_file}"
 else
   echo "   ${env_file} exists, left as is"
+fi
+if ! grep -q '^ConnectionStrings__DefaultConnection=.*Maximum Pool Size=' "$env_file"; then
+  sed -i -E "s/^(ConnectionStrings__DefaultConnection=\"?[^\"]*[^\";])(;?)(\"?)\$/\1;Maximum Pool Size=${pool_size}\3/" "$env_file"
+  echo "   capped the connection pool at ${pool_size} (restart ${app} to apply)"
 fi
 db_password="$(sed -n 's/^ConnectionStrings__DefaultConnection=.*Password=\([^;]*\).*/\1/p' "$env_file")"
 
@@ -97,8 +114,29 @@ chmod 440 "/etc/sudoers.d/${deploy_user}"
 visudo -cf "/etc/sudoers.d/${deploy_user}" >/dev/null
 
 echo "== nginx"
+# The site is installed from this checkout only, never by a deploy: nginx opens the log paths a site names as
+# root, so a site file from an artifact would be root on the shared droplet.
 site="/etc/nginx/sites-available/${app}"
-if [[ ! -f "$site" ]]; then
+if [[ -f "/etc/letsencrypt/live/${host}/fullchain.pem" ]]; then
+  if cmp -s "${deploy_dir}/nginx/${app}.conf" "$site"; then
+    echo "   ${site} matches the repo"
+  else
+    previous="$(mktemp)"
+    [[ -f "$site" ]] && cp "$site" "$previous"
+    install -m 644 "${deploy_dir}/nginx/${app}.conf" "$site"
+    ln -sfn "$site" "/etc/nginx/sites-enabled/${app}"
+    if nginx -t; then
+      systemctl reload nginx
+      echo "   installed ${site} from the repo"
+    else
+      if [[ -s "$previous" ]]; then install -m 644 "$previous" "$site"; else rm -f "$site" "/etc/nginx/sites-enabled/${app}"; fi
+      rm -f "$previous"
+      echo "   the repo's site failed nginx -t; the previous one is back" >&2
+      exit 1
+    fi
+    rm -f "$previous"
+  fi
+elif [[ ! -f "$site" ]]; then
   # First install: HTTP only, so certbot can take over and add the TLS server block.
   cat > "$site" <<EOF
 server {
@@ -122,9 +160,9 @@ EOF
   ln -sfn "$site" "/etc/nginx/sites-enabled/${app}"
   nginx -t
   systemctl reload nginx
-  echo "   installed HTTP site; run: certbot --nginx -d ${host} --redirect --non-interactive --agree-tos"
+  echo "   installed HTTP site; run: certbot certonly --nginx -d ${host}, then this script again for the TLS site"
 else
-  echo "   ${site} exists; deploys replace it from the artifact's nginx/${app}.conf"
+  echo "   ${site} exists and there is no certificate yet; left as is"
 fi
 
 echo "done"

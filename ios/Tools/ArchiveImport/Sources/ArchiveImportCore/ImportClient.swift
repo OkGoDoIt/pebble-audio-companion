@@ -108,6 +108,33 @@ public struct ImportClient: Sendable {
         }
     }
 
+    /// What the server says about the phone's own archive (`GET /sync/status`, §5): where what a
+    /// phone sent begins, and when the archive was last deleted. Both are nil on a server from
+    /// before they existed, and then the import behaves as if no phone had synced.
+    public struct Holdings: Equatable, Sendable {
+        public var phoneSinceMs: Int64?
+        public var wipedAtMs: Int64?
+
+        public init(phoneSinceMs: Int64?, wipedAtMs: Int64?) {
+            self.phoneSinceMs = phoneSinceMs
+            self.wipedAtMs = wipedAtMs
+        }
+    }
+
+    public func holdings(_ endpoint: ArchiveEndpoint) async throws -> Holdings {
+        let (status, body) = try await send(endpoint.request("GET", "/sync/status", json: false))
+        switch status {
+        case 200:
+            let value = try? JSONDecoder().decode(ArchiveJSONValue.self, from: body)
+            return Holdings(
+                phoneSinceMs: ArchiveTime.ms(value?["phoneSince"]?.string),
+                wipedAtMs: ArchiveTime.ms(value?["wipedAt"]?.string))
+        case 401: throw Failure.unauthorized
+        case 426: throw Failure.upgradeRequired
+        default: throw Failure.server(status: status, message: Self.errorText(body))
+        }
+    }
+
     // MARK: - §3 batches
 
     public enum BatchAnswer: Sendable {

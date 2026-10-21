@@ -172,6 +172,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseRouting();
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -190,9 +191,10 @@ app.MapGet("/", () => Results.Redirect("/admin"));
 app.MapGet("/.well-known/oauth-protected-resource", (IOptionsMonitor<McpAuthenticationOptions> options) =>
 	Results.Json(
 		options.Get(McpAuthenticationDefaults.AuthenticationScheme).ResourceMetadata,
-		McpJsonUtilities.DefaultOptions));
+		McpJsonUtilities.DefaultOptions))
+	.RequireCors(BrowserClients.CorsPolicy);
 
-app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy);
+app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy).RequireCors(BrowserClients.CorsPolicy);
 app.MapSync();
 app.MapOAuthServer();
 

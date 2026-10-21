@@ -90,9 +90,9 @@ public sealed class OAuthAuthorization(OAuthClientResolver clients, OAuthUrls ur
 			return Fail(redirectUri, "invalid_request", "PKCE with code_challenge_method=S256 is required", state);
 		}
 
-		// RFC 8707: the token's audience. Clients send the MCP URL exactly; older ones send nothing.
+		// RFC 8707: the token's audience. Clients send the MCP URL (in any canonical spelling); older ones send nothing.
 		var resource = Single(query, "resource");
-		if (resource is not null && !string.Equals(resource, urls.Resource, StringComparison.Ordinal))
+		if (resource is not null && !OAuthUrls.SameResource(resource, urls.Resource))
 		{
 			logger.LogInformation("Client {ClientId} asked for resource {Resource}.", clientId, resource);
 			return Fail(redirectUri, "invalid_target", $"the only resource here is {urls.Resource}", state);

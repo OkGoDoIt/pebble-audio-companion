@@ -16,8 +16,11 @@ A tool result is an MCP `CallToolResult` with:
 - `content`: two text blocks, in this order:
   1. the result's `summary` alone, one speakable sentence (for voice and AirPods, and for clients that read
      only the first block);
-  2. the same JSON as `structuredContent`, serialized, which ChatGPT requires for `search` and `fetch` and
-     every client that ignores `structuredContent` can parse.
+  2. the same JSON as `structuredContent`, serialized, which every client that ignores `structuredContent`
+     can parse.
+
+  `search` and `fetch` carry only the second, as OpenAI's connector contract has it (one text item holding the
+  JSON); their `summary` is the JSON's first key.
 - `_meta`: only on `get_audio` when a clip is ready (below). `_meta` reaches widgets, never the model.
 - `isError: true` only for arguments the tool cannot use (an unknown `include`, a malformed time) or a write
   from a read-only connection; the text says what to send instead. Something that is simply not there (an
@@ -64,9 +67,9 @@ Every result that can be cut has `truncated` (boolean). When it is `true`, or wh
 ```
 
 Calling `next.tool` with `next.arguments` returns the following window or page. The ceiling is the
-*Length of an assistant answer* setting (`ToolMaxCharacters`, 60,000 characters of JSON by default, so the
-JSON in `content` plus `structuredContent` stays under Claude's ~150,000-character result limit and Claude
-Code's 25,000 tokens) and the *Items per assistant answer* setting (`ToolMaxResults`, 50). A day of
+*Length of an assistant answer* setting (`ToolMaxCharacters`, 40,000 characters of JSON by default, so the
+JSON in `content` plus `structuredContent` stays under Claude's ~150,000-character result limit, and under
+the 50,000 characters past which Claude Code moves a result into a file and its 25,000 tokens) and the *Items per assistant answer* setting (`ToolMaxResults`, 50). A day of
 transcripts is about 200,000 characters, so whole days never come back in one result. One very long text
 (a recap, a single turn) is cut with `…` at the end rather than dropped.
 
@@ -204,9 +207,12 @@ In time order. Turns and markers share the list:
 ## Tools
 
 Read tools are annotated `readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false`.
-Write tools are `readOnlyHint: false, destructiveHint: false, openWorldHint: false`, need the `archive:write`
+Write tools are `readOnlyHint: false, openWorldHint: false`, with `destructiveHint: false` for the additive
+`create_follow_up` and `create_note` and `true` for `update_follow_up` (it replaces and archives), need the `archive:write`
 scope, and are hidden from `tools/list` for a read-only connection. Every tool has a `title` and the ChatGPT
-status strings `openai/toolInvocation/invoking` and `…/invoked` (64 characters at most) in its `_meta`.
+status strings `openai/toolInvocation/invoking` and `…/invoked` (64 characters at most) in its `_meta`. Each
+`outputSchema` requires only the fields that are never null, since a null field is left out; every result in the
+test suite is checked against it.
 
 ### `get_status`
 
@@ -382,7 +388,9 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 `notes`. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
 window asked for (items with `from_time` ≤ `at` ≤ `to_time`), `shownCount` what fits. A time without an offset
 is read on the conversation's wall clock. `gaps` lists every lost gap and the quiet gaps of a minute or more;
-shorter quiet stretches count in `quietMinutes` and appear as transcript items. An unknown id is `found: false`
+shorter quiet stretches count in `quietMinutes` and appear as transcript items. The lists above the transcript
+take at most half the answer when the transcript is asked for (all of it otherwise): past that, lost gaps stay
+first, then the longest quiet ones, then notes and follow-ups in order, and `summary` says how many it lists. An unknown id is `found: false`
 with `candidates`, conversations whose title matches the id as words:
 `[ { "id", "title", "url", "day", "startedAt" } ]`.
 

@@ -73,15 +73,17 @@ public sealed class McpEventsMethods(
 			throw InvalidParams("delivery.secret must be whsec_ and base64 of 24 to 64 bytes.");
 		}
 
+		// The "Event subscriptions" setting is the default and the ceiling: a request for no expiry (ttlMs null) gets
+		// it too, so every subscription has a refreshBefore and lapses when the assistant stops renewing it.
 		var config = await settings.GetAsync(cancellationToken);
-		TimeSpan? lifetime = config.EventSubscriptionLifetime;
+		var lifetime = config.EventSubscriptionLifetime;
 		if (parameters.TryGetPropertyValue("ttlMs", out var ttl))
 		{
 			lifetime = ttl switch
 			{
-				null => null,
+				null => config.EventSubscriptionLifetime,
 				JsonValue value when value.TryGetValue<long>(out var ms) && ms >= 0 => Clamp(TimeSpan.FromMilliseconds(ms), config.EventSubscriptionLifetime),
-				_ => throw InvalidParams("ttlMs must be a number of milliseconds, or null for no expiry."),
+				_ => throw InvalidParams("ttlMs must be a number of milliseconds, or null."),
 			};
 		}
 
@@ -119,7 +121,7 @@ public sealed class McpEventsMethods(
 		subscription.ApiTokenId = user.TokenId();
 		subscription.RenewedAt = now;
 		subscription.VerifiedAt = now;
-		subscription.ExpiresAt = lifetime is { } span ? now + span : null;
+		subscription.ExpiresAt = now + lifetime;
 		await db.SaveChangesAsync(cancellationToken);
 		logger.LogInformation(
 			"{Client} subscribed to {Event} at {CallbackHost}{Renewed}.",

@@ -13,6 +13,7 @@ public static class ArchiveMcp
 		builder.Services.AddSingleton<ViewerLinks>();
 		builder.Services.AddScoped<ArchiveReader>();
 		builder.Services.AddScoped<ArchiveSearch>();
+		builder.Services.AddOptions<ModelContextProtocol.Server.McpServerOptions>().Configure(CacheHints.Add).PostConfigure(OutputSchemas.Relax);
 		return builder
 			.WithTools<StatusTools>()
 			.WithTools<DayTools>()

@@ -613,6 +613,45 @@ input:not([type]) {
 	min-width: 0;
 }
 
+/* Unlinking the last phone asks first: the question opens under the row, at its full width. */
+.row:has(.unlink[open]) {
+	flex-wrap: wrap;
+}
+
+.unlink summary {
+	list-style: none;
+}
+
+.unlink summary::-webkit-details-marker {
+	display: none;
+}
+
+.unlink[open] {
+	flex-basis: 100%;
+}
+
+/* Open, Cancel sits beside the button that unlinks. */
+.unlink[open] summary {
+	display: none;
+}
+
+.unlink-form {
+	display: grid;
+	gap: var(--space-3);
+}
+
+.unlink-form p {
+	margin: 0;
+	color: var(--color-text-secondary);
+}
+
+.unlink-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: var(--space-2);
+}
+
 /* Settings */
 
 .settings {

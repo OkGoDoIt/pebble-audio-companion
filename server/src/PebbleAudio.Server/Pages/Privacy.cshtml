@@ -1,0 +1,31 @@
+@page "/privacy"
+@model PebbleAudio.Server.Pages.PrivacyModel
+@{
+	ViewData["Title"] = "Privacy";
+}
+<header class="page-header">
+	<h1>Privacy</h1>
+	<p class="lede">This server keeps one person's Pebble Audio archive so the assistants they choose can read it.</p>
+</header>
+
+<section class="card" aria-labelledby="holds-heading">
+	<h2 id="holds-heading">What it holds</h2>
+	<p>The text the owner's iPhone sends: conversation titles, summaries, and transcripts, day recaps, week and month briefs, follow-ups, notes, and the names of the people in them.</p>
+	<p>Audio only when the owner allows clips and an assistant asks for one. A clip is deleted @(Model.ClipKeepDays == 1 ? "a day" : $"{Model.ClipKeepDays} days") after it's ready.</p>
+	<p>How far back it holds is the owner's choice on the phone. Anything older is deleted.</p>
+</section>
+
+<section class="card" aria-labelledby="readers-heading">
+	<h2 id="readers-heading">Who can read it</h2>
+	<p>The owner, signed in with a passkey, and the assistants the owner connected, such as ChatGPT or Claude. Every read by an assistant is logged and shown on the owner's phone.</p>
+	<p>What an assistant keeps of what it reads is governed by the company that makes it, not by this server.</p>
+	<p>The archive is never sold, shared with anyone else, or used for advertising.</p>
+</section>
+
+<section class="card" aria-labelledby="deleting-heading">
+	<h2 id="deleting-heading">Deleting it</h2>
+	<p>Unlinking the phone, or Delete All on it, deletes everything here, and disconnecting an assistant ends its access at once. Database backups on this server are kept for @PrivacyModel.BackupDays days.</p>
+	<p>Like any website, the server logs requests, with IP addresses, to keep it running.</p>
+</section>
+
+<p class="footnote">Questions: <a href="https://github.com/OkGoDoIt/pebble-audio-companion/issues">github.com/OkGoDoIt/pebble-audio-companion/issues</a></p>

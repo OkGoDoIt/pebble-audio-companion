@@ -31,10 +31,14 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		[
 			ArchiveFixture.Item("conversation", "conv-old", ArchiveFixture.Conversation(old, ArchiveFixture.At(old, 9, 0), ArchiveFixture.At(old, 9, 30), "Measuring the old kitchen", "Sam measures the kitchen walls.", ["kitchen renovation"], [ArchiveFixture.Speaker("2", "person-sam", "Sam")], [], 30)),
 			ArchiveFixture.Item("transcript", "conv-old", ArchiveFixture.Transcript("conv-old", [ArchiveFixture.Turn(ArchiveFixture.At(old, 9, 1), "2", "Sam", "The wall is three meters forty.", 0.9)])),
+			// A transcript whose conversation never came: dated by its first item.
+			ArchiveFixture.Item("transcript", "conv-old-alone", ArchiveFixture.Transcript("conv-old-alone", [ArchiveFixture.Turn(ArchiveFixture.At(old, 11, 0), "2", "Sam", "The grout should be grey.", 0.9)])),
 			ArchiveFixture.Item("recap", ArchiveFixture.Key(old), ArchiveFixture.Recap(old, "Measurements", "Measuring the kitchen.", "A morning of measuring.", ["conv-old"])),
 			ArchiveFixture.Item("brief", $"week:{ArchiveFixture.Key(oldWeek)}", ArchiveFixture.Brief("week", $"week:{ArchiveFixture.Key(oldWeek)}", oldWeek, oldWeek.AddDays(6), "Measuring week", "Measurements.", "A week of measuring.")),
 			ArchiveFixture.Item("followUp", "fu-old", ArchiveFixture.FollowUp("Order the wall paint", "conv-old", ArchiveFixture.At(old, 9, 10), ArchiveFixture.At(old, 9, 40))),
 			ArchiveFixture.Item("followUp", "fu-old-loose", ArchiveFixture.FollowUp("Call the plumber", null, null, ArchiveFixture.At(old, 12, 0))),
+			// Said in the old conversation, written down only recently: dated by when it was said.
+			ArchiveFixture.Item("followUp", "fu-old-said", ArchiveFixture.FollowUp("Return the tile samples", "conv-old", ArchiveFixture.At(old, 9, 20), ArchiveFixture.At(fx.Today.AddDays(-1), 12, 0))),
 			ArchiveFixture.Item("note", "note-old", ArchiveFixture.Note("conv-old", "Sizes", "Three meters forty.", ArchiveFixture.At(old, 9, 1), ArchiveFixture.At(old, 10, 0))),
 			ArchiveFixture.Item("coverage", ArchiveFixture.Key(old), fx.Coverage(old)),
 		];
@@ -63,16 +67,21 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal("""{"kind":"lastDays","days":30}""", (await phone.GetJsonAsync("/sync/preferences")).GetProperty("scope").GetRawText());
 		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "lastDays", ["days"] = 0 } }))).StatusCode);
 		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "forever" } }))).StatusCode);
+		// A start in the future would delete everything and hold back every batch until then.
+		var later = Wire.T(DateTimeOffset.UtcNow.AddDays(2));
+		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "since", ["since"] = later } }))).StatusCode);
+		Assert.Equal(6, (await ArchiveFixture.CallAsync(mcp, "get_status")).GetProperty("counts").GetProperty("conversations").GetInt32());
 
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{
 			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
 			var u = phone.UserId;
 			Assert.False(await db.Conversations.AnyAsync(c => c.UserId == u && c.Id == "conv-old"));
-			Assert.False(await db.Transcripts.AnyAsync(t => t.UserId == u && t.ConversationId == "conv-old"));
+			Assert.False(await db.Transcripts.AnyAsync(t => t.UserId == u && (t.ConversationId == "conv-old" || t.ConversationId == "conv-old-alone")));
+			Assert.False(await db.SyncItems.AnyAsync(s => s.UserId == u && s.EntityId == "conv-old-alone"));
 			Assert.False(await db.Recaps.AnyAsync(r => r.UserId == u && r.DayKey == old));
 			Assert.False(await db.Briefs.AnyAsync(b => b.UserId == u && b.PeriodKey == $"week:{ArchiveFixture.Key(oldWeek)}"));
-			Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == u && (f.Id == "fu-old" || f.Id == "fu-old-loose")));
+			Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == u && (f.Id == "fu-old" || f.Id == "fu-old-loose" || f.Id == "fu-old-said")));
 			Assert.False(await db.Notes.AnyAsync(n => n.UserId == u && n.Id == "note-old"));
 			Assert.False(await db.CoverageDays.AnyAsync(c => c.UserId == u && c.DayKey == old));
 			Assert.False(await db.Clips.AnyAsync(c => c.UserId == u));
@@ -155,6 +164,24 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal(Wire.T(since), JsonDocument.Parse(await sinceAnswer.Content.ReadAsStringAsync()).RootElement.GetProperty("scope").GetProperty("since").GetString());
 		var after = await ArchiveFixture.CallAsync(mcp, "list_conversations");
 		Assert.Equal(["conv-launch-2"], after.GetProperty("conversations").EnumerateArray().Select(c => c.GetProperty("id").GetString()));
+
+		// On the day the window opens, coverage before its start is not shown: spans are cut at it.
+		var firstDay = fx.Day.AddDays(1);
+		var firstCoverage = new JsonObject
+		{
+			["dayKey"] = ArchiveFixture.Key(firstDay),
+			["missingMs"] = 0,
+			["quietMs"] = 0,
+			["recordedMs"] = 7_200_000,
+			["spans"] = new JsonArray(
+				new JsonObject { ["endedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 30)), ["kind"] = "recorded", ["startedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 0)) },
+				new JsonObject { ["endedAt"] = Wire.T(ArchiveFixture.At(firstDay, 7, 0)), ["kind"] = "recorded", ["startedAt"] = Wire.T(ArchiveFixture.At(firstDay, 5, 45)) }),
+			["timeZone"] = ArchiveFixture.Zone,
+		};
+		Assert.Single(Phone.Ids(await phone.BatchAsync(ArchiveFixture.Item("coverage", ArchiveFixture.Key(firstDay), firstCoverage)), "accepted"));
+		var spans = (await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(firstDay) })).GetProperty("coverage").GetProperty("spans");
+		var span = Assert.Single(spans.EnumerateArray());
+		Assert.Equal((Wire.T(since), 60.0), (Wire.T(span.GetProperty("startedAt").GetDateTimeOffset()), span.GetProperty("minutes").GetDouble()));
 		Assert.Equal(HttpStatusCode.OK, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "all" } }))).StatusCode);
 		Assert.Single((await ArchiveFixture.CallAsync(mcp, "list_conversations")).GetProperty("conversations").EnumerateArray());
 		var kitchen = fx.Items().Single(i => i["kind"]!.GetValue<string>() == "conversation" && i["id"]!.GetValue<string>() == "conv-kitchen");
@@ -203,6 +230,38 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		Assert.Equal(2, (await phone.GetJsonAsync("/sync/status")).GetProperty("access").GetArrayLength());
 		Assert.True(Directory.Exists(Path.Combine(factory.ClipsPath, userId.ToString("N"))));
 
+		// A backup import adds an older conversation: the status still says where what a phone sent begins, so a later
+		// import adds only what came before it; nothing has been deleted yet.
+		using (var import = await Phone.LinkAsync(factory, userId, "Backup import on the test Mac", build: SyncProtocol.ImportBuild))
+		{
+			var older = fx.Day.AddDays(-30);
+			await import.BatchAsync(ArchiveFixture.Item("conversation", "conv-imported", ArchiveFixture.Conversation(older, ArchiveFixture.At(older, 9, 0), ArchiveFixture.At(older, 9, 20), "An old talk", null, [], [], [], 20)));
+			DateTimeOffset phoneFirst;
+			await using (var scope = factory.Services.CreateAsyncScope())
+			{
+				phoneFirst = await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Conversations
+					.Where(c => c.UserId == userId && c.Id != "conv-imported").MinAsync(c => c.StartedAt);
+			}
+
+			var holdings = await import.GetJsonAsync("/sync/status");
+			Assert.Equal(phoneFirst, holdings.GetProperty("phoneSince").GetDateTimeOffset());
+			Assert.Equal(JsonValueKind.Null, holdings.GetProperty("wipedAt").ValueKind);
+
+			// Done, the import is unlinked in the admin area, as its README says.
+			await using var admin = factory.Services.CreateAsyncScope();
+			Assert.True(await admin.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, import.DeviceId, CancellationToken.None));
+		}
+
+		// The admin area unlinks an old phone while others stay linked: only its token ends.
+		using (var oldPhone = await Phone.LinkAsync(factory, userId, "An old iPhone"))
+		{
+			await using var scope = factory.Services.CreateAsyncScope();
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, oldPhone.DeviceId, CancellationToken.None));
+			Assert.Equal(HttpStatusCode.Unauthorized, (await oldPhone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Conversations.AnyAsync(c => c.UserId == userId));
+			Assert.Equal(2, (await phone.GetJsonAsync("/sync/status")).GetProperty("access").GetArrayLength());
+		}
+
 		// The person unlinks on the phone.
 		Assert.Equal(HttpStatusCode.NoContent, (await phone.SendAsync(HttpMethod.Delete, "/link")).StatusCode);
 
@@ -232,6 +291,25 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 		var remaining = await otherPhone.GetJsonAsync("/sync/status");
 		Assert.Equal(0, remaining.GetProperty("counts").GetProperty("conversation").GetInt32());
 		Assert.Equal(0, remaining.GetProperty("access").GetArrayLength());
+		Assert.True(DateTimeOffset.UtcNow - remaining.GetProperty("wipedAt").GetDateTimeOffset() < TimeSpan.FromMinutes(1));
+		Assert.Equal(JsonValueKind.Null, remaining.GetProperty("phoneSince").ValueKind);
+
+		// It syncs again and an assistant connects; the admin area then unlinks it, the last phone, which clears the
+		// server as unlinking on the phone does.
+		await otherPhone.BatchAsync(fx.Items());
+		string again;
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			(_, again) = await scope.ServiceProvider.GetRequiredService<ApiTokenService>().CreateAsync(userId, "Codex again", TokenAccess.Read, CancellationToken.None);
+			Assert.True(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, otherPhone.DeviceId, CancellationToken.None));
+			Assert.False(await scope.ServiceProvider.GetRequiredService<ArchiveWipe>().UnlinkFromAdminAsync(userId, otherPhone.DeviceId, CancellationToken.None));
+			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+			Assert.Equal(0, await db.Conversations.CountAsync(c => c.UserId == userId));
+			Assert.Equal(0, await db.SyncItems.CountAsync(s => s.UserId == userId));
+		}
+
+		Assert.Equal(HttpStatusCode.Unauthorized, (await otherPhone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
+		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(again))).StatusCode);
 	}
 
 	[Fact]

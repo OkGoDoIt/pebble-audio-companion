@@ -2,6 +2,9 @@
 # Activate a built artifact on the droplet. Run as root (GitHub Actions does it through the
 # pebbleaudio-deploy user's sudo rule; it can also be run by hand).
 #   deploy-pebbleaudio.sh <git-sha> <artifact.tar.gz>
+# Nothing from the artifact runs as root: it is unpacked and its migration bundle run as the
+# pebbleaudio user, and the nginx site comes from setup-server.sh's copy of the repo, never from
+# an artifact (nginx opens its log paths as root).
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -22,6 +25,10 @@ previous_target=""
 
 if [[ ! "$revision" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
   echo "Invalid revision: ${revision}" >&2
+  exit 64
+fi
+if [[ "$artifact_path" != "/tmp/${app}-production-${revision}.tar.gz" ]]; then
+  echo "The artifact must be /tmp/${app}-production-${revision}.tar.gz, not ${artifact_path}." >&2
   exit 64
 fi
 if [[ ! -f "$artifact_path" ]]; then
@@ -46,17 +53,8 @@ install -d -o "$app" -g "$app" -m 750 "$release_root"
 install -d -o postgres -g postgres -m 750 "$backup_dir"
 rm -rf "$release_dir"
 install -d -o "$app" -g "$app" -m 750 "$release_dir"
-tar -xzf "$artifact_path" -C "$release_dir"
-chown -R "$app:$app" "$release_dir"
-chmod +x "${release_dir}/app/PebbleAudio.Server" "${release_dir}/efbundle"
-
-if [[ -f "${release_dir}/nginx/${app}.conf" ]]; then
-  echo "Installing nginx site."
-  install -m 644 "${release_dir}/nginx/${app}.conf" "/etc/nginx/sites-available/${app}"
-  ln -sfn "/etc/nginx/sites-available/${app}" "/etc/nginx/sites-enabled/${app}"
-  nginx -t
-  systemctl reload nginx
-fi
+runuser -u "$app" -- tar -xzf "$artifact_path" -C "$release_dir" --no-same-owner --no-same-permissions
+chmod +x "${release_dir}/app/PebbleAudio.Server" "${release_dir}/efbundle-real"
 
 echo "Backing up the database."
 sudo -u postgres pg_dump --format=custom --file="${backup_dir}/${app}-$(date -u +%Y%m%dT%H%M%SZ).dump" "$app"
@@ -69,7 +67,7 @@ if [[ -z "$connection_string" ]]; then
   echo "ConnectionStrings__DefaultConnection is missing from ${env_file}." >&2
   exit 78
 fi
-"${release_dir}/efbundle" --connection "$connection_string"
+runuser -u "$app" -- "${release_dir}/efbundle-real" --connection "$connection_string"
 
 echo "Activating ${release_dir}."
 ln -sfn "$release_dir" "${current_link}.new"

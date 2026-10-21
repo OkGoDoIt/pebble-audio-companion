@@ -20,11 +20,14 @@ public final class BackupLibrary: Sendable {
     public let root: URL
     public let database: AppDatabase
     public let builder: ArchivePayloadBuilder
-    /// When the backup's database was last written. It is every item's version: the same backup
-    /// always sends the same versions (the server ignores the replay), a newer backup supersedes an
-    /// older one, and the phone's own sync, whose versions are the time of each change, supersedes
-    /// both.
+    /// The newest change the backup's database records (`newestChangeMs`). It is every item's
+    /// version: the same backup always sends the same versions (the server ignores the replay), a
+    /// newer backup supersedes an older one, and the phone's own sync, whose versions are the time
+    /// of each change, supersedes both. It is read from the contents, not the file dates, which a
+    /// copy without timestamps would move later and so let old content replace newer.
     public let snapshotMs: Int64
+    /// When the database files say they were last written, for the report.
+    public let fileWrittenMs: Int64?
     /// The zone of the backup's newest conversation: what "the phone's current zone" was when the
     /// backup was taken, for the payloads that fall back to it (a recap with no conversations, a
     /// day's coverage with none).
@@ -45,14 +48,47 @@ public final class BackupLibrary: Sendable {
 
     private init(
         root: URL, database: AppDatabase, builder: ArchivePayloadBuilder, snapshotMs: Int64,
-        zoneID: String, scratch: URL
+        fileWrittenMs: Int64?, zoneID: String, scratch: URL
     ) {
         self.root = root
         self.database = database
         self.builder = builder
         self.snapshotMs = snapshotMs
+        self.fileWrittenMs = fileWrittenMs
         self.zoneID = zoneID
         self.scratch = scratch
+    }
+
+    /// The app's "when it was written" columns. Planned times (`dueAtMs`, `nextAttemptAtMs`) are
+    /// not changes and are left out.
+    static let changeColumns: Set<String> = [
+        "createdAtMs", "updatedAtMs", "editedAtMs", "completedAtMs", "archivedAtMs", "changedAtMs",
+        "touchedAtMs", "closedAtMs", "receivedAtMs", "recordedAtMs", "judgedAtMs", "decidedAtMs",
+        "titleEditedAtMs", "lastAttemptAtMs",
+    ]
+
+    /// The newest change the database records: the largest of `changeColumns` in any table, up to
+    /// `limit` (a wrong clock can write a future time). Read before the app's migrations and the
+    /// import's own writes touch the copy, so it is the phone's, not this run's.
+    static func newestChangeMs(at url: URL, notAfter limit: Int64) throws -> Int64? {
+        let queue = try DatabaseQueue(path: url.path)
+        defer { try? queue.close() }
+        return try queue.read { d in
+            var newest: Int64?
+            let tables = try String.fetchAll(
+                d, sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            for table in tables {
+                for column in try d.columns(in: table).map(\.name) where changeColumns.contains(column) {
+                    let sql =
+                        "SELECT MAX(\(column.quotedDatabaseIdentifier)) FROM \(table.quotedDatabaseIdentifier) "
+                        + "WHERE \(column.quotedDatabaseIdentifier) <= ?"
+                    if let value = try Int64.fetchOne(d, sql: sql, arguments: [limit]) {
+                        newest = max(newest ?? value, value)
+                    }
+                }
+            }
+            return newest
+        }
     }
 
     public static func open(
@@ -74,11 +110,12 @@ public final class BackupLibrary: Sendable {
         if fm.fileExists(atPath: wal.path) {
             try fm.copyItem(at: wal, to: URL(fileURLWithPath: copy.path + "-wal"))
         }
-        let snapshotMs = [source, wal].compactMap { url -> Int64? in
+        let fileWrittenMs = [source, wal].compactMap { url -> Int64? in
             guard let date = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
             else { return nil }
             return Int64((date.timeIntervalSince1970 * 1000).rounded(.down))
-        }.max() ?? nowMs()
+        }.max()
+        let snapshotMs = try newestChangeMs(at: copy, notAfter: nowMs()) ?? fileWrittenMs ?? nowMs()
 
         let database = try AppDatabase.open(at: copy)
         let store = SegmentStore(root: root, nowMs: nowMs)
@@ -119,7 +156,7 @@ public final class BackupLibrary: Sendable {
         )
         return BackupLibrary(
             root: root, database: database, builder: builder, snapshotMs: snapshotMs,
-            zoneID: zoneID, scratch: scratch)
+            fileWrittenMs: fileWrittenMs, zoneID: zoneID, scratch: scratch)
     }
 
     /// Every entity the phone would send on linking, in the phone's own enumeration

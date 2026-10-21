@@ -77,6 +77,13 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var returnUrl = QueryHelpers.ParseQuery(login.Query)["ReturnUrl"].ToString();
 		Assert.Equal(authorize, returnUrl);
 
+		// Signed out, the metadata document of an app this server has never seen is not fetched: sign-in comes first.
+		const string unseen = "https://unseen-app.example/oauth/client.json";
+		var unseenAnswer = await browser.GetAsync(AuthorizeUrl(unseen, "https://unseen-app.example/callback", challenge, "unseen"));
+		Assert.Equal(HttpStatusCode.Redirect, unseenAnswer.StatusCode);
+		Assert.Equal("/admin/login", new Uri(new Uri(Origin), unseenAnswer.Headers.Location!).AbsolutePath);
+		Assert.DoesNotContain(factory.Http.Received, r => r.Request.RequestUri!.ToString() == unseen);
+
 		await SignInAsync(browser, userId);
 		var code = await AllowAsync(browser, returnUrl, ClaudeRedirect, "claude-state-1", expect: ["Connect Claude?", "claude.ai", "Add and update follow-ups, and add notes"]);
 
@@ -218,11 +225,33 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var write = await CallToolAsync(api, readOnly.Access, TestWriteTools.Name);
 		Assert.True(write.GetProperty("isError").GetBoolean());
 		Assert.Contains(McpScopeFilters.WriteNeeded, write.GetRawText());
-		Assert.Contains("insufficient_scope", write.GetProperty("_meta").GetProperty("mcp/www_authenticate").GetString());
+		var stepUp = write.GetProperty("_meta").GetProperty("mcp/www_authenticate").GetString();
+		Assert.Contains("error=\"insufficient_scope\"", stepUp);
+		Assert.Contains("error_description=\"", stepUp);
+		Assert.Contains($"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\"", stepUp);
 
 		// The same code again: refused, and what the first exchange started is ended.
 		await AssertTokenErrorAsync(await TokenAsync(api, exchange), HttpStatusCode.BadRequest, "invalid_grant");
 		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(readOnly.Access))).StatusCode);
+
+		// A week on, the cleanup deletes a registration that never connected and keeps this one, which ChatGPT reuses.
+		var unused = await api.PostAsJsonAsync("/oauth/register", new { redirect_uris = new[] { ChatGptCallbackRedirect }, token_endpoint_auth_method = "none" });
+		string unusedId;
+		using (var registration = JsonDocument.Parse(await unused.Content.ReadAsStringAsync()))
+		{
+			unusedId = registration.RootElement.GetProperty("client_id").GetString()!;
+		}
+
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+			await db.OAuthClients.Where(c => c.ClientId == clientId || c.ClientId == unusedId)
+				.ExecuteUpdateAsync(s => s.SetProperty(c => c.CreatedAt, DateTimeOffset.UtcNow - OAuthServer.UnusedRegistrationLifetime - TimeSpan.FromDays(1)));
+			await scope.ServiceProvider.GetRequiredService<OAuthTokenService>().CleanUpAsync(CancellationToken.None);
+		}
+
+		Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync(AuthorizeUrl(clientId, ChatGptCallbackRedirect, challenge, "gpt-state-again", "archive:read"))).StatusCode);
+		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(unusedId, ChatGptCallbackRedirect, challenge, "gpt-state-unused"))).StatusCode);
 
 		// ChatGPT's metadata document (fetched live through the stub), with write access.
 		var (cimdVerifier, cimdChallenge) = Pkce();
@@ -277,9 +306,13 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var otherPath = await browser.GetAsync(AuthorizeUrl(ClaudeCodeClientId, "http://localhost:53682/elsewhere", challenge, "cc"));
 		Assert.Equal(HttpStatusCode.BadRequest, otherPath.StatusCode);
 
+		// The resource in another canonical spelling (a trailing slash, the host in capitals, the default port) is the
+		// same resource; the path is not case-insensitive.
+		var otherCase = await browser.GetAsync(AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc", resource: $"{Origin}/MCP"));
+		AssertErrorRedirect(otherCase, redirect, "invalid_target", "cc");
 		var code = await AllowAsync(
 			browser,
-			AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc-state", "archive:read"),
+			AuthorizeUrl(ClaudeCodeClientId, redirect, challenge, "cc-state", "archive:read", resource: "HTTP://LocalHost:80/mcp/"),
 			redirect,
 			"cc-state",
 			expect: ["Connect Claude Code?", "An app on this device"]);
@@ -290,6 +323,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			["redirect_uri"] = redirect,
 			["client_id"] = ClaudeCodeClientId,
 			["code_verifier"] = verifier,
+			["resource"] = $"{Origin}/mcp/",
 		}));
 		Assert.Equal(HttpStatusCode.OK, (await api.SendAsync(McpTests.McpPost(tokens.Access))).StatusCode);
 
@@ -304,6 +338,40 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			Assert.Equal("Bearer", header.Scheme);
 			Assert.Equal(expectedChallenge, header.Parameter);
 		}
+
+		// A client running in a browser (the MCP Inspector) gets CORS on what it calls, with bearer tokens and never with
+		// credentials; the admin area gets none.
+		const string inspector = "https://inspector.example";
+		foreach (var (path, method) in new[]
+		{
+			("/mcp", "POST"), ("/.well-known/oauth-protected-resource/mcp", "GET"), ("/.well-known/oauth-protected-resource", "GET"),
+			("/.well-known/oauth-authorization-server", "GET"), ("/oauth/token", "POST"), ("/oauth/register", "POST"), ("/oauth/revoke", "POST"),
+		})
+		{
+			var preflight = new HttpRequestMessage(HttpMethod.Options, path);
+			preflight.Headers.Add("Origin", inspector);
+			preflight.Headers.Add("Access-Control-Request-Method", method);
+			preflight.Headers.Add("Access-Control-Request-Headers", "authorization,content-type,mcp-protocol-version");
+			var allowed = await api.SendAsync(preflight);
+			Assert.True(allowed.StatusCode == HttpStatusCode.NoContent, $"{path}: {(int)allowed.StatusCode}");
+			Assert.Equal("*", Assert.Single(allowed.Headers.GetValues("Access-Control-Allow-Origin")));
+			Assert.False(allowed.Headers.Contains("Access-Control-Allow-Credentials"), path);
+		}
+
+		var adminPreflight = new HttpRequestMessage(HttpMethod.Options, "/admin/tokens");
+		adminPreflight.Headers.Add("Origin", inspector);
+		adminPreflight.Headers.Add("Access-Control-Request-Method", "POST");
+		Assert.False((await api.SendAsync(adminPreflight)).Headers.Contains("Access-Control-Allow-Origin"));
+		var fromBrowser = McpTests.McpPost(null);
+		fromBrowser.Headers.Add("Origin", inspector);
+		var signInNeeded = await api.SendAsync(fromBrowser);
+		Assert.Equal(HttpStatusCode.Unauthorized, signInNeeded.StatusCode);
+		Assert.Contains("WWW-Authenticate", string.Join(",", signInNeeded.Headers.GetValues("Access-Control-Expose-Headers")));
+		var metadataRequest = new HttpRequestMessage(HttpMethod.Get, "/.well-known/oauth-protected-resource/mcp");
+		metadataRequest.Headers.Add("Origin", inspector);
+		var metadataAnswer = await api.SendAsync(metadataRequest);
+		Assert.Equal(HttpStatusCode.OK, metadataAnswer.StatusCode);
+		Assert.Equal("*", Assert.Single(metadataAnswer.Headers.GetValues("Access-Control-Allow-Origin")));
 
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{

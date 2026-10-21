@@ -102,6 +102,9 @@ public sealed class SharingScopes(ArchiveDbContext db, TimeProvider time)
 	/// <summary>The longest window a <c>lastDays</c> scope may ask for: about a hundred years.</summary>
 	public const int MaxDays = 36_500;
 
+	/// <summary>How far past the server's clock a <c>since</c> scope may start: the phone's clock may run a little ahead.</summary>
+	public static readonly TimeSpan SinceClockSkew = TimeSpan.FromHours(1);
+
 	/// <summary>The time the nightly deletion runs, in the account's time zone.</summary>
 	public static readonly TimeSpan SweepTime = new(3, 30, 0);
 

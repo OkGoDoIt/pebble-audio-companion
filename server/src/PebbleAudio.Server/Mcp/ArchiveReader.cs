@@ -132,7 +132,7 @@ public sealed class ArchiveReader(
 	public ConversationCard Card(ToolCall call, Conversation c, bool hasTranscript, int? overviewLength)
 	{
 		var zone = LogicalDays.Zone(c.TimeZone);
-		var end = c.EndedAt ?? (c.State == ConversationState.Live ? call.Now : c.StartedAt);
+		var end = End(c, call.Now);
 		return new ConversationCard(
 			c.Id,
 			c.Title,
@@ -155,6 +155,13 @@ public sealed class ArchiveReader(
 			GapMinutes(c, GapKind.Quiet),
 			GapMinutes(c, GapKind.Lost));
 	}
+
+	/// <summary>
+	/// Where a conversation ends for its length: its end time; now while it is live; else, closed without one, its
+	/// start plus the audio it recorded.
+	/// </summary>
+	public static DateTimeOffset End(Conversation c, DateTimeOffset now) =>
+		c.EndedAt ?? (c.State == ConversationState.Live ? now : c.StartedAt + TimeSpan.FromMilliseconds(c.RecordedMs));
 
 	public GapOut Gap(Conversation c, ConversationGap g)
 	{

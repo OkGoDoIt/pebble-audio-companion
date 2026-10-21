@@ -83,6 +83,14 @@ for (const button of document.querySelectorAll("button[data-copy]")) {
 	});
 }
 
+/* Cancel inside a disclosure (Unlink's confirmation) closes it. */
+
+for (const button of document.querySelectorAll("button[data-close-details]")) {
+	button.addEventListener("click", () => {
+		button.closest("details")?.removeAttribute("open");
+	});
+}
+
 /* Times: the server renders UTC; show them in the viewer's time zone. */
 
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });

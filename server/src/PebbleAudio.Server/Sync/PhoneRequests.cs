@@ -157,7 +157,7 @@ public sealed class PhoneRequestService(
 		return await DescribeAsync(clip, phoneRequest, cancellationToken);
 	}
 
-	/// <summary>Where a clip request stands now, by the request id a earlier result gave.</summary>
+	/// <summary>Where a clip request stands now, by the request id an earlier result gave.</summary>
 	public async Task<ClipRequestResult?> GetClipRequestAsync(Guid userId, Guid requestId, CancellationToken cancellationToken)
 	{
 		await ExpireDueAsync(userId, cancellationToken);

@@ -8,7 +8,7 @@ namespace PebbleAudio.Server.Sync;
 /// app's Delete all: every archive row and clip file goes, with the sync ledger, the requests, their jobs, and the
 /// AI-read log, and what lets the phone keep syncing stays (the linked phones, their preferences, the assistants'
 /// access). <see cref="UnlinkAsync"/> is <c>DELETE /link</c> (§1): the same deletion, and every assistant's access
-/// and this phone's token end with it.
+/// and this phone's token end with it. <see cref="UnlinkFromAdminAsync"/> is the admin area's Unlink.
 /// </summary>
 public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConnectedAssistants assistants, TimeProvider time)
 {
@@ -34,21 +34,81 @@ public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConne
 		await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
 		{
 			await SyncLocks.LockUserAsync(db, userId, cancellationToken);
-			await DeleteArchiveAsync(userId, cancellationToken);
-			await assistants.RevokeAllAsync(userId, cancellationToken);
-			await db.EventSubscriptions.Where(s => s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
-			var now = time.GetUtcNow();
-			await db.Devices
-				.Where(d => d.Id == deviceId && d.UserId == userId && d.UnlinkedAt == null)
-				.ExecuteUpdateAsync(s => s.SetProperty(d => d.UnlinkedAt, now), cancellationToken);
+			await DeleteEverythingAsync(userId, deviceId, cancellationToken);
 			await transaction.CommitAsync(cancellationToken);
 		}
 
 		storage.DeleteUser(userId);
 	}
 
+	/// <summary>
+	/// The admin area's Unlink. The last linked phone goes as <see cref="UnlinkAsync"/> does: unlinking must clear the
+	/// server (sync-protocol.md §1). While another phone stays linked, only this one's token ends, and the archive
+	/// stays for the phone that keeps syncing it.
+	/// </summary>
+	/// <returns>False when the phone is not linked.</returns>
+	public async Task<bool> UnlinkFromAdminAsync(Guid userId, Guid deviceId, CancellationToken cancellationToken)
+	{
+		bool last;
+		await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+		{
+			await SyncLocks.LockUserAsync(db, userId, cancellationToken);
+			var linked = await db.Devices
+				.Where(d => d.UserId == userId && d.UnlinkedAt == null)
+				.Select(d => d.Id)
+				.ToListAsync(cancellationToken);
+			if (!linked.Contains(deviceId))
+			{
+				return false;
+			}
+
+			last = linked.Count == 1;
+			if (last)
+			{
+				await DeleteEverythingAsync(userId, deviceId, cancellationToken);
+			}
+			else
+			{
+				await RevokeDeviceAsync(userId, deviceId, cancellationToken);
+			}
+
+			await transaction.CommitAsync(cancellationToken);
+		}
+
+		if (last)
+		{
+			storage.DeleteUser(userId);
+		}
+
+		return true;
+	}
+
+	private async Task DeleteEverythingAsync(Guid userId, Guid deviceId, CancellationToken cancellationToken)
+	{
+		await DeleteArchiveAsync(userId, cancellationToken);
+		await assistants.RevokeAllAsync(userId, cancellationToken);
+		await db.EventSubscriptions.Where(s => s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
+		await RevokeDeviceAsync(userId, deviceId, cancellationToken);
+	}
+
+	private async Task RevokeDeviceAsync(Guid userId, Guid deviceId, CancellationToken cancellationToken)
+	{
+		var now = time.GetUtcNow();
+		await db.Devices
+			.Where(d => d.Id == deviceId && d.UserId == userId && d.UnlinkedAt == null)
+			.ExecuteUpdateAsync(s => s.SetProperty(d => d.UnlinkedAt, now), cancellationToken);
+	}
+
 	private async Task DeleteArchiveAsync(Guid userId, CancellationToken cancellationToken)
 	{
+		// Noted with the preferences, which stay: a backup import reads it so it does not bring the archive back.
+		var now = time.GetUtcNow();
+		if (await db.SyncPreferences.Where(p => p.UserId == userId).ExecuteUpdateAsync(s => s.SetProperty(p => p.WipedAt, now), cancellationToken) == 0)
+		{
+			db.SyncPreferences.Add(new SyncPreferences { UserId = userId, WipedAt = now, UpdatedAt = now });
+			await db.SaveChangesAsync(cancellationToken);
+		}
+
 		await db.Requests.Where(r => r.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.Clips.Where(c => c.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.Jobs.Where(j => j.UserId == userId).ExecuteDeleteAsync(cancellationToken);

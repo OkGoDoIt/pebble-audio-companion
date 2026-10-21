@@ -6,7 +6,8 @@ import Foundation
 
 let usage = """
     Usage: archive-import --backup <dir> --server <url> [--code <link code>]
-                          [--scope all|since:<date>|last:<days>] [--dry-run] [--limit N]
+                          [--scope all|since:<date>|last:<days>] [--before <date>|all]
+                          [--dry-run] [--limit N]
 
       --backup   a copy of the app's audio-companion folder (db/, segments/, transcription/)
       --server   the Pebble Audio server, for example https://pebbleaudio.okgodoit.com
@@ -15,6 +16,10 @@ let usage = """
       --scope    what to send: everything (all), from a date or time on (since:2026-10-01),
                  or the last N days (last:90). Without it, the sharing scope stored on the
                  server, else everything.
+      --before   send only what is dated before this date or time; all sends everything.
+                 Without it, only what the phone no longer has: what is dated before the
+                 phone's own archive on the server begins, and nothing from before the
+                 archive was last deleted.
       --dry-run  build and check every payload against the contract, and send nothing
       --limit    send at most N items (after the scope)
     """
@@ -28,6 +33,7 @@ var backup: String?
 var server: String?
 var code: String?
 var scope: ImportScope?
+var before: ImportBoundary?
 var dryRun = false
 var limit: Int?
 
@@ -49,6 +55,12 @@ while let argument = arguments.popFirst() {
             fail("--scope is all, since:<YYYY-MM-DD or RFC 3339 time>, or last:<days>, not '\(text)'.")
         }
         scope = parsed
+    case "--before":
+        let text = value(argument)
+        guard let parsed = ImportBoundary.parse(text) else {
+            fail("--before is a YYYY-MM-DD date, an RFC 3339 time, or all, not '\(text)'.")
+        }
+        before = parsed
     case "--dry-run": dryRun = true
     case "--limit":
         let text = value(argument)
@@ -69,7 +81,8 @@ let backupURL = URL(fileURLWithPath: (backup as NSString).expandingTildeInPath, 
 
 ScratchCleanup.shared.installSignalHandlers()
 let options = ImportOptions(
-    backup: backupURL, server: server, code: code, scope: scope, dryRun: dryRun, limit: limit)
+    backup: backupURL, server: server, code: code, scope: scope, before: before, dryRun: dryRun,
+    limit: limit)
 Task {
     do {
         let status = try await ImportRun(options: options).run()

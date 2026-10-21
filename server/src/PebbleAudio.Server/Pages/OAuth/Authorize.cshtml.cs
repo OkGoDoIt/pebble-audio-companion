@@ -35,6 +35,11 @@ public sealed class AuthorizeModel(
 
 	public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
 	{
+		if (await SignInFirstAsync(cancellationToken))
+		{
+			return Challenge();
+		}
+
 		var check = await authorization.CheckAsync(Request.Query, cancellationToken);
 		if (Answer(check) is { } answer)
 		{
@@ -46,6 +51,11 @@ public sealed class AuthorizeModel(
 
 	public async Task<IActionResult> OnPostAsync(string? decision, CancellationToken cancellationToken)
 	{
+		if (await SignInFirstAsync(cancellationToken))
+		{
+			return Challenge();
+		}
+
 		var check = await authorization.CheckAsync(Request.Query, cancellationToken);
 		if (Answer(check) is { } answer)
 		{
@@ -69,6 +79,16 @@ public sealed class AuthorizeModel(
 		logger.LogInformation("Sign-in for {App} was allowed with {Scopes}.", AppName, string.Join(' ', request.Scopes));
 		return Redirect(authorization.SuccessLocation(request, code));
 	}
+
+	/// <summary>
+	/// Signed out, an app whose metadata document this server has never seen waits for the sign-in before its URL is
+	/// fetched; the person comes back to the same request.
+	/// </summary>
+	private async Task<bool> SignInFirstAsync(CancellationToken cancellationToken) =>
+		User.UserId() is null &&
+		Request.Query.TryGetValue("client_id", out var clientId) &&
+		clientId.Count == 1 &&
+		await clients.IsUnseenDocumentAsync(clientId[0], cancellationToken);
 
 	/// <summary>The response for a request that cannot go on to consent, or null (and <see cref="Pending"/> set) when it can.</summary>
 	private IActionResult? Answer(AuthorizeCheck check)

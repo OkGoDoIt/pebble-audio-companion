@@ -116,6 +116,28 @@ public sealed class McpTests(ArchiveServerFactory factory)
 			Assert.Equal(tokenId, read.ApiTokenId);
 			Assert.NotNull((await db.ApiTokens.AsNoTracking().SingleAsync(t => t.Id == tokenId)).LastUsedAt);
 
+			// Caching hints (MCP 2026-07-28): the tool list depends on the connection and a resource is the person's
+			// archive, so both are private; the prompts are the same for everyone.
+			using (var raw = factory.CreateClient())
+			{
+				async Task<(string?, long)> HintsAsync(string method, object? parameters, string? name = null)
+				{
+					var request = McpRpc.Request(secret, method, parameters, perRequestMetadata: true);
+					if (name is not null)
+					{
+						request.Headers.Add("Mcp-Name", name);
+					}
+
+					var listed = await McpRpc.ResultAsync(await raw.SendAsync(request));
+					return (listed.GetProperty("cacheScope").GetString(), listed.GetProperty("ttlMs").GetInt64());
+				}
+
+				Assert.Equal(("private", 3_600_000L), await HintsAsync("tools/list", null));
+				Assert.Equal(("public", 3_600_000L), await HintsAsync("prompts/list", null));
+				Assert.Equal(("public", 3_600_000L), await HintsAsync("resources/templates/list", null));
+				Assert.Equal(("private", 0L), await HintsAsync("resources/read", new { uri = "conversation://conv-mine" }, "conversation://conv-mine"));
+			}
+
 			await scope.ServiceProvider.GetRequiredService<ApiTokenService>().RevokeAsync(userId, tokenId, CancellationToken.None);
 		}
 

@@ -38,6 +38,7 @@ public static class SyncModule
 		services.AddScoped<IConnectedAssistants, ConnectedAssistants>();
 		services.AddScoped<IConnectedAssistantSource, TokenAssistantSource>();
 		services.AddJobHandler<ClipTranscodeJob>(ClipTranscodeJob.Type);
+		services.AddScoped<ClipRetention>();
 		services.AddScoped<SharingScopes>();
 		services.AddScoped<ScopeSweep>();
 		services.AddScoped<ScopeSweepSchedule>();
@@ -100,27 +101,11 @@ public static class SyncModule
 			statusCode: StatusCodes.Status201Created);
 	}
 
-	/// <summary>
-	/// Unlinks and deletes the server's copy, ending every assistant's access. <c>?keepData=true</c> only revokes this
-	/// phone's token, for the admin area's unlink of one phone while another stays linked.
-	/// </summary>
-	private static async Task<IResult> UnlinkAsync(
-		ClaimsPrincipal user,
-		bool? keepData,
-		PhoneLinkService links,
-		ArchiveWipe wipe,
-		CancellationToken cancellationToken)
+	/// <summary>Unlinks and deletes the server's copy, ending every assistant's access.</summary>
+	private static async Task<IResult> UnlinkAsync(ClaimsPrincipal user, ArchiveWipe wipe, CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
-		if (keepData == true)
-		{
-			await links.UnlinkAsync(userId, deviceId, cancellationToken);
-		}
-		else
-		{
-			await wipe.UnlinkAsync(userId, deviceId, cancellationToken);
-		}
-
+		await wipe.UnlinkAsync(userId, deviceId, cancellationToken);
 		return Results.NoContent();
 	}
 
@@ -290,6 +275,15 @@ public static class SyncModule
 			[SyncKind.Coverage.ToWire()] = counts.CoverageDays,
 		};
 
+		// For a backup import (§5): where what a phone sent begins (a backup import's own devices do not count), and
+		// when the archive was last deleted, so it adds only what the phone no longer has.
+		var phoneSince = await db.Conversations
+			.Where(c => c.UserId == userId && db.SyncItems.Any(s =>
+				s.UserId == userId && s.Kind == SyncKind.Conversation && s.EntityId == c.Id &&
+				db.Devices.Any(d => d.Id == s.DeviceId && d.AppBuild != SyncProtocol.ImportBuild)))
+			.MinAsync(c => (DateTimeOffset?)c.StartedAt, cancellationToken);
+		var wipedAt = await db.SyncPreferences.Where(p => p.UserId == userId).Select(p => p.WipedAt).SingleOrDefaultAsync(cancellationToken);
+
 		return Results.Json(
 			new StatusResponse(
 				time.GetUtcNow(),
@@ -297,7 +291,9 @@ public static class SyncModule
 				status.PendingRequests,
 				byKind,
 				reads,
-				await assistants.ListAsync(userId, cancellationToken)),
+				await assistants.ListAsync(userId, cancellationToken),
+				phoneSince,
+				wipedAt),
 			SyncJson.Options);
 	}
 
@@ -333,6 +329,8 @@ public static class SyncModule
 		PhoneRequestService requests,
 		SharingScopes scopes,
 		ScopeSweep sweep,
+		ClipRetention clips,
+		TimeProvider time,
 		CancellationToken cancellationToken)
 	{
 		var (userId, deviceId) = Caller(user);
@@ -349,6 +347,13 @@ public static class SyncModule
 				return Error(StatusCodes.Status400BadRequest, "scope.since is an RFC 3339 time for kind since.");
 			}
 
+			// A later start would delete everything now and drop every batch item until then, which the phone counts
+			// as held. Only a phone bug or a wrong clock sends one; an hour covers clock drift.
+			if (parsed == SharingScopeKind.Since && scope.Since > time.GetUtcNow() + SharingScopes.SinceClockSkew)
+			{
+				return Error(StatusCodes.Status400BadRequest, "scope.since is in the future; send a time up to now.");
+			}
+
 			if (parsed == SharingScopeKind.LastDays && scope.Days is not (>= 1 and <= SharingScopes.MaxDays))
 			{
 				return Error(StatusCodes.Status400BadRequest, $"scope.days is a whole number from 1 to {SharingScopes.MaxDays} for kind lastDays.");
@@ -358,6 +363,12 @@ public static class SyncModule
 		}
 
 		var preferences = await requests.SetPreferencesAsync(userId, deviceId, body.Clips, body.Edits, cancellationToken);
+		if (body.Clips == false)
+		{
+			// No audio for assistants any more: what the server has goes too, and links already given stop working.
+			await clips.RemoveAllAsync(userId, cancellationToken);
+		}
+
 		if (kind is { } scopeKind && await scopes.SetAsync(userId, deviceId, scopeKind, body.Scope!.Since, body.Scope.Days, cancellationToken))
 		{
 			await sweep.RunAsync(userId, cancellationToken);
@@ -490,7 +501,9 @@ public static class SyncModule
 		int PendingRequests,
 		IReadOnlyDictionary<string, int> Counts,
 		IReadOnlyList<AiReadWire> AiReads,
-		IReadOnlyList<AccessEntry> Access);
+		IReadOnlyList<AccessEntry> Access,
+		DateTimeOffset? PhoneSince,
+		DateTimeOffset? WipedAt);
 
 	internal sealed record AiReadWire(DateTimeOffset At, string Client, string Tool, IReadOnlyList<string> Ids);
 

@@ -151,7 +151,7 @@ public sealed class OAuthTokenService(
 			return Error("invalid_grant", "code_verifier does not match the code_challenge");
 		}
 
-		if (resource is not null && !string.Equals(resource, stored.Resource, StringComparison.Ordinal))
+		if (resource is not null && !OAuthUrls.SameResource(resource, stored.Resource))
 		{
 			return Error("invalid_target", $"the only resource here is {urls.Resource}");
 		}
@@ -172,6 +172,10 @@ public sealed class OAuthTokenService(
 		stored.GrantId = grant.Id;
 		var response = AddTokenPair(grant, now, config);
 		await db.SaveChangesAsync(cancellationToken);
+		// Connected: from now on the app keeps its registration, even with no live connection (it reuses its client_id).
+		await db.OAuthClients
+			.Where(c => c.Id == client.Id)
+			.ExecuteUpdateAsync(s => s.SetProperty(c => c.LastUsedAt, now), cancellationToken);
 		await transaction.CommitAsync(cancellationToken);
 
 		await CleanUpAsync(cancellationToken);
@@ -240,7 +244,7 @@ public sealed class OAuthTokenService(
 			return Error("invalid_grant", "the refresh token has expired");
 		}
 
-		if (resource is not null && !string.Equals(resource, grant.Resource, StringComparison.Ordinal))
+		if (resource is not null && !OAuthUrls.SameResource(resource, grant.Resource))
 		{
 			return Error("invalid_target", $"the only resource here is {urls.Resource}");
 		}
@@ -332,7 +336,8 @@ public sealed class OAuthTokenService(
 
 	/// <summary>
 	/// Deletes what can no longer be used: expired codes and tokens, grants past their refresh lifetime, and
-	/// registrations that never connected.
+	/// registrations that never connected. A registration that connected once stays: ChatGPT and the CLIs keep their
+	/// client_id and come back with it after a disconnect.
 	/// </summary>
 	public async Task CleanUpAsync(CancellationToken cancellationToken)
 	{
@@ -342,7 +347,7 @@ public sealed class OAuthTokenService(
 		await db.OAuthGrants.Where(g => g.ExpiresAt < now).ExecuteDeleteAsync(cancellationToken);
 		var unused = now - OAuthServer.UnusedRegistrationLifetime;
 		await db.OAuthClients
-			.Where(c => c.Kind == OAuthClientKind.Registered && c.CreatedAt < unused && !c.Grants.Any())
+			.Where(c => c.Kind == OAuthClientKind.Registered && c.CreatedAt < unused && c.LastUsedAt == null && !c.Grants.Any())
 			.ExecuteDeleteAsync(cancellationToken);
 	}
 

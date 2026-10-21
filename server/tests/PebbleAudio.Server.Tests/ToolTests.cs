@@ -39,6 +39,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
 			Assert.Equal((true, false, false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
 			Assert.NotNull(tool.OutputSchema);
+			Assert.Equal("""[{"type":"oauth2","scopes":["archive:read"]}]""", tool.Meta?["securitySchemes"]?.ToJsonString());
 			foreach (var key in new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" })
 			{
 				var text = tool.Meta?[key]?.GetValue<string>();
@@ -91,7 +92,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Equal($"{ArchiveFixture.Key(fx.Day)}T10:05:00+07:00", kitchen.GetProperty("startedAt").GetString());
 		Assert.Equal(36.0, kitchen.GetProperty("minutes").GetDouble());
 		Assert.Equal((1.0, 2.3), (kitchen.GetProperty("lostMinutes").GetDouble(), kitchen.GetProperty("quietMinutes").GetDouble()));
-		Assert.Equal(["Roger", "Sam"], kitchen.GetProperty("people").EnumerateArray().Select(p => p.GetProperty("name").GetString()));
+		Assert.Equal(["Alex", "Sam"], kitchen.GetProperty("people").EnumerateArray().Select(p => p.GetProperty("name").GetString()));
 		Assert.True(kitchen.GetProperty("hasTranscript").GetBoolean());
 		Assert.Equal(("noConversation", "music"), (cards[3].GetProperty("kind").GetString(), cards[3].GetProperty("descriptor").GetString()));
 		Assert.False(cards[1].GetProperty("people")[1].TryGetProperty("name", out _), "An unmatched speaker has no name.");
@@ -181,7 +182,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		// get_people keeps the two Sams apart; get_tags counts conversations.
 		var people = (await ArchiveFixture.CallAsync(mcp, "get_people")).GetProperty("people").EnumerateArray().ToList();
 		Assert.Equal(2, people.Count(p => p.GetProperty("name").GetString() == "Sam"));
-		Assert.Equal(("Roger", 5), (people[0].GetProperty("name").GetString(), people[0].GetProperty("conversationCount").GetInt32()));
+		Assert.Equal(("Alex", 5), (people[0].GetProperty("name").GetString(), people[0].GetProperty("conversationCount").GetInt32()));
 		var tags = (await ArchiveFixture.CallAsync(mcp, "get_tags")).GetProperty("tags").EnumerateArray().ToList();
 		Assert.Equal(("product launch", 2), (tags[0].GetProperty("tag").GetString(), tags[0].GetProperty("conversationCount").GetInt32()));
 
@@ -279,11 +280,11 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		// A long talk: 400 turns of about 120 characters, and a dozen short ones on other days.
 		var start = fx.At(9, 0);
 		var turns = Enumerable.Range(0, 400)
-			.Select(i => ArchiveFixture.Turn(start.AddSeconds(i * 15), i % 2 == 0 ? "1" : "2", i % 2 == 0 ? "Roger" : "Priya", $"Turn {i}: the launch checklist still needs the press kit, the demo video, the pricing page, and the FAQ.", 0.9))
+			.Select(i => ArchiveFixture.Turn(start.AddSeconds(i * 15), i % 2 == 0 ? "1" : "2", i % 2 == 0 ? "Alex" : "Priya", $"Turn {i}: the launch checklist still needs the press kit, the demo video, the pricing page, and the FAQ.", 0.9))
 			.ToArray();
 		var batch = new List<System.Text.Json.Nodes.JsonObject>
 		{
-			ArchiveFixture.Item("conversation", "conv-long", ArchiveFixture.Conversation(fx.Day, start, start.AddMinutes(100), "Launch review with Priya", "A long review of everything left for the launch.", ["product launch"], [ArchiveFixture.Speaker("1", null, "Roger"), ArchiveFixture.Speaker("2", null, "Priya")], [], 100)),
+			ArchiveFixture.Item("conversation", "conv-long", ArchiveFixture.Conversation(fx.Day, start, start.AddMinutes(100), "Launch review with Priya", "A long review of everything left for the launch.", ["product launch"], [ArchiveFixture.Speaker("1", null, "Alex"), ArchiveFixture.Speaker("2", null, "Priya")], [], 100)),
 			ArchiveFixture.Item("transcript", "conv-long", ArchiveFixture.Transcript("conv-long", turns)),
 		};
 		for (var i = 1; i <= 12; i++)
@@ -292,8 +293,29 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			batch.Add(ArchiveFixture.Item("conversation", $"conv-short-{i}", ArchiveFixture.Conversation(day, ArchiveFixture.At(day, 9, 0), ArchiveFixture.At(day, 9, 10), $"Launch standup {i}", "A short launch standup.", ["product launch"], [], [], 10)));
 		}
 
+		// A conversation the watch kept dropping out of: 600 lost seconds.
+		var gappyDay = fx.Day.AddDays(-14);
+		var gappyStart = ArchiveFixture.At(gappyDay, 9, 0);
+		var lostGaps = Enumerable.Range(0, 600).Select(i => ArchiveFixture.Gap(gappyStart.AddSeconds(i * 10), gappyStart.AddSeconds(i * 10 + 1), "lost", "watch")).ToArray();
+		batch.Add(ArchiveFixture.Item("conversation", "conv-gappy", ArchiveFixture.Conversation(gappyDay, gappyStart, gappyStart.AddMinutes(100), "Watch reconnects all morning", "The watch kept dropping out.", ["watch"], [], lostGaps, 90)));
+		batch.Add(ArchiveFixture.Item("transcript", "conv-gappy", ArchiveFixture.Transcript("conv-gappy", [.. Enumerable.Range(0, 50).Select(i => ArchiveFixture.Turn(gappyStart.AddSeconds(i * 10 + 2), "1", "Alex", $"Turn {i}: it dropped again.", 0.9))])));
+
 		Assert.Equal(0, (await phone.BatchAsync([.. batch])).GetProperty("rejected").GetArrayLength());
 		await using var mcp = await ArchiveFixture.ConnectAsync(factory, userId, TokenAccess.Read);
+
+		// Hundreds of gaps still answer inside the cap, lost ones listed first, and the summary says how many it lists;
+		// with the transcript the gaps take at most half, so turns still come back.
+		foreach (var include in new[] { "summary", "both" })
+		{
+			var gappy = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-gappy", ["include"] = include });
+			Assert.True(Length(gappy) <= ArchiveSettings.Defaults.ToolMaxCharacters, $"{include}: {Length(gappy)} characters");
+			Assert.InRange(gappy.GetProperty("gaps").GetArrayLength(), 1, 599);
+			Assert.Contains("of 600 gaps to fit the answer", gappy.GetProperty("summary").GetString());
+			if (include == "both")
+			{
+				Assert.True(gappy.GetProperty("transcript").GetProperty("shownCount").GetInt32() > 0);
+			}
+		}
 
 		// With the defaults the long transcript comes back cut to the transcript read, and says how to read on.
 		var first = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-long", ["include"] = "transcript" });
@@ -470,8 +492,10 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		foreach (var name in WriteToolNames)
 		{
 			var tool = Assert.Single(tools, t => t.Name == name).ProtocolTool;
-			Assert.Equal((false, false, false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
+			// Adding is additive; changing a follow-up replaces what it said, so hosts ask before it.
+			Assert.Equal((false, name == "update_follow_up", false), (tool.Annotations?.ReadOnlyHint, tool.Annotations?.DestructiveHint, tool.Annotations?.OpenWorldHint));
 			Assert.False(string.IsNullOrWhiteSpace(tool.Title));
+			Assert.Equal("""[{"type":"oauth2","scopes":["archive:read","archive:write"]}]""", tool.Meta?["securitySchemes"]?.ToJsonString());
 			Assert.All(
 				new[] { "openai/toolInvocation/invoking", "openai/toolInvocation/invoked" },
 				key => Assert.InRange(tool.Meta?[key]?.GetValue<string>().Length ?? 0, 1, 64));

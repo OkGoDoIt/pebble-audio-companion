@@ -32,10 +32,10 @@ Optional fields are sent as an explicit `null`, never left out. An error answer 
 the account (as `POST /sync/wipe` does), ends every assistant's access (every OAuth connection
 and every personal token), then revokes this device token, all in one transaction, `204`. The
 person asked for this (2026-10-21): unlinking must clear the server, never leave a copy behind.
-The phone says so in its confirmation before calling it. `DELETE /link?keepData=true` exists
-only for the admin area's "Unlink this phone" when another phone stays linked; the app never
-sends it.
-The admin area can rename and unlink a phone too.
+The phone says so in its confirmation before calling it.
+The admin area can rename and unlink a phone too. Unlinking the last linked phone there does
+what `DELETE /link` does, after a confirmation that says so; while another phone stays linked,
+it only revokes that phone's token, and the archive stays for the phone that keeps syncing it.
 
 ## 2. Entities
 
@@ -276,7 +276,9 @@ has expired: it answers that the audio is gone.
 Ready clips are served at `GET /clips/{clipId}.m4a?exp=…&sig=…` (no token: the signature is
 the authorization), `audio/mp4`, with byte ranges for seeking. A link lasts the *How long a clip
 link works* setting (an hour by default). `403` for a wrong or expired signature, `404` while
-the clip is not ready.
+the clip is not ready or once it is gone. A clip is kept for the *How long clips are kept*
+setting (7 days by default) after it is ready, failed, or answered `unavailable`; then it goes
+with its request and its file, and asking for that span again asks the phone again.
 
 ## 5. Account-level endpoints (device token)
 
@@ -303,6 +305,12 @@ the clip is not ready.
   `lastBatchAt` is this phone's last batch (null before its first). The phone also accepts
   `when` for `at` and `entityIds` for `ids`; the server sends `at` and `ids`.
 
+  For the Mac's backup import (`ios/Tools/ArchiveImport`, which links with `appBuild`
+  `archive-import`), the answer also carries `phoneSince`, the start of the earliest conversation
+  the server holds from a phone (an import's own do not count; null before the first), and
+  `wipedAt`, when the archive was last deleted by `POST /sync/wipe` or unlinking (null if never).
+  The import sends only what is dated before the first and after the second.
+
   ```json
   "access": [
     { "kind": "oauth", "id": "…", "name": "ChatGPT", "scopes": ["archive:read"], "connectedAt": "…", "lastUsedAt": "…" },
@@ -320,7 +328,8 @@ the clip is not ready.
 - `PUT /sync/preferences` (device token) `{ "clips": false, "edits": false }`: what the person
   allowed on the phone. Sent once after linking and whenever a choice changes; both default to
   `false` until the phone says otherwise. With `clips: false` the server never queues a clip
-  request (the audio tool answers that the person has not allowed clips); with `edits: false` it
+  request (the audio tool answers that the person has not allowed clips), and a `PUT` with
+  `clips: false` deletes every clip it holds for the account, files and requests included; with `edits: false` it
   refuses the follow-up and note write tools (they answer that the person has not allowed
   assistants to add to their archive). The phone also refuses such requests itself, so a stale
   server preference can never move audio or write anything the person did not allow.
@@ -347,7 +356,8 @@ the clip is not ready.
     deleted: conversations, their transcripts and notes, recaps for those days, briefs whose
     period ends before the window, follow-ups whose source time is before it, and clip files.
   - "Dated" means a conversation's `startedAt`, a recap's day, a brief's `endDay`, a follow-up's
-    `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`). A day is inside
+    `sourceAt` (else `createdAt`), a note's conversation (else its `createdAt`), a transcript's
+    conversation (else its first item). A day is inside
     when it is on or after the logical day the window's start falls on. Widening the window does
     not bring anything back by itself; the phone re-sends what now falls inside it (it watches
     for a widened scope and marks those items pending). The server forgets the versions of what it
@@ -355,7 +365,8 @@ the clip is not ready.
   - `GET` and `PUT` answer with the scope as stored, in the same shape:
     `{ "clips": true, "edits": false, "scope": { "kind": "lastDays", "days": 90 } }` (`since` only
     for `since`, `days` only for `lastDays`). `400` for an unknown `kind`, a `since` scope without
-    a time, or `days` outside 1 to 36,500. The account's time zone is the one of the latest
+    a time or with one more than an hour after the server's clock, or `days` outside 1 to 36,500.
+    The account's time zone is the one of the latest
     conversation the phone sent (UTC before the first).
 
 ## 6. What the server derives and never asks the phone for

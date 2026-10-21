@@ -6,8 +6,9 @@ namespace PebbleAudio.Server.Sync;
 
 /// <summary>
 /// Deletes everything that has fallen outside the account's sharing scope (sync-protocol.md §5): conversations with
-/// their transcripts, notes, and clip files; recaps and coverage for earlier days; briefs whose period ended
-/// earlier; follow-ups said (or, without a source, created) earlier; notes without a conversation created earlier.
+/// their transcripts, notes, and clip files; transcripts without a conversation whose first item is earlier; recaps
+/// and coverage for earlier days; briefs whose period ended earlier; follow-ups said (or, without a source, created)
+/// earlier; notes without a conversation created earlier.
 /// It runs nightly at 03:30 in the account's time zone and at once when the phone changes the scope.
 /// </summary>
 /// <remarks>
@@ -30,11 +31,30 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 		{
 			await SyncLocks.LockUserAsync(db, userId, cancellationToken);
 
+			// Follow-ups first: deleting a conversation clears the source time of the follow-ups said in it, and they
+			// are dated by that time.
+			var followUps = db.FollowUps.Where(f => f.UserId == userId && (f.SourceAt ?? f.CreatedAt) < from);
+			var followUpIds = await followUps.Select(f => f.Id).ToListAsync(cancellationToken);
+			await followUps.ExecuteDeleteAsync(cancellationToken);
+
 			var conversations = await db.Conversations
 				.Where(c => c.UserId == userId && c.StartedAt < from)
 				.Select(c => c.Id)
 				.ToListAsync(cancellationToken);
 			await ArchiveDeletes.ConversationsAsync(db, userId, conversations, files, cancellationToken);
+
+			// A transcript whose conversation is not here is dated by its first item, as a batch dates it.
+			var orphans = (await db.Transcripts
+					.Where(t => t.UserId == userId && !db.Conversations.Any(c => c.UserId == userId && c.Id == t.ConversationId))
+					.Select(t => new { t.ConversationId, First = t.Items.Min(i => (DateTimeOffset?)i.At) })
+					.ToListAsync(cancellationToken))
+				.Where(t => t.First < from)
+				.Select(t => t.ConversationId)
+				.ToList();
+			if (orphans.Count > 0)
+			{
+				await db.Transcripts.Where(t => t.UserId == userId && orphans.Contains(t.ConversationId)).ExecuteDeleteAsync(cancellationToken);
+			}
 
 			var recaps = await db.Recaps.Where(r => r.UserId == userId && r.DayKey < fromDay).Select(r => r.DayKey).ToListAsync(cancellationToken);
 			await db.Recaps.Where(r => r.UserId == userId && r.DayKey < fromDay).ExecuteDeleteAsync(cancellationToken);
@@ -45,10 +65,6 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 			var briefs = await db.Briefs.Where(b => b.UserId == userId && b.EndDay < fromDay).Select(b => b.PeriodKey).ToListAsync(cancellationToken);
 			await db.Briefs.Where(b => b.UserId == userId && b.EndDay < fromDay).ExecuteDeleteAsync(cancellationToken);
 
-			var followUps = db.FollowUps.Where(f => f.UserId == userId && (f.SourceAt ?? f.CreatedAt) < from);
-			var followUpIds = await followUps.Select(f => f.Id).ToListAsync(cancellationToken);
-			await followUps.ExecuteDeleteAsync(cancellationToken);
-
 			// Notes on a conversation went with it above; one with none here is dated by when it was written.
 			var notes = db.Notes.Where(n =>
 				n.UserId == userId &&
@@ -58,7 +74,7 @@ public sealed class ScopeSweep(ArchiveDbContext db, ClipStorage storage, Sharing
 			await notes.ExecuteDeleteAsync(cancellationToken);
 
 			await ForgetAsync(userId, SyncKind.Conversation, conversations, cancellationToken);
-			await ForgetAsync(userId, SyncKind.Transcript, conversations, cancellationToken);
+			await ForgetAsync(userId, SyncKind.Transcript, [.. conversations, .. orphans], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Recap, [.. recaps.Select(Day)], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Coverage, [.. coverage.Select(Day)], cancellationToken);
 			await ForgetAsync(userId, SyncKind.Brief, briefs, cancellationToken);
@@ -151,7 +167,9 @@ public sealed class ScopeSweepSchedule(ArchiveDbContext db, IJobQueue queue)
 	}
 }
 
-/// <summary>Looks for due nightly deletions every ten minutes.</summary>
+/// <summary>
+/// Looks for due nightly deletions every ten minutes, and removes clips past the "How long clips are kept" setting.
+/// </summary>
 public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvider time, ILogger<ScopeSweepScheduler> logger) : BackgroundService
 {
 	public static readonly TimeSpan Interval = TimeSpan.FromMinutes(10);
@@ -165,6 +183,7 @@ public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvide
 			{
 				await using var scope = scopes.CreateAsyncScope();
 				await scope.ServiceProvider.GetRequiredService<ScopeSweepSchedule>().QueueDueAsync(time.GetUtcNow(), stoppingToken);
+				await scope.ServiceProvider.GetRequiredService<ClipRetention>().RemoveExpiredAsync(time.GetUtcNow(), stoppingToken);
 			}
 			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 			{
@@ -172,7 +191,7 @@ public sealed class ScopeSweepScheduler(IServiceScopeFactory scopes, TimeProvide
 			}
 			catch (Exception ex)
 			{
-				logger.LogError(ex, "Could not queue the nightly sharing-scope deletions.");
+				logger.LogError(ex, "Could not queue the nightly sharing-scope deletions or remove old clips.");
 			}
 		}
 		while (await WaitAsync(timer, stoppingToken));

@@ -89,6 +89,13 @@ public sealed class ClipTests(ArchiveServerFactory factory)
 		Assert.Equal("No audio is stored for that span.", unavailable.Detail);
 		Assert.Equal(0, (await phone.GetJsonAsync("/sync/requests")).GetProperty("requests").GetArrayLength());
 
+		// Turning clips off on the phone removes every clip the server holds, the upload waiting for conversion included.
+		var upload = Path.Combine(factory.ClipsPath, clip.Path!);
+		await phone.AllowAsync(clips: false, edits: false);
+		Assert.False(await db.Clips.AnyAsync(c => c.UserId == userId));
+		Assert.False(await db.Requests.AnyAsync(r => r.UserId == userId && r.Kind == PhoneRequestKind.Clip));
+		Assert.False(File.Exists(upload));
+
 		// Not converted here; the ffmpeg test does that.
 		await db.Jobs.Where(j => j.Id == job.Id).ExecuteDeleteAsync();
 	}
@@ -150,5 +157,15 @@ public sealed class ClipTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync($"/clips/{clip.Id:N}.m4a")).StatusCode);
 		var expired = links.Create(clip.Id, DateTimeOffset.UtcNow.AddMinutes(-1));
 		Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync(new Uri(expired.Url).PathAndQuery)).StatusCode);
+
+		// Past the keep time (a week by default) the clip goes: its link stops working, and asking again asks the phone.
+		await db.Clips.Where(c => c.Id == clip.Id).ExecuteUpdateAsync(s => s.SetProperty(c => c.ReadyAt, DateTimeOffset.UtcNow.AddDays(-8)));
+		Assert.True(await scope.ServiceProvider.GetRequiredService<ClipRetention>().RemoveExpiredAsync(DateTimeOffset.UtcNow, none) >= 1);
+		Assert.False(await db.Clips.AnyAsync(c => c.Id == clip.Id));
+		Assert.False(File.Exists(Path.Combine(factory.ClipsPath, clip.Path!)));
+		Assert.Equal(HttpStatusCode.NotFound, (await browser.GetAsync(url)).StatusCode);
+		var again = await requests.RequestClipAsync(userId, id, Wire.Start, Wire.Start.AddSeconds(3), none);
+		Assert.Equal(ClipOutcome.Waiting, again.Outcome);
+		Assert.NotEqual(asked.RequestId, again.RequestId);
 	}
 }
