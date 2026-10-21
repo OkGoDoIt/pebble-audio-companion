@@ -120,18 +120,27 @@ public static class OAuthClientNames
 		}
 
 		var host = redirectUri is null ? "" : OAuthRedirects.Host(redirectUri);
-		if (IsHostOrSubdomain(host, "chatgpt.com"))
+		foreach (var (domain, known) in KnownHosts)
 		{
-			return "ChatGPT";
-		}
-
-		if (IsHostOrSubdomain(host, "claude.ai"))
-		{
-			return "Claude";
+			if (IsHostOrSubdomain(host, domain))
+			{
+				return known;
+			}
 		}
 
 		return host.Length > 0 ? host : "Unnamed app";
 	}
+
+	/// <summary>Where the assistants on the Connect pages return to, and their names (connect-commands.md).</summary>
+	private static readonly (string Domain, string Name)[] KnownHosts =
+	[
+		("chatgpt.com", "ChatGPT"),
+		("claude.ai", "Claude"),
+		("gemini.google.com", "Gemini"),
+		("antigravity.google", "Antigravity"),
+		("meta.ai", "Muse"),
+		("grok.com", "Grok"),
+	];
 
 	private static bool IsHostOrSubdomain(string host, string domain) =>
 		host.Equals(domain, StringComparison.OrdinalIgnoreCase) ||

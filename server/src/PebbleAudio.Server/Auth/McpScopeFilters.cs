@@ -17,6 +17,44 @@ public static class McpScopeFilters
 	public const string WriteNeeded =
 		"This assistant can read the archive but not add to it. Reconnect it and allow adding follow-ups and notes.";
 
+	/// <summary>The scopes the 401 on <c>/mcp</c> names: what a client asks for when it signs in.</summary>
+	public const string ChallengeScope = $"{ArchiveScopes.Read} {ArchiveScopes.Write}";
+
+	/// <summary>
+	/// The 401 that starts sign-in on <c>/mcp</c> also names the scopes (MCP authorization: the challenge SHOULD carry
+	/// <c>scope</c>, and a client asks for those). Both are named, as <c>scopes_supported</c> lists them, so a client asks
+	/// for both and the person chooses on the consent page. The SDK's handler writes the challenge without it, so it is
+	/// added as the response starts.
+	/// </summary>
+	public static IApplicationBuilder UseMcpChallengeScope(this IApplicationBuilder app) => app.Use((context, next) =>
+	{
+		if (context.Request.Path.StartsWithSegments("/mcp", StringComparison.Ordinal))
+		{
+			context.Response.OnStarting(() =>
+			{
+				var response = context.Response;
+				if (response.StatusCode == StatusCodes.Status401Unauthorized)
+				{
+					var values = response.Headers.WWWAuthenticate.ToArray();
+					for (var i = 0; i < values.Length; i++)
+					{
+						if (values[i] is { } value && value.StartsWith("Bearer ", StringComparison.Ordinal) &&
+							value.Contains("resource_metadata=", StringComparison.Ordinal) && !value.Contains("scope=", StringComparison.Ordinal))
+						{
+							values[i] = $"{value}, scope=\"{ChallengeScope}\"";
+						}
+					}
+
+					response.Headers.WWWAuthenticate = values;
+				}
+
+				return Task.CompletedTask;
+			});
+		}
+
+		return next(context);
+	});
+
 	/// <summary>
 	/// <c>_meta["securitySchemes"]</c> on every tool: OAuth with <c>archive:read</c>, and <c>archive:write</c> too for one
 	/// that is not read-only. Set once, after the SDK has collected the tools.

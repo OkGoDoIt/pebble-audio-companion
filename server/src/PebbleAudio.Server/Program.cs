@@ -177,6 +177,7 @@ if (!app.Environment.IsDevelopment())
 
 app.UseRouting();
 app.UseCors();
+app.UseMcpChallengeScope();
 app.UseAuthentication();
 app.UseAuthorization();
 

@@ -30,7 +30,7 @@ public sealed class McpTests(ArchiveServerFactory factory)
 		var challenge = Assert.Single(response.Headers.WwwAuthenticate);
 		Assert.Equal("Bearer", challenge.Scheme);
 		Assert.Equal(
-			$"resource_metadata=\"{ArchiveServerFactory.PublicOrigin}/.well-known/oauth-protected-resource/mcp\"",
+			$"resource_metadata=\"{ArchiveServerFactory.PublicOrigin}/.well-known/oauth-protected-resource/mcp\", scope=\"archive:read archive:write\"",
 			challenge.Parameter);
 
 		foreach (var path in new[] { "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource" })

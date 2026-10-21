@@ -330,7 +330,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 
 		// The 401 that starts sign-in: the same challenge for no token, an unknown one, one for another audience,
 		// and an expired one.
-		var expectedChallenge = $"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\"";
+		var expectedChallenge = $"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\", scope=\"archive:read archive:write\"";
 		foreach (var token in new string?[] { null, OAuthServer.AccessTokenPrefix + "never-issued" })
 		{
 			var response = await api.SendAsync(McpTests.McpPost(token));
@@ -416,7 +416,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 	}
 
 	[Fact]
-	public async Task Gemini_Cursor_and_Muse_register_the_way_they_ask_and_sign_in_as_public_clients()
+	public async Task Gemini_Cursor_Muse_Grok_and_Antigravity_register_the_way_they_ask_and_sign_in_as_public_clients()
 	{
 		var userId = await factory.CreateUserAsync();
 		using var browser = Browser();
@@ -451,10 +451,18 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(cursor, "cursor://anysphere.cursor-mcp/elsewhere", challenge, "c"))).StatusCode);
 		await SignInAndReadAsync(browser, api, cursor, cursorRedirect, ["Connect Cursor?", "An app on this device"]);
 
-		// Muse (Meta) returns to an https address on agent.meta.ai.
+		// Muse (Meta), Grok, and Antigravity return to https addresses, Grok's with its trailing slash. One that gives no
+		// name is named from where it returns to.
 		const string museRedirect = "https://agent.meta.ai/api/hatch/oauth/callback";
-		var muse = await RegisterAsync(api, new { client_name = "Meta AI", redirect_uris = new[] { museRedirect } });
-		await SignInAndReadAsync(browser, api, muse, museRedirect, ["Connect Meta AI?", "agent.meta.ai"]);
+		var muse = await RegisterAsync(api, new { redirect_uris = new[] { museRedirect } });
+		await SignInAndReadAsync(browser, api, muse, museRedirect, ["Connect Muse?", "agent.meta.ai"]);
+		const string grokRedirect = "https://grok.com/connectors-oauth-exchange-code/";
+		var grok = await RegisterAsync(api, new { redirect_uris = new[] { grokRedirect }, token_endpoint_auth_method = "none" });
+		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(grok, grokRedirect.TrimEnd('/'), challenge, "g"))).StatusCode);
+		await SignInAndReadAsync(browser, api, grok, grokRedirect, ["Connect Grok?", "grok.com"]);
+		const string antigravityRedirect = "https://antigravity.google/oauth-callback";
+		var antigravity = await RegisterAsync(api, new { client_name = "Antigravity", redirect_uris = new[] { antigravityRedirect } });
+		await SignInAndReadAsync(browser, api, antigravity, antigravityRedirect, ["Connect Antigravity?", "antigravity.google"]);
 	}
 
 	/// <summary>Registers a client (RFC 7591) and checks it was registered as a public client.</summary>

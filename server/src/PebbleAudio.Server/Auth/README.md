@@ -10,7 +10,9 @@
   scope; tool code checks them with `User.HasScope(ArchiveScopes.Write)`.
 - **The 401 challenge on `/mcp`**: the MCP SDK's `AddMcp` handler answers unauthenticated requests (and unknown,
   expired, revoked, or wrong-audience tokens) with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`
-  and serves that metadata document. `Program.cs` also serves it at the root path.
+  and serves that metadata document. `Program.cs` also serves it at the root path. `UseMcpChallengeScope` adds
+  `scope="archive:read archive:write"` to that challenge (the MCP spec says it SHOULD carry one); both are named, as
+  `scopes_supported` lists them, so a client asks for both and the person chooses on the consent page.
 - **CORS** (`BrowserClients`): `/mcp`, both metadata documents, and `/oauth/token`, `/oauth/register`, and
   `/oauth/revoke` answer browser-run clients (the MCP Inspector) from any origin, without credentials, exposing
   `WWW-Authenticate`. Nothing else, the admin area included, sends CORS headers.
