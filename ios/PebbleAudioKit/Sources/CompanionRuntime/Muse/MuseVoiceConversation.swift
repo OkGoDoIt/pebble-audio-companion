@@ -176,6 +176,7 @@ actor VoiceTurnFollower {
     private var ownApprovals: Set<String> = []
     /// Muse reacted to the question: an answer even with no words.
     private var reacted = false
+    private var reactionShapes = 0
     private var approvalShapes = 0
     private let trace: (@Sendable (String) -> Void)?
     /// The first events' shapes, for the flight recorder (names and keys only).
@@ -315,10 +316,38 @@ actor VoiceTurnFollower {
         let target = ["target_message_id", "user_message_id", "reply_to_message_id", "message_id"].lazy
             .compactMap { payload[$0]?.string ?? payload["reaction"]?[$0]?.string }.first
         if let target, !userIDs.isEmpty, !userIDs.contains(target) { return nil }
-        let raw = ["emoji", "reaction", "value", "key"].lazy
+        if reactionShapes < 2 {
+            reactionShapes += 1
+            trace?("reaction \(name) \(MuseWidget.shape(payload))")
+        }
+        // `reactions.updated` carries the message's reactions as a whole (seen 2026-10-21);
+        // other forms name one.
+        let raw = Self.reactionValue(payload["reactions"]) ?? ["emoji", "reaction", "value", "key"].lazy
             .compactMap { payload[$0]?.string ?? payload["reaction"]?[$0]?.string }.first
         guard let raw, let emoji = Self.reactionText(raw) else { return nil }
         return emoji
+    }
+
+    /// The newest reaction in a message's reactions: a list of emoji or of objects that name one,
+    /// or an object keyed by emoji.
+    static func reactionValue(_ value: MuseJSON?) -> String? {
+        guard let value else { return nil }
+        if let text = value.string { return reactionText(text) == nil ? nil : text }
+        let keys = ["emoji", "reaction", "value", "key", "id", "type"]
+        if let list = value.array {
+            for item in list.reversed() {
+                if let text = item.string, reactionText(text) != nil { return text }
+                if let found = keys.lazy.compactMap({ item[$0]?.string }).first(where: { reactionText($0) != nil }) {
+                    return found
+                }
+            }
+            return nil
+        }
+        guard let object = value.object else { return nil }
+        if let found = keys.lazy.compactMap({ object[$0]?.string }).first(where: { reactionText($0) != nil }) {
+            return found
+        }
+        return object.keys.sorted().first { reactionText($0) != nil }
     }
 
     /// The emoji a reaction shows: itself, or a heart for Muse's own care reaction.
