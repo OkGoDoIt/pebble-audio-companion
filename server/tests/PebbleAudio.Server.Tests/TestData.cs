@@ -42,7 +42,7 @@ internal static class TestData
 			State = ConversationState.Closed,
 			StartReason = "topicChange",
 			Title = title,
-			Summary = "Roger and a friend talk through why the watch kept showing a paused audiobook as playing.",
+			Summary = "Alex and a friend talk through why the watch kept showing a paused audiobook as playing.",
 			Tags = [.. tags],
 			IsFinal = true,
 			ContentKind = ContentKind.Conversation,
@@ -59,7 +59,7 @@ internal static class TestData
 					EndedAt = started.AddMinutes(23),
 				},
 			],
-			People = [new ConversationSpeaker { Label = "1", PersonId = "person-roger", Name = "Roger" }],
+			People = [new ConversationSpeaker { Label = "1", PersonId = "person-alex", Name = "Alex" }],
 			Gaps =
 			[
 				new ConversationGap { StartedAt = started.AddMinutes(4), EndedAt = started.AddMinutes(5), Kind = GapKind.Lost, Origin = "watch" },

@@ -23,7 +23,7 @@ internal sealed class Phone(ArchiveServerFactory factory, string token, Guid dev
 	public Guid UserId { get; } = userId;
 
 	/// <summary>Mints a code the way the admin page does and links with it.</summary>
-	public static async Task<Phone> LinkAsync(ArchiveServerFactory factory, Guid userId, string name = "Roger's iPhone", string build = "812")
+	public static async Task<Phone> LinkAsync(ArchiveServerFactory factory, Guid userId, string name = "Alex's iPhone", string build = "812")
 	{
 		string code;
 		await using (var scope = factory.Services.CreateAsyncScope())
@@ -46,7 +46,7 @@ internal sealed class Phone(ArchiveServerFactory factory, string token, Guid dev
 	}
 
 	/// <summary><c>POST /link</c> as the app sends it: no token, a normalized code, the protocol header.</summary>
-	public static HttpRequestMessage LinkRequest(string code, string name = "Roger's iPhone", string build = "812")
+	public static HttpRequestMessage LinkRequest(string code, string name = "Alex's iPhone", string build = "812")
 	{
 		var request = new HttpRequestMessage(HttpMethod.Post, "/link")
 		{
@@ -158,7 +158,7 @@ internal static class Wire
 			["hasMissingAudio"] = true,
 			["isFinal"] = true,
 			["mostlyQuiet"] = false,
-			["people"] = new JsonArray(new JsonObject { ["label"] = "1", ["name"] = "Roger", ["personId"] = "person-roger" }),
+			["people"] = new JsonArray(new JsonObject { ["label"] = "1", ["name"] = "Alex", ["personId"] = "person-alex" }),
 			["pieces"] = new JsonArray(
 				new JsonObject { ["endMediaMs"] = null, ["endedAt"] = T(s.AddMinutes(15)), ["ordinal"] = 0, ["segmentId"] = "seg-1791997844787-ed737f28-62", ["startMediaMs"] = 0, ["startedAt"] = T(s) },
 				new JsonObject { ["endMediaMs"] = 480_000, ["endedAt"] = T(s.AddMinutes(23)), ["ordinal"] = 1, ["segmentId"] = "seg-1791997844787-ed737f28-63", ["startMediaMs"] = 0, ["startedAt"] = T(s.AddMinutes(15)) }),
@@ -178,13 +178,13 @@ internal static class Wire
 	/// <summary>A transcript as the app sends it; its language is null.</summary>
 	public static JsonObject Transcript(string conversationId, string said)
 	{
-		var text = $"Roger: {said}";
+		var text = $"Alex: {said}";
 		return new JsonObject
 		{
 			["charCount"] = text.Length,
 			["conversationId"] = conversationId,
 			["items"] = new JsonArray(
-				new JsonObject { ["at"] = T(Start), ["confidence"] = 0.93, ["endAt"] = T(Start.AddSeconds(8)), ["kind"] = "turn", ["name"] = "Roger", ["speaker"] = "1", ["text"] = said },
+				new JsonObject { ["at"] = T(Start), ["confidence"] = 0.93, ["endAt"] = T(Start.AddSeconds(8)), ["kind"] = "turn", ["name"] = "Alex", ["speaker"] = "1", ["text"] = said },
 				new JsonObject { ["at"] = T(Start.AddMinutes(4)), ["endAt"] = T(Start.AddMinutes(5)), ["kind"] = "lost", ["origin"] = "link" },
 				new JsonObject { ["at"] = T(Start.AddMinutes(9)), ["endAt"] = T(Start.AddMinutes(11)), ["kind"] = "quiet" },
 				new JsonObject { ["at"] = T(Start.AddMinutes(14)), ["descriptor"] = "music", ["endAt"] = T(Start.AddMinutes(15)), ["kind"] = "masked" }),

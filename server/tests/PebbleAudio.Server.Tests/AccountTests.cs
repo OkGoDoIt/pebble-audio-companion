@@ -198,7 +198,7 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 	{
 		var (phone, fx) = await ArchiveFixture.SeedAsync(factory, clips: true, edits: true);
 		using var linked = phone;
-		using var otherPhone = await Phone.LinkAsync(factory, phone.UserId, "Roger's iPad");
+		using var otherPhone = await Phone.LinkAsync(factory, phone.UserId, "Alex's iPad");
 		var userId = phone.UserId;
 		string personal, oauthAccess;
 		await using (var scope = factory.Services.CreateAsyncScope())
